@@ -1,0 +1,83 @@
+name: Foundation
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify-root-foundation:
+    if: github.event.before == '0000000000000000000000000000000000000000'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the event commit
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Verify the parentless foundation object
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          commit="$GITHUB_SHA"
+          checked_out_commit="$(git rev-parse HEAD)"
+          test "$checked_out_commit" = "$commit"
+
+          parents="$(git show --no-patch --format=%P "$commit")"
+          test -z "$parents"
+          tree="$(git show --no-patch --format=%T "$commit")"
+          test -n "$tree"
+
+          expected_paths="$(printf '%s\n' \
+            '.github/pull_request_template.md' \
+            '.github/workflows/foundation.yml' \
+            'AGENTS.md' \
+            'CLAUDE.md' \
+            'README.md' \
+            'docs/PRODUCT.md' \
+            'docs/decisions/README.md' \
+            'docs/requirements/README.md' | LC_ALL=C sort)"
+          actual_paths="$(git ls-tree -r --name-only "$commit" | LC_ALL=C sort)"
+          test "$actual_paths" = "$expected_paths"
+
+          test "$(git cat-file -s "$commit:CLAUDE.md")" -eq 11
+          git show "$commit:CLAUDE.md" | cmp - <(printf '@AGENTS.md\n')
+
+          git grep -F 'This file is the sole owner of product intent, scope, and implementation status.' "$commit" -- docs/PRODUCT.md
+          git grep -F 'The only editable HumanRequirement authority is' "$commit" -- docs/requirements/README.md
+          git grep -F 'This directory will own architecture decision records.' "$commit" -- docs/decisions/README.md
+          git grep -F 'No architecture decision record exists yet.' "$commit" -- docs/decisions/README.md
+          git grep -F 'This file is reusable AI policy.' "$commit" -- AGENTS.md
+          git grep -F '| Product intent, scope, and implementation status | [docs/PRODUCT.md](docs/PRODUCT.md) |' "$commit" -- README.md
+          git grep -F '| Reusable agent policy | [AGENTS.md](AGENTS.md); [CLAUDE.md](CLAUDE.md) only loads it for Claude |' "$commit" -- README.md
+
+          if printf '%s\n' "$actual_paths" | grep -E '(^|/)(src|app|lib|bin|tests?|deploy)(/|$)|(^|/)(package(-lock)?\.json|yarn\.lock|pnpm-lock\.yaml|deno\.jsonc?|bun\.lockb?|pyproject\.toml|requirements\.txt|Pipfile|poetry\.lock|Cargo\.(toml|lock)|go\.(mod|sum)|Gemfile(\.lock)?|composer\.(json|lock)|mix\.exs)$'; then
+            echo 'Runtime, test, deployment, or dependency path found.' >&2
+            exit 1
+          fi
+
+          git grep -F 'No executable product exists.' "$commit" -- docs/PRODUCT.md
+          if git grep -nEi '\b(is implemented|currently (provides|supports|runs)|Atelier 2 (provides|supports|runs))\b' "$commit" -- README.md docs/PRODUCT.md; then
+            echo 'Implemented product behavior is claimed by the foundation.' >&2
+            exit 1
+          fi
+
+          {
+            echo '## Foundation object'
+            echo "- commit: \`$commit\`"
+            echo "- tree: \`$tree\`"
+            echo '- parent: `NONE`'
+            echo '- paths: exact eight-file foundation'
+            echo '- required owner declarations: present'
+            echo '- CLAUDE import bytes: exact'
+            echo '- prohibited runtime/dependency paths: absent'
+            echo '- prohibited implemented-behavior phrases: absent'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          printf 'I=%s\ntree(I)=%s\nparent(I)=NONE\n' "$commit" "$tree"
