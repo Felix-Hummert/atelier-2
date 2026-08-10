@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +33,7 @@ def test_dbos_satisfies_the_durable_runtime_contract(
         ],
         check=False,
         capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2] / "src")},
         text=True,
         timeout=45,
     )

@@ -38,9 +38,16 @@ vector-store, security, or extension architecture.
 
 ## Current state
 
-No executable product exists. The foundation now includes a locked dependency
-manifest and an executable H0 decision probe: it accepts DBOS for the first
-durable-run slice under the limits in
-[ADR 0001](decisions/0001-durable-runtime.md). There is still no Atelier 2
-product runtime, cockpit, platform integration, or deployment code. Every
-product behavior above remains intent, not a claim about implemented behavior.
+One callable product-core slice now exists. A caller can supply an exact,
+nonempty run identifier and immutable workflow-revision bytes; Atelier hashes
+and stores those bytes, atomically creates the revision-bound run and enqueues
+its DBOS workflow in the same canonical SQLite transaction, and a matching
+executor can durably advance that run once from `STARTED` to `COMPLETED` after a
+restart. Identical starts return the current run without enqueueing again, while
+conflicting run identity or durable revision bytes fail without mutation.
+
+This is only the H1 durable-start boundary accepted by
+[ADR 0001](decisions/0001-durable-runtime.md). There is no cockpit, HTTP surface,
+effect or reconciliation path, configurable workflow graph, provider or
+platform integration, deployment code, or general-purpose workflow engine.
+Those product behaviors remain intent rather than implemented claims.

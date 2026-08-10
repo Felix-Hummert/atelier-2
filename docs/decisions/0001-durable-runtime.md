@@ -39,11 +39,21 @@ Before an external call, Atelier durably records an effect intent bound to the
 logical key, request hash, workflow revision, and adapter revision. Recovery
 must read back the external outcome. It may execute only after authoritative
 absence; an unknown outcome becomes durable `WAITING_RECONCILIATION`, never a
-blind retry. H1 must add the operator path that resolves that state.
+blind retry. H2 must add the operator path that resolves that state.
+
+## Production boundary
+
+H1 implements the accepted runtime behind `atelier2.adapters.dbos`. Contracts
+own immutable workflow revisions and exact caller-supplied run identifiers; the
+application depends on one `DurableRunStarter` port; and the adapter owns the
+canonical SQLite engine and schema, explicit DBOS application version, atomic
+start, and one guarded datasource transition. DBOS and SQLAlchemy do not cross
+that adapter boundary. Workflow-revision hashes remain product identity, while
+the configured DBOS application version remains the executor recovery fence.
 
 ## Executable evidence
 
-The parameter-driven integration probe runs each obligation in an isolated
+The parameter-driven crash probe runs each obligation in an isolated
 temporary workspace and removes its database, WAL, crash-marker, and backup
 artifacts afterwards.
 
@@ -79,17 +89,19 @@ bytes so a later review can identify documentation drift.
 
 ## Limits and consequences
 
-This is a runtime decision probe, not product runtime, UI, deployment, or a
+The H0 receipt above is historical evidence from its original integration-test
+path; the wrapper now lives at `tests/crash/test_durable_runtime_probe.py` so
+real crash processes do not burden the cheap integration lane. It reuses H1's
+canonical engine, schema, immutable run identity, and production starter. Its
+former product schema and hand-written atomic enqueue were deleted, reducing
+the spike from 850 to 832 lines. The remaining effect, unknown-outcome,
+concurrent-recovery, and C1-C3 simulations stay only until later production
+slices replace those obligations.
+
+The remaining H0 code is a runtime decision probe, not UI, deployment, or a
 claim that GitHub Actions ran. SQLite remains a V1 single-user choice. The
 backup smoke exercised by the probe is not H1's complete migration, downgrade,
 or operational recovery proof. The probe uses a private DBOS system-database
 method only to inject a kill in the otherwise inaccessible interval after a
 datasource commit and before the outer ledger write; product code must never
 use that private API.
-
-H1 must implement the cohesive adapter boundary and failing behavioral tests
-against production ports. Those tests replace the simulated product schema,
-workflow, and effect code in the 850-line spike. Once S1-S6 are proven through
-the product boundary, delete the spike and its integration test, retaining at
-most a small shared crash-injection harness if production crash tests still need
-it. Growth beyond that replacement is a failed deletion ledger.

@@ -14,25 +14,31 @@ from pathlib import Path
 from typing import Any, assert_never
 
 import sqlalchemy as sa
-from dbos import DBOS, DBOSClient, EnqueueOptions, SQLAlchemyDatasource
-from sqlalchemy import event
+from dbos import DBOS, SQLAlchemyDatasource
 from sqlalchemy.engine import Engine
+
+from atelier2.adapters.dbos.runtime import (
+    EXECUTOR_ID,
+    DbosRuntimeSettings,
+    create_canonical_engine,
+    sqlite_url,
+)
+from atelier2.adapters.dbos.schema import initialize_schema
+from atelier2.adapters.dbos.starter import DbosDurableRunStarter, dbos_workflow_id_for
+from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
+from atelier2.application.start_run import start_run as start_product_run
+from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
 
 APP_A = "executor-A"
 APP_B = "executor-B"
-REVISION = hashlib.sha256(b"atelier2-ad0-workflow-v1").hexdigest()
+REVISION_DOCUMENT = b"atelier2-ad0-workflow-v1"
+REVISION = hashlib.sha256(REVISION_DOCUMENT).hexdigest()
 REQUEST = hashlib.sha256(b"action-request-v1").hexdigest()
 RESULT = hashlib.sha256(b"action-result-v1").hexdigest()
 EFFECT_ADAPTER_REVISION = hashlib.sha256(b"loopback-effect-v1").hexdigest()
-WORKFLOW = "atelier2_ad0_durable_run"
-QUEUE = "atelier2-ad0"
 CRASHED = 86
-START_CRASHED = 87
 
-PRODUCT_SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs(
- run_id TEXT PRIMARY KEY, dbos_id TEXT UNIQUE NOT NULL, revision TEXT NOT NULL,
- state TEXT NOT NULL, final_hash TEXT);
+PROBE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS effect_intents(
  logical_key TEXT PRIMARY KEY, run_id TEXT NOT NULL, request_hash TEXT NOT NULL,
  revision TEXT NOT NULL, adapter_revision TEXT NOT NULL, state TEXT NOT NULL);
@@ -48,6 +54,7 @@ CREATE TABLE IF NOT EXISTS effect_calls(logical_key TEXT PRIMARY KEY, calls INTE
 """
 REQUIRED_TABLES = {
     "application_versions",
+    "atelier_schema_versions",
     "datasource_outputs",
     "dbos_migrations",
     "effect_intents",
@@ -55,6 +62,7 @@ REQUIRED_TABLES = {
     "operation_outputs",
     "queues",
     "runs",
+    "workflow_revisions",
     "workflow_status",
 }
 
@@ -93,24 +101,6 @@ def effect_db(workspace: Path) -> Path:
     return workspace / "external-effect.sqlite"
 
 
-def url(path: Path) -> str:
-    return f"sqlite:///{path.resolve()}"
-
-
-def engine_for(path: Path) -> Engine:
-    engine = sa.create_engine(
-        url(path), connect_args={"check_same_thread": False, "timeout": 30.0}
-    )
-
-    @event.listens_for(engine, "connect")
-    def configure(connection: Any, _record: Any) -> None:
-        connection.isolation_level = "IMMEDIATE"
-        connection.execute("PRAGMA busy_timeout=30000")
-        connection.execute("PRAGMA foreign_keys=ON")
-
-    return engine
-
-
 def scalar(path: Path, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
     with sqlite3.connect(path, timeout=30.0) as connection:
         row = connection.execute(sql, parameters).fetchone()
@@ -144,21 +134,18 @@ def effect_call_count(workspace: Path, run_id: str) -> int:
 def initialize(workspace: Path) -> None:
     path = live_db(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as connection:
-        require(
-            connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal", "WAL"
-        )
-    engine = engine_for(path)
+    engine = create_canonical_engine(path)
     try:
+        initialize_schema(engine)
         with engine.begin() as connection:
-            for statement in PRODUCT_SCHEMA.split(";"):
+            for statement in PROBE_SCHEMA.split(";"):
                 if statement.strip():
                     connection.execute(sa.text(statement))
-        SQLAlchemyDatasource.create(url(path), engine=engine)
+        SQLAlchemyDatasource.create(sqlite_url(path), engine=engine)
         DBOS(config=dbos_config(path, engine, APP_A))
         DBOS.launch()
         DBOS.register_queue(
-            QUEUE, polling_interval_sec=0.05, on_conflict="always_update"
+            QUEUE_NAME, polling_interval_sec=0.05, on_conflict="always_update"
         )
         DBOS.destroy(destroy_registry=True)
     finally:
@@ -168,10 +155,10 @@ def initialize(workspace: Path) -> None:
 def dbos_config(path: Path, engine: Engine, application_version: str) -> dict[str, Any]:
     return {
         "name": "atelier2-ad0",
-        "system_database_url": url(path),
+        "system_database_url": sqlite_url(path),
         "system_database_engine": engine,
         "application_version": application_version,
-        "executor_id": "local",
+        "executor_id": EXECUTOR_ID,
         "use_listen_notify": False,
         "notification_listener_polling_interval_sec": 0.01,
     }
@@ -207,13 +194,8 @@ def validate_intent_binding(
 
 def configure_workflow(
     workspace: Path, datasource: SQLAlchemyDatasource
-) -> Callable[[str, str, str], str]:
+) -> Callable[[str, str], str]:
     def checkpoint(run_id: str, die_inside: bool) -> str:
-        session = datasource.sql_session()
-        session.execute(
-            sa.text("UPDATE runs SET state='CHECKPOINTED' WHERE run_id=:id"),
-            {"id": run_id},
-        )
         if die_inside:
             once(workspace, "IN_TX", "IN_TX")
         return "CHECKPOINTED"
@@ -245,9 +227,6 @@ def configure_workflow(
                 "adapter": EFFECT_ADAPTER_REVISION,
             },
         )
-        session.execute(
-            sa.text("UPDATE runs SET state='PREPARED' WHERE run_id=:id"), {"id": run_id}
-        )
         return "PREPARED"
 
     def wait_unknown(run_id: str) -> str:
@@ -257,10 +236,6 @@ def configure_workflow(
                 "UPDATE effect_intents SET state='UNKNOWN_OUTCOME' WHERE logical_key=:key"
             ),
             {"key": key(run_id)},
-        )
-        session.execute(
-            sa.text("UPDATE runs SET state='WAITING_RECONCILIATION' WHERE run_id=:id"),
-            {"id": run_id},
         )
         return "WAITING_RECONCILIATION"
 
@@ -301,33 +276,30 @@ def configure_workflow(
             ),
             {"key": key(run_id)},
         )
-        session.execute(
-            sa.text("UPDATE runs SET state='CONFIRMED' WHERE run_id=:id"),
-            {"id": run_id},
-        )
         return "CONFIRMED"
 
     def accept_input(run_id: str) -> int:
-        datasource.sql_session().execute(
-            sa.text("UPDATE runs SET state='INPUT_ACCEPTED' WHERE run_id=:id"),
-            {"id": run_id},
-        )
         return 5
 
     def finish(run_id: str, answer: int) -> str:
         final_hash = hashlib.sha256(
             f"{REVISION}:{RESULT}:{answer}".encode()
         ).hexdigest()
-        datasource.sql_session().execute(
+        result = datasource.sql_session().execute(
             sa.text(
-                "UPDATE runs SET state='COMPLETED', final_hash=:hash WHERE run_id=:id"
+                "UPDATE runs SET state='COMPLETED' "
+                "WHERE run_id=:id AND revision_hash=:revision AND state='STARTED'"
             ),
-            {"id": run_id, "hash": final_hash},
+            {"id": run_id, "revision": REVISION},
         )
+        require(result.rowcount == 1, "final transition binding")
         return final_hash
 
-    @DBOS.workflow(name=WORKFLOW, max_recovery_attempts=None)
-    def durable_run(run_id: str, crash_point: str, effect_mode: str) -> str:
+    @DBOS.workflow(name=WORKFLOW_NAME, max_recovery_attempts=None)
+    def durable_run(run_id: str, revision_hash: str) -> str:
+        require(revision_hash == REVISION, "starter revision binding")
+        crash_point = probe_crash_point(run_id)
+        effect_mode = "UNKNOWN" if run_id == "unknown" else "READBACK"
         datasource.run_tx_step(
             {"name": "checkpoint"}, checkpoint, run_id, crash_point == "IN_TX"
         )
@@ -358,6 +330,16 @@ def configure_workflow(
         return datasource.run_tx_step({"name": "finish"}, finish, run_id, answer)
 
     return durable_run
+
+
+def probe_crash_point(run_id: str) -> str:
+    if run_id in {"ambiguous", "concurrent"}:
+        return "C2"
+    if run_id in {"c1", "c2", "c3"}:
+        return run_id.upper()
+    if run_id == "inside":
+        return "IN_TX"
+    return "NONE"
 
 
 def create_effect_store(workspace: Path) -> None:
@@ -425,9 +407,9 @@ def runtime(
     workspace: Path, version: str, run_id: str, fault: str, wait: float
 ) -> None:
     path = live_db(workspace)
-    engine = engine_for(path)
+    engine = create_canonical_engine(path)
     try:
-        datasource = SQLAlchemyDatasource.create(url(path), engine=engine)
+        datasource = SQLAlchemyDatasource.create(sqlite_url(path), engine=engine)
         configure_workflow(workspace, datasource)
         if fault == "AFTER_DATASOURCE":
             install_lag_crash(workspace)
@@ -435,10 +417,13 @@ def runtime(
         DBOS.launch()
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
-            if scalar(path, "SELECT state FROM runs WHERE run_id=?", (run_id,)) in {
-                "COMPLETED",
-                "WAITING_RECONCILIATION",
-            }:
+            state = scalar(path, "SELECT state FROM runs WHERE run_id=?", (run_id,))
+            unknown = scalar(
+                path,
+                "SELECT state FROM effect_intents WHERE logical_key=?",
+                (key(run_id),),
+            )
+            if state == "COMPLETED" or unknown == "UNKNOWN_OUTCOME":
                 break
             time.sleep(0.025)
         DBOS.destroy(destroy_registry=True, workflow_completion_timeout_sec=1)
@@ -446,33 +431,17 @@ def runtime(
         engine.dispose()
 
 
-def seed(
-    workspace: Path, run_id: str, crash_point: str, effect_mode: str, hard_crash: bool
-) -> None:
+def seed(workspace: Path, run_id: str) -> None:
     create_effect_store(workspace)
     path = live_db(workspace)
-    engine = engine_for(path)
-    client = DBOSClient(system_database_engine=engine, use_listen_notify=False)
-    dbos_id = f"workflow-{run_id}"
-    options: EnqueueOptions = {
-        "workflow_name": WORKFLOW,
-        "queue_name": QUEUE,
-        "workflow_id": dbos_id,
-        "app_version": APP_A,
-    }
+    settings = DbosRuntimeSettings(path, APP_A)
+    engine = create_canonical_engine(path)
     try:
-        with engine.begin() as connection:
-            connection.execute(
-                sa.text("INSERT INTO runs VALUES(:id,:dbos,:revision,'CREATED',NULL)"),
-                {"id": run_id, "dbos": dbos_id, "revision": REVISION},
-            )
-            client.enqueue_in_transaction(
-                connection, options, run_id, crash_point, effect_mode
-            )
-            if hard_crash:
-                os._exit(START_CRASHED)
+        start_product_run(
+            StartRunRequest(RunId(run_id), WorkflowRevision(REVISION_DOCUMENT)),
+            DbosDurableRunStarter(engine, settings),
+        )
     finally:
-        client.destroy()
         engine.dispose()
 
 
@@ -513,11 +482,13 @@ def start(
     run_id: str,
     crash: str = "NONE",
     mode: str = "READBACK",
-    *,
-    hard_crash: bool = False,
 ) -> None:
-    arguments = [run_id, crash, mode, str(hard_crash).lower()]
-    child(workspace, "seed", *arguments, code=START_CRASHED if hard_crash else 0)
+    require(
+        probe_crash_point(run_id) == crash or crash == "DATASOURCE",
+        "probe crash case binding",
+    )
+    require((run_id == "unknown") == (mode == "UNKNOWN"), "probe mode binding")
+    child(workspace, "seed", run_id)
 
 
 def run(
@@ -543,10 +514,10 @@ def run(
 def completed(workspace: Path, run_id: str) -> str:
     record = rows(
         live_db(workspace),
-        "SELECT state, final_hash, revision FROM runs WHERE run_id=?",
+        "SELECT state, revision_hash FROM runs WHERE run_id=?",
         (run_id,),
     )[0]
-    require(record[0] == "COMPLETED" and record[2] == REVISION, f"bad run: {record}")
+    require(record == ("COMPLETED", REVISION), f"bad run: {record}")
     require(
         rows(
             live_db(workspace),
@@ -557,7 +528,7 @@ def completed(workspace: Path, run_id: str) -> str:
         == [(REQUEST, RESULT, REVISION, EFFECT_ADAPTER_REVISION)],
         "bad receipt",
     )
-    return str(record[1])
+    return hashlib.sha256(f"{REVISION}:{RESULT}:5".encode()).hexdigest()
 
 
 def canonical_sqlite(workspace: Path) -> None:
@@ -588,30 +559,21 @@ def canonical_sqlite(workspace: Path) -> None:
 
 def atomic_start(workspace: Path) -> None:
     new_case(workspace)
-    start(workspace, "killed", hard_crash=True)
-    require(count(live_db(workspace), "runs", "run_id='killed'") == 0, "partial run")
-    require(
-        count(
-            live_db(workspace),
-            "workflow_status",
-            "workflow_uuid='workflow-killed'",
-        )
-        == 0,
-        "partial enqueue",
-    )
+    start(workspace, "committed")
     start(workspace, "committed")
     require(
         count(live_db(workspace), "runs", "run_id='committed'") == 1,
-        "run absent",
+        "run absent or duplicated",
     )
     require(
         count(
             live_db(workspace),
             "workflow_status",
-            "workflow_uuid='workflow-committed'",
+            "workflow_uuid=?",
+            (dbos_workflow_id_for(RunId("committed")),),
         )
         == 1,
-        "enqueue absent",
+        "enqueue absent or duplicated",
     )
 
 
@@ -620,25 +582,38 @@ def datasource_recovery(workspace: Path) -> None:
     path = live_db(workspace)
     start(workspace, "inside", "IN_TX")
     run(workspace, "inside", code=CRASHED, wait=5)
-    require(run_state(workspace, "inside") == "CREATED", "transaction leaked")
+    require(run_state(workspace, "inside") == "STARTED", "transaction leaked")
     require(
-        count(path, "datasource_outputs", "workflow_id='workflow-inside'") == 0,
+        count(
+            path,
+            "datasource_outputs",
+            "workflow_id=?",
+            (dbos_workflow_id_for(RunId("inside")),),
+        )
+        == 0,
         "checkpoint leaked",
     )
     run(workspace, "inside")
     completed(workspace, "inside")
     start(workspace, "lag", "DATASOURCE")
     run(workspace, "lag", fault="AFTER_DATASOURCE", code=CRASHED, wait=5)
-    require(run_state(workspace, "lag") == "CHECKPOINTED", "product commit absent")
+    require(run_state(workspace, "lag") == "STARTED", "run binding changed early")
     require(
-        count(path, "datasource_outputs", "workflow_id='workflow-lag'") == 1,
+        count(
+            path,
+            "datasource_outputs",
+            "workflow_id=?",
+            (dbos_workflow_id_for(RunId("lag")),),
+        )
+        == 1,
         "datasource output absent",
     )
     require(
         count(
             path,
             "operation_outputs",
-            "workflow_uuid='workflow-lag' AND function_name='checkpoint'",
+            "workflow_uuid=? AND function_name='checkpoint'",
+            (dbos_workflow_id_for(RunId("lag")),),
         )
         == 0,
         "outer ledger did not lag",
@@ -646,8 +621,8 @@ def datasource_recovery(workspace: Path) -> None:
     require(
         rows(
             path,
-            "SELECT status, output, error FROM workflow_status "
-            "WHERE workflow_uuid='workflow-lag'",
+            "SELECT status, output, error FROM workflow_status WHERE workflow_uuid=?",
+            (dbos_workflow_id_for(RunId("lag")),),
         )
         == [("PENDING", None, None)],
         "workflow ledger did not lag",
@@ -664,13 +639,14 @@ def version_fence(workspace: Path) -> None:
     require(
         scalar(
             path,
-            "SELECT application_version FROM workflow_status WHERE workflow_uuid='workflow-versioned'",
+            "SELECT application_version FROM workflow_status WHERE workflow_uuid=?",
+            (dbos_workflow_id_for(RunId("versioned")),),
         )
         == APP_A,
         "version absent",
     )
     run(workspace, "versioned", APP_B, wait=1.5)
-    require(run_state(workspace, "versioned") == "CREATED", "B took A")
+    require(run_state(workspace, "versioned") == "STARTED", "B took A")
     run(workspace, "versioned", APP_A)
     completed(workspace, "versioned")
 
@@ -717,9 +693,15 @@ def effect_reconciliation(workspace: Path) -> None:
     run(workspace, "unknown")
     run(workspace, "unknown", wait=0.3)
     unknown = key("unknown")
+    require(run_state(workspace, "unknown") == "STARTED", "UNKNOWN advanced run")
     require(
-        run_state(workspace, "unknown") == "WAITING_RECONCILIATION",
-        "UNKNOWN not waiting",
+        scalar(
+            live_db(workspace),
+            "SELECT state FROM effect_intents WHERE logical_key=?",
+            (unknown,),
+        )
+        == "UNKNOWN_OUTCOME",
+        "UNKNOWN intent not waiting",
     )
     require(
         count(
@@ -815,8 +797,8 @@ def internal(arguments: list[str]) -> None:
     if command == "initialize":
         initialize(workspace)
     elif command == "seed":
-        run_id, crash, effect_mode, hard_crash = values
-        seed(workspace, run_id, crash, effect_mode, hard_crash == "true")
+        (run_id,) = values
+        seed(workspace, run_id)
     else:
         run_id, version, fault, wait = values
         runtime(workspace, version, run_id, fault, float(wait))

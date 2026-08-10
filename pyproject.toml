@@ -11,7 +11,13 @@ dependencies = [
 dev = [
     "pytest==9.1.1",
     "pytest-xdist==3.8.0",
+    "pyright==1.1.411",
+    "ruff==0.16.2",
 ]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
+pythonpath = ["src"]
+
+[tool.pyright]
+extraPaths = ["src"]
