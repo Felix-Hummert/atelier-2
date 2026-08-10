@@ -51,6 +51,14 @@ start, and one guarded datasource transition. DBOS and SQLAlchemy do not cross
 that adapter boundary. Workflow-revision hashes remain product identity, while
 the configured DBOS application version remains the executor recovery fence.
 
+A process owns exactly one compatible DBOS binding of canonical database path
+and application version. Identical callers hold leases on that one binding, an
+incompatible second binding is refused before any global mutation, and only the
+last released lease tears the runtime down; a lease releases exactly once even
+when it is closed concurrently. This decision also binds an effect adapter
+revision into effect identity, but no effect adapter sits behind a port yet, so
+that identity stays deferred until a caller exists.
+
 ## Executable evidence
 
 The parameter-driven crash probe runs each obligation in an isolated
