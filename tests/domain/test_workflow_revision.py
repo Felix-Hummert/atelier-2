@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
 
 
 @pytest.mark.parametrize("document", [b"workflow-v1", b"", b"\x00\xffrevision"])
@@ -24,6 +24,15 @@ def test_run_id_preserves_the_callers_exact_nonempty_string(value: str) -> None:
 def test_run_id_rejects_only_empty_input() -> None:
     with pytest.raises(ValueError, match="nonempty"):
         RunId("")
+
+
+@pytest.mark.parametrize("state", list(RunState))
+def test_run_state_round_trips_through_its_durable_token(state: RunState) -> None:
+    assert RunState(state.value) is state
+
+
+def test_a_run_awaiting_reconciliation_has_a_durable_token() -> None:
+    assert RunState("WAITING_RECONCILIATION") is RunState.WAITING_RECONCILIATION
 
 
 def test_start_request_is_frozen() -> None:

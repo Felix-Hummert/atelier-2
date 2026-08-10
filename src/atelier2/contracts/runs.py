@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from enum import StrEnum
+
+from atelier2.contracts.hashing import Sha256Hash
 
 
 class RunIdentityConflict(RuntimeError):
@@ -13,13 +14,8 @@ class RevisionHashCollision(RuntimeError):
     """Durable bytes disagree with the document identified by their hash."""
 
 
-@dataclass(frozen=True)
-class WorkflowRevisionHash:
-    value: str
-
-    @classmethod
-    def from_document(cls, document: bytes) -> WorkflowRevisionHash:
-        return cls(hashlib.sha256(document).hexdigest())
+class WorkflowRevisionHash(Sha256Hash):
+    """The immutable product identity of one workflow document."""
 
 
 @dataclass(frozen=True)
@@ -29,7 +25,7 @@ class WorkflowRevision:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "revision_hash", WorkflowRevisionHash.from_document(self.document)
+            self, "revision_hash", WorkflowRevisionHash.of(self.document)
         )
 
 
@@ -44,6 +40,7 @@ class RunId:
 
 class RunState(StrEnum):
     STARTED = "STARTED"
+    WAITING_RECONCILIATION = "WAITING_RECONCILIATION"
     COMPLETED = "COMPLETED"
 
 

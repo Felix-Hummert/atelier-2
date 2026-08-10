@@ -47,7 +47,11 @@ restart. Identical starts return the current run without enqueueing again, while
 conflicting run identity or durable revision bytes fail without mutation.
 
 This is only the H1 durable-start boundary accepted by
-[ADR 0001](decisions/0001-durable-runtime.md). There is no cockpit, HTTP surface,
-effect or reconciliation path, configurable workflow graph, provider or
-platform integration, deployment code, or general-purpose workflow engine.
-Those product behaviors remain intent rather than implemented claims.
+[ADR 0001](decisions/0001-durable-runtime.md), plus the H2 effects contract as
+domain data: an intent bound to its exact request bytes, typed readback
+outcomes, and one accountable operator command that either confirms a found
+effect or authorizes one execution of that same request. No runtime yet
+prepares, reads back, executes, or reconciles an effect, and there is no
+cockpit, HTTP surface, configurable workflow graph, provider or platform
+integration, deployment code, or general-purpose workflow engine. Those product
+behaviors remain intent rather than implemented claims.
