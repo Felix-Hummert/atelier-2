@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.runtime import (
     create_canonical_engine,
 )
 from atelier2.adapters.dbos.schema import (
+    MigrationRequired,
     UnsupportedSchemaVersion,
     initialize_schema,
     workflow_revisions,
@@ -219,7 +220,7 @@ def test_revision_document_cannot_be_updated_or_deleted(
         )
 
 
-@pytest.mark.parametrize("version", [0, 2])
+@pytest.mark.parametrize("version", [0, 3])
 def test_unsupported_schema_version_is_refused_without_mutation(
     tmp_path: Path, version: int
 ) -> None:
@@ -239,7 +240,24 @@ def test_unsupported_schema_version_is_refused_without_mutation(
     assert database_path.read_bytes() == before
 
 
-def test_schema_version_one_opens_idempotently(tmp_path: Path) -> None:
+def test_schema_version_one_requires_an_explicit_migration(tmp_path: Path) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE atelier_schema_versions(version INTEGER PRIMARY KEY)"
+        )
+        connection.execute("INSERT INTO atelier_schema_versions VALUES(1)")
+    before = database_path.read_bytes()
+    engine = sa.create_engine(f"sqlite:///{database_path}")
+
+    with pytest.raises(MigrationRequired):
+        initialize_schema(engine)
+
+    engine.dispose()
+    assert database_path.read_bytes() == before
+
+
+def test_schema_version_two_opens_idempotently(tmp_path: Path) -> None:
     runtime = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A")
     )
@@ -251,7 +269,7 @@ def test_schema_version_one_opens_idempotently(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_concurrent_first_schema_initializers_converge_on_version_one(
+def test_concurrent_first_schema_initializers_converge_on_version_two(
     tmp_path: Path,
 ) -> None:
     participants = 4
@@ -283,7 +301,7 @@ def test_concurrent_first_schema_initializers_converge_on_version_one(
                 )
             )
 
-        assert results == [[1]] * participants
+        assert results == [[2]] * participants
 
 
 def test_initialized_runtime_can_execute_a_later_seeded_workflow(

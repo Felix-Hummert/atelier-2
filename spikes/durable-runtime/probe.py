@@ -39,10 +39,10 @@ EFFECT_ADAPTER_REVISION = hashlib.sha256(b"loopback-effect-v1").hexdigest()
 CRASHED = 86
 
 PROBE_SCHEMA = """
-CREATE TABLE IF NOT EXISTS effect_intents(
+CREATE TABLE IF NOT EXISTS probe_effect_intents(
  logical_key TEXT PRIMARY KEY, run_id TEXT NOT NULL, request_hash TEXT NOT NULL,
  revision TEXT NOT NULL, adapter_revision TEXT NOT NULL, state TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS effect_receipts(
+CREATE TABLE IF NOT EXISTS probe_effect_receipts(
  logical_key TEXT PRIMARY KEY, effect_id TEXT NOT NULL, request_hash TEXT NOT NULL,
  result_hash TEXT NOT NULL, revision TEXT NOT NULL, adapter_revision TEXT NOT NULL);
 """
@@ -57,8 +57,8 @@ REQUIRED_TABLES = {
     "atelier_schema_versions",
     "datasource_outputs",
     "dbos_migrations",
-    "effect_intents",
-    "effect_receipts",
+    "probe_effect_intents",
+    "probe_effect_receipts",
     "operation_outputs",
     "queues",
     "runs",
@@ -205,7 +205,7 @@ def configure_workflow(
         existing = session.execute(
             sa.text(
                 "SELECT request_hash, revision, adapter_revision, state "
-                "FROM effect_intents WHERE logical_key=:key"
+                "FROM probe_effect_intents WHERE logical_key=:key"
             ),
             {"key": key(run_id)},
         ).fetchone()
@@ -216,7 +216,7 @@ def configure_workflow(
             return str(existing[3])
         session.execute(
             sa.text(
-                "INSERT INTO effect_intents "
+                "INSERT INTO probe_effect_intents "
                 "VALUES(:key,:run_id,:request,:revision,:adapter,'PREPARED')"
             ),
             {
@@ -233,7 +233,8 @@ def configure_workflow(
         session = datasource.sql_session()
         session.execute(
             sa.text(
-                "UPDATE effect_intents SET state='UNKNOWN_OUTCOME' WHERE logical_key=:key"
+                "UPDATE probe_effect_intents SET state='UNKNOWN_OUTCOME' "
+                "WHERE logical_key=:key"
             ),
             {"key": key(run_id)},
         )
@@ -243,7 +244,7 @@ def configure_workflow(
         session = datasource.sql_session()
         session.execute(
             sa.text(
-                "INSERT OR IGNORE INTO effect_receipts "
+                "INSERT OR IGNORE INTO probe_effect_receipts "
                 "VALUES(:key,:effect,:request,:result,:revision,:adapter)"
             ),
             {
@@ -258,7 +259,7 @@ def configure_workflow(
         receipt = session.execute(
             sa.text(
                 "SELECT effect_id, request_hash, result_hash, revision, adapter_revision "
-                "FROM effect_receipts WHERE logical_key=:key"
+                "FROM probe_effect_receipts WHERE logical_key=:key"
             ),
             {"key": key(run_id)},
         ).one()
@@ -272,7 +273,8 @@ def configure_workflow(
             raise IntentMismatch("receipt provenance changed")
         session.execute(
             sa.text(
-                "UPDATE effect_intents SET state='CONFIRMED' WHERE logical_key=:key"
+                "UPDATE probe_effect_intents SET state='CONFIRMED' "
+                "WHERE logical_key=:key"
             ),
             {"key": key(run_id)},
         )
@@ -420,7 +422,7 @@ def runtime(
             state = scalar(path, "SELECT state FROM runs WHERE run_id=?", (run_id,))
             unknown = scalar(
                 path,
-                "SELECT state FROM effect_intents WHERE logical_key=?",
+                "SELECT state FROM probe_effect_intents WHERE logical_key=?",
                 (key(run_id),),
             )
             if state == "COMPLETED" or unknown == "UNKNOWN_OUTCOME":
@@ -522,7 +524,7 @@ def completed(workspace: Path, run_id: str) -> str:
         rows(
             live_db(workspace),
             "SELECT request_hash, result_hash, revision, adapter_revision "
-            "FROM effect_receipts WHERE logical_key=?",
+            "FROM probe_effect_receipts WHERE logical_key=?",
             (key(run_id),),
         )
         == [(REQUEST, RESULT, REVISION, EFFECT_ADAPTER_REVISION)],
@@ -660,7 +662,7 @@ def effect_reconciliation(workspace: Path) -> None:
     require(
         scalar(
             live_db(workspace),
-            "SELECT state FROM effect_intents WHERE logical_key=?",
+            "SELECT state FROM probe_effect_intents WHERE logical_key=?",
             (logical_key,),
         )
         == "PREPARED",
@@ -672,7 +674,7 @@ def effect_reconciliation(workspace: Path) -> None:
     existing = rows(
         live_db(workspace),
         "SELECT request_hash, revision, adapter_revision "
-        "FROM effect_intents WHERE logical_key=?",
+        "FROM probe_effect_intents WHERE logical_key=?",
         (logical_key,),
     )[0]
     changed_bindings = (
@@ -697,7 +699,7 @@ def effect_reconciliation(workspace: Path) -> None:
     require(
         scalar(
             live_db(workspace),
-            "SELECT state FROM effect_intents WHERE logical_key=?",
+            "SELECT state FROM probe_effect_intents WHERE logical_key=?",
             (unknown,),
         )
         == "UNKNOWN_OUTCOME",
@@ -706,7 +708,7 @@ def effect_reconciliation(workspace: Path) -> None:
     require(
         count(
             live_db(workspace),
-            "effect_receipts",
+            "probe_effect_receipts",
             "logical_key=?",
             (unknown,),
         )
@@ -743,7 +745,7 @@ def concurrent_recovery(workspace: Path) -> None:
     require(
         count(
             live_db(workspace),
-            "effect_receipts",
+            "probe_effect_receipts",
             "logical_key=?",
             (logical_key,),
         )
