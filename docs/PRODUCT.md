@@ -38,7 +38,9 @@ vector-store, security, or extension architecture.
 
 ## Current state
 
-No executable product exists. This foundation contains no runtime, dependency
-manifest, tests, or deployment code. Every behavior above is product intent,
-not a claim about implemented behavior. The current state of technical choices
-is recorded only in [decisions/README.md](decisions/README.md).
+No executable product exists. The foundation now includes a locked dependency
+manifest and an executable H0 decision probe: it accepts DBOS for the first
+durable-run slice under the limits in
+[ADR 0001](decisions/0001-durable-runtime.md). There is still no Atelier 2
+product runtime, cockpit, platform integration, or deployment code. Every
+product behavior above remains intent, not a claim about implemented behavior.

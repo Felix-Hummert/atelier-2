@@ -2,9 +2,11 @@
 
 Audience: humans and agents who need the durable reason for a technical choice.
 
-This directory will own architecture decision records. A future record must name
-its context, decision, consequences, and any record it supersedes; other
-documents may point to that record but must not restate it as a separate truth.
+This directory owns architecture decision records. A record must name its
+context, decision, consequences, and any record it supersedes; other documents
+may point to that record but must not restate it as a separate truth.
 
-No architecture decision record exists yet. In particular, this foundation
-chooses no language, framework, data store, workflow engine, or hosting provider.
+- [ADR 0001: DBOS owns durable execution behind an Atelier adapter](0001-durable-runtime.md)
+
+The product stack beyond recorded decisions remains undecided; an ADR is not a
+claim that its product slice already exists.
