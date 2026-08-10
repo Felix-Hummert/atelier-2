@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Static and behavior
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv and select Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12.3"
+          version: "0.10.9"
+
+      - name: Verify the dependency lock
+        run: uv lock --check
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Check source
+        run: uv run --locked ruff check .
+
+      - name: Check formatting
+        run: uv run --locked ruff format --check .
+
+      - name: Check types
+        run: uv run --locked pyright src tests
+
+      - name: Test non-crash behavior
+        run: uv run --locked pytest -n auto --ignore=tests/crash tests -q
+
+  crash-recovery:
+    name: Crash recovery
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv and select Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12.3"
+          version: "0.10.9"
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Test crash-recovery behavior
+        run: uv run --locked pytest -n auto tests/crash -q

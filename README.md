@@ -13,6 +13,7 @@ configurable workflows. The authoritative product intent is
 | Technical decisions | Future records indexed by [docs/decisions/README.md](docs/decisions/README.md) |
 | Reusable agent policy | [AGENTS.md](AGENTS.md); [CLAUDE.md](CLAUDE.md) only loads it for Claude |
 | Foundation verification | [.github/workflows/foundation.yml](.github/workflows/foundation.yml) |
+| Current code verification | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
 
 Use [.github/pull_request_template.md](.github/pull_request_template.md) to bind
 future changes to their requirement, acceptance evidence, context, decisions,
