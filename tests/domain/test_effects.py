@@ -7,11 +7,13 @@ from dataclasses import replace
 import pytest
 
 from atelier2.contracts.effects import (
+    AdapterOperationalIdentity,
     AdapterRevision,
     AuthorizedEffectExecution,
     CanonicalRequest,
     ConfirmationSource,
     EffectAbsence,
+    EffectAdapterResponseConflict,
     EffectBinding,
     EffectDestination,
     EffectHashCollision,
@@ -20,6 +22,8 @@ from atelier2.contracts.effects import (
     EffectIntent,
     EffectIntentMismatch,
     EffectIntentReference,
+    EffectIntentSnapshot,
+    EffectIntentState,
     EffectIntentStateConflict,
     EffectIntentStateVersion,
     EffectOutcome,
@@ -35,6 +39,8 @@ from atelier2.contracts.effects import (
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
+    ReconcileCommandSnapshot,
+    ReconcileCommandState,
     ReconcileDetermination,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -42,6 +48,7 @@ from atelier2.contracts.runs import RunId, WorkflowRevision
 
 IDENTIFIER_TYPES: list[type[EffectIdentifier]] = [
     AdapterRevision,
+    AdapterOperationalIdentity,
     EffectDestination,
     EffectId,
     LogicalEffectKey,
@@ -63,6 +70,9 @@ def binding() -> EffectBinding:
         workflow_revision_hash=WorkflowRevision(b"workflow-v1").revision_hash,
         adapter_revision=AdapterRevision("github-adapter-7"),
         destination=EffectDestination("github.com/FlexOr2/atelier-2"),
+        adapter_operational_identity=AdapterOperationalIdentity(
+            "github-installation-42"
+        ),
     )
 
 
@@ -177,6 +187,15 @@ BOUND_VALUE_CHANGES: dict[str, Callable[[EffectIntent], EffectIntent]] = {
             intent.binding, destination=EffectDestination("gitlab.com/FlexOr2/other")
         ),
     ),
+    "adapter-operational-identity": lambda intent: replace(
+        intent,
+        binding=replace(
+            intent.binding,
+            adapter_operational_identity=AdapterOperationalIdentity(
+                "github-installation-99"
+            ),
+        ),
+    ),
 }
 
 
@@ -259,6 +278,28 @@ def test_intent_state_version_keeps_any_nonnegative_advance_count(
 def test_intent_state_version_rejects_a_negative_advance_count() -> None:
     with pytest.raises(ValueError, match="nonnegative"):
         EffectIntentStateVersion(-1)
+
+
+@pytest.mark.parametrize("state", list(EffectIntentState))
+def test_intent_snapshot_is_a_typed_point_in_time_durable_read(
+    intent: EffectIntent, state: EffectIntentState
+) -> None:
+    snapshot = EffectIntentSnapshot(intent, state, RECONCILED_STATE_VERSION)
+
+    assert snapshot.intent is intent
+    assert snapshot.state is state
+    assert snapshot.state_version == RECONCILED_STATE_VERSION
+
+
+@pytest.mark.parametrize("state", list(ReconcileCommandState))
+def test_reconcile_command_snapshot_is_a_typed_point_in_time_durable_read(
+    intent: EffectIntent, state: ReconcileCommandState
+) -> None:
+    command = reconcile_command(intent, operator_found_effect())
+
+    assert ReconcileCommandSnapshot(command, state) == ReconcileCommandSnapshot(
+        command=command, state=state
+    )
 
 
 def test_intent_reference_fingerprints_the_exact_prepared_request(
@@ -360,6 +401,22 @@ def test_authoritative_absence_is_established_only_by_an_adapter_readback(
     absence = authoritative_absence(intent)
 
     assert absence.confirmation_source is ConfirmationSource.ADAPTER_READBACK
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        ConfirmationSource.OPERATOR_FOUND,
+        ConfirmationSource.OPERATOR_AUTHORIZED_EXECUTION,
+    ],
+)
+def test_adapter_readback_cannot_spoof_operator_provenance(
+    intent: EffectIntent, source: ConfirmationSource
+) -> None:
+    response = found_receipt(intent, source, ReconcileCommandId("forged-command"))
+
+    with pytest.raises(EffectAdapterResponseConflict):
+        intent.authorize_adapter_readback(response)
 
 
 @pytest.mark.parametrize(

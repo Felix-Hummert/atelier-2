@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import sqlite3
 import subprocess
@@ -9,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from atelier2.adapters.dbos.starter import dbos_workflow_id_for
+from atelier2.adapters.dbos.starter import bootstrap_workflow_id_for
+from atelier2.adapters.dbos.workflow import (
+    BOOTSTRAP_STEP_NAME,
+    COMMIT_STEP_NAME,
+    OBSERVE_STEP_NAME,
+    RESOLVE_STEP_NAME,
+)
 from atelier2.contracts.runs import RunId
 
 CRASHED = 86
@@ -23,6 +30,7 @@ def child(
     *arguments: str,
     expected: int = 0,
     timeout: float = 15,
+    stderr_contains: str | None = None,
 ) -> None:
     result = subprocess.run(
         [sys.executable, str(HARNESS), command, str(database), version, *arguments],
@@ -33,6 +41,8 @@ def child(
         timeout=timeout,
     )
     assert result.returncode == expected, result.stderr
+    if stderr_contains is not None:
+        assert stderr_contains in result.stderr
 
 
 def scalar(database: Path, statement: str, parameters: tuple[str, ...] = ()) -> object:
@@ -47,7 +57,7 @@ def test_matching_executor_recovers_after_datasource_commit(tmp_path: Path) -> N
     run_id = "recover-me"
     document = b"workflow-v1"
     revision = hashlib.sha256(document).hexdigest()
-    workflow_id = dbos_workflow_id_for(RunId(run_id))
+    workflow_id = bootstrap_workflow_id_for(RunId(run_id))
     child(database, "initialize", "executor-A")
     child(database, "seed", "executor-A", run_id, document.hex())
 
@@ -65,7 +75,7 @@ def test_matching_executor_recovers_after_datasource_commit(tmp_path: Path) -> N
     assert (
         scalar(
             database,
-            "SELECT COUNT(*) FROM runs WHERE run_id=? AND revision_hash=? AND state='COMPLETED'",
+            "SELECT COUNT(*) FROM runs WHERE run_id=? AND revision_hash=? AND state='STARTED'",
             (run_id, revision),
         )
         == 1
@@ -81,8 +91,8 @@ def test_matching_executor_recovers_after_datasource_commit(tmp_path: Path) -> N
     assert (
         scalar(
             database,
-            "SELECT COUNT(*) FROM operation_outputs WHERE workflow_uuid=? AND function_name='complete-run'",
-            (workflow_id,),
+            "SELECT COUNT(*) FROM operation_outputs WHERE workflow_uuid=? AND function_name=?",
+            (workflow_id, BOOTSTRAP_STEP_NAME),
         )
         == 0
     )
@@ -95,12 +105,21 @@ def test_matching_executor_recovers_after_datasource_commit(tmp_path: Path) -> N
         == "PENDING"
     )
 
-    child(database, "execute", "executor-B", run_id, "NONE", "0.5")
+    child(
+        database,
+        "execute",
+        "executor-B",
+        run_id,
+        "NONE",
+        "0.5",
+        expected=1,
+        stderr_contains="bootstrap workflow stayed PENDING",
+    )
     assert (
         scalar(
             database,
-            "SELECT COUNT(*) FROM operation_outputs WHERE workflow_uuid=? AND function_name='complete-run'",
-            (workflow_id,),
+            "SELECT COUNT(*) FROM operation_outputs WHERE workflow_uuid=? AND function_name=?",
+            (workflow_id, BOOTSTRAP_STEP_NAME),
         )
         == 0
     )
@@ -118,10 +137,19 @@ def test_matching_executor_recovers_after_datasource_commit(tmp_path: Path) -> N
     assert (
         scalar(
             database,
-            "SELECT COUNT(*) FROM operation_outputs WHERE workflow_uuid=? AND function_name='complete-run'",
-            (workflow_id,),
+            "SELECT COUNT(*) FROM operation_outputs WHERE workflow_uuid=? AND function_name=?",
+            (workflow_id, BOOTSTRAP_STEP_NAME),
         )
         == 1
+    )
+
+    assert (
+        scalar(
+            database,
+            "SELECT state FROM runs WHERE run_id=?",
+            (run_id,),
+        )
+        == "STARTED"
     )
     assert (
         scalar(
@@ -131,6 +159,28 @@ def test_matching_executor_recovers_after_datasource_commit(tmp_path: Path) -> N
         )
         == "SUCCESS"
     )
+
+
+def test_private_crash_hook_signature_and_named_sentinel_match_dbos_2_29() -> None:
+    from dbos._sys_db import SystemDatabase
+
+    signature = inspect.signature(SystemDatabase.record_operation_result)
+
+    assert tuple(signature.parameters) == (
+        "self",
+        "result",
+        "completed_at_epoch_ms",
+    )
+    assert (
+        signature.parameters["completed_at_epoch_ms"].kind
+        is inspect.Parameter.KEYWORD_ONLY
+    )
+    assert (
+        BOOTSTRAP_STEP_NAME,
+        OBSERVE_STEP_NAME,
+        RESOLVE_STEP_NAME,
+        COMMIT_STEP_NAME,
+    ) == ("bootstrap-run-binding", "observe/0", "resolve/1", "commit/2")
 
 
 @pytest.mark.parametrize("version", ["executor-A", "executor-B"])

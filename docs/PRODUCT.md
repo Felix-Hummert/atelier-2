@@ -38,20 +38,25 @@ vector-store, security, or extension architecture.
 
 ## Current state
 
-One callable product-core slice now exists. A caller can supply an exact,
-nonempty run identifier and immutable workflow-revision bytes; Atelier hashes
-and stores those bytes, atomically creates the revision-bound run and enqueues
-its DBOS workflow in the same canonical SQLite transaction, and a matching
-executor can durably advance that run once from `STARTED` to `COMPLETED` after a
-restart. Identical starts return the current run without enqueueing again, while
-conflicting run identity or durable revision bytes fail without mutation.
+One callable product-core vertical now exists. A caller starts an exact run and
+immutable workflow revision, then advances it with one exact prepared effect.
+Bootstrap only verifies and returns the run's current state. Advance binds the
+request bytes, workflow revision, adapter revision, destination, and external
+store identity before enqueueing durable execution. Identical retries return
+current durable snapshots; changed identities and a second V1 effect fail
+without mutation.
 
-This is only the H1 durable-start boundary accepted by
-[ADR 0001](decisions/0001-durable-runtime.md), plus the H2 effects contract as
-domain data: an intent bound to its exact request bytes, typed readback
-outcomes, and one accountable operator command that either confirms a found
-effect or authorizes one execution of that same request. No runtime yet
-prepares, reads back, executes, or reconciles an effect, and there is no
-cockpit, HTTP surface, configurable workflow graph, provider or platform
-integration, deployment code, or general-purpose workflow engine. Those product
-behaviors remain intent rather than implemented claims.
+The executor reads the effect back, performs it only after authoritative
+absence, and atomically confirms the receipt and run. An unknown outcome becomes
+`WAITING_RECONCILIATION` without execution. One accountable operator command may
+then confirm a found effect or authorize exactly that request's execution; a
+state-version CAS gives competing commands one winner. Receipts preserve exact
+request/result bytes and whether confirmation came from adapter readback,
+adapter execution, operator observation, or operator-authorized execution. The
+first concrete adapter is a persistent loopback SQLite destination stored apart
+from Atelier's canonical database. [ADR 0001](decisions/0001-durable-runtime.md)
+owns the runtime decision and recovery guarantees.
+
+There is still no cockpit, HTTP surface, configurable workflow graph, provider
+or platform integration, deployment code, or general-purpose workflow engine.
+The product proves one durable effect vertical; it is not yet remotely usable.

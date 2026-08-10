@@ -20,6 +20,10 @@ class EffectIntentStateConflict(RuntimeError):
     """A reconcile command was prepared against a superseded prepared-intent state."""
 
 
+class EffectAdapterResponseConflict(RuntimeError):
+    """An adapter claimed provenance that only an operator may establish."""
+
+
 class EffectRequestHash(Sha256Hash):
     """The immutable fingerprint of the exact request bytes one intent prepared."""
 
@@ -88,8 +92,20 @@ class AdapterRevision(EffectIdentifier):
     """The immutable revision of the adapter that prepared an effect."""
 
 
+class AdapterOperationalIdentity(EffectIdentifier):
+    """The exact adapter instance or external store a durable effect targets."""
+
+
 class EffectId(EffectIdentifier):
     """The identity a destination assigned to the performed effect."""
+
+
+@dataclass(frozen=True)
+class PerformedEffect:
+    """A provider-neutral external effect result without ledger provenance."""
+
+    effect_id: EffectId
+    result: EffectResult
 
 
 class ReconcileCommandId(EffectIdentifier):
@@ -98,6 +114,13 @@ class ReconcileCommandId(EffectIdentifier):
 
 class ReconcileActor(EffectIdentifier):
     """The operator accountable for one reconciliation command."""
+
+
+@dataclass(frozen=True)
+class EffectAdapterBinding:
+    adapter_revision: AdapterRevision
+    destination: EffectDestination
+    operational_identity: AdapterOperationalIdentity
 
 
 @dataclass(frozen=True)
@@ -116,6 +139,19 @@ class EffectIntentStateVersion:
             raise ValueError(
                 "EffectIntentStateVersion must be a nonnegative advance count"
             )
+
+
+class EffectIntentState(StrEnum):
+    PREPARED = "PREPARED"
+    WAITING_RECONCILIATION = "WAITING_RECONCILIATION"
+    RECONCILING = "RECONCILING"
+    CONFIRMED = "CONFIRMED"
+
+
+class ReconcileCommandState(StrEnum):
+    PENDING = "PENDING"
+    APPLIED = "APPLIED"
+    REJECTED_CONFLICT = "REJECTED_CONFLICT"
 
 
 class EffectOutcome(StrEnum):
@@ -148,6 +184,15 @@ class EffectBinding:
     workflow_revision_hash: WorkflowRevisionHash
     adapter_revision: AdapterRevision
     destination: EffectDestination
+    adapter_operational_identity: AdapterOperationalIdentity
+
+    @property
+    def adapter_binding(self) -> EffectAdapterBinding:
+        return EffectAdapterBinding(
+            self.adapter_revision,
+            self.destination,
+            self.adapter_operational_identity,
+        )
 
 
 @dataclass(frozen=True)
@@ -295,6 +340,16 @@ class EffectIntent:
                 "a determination must present the prepared intent and its request"
             )
 
+    def authorize_adapter_readback(self, readback: EffectReadback) -> None:
+        self.authorize_readback(readback)
+        if (
+            isinstance(readback, EffectReceipt)
+            and readback.confirmation_source is not ConfirmationSource.ADAPTER_READBACK
+        ):
+            raise EffectAdapterResponseConflict(
+                "an effect adapter may establish only ADAPTER_READBACK provenance"
+            )
+
     def resolve_reconciliation(
         self,
         command: ReconcileCommand,
@@ -320,3 +375,20 @@ class EffectIntent:
         return AuthorizedEffectExecution(
             intent=self, reconcile_command_id=command.command_id
         )
+
+
+@dataclass(frozen=True)
+class EffectIntentSnapshot:
+    """One durable point-in-time view of an intent's product lifecycle."""
+
+    intent: EffectIntent
+    state: EffectIntentState
+    state_version: EffectIntentStateVersion
+
+
+@dataclass(frozen=True)
+class ReconcileCommandSnapshot:
+    """One durable point-in-time view of an operator command."""
+
+    command: ReconcileCommand
+    state: ReconcileCommandState

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Sequence
+from pathlib import Path
+
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
@@ -22,7 +26,7 @@ runs = sa.Table(
     "runs",
     metadata,
     sa.Column("run_id", sa.Text, primary_key=True),
-    sa.Column("dbos_workflow_id", sa.Text, unique=True, nullable=False),
+    sa.Column("bootstrap_workflow_id", sa.Text, unique=True, nullable=False),
     sa.Column(
         "revision_hash",
         sa.Text,
@@ -47,6 +51,7 @@ effect_intents = sa.Table(
     ),
     sa.Column("adapter_revision", sa.Text, nullable=False),
     sa.Column("destination_identity", sa.Text, nullable=False),
+    sa.Column("adapter_operational_identity", sa.Text, nullable=False),
     sa.Column("state", sa.Text, nullable=False),
     sa.Column("state_version", sa.Integer, nullable=False),
     sa.Column(
@@ -61,6 +66,7 @@ effect_intents = sa.Table(
     sa.CheckConstraint("length(workflow_revision_hash) > 0"),
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
+    sa.CheckConstraint("length(adapter_operational_identity) > 0"),
     sa.CheckConstraint(
         "state IN ('PREPARED', 'WAITING_RECONCILIATION', 'RECONCILING', 'CONFIRMED')"
     ),
@@ -129,6 +135,7 @@ effect_receipts = sa.Table(
     ),
     sa.Column("adapter_revision", sa.Text, nullable=False),
     sa.Column("destination_identity", sa.Text, nullable=False),
+    sa.Column("adapter_operational_identity", sa.Text, nullable=False),
     sa.Column("effect_id", sa.Text, nullable=False),
     sa.Column("result", sa.LargeBinary, nullable=False),
     sa.Column("result_hash", sa.Text, nullable=False),
@@ -145,6 +152,7 @@ effect_receipts = sa.Table(
     sa.CheckConstraint("length(workflow_revision_hash) > 0"),
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
+    sa.CheckConstraint("length(adapter_operational_identity) > 0"),
     sa.CheckConstraint("length(effect_id) > 0"),
     sa.CheckConstraint("length(result_hash) > 0"),
     sa.CheckConstraint(
@@ -183,7 +191,8 @@ _EFFECT_LEDGER_TRIGGERS = (
     """
     CREATE TRIGGER IF NOT EXISTS effect_intents_binding_no_update
     BEFORE UPDATE OF logical_key, run_id, canonical_request, request_hash,
-                     workflow_revision_hash, adapter_revision, destination_identity
+                     workflow_revision_hash, adapter_revision, destination_identity,
+                     adapter_operational_identity
     ON effect_intents
     BEGIN
       SELECT RAISE(ABORT, 'effect intent bindings are immutable');
@@ -246,7 +255,56 @@ class MigrationRequired(UnsupportedSchemaVersion):
         )
 
 
+def _require_supported_versions(versions: Sequence[int]) -> None:
+    normalized = tuple(versions)
+    if normalized == (1,):
+        raise MigrationRequired
+    if normalized != (SCHEMA_VERSION,):
+        raise UnsupportedSchemaVersion(normalized)
+
+
+def _preflight_existing_schema(engine: Engine) -> None:
+    """Refuse incompatible disk state before configured connections can mutate it."""
+
+    raw_database_path = engine.url.database
+    if engine.url.get_backend_name() != "sqlite" or raw_database_path is None:
+        return
+    if raw_database_path in {"", ":memory:"}:
+        return
+    database_path = Path(raw_database_path).resolve()
+    if not database_path.is_file() or database_path.stat().st_size == 0:
+        return
+    try:
+        with sqlite3.connect(
+            f"{database_path.as_uri()}?mode=ro", uri=True
+        ) as connection:
+            table_names = {
+                str(record[0])
+                for record in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if not table_names:
+                return
+            if atelier_schema_versions.name not in table_names:
+                raise UnsupportedSchemaVersion(
+                    f"missing version owner beside tables {tuple(sorted(table_names))!r}"
+                )
+            versions = []
+            for record in connection.execute(
+                "SELECT version FROM atelier_schema_versions"
+            ):
+                version = record[0]
+                if not isinstance(version, int):
+                    raise TypeError("schema version must be stored as an integer")
+                versions.append(version)
+    except (sqlite3.DatabaseError, TypeError, ValueError) as error:
+        raise UnsupportedSchemaVersion("unreadable schema version owner") from error
+    _require_supported_versions(versions)
+
+
 def initialize_schema(engine: Engine) -> None:
+    _preflight_existing_schema(engine)
     with engine.connect() as connection:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
         try:
@@ -272,10 +330,7 @@ def initialize_schema(engine: Engine) -> None:
                 .scalars()
                 .all()
             )
-            if versions == [1]:
-                raise MigrationRequired
-            if versions != [SCHEMA_VERSION]:
-                raise UnsupportedSchemaVersion(tuple(versions))
+            _require_supported_versions(versions)
             connection.commit()
         except BaseException:
             connection.rollback()

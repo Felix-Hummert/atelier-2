@@ -58,19 +58,27 @@ def _logical_dump(database_path: Path) -> tuple[str, ...]:
         return tuple(connection.iterdump())
 
 
+def _file_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        entry.name: entry.read_bytes() for entry in root.iterdir() if entry.is_file()
+    }
+
+
 def test_populated_version_one_is_refused_without_logical_mutation(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
     _create_populated_version_one_database(database_path)
-    before = _logical_dump(database_path)
-    engine = sa.create_engine(f"sqlite:///{database_path}")
+    before_files = _file_snapshot(tmp_path)
+    before_logical = _logical_dump(database_path)
+    engine = create_canonical_engine(database_path)
 
     with pytest.raises(MigrationRequired, match="explicit offline migration"):
         initialize_schema(engine)
 
     engine.dispose()
-    assert _logical_dump(database_path) == before
+    assert _file_snapshot(tmp_path) == before_files
+    assert _logical_dump(database_path) == before_logical
 
 
 @pytest.mark.parametrize(
@@ -82,8 +90,21 @@ def test_populated_version_one_is_refused_without_logical_mutation(
         INSERT INTO atelier_schema_versions VALUES(1);
         INSERT INTO atelier_schema_versions VALUES(2);
         """,
+        """
+        CREATE TABLE atelier_schema_versions(version INTEGER PRIMARY KEY);
+        INSERT INTO atelier_schema_versions VALUES(3);
+        """,
+        """
+        CREATE TABLE atelier_schema_versions(version TEXT NOT NULL);
+        INSERT INTO atelier_schema_versions VALUES('2');
+        """,
     ],
-    ids=["missing-version-owner", "multiple-versions"],
+    ids=[
+        "missing-version-owner",
+        "multiple-versions",
+        "future-version",
+        "malformed-version",
+    ],
 )
 def test_unknown_schema_is_refused_without_logical_mutation(
     tmp_path: Path, schema_sql: str
@@ -91,14 +112,16 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     database_path = tmp_path / "atelier.sqlite"
     with sqlite3.connect(database_path) as connection:
         connection.executescript(schema_sql)
-    before = _logical_dump(database_path)
-    engine = sa.create_engine(f"sqlite:///{database_path}")
+    before_files = _file_snapshot(tmp_path)
+    before_logical = _logical_dump(database_path)
+    engine = create_canonical_engine(database_path)
 
     with pytest.raises(UnsupportedSchemaVersion):
         initialize_schema(engine)
 
     engine.dispose()
-    assert _logical_dump(database_path) == before
+    assert _file_snapshot(tmp_path) == before_files
+    assert _logical_dump(database_path) == before_logical
 
 
 def test_new_database_has_the_version_two_effect_ledger(tmp_path: Path) -> None:
@@ -116,6 +139,17 @@ def test_new_database_has_the_version_two_effect_ledger(tmp_path: Path) -> None:
             effect_intents.name,
             effect_receipts.name,
             reconcile_commands.name,
+        }
+        assert {
+            column["name"] for column in sa.inspect(connection).get_columns("runs")
+        } >= {
+            "run_id",
+            "bootstrap_workflow_id",
+            "revision_hash",
+            "state",
+        }
+        assert "dbos_workflow_id" not in {
+            column["name"] for column in sa.inspect(connection).get_columns("runs")
         }
     first_dump = _logical_dump(database_path)
 
@@ -140,7 +174,7 @@ def ledger_engine(tmp_path: Path) -> Iterator[Engine]:
         connection.execute(
             runs.insert().values(
                 run_id="run-1",
-                dbos_workflow_id="workflow-1",
+                bootstrap_workflow_id="workflow-1",
                 revision_hash=revision_hash,
                 state="STARTED",
             )
@@ -169,6 +203,7 @@ def _add_intent(
         "workflow_revision_hash": hashlib.sha256(b"workflow-v1").hexdigest(),
         "adapter_revision": "adapter-1",
         "destination_identity": "destination-1",
+        "adapter_operational_identity": "external-store-1",
         "state": state,
         "state_version": state_version,
         "reconciliation_owner_command_id": owner_command_id,
@@ -223,6 +258,7 @@ def _add_receipt(
         "workflow_revision_hash": hashlib.sha256(b"workflow-v1").hexdigest(),
         "adapter_revision": "adapter-1",
         "destination_identity": "destination-1",
+        "adapter_operational_identity": "external-store-1",
         "effect_id": "external-effect-1",
         "result": result,
         "result_hash": hashlib.sha256(result).hexdigest(),
@@ -251,6 +287,12 @@ def _add_receipt(
             "destination_identity",
             "",
             id="intent-destination-identity",
+        ),
+        pytest.param(
+            "intent",
+            "adapter_operational_identity",
+            "",
+            id="intent-adapter-operational-identity",
         ),
         pytest.param(
             "intent",
@@ -288,6 +330,12 @@ def _add_receipt(
             "destination_identity",
             "",
             id="receipt-destination-identity",
+        ),
+        pytest.param(
+            "receipt",
+            "adapter_operational_identity",
+            "",
+            id="receipt-adapter-operational-identity",
         ),
         pytest.param("receipt", "effect_id", "", id="receipt-effect-id"),
         pytest.param("receipt", "result_hash", "", id="receipt-result-hash"),
@@ -361,7 +409,7 @@ def test_run_state_tokens_are_exact(
 ) -> None:
     statement = runs.insert().values(
         run_id="candidate-run",
-        dbos_workflow_id="candidate-workflow",
+        bootstrap_workflow_id="candidate-workflow",
         revision_hash=hashlib.sha256(b"workflow-v1").hexdigest(),
         state=state,
     )
@@ -547,6 +595,7 @@ def test_receipt_round_trips_full_provenance_once_per_logical_key(
             hashlib.sha256(b"workflow-v1").hexdigest(),
             "adapter-1",
             "destination-1",
+            "external-store-1",
             "external-effect-1",
             result,
             hashlib.sha256(result).hexdigest(),
@@ -574,6 +623,11 @@ def test_receipt_round_trips_full_provenance_once_per_logical_key(
         pytest.param(
             "destination_identity", "destination-2", id="destination-identity"
         ),
+        pytest.param(
+            "adapter_operational_identity",
+            "external-store-2",
+            id="adapter-operational-identity",
+        ),
     ],
 )
 def test_every_effect_intent_binding_column_is_immutable(
@@ -593,7 +647,7 @@ def test_every_effect_intent_binding_column_is_immutable(
         connection.execute(
             runs.insert().values(
                 run_id="run-2",
-                dbos_workflow_id="workflow-2",
+                bootstrap_workflow_id="workflow-2",
                 revision_hash=alternate_revision_hash,
                 state="STARTED",
             )

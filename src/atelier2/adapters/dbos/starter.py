@@ -22,7 +22,7 @@ from atelier2.contracts.runs import (
 WORKFLOW_ID_PREFIX = "atelier2-run-"
 
 
-def dbos_workflow_id_for(run_id: RunId) -> str:
+def bootstrap_workflow_id_for(run_id: RunId) -> str:
     return WORKFLOW_ID_PREFIX + hashlib.sha256(run_id.value.encode()).hexdigest()
 
 
@@ -46,11 +46,11 @@ class DbosDurableRunStarter:
                         )
                     return existing
 
-                workflow_id = dbos_workflow_id_for(request.run_id)
+                workflow_id = bootstrap_workflow_id_for(request.run_id)
                 connection.execute(
                     runs.insert().values(
                         run_id=request.run_id.value,
-                        dbos_workflow_id=workflow_id,
+                        bootstrap_workflow_id=workflow_id,
                         revision_hash=request.revision.revision_hash.value,
                         state=RunState.STARTED.value,
                     )

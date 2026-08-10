@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,10 +12,17 @@ from typing import Any
 import sqlalchemy as sa
 from dbos import DBOS, DBOSConfig, SQLAlchemyDatasource
 from sqlalchemy import event
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
-from atelier2.adapters.dbos.schema import initialize_schema
+from atelier2.adapters.dbos.schema import effect_intents, initialize_schema
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, register_durable_run_workflow
+from atelier2.contracts.effects import (
+    AdapterOperationalIdentity,
+    AdapterRevision,
+    EffectAdapterBinding,
+    EffectDestination,
+)
+from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
 
 EXECUTOR_ID = "atelier2-local"
 _SQLITE_LOCK_TIMEOUT_SECONDS = 30.0
@@ -34,13 +43,13 @@ class DbosRuntimeLeaseClosed(RuntimeError):
 class DbosRuntimeBinding:
     """What a process globally binds while it owns the DBOS runtime.
 
-    ADR 0001 also binds an effect adapter revision into effect identity, but no
-    effect adapter exists behind a port yet, so there is nothing honest to
-    identify here until one has a caller.
+    The resource-free adapter binding participates in compatibility so a
+    refused lease cannot open or mutate an unrelated external destination.
     """
 
     canonical_database_path: Path
     application_version: str
+    effect_adapter: EffectAdapterBinding
 
 
 @dataclass(frozen=True)
@@ -52,10 +61,9 @@ class DbosRuntimeSettings:
         if not self.application_version.strip():
             raise ValueError("application_version must be nonempty")
 
-    @property
-    def binding(self) -> DbosRuntimeBinding:
+    def binding(self, effect_adapter: EffectAdapterBinding) -> DbosRuntimeBinding:
         return DbosRuntimeBinding(
-            self.database_path.resolve(), self.application_version
+            self.database_path.resolve(), self.application_version, effect_adapter
         )
 
 
@@ -85,6 +93,21 @@ def create_canonical_engine(database_path: Path) -> Engine:
     return engine
 
 
+@contextmanager
+def canonical_write_transaction(engine: Engine) -> Iterator[Connection]:
+    """Serialize a read-decide-write invariant from its first observation."""
+
+    with engine.connect() as connection:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            yield connection
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+
+
 def _establish_wal_journal_mode(connection: Any) -> None:
     deadline = time.monotonic() + _SQLITE_LOCK_TIMEOUT_SECONDS
     while True:
@@ -108,23 +131,74 @@ class _BoundRuntime:
     settings: DbosRuntimeSettings
     engine: Engine
     datasource: SQLAlchemyDatasource
+    effect_adapter_binding: EffectAdapterBinding
+    effect_adapter: EffectAdapter
     leases: int = 0
     launched: bool = False
     storage_ready: bool = False
 
 
-def _open_binding(settings: DbosRuntimeSettings) -> _BoundRuntime:
+def _open_binding(
+    settings: DbosRuntimeSettings,
+    factory: EffectAdapterFactory,
+    adapter_binding: EffectAdapterBinding,
+) -> _BoundRuntime:
+    canonical_database = settings.database_path.resolve()
+    # H2's sole concrete adapter binds its resolved external SQLite path here.
+    # This closes file-alias corruption without widening the generic factory port.
+    external_database = Path(adapter_binding.operational_identity.value)
+    same_existing_file = False
+    if (
+        external_database.is_absolute()
+        and canonical_database.exists()
+        and external_database.exists()
+    ):
+        try:
+            same_existing_file = canonical_database.samefile(external_database)
+        except OSError:
+            same_existing_file = True
+    if str(canonical_database) == str(external_database) or same_existing_file:
+        raise DbosRuntimeBindingConflict(
+            "canonical and external effect stores must be distinct"
+        )
     engine = create_canonical_engine(settings.database_path)
+    adapter: EffectAdapter | None = None
     try:
         initialize_schema(engine)
+        with engine.connect() as connection:
+            durable_bindings = {
+                EffectAdapterBinding(
+                    AdapterRevision(str(record.adapter_revision)),
+                    EffectDestination(str(record.destination_identity)),
+                    AdapterOperationalIdentity(
+                        str(record.adapter_operational_identity)
+                    ),
+                )
+                for record in connection.execute(
+                    sa.select(
+                        effect_intents.c.adapter_revision,
+                        effect_intents.c.destination_identity,
+                        effect_intents.c.adapter_operational_identity,
+                    ).distinct()
+                )
+            }
+        if durable_bindings and durable_bindings != {adapter_binding}:
+            raise DbosRuntimeBindingConflict(
+                "runtime adapter binding differs from durable effect intents"
+            )
+        adapter = factory.open()
         datasource = SQLAlchemyDatasource.create(
             sqlite_url(settings.database_path), engine=engine
         )
-        register_durable_run_workflow(datasource)
+        register_durable_run_workflow(datasource, adapter)
     except Exception:
-        engine.dispose()
+        try:
+            if adapter is not None:
+                adapter.close()
+        finally:
+            engine.dispose()
         raise
-    return _BoundRuntime(settings, engine, datasource)
+    return _BoundRuntime(settings, engine, datasource, adapter_binding, adapter)
 
 
 def _dbos_config(settings: DbosRuntimeSettings, engine: Engine) -> DBOSConfig:
@@ -153,14 +227,22 @@ class _DbosProcessOwner:
         self._lock = threading.Lock()
         self._bound: _BoundRuntime | None = None
 
-    def acquire(self, settings: DbosRuntimeSettings) -> _BoundRuntime:
+    def acquire(
+        self, settings: DbosRuntimeSettings, factory: EffectAdapterFactory
+    ) -> _BoundRuntime:
         with self._lock:
+            adapter_binding = factory.binding
+            requested_binding = settings.binding(adapter_binding)
             if self._bound is None:
-                self._bound = _open_binding(settings)
-            elif self._bound.settings.binding != settings.binding:
+                self._bound = _open_binding(settings, factory, adapter_binding)
+            elif (
+                self._bound.settings.binding(self._bound.effect_adapter_binding)
+                != requested_binding
+            ):
                 raise DbosRuntimeBindingConflict(
-                    f"this process already owns {self._bound.settings.binding}; "
-                    f"refusing {settings.binding}"
+                    "this process already owns "
+                    f"{self._bound.settings.binding(self._bound.effect_adapter_binding)}; "
+                    f"refusing {requested_binding}"
                 )
             self._bound.leases += 1
             return self._bound
@@ -170,14 +252,19 @@ class _DbosProcessOwner:
             bound.leases -= 1
             if bound.leases > 0:
                 return
-            DBOS.destroy(
-                destroy_registry=True,
-                workflow_completion_timeout_sec=(
-                    _SHUTDOWN_WORKFLOW_COMPLETION_SECONDS if bound.launched else 0
-                ),
-            )
-            bound.engine.dispose()
-            self._bound = None
+            try:
+                DBOS.destroy(
+                    destroy_registry=True,
+                    workflow_completion_timeout_sec=(
+                        _SHUTDOWN_WORKFLOW_COMPLETION_SECONDS if bound.launched else 0
+                    ),
+                )
+            finally:
+                try:
+                    bound.effect_adapter.close()
+                finally:
+                    bound.engine.dispose()
+                    self._bound = None
 
     def launch(self, bound: _BoundRuntime) -> None:
         with self._lock:
@@ -213,9 +300,15 @@ class DbosRuntime:
     cannot destroy a binding another lease still holds.
     """
 
-    def __init__(self, settings: DbosRuntimeSettings) -> None:
+    def __init__(
+        self,
+        settings: DbosRuntimeSettings,
+        effect_adapter_factory: EffectAdapterFactory,
+    ) -> None:
         self._close_lock = threading.Lock()
-        self._bound: _BoundRuntime | None = _PROCESS_OWNER.acquire(settings)
+        self._bound: _BoundRuntime | None = _PROCESS_OWNER.acquire(
+            settings, effect_adapter_factory
+        )
 
     @property
     def settings(self) -> DbosRuntimeSettings:
@@ -228,6 +321,14 @@ class DbosRuntime:
     @property
     def datasource(self) -> SQLAlchemyDatasource:
         return self._held().datasource
+
+    @property
+    def effect_adapter(self) -> EffectAdapter:
+        return self._held().effect_adapter
+
+    @property
+    def effect_adapter_binding(self) -> EffectAdapterBinding:
+        return self._held().effect_adapter_binding
 
     def launch(self) -> None:
         _PROCESS_OWNER.launch(self._held())

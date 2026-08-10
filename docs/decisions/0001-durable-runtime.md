@@ -19,15 +19,15 @@ or rejected by the probe; it is outside the V1 single-process operating model.
 ## Decision
 
 Use DBOS 2.29.0 behind the public `src/atelier2/adapters/dbos/` boundary for the
-first vertical slice. Product code will not import DBOS outside that adapter.
-The adapter will own the DBOS runtime, the canonical SQLAlchemy/SQLite
-datasource, `RunStore`, and `DurableRunStarter` so one caller transaction can
-persist the run and enqueue its DBOS workflow.
+first vertical slice. Product code does not import DBOS outside that adapter.
+The adapter owns the runtime, canonical SQLAlchemy/SQLite datasource, durable
+start/advance/reconcile implementations, and effect ledger so each caller
+decision and its DBOS enqueue share one transaction.
 
-One canonical SQLite engine and file will contain Atelier product tables, DBOS
-system tables, and `datasource_outputs`. An external service may of course have
-its own store; the probe's loopback-effect database represents that independent
-system and is not a second Atelier store.
+One canonical SQLite engine and file contains Atelier product tables, DBOS
+system tables, and `datasource_outputs`. The persistent loopback adapter uses a
+separately configured SQLite file as its external destination; it is not a
+second Atelier store.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -36,51 +36,50 @@ datasource transaction without making the cockpit lie. Atelier's immutable
 `application_version`, which fences executor compatibility.
 
 Before an external call, Atelier durably records an effect intent bound to the
-logical key, request hash, workflow revision, and adapter revision. Recovery
-must read back the external outcome. It may execute only after authoritative
-absence; an unknown outcome becomes durable `WAITING_RECONCILIATION`, never a
-blind retry. H2 must add the operator path that resolves that state.
+logical key, exact request bytes and hash, workflow revision, adapter revision,
+destination, and external-store identity. Recovery reads back the external
+outcome. It executes only after authoritative absence; an unknown outcome
+becomes durable `WAITING_RECONCILIATION`, never a blind retry. An immutable
+operator command resolves the exact waiting state by confirming a found effect
+or authorizing that same request's execution.
 
 ## Production boundary
 
-H1 implements the accepted runtime behind `atelier2.adapters.dbos`. Contracts
-own immutable workflow revisions and exact caller-supplied run identifiers; the
-application depends on one `DurableRunStarter` port; and the adapter owns the
-canonical SQLite engine and schema, explicit DBOS application version, atomic
-start, and one guarded datasource transition. DBOS and SQLAlchemy do not cross
-that adapter boundary. Workflow-revision hashes remain product identity, while
+The runtime lives behind `atelier2.adapters.dbos`. Contracts own immutable
+workflow revisions, caller-supplied run identifiers, effect lifecycles, exact
+payloads, and reconciliation decisions. Application functions depend on narrow
+start, advance, and reconcile ports. The adapter owns the canonical engine,
+schema, durable codecs and transactions, explicit application version, and the
+three-operation effect and reconciliation workflows. DBOS and SQLAlchemy do not
+cross that boundary. Workflow-revision hashes remain product identity, while
 the configured DBOS application version remains the executor recovery fence.
 
-A process owns exactly one compatible DBOS binding of canonical database path
-and application version. Identical callers hold leases on that one binding, an
-incompatible second binding is refused before any global mutation, and only the
-last released lease tears the runtime down; a lease releases exactly once even
-when it is closed concurrently. This decision also binds an effect adapter
-revision into effect identity, but no effect adapter sits behind a port yet, so
-that identity stays deferred until a caller exists.
+A process owns exactly one compatible DBOS binding of canonical database path,
+application version, and resource-free effect-adapter binding. The latter
+contains revision, destination, and stable operational/store identity and is
+persisted in intents and receipts. Restart refuses configuration contradicting
+durable intents. Identical callers share one opened adapter and runtime under
+counted leases; an incompatible lease is refused before adapter open or global
+mutation. Only the last release destroys DBOS, closes the adapter, and disposes
+the engine, each exactly once. H2 has one concrete file-backed adapter, so its
+resolved operational identity is also checked against the canonical file
+identity, including hardlink aliases, before either store is opened. This is a
+bounded loopback invariant rather than a generic provider contract.
 
 ## Executable evidence
 
-The parameter-driven crash probe runs each obligation in an isolated
-temporary workspace and removes its database, WAL, crash-marker, and backup
-artifacts afterwards.
-
-| Criterion | What the probe establishes |
+| Production proof | What it establishes |
 | --- | --- |
-| `canonical_sqlite` | Atelier product state, DBOS system state, and datasource records share one SQLite file and engine. |
-| `atomic_start` | A hard exit before commit leaves neither the run nor the queued workflow; a committed caller transaction leaves both. |
-| `datasource_recovery` | Product state and `datasource_outputs` commit together and survive a kill before the outer DBOS ledger records completion. |
-| `version_fence` | An executor with a different DBOS application version does not adopt the unfinished run; the matching executor resumes it. |
-| `effect_reconciliation` | Prepared intent, typed authoritative readback, receipt provenance, changed request/revision rejection, and unknown-outcome waiting prevent blind replay. |
-| `concurrent_recovery` | Competing recovery processes converge without duplicating the logical effect. |
-| `crash_boundaries` | Real subprocess kills at C1, C2, and C3 recover to the same final hash as an uninterrupted run. |
+| Atomic start and advance | Revision/run/bootstrap and intent/effect enqueue each commit or roll back together; exact retries do not enqueue again. |
+| Bootstrap recovery | A matching application version fills the outer DBOS ledger after a datasource commit without changing or regressing the product run. |
+| Effect recovery | Real subprocess kills after recorded observation (C1), after external commit (C2), and after product confirmation converge with one external call and one receipt. |
+| Unknown outcome | A committed unknown remains waiting across restart and provider-state change; no effect occurs until an operator command owns the intent. |
+| Reconciliation | FOUND and authorized-absence commands preserve operator provenance; concurrent opposing commands commit one CAS winner and one rejected loser. |
+| Atomic final commit | Receipt, intent, run, and owning command roll back together under an injected database failure. |
+| Runtime lifecycle | Equivalent leases share one engine and adapter; conflicts, failed initialization, concurrent close, store drift, and two-process recovery preserve one binding and result. |
 
-Verification on 2026-08-10:
-
-```text
-uv run --locked pytest -n auto tests/integration/test_durable_runtime_probe.py -q
-7 passed in 10.57s
-```
+The repository gate is `.github/workflows/ci.yml`; the local crash lane is
+`uv run --locked pytest -n auto tests/crash`.
 
 ## Primary-source receipts
 
@@ -97,19 +96,14 @@ bytes so a later review can identify documentation drift.
 
 ## Limits and consequences
 
-The H0 receipt above is historical evidence from its original integration-test
-path; the wrapper now lives at `tests/crash/test_durable_runtime_probe.py` so
-real crash processes do not burden the cheap integration lane. It reuses H1's
-canonical engine, schema, immutable run identity, and production starter. Its
-former product schema and hand-written atomic enqueue were deleted, reducing
-the spike from 850 to 832 lines. The remaining effect, unknown-outcome,
-concurrent-recovery, and C1-C3 simulations stay only until later production
-slices replace those obligations.
+Production H2 tests replaced the H0 effect, unknown, C1, C2, and concurrency
+simulations. The remaining small probe covers only unreplaced C3: durable input
+is replayed before following work. It is decision evidence, not a product
+feature, UI, deployment, or a claim that GitHub Actions ran.
 
-The remaining H0 code is a runtime decision probe, not UI, deployment, or a
-claim that GitHub Actions ran. SQLite remains a V1 single-user choice. The
-backup smoke exercised by the probe is not H1's complete migration, downgrade,
-or operational recovery proof. The probe uses a private DBOS system-database
-method only to inject a kill in the otherwise inaccessible interval after a
-datasource commit and before the outer ledger write; product code must never
-use that private API.
+SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
+2.29.0's private `SystemDatabase.record_operation_result` to kill in the
+otherwise inaccessible gap after a datasource/product commit and before the
+outer ledger write. A signature and named-operation sentinel fail loudly if
+that pinned dependency seam drifts. Product code has no crash switch and never
+uses the private API.

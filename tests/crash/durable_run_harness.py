@@ -9,10 +9,24 @@ from pathlib import Path
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.workflow import BOOTSTRAP_STEP_NAME
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.start_run import start_run
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
 
 CRASHED = 86
+
+
+def _runtime(database: Path, application_version: str) -> DbosRuntime:
+    return DbosRuntime(
+        DbosRuntimeSettings(database, application_version),
+        LoopbackEffectAdapterFactory(
+            database.with_name("external-effect.sqlite"),
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+    )
 
 
 def _once(path: Path) -> None:
@@ -35,7 +49,7 @@ def _install_after_datasource_crash(marker: Path) -> None:
         *,
         completed_at_epoch_ms: int | None = None,
     ) -> None:
-        if result.get("function_name") == "complete-run":
+        if result.get("function_name") == BOOTSTRAP_STEP_NAME:
             _once(marker)
         original(self, result, completed_at_epoch_ms=completed_at_epoch_ms)
 
@@ -43,7 +57,7 @@ def _install_after_datasource_crash(marker: Path) -> None:
 
 
 def initialize(database: Path, application_version: str) -> None:
-    runtime = DbosRuntime(DbosRuntimeSettings(database, application_version))
+    runtime = _runtime(database, application_version)
     try:
         runtime.initialize_storage()
     finally:
@@ -53,7 +67,7 @@ def initialize(database: Path, application_version: str) -> None:
 def seed(
     database: Path, application_version: str, run_id: str, document: bytes
 ) -> None:
-    runtime = DbosRuntime(DbosRuntimeSettings(database, application_version))
+    runtime = _runtime(database, application_version)
     try:
         start_run(
             StartRunRequest(RunId(run_id), WorkflowRevision(document)),
@@ -70,22 +84,28 @@ def execute(
     marker: Path | None,
     wait_seconds: float,
 ) -> None:
-    runtime = DbosRuntime(DbosRuntimeSettings(database, application_version))
+    runtime = _runtime(database, application_version)
     try:
         if marker is not None:
             _install_after_datasource_crash(marker)
         runtime.launch()
         deadline = time.monotonic() + wait_seconds
+        state = "PENDING"
         while time.monotonic() < deadline:
             with sqlite3.connect(database) as connection:
                 state = connection.execute(
                     "SELECT status FROM workflow_status "
-                    "WHERE workflow_uuid=(SELECT dbos_workflow_id FROM runs WHERE run_id=?)",
+                    "WHERE workflow_uuid=(SELECT bootstrap_workflow_id FROM runs WHERE run_id=?)",
                     (run_id,),
                 ).fetchone()[0]
             if state == "SUCCESS":
-                break
+                return
+            if state in {"ERROR", "CANCELLED"}:
+                raise RuntimeError(f"bootstrap workflow failed with {state}")
             time.sleep(0.025)
+        raise TimeoutError(
+            f"bootstrap workflow stayed {state} for {wait_seconds} seconds"
+        )
     finally:
         runtime.close()
 

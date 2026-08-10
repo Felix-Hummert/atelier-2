@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -8,8 +10,10 @@ from threading import Barrier
 
 import pytest
 import sqlalchemy as sa
+from dbos import SQLAlchemyDatasource
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeBindingConflict,
@@ -17,15 +21,64 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeSettings,
 )
 from atelier2.adapters.dbos.schema import runs
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.starter import (
+    DbosDurableRunStarter,
+    bootstrap_workflow_id_for,
+)
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.application.advance_run import advance_run
 from atelier2.application.start_run import start_run
+from atelier2.contracts.effects import (
+    AdapterRevision,
+    CanonicalRequest,
+    EffectAdapterBinding,
+    EffectBinding,
+    EffectDestination,
+    EffectIntent,
+    EffectReadback,
+    LogicalEffectKey,
+    PerformedEffect,
+)
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+from atelier2.ports.effects import EffectAdapter
 
-COMPLETION_TIMEOUT_SECONDS = 5.0
-COMPLETION_POLL_SECONDS = 0.025
+WORKFLOW_TIMEOUT_SECONDS = 5.0
+WORKFLOW_POLL_SECONDS = 0.025
 BARRIER_TIMEOUT_SECONDS = 5.0
 
 AcquireLease = Callable[[DbosRuntimeSettings], DbosRuntime]
+
+
+class CountingAdapter:
+    def __init__(self, delegate: EffectAdapter) -> None:
+        self._delegate = delegate
+        self.closes = 0
+
+    def readback(self, intent: EffectIntent) -> EffectReadback:
+        return self._delegate.readback(intent)
+
+    def execute(self, intent: EffectIntent) -> PerformedEffect:
+        return self._delegate.execute(intent)
+
+    def close(self) -> None:
+        self.closes += 1
+        self._delegate.close()
+
+
+class CountingFactory:
+    def __init__(self, delegate: LoopbackEffectAdapterFactory) -> None:
+        self._delegate = delegate
+        self.opens = 0
+        self.opened: CountingAdapter | None = None
+
+    @property
+    def binding(self) -> EffectAdapterBinding:
+        return self._delegate.binding
+
+    def open(self) -> CountingAdapter:
+        self.opens += 1
+        self.opened = CountingAdapter(self._delegate.open())
+        return self.opened
 
 
 def runtime_settings(
@@ -54,20 +107,30 @@ def run_state(engine: Engine, run_id: RunId) -> RunState:
     return RunState(str(state))
 
 
-def wait_until_completed(engine: Engine, run_id: RunId) -> RunState:
-    deadline = time.monotonic() + COMPLETION_TIMEOUT_SECONDS
-    state = run_state(engine, run_id)
-    while state is not RunState.COMPLETED and time.monotonic() < deadline:
-        time.sleep(COMPLETION_POLL_SECONDS)
-        state = run_state(engine, run_id)
-    return state
+def wait_until_bootstrap_succeeds(engine: Engine, run_id: RunId) -> str:
+    deadline = time.monotonic() + WORKFLOW_TIMEOUT_SECONDS
+    status = "PENDING"
+    while status != "SUCCESS" and time.monotonic() < deadline:
+        with engine.connect() as connection:
+            status = str(
+                connection.scalar(
+                    sa.text(
+                        "SELECT status FROM workflow_status WHERE workflow_uuid=:id"
+                    ),
+                    {"id": bootstrap_workflow_id_for(run_id)},
+                )
+            )
+        if status != "SUCCESS":
+            time.sleep(WORKFLOW_POLL_SECONDS)
+    return status
 
 
-def execute_one_run(runtime: DbosRuntime) -> RunState:
+def execute_one_bootstrap(runtime: DbosRuntime) -> RunState:
     runtime.initialize_storage()
     started = start_run(start_request(), starter_for(runtime))
     runtime.launch()
-    return wait_until_completed(runtime.engine, started.run_id)
+    assert wait_until_bootstrap_succeeds(runtime.engine, started.run_id) == "SUCCESS"
+    return run_state(runtime.engine, started.run_id)
 
 
 @pytest.fixture
@@ -75,7 +138,14 @@ def acquire() -> Iterator[AcquireLease]:
     leases: list[DbosRuntime] = []
 
     def acquire_lease(settings: DbosRuntimeSettings) -> DbosRuntime:
-        lease = DbosRuntime(settings)
+        lease = DbosRuntime(
+            settings,
+            LoopbackEffectAdapterFactory(
+                settings.database_path.parent / "external-effect.sqlite",
+                AdapterRevision("loopback-v1"),
+                EffectDestination("loopback-test"),
+            ),
+        )
         leases.append(lease)
         return lease
 
@@ -129,7 +199,7 @@ def test_an_incompatible_second_binding_is_refused_and_the_active_one_keeps_work
     with pytest.raises(DbosRuntimeBindingConflict):
         acquire(conflicting(tmp_path))
 
-    assert execute_one_run(active) is RunState.COMPLETED
+    assert execute_one_bootstrap(active) is RunState.STARTED
 
 
 def test_a_refused_binding_opens_no_second_canonical_store(
@@ -156,7 +226,8 @@ def test_closing_one_of_two_identical_leases_keeps_the_executor_running(
     first.close()
 
     started = start_run(start_request(), starter_for(second))
-    assert wait_until_completed(second.engine, started.run_id) is RunState.COMPLETED
+    assert wait_until_bootstrap_succeeds(second.engine, started.run_id) == "SUCCESS"
+    assert run_state(second.engine, started.run_id) is RunState.STARTED
 
 
 def test_initializing_storage_from_a_second_lease_keeps_the_executor_running(
@@ -171,7 +242,8 @@ def test_initializing_storage_from_a_second_lease_keeps_the_executor_running(
     second.initialize_storage()
 
     started = start_run(start_request(), starter_for(first))
-    assert wait_until_completed(first.engine, started.run_id) is RunState.COMPLETED
+    assert wait_until_bootstrap_succeeds(first.engine, started.run_id) == "SUCCESS"
+    assert run_state(first.engine, started.run_id) is RunState.STARTED
 
 
 def test_the_last_close_releases_the_binding_for_a_different_one(
@@ -185,7 +257,7 @@ def test_the_last_close_releases_the_binding_for_a_different_one(
 
     rebound = acquire(runtime_settings(tmp_path / "second.sqlite", "executor-B"))
 
-    assert execute_one_run(rebound) is RunState.COMPLETED
+    assert execute_one_bootstrap(rebound) is RunState.STARTED
 
 
 def test_closing_one_lease_twice_does_not_release_the_other(
@@ -244,7 +316,7 @@ def test_concurrent_closes_of_one_lease_release_it_exactly_once(
 
     with pytest.raises(DbosRuntimeBindingConflict):
         acquire(runtime_settings(tmp_path / "second.sqlite"))
-    assert execute_one_run(held) is RunState.COMPLETED
+    assert execute_one_bootstrap(held) is RunState.STARTED
 
 
 def test_concurrent_identical_acquisitions_hold_one_counted_binding(
@@ -271,3 +343,179 @@ def test_concurrent_identical_acquisitions_hold_one_counted_binding(
 
     rebound = acquire(runtime_settings(tmp_path / "second.sqlite"))
     assert rebound.settings.database_path == tmp_path / "second.sqlite"
+
+
+def test_equivalent_factories_open_once_and_last_lease_closes_once(
+    tmp_path: Path,
+) -> None:
+    settings = runtime_settings(canonical_database(tmp_path))
+    first_factory = CountingFactory(
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        )
+    )
+    second_factory = CountingFactory(first_factory._delegate)
+    first = DbosRuntime(settings, first_factory)
+    second = DbosRuntime(settings, second_factory)
+
+    assert first_factory.opens == 1
+    assert second_factory.opens == 0
+    assert first.effect_adapter is second.effect_adapter
+    assert first_factory.opened is not None
+    first.close()
+    assert first_factory.opened.closes == 0
+    second.close()
+    assert first_factory.opened.closes == 1
+
+
+def test_incompatible_factory_is_refused_before_it_opens_or_mutates_its_store(
+    tmp_path: Path,
+) -> None:
+    settings = runtime_settings(canonical_database(tmp_path))
+    active = DbosRuntime(
+        settings,
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+    )
+    refused_path = tmp_path / "refused" / "external.sqlite"
+    refused = CountingFactory(
+        LoopbackEffectAdapterFactory(
+            refused_path,
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        )
+    )
+    try:
+        with pytest.raises(DbosRuntimeBindingConflict):
+            DbosRuntime(settings, refused)
+        assert refused.opens == 0
+        assert not refused_path.parent.exists()
+    finally:
+        active.close()
+
+
+def test_initialization_failure_closes_the_opened_adapter_and_releases_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = runtime_settings(canonical_database(tmp_path))
+    factory = CountingFactory(
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        )
+    )
+
+    def fail_datasource(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("injected datasource failure")
+
+    with monkeypatch.context() as context:
+        context.setattr(SQLAlchemyDatasource, "create", fail_datasource)
+        with pytest.raises(RuntimeError, match="injected datasource failure"):
+            DbosRuntime(settings, factory)
+
+    assert factory.opens == 1
+    assert factory.opened is not None
+    assert factory.opened.closes == 1
+    recovered = DbosRuntime(settings, factory._delegate)
+    recovered.close()
+
+
+def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
+    tmp_path: Path,
+) -> None:
+    settings = runtime_settings(canonical_database(tmp_path))
+    original_factory = LoopbackEffectAdapterFactory(
+        tmp_path / "external.sqlite",
+        AdapterRevision("loopback-v1"),
+        EffectDestination("loopback-test"),
+    )
+    runtime = DbosRuntime(settings, original_factory)
+    runtime.initialize_storage()
+    started = start_run(start_request(), starter_for(runtime))
+    intent = EffectIntent(
+        EffectBinding(
+            LogicalEffectKey("run-1/action-1"),
+            started.run_id,
+            started.revision_hash,
+            original_factory.binding.adapter_revision,
+            original_factory.binding.destination,
+            original_factory.binding.operational_identity,
+        ),
+        CanonicalRequest(b"request"),
+    )
+    advance_run(
+        intent,
+        DbosDurableRunAdvancer(
+            runtime.engine, runtime.settings, runtime.effect_adapter_binding
+        ),
+    )
+    runtime.close()
+    changed_path = tmp_path / "changed" / "external.sqlite"
+
+    with pytest.raises(DbosRuntimeBindingConflict, match="durable effect intents"):
+        DbosRuntime(
+            settings,
+            LoopbackEffectAdapterFactory(
+                changed_path,
+                AdapterRevision("loopback-v1"),
+                EffectDestination("loopback-test"),
+            ),
+        )
+
+    assert not changed_path.parent.exists()
+
+
+def test_canonical_and_external_store_must_be_distinct(tmp_path: Path) -> None:
+    database = canonical_database(tmp_path)
+
+    with pytest.raises(DbosRuntimeBindingConflict, match="must be distinct"):
+        DbosRuntime(
+            runtime_settings(database),
+            LoopbackEffectAdapterFactory(
+                database,
+                AdapterRevision("loopback-v1"),
+                EffectDestination("loopback-test"),
+            ),
+        )
+
+
+def test_existing_hardlink_alias_is_refused_before_external_store_mutation(
+    tmp_path: Path,
+) -> None:
+    database = canonical_database(tmp_path)
+    original = DbosRuntime(
+        runtime_settings(database),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "original-external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+    )
+    original.close()
+    before = database.read_bytes()
+    external_alias = tmp_path / "external-alias.sqlite"
+    os.link(database, external_alias)
+
+    with pytest.raises(DbosRuntimeBindingConflict, match="must be distinct"):
+        DbosRuntime(
+            runtime_settings(database),
+            LoopbackEffectAdapterFactory(
+                external_alias,
+                AdapterRevision("loopback-v1"),
+                EffectDestination("loopback-test"),
+            ),
+        )
+
+    assert database.read_bytes() == before
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type='table' AND name LIKE 'loopback_effect%'"
+        ).fetchone() == (0,)
