@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from atelier2.api.models import (
     ActionNodeResource,
     AgentCompletedEventResource,
     AgentNodeResource,
     NoWaitingResource,
+    RunEventResource,
     RunResource,
     SubworkflowNodeResource,
     WaitingInputResource,
@@ -163,6 +164,15 @@ def test_models_are_frozen_strict_and_forbid_extra_fields() -> None:
         )
 
 
+def test_frozen_model_rejects_an_actual_assignment() -> None:
+    resource = agent_node()
+
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        resource.job = "mutated"
+
+    assert resource.job == "job"
+
+
 def test_event_union_forbids_fields_from_another_variant() -> None:
     with pytest.raises(ValidationError):
         AgentCompletedEventResource.model_validate(
@@ -180,3 +190,26 @@ def test_event_union_forbids_fields_from_another_variant() -> None:
                 "receipt": {},
             }
         )
+
+
+@pytest.mark.parametrize("discriminator", [None, "UNKNOWN", 17])
+def test_event_union_rejects_missing_unknown_and_non_string_discriminators(
+    discriminator: object,
+) -> None:
+    candidate: dict[str, object] = {
+        "event": discriminator,
+        "cursor": "event1.cnVu.1",
+        "sequence": 1,
+        "public_run_reference": "run1.cnVu",
+        "workflow_revision_hash": HASH,
+        "node_id": "agent",
+        "node_execution_id": EXECUTION,
+        "event_hash": HASH,
+        "output": "payload",
+        "payload_hash": HASH,
+    }
+    if discriminator is None:
+        del candidate["event"]
+
+    with pytest.raises(ValidationError):
+        TypeAdapter(RunEventResource).validate_python(candidate)

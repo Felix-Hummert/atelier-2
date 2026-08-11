@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Barrier
 
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
+from atelier2.adapters.dbos import run_store as run_store_module
+from atelier2.adapters.dbos import starter as starter_module
 from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer, graph_action_intent
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.queries import DbosQueries
@@ -30,7 +35,9 @@ from atelier2.adapters.dbos.runtime import (
 )
 from atelier2.adapters.dbos.schema import (
     effect_intents,
+    effect_receipts,
     reconcile_commands,
+    run_events,
     runs,
     wait_answers,
     workflow_revisions,
@@ -42,6 +49,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.limits import ApiLimits
 from atelier2.api.references import encode_canonical_base64, encode_public_run_reference
 from atelier2.application.advance_run import advance_run
 from atelier2.application.start_published_run import StartPublishedRunRequest
@@ -77,6 +85,7 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     DurableRunExisting,
     DurableRunRevisionMissing,
+    DurableStateCorrupt,
 )
 from atelier2.ports.effects import (
     DurableReconciliationCommandConflict,
@@ -87,6 +96,14 @@ from atelier2.ports.effects import (
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCreated,
     DurableRevisionExisting,
+)
+from tests.scenarios.api import (
+    RECONCILIATION_APPLIED_RESULT_HASH,
+    RECONCILIATION_LOGICAL_KEY,
+    RECONCILIATION_REQUEST_HASH,
+    RECONCILIATION_REVISION_HASH,
+    api_limits,
+    event_poll_backoff,
 )
 
 DOCUMENT = b"""format_version: 1
@@ -121,6 +138,44 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
         yield configured
     finally:
         configured.close()
+
+
+@dataclass(frozen=True)
+class DurableSnapshot:
+    tables: tuple[tuple[str, tuple[tuple[object, ...], ...]], ...]
+    workflow_count: int
+
+
+def _durable_snapshot(runtime: DbosRuntime) -> DurableSnapshot:
+    tables = (
+        workflow_revisions,
+        runs,
+        effect_intents,
+        reconcile_commands,
+        effect_receipts,
+        run_events,
+        wait_answers,
+    )
+    with runtime.engine.connect() as connection:
+        contents = tuple(
+            (
+                table.name,
+                tuple(
+                    sorted(
+                        (
+                            tuple(record)
+                            for record in connection.execute(sa.select(table))
+                        ),
+                        key=repr,
+                    )
+                ),
+            )
+            for table in tables
+        )
+        workflow_count = int(
+            connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status")) or 0
+        )
+    return DurableSnapshot(contents, workflow_count)
 
 
 def test_revision_publication_created_and_existing_are_decided_by_one_write(
@@ -173,6 +228,63 @@ def test_missing_revision_is_a_typed_in_transaction_start_result(
     assert isinstance(result, DurableRunRevisionMissing)
     with runtime.engine.connect() as connection:
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
+def test_missing_revision_start_never_acquires_a_write_lock_or_blocks_publication(
+    runtime: DbosRuntime,
+) -> None:
+    requested = WorkflowRevisionHash("0" * 64)
+    concurrent_revision = WorkflowRevision(
+        DOCUMENT.replace(b"job: test", b"job: other")
+    )
+    statements: list[str] = []
+    publication_completed = False
+    publication_in_progress = False
+
+    def publish_while_missing_read_connection_is_open(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        nonlocal publication_completed, publication_in_progress
+        if publication_in_progress:
+            return
+        statements.append(statement)
+        if publication_completed or "workflow_revisions.document" not in statement:
+            return
+        publication_in_progress = True
+        try:
+            publication_completed = isinstance(
+                DbosWorkflowRevisionPublisher(runtime.engine).publish(
+                    concurrent_revision
+                ),
+                DurableRevisionCreated,
+            )
+        finally:
+            publication_in_progress = False
+
+    event.listen(
+        runtime.engine,
+        "after_cursor_execute",
+        publish_while_missing_read_connection_is_open,
+    )
+    try:
+        result = DbosDurableRunStarter(
+            runtime.engine, runtime.settings
+        ).start_published(StartPublishedRunRequest(RunId("missing-lock"), requested))
+    finally:
+        event.remove(
+            runtime.engine,
+            "after_cursor_execute",
+            publish_while_missing_read_connection_is_open,
+        )
+
+    assert isinstance(result, DurableRunRevisionMissing)
+    assert publication_completed
+    assert all("BEGIN IMMEDIATE" not in statement.upper() for statement in statements)
 
 
 def test_concurrent_start_enqueues_only_the_transaction_that_created_the_run(
@@ -441,8 +553,91 @@ def test_reconciliation_created_and_existing_come_from_the_serialized_write(
         )
 
 
-def _client(runtime: DbosRuntime) -> TestClient:
+def test_concurrent_same_command_http_reconciliation_creates_one_command_and_workflow(
+    runtime: DbosRuntime,
+) -> None:
+    intent = _waiting_reconciliation(runtime)
+    parallelism = 4
+    barrier = Barrier(parallelism)
+    path = (
+        f"/atelier/api/v1/runs/{encode_public_run_reference(intent.binding.run_id)}"
+        "/reconciliations"
+    )
+    body = {
+        "command_id": "concurrent-http-command",
+        "expected_intent_state_version": 1,
+        "actor": "operator-concurrent",
+        "evidence": "same exact concurrent evidence",
+        "determination": {
+            "type": "operator_found",
+            "effect_id": "concurrent-effect",
+            "result_base64": encode_canonical_base64(b"concurrent-result"),
+        },
+    }
+
+    def reconcile(_: int) -> int:
+        barrier.wait(timeout=5)
+        return _client(runtime).post(path, json=body).status_code
+
+    with ThreadPoolExecutor(max_workers=parallelism) as pool:
+        statuses = list(pool.map(reconcile, range(parallelism)))
+
+    assert statuses == [202] * parallelism
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(reconcile_commands)
+            )
+            == 1
+        )
+        assert (
+            connection.scalar(
+                sa.text(
+                    "SELECT COUNT(*) FROM workflow_status WHERE workflow_uuid=:workflow_id"
+                ),
+                {
+                    "workflow_id": reconcile_workflow_id_for(
+                        ReconcileCommandId("concurrent-http-command")
+                    )
+                },
+            )
+            == 1
+        )
+
+
+def test_run_projection_over_response_limit_is_temporarily_unavailable(
+    runtime: DbosRuntime,
+) -> None:
+    intent = _waiting_reconciliation(runtime)
+    commander = DbosEffectReconcileCommander(runtime.engine, runtime.settings)
+    oversized_evidence = "e" * 101
+    assert isinstance(
+        commander.submit_result(_command(intent, evidence=oversized_evidence)),
+        DurableReconciliationCreated,
+    )
+    path = "/atelier/api/v1/runs/" + encode_public_run_reference(intent.binding.run_id)
+
+    response = _client(runtime, api_limits(maximum_field_characters=100)).get(path)
+
+    assert response.status_code == 503
+    assert response.json()["type"].endswith(":temporarily-unavailable")
+    assert response.json()["detail"] == (
+        "Durable projection exceeds configured API limits."
+    )
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(reconcile_commands)
+            )
+            == 1
+        )
+
+
+def _client(
+    runtime: DbosRuntime, configured_limits: ApiLimits | None = None
+) -> TestClient:
     queries = DbosQueries(runtime.engine)
+    active_limits = api_limits() if configured_limits is None else configured_limits
     return TestClient(
         create_app(
             source_commit="commit-under-test",
@@ -464,8 +659,112 @@ def _client(runtime: DbosRuntime) -> TestClient:
                 run_queries=queries,
                 run_event_queries=queries,
             ),
+            limits=active_limits,
+            event_poll_backoff=event_poll_backoff(),
         )
     )
+
+
+def test_valid_r1_revision_over_projection_limit_is_temporarily_unavailable(
+    runtime: DbosRuntime,
+) -> None:
+    revision = WorkflowRevision(DOCUMENT)
+    assert isinstance(
+        DbosWorkflowRevisionPublisher(runtime.engine).publish(revision),
+        DurableRevisionCreated,
+    )
+    with runtime.engine.connect() as connection:
+        before = connection.scalar(
+            sa.select(sa.func.count()).select_from(workflow_revisions)
+        )
+
+    response = _client(runtime, api_limits(maximum_field_characters=5)).get(
+        "/atelier/api/v1/workflow-revisions/" + revision.revision_hash.value
+    )
+
+    assert response.status_code == 503
+    assert response.json()["type"].endswith(":temporarily-unavailable")
+    assert response.json()["detail"] == (
+        "Durable projection exceeds configured API limits."
+    )
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(workflow_revisions)
+            )
+            == before
+        )
+
+
+def test_http_publication_collision_changes_no_durable_state_or_workflow(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requested = WorkflowRevision(DOCUMENT)
+    stored_document = DOCUMENT.replace(b"job: test", b"job: collision")
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=requested.revision_hash.value,
+                document=stored_document,
+            )
+        )
+
+    @dataclass(frozen=True)
+    class SimulatedCollisionRevision:
+        document: bytes
+        revision_hash: WorkflowRevisionHash
+
+    monkeypatch.setattr(
+        starter_module,
+        "WorkflowRevision",
+        lambda document: SimulatedCollisionRevision(document, requested.revision_hash),
+    )
+    before = _durable_snapshot(runtime)
+
+    response = _client(runtime).post(
+        "/atelier/api/v1/workflow-revisions",
+        content=DOCUMENT,
+        headers={"content-type": "application/yaml"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["type"].endswith(":revision-collision")
+    assert _durable_snapshot(runtime) == before
+
+
+def test_http_start_identity_conflict_changes_no_durable_state_or_workflow(
+    runtime: DbosRuntime,
+) -> None:
+    first_document = DOCUMENT
+    changed_document = DOCUMENT.replace(b"job: test", b"job: changed")
+    client = _client(runtime)
+    for document in (first_document, changed_document):
+        publication = client.post(
+            "/atelier/api/v1/workflow-revisions",
+            content=document,
+            headers={"content-type": "application/yaml"},
+        )
+        assert publication.status_code == 201
+    first_hash = hashlib.sha256(first_document).hexdigest()
+    changed_hash = hashlib.sha256(changed_document).hexdigest()
+    created = client.post(
+        "/atelier/api/v1/runs",
+        json={"run_id": "identity-conflict", "workflow_revision_hash": first_hash},
+    )
+    assert created.status_code == 201
+    before = _durable_snapshot(runtime)
+
+    conflict = client.post(
+        "/atelier/api/v1/runs",
+        json={
+            "run_id": "identity-conflict",
+            "workflow_revision_hash": changed_hash,
+        },
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["type"].endswith(":run-identity-conflict")
+    assert _durable_snapshot(runtime) == before
 
 
 def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
@@ -526,6 +825,122 @@ def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
     )
 
 
+def test_http_workflow_revision_pages_follow_every_exclusive_cursor(
+    runtime: DbosRuntime,
+) -> None:
+    client = _client(runtime)
+    documents = tuple(
+        DOCUMENT.replace(b"job: test", f"job: page-{index}".encode())
+        for index in range(5)
+    )
+    expected = tuple(
+        sorted(hashlib.sha256(document).hexdigest() for document in documents)
+    )
+    for document in documents:
+        response = client.post(
+            "/atelier/api/v1/workflow-revisions",
+            content=document,
+            headers={"content-type": "application/yaml"},
+        )
+        assert response.status_code == 201
+        assert response.json()["revision_hash"] == hashlib.sha256(document).hexdigest()
+
+    found: list[str] = []
+    after: str | None = None
+    for index, expected_hash in enumerate(expected):
+        parameters = {"limit": "1"}
+        if after is not None:
+            parameters["after_revision_hash"] = after
+        response = client.get("/atelier/api/v1/workflow-revisions", params=parameters)
+        assert response.status_code == 200
+        page = response.json()
+        assert page["items"] == [{"revision_hash": expected_hash}]
+        expected_next = expected_hash if index < len(expected) - 1 else None
+        assert page["next_after_revision_hash"] == expected_next
+        found.append(page["items"][0]["revision_hash"])
+        after = page["next_after_revision_hash"]
+
+    assert tuple(found) == expected
+    assert len(found) == len(set(found))
+    missing_boundary = next(
+        candidate
+        for candidate in ("0" * 64, "8" * 64, "f" * 64)
+        if candidate not in expected
+    )
+    boundary_page = client.get(
+        "/atelier/api/v1/workflow-revisions",
+        params={"after_revision_hash": missing_boundary, "limit": "100"},
+    )
+    assert boundary_page.status_code == 200
+    assert boundary_page.json() == {
+        "items": [
+            {"revision_hash": revision_hash}
+            for revision_hash in expected
+            if revision_hash > missing_boundary
+        ],
+        "next_after_revision_hash": None,
+    }
+
+
+def test_http_run_pages_follow_exact_utf8_order_and_every_exclusive_cursor(
+    runtime: DbosRuntime,
+) -> None:
+    client = _client(runtime)
+    publication = client.post(
+        "/atelier/api/v1/workflow-revisions",
+        content=DOCUMENT,
+        headers={"content-type": "application/yaml"},
+    )
+    assert publication.status_code == 201
+    revision_hash = publication.json()["revision_hash"]
+    run_ids = ("slash/run", "nul\0run", "Grüße-東京", "alpha", "zeta")
+    expected = ("Grüße-東京", "alpha", "nul\0run", "slash/run", "zeta")
+    assert expected == tuple(sorted(run_ids, key=lambda value: value.encode("utf-8")))
+    for run_id in run_ids:
+        response = client.post(
+            "/atelier/api/v1/runs",
+            json={"run_id": run_id, "workflow_revision_hash": revision_hash},
+        )
+        assert response.status_code == 201
+
+    found: list[str] = []
+    after: str | None = None
+    for index, expected_run_id in enumerate(expected):
+        parameters = {"limit": "1"}
+        if after is not None:
+            parameters["after"] = after
+        response = client.get("/atelier/api/v1/runs", params=parameters)
+        assert response.status_code == 200
+        page = response.json()
+        assert [item["run_id"] for item in page["items"]] == [expected_run_id]
+        expected_next = (
+            encode_public_run_reference(RunId(expected_run_id))
+            if index < len(expected) - 1
+            else None
+        )
+        assert page["next_after"] == expected_next
+        found.append(page["items"][0]["run_id"])
+        after = page["next_after"]
+
+    assert tuple(found) == expected
+    assert len(found) == len(set(found))
+    missing_boundary = RunId("m")
+    boundary_page = client.get(
+        "/atelier/api/v1/runs",
+        params={
+            "after": encode_public_run_reference(missing_boundary),
+            "limit": "100",
+        },
+    )
+    assert boundary_page.status_code == 200
+    assert [item["run_id"] for item in boundary_page.json()["items"]] == [
+        "nul\0run",
+        "slash/run",
+        "zeta",
+    ]
+    assert boundary_page.json()["next_after"] is None
+
+
 def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
     runtime: DbosRuntime,
 ) -> None:
@@ -549,6 +964,7 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
 
     accepted = client.post(path, json=body)
     existing = client.post(path, json=body)
+    before_conflict = _durable_snapshot(runtime)
     conflict = client.post(
         path,
         json={**body, "answer_base64": encode_canonical_base64(b"18")},
@@ -564,6 +980,7 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
     }
     assert conflict.status_code == 409
     assert conflict.json()["type"].endswith(":answer-bytes-conflict")
+    assert _durable_snapshot(runtime) == before_conflict
 
 
 @pytest.mark.parametrize("found", [True, False])
@@ -614,7 +1031,7 @@ def test_http_reconciliation_preserves_accountable_binding_without_adapter_ident
 
 
 def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
-    runtime: DbosRuntime,
+    runtime: DbosRuntime, tmp_path: Path
 ) -> None:
     intent = _waiting_reconciliation(runtime)
     client = _client(runtime)
@@ -647,6 +1064,57 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
 
     accepted = client.post(path, json=body)
     assert accepted.status_code == 202
+    revision_hash = RECONCILIATION_REVISION_HASH
+    request_hash = RECONCILIATION_REQUEST_HASH
+    result_hash = RECONCILIATION_APPLIED_RESULT_HASH
+    logical_key = RECONCILIATION_LOGICAL_KEY
+    expected_intent = {
+        "logical_key": logical_key,
+        "run_id": "reconcile-run",
+        "canonical_request": b"request",
+        "request_hash": request_hash,
+        "workflow_revision_hash": revision_hash,
+        "adapter_revision": "loopback-v1",
+        "destination_identity": "loopback-test",
+        "adapter_operational_identity": str((tmp_path / "external.sqlite").resolve()),
+        "state": "RECONCILING",
+        "state_version": 2,
+        "reconciliation_owner_command_id": "applied-command",
+    }
+    expected_command = {
+        "command_id": "applied-command",
+        "logical_key": logical_key,
+        "expected_intent_version": 1,
+        "determination": "FOUND",
+        "actor": "operator-applied",
+        "evidence": "inspected exact applied request",
+        "found_effect_id": "effect-applied",
+        "found_result": b"result-applied",
+        "found_result_hash": result_hash,
+        "state": "PENDING",
+    }
+    with runtime.engine.connect() as connection:
+        intent_row = (
+            connection.execute(
+                sa.select(effect_intents).where(
+                    effect_intents.c.logical_key == logical_key
+                )
+            )
+            .mappings()
+            .one()
+        )
+        command_row = (
+            connection.execute(
+                sa.select(reconcile_commands).where(
+                    reconcile_commands.c.command_id == "applied-command"
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert dict(intent_row) == expected_intent
+    assert dict(command_row) == expected_command
+
     with Session(runtime.engine) as session, session.begin():
         commit_resolution(
             session,
@@ -659,6 +1127,57 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
             ),
             command.command_id,
         )
+
+    with runtime.engine.connect() as connection:
+        receipt_row = (
+            connection.execute(
+                sa.select(effect_receipts).where(
+                    effect_receipts.c.logical_key == logical_key
+                )
+            )
+            .mappings()
+            .one()
+        )
+        applied_command_row = (
+            connection.execute(
+                sa.select(reconcile_commands).where(
+                    reconcile_commands.c.command_id == "applied-command"
+                )
+            )
+            .mappings()
+            .one()
+        )
+        confirmed_intent_row = (
+            connection.execute(
+                sa.select(effect_intents).where(
+                    effect_intents.c.logical_key == logical_key
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert dict(receipt_row) == {
+        "logical_key": logical_key,
+        "run_id": "reconcile-run",
+        "canonical_request": b"request",
+        "request_hash": request_hash,
+        "workflow_revision_hash": revision_hash,
+        "adapter_revision": "loopback-v1",
+        "destination_identity": "loopback-test",
+        "adapter_operational_identity": str((tmp_path / "external.sqlite").resolve()),
+        "effect_id": "effect-applied",
+        "result": b"result-applied",
+        "result_hash": result_hash,
+        "confirmation_source": "OPERATOR_FOUND",
+        "reconcile_command_id": "applied-command",
+    }
+    assert dict(applied_command_row) == {**expected_command, "state": "APPLIED"}
+    assert dict(confirmed_intent_row) == {
+        **expected_intent,
+        "state": "CONFIRMED",
+        "state_version": 3,
+        "reconciliation_owner_command_id": None,
+    }
 
     retry = client.post(path, json=body)
 
@@ -695,4 +1214,181 @@ def test_reconciliation_retry_conflicts_are_typed_without_mutation(
                 sa.select(sa.func.count()).select_from(reconcile_commands)
             )
             == 1
+        )
+
+
+def _assert_parser_has_no_serialized_write_lock(
+    runtime: DbosRuntime, parser: object, document: bytes
+):
+    with runtime.engine.connect() as connection:
+        previous_timeout = int(
+            connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one()
+        )
+        try:
+            connection.exec_driver_sql("PRAGMA busy_timeout=1")
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            connection.rollback()
+        finally:
+            connection.exec_driver_sql(f"PRAGMA busy_timeout={previous_timeout}")
+    assert callable(parser)
+    return parser(document)
+
+
+def test_start_parses_workflow_before_begin_immediate(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision = WorkflowRevision(DOCUMENT)
+    publisher = DbosWorkflowRevisionPublisher(runtime.engine)
+    assert isinstance(publisher.publish(revision), DurableRevisionCreated)
+    original_parser = starter_module.parse_workflow_document
+    monkeypatch.setattr(
+        starter_module,
+        "parse_workflow_document",
+        lambda document: _assert_parser_has_no_serialized_write_lock(
+            runtime, original_parser, document
+        ),
+    )
+
+    result = DbosDurableRunStarter(runtime.engine, runtime.settings).start_published(
+        StartPublishedRunRequest(
+            RunId("parse-before-start-lock"), revision.revision_hash
+        )
+    )
+
+    assert isinstance(result, DurableRunCreated)
+
+
+def test_wait_answer_parses_workflow_before_begin_immediate(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision = WorkflowRevision(DOCUMENT)
+    run_id = RunId("parse-before-answer-lock")
+    DbosDurableRunStarter(runtime.engine, runtime.settings).start(
+        StartRunRequest(run_id, revision)
+    )
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_agent_completed(
+            connection, run_id, revision.revision_hash, "agent", b"payload"
+        )
+        commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
+    original_parser = run_store_module.parse_workflow_document
+    monkeypatch.setattr(
+        run_store_module,
+        "parse_workflow_document",
+        lambda document: _assert_parser_has_no_serialized_write_lock(
+            runtime, original_parser, document
+        ),
+    )
+
+    result = DbosWaitAnswerer(
+        runtime.engine, runtime.settings.application_version
+    ).submit_result(
+        SubmitWaitAnswerRequest(run_id, revision.revision_hash, "wait", b"17")
+    )
+
+    assert isinstance(result, DurableAnswerCreated)
+
+
+def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision = WorkflowRevision(DOCUMENT)
+    assert isinstance(
+        DbosWorkflowRevisionPublisher(runtime.engine).publish(revision),
+        DurableRevisionCreated,
+    )
+    changed_document = DOCUMENT.replace(b"output: payload", b"output: changed")
+    original_parser = starter_module.parse_workflow_document
+
+    def drift_revision(document: bytes):
+        graph = original_parser(document)
+        with runtime.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER workflow_revisions_no_update")
+            connection.execute(
+                workflow_revisions.update()
+                .where(
+                    workflow_revisions.c.revision_hash == revision.revision_hash.value
+                )
+                .values(document=changed_document)
+            )
+        return graph
+
+    monkeypatch.setattr(starter_module, "parse_workflow_document", drift_revision)
+    with runtime.engine.connect() as connection:
+        before_runs = int(
+            connection.scalar(sa.select(sa.func.count()).select_from(runs)) or 0
+        )
+        before_workflows = int(
+            connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status")) or 0
+        )
+
+    result = DbosDurableRunStarter(runtime.engine, runtime.settings).start_published(
+        StartPublishedRunRequest(RunId("revision-drift-start"), revision.revision_hash)
+    )
+
+    assert isinstance(result, DurableStateCorrupt)
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(runs))
+            == before_runs
+        )
+        assert (
+            connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status"))
+            == before_workflows
+        )
+
+
+def test_wait_answer_rechecks_revision_bytes_after_outside_parse_without_mutation(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision = WorkflowRevision(DOCUMENT)
+    run_id = RunId("revision-drift-answer")
+    DbosDurableRunStarter(runtime.engine, runtime.settings).start(
+        StartRunRequest(run_id, revision)
+    )
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_agent_completed(
+            connection, run_id, revision.revision_hash, "agent", b"payload"
+        )
+        commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
+    changed_document = DOCUMENT.replace(b"output: payload", b"output: changed")
+    original_parser = run_store_module.parse_workflow_document
+
+    def drift_revision(document: bytes):
+        graph = original_parser(document)
+        with runtime.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER workflow_revisions_no_update")
+            connection.execute(
+                workflow_revisions.update()
+                .where(
+                    workflow_revisions.c.revision_hash == revision.revision_hash.value
+                )
+                .values(document=changed_document)
+            )
+        return graph
+
+    monkeypatch.setattr(run_store_module, "parse_workflow_document", drift_revision)
+    with runtime.engine.connect() as connection:
+        before_answers = int(
+            connection.scalar(sa.select(sa.func.count()).select_from(wait_answers)) or 0
+        )
+        before_workflows = int(
+            connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status")) or 0
+        )
+
+    result = DbosWaitAnswerer(
+        runtime.engine, runtime.settings.application_version
+    ).submit_result(
+        SubmitWaitAnswerRequest(run_id, revision.revision_hash, "wait", b"17")
+    )
+
+    assert isinstance(result, DurableStateCorrupt)
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(wait_answers))
+            == before_answers
+        )
+        assert (
+            connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status"))
+            == before_workflows
         )

@@ -19,26 +19,38 @@ run, command, or event state machine.
 Every mutation delegates to the runtime owner and decides created-versus-
 existing from the row written in that same transaction. Only a newly created
 command schedules continuation. Starting a run verifies its published revision
-inside the start transaction. Reads use short-lived SQLite connections behind a
-shared concurrency bound and a per-query database deadline; cancellation keeps
-the bound occupied until the underlying blocking durable call has actually
-returned.
+inside the start transaction. Reads use short-lived SQLite connections behind
+separate bounded admission for ordinary control work and event-page polling,
+plus a per-query database deadline. An idle stream backs off deterministically
+to a configured ceiling and resets that delay after progress. Cancellation
+keeps the applicable bound occupied until the underlying blocking durable call
+has actually returned.
 
 Run references are canonical `run1` encodings of the domain's UTF-8 run ID.
 Event cursors canonically bind that reference to a positive durable sequence as
-`event1`. Run pagination compares the stored UTF-8 bytes, so its order is stable
-across SQLite text collations. `Last-Event-ID` is an exclusive acknowledgement:
+`event1`. Run pagination uses SQLite's `BINARY` ordering for `TEXT`, then refuses
+the projection if that observed order or boundary disagrees with the exact UTF-8
+byte order required by the API. `Last-Event-ID` is an exclusive acknowledgement:
 the stream begins with the next durable event. Reusing an older cursor
 intentionally replays unacknowledged events, and reconnecting to a new process
 reads the same history from the durable store. A terminal stream ends only
 after its durable tail has been delivered.
 
 JSON resources and commands are closed typed models. Workflow publication is
-the one raw `application/yaml` request. Errors are closed RFC 9457
+the one raw `application/yaml` request. Centrally injected limits reject declared
+oversize bodies before route parsing and stop undeclared or chunked bodies while
+they are received; they also bound individual fields, encoded and decoded payloads,
+workflow graphs, response projections, and concurrent query work. Durable
+control-read projections outside those limits have their encoded workflow bytes
+refused before YAML parsing and are refused before serialization as temporarily
+unavailable; their durable rows are not changed.
+After an SSE response has started, an invalid or oversized durable event closes
+the stream without inventing an event. Errors are closed RFC 9457
 `application/problem+json` variants. The generated OpenAPI 3.1 document is
-validated at construction and adds a documented extension for the closed SSE
-`id`, `event`, and `data` contract. Streaming uses FastAPI's public
-`EventSourceResponse` and `ServerSentEvent` mechanisms.
+built and validated eagerly during application construction and adds a
+documented extension for the closed SSE `id`, `event`, and `data` contract.
+Streaming uses FastAPI's public `EventSourceResponse` and `ServerSentEvent`
+mechanisms.
 
 ## Consequences
 

@@ -7,6 +7,8 @@ from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflows import WorkflowGraph
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
+PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."
+
 
 @dataclass(frozen=True)
 class DurableRevisionCreated:
@@ -38,6 +40,16 @@ class WorkflowRevisionPublisher(Protocol):
     ) -> DurableRevisionPublicationResult: ...
 
 
+class WorkflowProjectionLimit(Protocol):
+    def validate_document(self, document: bytes) -> None: ...
+
+    def validate_graph(self, graph: WorkflowGraph) -> None: ...
+
+
+class ProjectionLimitExceeded(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class WorkflowRevisionProjection:
     revision: WorkflowRevision
@@ -62,7 +74,7 @@ class WorkflowRevisionPage:
 
 @dataclass(frozen=True)
 class ReadUnavailable:
-    pass
+    detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,7 +95,9 @@ type ListWorkflowRevisionsResult = (
 
 class WorkflowRevisionQueries(Protocol):
     def get_workflow_revision(
-        self, revision_hash: WorkflowRevisionHash
+        self,
+        revision_hash: WorkflowRevisionHash,
+        projection_limit: WorkflowProjectionLimit | None = None,
     ) -> GetWorkflowRevisionResult: ...
 
     def list_workflow_revisions(

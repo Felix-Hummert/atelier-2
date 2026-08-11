@@ -31,7 +31,11 @@ from atelier2.ports.run_queries import (
     RunQueries,
     RunQueryMissing,
 )
-from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt, ReadUnavailable
+from atelier2.ports.workflow_revisions import (
+    QueryDurableStateCorrupt,
+    ReadUnavailable,
+    WorkflowProjectionLimit,
+)
 
 
 @dataclass(frozen=True)
@@ -48,13 +52,14 @@ def reconcile_run(
     request: ReconcileRunRequest,
     queries: RunQueries,
     commander: TransactionalEffectReconcileCommander,
+    projection_limit: WorkflowProjectionLimit | None = None,
 ) -> ReconcileRunResult:
-    found = queries.get_run(request.run_id)
+    found = queries.get_run(request.run_id, projection_limit)
     match found:
         case RunQueryMissing():
             return RunMissing()
-        case ReadUnavailable():
-            return WriteUnavailable()
+        case ReadUnavailable(detail):
+            return WriteUnavailable(detail)
         case QueryDurableStateCorrupt():
             return DurableStateCorrupt()
         case RunFound(projection):

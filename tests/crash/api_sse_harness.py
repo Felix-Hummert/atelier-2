@@ -12,6 +12,7 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.api.app import ApiPorts, create_app
+from tests.scenarios.api import api_limits, event_poll_backoff
 
 database_path = Path(os.environ["ATELIER2_TEST_DATABASE"])
 settings = DbosRuntimeSettings(database_path, os.environ["ATELIER2_TEST_APP_VERSION"])
@@ -30,6 +31,6 @@ app = create_app(
         queries,
         queries,
     ),
-    event_page_size=2,
-    event_poll_delay_seconds=0.01,
+    limits=api_limits(event_page_size=2),
+    event_poll_backoff=event_poll_backoff(),
 )

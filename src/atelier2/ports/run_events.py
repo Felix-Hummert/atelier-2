@@ -47,7 +47,9 @@ type PrepareRunEventStreamResult = (
     | ReadUnavailable
     | QueryDurableStateCorrupt
 )
-type ReadRunEventPageResult = RunEventPage | ReadUnavailable | QueryDurableStateCorrupt
+type ReadRunEventPageResult = (
+    RunEventPage | EventHistoryCorrupt | ReadUnavailable | QueryDurableStateCorrupt
+)
 
 
 class RunEventQueries(Protocol):

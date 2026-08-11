@@ -35,8 +35,6 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import ApiPorts, create_app
-from atelier2.api.models import run_event_resource
-from atelier2.api.references import encode_event_cursor, encode_public_run_reference
 from atelier2.application.advance_run import advance_run
 from atelier2.contracts.effects import (
     AdapterRevision,
@@ -54,7 +52,13 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
 from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
-from atelier2.ports.run_events import RunEventPage
+from tests.scenarios.api import (
+    SSE_COMPLETE_HISTORY,
+    SSE_CURSOR_AFTER_THREE,
+    SSE_PUBLIC_RUN_REFERENCE,
+    api_limits,
+    event_poll_backoff,
+)
 
 DOCUMENT = b"""format_version: 1
 start: agent
@@ -175,8 +179,8 @@ def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
             queries,
             queries,
         ),
-        event_page_size=page_size,
-        event_poll_delay_seconds=0.01,
+        limits=api_limits(event_page_size=page_size),
+        event_poll_backoff=event_poll_backoff(),
     )
     return TestClient(app)
 
@@ -199,38 +203,27 @@ def test_sse_emits_all_seven_persisted_events_and_resumes_after_cursor(
     tmp_path: Path,
 ) -> None:
     for runtime in _runtime(tmp_path):
-        run_id, _revision = _complete_history(runtime)
-        queries = DbosQueries(runtime.engine)
-        page = queries.read_run_event_page(run_id, 0, 100)
-        assert isinstance(page, RunEventPage)
-        expected = [
-            run_event_resource(item).model_dump(mode="json") for item in page.events
-        ]
+        _run_id, _revision = _complete_history(runtime)
         client = _client(runtime)
-        path = f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/events"
+        path = f"/atelier/api/v1/runs/{SSE_PUBLIC_RUN_REFERENCE}/events"
 
         first = _parse_events(client.get(path).text)
         resumed = _parse_events(
-            client.get(
-                path, headers={"last-event-id": encode_event_cursor(run_id, 3)}
-            ).text
+            client.get(path, headers={"last-event-id": SSE_CURSOR_AFTER_THREE}).text
         )
         second_reader = _parse_events(client.get(path).text)
 
-        assert [item["data"] for item in first] == expected
-        assert [item["event"] for item in first] == [item["event"] for item in expected]
-        assert [item["id"] for item in first] == [item["cursor"] for item in expected]
-        assert [item["data"] for item in resumed] == expected[3:]
-        assert second_reader == first
-        assert [item["sequence"] for item in expected] == list(range(1, 8))
+        assert first == SSE_COMPLETE_HISTORY
+        assert resumed == SSE_COMPLETE_HISTORY[3:]
+        assert second_reader == SSE_COMPLETE_HISTORY
 
 
 def test_two_concurrent_readers_receive_the_same_durable_order(
     tmp_path: Path,
 ) -> None:
     for runtime in _runtime(tmp_path):
-        run_id, _revision = _complete_history(runtime)
-        path = f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/events"
+        _run_id, _revision = _complete_history(runtime)
+        path = f"/atelier/api/v1/runs/{SSE_PUBLIC_RUN_REFERENCE}/events"
         barrier = Barrier(2)
 
         def read(

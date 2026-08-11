@@ -151,6 +151,23 @@ def test_publication_rejects_invalid_yaml_before_the_write_port() -> None:
     assert isinstance(result, PublicationInvalid)
 
 
+def test_publication_returns_the_graph_validated_before_the_write() -> None:
+    document = b"format_version: 1\nstart: final\nnodes:\n  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n"
+    revision = WorkflowRevision(document)
+
+    result = publish_workflow_revision(
+        document,
+        cast(
+            WorkflowRevisionPublisher,
+            FakePort(DurableRevisionCreated(revision)),
+        ),
+    )
+
+    assert isinstance(result, PublicationCreated)
+    assert result.projection.revision == revision
+    assert result.projection.graph.start == "final"
+
+
 @pytest.mark.parametrize(
     ("port_result", "application_type"),
     [

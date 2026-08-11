@@ -79,6 +79,12 @@ def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> WorkflowGra
     )
     if document is None:
         raise RunTransitionConflict("workflow revision is missing")
+    return graph_from_document(revision_hash, bytes(document))
+
+
+def graph_from_document(
+    revision_hash: WorkflowRevisionHash, document: bytes
+) -> WorkflowGraph:
     revision = WorkflowRevision(bytes(document))
     if revision.revision_hash != revision_hash:
         raise RevisionHashCollision(
@@ -110,6 +116,11 @@ def load_run(session: Any, run_id: RunId) -> Run:
         raise RunTransitionConflict("run does not exist")
     run = run_from_record(record)
     graph = load_graph(session, run.revision_hash)
+    validate_run_graph_binding(run, graph)
+    return run
+
+
+def validate_run_graph_binding(run: Run, graph: WorkflowGraph) -> None:
     node = graph.node(run.current_node_id)
     if run.state is RunState.WAITING_INPUT and not isinstance(node, WaitNode):
         raise RunTransitionConflict("WAITING_INPUT must name a Wait node")
@@ -119,7 +130,6 @@ def load_run(session: Any, run_id: RunId) -> Run:
         raise RunTransitionConflict("WAITING_RECONCILIATION must name an Action node")
     if run.state is RunState.COMPLETED and not isinstance(node, SubworkflowNode):
         raise RunTransitionConflict("COMPLETED must name the terminal Subworkflow")
-    return run
 
 
 def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
@@ -587,6 +597,25 @@ class DbosWaitAnswerer:
             return DurableAnswerStateConflict()
         from atelier2.adapters.dbos.workflow import ANSWER_WORKFLOW_NAME, QUEUE_NAME
 
+        try:
+            with self._engine.connect() as read_connection:
+                document = read_connection.scalar(
+                    sa.select(workflow_revisions.c.document).where(
+                        workflow_revisions.c.revision_hash
+                        == request.revision_hash.value
+                    )
+                )
+            if document is None:
+                prepared_document = None
+                graph = None
+            else:
+                prepared_document = bytes(document)
+                graph = graph_from_document(request.revision_hash, prepared_document)
+        except OperationalError:
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
         client = DBOSClient(
             system_database_engine=self._engine, use_listen_notify=False
         )
@@ -608,6 +637,24 @@ class DbosWaitAnswerer:
                     if run.revision_hash != request.revision_hash:
                         connection.rollback()
                         return DurableAnswerRevisionConflict()
+                    stored_document = connection.scalar(
+                        sa.select(workflow_revisions.c.document).where(
+                            workflow_revisions.c.revision_hash
+                            == request.revision_hash.value
+                        )
+                    )
+                    if (
+                        prepared_document is None
+                        or graph is None
+                        or stored_document is None
+                        or bytes(stored_document) != prepared_document
+                    ):
+                        connection.rollback()
+                        return DurableStateCorrupt()
+                    stored_revision = WorkflowRevision(bytes(stored_document))
+                    if stored_revision.revision_hash != request.revision_hash:
+                        connection.rollback()
+                        return DurableStateCorrupt()
                     execution_id = NodeExecutionId.for_node(
                         request.run_id, request.revision_hash, request.node_id
                     )
@@ -659,7 +706,6 @@ class DbosWaitAnswerer:
                             return DurableStateCorrupt()
                         connection.commit()
                         return DurableAnswerExisting(snapshot)
-                    graph = load_graph(connection, request.revision_hash)
                     try:
                         node = graph.node(request.node_id)
                     except KeyError:

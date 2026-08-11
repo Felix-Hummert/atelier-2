@@ -155,6 +155,7 @@ def install_custom_openapi(app: FastAPI) -> None:
         return schema
 
     app.openapi = custom_openapi
+    custom_openapi()
 
 
 def _install_publication_request_body(schema: dict[str, Any]) -> None:

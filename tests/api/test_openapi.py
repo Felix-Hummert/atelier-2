@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from typing import cast
 
+import pytest
 from fastapi.testclient import TestClient
 from openapi_spec_validator import OpenAPIV31SpecValidator, validate
 
+from atelier2.api import openapi as openapi_module
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.openapi import API_PREFIX, EVENT_NAMES, EVENT_PATH
 from atelier2.application.start_published_run import DurablePublishedRunStarter
@@ -17,6 +19,7 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionPublisher,
     WorkflowRevisionQueries,
 )
+from tests.scenarios.api import api_limits, event_poll_backoff
 
 
 def empty_ports() -> ApiPorts:
@@ -60,7 +63,13 @@ EXPECTED_SUCCESS_STATUSES = {
 
 def test_openapi_31_validates_and_describes_exact_r2_surface() -> None:
     client = TestClient(
-        create_app(source_commit="commit", source_tree="tree", ports=empty_ports())
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=empty_ports(),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
     )
 
     response = client.get(API_PREFIX + "/openapi.json")
@@ -77,7 +86,13 @@ def test_openapi_31_validates_and_describes_exact_r2_surface() -> None:
 
 
 def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> None:
-    app = create_app(source_commit="commit", source_tree="tree", ports=empty_ports())
+    app = create_app(
+        source_commit="commit",
+        source_tree="tree",
+        ports=empty_ports(),
+        limits=api_limits(),
+        event_poll_backoff=event_poll_backoff(),
+    )
     schema = app.openapi()
 
     content = schema["paths"][EVENT_PATH]["get"]["responses"]["200"]["content"]
@@ -104,7 +119,11 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
 
 def test_every_declared_error_response_is_problem_json_one_of() -> None:
     schema = create_app(
-        source_commit="commit", source_tree="tree", ports=empty_ports()
+        source_commit="commit",
+        source_tree="tree",
+        ports=empty_ports(),
+        limits=api_limits(),
+        event_poll_backoff=event_poll_backoff(),
     ).openapi()
 
     for path in schema["paths"].values():
@@ -120,7 +139,11 @@ def test_every_declared_error_response_is_problem_json_one_of() -> None:
 
 def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
     schema = create_app(
-        source_commit="commit", source_tree="tree", ports=empty_ports()
+        source_commit="commit",
+        source_tree="tree",
+        ports=empty_ports(),
+        limits=api_limits(),
+        event_poll_backoff=event_poll_backoff(),
     ).openapi()
 
     for (path, method), expected_statuses in EXPECTED_SUCCESS_STATUSES.items():
@@ -159,3 +182,56 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
             "maximum": 100,
             "default": 50,
         }
+
+
+def test_invalid_openapi_fails_during_app_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InvalidGeneratedSchema(ValueError):
+        pass
+
+    def reject_schema(_model: type[object], _schema: object) -> None:
+        raise InvalidGeneratedSchema
+
+    monkeypatch.setattr(
+        openapi_module.OpenAPI,
+        "model_validate",
+        classmethod(reject_schema),
+    )
+
+    with pytest.raises(InvalidGeneratedSchema):
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=empty_ports(),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+
+
+def test_first_request_reuses_schema_built_during_app_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated = 0
+    original_get_openapi = openapi_module.get_openapi
+
+    def counted_get_openapi(*args: object, **kwargs: object):
+        nonlocal generated
+        generated += 1
+        return original_get_openapi(*args, **kwargs)
+
+    monkeypatch.setattr(openapi_module, "get_openapi", counted_get_openapi)
+
+    app = create_app(
+        source_commit="commit",
+        source_tree="tree",
+        ports=empty_ports(),
+        limits=api_limits(),
+        event_poll_backoff=event_poll_backoff(),
+    )
+    assert generated == 1
+
+    response = TestClient(app).get(API_PREFIX + "/health")
+
+    assert response.status_code == 200
+    assert generated == 1

@@ -198,13 +198,17 @@ def _append_terminal_events(
         runtime.close()
 
 
-def _free_port() -> int:
-    with socket.socket() as listener:
+@contextmanager
+def _bound_listener() -> Iterator[socket.socket]:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", 0))
-        return int(listener.getsockname()[1])
+        yield listener
 
 
-def _serve(database_path: Path, port: int) -> subprocess.Popen[bytes]:
+def _serve(database_path: Path, listener: socket.socket) -> subprocess.Popen[bytes]:
+    repository_root = Path(__file__).parents[2]
+    port = int(listener.getsockname()[1])
     environment = os.environ.copy()
     environment.update(
         {
@@ -212,7 +216,9 @@ def _serve(database_path: Path, port: int) -> subprocess.Popen[bytes]:
             "ATELIER2_TEST_APP_VERSION": "api-crash-tests",
             "ATELIER2_TEST_SOURCE_COMMIT": "crash-commit",
             "ATELIER2_TEST_SOURCE_TREE": "crash-tree",
-            "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+            "PYTHONPATH": os.pathsep.join(
+                (str(repository_root / "src"), str(repository_root))
+            ),
         }
     )
     process = subprocess.Popen(
@@ -223,17 +229,16 @@ def _serve(database_path: Path, port: int) -> subprocess.Popen[bytes]:
             "--app-dir",
             str(Path(__file__).parent),
             "api_sse_harness:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
+            "--fd",
+            str(listener.fileno()),
             "--log-level",
             "warning",
         ],
-        cwd=Path(__file__).parents[2],
+        cwd=repository_root,
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        pass_fds=(listener.fileno(),),
     )
     _wait_until_serving(process, port)
     return process
@@ -332,33 +337,35 @@ def test_last_event_id_resumes_after_real_api_sigkill_and_allows_unacknowledged_
     reference = encode_public_run_reference(run_id)
     path = f"/atelier/api/v1/runs/{reference}/events"
 
-    first_port = _free_port()
-    first_process = _serve(database_path, first_port)
-    with _killed(first_process):
-        before_crash = _read_events(first_port, path, stop_after=3)
-        assert [event["data"]["sequence"] for event in before_crash] == [1, 2, 3]
-        acknowledged_cursor = str(before_crash[-1]["id"])
-        replay_cursor = str(before_crash[-2]["id"])
-        first_process.kill()
-        first_process.wait(timeout=5)
+    with _bound_listener() as first_listener:
+        first_port = int(first_listener.getsockname()[1])
+        first_process = _serve(database_path, first_listener)
+        with _killed(first_process):
+            before_crash = _read_events(first_port, path, stop_after=3)
+            assert [event["data"]["sequence"] for event in before_crash] == [1, 2, 3]
+            acknowledged_cursor = str(before_crash[-1]["id"])
+            replay_cursor = str(before_crash[-2]["id"])
+            first_process.kill()
+            first_process.wait(timeout=5)
 
     terminal_hash = _append_terminal_events(
         database_path, external_path, run_id, revision, logical_key
     )
 
-    second_port = _free_port()
-    second_process = _serve(database_path, second_port)
-    with _killed(second_process):
-        resumed = _read_events(second_port, path, last_event_id=acknowledged_cursor)
-        replayed = _read_events(second_port, path, last_event_id=replay_cursor)
+    with _bound_listener() as second_listener:
+        second_port = int(second_listener.getsockname()[1])
+        second_process = _serve(database_path, second_listener)
+        with _killed(second_process):
+            resumed = _read_events(second_port, path, last_event_id=acknowledged_cursor)
+            replayed = _read_events(second_port, path, last_event_id=replay_cursor)
 
-        assert [event["data"]["sequence"] for event in resumed] == [4, 5, 6, 7]
-        assert [event["data"]["sequence"] for event in replayed] == [3, 4, 5, 6, 7]
-        assert resumed[-1]["data"]["event"] == "SUBWORKFLOW_COMPLETED"
-        connection = http.client.HTTPConnection("127.0.0.1", second_port, timeout=5)
-        connection.request("GET", f"/atelier/api/v1/runs/{reference}")
-        run_response = connection.getresponse()
-        run_resource = json.loads(run_response.read())
-        connection.close()
-        assert run_resource["terminal_hash"] == terminal_hash
-        assert run_resource["latest_event_cursor"] == encode_event_cursor(run_id, 7)
+            assert [event["data"]["sequence"] for event in resumed] == [4, 5, 6, 7]
+            assert [event["data"]["sequence"] for event in replayed] == [3, 4, 5, 6, 7]
+            assert resumed[-1]["data"]["event"] == "SUBWORKFLOW_COMPLETED"
+            connection = http.client.HTTPConnection("127.0.0.1", second_port, timeout=5)
+            connection.request("GET", f"/atelier/api/v1/runs/{reference}")
+            run_response = connection.getresponse()
+            run_resource = json.loads(run_response.read())
+            connection.close()
+            assert run_resource["terminal_hash"] == terminal_hash
+            assert run_resource["latest_event_cursor"] == encode_event_cursor(run_id, 7)

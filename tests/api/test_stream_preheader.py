@@ -31,6 +31,7 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionPublisher,
     WorkflowRevisionQueries,
 )
+from tests.scenarios.api import api_limits, event_poll_backoff
 
 
 class FakeEventQueries:
@@ -68,43 +69,46 @@ def app_for(queries: FakeEventQueries):
             cast(RunQueries, unused),
             cast(RunEventQueries, queries),
         ),
+        limits=api_limits(),
+        event_poll_backoff=event_poll_backoff(),
     )
-
-
-def _free_port() -> int:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return int(listener.getsockname()[1])
 
 
 @contextmanager
 def live_server(queries: FakeEventQueries) -> Iterator[int]:
-    port = _free_port()
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app_for(queries),
-            host="127.0.0.1",
-            port=port,
-            log_level="critical",
-            access_log=False,
-            lifespan="off",
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        port = int(listener.getsockname()[1])
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app_for(queries),
+                host="127.0.0.1",
+                port=0,
+                log_level="critical",
+                access_log=False,
+                lifespan="off",
+            )
         )
-    )
-    thread = Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 5
-    while not server.started and thread.is_alive() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    if not server.started:
-        server.should_exit = True
-        thread.join(timeout=5)
-        raise AssertionError("Uvicorn did not start for raw pre-header proof")
-    try:
-        yield port
-    finally:
-        server.should_exit = True
-        thread.join(timeout=5)
-        assert not thread.is_alive()
+        thread = Thread(
+            target=server.run,
+            kwargs={"sockets": [listener]},
+            daemon=True,
+        )
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not server.started and thread.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not server.started:
+            server.should_exit = True
+            thread.join(timeout=5)
+            raise AssertionError("Uvicorn did not start for raw pre-header proof")
+        try:
+            yield port
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+            assert not thread.is_alive()
 
 
 def raw_get(

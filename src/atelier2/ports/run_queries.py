@@ -10,7 +10,11 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.runs import Run, RunId
 from atelier2.contracts.workflows import WorkflowGraph
-from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt, ReadUnavailable
+from atelier2.ports.workflow_revisions import (
+    QueryDurableStateCorrupt,
+    ReadUnavailable,
+    WorkflowProjectionLimit,
+)
 
 
 @dataclass(frozen=True)
@@ -72,9 +76,18 @@ type GetReconciliationRetryTargetResult = (
 
 
 class RunQueries(Protocol):
-    def get_run(self, run_id: RunId) -> GetRunResult: ...
+    def get_run(
+        self,
+        run_id: RunId,
+        projection_limit: WorkflowProjectionLimit | None = None,
+    ) -> GetRunResult: ...
 
-    def list_runs(self, after: RunId | None, limit: int) -> ListRunsResult: ...
+    def list_runs(
+        self,
+        after: RunId | None,
+        limit: int,
+        projection_limit: WorkflowProjectionLimit | None = None,
+    ) -> ListRunsResult: ...
 
     def get_reconciliation_retry_target(
         self, run_id: RunId, command_id: ReconcileCommandId

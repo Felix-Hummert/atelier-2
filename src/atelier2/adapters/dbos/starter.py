@@ -108,23 +108,49 @@ class DbosDurableRunStarter:
     def start_published(
         self, request: StartPublishedRunRequest
     ) -> DurablePublishedRunResult:
-        client = DBOSClient(
-            system_database_engine=self._engine, use_listen_notify=False
-        )
         try:
-            with canonical_write_transaction(self._engine) as connection:
-                document = connection.scalar(
+            with self._engine.connect() as read_connection:
+                document = read_connection.scalar(
                     sa.select(workflow_revisions.c.document).where(
                         workflow_revisions.c.revision_hash
                         == request.revision_hash.value
                     )
                 )
-                if document is None:
-                    return DurableRunRevisionMissing()
-                revision = WorkflowRevision(bytes(document))
-                if revision.revision_hash != request.revision_hash:
-                    return DurableStateCorrupt()
-                graph = parse_workflow_document(revision.document)
+            if document is None:
+                return DurableRunRevisionMissing()
+            revision_document = bytes(document)
+            revision = WorkflowRevision(revision_document)
+            if revision.revision_hash != request.revision_hash:
+                return DurableStateCorrupt()
+            graph = parse_workflow_document(revision.document)
+        except OperationalError:
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
+        client = DBOSClient(
+            system_database_engine=self._engine, use_listen_notify=False
+        )
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                stored_document = connection.scalar(
+                    sa.select(workflow_revisions.c.document).where(
+                        workflow_revisions.c.revision_hash
+                        == request.revision_hash.value
+                    )
+                )
+                if (
+                    stored_document is None
+                    or bytes(stored_document) != revision_document
+                ):
+                    raise RuntimeError(
+                        "published revision changed between parse and serialized start"
+                    )
+                stored_revision = WorkflowRevision(bytes(stored_document))
+                if stored_revision.revision_hash != request.revision_hash:
+                    raise RuntimeError(
+                        "published revision bytes disagree with their hash"
+                    )
                 workflow_id = bootstrap_workflow_id_for(request.run_id)
                 inserted = connection.execute(
                     runs.insert()

@@ -11,7 +11,11 @@ from fastapi.responses import JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.api.limits import (
+    ApiLimitExceeded,
+    ApiLimits,
+    RequestBodyLimitMiddleware,
+)
 from atelier2.api.models import (
     AnswerWaitRequestResource,
     HealthResource,
@@ -41,6 +45,7 @@ from atelier2.api.references import (
 )
 from atelier2.api.stream import (
     BoundedQueryRunner,
+    EventPollBackoff,
     PreparedEventStream,
     stream_server_events,
 )
@@ -61,6 +66,7 @@ from atelier2.application.publish_workflow_revision import (
     PublicationCreated,
     PublicationExisting,
     PublicationInvalid,
+    WorkflowPublicationLimits,
     WriteUnavailable,
     publish_workflow_revision,
 )
@@ -106,16 +112,18 @@ from atelier2.ports.run_events import (
 from atelier2.ports.run_queries import (
     RunFound,
     RunPage,
+    RunProjection,
     RunQueries,
     RunQueryMissing,
 )
 from atelier2.ports.workflow_revisions import (
+    PROJECTION_LIMIT_DETAIL,
     QueryDurableStateCorrupt,
     ReadUnavailable,
+    WorkflowProjectionLimit,
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
     WorkflowRevisionPage,
-    WorkflowRevisionProjection,
     WorkflowRevisionPublisher,
     WorkflowRevisionQueries,
 )
@@ -137,19 +145,13 @@ def create_app(
     source_commit: str,
     source_tree: str,
     ports: ApiPorts,
-    event_page_size: int = 50,
-    event_poll_delay_seconds: float = 0.1,
-    maximum_concurrent_queries: int = 8,
+    limits: ApiLimits,
+    event_poll_backoff: EventPollBackoff,
 ) -> FastAPI:
     if not source_commit:
         raise ValueError("source_commit must be injected at application construction")
     if not source_tree:
         raise ValueError("source_tree must be injected at application construction")
-    if type(event_page_size) is not int or not 1 <= event_page_size <= 100:
-        raise ValueError("event_page_size must be an integer from 1 to 100")
-    if event_poll_delay_seconds <= 0:
-        raise ValueError("event_poll_delay_seconds must be positive")
-
     app = FastAPI(
         title="Atelier 2 durable workflow API",
         version="1",
@@ -158,7 +160,21 @@ def create_app(
         redoc_url=None,
     )
     install_problem_handlers(app)
-    runner = BoundedQueryRunner(maximum_concurrent_queries)
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        maximum_body_bytes=limits.maximum_request_body_bytes,
+        api_prefix=API_PREFIX,
+    )
+    runner = BoundedQueryRunner(limits.maximum_control_queries)
+    event_runner = BoundedQueryRunner(limits.maximum_event_poll_queries)
+    workflow_projection_limit = WorkflowPublicationLimits(
+        maximum_document_bytes=min(
+            limits.maximum_request_body_bytes,
+            limits.maximum_base64_decoded_bytes,
+        ),
+        maximum_nodes=limits.maximum_workflow_nodes,
+        maximum_string_characters=limits.maximum_field_characters,
+    )
 
     @app.get(API_PREFIX + "/health", response_model=HealthResource)
     async def health() -> HealthResource:
@@ -177,31 +193,27 @@ def create_app(
         document = await request.body()
         result = await runner.run(
             lambda: publish_workflow_revision(
-                document, ports.workflow_revision_publisher
+                document,
+                ports.workflow_revision_publisher,
+                workflow_projection_limit,
             )
         )
         match result:
-            case PublicationCreated(revision):
+            case PublicationCreated(projection):
                 status = HTTPStatus.CREATED
-            case PublicationExisting(revision):
+            case PublicationExisting(projection):
                 status = HTTPStatus.OK
             case PublicationInvalid():
                 raise ApiProblem("invalid-workflow-document")
             case PublicationCollision():
                 raise ApiProblem("revision-collision")
-            case WriteUnavailable():
-                raise ApiProblem("temporarily-unavailable")
+            case WriteUnavailable(detail):
+                raise ApiProblem("temporarily-unavailable", detail)
             case DurableStateCorrupt():
                 raise ApiProblem("durable-state-corrupt")
             case _ as unreachable:
                 assert_never(unreachable)
-        resource = await runner.run(
-            lambda: workflow_revision_detail_resource(
-                WorkflowRevisionProjection(
-                    revision, parse_workflow_document(revision.document)
-                )
-            )
-        )
+        resource = workflow_revision_detail_resource(projection)
         return _resource_response(resource, status)
 
     @app.get(
@@ -234,8 +246,8 @@ def create_app(
                         None if next_after is None else next_after.value
                     ),
                 )
-            case ReadUnavailable():
-                raise ApiProblem("temporarily-unavailable")
+            case ReadUnavailable(detail):
+                raise ApiProblem("temporarily-unavailable", detail)
             case QueryDurableStateCorrupt():
                 raise ApiProblem("durable-state-corrupt")
             case _ as unreachable:
@@ -251,15 +263,17 @@ def create_app(
         except InvalidRevisionHash as error:
             raise ApiProblem("invalid-revision-hash") from error
         result = await runner.run(
-            lambda: ports.workflow_revision_queries.get_workflow_revision(parsed)
+            lambda: ports.workflow_revision_queries.get_workflow_revision(
+                parsed, workflow_projection_limit
+            )
         )
         match result:
             case WorkflowRevisionFound(projection):
                 return workflow_revision_detail_resource(projection)
             case WorkflowRevisionMissing():
                 raise ApiProblem("workflow-revision-not-found")
-            case ReadUnavailable():
-                raise ApiProblem("temporarily-unavailable")
+            case ReadUnavailable(detail):
+                raise ApiProblem("temporarily-unavailable", detail)
             case QueryDurableStateCorrupt():
                 raise ApiProblem("durable-state-corrupt")
             case _ as unreachable:
@@ -275,6 +289,7 @@ def create_app(
         body: StartRunRequestResource,
         _media: None = Depends(_require_json_media_dependency),
     ) -> JSONResponse:
+        _require_field(body.run_id, limits)
         try:
             revision_hash = parse_revision_hash(body.workflow_revision_hash)
         except InvalidRevisionHash as error:
@@ -292,27 +307,37 @@ def create_app(
                 raise ApiProblem("workflow-revision-not-found")
             case RunIdentityConflict():
                 raise ApiProblem("run-identity-conflict")
-            case WriteUnavailable():
-                raise ApiProblem("temporarily-unavailable")
+            case WriteUnavailable(detail):
+                raise ApiProblem("temporarily-unavailable", detail)
             case DurableStateCorrupt():
                 raise ApiProblem("durable-state-corrupt")
             case _ as unreachable:
                 assert_never(unreachable)
         return _resource_response(
-            await _load_run_resource(request.run_id, ports.run_queries, runner), status
+            await _load_run_resource(
+                request.run_id,
+                ports.run_queries,
+                runner,
+                limits,
+                workflow_projection_limit,
+            ),
+            status,
         )
 
     @app.get(API_PREFIX + "/runs", response_model=RunPageResource)
     async def list_runs(after: str | None = None, limit: str = "50") -> RunPageResource:
         boundary = None
         if after is not None:
-            boundary = _decode_public_reference(after)
+            boundary = _decode_public_reference(after, limits)
         parsed_limit = _parse_limit(limit)
         result = await runner.run(
-            lambda: ports.run_queries.list_runs(boundary, parsed_limit)
+            lambda: ports.run_queries.list_runs(
+                boundary, parsed_limit, workflow_projection_limit
+            )
         )
         match result:
             case RunPage(runs, next_after):
+                _require_run_projections(runs, limits)
                 return RunPageResource(
                     items=tuple(run_resource(run) for run in runs),
                     next_after=(
@@ -321,8 +346,8 @@ def create_app(
                         else encode_public_run_reference(next_after)
                     ),
                 )
-            case ReadUnavailable():
-                raise ApiProblem("temporarily-unavailable")
+            case ReadUnavailable(detail):
+                raise ApiProblem("temporarily-unavailable", detail)
             case QueryDurableStateCorrupt():
                 raise ApiProblem("durable-state-corrupt")
             case _ as unreachable:
@@ -331,7 +356,11 @@ def create_app(
     @app.get(API_PREFIX + "/runs/{public_ref}", response_model=RunResource)
     async def get_run_route(public_ref: str) -> RunResource:
         return await _load_run_resource(
-            _decode_public_reference(public_ref), ports.run_queries, runner
+            _decode_public_reference(public_ref, limits),
+            ports.run_queries,
+            runner,
+            limits,
+            workflow_projection_limit,
         )
 
     @app.post(
@@ -345,12 +374,13 @@ def create_app(
         body: AnswerWaitRequestResource,
         _media: None = Depends(_require_json_media_dependency),
     ) -> JSONResponse:
-        run_id = _decode_public_reference(public_ref)
+        run_id = _decode_public_reference(public_ref, limits)
+        _require_field(body.node_id, limits)
         try:
             revision_hash = parse_revision_hash(body.revision_hash)
         except InvalidRevisionHash as error:
             raise ApiProblem("invalid-revision-hash") from error
-        answer_bytes = _decode_base64(body.answer_base64)
+        answer_bytes = _decode_base64(body.answer_base64, limits)
         if not is_canonical_integer_bytes(answer_bytes):
             raise ApiProblem("invalid-request")
         answer_request = SubmitWaitAnswerRequest(
@@ -374,14 +404,21 @@ def create_app(
                 raise ApiProblem("answer-state-conflict")
             case AnswerBytesConflict():
                 raise ApiProblem("answer-bytes-conflict")
-            case WriteUnavailable():
-                raise ApiProblem("temporarily-unavailable")
+            case WriteUnavailable(detail):
+                raise ApiProblem("temporarily-unavailable", detail)
             case DurableStateCorrupt():
                 raise ApiProblem("durable-state-corrupt")
             case _ as unreachable:
                 assert_never(unreachable)
         return _resource_response(
-            await _load_run_resource(run_id, ports.run_queries, runner), status
+            await _load_run_resource(
+                run_id,
+                ports.run_queries,
+                runner,
+                limits,
+                workflow_projection_limit,
+            ),
+            status,
         )
 
     @app.post(
@@ -395,12 +432,19 @@ def create_app(
         body: ReconcileRunRequestResource,
         _media: None = Depends(_require_json_media_dependency),
     ) -> JSONResponse:
-        run_id = _decode_public_reference(public_ref)
+        run_id = _decode_public_reference(public_ref, limits)
+        _require_fields(
+            limits,
+            body.command_id,
+            body.actor,
+            body.evidence,
+        )
         determination_body = body.determination
         if isinstance(determination_body, OperatorFoundDeterminationResource):
+            _require_field(determination_body.effect_id, limits)
             determination = OperatorFoundEffect(
                 EffectId(determination_body.effect_id),
-                EffectResult(_decode_base64(determination_body.result_base64)),
+                EffectResult(_decode_base64(determination_body.result_base64, limits)),
             )
         else:
             determination = OperatorAuthoritativeAbsence()
@@ -417,6 +461,7 @@ def create_app(
                 reconciliation_request,
                 ports.run_queries,
                 ports.reconcile_commander,
+                workflow_projection_limit,
             )
         )
         match result:
@@ -436,27 +481,35 @@ def create_app(
                 raise ApiProblem("reconciliation-determination-conflict")
             case ReconciliationExistingRejected():
                 raise ApiProblem("reconciliation-rejected")
-            case WriteUnavailable():
-                raise ApiProblem("temporarily-unavailable")
+            case WriteUnavailable(detail):
+                raise ApiProblem("temporarily-unavailable", detail)
             case DurableStateCorrupt():
                 raise ApiProblem("durable-state-corrupt")
             case _ as unreachable:
                 assert_never(unreachable)
         return _resource_response(
-            await _load_run_resource(run_id, ports.run_queries, runner), status
+            await _load_run_resource(
+                run_id,
+                ports.run_queries,
+                runner,
+                limits,
+                workflow_projection_limit,
+            ),
+            status,
         )
 
     async def prepare_events(request: Request, public_ref: str) -> PreparedEventStream:
         _require_sse_accept(request)
-        run_id = _decode_public_reference(public_ref)
+        run_id = _decode_public_reference(public_ref, limits)
         cursor_headers = request.headers.getlist("last-event-id")
         if len(cursor_headers) > 1:
             raise ApiProblem("invalid-event-cursor")
         after_sequence = 0
         if cursor_headers:
             try:
+                limits.require_field(cursor_headers[0])
                 cursor = parse_event_cursor(cursor_headers[0])
-            except InvalidEventCursor as error:
+            except (ApiLimitExceeded, InvalidEventCursor) as error:
                 raise ApiProblem("invalid-event-cursor") from error
             if cursor.run_id != run_id:
                 raise ApiProblem("event-cursor-run-mismatch")
@@ -475,8 +528,8 @@ def create_app(
                 raise ApiProblem("event-cursor-ahead")
             case EventHistoryCorrupt() | QueryDurableStateCorrupt():
                 raise ApiProblem("durable-state-corrupt")
-            case ReadUnavailable():
-                raise ApiProblem("temporarily-unavailable")
+            case ReadUnavailable(detail):
+                raise ApiProblem("temporarily-unavailable", detail)
             case _ as unreachable:
                 assert_never(unreachable)
 
@@ -492,9 +545,10 @@ def create_app(
         async for event in stream_server_events(
             prepared,
             ports.run_event_queries,
-            runner,
-            page_size=event_page_size,
-            poll_delay_seconds=event_poll_delay_seconds,
+            event_runner,
+            page_size=limits.event_page_size,
+            limits=limits,
+            poll_backoff=event_poll_backoff,
         ):
             yield event
 
@@ -507,34 +561,70 @@ def _resource_response(resource: BaseModel, status: HTTPStatus) -> JSONResponse:
 
 
 async def _load_run_resource(
-    run_id: RunId, queries: RunQueries, runner: BoundedQueryRunner
+    run_id: RunId,
+    queries: RunQueries,
+    runner: BoundedQueryRunner,
+    limits: ApiLimits,
+    projection_limit: WorkflowProjectionLimit,
 ) -> RunResource:
-    result = await runner.run(lambda: queries.get_run(run_id))
+    result = await runner.run(lambda: queries.get_run(run_id, projection_limit))
     match result:
         case RunFound(projection):
+            _require_run_projections((projection,), limits)
             return run_resource(projection)
         case RunQueryMissing():
             raise ApiProblem("run-not-found")
-        case ReadUnavailable():
-            raise ApiProblem("temporarily-unavailable")
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
         case QueryDurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
 
 
-def _decode_public_reference(value: str) -> RunId:
+def _require_run_projections(
+    projections: tuple[RunProjection, ...], limits: ApiLimits
+) -> None:
     try:
-        return decode_public_run_reference(value)
+        for projection in projections:
+            limits.require_run_projection(projection)
+    except (ApiLimitExceeded, UnicodeDecodeError) as error:
+        raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL) from error
+
+
+def _decode_public_reference(value: str, limits: ApiLimits) -> RunId:
+    try:
+        run_id = decode_public_run_reference(value)
+        limits.require_field(run_id.value)
+        return run_id
+    except ApiLimitExceeded as error:
+        raise ApiProblem("invalid-public-run-reference") from error
     except InvalidPublicRunReference as error:
         raise ApiProblem("invalid-public-run-reference") from error
 
 
-def _decode_base64(value: str) -> bytes:
+def _decode_base64(value: str, limits: ApiLimits) -> bytes:
     try:
-        return decode_canonical_base64(value)
+        limits.require_base64(value)
+        decoded = decode_canonical_base64(value)
+        limits.require_payload(decoded)
+        return decoded
+    except ApiLimitExceeded as error:
+        raise ApiProblem("invalid-request", str(error)) from error
     except ValueError as error:
         raise ApiProblem("invalid-base64") from error
+
+
+def _require_field(value: str, limits: ApiLimits) -> None:
+    try:
+        limits.require_field(value)
+    except ApiLimitExceeded as error:
+        raise ApiProblem("invalid-request", str(error)) from error
+
+
+def _require_fields(limits: ApiLimits, *values: str) -> None:
+    for value in values:
+        _require_field(value, limits)
 
 
 def _parse_limit(value: str) -> int:

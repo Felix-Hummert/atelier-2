@@ -5,6 +5,7 @@ from typing import assert_never
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.contracts.runs import WorkflowRevision
+from atelier2.contracts.workflows import AgentNode, SubworkflowNode, WorkflowGraph
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
@@ -15,18 +16,55 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
     DurableRevisionCreated,
     DurableRevisionExisting,
+    ProjectionLimitExceeded,
+    WorkflowRevisionProjection,
     WorkflowRevisionPublisher,
 )
 
 
 @dataclass(frozen=True)
+class WorkflowPublicationLimits:
+    maximum_document_bytes: int
+    maximum_nodes: int
+    maximum_string_characters: int
+
+    def __post_init__(self) -> None:
+        for name, value in self.__dict__.items():
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+
+    def validate(self, document: bytes, graph: WorkflowGraph) -> None:
+        self.validate_document(document)
+        self.validate_graph(graph)
+
+    def validate_document(self, document: bytes) -> None:
+        if len(document) > self.maximum_document_bytes:
+            raise ProjectionLimitExceeded(
+                "workflow document exceeds its encoded response limit"
+            )
+
+    def validate_graph(self, graph: WorkflowGraph) -> None:
+        if len(graph.nodes) > self.maximum_nodes:
+            raise ProjectionLimitExceeded("workflow exceeds its node limit")
+        values = [graph.start]
+        for node in graph.nodes:
+            values.append(node.id)
+            if isinstance(node, AgentNode):
+                values.extend((node.job, node.output))
+            if not isinstance(node, SubworkflowNode):
+                values.append(node.next)
+        if any(len(value) > self.maximum_string_characters for value in values):
+            raise ProjectionLimitExceeded("workflow string exceeds its character limit")
+
+
+@dataclass(frozen=True)
 class PublicationCreated:
-    revision: WorkflowRevision
+    projection: WorkflowRevisionProjection
 
 
 @dataclass(frozen=True)
 class PublicationExisting:
-    revision: WorkflowRevision
+    projection: WorkflowRevisionProjection
 
 
 @dataclass(frozen=True)
@@ -51,7 +89,7 @@ type PublishWorkflowRevisionResult = (
 
 @dataclass(frozen=True)
 class WriteUnavailable:
-    pass
+    detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,19 +98,23 @@ class DurableStateCorrupt:
 
 
 def publish_workflow_revision(
-    document: bytes, publisher: WorkflowRevisionPublisher
+    document: bytes,
+    publisher: WorkflowRevisionPublisher,
+    limits: WorkflowPublicationLimits | None = None,
 ) -> PublishWorkflowRevisionResult:
     try:
         revision = WorkflowRevision(document)
-        parse_workflow_document(document)
+        graph = parse_workflow_document(document)
+        if limits is not None:
+            limits.validate(document, graph)
     except (TypeError, ValueError) as error:
         return PublicationInvalid(str(error))
     result = publisher.publish(revision)
     match result:
         case DurableRevisionCreated(stored):
-            return PublicationCreated(stored)
+            return PublicationCreated(WorkflowRevisionProjection(stored, graph))
         case DurableRevisionExisting(stored):
-            return PublicationExisting(stored)
+            return PublicationExisting(WorkflowRevisionProjection(stored, graph))
         case DurableRevisionCollision():
             return PublicationCollision()
         case DurableWriteUnavailable():
