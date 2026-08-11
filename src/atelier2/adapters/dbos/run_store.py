@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from typing import Any
 
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DatabaseError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.effect_store import (
     intent_snapshot_from_record,
@@ -31,6 +32,7 @@ from atelier2.contracts.executions import (
     WaitAnswer,
     WaitAnswerSnapshot,
     WaitAnswerState,
+    is_canonical_integer_bytes,
     logical_effect_key_for,
     terminal_hash_for,
 )
@@ -49,13 +51,22 @@ from atelier2.contracts.workflows import (
     WaitNode,
     WorkflowGraph,
 )
+from atelier2.ports.durable_runs import (
+    DurableAnswerBytesConflict,
+    DurableAnswerCreated,
+    DurableAnswerExisting,
+    DurableAnswerNodeMissing,
+    DurableAnswerResult,
+    DurableAnswerRevisionConflict,
+    DurableAnswerRunMissing,
+    DurableAnswerStateConflict,
+    DurableStateCorrupt,
+    DurableWriteUnavailable,
+)
 
 
 class RunTransitionConflict(RuntimeError):
     """A retry or transition contradicts the exact durable graph/run/event binding."""
-
-
-_INTEGER_ANSWER = re.compile(rb"(?:0|-?[1-9][0-9]*)")
 
 
 def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> WorkflowGraph:
@@ -66,6 +77,12 @@ def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> WorkflowGra
     )
     if document is None:
         raise RunTransitionConflict("workflow revision is missing")
+    return graph_from_document(revision_hash, bytes(document))
+
+
+def graph_from_document(
+    revision_hash: WorkflowRevisionHash, document: bytes
+) -> WorkflowGraph:
     revision = WorkflowRevision(bytes(document))
     if revision.revision_hash != revision_hash:
         raise RevisionHashCollision(
@@ -74,7 +91,7 @@ def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> WorkflowGra
     return parse_workflow_document(revision.document)
 
 
-def _run_from_record(record: Mapping[Any, Any]) -> Run:
+def run_from_record(record: Mapping[Any, Any]) -> Run:
     terminal = record["terminal_hash"]
     return Run(
         RunId(str(record["run_id"])),
@@ -95,8 +112,13 @@ def load_run(session: Any, run_id: RunId) -> Run:
     )
     if record is None:
         raise RunTransitionConflict("run does not exist")
-    run = _run_from_record(record)
+    run = run_from_record(record)
     graph = load_graph(session, run.revision_hash)
+    validate_run_graph_binding(run, graph)
+    return run
+
+
+def validate_run_graph_binding(run: Run, graph: WorkflowGraph) -> None:
     node = graph.node(run.current_node_id)
     if run.state is RunState.WAITING_INPUT and not isinstance(node, WaitNode):
         raise RunTransitionConflict("WAITING_INPUT must name a Wait node")
@@ -106,10 +128,9 @@ def load_run(session: Any, run_id: RunId) -> Run:
         raise RunTransitionConflict("WAITING_RECONCILIATION must name an Action node")
     if run.state is RunState.COMPLETED and not isinstance(node, SubworkflowNode):
         raise RunTransitionConflict("COMPLETED must name the terminal Subworkflow")
-    return run
 
 
-def _event_from_record(record: Mapping[Any, Any]) -> RunEvent:
+def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
     logical_key = record["receipt_logical_key"]
     result_hash = record["receipt_result_hash"]
     event = RunEvent(
@@ -154,7 +175,7 @@ def _existing_event(
     )
     if record is None:
         return None
-    event = _event_from_record(record)
+    event = event_from_record(record)
     expected_execution = NodeExecutionId.for_node(run_id, revision_hash, node_id)
     if (
         event.node_execution_id != expected_execution
@@ -557,19 +578,81 @@ class DbosWaitAnswerer:
         self._application_version = application_version
 
     def submit(self, request: SubmitWaitAnswerRequest) -> WaitAnswerSnapshot:
-        if _INTEGER_ANSWER.fullmatch(request.answer_bytes) is None:
+        result = self.submit_result(request)
+        if isinstance(result, (DurableAnswerCreated, DurableAnswerExisting)):
+            return result.snapshot
+        if isinstance(
+            result, DurableAnswerStateConflict
+        ) and not is_canonical_integer_bytes(request.answer_bytes):
             raise ValueError(
                 "integer answer must be canonical base-10 bytes without whitespace or plus"
             )
+        raise RunTransitionConflict(f"wait answer refused: {type(result).__name__}")
+
+    def submit_result(self, request: SubmitWaitAnswerRequest) -> DurableAnswerResult:
+        if not is_canonical_integer_bytes(request.answer_bytes):
+            return DurableAnswerStateConflict()
         from atelier2.adapters.dbos.workflow import ANSWER_WORKFLOW_NAME, QUEUE_NAME
 
-        client = DBOSClient(
-            system_database_engine=self._engine, use_listen_notify=False
-        )
         try:
+            with self._engine.connect() as read_connection:
+                document = read_connection.scalar(
+                    sa.select(workflow_revisions.c.document).where(
+                        workflow_revisions.c.revision_hash
+                        == request.revision_hash.value
+                    )
+                )
+            if document is None:
+                prepared_document = None
+                graph = None
+            else:
+                prepared_document = bytes(document)
+                graph = graph_from_document(request.revision_hash, prepared_document)
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
+        client: DBOSClient | None = None
+        try:
+            client = DBOSClient(
+                system_database_engine=self._engine, use_listen_notify=False
+            )
             with self._engine.connect() as connection:
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
                 try:
+                    run_record = (
+                        connection.execute(
+                            sa.select(runs).where(runs.c.run_id == request.run_id.value)
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if run_record is None:
+                        connection.rollback()
+                        return DurableAnswerRunMissing()
+                    run = run_from_record(run_record)
+                    if run.revision_hash != request.revision_hash:
+                        connection.rollback()
+                        return DurableAnswerRevisionConflict()
+                    stored_document = connection.scalar(
+                        sa.select(workflow_revisions.c.document).where(
+                            workflow_revisions.c.revision_hash
+                            == request.revision_hash.value
+                        )
+                    )
+                    if (
+                        prepared_document is None
+                        or graph is None
+                        or stored_document is None
+                        or bytes(stored_document) != prepared_document
+                    ):
+                        connection.rollback()
+                        return DurableStateCorrupt()
+                    stored_revision = WorkflowRevision(bytes(stored_document))
+                    if stored_revision.revision_hash != request.revision_hash:
+                        connection.rollback()
+                        return DurableStateCorrupt()
                     execution_id = NodeExecutionId.for_node(
                         request.run_id, request.revision_hash, request.node_id
                     )
@@ -580,39 +663,10 @@ class DbosWaitAnswerer:
                         execution_id,
                         request.answer_bytes,
                     )
-                    existing_record = (
-                        connection.execute(
-                            sa.select(wait_answers).where(
-                                wait_answers.c.run_id == request.run_id.value,
-                                wait_answers.c.node_id == request.node_id,
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    if existing_record is not None:
-                        snapshot = wait_answer_snapshot_from_record(existing_record)
-                        if snapshot.answer != answer:
-                            raise RunTransitionConflict(
-                                "wait already has a different exact answer"
-                            )
-                        connection.commit()
-                        return snapshot
-                    run = load_run(connection, request.run_id)
-                    graph = load_graph(connection, request.revision_hash)
-                    node = graph.node(request.node_id)
-                    if (
-                        run.revision_hash != request.revision_hash
-                        or run.current_node_id != request.node_id
-                        or run.state is not RunState.WAITING_INPUT
-                        or not isinstance(node, WaitNode)
-                        or node.answer_type != "integer"
-                    ):
-                        raise RunTransitionConflict(
-                            "answer requires its exact current WAITING_INPUT node"
-                        )
-                    connection.execute(
-                        wait_answers.insert().values(
+                    inserted = connection.execute(
+                        wait_answers.insert()
+                        .prefix_with("OR IGNORE")
+                        .values(
                             run_id=answer.run_id.value,
                             revision_hash=answer.revision_hash.value,
                             node_id=answer.node_id,
@@ -624,6 +678,45 @@ class DbosWaitAnswerer:
                             state_version=0,
                         )
                     )
+                    stored_record = (
+                        connection.execute(
+                            sa.select(wait_answers).where(
+                                wait_answers.c.run_id == request.run_id.value,
+                                wait_answers.c.node_id == request.node_id,
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if stored_record is None:
+                        connection.rollback()
+                        return DurableStateCorrupt()
+                    snapshot = wait_answer_snapshot_from_record(stored_record)
+                    if inserted.rowcount == 0:
+                        if snapshot.answer.revision_hash != request.revision_hash:
+                            connection.rollback()
+                            return DurableAnswerRevisionConflict()
+                        if snapshot.answer.answer_bytes != request.answer_bytes:
+                            connection.rollback()
+                            return DurableAnswerBytesConflict()
+                        if snapshot.answer != answer:
+                            connection.rollback()
+                            return DurableStateCorrupt()
+                        connection.commit()
+                        return DurableAnswerExisting(snapshot)
+                    try:
+                        node = graph.node(request.node_id)
+                    except KeyError:
+                        connection.rollback()
+                        return DurableAnswerNodeMissing()
+                    if (
+                        run.current_node_id != request.node_id
+                        or run.state is not RunState.WAITING_INPUT
+                        or not isinstance(node, WaitNode)
+                        or node.answer_type != "integer"
+                    ):
+                        connection.rollback()
+                        return DurableAnswerStateConflict()
                     options: EnqueueOptions = {
                         "workflow_name": ANSWER_WORKFLOW_NAME,
                         "queue_name": QUEUE_NAME,
@@ -637,11 +730,18 @@ class DbosWaitAnswerer:
                         answer.revision_hash.value,
                         answer.node_id,
                     )
-                    snapshot = WaitAnswerSnapshot(answer, WaitAnswerState.PENDING, 0)
                     connection.commit()
-                    return snapshot
-                except BaseException:
+                    return DurableAnswerCreated(snapshot)
+                except (OperationalError, PoolTimeoutError):
                     connection.rollback()
-                    raise
+                    return DurableWriteUnavailable()
+                except (ValueError, RuntimeError, DatabaseError):
+                    connection.rollback()
+                    return DurableStateCorrupt()
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
         finally:
-            client.destroy()
+            if client is not None:
+                client.destroy()
