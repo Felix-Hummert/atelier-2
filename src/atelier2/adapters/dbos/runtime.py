@@ -190,7 +190,7 @@ def _open_binding(
         datasource = SQLAlchemyDatasource.create(
             sqlite_url(settings.database_path), engine=engine
         )
-        register_durable_run_workflow(datasource, adapter)
+        register_durable_run_workflow(datasource, adapter, adapter_binding)
     except Exception:
         try:
             if adapter is not None:

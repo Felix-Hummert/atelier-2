@@ -13,12 +13,17 @@ import sqlalchemy as sa
 from dbos import SQLAlchemyDatasource
 from sqlalchemy.engine import Engine
 
-from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer
+from atelier2.adapters.dbos.advancer import (
+    DbosDurableRunAdvancer,
+    graph_action_intent,
+)
+from atelier2.adapters.dbos.run_store import commit_agent_completed
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeBindingConflict,
     DbosRuntimeLeaseClosed,
     DbosRuntimeSettings,
+    canonical_write_transaction,
 )
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.starter import (
@@ -30,13 +35,10 @@ from atelier2.application.advance_run import advance_run
 from atelier2.application.start_run import start_run
 from atelier2.contracts.effects import (
     AdapterRevision,
-    CanonicalRequest,
     EffectAdapterBinding,
-    EffectBinding,
     EffectDestination,
     EffectIntent,
     EffectReadback,
-    LogicalEffectKey,
     PerformedEffect,
 )
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
@@ -45,6 +47,14 @@ from atelier2.ports.effects import EffectAdapter
 WORKFLOW_TIMEOUT_SECONDS = 5.0
 WORKFLOW_POLL_SECONDS = 0.025
 BARRIER_TIMEOUT_SECONDS = 5.0
+WORKFLOW_DOCUMENT = b"""format_version: 1
+start: agent
+nodes:
+  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: waiting, type: wait, answer_type: integer, next: final}
+  - {id: action, type: action, next: waiting}
+  - {id: agent, type: agent, job: job-17, output: request, next: action}
+"""
 
 AcquireLease = Callable[[DbosRuntimeSettings], DbosRuntime]
 
@@ -92,7 +102,7 @@ def canonical_database(root: Path) -> Path:
 
 
 def start_request() -> StartRunRequest:
-    return StartRunRequest(RunId("run-1"), WorkflowRevision(b"workflow-v1"))
+    return StartRunRequest(RunId("run-1"), WorkflowRevision(WORKFLOW_DOCUMENT))
 
 
 def starter_for(runtime: DbosRuntime) -> DbosDurableRunStarter:
@@ -125,12 +135,21 @@ def wait_until_bootstrap_succeeds(engine: Engine, run_id: RunId) -> str:
     return status
 
 
+def wait_until_run_state(engine: Engine, run_id: RunId, expected: RunState) -> RunState:
+    deadline = time.monotonic() + WORKFLOW_TIMEOUT_SECONDS
+    state = run_state(engine, run_id)
+    while state is not expected and time.monotonic() < deadline:
+        time.sleep(WORKFLOW_POLL_SECONDS)
+        state = run_state(engine, run_id)
+    return state
+
+
 def execute_one_bootstrap(runtime: DbosRuntime) -> RunState:
     runtime.initialize_storage()
     started = start_run(start_request(), starter_for(runtime))
     runtime.launch()
     assert wait_until_bootstrap_succeeds(runtime.engine, started.run_id) == "SUCCESS"
-    return run_state(runtime.engine, started.run_id)
+    return wait_until_run_state(runtime.engine, started.run_id, RunState.WAITING_INPUT)
 
 
 @pytest.fixture
@@ -199,7 +218,7 @@ def test_an_incompatible_second_binding_is_refused_and_the_active_one_keeps_work
     with pytest.raises(DbosRuntimeBindingConflict):
         acquire(conflicting(tmp_path))
 
-    assert execute_one_bootstrap(active) is RunState.STARTED
+    assert execute_one_bootstrap(active) is RunState.WAITING_INPUT
 
 
 def test_a_refused_binding_opens_no_second_canonical_store(
@@ -227,7 +246,10 @@ def test_closing_one_of_two_identical_leases_keeps_the_executor_running(
 
     started = start_run(start_request(), starter_for(second))
     assert wait_until_bootstrap_succeeds(second.engine, started.run_id) == "SUCCESS"
-    assert run_state(second.engine, started.run_id) is RunState.STARTED
+    assert (
+        wait_until_run_state(second.engine, started.run_id, RunState.WAITING_INPUT)
+        is RunState.WAITING_INPUT
+    )
 
 
 def test_initializing_storage_from_a_second_lease_keeps_the_executor_running(
@@ -243,7 +265,10 @@ def test_initializing_storage_from_a_second_lease_keeps_the_executor_running(
 
     started = start_run(start_request(), starter_for(first))
     assert wait_until_bootstrap_succeeds(first.engine, started.run_id) == "SUCCESS"
-    assert run_state(first.engine, started.run_id) is RunState.STARTED
+    assert (
+        wait_until_run_state(first.engine, started.run_id, RunState.WAITING_INPUT)
+        is RunState.WAITING_INPUT
+    )
 
 
 def test_the_last_close_releases_the_binding_for_a_different_one(
@@ -257,7 +282,7 @@ def test_the_last_close_releases_the_binding_for_a_different_one(
 
     rebound = acquire(runtime_settings(tmp_path / "second.sqlite", "executor-B"))
 
-    assert execute_one_bootstrap(rebound) is RunState.STARTED
+    assert execute_one_bootstrap(rebound) is RunState.WAITING_INPUT
 
 
 def test_closing_one_lease_twice_does_not_release_the_other(
@@ -316,7 +341,7 @@ def test_concurrent_closes_of_one_lease_release_it_exactly_once(
 
     with pytest.raises(DbosRuntimeBindingConflict):
         acquire(runtime_settings(tmp_path / "second.sqlite"))
-    assert execute_one_bootstrap(held) is RunState.STARTED
+    assert execute_one_bootstrap(held) is RunState.WAITING_INPUT
 
 
 def test_concurrent_identical_acquisitions_hold_one_counted_binding(
@@ -438,17 +463,20 @@ def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
     runtime = DbosRuntime(settings, original_factory)
     runtime.initialize_storage()
     started = start_run(start_request(), starter_for(runtime))
-    intent = EffectIntent(
-        EffectBinding(
-            LogicalEffectKey("run-1/action-1"),
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_agent_completed(
+            connection,
             started.run_id,
             started.revision_hash,
-            original_factory.binding.adapter_revision,
-            original_factory.binding.destination,
-            original_factory.binding.operational_identity,
-        ),
-        CanonicalRequest(b"request"),
-    )
+            "agent",
+            b"request",
+        )
+        intent = graph_action_intent(
+            connection,
+            started.run_id,
+            started.revision_hash,
+            runtime.effect_adapter_binding,
+        )
     advance_run(
         intent,
         DbosDurableRunAdvancer(

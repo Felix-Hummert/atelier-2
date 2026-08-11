@@ -2,10 +2,33 @@ from __future__ import annotations
 
 import hashlib
 import re
+import struct
 from dataclasses import dataclass
 from typing import Self
 
 SHA256_HEX_DIGEST = re.compile(r"[0-9a-f]{64}")
+_FRAME_PREFIX = b"ATELIER2\x00"
+
+
+def frame(domain: str, *fields: bytes) -> bytes:
+    """Encode one unambiguous Atelier identity preimage.
+
+    Domain names are UTF-8 and length-prefixed with an unsigned 32-bit integer;
+    each exact field is length-prefixed with an unsigned 64-bit integer.
+    """
+
+    domain_bytes = domain.encode("utf-8")
+    if len(domain_bytes) > 0xFFFFFFFF:
+        raise ValueError("frame domain exceeds uint32 length")
+    encoded = bytearray(_FRAME_PREFIX)
+    encoded.extend(struct.pack(">I", len(domain_bytes)))
+    encoded.extend(domain_bytes)
+    for field in fields:
+        if len(field) > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("frame field exceeds uint64 length")
+        encoded.extend(struct.pack(">Q", len(field)))
+        encoded.extend(field)
+    return bytes(encoded)
 
 
 @dataclass(frozen=True)

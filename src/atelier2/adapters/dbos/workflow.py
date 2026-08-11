@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, TypedDict, cast
 
-import sqlalchemy as sa
-from dbos import DBOS, SQLAlchemyDatasource
+from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
+from atelier2.adapters.dbos.continuation import (
+    ACTION_CONTINUATION_WORKFLOW_NAME,
+    checkpoint_confirmed_action,
+    schedule_confirmed_action_continuation,
+)
 from atelier2.adapters.dbos.effect_store import (
     EncodedEffectResolution,
     commit_resolution,
@@ -12,23 +16,54 @@ from atelier2.adapters.dbos.effect_store import (
     observe_reconcile_command,
     resolve_observation,
 )
-from atelier2.adapters.dbos.schema import runs, workflow_revisions
-from atelier2.contracts.effects import ReconcileCommandId
+from atelier2.adapters.dbos.run_store import (
+    RunTransitionConflict,
+    commit_agent_completed,
+    commit_subworkflow_completed,
+    commit_wait_answered,
+    commit_waiting_input,
+    load_graph,
+    load_run,
+    load_wait_answer,
+)
+from atelier2.contracts.effects import (
+    EffectAdapterBinding,
+    LogicalEffectKey,
+    ReconcileCommandId,
+)
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    node_workflow_id_for,
+    subworkflow_workflow_id_for,
+)
 from atelier2.contracts.runs import (
-    RevisionHashCollision,
     RunId,
     RunState,
-    WorkflowRevision,
     WorkflowRevisionHash,
+)
+from atelier2.contracts.workflows import (
+    ActionNode,
+    AgentNode,
+    SubworkflowNode,
+    WaitNode,
 )
 from atelier2.ports.effects import EffectAdapter
 
 WORKFLOW_NAME = "atelier2_durable_run"
+NODE_WORKFLOW_NAME = "atelier2_graph_node"
 EFFECT_WORKFLOW_NAME = "atelier2_effect"
 RECONCILE_WORKFLOW_NAME = "atelier2_reconcile_effect"
+ANSWER_WORKFLOW_NAME = "atelier2_wait_answer"
+SUBWORKFLOW_WORKFLOW_NAME = "atelier2_add_subworkflow"
 QUEUE_NAME = "atelier2-durable-runs"
 
 BOOTSTRAP_STEP_NAME = "bootstrap-run-binding"
+NODE_BINDING_STEP_NAME = "node-binding/0"
+AGENT_COMMIT_STEP_NAME = "agent-commit/1"
+ACTION_PREPARE_STEP_NAME = "action-prepare/1"
+WAIT_COMMIT_STEP_NAME = "wait-commit/1"
+SUBWORKFLOW_COMMIT_STEP_NAME = "subworkflow-commit/1"
+ANSWER_COMMIT_STEP_NAME = "answer-commit/0"
 OBSERVE_STEP_NAME = "observe/0"
 RESOLVE_STEP_NAME = "resolve/1"
 COMMIT_STEP_NAME = "commit/2"
@@ -38,36 +73,54 @@ class RunBindingConflict(RuntimeError):
     pass
 
 
+class EncodedAgentBinding(TypedDict):
+    type: Literal["agent"]
+    output: str
+
+
+class EncodedActionBinding(TypedDict):
+    type: Literal["action"]
+
+
+class EncodedWaitBinding(TypedDict):
+    type: Literal["wait"]
+
+
+class EncodedSubworkflowBinding(TypedDict):
+    type: Literal["subworkflow"]
+    left: int
+    right: int
+
+
+type EncodedNodeBinding = (
+    EncodedAgentBinding
+    | EncodedActionBinding
+    | EncodedWaitBinding
+    | EncodedSubworkflowBinding
+)
+
+
 def bootstrap_run_binding(
     datasource: SQLAlchemyDatasource,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
-) -> RunState:
+) -> str:
     def load_binding() -> str:
-        record = (
-            datasource.sql_session()
-            .execute(
-                sa.select(
-                    runs.c.revision_hash, runs.c.state, workflow_revisions.c.document
-                )
-                .join(
-                    workflow_revisions,
-                    workflow_revisions.c.revision_hash == runs.c.revision_hash,
-                )
-                .where(runs.c.run_id == run_id.value)
-            )
-            .one_or_none()
-        )
-        if record is None or str(record.revision_hash) != revision_hash.value:
+        session = datasource.sql_session()
+        run = load_run(session, run_id)
+        if run.revision_hash != revision_hash:
             raise RunBindingConflict("bootstrap requires its exact durable run binding")
-        revision = WorkflowRevision(bytes(record.document))
-        if revision.revision_hash != revision_hash:
-            raise RevisionHashCollision(
-                "durable workflow revision bytes disagree with their run binding"
-            )
-        return RunState(str(record.state)).value
+        graph = load_graph(session, revision_hash)
+        if (
+            run.state is not RunState.STARTED
+            or run.current_node_id != graph.start
+            or run.state_version != 0
+            or run.last_event_sequence != 0
+        ):
+            raise RunBindingConflict("bootstrap requires its exact new durable run")
+        return graph.start
 
-    return RunState(datasource.run_tx_step({"name": BOOTSTRAP_STEP_NAME}, load_binding))
+    return str(datasource.run_tx_step({"name": BOOTSTRAP_STEP_NAME}, load_binding))
 
 
 def _run_effect_step(
@@ -82,14 +135,145 @@ def _run_effect_step(
     return datasource.run_tx_step({"name": name}, execute)
 
 
+def _node_binding(
+    datasource: SQLAlchemyDatasource,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+) -> EncodedNodeBinding:
+    def load() -> EncodedNodeBinding:
+        session = datasource.sql_session()
+        run = load_run(session, run_id)
+        if (
+            run.revision_hash != revision_hash
+            or run.current_node_id != node_id
+            or run.state is not RunState.STARTED
+        ):
+            raise RunTransitionConflict(
+                "node workflow does not own current STARTED node"
+            )
+        node = load_graph(session, revision_hash).node(node_id)
+        if isinstance(node, AgentNode):
+            return {"type": "agent", "output": node.output}
+        if isinstance(node, ActionNode):
+            return {"type": "action"}
+        if isinstance(node, WaitNode):
+            return {"type": "wait"}
+        if isinstance(node, SubworkflowNode):
+            return {
+                "type": "subworkflow",
+                "left": node.operands[0],
+                "right": node.operands[1],
+            }
+        raise AssertionError("closed WorkflowNode union was not exhaustive")
+
+    return cast(
+        EncodedNodeBinding,
+        datasource.run_tx_step({"name": NODE_BINDING_STEP_NAME}, load),
+    )
+
+
 def register_durable_run_workflow(
-    datasource: SQLAlchemyDatasource, adapter: EffectAdapter
+    datasource: SQLAlchemyDatasource,
+    adapter: EffectAdapter,
+    effect_binding: EffectAdapterBinding,
 ) -> None:
+    def start_node(
+        run_id: RunId, revision_hash: WorkflowRevisionHash, node_id: str
+    ) -> None:
+        execution_id = NodeExecutionId.for_node(run_id, revision_hash, node_id)
+        with SetWorkflowID(node_workflow_id_for(execution_id)):
+            DBOS.start_workflow(
+                durable_node, run_id.value, revision_hash.value, node_id
+            )
+
     @DBOS.workflow(name=WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_run(run_id: str, revision_hash: str) -> str:
-        return bootstrap_run_binding(
-            datasource, RunId(run_id), WorkflowRevisionHash(revision_hash)
-        ).value
+        typed_run_id = RunId(run_id)
+        typed_revision = WorkflowRevisionHash(revision_hash)
+        start = bootstrap_run_binding(datasource, typed_run_id, typed_revision)
+        start_node(typed_run_id, typed_revision, start)
+        return RunState.STARTED.value
+
+    @DBOS.workflow(name=SUBWORKFLOW_WORKFLOW_NAME, max_recovery_attempts=None)
+    def durable_add(left: int, right: int) -> int:
+        return left + right
+
+    @DBOS.workflow(name=NODE_WORKFLOW_NAME, max_recovery_attempts=None)
+    def durable_node(run_id: str, revision_hash: str, node_id: str) -> str:
+        typed_run_id = RunId(run_id)
+        typed_revision = WorkflowRevisionHash(revision_hash)
+        binding = _node_binding(datasource, typed_run_id, typed_revision, node_id)
+        if binding["type"] == "agent":
+            successor = datasource.run_tx_step(
+                {"name": AGENT_COMMIT_STEP_NAME},
+                lambda: (
+                    commit_agent_completed(
+                        datasource.sql_session(),
+                        typed_run_id,
+                        typed_revision,
+                        node_id,
+                        binding["output"].encode("utf-8"),
+                    ).current_node_id
+                ),
+            )
+            start_node(typed_run_id, typed_revision, str(successor))
+            return RunState.STARTED.value
+        if binding["type"] == "action":
+            from atelier2.adapters.dbos.advancer import (
+                effect_workflow_id_for,
+                prepare_graph_action,
+            )
+
+            logical_key = str(
+                datasource.run_tx_step(
+                    {"name": ACTION_PREPARE_STEP_NAME},
+                    lambda: (
+                        prepare_graph_action(
+                            datasource.sql_session(),
+                            typed_run_id,
+                            typed_revision,
+                            effect_binding,
+                        ).intent.binding.logical_key.value
+                    ),
+                )
+            )
+            with SetWorkflowID(effect_workflow_id_for(LogicalEffectKey(logical_key))):
+                DBOS.start_workflow(durable_effect, logical_key, revision_hash)
+            return RunState.STARTED.value
+        if binding["type"] == "wait":
+            datasource.run_tx_step(
+                {"name": WAIT_COMMIT_STEP_NAME},
+                lambda: (
+                    commit_waiting_input(
+                        datasource.sql_session(), typed_run_id, typed_revision, node_id
+                    ).state.value
+                ),
+            )
+            return RunState.WAITING_INPUT.value
+        if binding["type"] == "subworkflow":
+            execution_id = NodeExecutionId.for_node(
+                typed_run_id, typed_revision, node_id
+            )
+            with SetWorkflowID(subworkflow_workflow_id_for(execution_id)):
+                handle = DBOS.start_workflow(
+                    durable_add, int(binding["left"]), int(binding["right"])
+                )
+            result = handle.get_result()
+            datasource.run_tx_step(
+                {"name": SUBWORKFLOW_COMMIT_STEP_NAME},
+                lambda: (
+                    commit_subworkflow_completed(
+                        datasource.sql_session(),
+                        typed_run_id,
+                        typed_revision,
+                        node_id,
+                        result,
+                    ).state.value
+                ),
+            )
+            return RunState.COMPLETED.value
+        raise AssertionError("closed node binding union was not exhaustive")
 
     @DBOS.workflow(name=EFFECT_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_effect(logical_key: str, revision_hash: str) -> str:
@@ -110,14 +294,23 @@ def register_durable_run_workflow(
             revision_hash,
             observed,
         )
-        return datasource.run_tx_step(
-            {"name": COMMIT_STEP_NAME},
-            lambda: (
-                commit_resolution(
-                    datasource.sql_session(), logical_key, revision_hash, resolved
-                ).value
-            ),
+        state = RunState(
+            datasource.run_tx_step(
+                {"name": COMMIT_STEP_NAME},
+                lambda: (
+                    commit_resolution(
+                        datasource.sql_session(), logical_key, revision_hash, resolved
+                    ).value
+                ),
+            )
         )
+        if state is RunState.STARTED:
+            schedule_confirmed_action_continuation(
+                durable_action_continuation,
+                LogicalEffectKey(logical_key),
+                WorkflowRevisionHash(revision_hash),
+            )
+        return state.value
 
     @DBOS.workflow(name=RECONCILE_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_reconciliation(command_id: str, revision_hash: str) -> str:
@@ -141,15 +334,53 @@ def register_durable_run_workflow(
             observed,
             command if observed.get("operator_authorized") == command_id else None,
         )
-        return datasource.run_tx_step(
-            {"name": COMMIT_STEP_NAME},
-            lambda: (
-                commit_resolution(
-                    datasource.sql_session(),
-                    logical_key,
-                    revision_hash,
-                    resolved,
-                    command,
-                ).value
-            ),
+        state = RunState(
+            datasource.run_tx_step(
+                {"name": COMMIT_STEP_NAME},
+                lambda: (
+                    commit_resolution(
+                        datasource.sql_session(),
+                        logical_key,
+                        revision_hash,
+                        resolved,
+                        command,
+                    ).value
+                ),
+            )
         )
+        if state is RunState.STARTED:
+            schedule_confirmed_action_continuation(
+                durable_action_continuation,
+                LogicalEffectKey(logical_key),
+                WorkflowRevisionHash(revision_hash),
+            )
+        return state.value
+
+    @DBOS.workflow(name=ACTION_CONTINUATION_WORKFLOW_NAME, max_recovery_attempts=None)
+    def durable_action_continuation(logical_key: str, revision_hash: str) -> str:
+        typed_key = LogicalEffectKey(logical_key)
+        typed_revision = WorkflowRevisionHash(revision_hash)
+        run_id, successor = checkpoint_confirmed_action(
+            datasource, typed_key, typed_revision
+        )
+        start_node(RunId(run_id), typed_revision, successor)
+        return RunState.STARTED.value
+
+    @DBOS.workflow(name=ANSWER_WORKFLOW_NAME, max_recovery_attempts=None)
+    def durable_answer(run_id: str, revision_hash: str, node_id: str) -> str:
+        typed_run_id = RunId(run_id)
+        typed_revision = WorkflowRevisionHash(revision_hash)
+
+        def apply() -> str:
+            answer = load_wait_answer(
+                datasource.sql_session(), typed_run_id, typed_revision, node_id
+            ).answer
+            return commit_wait_answered(
+                datasource.sql_session(), answer
+            ).current_node_id
+
+        successor = str(
+            datasource.run_tx_step({"name": ANSWER_COMMIT_STEP_NAME}, apply)
+        )
+        start_node(typed_run_id, typed_revision, successor)
+        return RunState.STARTED.value

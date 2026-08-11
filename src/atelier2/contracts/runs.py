@@ -41,6 +41,7 @@ class RunId:
 class RunState(StrEnum):
     STARTED = "STARTED"
     WAITING_RECONCILIATION = "WAITING_RECONCILIATION"
+    WAITING_INPUT = "WAITING_INPUT"
     COMPLETED = "COMPLETED"
 
 
@@ -49,6 +50,18 @@ class Run:
     run_id: RunId
     revision_hash: WorkflowRevisionHash
     state: RunState
+    current_node_id: str
+    state_version: int
+    last_event_sequence: int
+    terminal_hash: Sha256Hash | None = None
+
+    def __post_init__(self) -> None:
+        if self.current_node_id == "":
+            raise ValueError("current_node_id must be nonempty")
+        if self.state_version < 0 or self.last_event_sequence < 0:
+            raise ValueError("run versions and cursors must be nonnegative")
+        if (self.state is RunState.COMPLETED) != (self.terminal_hash is not None):
+            raise ValueError("only a completed run has a terminal hash")
 
 
 @dataclass(frozen=True)

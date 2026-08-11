@@ -124,7 +124,7 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
-def test_new_database_has_the_version_two_effect_ledger(tmp_path: Path) -> None:
+def test_new_database_has_the_version_three_runtime_ledger(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
 
@@ -133,7 +133,7 @@ def test_new_database_has_the_version_two_effect_ledger(tmp_path: Path) -> None:
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
-            == 2
+            == 3
         )
         assert set(sa.inspect(connection).get_table_names()) >= {
             effect_intents.name,
@@ -146,7 +146,11 @@ def test_new_database_has_the_version_two_effect_ledger(tmp_path: Path) -> None:
             "run_id",
             "bootstrap_workflow_id",
             "revision_hash",
+            "current_node_id",
             "state",
+            "state_version",
+            "last_event_sequence",
+            "terminal_hash",
         }
         assert "dbos_workflow_id" not in {
             column["name"] for column in sa.inspect(connection).get_columns("runs")
@@ -176,7 +180,11 @@ def ledger_engine(tmp_path: Path) -> Iterator[Engine]:
                 run_id="run-1",
                 bootstrap_workflow_id="workflow-1",
                 revision_hash=revision_hash,
+                current_node_id="agent",
                 state="STARTED",
+                state_version=0,
+                last_event_sequence=0,
+                terminal_hash=None,
             )
         )
     try:
@@ -397,6 +405,7 @@ def test_effect_ledger_rejects_invalid_field_shapes(
     [
         ("STARTED", True),
         ("WAITING_RECONCILIATION", True),
+        ("WAITING_INPUT", True),
         ("COMPLETED", True),
         ("RECONCILING", False),
         ("PREPARED", False),
@@ -411,7 +420,11 @@ def test_run_state_tokens_are_exact(
         run_id="candidate-run",
         bootstrap_workflow_id="candidate-workflow",
         revision_hash=hashlib.sha256(b"workflow-v1").hexdigest(),
+        current_node_id=("final" if state == "COMPLETED" else "node"),
         state=state,
+        state_version=0,
+        last_event_sequence=0,
+        terminal_hash=("0" * 64 if state == "COMPLETED" else None),
     )
     if accepted:
         with ledger_engine.begin() as connection:
@@ -649,7 +662,11 @@ def test_every_effect_intent_binding_column_is_immutable(
                 run_id="run-2",
                 bootstrap_workflow_id="workflow-2",
                 revision_hash=alternate_revision_hash,
+                current_node_id="agent",
                 state="STARTED",
+                state_version=0,
+                last_event_sequence=0,
+                terminal_hash=None,
             )
         )
         _add_intent(connection)

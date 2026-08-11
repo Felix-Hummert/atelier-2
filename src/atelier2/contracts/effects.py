@@ -141,6 +141,13 @@ class EffectIntentStateVersion:
             )
 
 
+EFFECT_INTENT_VERSION_INITIAL: Final = EffectIntentStateVersion(0)
+EFFECT_INTENT_VERSION_WAITING: Final = EffectIntentStateVersion(1)
+EFFECT_INTENT_VERSION_RECONCILING: Final = EffectIntentStateVersion(2)
+EFFECT_INTENT_VERSION_CONFIRMED_INITIAL: Final = EffectIntentStateVersion(1)
+EFFECT_INTENT_VERSION_CONFIRMED_RECONCILED: Final = EffectIntentStateVersion(3)
+
+
 class EffectIntentState(StrEnum):
     PREPARED = "PREPARED"
     WAITING_RECONCILIATION = "WAITING_RECONCILIATION"

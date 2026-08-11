@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 metadata = sa.MetaData()
 
@@ -21,6 +23,9 @@ workflow_revisions = sa.Table(
     metadata,
     sa.Column("revision_hash", sa.Text, primary_key=True),
     sa.Column("document", sa.LargeBinary, nullable=False),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
 )
 runs = sa.Table(
     "runs",
@@ -33,8 +38,24 @@ runs = sa.Table(
         sa.ForeignKey("workflow_revisions.revision_hash"),
         nullable=False,
     ),
+    sa.Column("current_node_id", sa.Text, nullable=False),
     sa.Column("state", sa.Text, nullable=False),
-    sa.CheckConstraint("state IN ('STARTED', 'WAITING_RECONCILIATION', 'COMPLETED')"),
+    sa.Column("state_version", sa.Integer, nullable=False),
+    sa.Column("last_event_sequence", sa.Integer, nullable=False),
+    sa.Column("terminal_hash", sa.Text, nullable=True),
+    sa.UniqueConstraint("run_id", "revision_hash"),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint("length(current_node_id) > 0"),
+    sa.CheckConstraint(
+        "state IN ('STARTED', 'WAITING_RECONCILIATION', 'WAITING_INPUT', 'COMPLETED')"
+    ),
+    sa.CheckConstraint("state_version >= 0"),
+    sa.CheckConstraint("last_event_sequence >= 0"),
+    sa.CheckConstraint(
+        "(state = 'COMPLETED' AND terminal_hash IS NOT NULL "
+        "AND length(terminal_hash) = 64 AND terminal_hash NOT GLOB '*[^0-9a-f]*') "
+        "OR (state <> 'COMPLETED' AND terminal_hash IS NULL)"
+    ),
 )
 effect_intents = sa.Table(
     "effect_intents",
@@ -60,10 +81,20 @@ effect_intents = sa.Table(
         sa.ForeignKey("reconcile_commands.command_id", ondelete="RESTRICT"),
         nullable=True,
     ),
+    sa.UniqueConstraint("logical_key", "run_id", "workflow_revision_hash"),
+    sa.ForeignKeyConstraint(
+        ("run_id", "workflow_revision_hash"),
+        ("runs.run_id", "runs.revision_hash"),
+    ),
     sa.CheckConstraint("length(logical_key) > 0"),
     sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint("length(request_hash) > 0"),
-    sa.CheckConstraint("length(workflow_revision_hash) > 0"),
+    sa.CheckConstraint(
+        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(workflow_revision_hash) = 64 "
+        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
     sa.CheckConstraint("length(adapter_operational_identity) > 0"),
@@ -107,7 +138,8 @@ reconcile_commands = sa.Table(
         "(determination = 'FOUND' "
         "AND found_effect_id IS NOT NULL AND length(found_effect_id) > 0 "
         "AND found_result IS NOT NULL "
-        "AND found_result_hash IS NOT NULL AND length(found_result_hash) > 0) "
+        "AND found_result_hash IS NOT NULL AND length(found_result_hash) = 64 "
+        "AND found_result_hash NOT GLOB '*[^0-9a-f]*') "
         "OR (determination = 'AUTHORITATIVE_NOT_FOUND' "
         "AND found_effect_id IS NULL "
         "AND found_result IS NULL "
@@ -146,15 +178,33 @@ effect_receipts = sa.Table(
         sa.ForeignKey("reconcile_commands.command_id"),
         nullable=True,
     ),
+    sa.UniqueConstraint(
+        "logical_key", "run_id", "workflow_revision_hash", "result_hash"
+    ),
+    sa.ForeignKeyConstraint(
+        ("logical_key", "run_id", "workflow_revision_hash"),
+        (
+            "effect_intents.logical_key",
+            "effect_intents.run_id",
+            "effect_intents.workflow_revision_hash",
+        ),
+    ),
     sa.CheckConstraint("length(logical_key) > 0"),
     sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint("length(request_hash) > 0"),
-    sa.CheckConstraint("length(workflow_revision_hash) > 0"),
+    sa.CheckConstraint(
+        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(workflow_revision_hash) = 64 "
+        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
     sa.CheckConstraint("length(adapter_operational_identity) > 0"),
     sa.CheckConstraint("length(effect_id) > 0"),
-    sa.CheckConstraint("length(result_hash) > 0"),
+    sa.CheckConstraint(
+        "length(result_hash) = 64 AND result_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
     sa.CheckConstraint(
         "confirmation_source IN "
         "('ADAPTER_READBACK', 'ADAPTER_EXECUTION', "
@@ -169,74 +219,198 @@ effect_receipts = sa.Table(
         "AND length(reconcile_command_id) > 0)"
     ),
 )
-
-_IMMUTABLE_REVISION_TRIGGERS = (
-    """
-    CREATE TRIGGER IF NOT EXISTS workflow_revisions_no_update
-    BEFORE UPDATE ON workflow_revisions
-    BEGIN
-      SELECT RAISE(ABORT, 'workflow revisions are immutable');
-    END
-    """,
-    """
-    CREATE TRIGGER IF NOT EXISTS workflow_revisions_no_delete
-    BEFORE DELETE ON workflow_revisions
-    BEGIN
-      SELECT RAISE(ABORT, 'workflow revisions are immutable');
-    END
-    """,
+run_events = sa.Table(
+    "run_events",
+    metadata,
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("revision_hash", sa.Text, nullable=False),
+    sa.Column("event_sequence", sa.Integer, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
+    sa.Column("node_execution_id", sa.Text, nullable=False),
+    sa.Column("event_kind", sa.Text, nullable=False),
+    sa.Column("payload", sa.LargeBinary, nullable=False),
+    sa.Column("payload_hash", sa.Text, nullable=False),
+    sa.Column("receipt_logical_key", sa.Text, nullable=True),
+    sa.Column("receipt_result_hash", sa.Text, nullable=True),
+    sa.Column("event_hash", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("run_id", "event_sequence"),
+    sa.UniqueConstraint("run_id", "revision_hash", "node_id", "event_kind"),
+    sa.UniqueConstraint("node_execution_id", "event_kind"),
+    sa.ForeignKeyConstraint(
+        ("run_id", "revision_hash"), ("runs.run_id", "runs.revision_hash")
+    ),
+    sa.ForeignKeyConstraint(
+        (
+            "receipt_logical_key",
+            "run_id",
+            "revision_hash",
+            "receipt_result_hash",
+        ),
+        (
+            "effect_receipts.logical_key",
+            "effect_receipts.run_id",
+            "effect_receipts.workflow_revision_hash",
+            "effect_receipts.result_hash",
+        ),
+    ),
+    sa.CheckConstraint("event_sequence > 0"),
+    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "event_kind IN ('AGENT_COMPLETED', 'ACTION_RECONCILIATION_REQUIRED', "
+        "'ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED', 'WAITING_INPUT', "
+        "'WAIT_ANSWERED', 'SUBWORKFLOW_COMPLETED')"
+    ),
+    sa.CheckConstraint(
+        "length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(event_hash) = 64 AND event_hash NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(
+        "(event_kind IN ('ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED') "
+        "AND receipt_logical_key IS NOT NULL "
+        "AND length(receipt_logical_key) > 0 "
+        "AND receipt_result_hash IS NOT NULL "
+        "AND length(receipt_result_hash) = 64 "
+        "AND receipt_result_hash NOT GLOB '*[^0-9a-f]*' "
+        "AND receipt_result_hash = payload_hash) "
+        "OR (event_kind NOT IN "
+        "('ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED') "
+        "AND receipt_logical_key IS NULL AND receipt_result_hash IS NULL)"
+    ),
+)
+wait_answers = sa.Table(
+    "wait_answers",
+    metadata,
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("revision_hash", sa.Text, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
+    sa.Column("node_execution_id", sa.Text, nullable=False, unique=True),
+    sa.Column("answer_bytes", sa.LargeBinary, nullable=False),
+    sa.Column("answer_hash", sa.Text, nullable=False),
+    sa.Column("answer_workflow_id", sa.Text, nullable=False, unique=True),
+    sa.Column("state", sa.Text, nullable=False),
+    sa.Column("state_version", sa.Integer, nullable=False),
+    sa.PrimaryKeyConstraint("run_id", "node_id"),
+    sa.ForeignKeyConstraint(
+        ("run_id", "revision_hash"), ("runs.run_id", "runs.revision_hash")
+    ),
+    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(answer_hash) = 64 AND answer_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(answer_workflow_id) > 0"),
+    sa.CheckConstraint("state IN ('PENDING', 'APPLIED')"),
+    sa.CheckConstraint("state_version IN (0, 1)"),
+    sa.CheckConstraint(
+        "(state = 'PENDING' AND state_version = 0) "
+        "OR (state = 'APPLIED' AND state_version = 1)"
+    ),
 )
 
-_EFFECT_LEDGER_TRIGGERS = (
-    """
-    CREATE TRIGGER IF NOT EXISTS effect_intents_binding_no_update
-    BEFORE UPDATE OF logical_key, run_id, canonical_request, request_hash,
-                     workflow_revision_hash, adapter_revision, destination_identity,
-                     adapter_operational_identity
-    ON effect_intents
-    BEGIN
-      SELECT RAISE(ABORT, 'effect intent bindings are immutable');
-    END
+PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
+
+_PRODUCT_TRIGGERS = {
+    "workflow_revisions_no_update": """
+        CREATE TRIGGER workflow_revisions_no_update
+        BEFORE UPDATE ON workflow_revisions BEGIN
+          SELECT RAISE(ABORT, 'workflow revisions are immutable');
+        END
     """,
-    """
-    CREATE TRIGGER IF NOT EXISTS effect_intents_no_delete
-    BEFORE DELETE ON effect_intents
-    BEGIN
-      SELECT RAISE(ABORT, 'effect intents are immutable');
-    END
+    "workflow_revisions_no_delete": """
+        CREATE TRIGGER workflow_revisions_no_delete
+        BEFORE DELETE ON workflow_revisions BEGIN
+          SELECT RAISE(ABORT, 'workflow revisions are immutable');
+        END
     """,
-    """
-    CREATE TRIGGER IF NOT EXISTS effect_receipts_no_update
-    BEFORE UPDATE ON effect_receipts
-    BEGIN
-      SELECT RAISE(ABORT, 'effect receipts are immutable');
-    END
+    "runs_binding_no_update": """
+        CREATE TRIGGER runs_binding_no_update
+        BEFORE UPDATE OF run_id, bootstrap_workflow_id, revision_hash ON runs BEGIN
+          SELECT RAISE(ABORT, 'run bindings are immutable');
+        END
     """,
-    """
-    CREATE TRIGGER IF NOT EXISTS effect_receipts_no_delete
-    BEFORE DELETE ON effect_receipts
-    BEGIN
-      SELECT RAISE(ABORT, 'effect receipts are immutable');
-    END
+    "effect_intents_binding_no_update": """
+        CREATE TRIGGER effect_intents_binding_no_update
+        BEFORE UPDATE OF logical_key, run_id, canonical_request, request_hash,
+                         workflow_revision_hash, adapter_revision, destination_identity,
+                         adapter_operational_identity
+        ON effect_intents BEGIN
+          SELECT RAISE(ABORT, 'effect intent bindings are immutable');
+        END
     """,
-    """
-    CREATE TRIGGER IF NOT EXISTS reconcile_commands_payload_no_update
-    BEFORE UPDATE OF command_id, logical_key, expected_intent_version,
-                     determination, actor, evidence, found_effect_id,
-                     found_result, found_result_hash
-    ON reconcile_commands
-    BEGIN
-      SELECT RAISE(ABORT, 'reconcile command payloads are immutable');
-    END
+    "effect_intents_no_delete": """
+        CREATE TRIGGER effect_intents_no_delete
+        BEFORE DELETE ON effect_intents BEGIN
+          SELECT RAISE(ABORT, 'effect intents are immutable');
+        END
     """,
-    """
-    CREATE TRIGGER IF NOT EXISTS reconcile_commands_no_delete
-    BEFORE DELETE ON reconcile_commands
-    BEGIN
-      SELECT RAISE(ABORT, 'reconcile commands are immutable');
-    END
+    "effect_receipts_no_update": """
+        CREATE TRIGGER effect_receipts_no_update
+        BEFORE UPDATE ON effect_receipts BEGIN
+          SELECT RAISE(ABORT, 'effect receipts are immutable');
+        END
     """,
-)
+    "effect_receipts_no_delete": """
+        CREATE TRIGGER effect_receipts_no_delete
+        BEFORE DELETE ON effect_receipts BEGIN
+          SELECT RAISE(ABORT, 'effect receipts are immutable');
+        END
+    """,
+    "reconcile_commands_payload_no_update": """
+        CREATE TRIGGER reconcile_commands_payload_no_update
+        BEFORE UPDATE OF command_id, logical_key, expected_intent_version,
+                         determination, actor, evidence, found_effect_id,
+                         found_result, found_result_hash
+        ON reconcile_commands BEGIN
+          SELECT RAISE(ABORT, 'reconcile command payloads are immutable');
+        END
+    """,
+    "reconcile_commands_no_delete": """
+        CREATE TRIGGER reconcile_commands_no_delete
+        BEFORE DELETE ON reconcile_commands BEGIN
+          SELECT RAISE(ABORT, 'reconcile commands are immutable');
+        END
+    """,
+    "run_events_no_update": """
+        CREATE TRIGGER run_events_no_update
+        BEFORE UPDATE ON run_events BEGIN
+          SELECT RAISE(ABORT, 'run events are immutable');
+        END
+    """,
+    "run_events_no_delete": """
+        CREATE TRIGGER run_events_no_delete
+        BEFORE DELETE ON run_events BEGIN
+          SELECT RAISE(ABORT, 'run events are immutable');
+        END
+    """,
+    "wait_answers_payload_no_update": """
+        CREATE TRIGGER wait_answers_payload_no_update
+        BEFORE UPDATE OF run_id, revision_hash, node_id, node_execution_id,
+                         answer_bytes, answer_hash, answer_workflow_id
+        ON wait_answers BEGIN
+          SELECT RAISE(ABORT, 'wait answer bindings are immutable');
+        END
+    """,
+    "wait_answers_state_transition": """
+        CREATE TRIGGER wait_answers_state_transition
+        BEFORE UPDATE OF state, state_version ON wait_answers
+        WHEN NOT (OLD.state = 'PENDING' AND OLD.state_version = 0
+                  AND NEW.state = 'APPLIED' AND NEW.state_version = 1)
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid wait answer transition');
+        END
+    """,
+    "wait_answers_no_delete": """
+        CREATE TRIGGER wait_answers_no_delete
+        BEFORE DELETE ON wait_answers BEGIN
+          SELECT RAISE(ABORT, 'wait answers are immutable');
+        END
+    """,
+}
 
 
 class UnsupportedSchemaVersion(RuntimeError):
@@ -247,25 +421,174 @@ class UnsupportedSchemaVersion(RuntimeError):
 
 
 class MigrationRequired(UnsupportedSchemaVersion):
-    def __init__(self) -> None:
+    def __init__(self, actual: int = 2) -> None:
         RuntimeError.__init__(
             self,
-            "Atelier schema version 1 requires an explicit offline migration; "
+            f"Atelier schema version {actual} requires an explicit offline migration; "
             "runtime startup will not alter it",
         )
 
 
 def _require_supported_versions(versions: Sequence[int]) -> None:
     normalized = tuple(versions)
-    if normalized == (1,):
-        raise MigrationRequired
+    if normalized in {(1,), (2,)}:
+        raise MigrationRequired(normalized[0])
     if normalized != (SCHEMA_VERSION,):
         raise UnsupportedSchemaVersion(normalized)
 
 
-def _preflight_existing_schema(engine: Engine) -> None:
-    """Refuse incompatible disk state before configured connections can mutate it."""
+@dataclass(frozen=True)
+class _TableSchemaFingerprint:
+    name: str
+    create_sql: str
+    columns: tuple[tuple[object, ...], ...]
+    indexes: tuple[tuple[object, ...], ...]
+    foreign_keys: tuple[tuple[object, ...], ...]
 
+
+@dataclass(frozen=True)
+class _ProductSchemaFingerprint:
+    tables: tuple[_TableSchemaFingerprint, ...]
+    triggers: tuple[tuple[str, str, str], ...]
+
+
+def _quoted_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _normalized_sql(value: object) -> str:
+    if value is None:
+        return ""
+    source = str(value)
+    normalized: list[str] = []
+    pending_space = False
+    closing_quote: str | None = None
+    index = 0
+    while index < len(source):
+        character = source[index]
+        if closing_quote is not None:
+            normalized.append(character)
+            if character == closing_quote:
+                if index + 1 < len(source) and source[index + 1] == closing_quote:
+                    normalized.append(source[index + 1])
+                    index += 2
+                    continue
+                closing_quote = None
+            index += 1
+            continue
+        if character.isspace():
+            pending_space = bool(normalized)
+            index += 1
+            continue
+        if pending_space:
+            normalized.append(" ")
+            pending_space = False
+        normalized.append(character)
+        if character in {"'", '"', "`"}:
+            closing_quote = character
+        elif character == "[":
+            closing_quote = "]"
+        index += 1
+    return "".join(normalized)
+
+
+def _table_fingerprint(
+    connection: sqlite3.Connection, table_name: str
+) -> _TableSchemaFingerprint:
+    create_record = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
+    ).fetchone()
+    if create_record is None or create_record[0] is None:
+        raise UnsupportedSchemaVersion(f"malformed v3 product table {table_name}")
+    quoted_table = _quoted_identifier(table_name)
+    columns = tuple(
+        tuple(record)
+        for record in connection.execute(f"PRAGMA table_xinfo({quoted_table})")
+    )
+    indexes: list[tuple[object, ...]] = []
+    for record in connection.execute(f"PRAGMA index_list({quoted_table})"):
+        index_name = str(record[1])
+        quoted_index = _quoted_identifier(index_name)
+        index_sql_record = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+            (index_name,),
+        ).fetchone()
+        index_columns = tuple(
+            tuple(column)
+            for column in connection.execute(f"PRAGMA index_xinfo({quoted_index})")
+        )
+        indexes.append(
+            (
+                index_name,
+                int(record[2]),
+                str(record[3]),
+                int(record[4]),
+                _normalized_sql(
+                    None if index_sql_record is None else index_sql_record[0]
+                ),
+                index_columns,
+            )
+        )
+    foreign_keys = tuple(
+        tuple(record)
+        for record in connection.execute(f"PRAGMA foreign_key_list({quoted_table})")
+    )
+    return _TableSchemaFingerprint(
+        table_name,
+        _normalized_sql(create_record[0]),
+        columns,
+        tuple(sorted(indexes, key=lambda value: str(value[0]))),
+        foreign_keys,
+    )
+
+
+def _product_schema_fingerprint(
+    connection: sqlite3.Connection,
+) -> _ProductSchemaFingerprint:
+    tables = tuple(
+        _table_fingerprint(connection, table_name)
+        for table_name in sorted(PRODUCT_TABLE_NAMES)
+    )
+    placeholders = ",".join("?" for _ in PRODUCT_TABLE_NAMES)
+    triggers = tuple(
+        (str(record[0]), str(record[1]), _normalized_sql(record[2]))
+        for record in connection.execute(
+            "SELECT name,tbl_name,sql FROM sqlite_master "
+            f"WHERE type='trigger' AND tbl_name IN ({placeholders}) ORDER BY name",
+            tuple(sorted(PRODUCT_TABLE_NAMES)),
+        )
+    )
+    return _ProductSchemaFingerprint(tables, triggers)
+
+
+def _sqlite_connection(connection: sa.Connection) -> sqlite3.Connection:
+    raw_connection = connection.connection.driver_connection
+    if not isinstance(raw_connection, sqlite3.Connection):
+        raise UnsupportedSchemaVersion("Atelier v3 requires SQLite")
+    return raw_connection
+
+
+@lru_cache(maxsize=1)
+def _expected_product_schema_fingerprint() -> _ProductSchemaFingerprint:
+    engine = sa.create_engine("sqlite://")
+    try:
+        with engine.begin() as connection:
+            metadata.create_all(connection)
+            _create_triggers(connection, _PRODUCT_TRIGGERS.values())
+            return _product_schema_fingerprint(_sqlite_connection(connection))
+    finally:
+        engine.dispose()
+
+
+def _require_v3_product_shape(connection: sqlite3.Connection) -> None:
+    if (
+        _product_schema_fingerprint(connection)
+        != _expected_product_schema_fingerprint()
+    ):
+        raise UnsupportedSchemaVersion("malformed v3 product schema fingerprint")
+
+
+def _preflight_existing_schema(engine: Engine) -> None:
     raw_database_path = engine.url.database
     if engine.url.get_backend_name() != "sqlite" or raw_database_path is None:
         return
@@ -290,7 +613,7 @@ def _preflight_existing_schema(engine: Engine) -> None:
                 raise UnsupportedSchemaVersion(
                     f"missing version owner beside tables {tuple(sorted(table_names))!r}"
                 )
-            versions = []
+            versions: list[int] = []
             for record in connection.execute(
                 "SELECT version FROM atelier_schema_versions"
             ):
@@ -298,32 +621,38 @@ def _preflight_existing_schema(engine: Engine) -> None:
                 if not isinstance(version, int):
                     raise TypeError("schema version must be stored as an integer")
                 versions.append(version)
+            _require_supported_versions(versions)
+            _require_v3_product_shape(connection)
+    except UnsupportedSchemaVersion:
+        raise
     except (sqlite3.DatabaseError, TypeError, ValueError) as error:
         raise UnsupportedSchemaVersion("unreadable schema version owner") from error
-    _require_supported_versions(versions)
+
+
+def _create_triggers(connection: sa.Connection, statements: Iterable[str]) -> None:
+    for statement in statements:
+        connection.execute(sa.text(statement))
 
 
 def initialize_schema(engine: Engine) -> None:
+    if engine.url.get_backend_name() != "sqlite":
+        raise UnsupportedSchemaVersion("Atelier v3 requires SQLite")
     _preflight_existing_schema(engine)
     with engine.connect() as connection:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
         try:
             inspector = sa.inspect(connection)
             if not inspector.has_table(atelier_schema_versions.name):
-                existing_tables = inspector.get_table_names()
+                existing_tables = set(inspector.get_table_names())
                 if existing_tables:
                     raise UnsupportedSchemaVersion(
-                        f"missing version owner beside tables {tuple(existing_tables)!r}"
+                        f"missing version owner beside tables {tuple(sorted(existing_tables))!r}"
                     )
                 metadata.create_all(connection)
                 connection.execute(
                     atelier_schema_versions.insert().values(version=SCHEMA_VERSION)
                 )
-                for statement in (
-                    *_IMMUTABLE_REVISION_TRIGGERS,
-                    *_EFFECT_LEDGER_TRIGGERS,
-                ):
-                    connection.execute(sa.text(statement))
+                _create_triggers(connection, _PRODUCT_TRIGGERS.values())
 
             versions = (
                 connection.execute(sa.select(atelier_schema_versions.c.version))
@@ -331,6 +660,7 @@ def initialize_schema(engine: Engine) -> None:
                 .all()
             )
             _require_supported_versions(versions)
+            _require_v3_product_shape(_sqlite_connection(connection))
             connection.commit()
         except BaseException:
             connection.rollback()

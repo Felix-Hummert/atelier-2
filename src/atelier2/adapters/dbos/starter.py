@@ -9,6 +9,8 @@ from sqlalchemy.engine import Engine
 from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs, workflow_revisions
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     Run,
@@ -32,6 +34,7 @@ class DbosDurableRunStarter:
         self._settings = settings
 
     def start(self, request: StartRunRequest) -> Run:
+        graph = parse_workflow_document(request.revision.document)
         client = DBOSClient(
             system_database_engine=self._engine, use_listen_notify=False
         )
@@ -52,7 +55,11 @@ class DbosDurableRunStarter:
                         run_id=request.run_id.value,
                         bootstrap_workflow_id=workflow_id,
                         revision_hash=request.revision.revision_hash.value,
+                        current_node_id=graph.start,
                         state=RunState.STARTED.value,
+                        state_version=0,
+                        last_event_sequence=0,
+                        terminal_hash=None,
                     )
                 )
                 options: EnqueueOptions = {
@@ -71,6 +78,9 @@ class DbosDurableRunStarter:
                     request.run_id,
                     request.revision.revision_hash,
                     RunState.STARTED,
+                    graph.start,
+                    0,
+                    0,
                 )
         finally:
             client.destroy()
@@ -101,14 +111,24 @@ class DbosDurableRunStarter:
     @staticmethod
     def _existing_run(connection: sa.Connection, run_id: RunId) -> Run | None:
         record = connection.execute(
-            sa.select(runs.c.revision_hash, runs.c.state).where(
-                runs.c.run_id == run_id.value
-            )
+            sa.select(
+                runs.c.revision_hash,
+                runs.c.state,
+                runs.c.current_node_id,
+                runs.c.state_version,
+                runs.c.last_event_sequence,
+                runs.c.terminal_hash,
+            ).where(runs.c.run_id == run_id.value)
         ).one_or_none()
         if record is None:
             return None
+        terminal = record.terminal_hash
         return Run(
             run_id,
             WorkflowRevisionHash(str(record.revision_hash)),
             RunState(str(record.state)),
+            str(record.current_node_id),
+            int(record.state_version),
+            int(record.last_event_sequence),
+            None if terminal is None else Sha256Hash(str(terminal)),
         )

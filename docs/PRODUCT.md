@@ -38,25 +38,32 @@ vector-store, security, or extension architecture.
 
 ## Current state
 
-One callable product-core vertical now exists. A caller starts an exact run and
-immutable workflow revision, then advances it with one exact prepared effect.
-Bootstrap only verifies and returns the run's current state. Advance binds the
-request bytes, workflow revision, adapter revision, destination, and external
-store identity before enqueueing durable execution. Identical retries return
-current durable snapshots; changed identities and a second V1 effect fail
-without mutation.
+One callable product-core vertical executes an immutable YAML workflow revision
+through `Agent → Action → Wait → Subworkflow`. The order of YAML entries is not
+execution order; configured edges are. Each confirmed node writes one ordered,
+hash-bound event and starts only its configured successor. A submitted Wait
+answer resumes the same run, and the terminal event binds the completed history
+to one terminal hash. Process restarts resume from durable checkpoints without
+duplicating the Action effect.
 
-The executor reads the effect back, performs it only after authoritative
-absence, and atomically confirms the receipt and run. An unknown outcome becomes
-`WAITING_RECONCILIATION` without execution. One accountable operator command may
-then confirm a found effect or authorize exactly that request's execution; a
-state-version CAS gives competing commands one winner. Receipts preserve exact
-request/result bytes and whether confirmation came from adapter readback,
-adapter execution, operator observation, or operator-authorized execution. The
-first concrete adapter is a persistent loopback SQLite destination stored apart
-from Atelier's canonical database. [ADR 0001](decisions/0001-durable-runtime.md)
-owns the runtime decision and recovery guarantees.
+V1's graph is intentionally narrow: Agent emits configured bytes, Action owns
+the existing exact effect and reconciliation contract, Wait accepts one exact
+integer answer, and the terminal Subworkflow adds two configured integers. The
+document is a closed safe-YAML contract; unknown fields, unsafe YAML features,
+cycles, unreachable nodes, changed retry identities, and contradictory answers
+fail without mutating durable state. [ADR 0002](decisions/0002-exact-yaml-graph.md)
+owns that graph contract.
 
-There is still no cockpit, HTTP surface, configurable workflow graph, provider
-or platform integration, deployment code, or general-purpose workflow engine.
-The product proves one durable effect vertical; it is not yet remotely usable.
+The executor still performs an Action only after authoritative absence. An
+unknown outcome becomes `WAITING_RECONCILIATION` with a durable reason; one
+accountable command may resolve it, after which initial and reconciled Actions
+share the same continuation path. Initial receipt creation commits atomically
+with intent confirmation. Reconciliation resolution separately commits its
+receipt, intent, command, run, and resolved event. The later `ACTION_COMPLETED`
+transition is another crash-safe transaction.
+[ADR 0001](decisions/0001-durable-runtime.md) owns the runtime and recovery
+boundary.
+
+There is still no cockpit, HTTP surface, provider or platform integration, or
+deployment code. The graph is a proven durable vertical, not yet a
+general-purpose workflow engine or remotely usable product.

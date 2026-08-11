@@ -11,10 +11,12 @@ import sqlalchemy as sa
 
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
+from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.application.answer_wait import answer_wait
 from atelier2.application.reconcile_effect import reconcile_effect
 from atelier2.application.start_run import start_run
 from atelier2.contracts.effects import (
@@ -30,24 +32,22 @@ from atelier2.contracts.effects import (
     ReconcileCommand,
     ReconcileCommandId,
 )
-from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from atelier2.contracts.executions import SubmitWaitAnswerRequest
+from atelier2.contracts.runs import (
+    RunId,
+    StartRunRequest,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.effects import EffectAdapter
 
 CRASHED = 86
-ADAPTER_EXECUTE_AFTER_COMMIT = "adapter/execute-after-commit"
-AFTER_EXTERNAL_COMMIT = "after-external-commit"
 
 
 class HarnessEffectAdapter:
-    def __init__(
-        self,
-        delegate: EffectAdapter,
-        force_unknown_marker: Path,
-        after_execute_crash_marker: Path | None,
-    ) -> None:
+    def __init__(self, delegate: EffectAdapter, force_unknown_marker: Path) -> None:
         self._delegate = delegate
         self._force_unknown_marker = force_unknown_marker
-        self._after_execute_crash_marker = after_execute_crash_marker
 
     def readback(self, intent: EffectIntent) -> EffectReadback:
         if self._force_unknown_marker.exists():
@@ -55,77 +55,42 @@ class HarnessEffectAdapter:
         return self._delegate.readback(intent)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect:
-        performed = self._delegate.execute(intent)
-        if self._after_execute_crash_marker is not None:
-            _crash_once(
-                self._after_execute_crash_marker,
-                ADAPTER_EXECUTE_AFTER_COMMIT,
-                AFTER_EXTERNAL_COMMIT,
-            )
-        return performed
+        return self._delegate.execute(intent)
 
     def close(self) -> None:
         self._delegate.close()
 
 
 class HarnessEffectAdapterFactory:
-    def __init__(
-        self,
-        database: Path,
-        force_unknown_marker: Path,
-        after_execute_crash_marker: Path | None = None,
-    ) -> None:
+    def __init__(self, database: Path, force_unknown_marker: Path) -> None:
         self._delegate = LoopbackEffectAdapterFactory(
             database,
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-crash-test"),
         )
         self._force_unknown_marker = force_unknown_marker
-        self._after_execute_crash_marker = after_execute_crash_marker
 
     @property
     def binding(self) -> EffectAdapterBinding:
         return self._delegate.binding
 
     def open(self) -> HarnessEffectAdapter:
-        return HarnessEffectAdapter(
-            self._delegate.open(),
-            self._force_unknown_marker,
-            self._after_execute_crash_marker,
-        )
+        return HarnessEffectAdapter(self._delegate.open(), self._force_unknown_marker)
 
 
 def runtime(
-    database: Path,
-    external: Path,
-    application_version: str,
-    force_unknown_marker: Path,
-    after_execute_crash_marker: Path | None = None,
+    database: Path, external: Path, version: str, force_unknown_marker: Path
 ) -> DbosRuntime:
     return DbosRuntime(
-        DbosRuntimeSettings(database, application_version),
-        HarnessEffectAdapterFactory(
-            external, force_unknown_marker, after_execute_crash_marker
-        ),
+        DbosRuntimeSettings(database, version),
+        HarnessEffectAdapterFactory(external, force_unknown_marker),
     )
 
 
-def load_intent(runtime_lease: DbosRuntime, run_id: str) -> EffectIntent:
-    with runtime_lease.engine.connect() as connection:
-        record = (
-            connection.execute(
-                sa.select(effect_intents).where(effect_intents.c.run_id == run_id)
-            )
-            .mappings()
-            .one()
-        )
-    return intent_snapshot_from_record(record).intent
-
-
 def initialize(
-    database: Path, external: Path, version: str, unknown_marker: Path
+    database: Path, external: Path, version: str, force_unknown_marker: Path
 ) -> None:
-    lease = runtime(database, external, version, unknown_marker)
+    lease = runtime(database, external, version, force_unknown_marker)
     try:
         lease.initialize_storage()
     finally:
@@ -136,11 +101,11 @@ def seed(
     database: Path,
     external: Path,
     version: str,
-    unknown_marker: Path,
+    force_unknown_marker: Path,
     run_id: str,
     document: bytes,
 ) -> None:
-    lease = runtime(database, external, version, unknown_marker)
+    lease = runtime(database, external, version, force_unknown_marker)
     try:
         lease.initialize_storage()
         start_run(
@@ -151,17 +116,48 @@ def seed(
         lease.close()
 
 
-def _crash_once(marker: Path, operation_name: str, timing: str) -> None:
+def submit_answer(
+    database: Path,
+    external: Path,
+    version: str,
+    force_unknown_marker: Path,
+    run_id: str,
+    node_id: str,
+    answer: str,
+) -> None:
+    lease = runtime(database, external, version, force_unknown_marker)
+    try:
+        lease.initialize_storage()
+        with sqlite3.connect(database, timeout=30) as connection:
+            revision_hash = str(
+                connection.execute(
+                    "SELECT revision_hash FROM runs WHERE run_id=?", (run_id,)
+                ).fetchone()[0]
+            )
+        answer_wait(
+            SubmitWaitAnswerRequest(
+                RunId(run_id),
+                WorkflowRevisionHash(revision_hash),
+                node_id,
+                answer.encode("utf-8"),
+            ),
+            DbosWaitAnswerer(lease.engine, lease.settings.application_version),
+        )
+    finally:
+        lease.close()
+
+
+def _crash_once(marker: Path, operation_name: str) -> None:
     try:
         descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         return
-    os.write(descriptor, f"{operation_name}:{timing}".encode())
+    os.write(descriptor, f"{operation_name}:before-record".encode())
     os.close(descriptor)
     os._exit(CRASHED)
 
 
-def install_crash(marker: Path, operation_name: str, timing: str) -> None:
+def install_crash(marker: Path, operation_name: str) -> None:
     from dbos._sys_db import OperationResultInternal, SystemDatabase
 
     original = SystemDatabase.record_operation_result
@@ -172,79 +168,63 @@ def install_crash(marker: Path, operation_name: str, timing: str) -> None:
         *,
         completed_at_epoch_ms: int | None = None,
     ) -> None:
-        if result.get("function_name") != operation_name:
-            original(self, result, completed_at_epoch_ms=completed_at_epoch_ms)
-            return
-        if timing == "after-record":
-            original(self, result, completed_at_epoch_ms=completed_at_epoch_ms)
-            _crash_once(marker, operation_name, timing)
-            return
-        _crash_once(marker, operation_name, timing)
+        if result.get("function_name") == operation_name:
+            _crash_once(marker, operation_name)
         original(self, result, completed_at_epoch_ms=completed_at_epoch_ms)
 
     SystemDatabase.record_operation_result = injected
 
 
-def execute(
+def execute_until(
     database: Path,
     external: Path,
     version: str,
-    unknown_marker: Path,
+    force_unknown_marker: Path,
     run_id: str,
-    crash_marker: Path | None,
-    operation_name: str,
-    timing: str,
-    wait_seconds: float,
+    target_state: str,
+    marker: Path | None,
+    operation_name: str | None,
 ) -> None:
-    adapter_crash = operation_name == ADAPTER_EXECUTE_AFTER_COMMIT
-    if adapter_crash and timing != AFTER_EXTERNAL_COMMIT:
-        raise ValueError("adapter execute crash requires after-external-commit timing")
-    lease = runtime(
-        database,
-        external,
-        version,
-        unknown_marker,
-        crash_marker if adapter_crash else None,
-    )
+    lease = runtime(database, external, version, force_unknown_marker)
     try:
-        if crash_marker is not None and not adapter_crash:
-            install_crash(crash_marker, operation_name, timing)
+        if marker is not None and operation_name is not None:
+            install_crash(marker, operation_name)
         lease.launch()
-        deadline = time.monotonic() + wait_seconds
-        statuses: tuple[str, ...] = ()
+        deadline = time.monotonic() + 10
+        observed = ""
         while time.monotonic() < deadline:
             with sqlite3.connect(database, timeout=30) as connection:
-                statuses = tuple(
+                observed = str(
+                    connection.execute(
+                        "SELECT state FROM runs WHERE run_id=?", (run_id,)
+                    ).fetchone()[0]
+                )
+                failed = tuple(
                     row[0]
                     for row in connection.execute(
-                        "SELECT status FROM workflow_status WHERE application_version=?",
-                        (version,),
+                        "SELECT status FROM workflow_status "
+                        "WHERE status IN ('ERROR','CANCELLED')"
                     )
                 )
-            failed = set(statuses) & {"ERROR", "CANCELLED"}
             if failed:
-                raise RuntimeError(f"durable workflow failed with {sorted(failed)!r}")
-            if statuses and set(statuses) == {"SUCCESS"}:
-                break
+                raise RuntimeError(f"durable workflow failed with {failed!r}")
+            if observed == target_state:
+                return
             time.sleep(0.025)
-        else:
-            raise TimeoutError(
-                f"durable workflows did not finish within {wait_seconds}s: {statuses!r}"
-            )
+        raise TimeoutError(f"run stayed {observed!r}, expected {target_state!r}")
     finally:
         lease.close()
 
 
-def submit_absence(
+def reconcile_absence(
     database: Path,
     external: Path,
     version: str,
-    unknown_marker: Path,
+    force_unknown_marker: Path,
     run_id: str,
 ) -> None:
-    lease = runtime(database, external, version, unknown_marker)
+    lease = runtime(database, external, version, force_unknown_marker)
     try:
-        intent = load_intent(lease, run_id)
         with lease.engine.connect() as connection:
             snapshot = intent_snapshot_from_record(
                 connection.execute(
@@ -255,7 +235,7 @@ def submit_absence(
             )
         command = ReconcileCommand(
             ReconcileCommandId(f"{run_id}/reconcile-1"),
-            intent.reference,
+            snapshot.intent.reference,
             snapshot.state_version,
             ReconcileActor("operator"),
             "inspected the exact external destination",
@@ -292,21 +272,36 @@ def main() -> None:
             run_id,
             bytes.fromhex(document_hex),
         )
-    elif command == "submit-absence":
-        (run_id,) = arguments
-        submit_absence(database, external, version, unknown_marker, run_id)
-    else:
-        run_id, raw_marker, operation_name, timing, raw_wait = arguments
-        execute(
+    elif command == "answer":
+        run_id, node_id, answer = arguments
+        submit_answer(
             database,
             external,
             version,
             unknown_marker,
             run_id,
+            node_id,
+            answer,
+        )
+    elif command == "reconcile":
+        (run_id,) = arguments
+        reconcile_absence(database, external, version, unknown_marker, run_id)
+    else:
+        run_id, raw_marker, raw_operation = arguments
+        target_state = {
+            "execute-until-reconcile": "WAITING_RECONCILIATION",
+            "execute-until-wait": "WAITING_INPUT",
+            "execute-until-complete": "COMPLETED",
+        }[command]
+        execute_until(
+            database,
+            external,
+            version,
+            unknown_marker,
+            run_id,
+            target_state,
             None if raw_marker == "NONE" else Path(raw_marker),
-            operation_name,
-            timing,
-            float(raw_wait),
+            None if raw_operation == "NONE" else raw_operation,
         )
     print(json.dumps({"command": command, "ok": True}))
 

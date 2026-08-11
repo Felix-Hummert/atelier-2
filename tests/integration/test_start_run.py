@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.runtime import (
     create_canonical_engine,
 )
 from atelier2.adapters.dbos.schema import (
+    PRODUCT_TABLE_NAMES,
     MigrationRequired,
     UnsupportedSchemaVersion,
     initialize_schema,
@@ -45,6 +46,15 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
 )
 
+WORKFLOW_DOCUMENT = b"""format_version: 1
+start: agent
+nodes:
+  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: waiting, type: wait, answer_type: integer, next: final}
+  - {id: action, type: action, next: waiting}
+  - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
+"""
+
 
 @pytest.fixture
 def storage(tmp_path: Path) -> Iterator[tuple[DbosRuntime, DbosDurableRunStarter]]:
@@ -63,7 +73,9 @@ def storage(tmp_path: Path) -> Iterator[tuple[DbosRuntime, DbosDurableRunStarter
         runtime.close()
 
 
-def request(run_id: str = "run-1", document: bytes = b"workflow-v1") -> StartRunRequest:
+def request(
+    run_id: str = "run-1", document: bytes = WORKFLOW_DOCUMENT
+) -> StartRunRequest:
     return StartRunRequest(RunId(run_id), WorkflowRevision(document))
 
 
@@ -89,8 +101,21 @@ def test_start_commits_revision_run_and_enqueue_atomically(
     assert started.state is RunState.STARTED
     with runtime.engine.connect() as connection:
         assert connection.execute(
-            sa.text("SELECT run_id, revision_hash, state FROM runs")
-        ).all() == [("run-1", request().revision.revision_hash.value, "STARTED")]
+            sa.text(
+                "SELECT run_id, revision_hash, current_node_id, state, "
+                "state_version, last_event_sequence, terminal_hash FROM runs"
+            )
+        ).all() == [
+            (
+                "run-1",
+                request().revision.revision_hash.value,
+                "agent",
+                "STARTED",
+                0,
+                0,
+                None,
+            )
+        ]
         assert connection.execute(
             sa.text("SELECT workflow_uuid, application_version FROM workflow_status")
         ).all() == [(bootstrap_workflow_id_for(RunId("run-1")), "executor-A")]
@@ -122,6 +147,20 @@ def test_raise_after_real_enqueue_rolls_back_every_record(
     assert count(runtime.engine, "workflow_status") == 0
 
 
+def test_invalid_graph_writes_no_revision_run_event_answer_or_dbos_workflow(
+    storage: tuple[DbosRuntime, DbosDurableRunStarter],
+) -> None:
+    runtime, starter = storage
+    invalid = WORKFLOW_DOCUMENT.replace(b"start: agent", b"start: action")
+
+    with pytest.raises(ValueError):
+        start_run(request(document=invalid), starter)
+
+    for table in PRODUCT_TABLE_NAMES - {"atelier_schema_versions"}:
+        assert count(runtime.engine, table) == 0
+    assert count(runtime.engine, "workflow_status") == 0
+
+
 def test_identical_retry_returns_current_run_without_enqueueing_again(
     storage: tuple[DbosRuntime, DbosDurableRunStarter], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -139,16 +178,32 @@ def test_identical_retry_returns_current_run_without_enqueueing_again(
     assert count(runtime.engine, "workflow_status") == 1
 
 
-@pytest.mark.parametrize("state", [RunState.WAITING_RECONCILIATION, RunState.COMPLETED])
+@pytest.mark.parametrize(
+    ("state", "current_node", "terminal_hash"),
+    [
+        (RunState.WAITING_RECONCILIATION, "action", None),
+        (RunState.COMPLETED, "final", "0" * 64),
+    ],
+)
 def test_retry_after_progress_returns_the_current_run(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
     state: RunState,
+    current_node: str,
+    terminal_hash: str | None,
 ) -> None:
     runtime, starter = storage
     start_run(request(), starter)
     with runtime.engine.begin() as connection:
         connection.execute(
-            sa.text("UPDATE runs SET state=:state"), {"state": state.value}
+            sa.text(
+                "UPDATE runs SET state=:state, current_node_id=:current_node, "
+                "terminal_hash=:terminal_hash"
+            ),
+            {
+                "state": state.value,
+                "current_node": current_node,
+                "terminal_hash": terminal_hash,
+            },
         )
 
     assert start_run(request(), starter).state is state
@@ -162,7 +217,10 @@ def test_conflicting_run_id_fails_without_mutation(
     original = start_run(request(), starter)
 
     with pytest.raises(RunIdentityConflict):
-        start_run(request(document=b"workflow-v2"), starter)
+        start_run(
+            request(document=WORKFLOW_DOCUMENT.replace(b"draft-17", b"draft-18")),
+            starter,
+        )
 
     assert start_run(request(), starter) == original
     assert count(runtime.engine, "workflow_revisions") == 1
@@ -226,11 +284,11 @@ def test_revision_document_cannot_be_updated_or_deleted(
                     workflow_revisions.c.revision_hash == started.revision_hash.value
                 )
             )
-            == b"workflow-v1"
+            == WORKFLOW_DOCUMENT
         )
 
 
-@pytest.mark.parametrize("version", [0, 3])
+@pytest.mark.parametrize("version", [0, 4])
 def test_unsupported_schema_version_is_refused_without_mutation(
     tmp_path: Path, version: int
 ) -> None:
@@ -267,7 +325,7 @@ def test_schema_version_one_requires_an_explicit_migration(tmp_path: Path) -> No
     assert database_path.read_bytes() == before
 
 
-def test_schema_version_two_opens_idempotently(tmp_path: Path) -> None:
+def test_schema_version_three_opens_idempotently(tmp_path: Path) -> None:
     runtime = DbosRuntime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
         LoopbackEffectAdapterFactory(
@@ -284,7 +342,7 @@ def test_schema_version_two_opens_idempotently(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_concurrent_first_schema_initializers_converge_on_version_two(
+def test_concurrent_first_schema_initializers_converge_on_version_three(
     tmp_path: Path,
 ) -> None:
     participants = 4
@@ -316,7 +374,7 @@ def test_concurrent_first_schema_initializers_converge_on_version_two(
                 )
             )
 
-        assert results == [[2]] * participants
+        assert results == [[3]] * participants
 
 
 def test_initialized_runtime_can_execute_a_later_seeded_workflow(
@@ -327,26 +385,24 @@ def test_initialized_runtime_can_execute_a_later_seeded_workflow(
 
     runtime.launch()
     deadline = time.monotonic() + 5
-    workflow_state = "PENDING"
+    run_state = "STARTED"
     while time.monotonic() < deadline:
         with runtime.engine.connect() as connection:
-            workflow_state = str(
+            run_state = str(
                 connection.scalar(
-                    sa.text(
-                        "SELECT status FROM workflow_status WHERE workflow_uuid=:id"
-                    ),
-                    {"id": bootstrap_workflow_id_for(started.run_id)},
+                    sa.text("SELECT state FROM runs WHERE run_id=:id"),
+                    {"id": started.run_id.value},
                 )
             )
-        if workflow_state == "SUCCESS":
+        if run_state == RunState.WAITING_INPUT.value:
             break
         time.sleep(0.025)
 
-    assert workflow_state == "SUCCESS"
+    assert run_state == RunState.WAITING_INPUT.value
     with runtime.engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT state FROM runs"))
-            == RunState.STARTED.value
+            == RunState.WAITING_INPUT.value
         )
 
 
@@ -358,7 +414,7 @@ def test_runtime_requires_a_nonempty_application_version(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", application_version)
 
 
-def test_bootstrap_returns_current_state_and_requires_the_exact_run_binding(
+def test_bootstrap_returns_configured_start_and_requires_the_exact_new_run_binding(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
     runtime, starter = storage
@@ -366,7 +422,7 @@ def test_bootstrap_returns_current_state_and_requires_the_exact_run_binding(
 
     assert (
         bootstrap_run_binding(runtime.datasource, started.run_id, started.revision_hash)
-        is RunState.STARTED
+        == "agent"
     )
 
     with pytest.raises(RuntimeError, match="exact durable run binding"):
@@ -377,11 +433,14 @@ def test_bootstrap_returns_current_state_and_requires_the_exact_run_binding(
         )
 
     with runtime.engine.begin() as connection:
-        connection.execute(sa.text("UPDATE runs SET state='WAITING_RECONCILIATION'"))
-    assert (
+        connection.execute(
+            sa.text(
+                "UPDATE runs SET state='WAITING_RECONCILIATION', "
+                "current_node_id='action', state_version=1"
+            )
+        )
+    with pytest.raises(RuntimeError, match="exact new durable run"):
         bootstrap_run_binding(runtime.datasource, started.run_id, started.revision_hash)
-        is RunState.WAITING_RECONCILIATION
-    )
     with runtime.engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT state FROM runs"))

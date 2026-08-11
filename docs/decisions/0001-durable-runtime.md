@@ -21,13 +21,19 @@ or rejected by the probe; it is outside the V1 single-process operating model.
 Use DBOS 2.29.0 behind the public `src/atelier2/adapters/dbos/` boundary for the
 first vertical slice. Product code does not import DBOS outside that adapter.
 The adapter owns the runtime, canonical SQLAlchemy/SQLite datasource, durable
-start/advance/reconcile implementations, and effect ledger so each caller
-decision and its DBOS enqueue share one transaction.
+start/advance/answer/reconcile implementations, graph-event and effect ledgers,
+and node continuations so each caller decision and its DBOS enqueue share one
+transaction.
 
 One canonical SQLite engine and file contains Atelier product tables, DBOS
 system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
+
+The runtime creates schema V3 only in a truly empty canonical store and reopens
+only an exact V3 product schema. A V1 or V2 store, or any nonempty store without
+the V3 version owner, is rejected without mutation. V1 provides no runtime
+upgrade or downgrade migration.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -48,11 +54,13 @@ or authorizing that same request's execution.
 The runtime lives behind `atelier2.adapters.dbos`. Contracts own immutable
 workflow revisions, caller-supplied run identifiers, effect lifecycles, exact
 payloads, and reconciliation decisions. Application functions depend on narrow
-start, advance, and reconcile ports. The adapter owns the canonical engine,
-schema, durable codecs and transactions, explicit application version, and the
-three-operation effect and reconciliation workflows. DBOS and SQLAlchemy do not
-cross that boundary. Workflow-revision hashes remain product identity, while
-the configured DBOS application version remains the executor recovery fence.
+start, advance, answer, and reconcile ports. The adapter owns the canonical
+engine, schema, durable codecs and transactions, explicit application version,
+and the node, effect, reconciliation, answer, and continuation workflows. DBOS
+and SQLAlchemy do not cross that boundary. Workflow-revision hashes remain
+product identity, while the configured DBOS application version remains the
+executor recovery fence. [ADR 0002](0002-exact-yaml-graph.md) owns the workflow
+document and graph semantics above this execution boundary.
 
 A process owns exactly one compatible DBOS binding of canonical database path,
 application version, and resource-free effect-adapter binding. The latter
@@ -70,12 +78,12 @@ bounded loopback invariant rather than a generic provider contract.
 
 | Production proof | What it establishes |
 | --- | --- |
-| Atomic start and advance | Revision/run/bootstrap and intent/effect enqueue each commit or roll back together; exact retries do not enqueue again. |
+| Atomic start, advance, and answer | Revision/run/bootstrap, intent/effect enqueue, and exact Wait answer/enqueue each commit or roll back together; exact retries do not enqueue again. |
 | Bootstrap recovery | A matching application version fills the outer DBOS ledger after a datasource commit without changing or regressing the product run. |
-| Effect recovery | Real subprocess kills after recorded observation (C1), after external commit (C2), and after product confirmation converge with one external call and one receipt. |
+| Effect recovery | Real subprocess kills after recorded observation (C1), after external commit (C2), and after product confirmation converge with one external call, one receipt, and the configured Wait successor. |
 | Unknown outcome | A committed unknown remains waiting across restart and provider-state change; no effect occurs until an operator command owns the intent. |
 | Reconciliation | FOUND and authorized-absence commands preserve operator provenance; concurrent opposing commands commit one CAS winner and one rejected loser. |
-| Atomic final commit | Receipt, intent, run, and owning command roll back together under an injected database failure. |
+| Atomic product events | Reconciliation state and its required/resolved event, plus receipt, intent, run, and owning command, commit or roll back together under injected database failures. |
 | Runtime lifecycle | Equivalent leases share one engine and adapter; conflicts, failed initialization, concurrent close, store drift, and two-process recovery preserve one binding and result. |
 
 The repository gate is `.github/workflows/ci.yml`; the local crash lane is
@@ -96,10 +104,8 @@ bytes so a later review can identify documentation drift.
 
 ## Limits and consequences
 
-Production H2 tests replaced the H0 effect, unknown, C1, C2, and concurrency
-simulations. The remaining small probe covers only unreplaced C3: durable input
-is replayed before following work. It is decision evidence, not a product
-feature, UI, deployment, or a claim that GitHub Actions ran.
+Production crash tests replace the H0 effect, unknown, C1, C2, C3, and
+concurrency simulations, so the exploratory probe is no longer retained.
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the

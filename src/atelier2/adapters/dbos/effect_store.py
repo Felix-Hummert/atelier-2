@@ -12,6 +12,11 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.contracts.effects import (
+    EFFECT_INTENT_VERSION_CONFIRMED_INITIAL,
+    EFFECT_INTENT_VERSION_CONFIRMED_RECONCILED,
+    EFFECT_INTENT_VERSION_INITIAL,
+    EFFECT_INTENT_VERSION_RECONCILING,
+    EFFECT_INTENT_VERSION_WAITING,
     AdapterOperationalIdentity,
     AdapterRevision,
     CanonicalRequest,
@@ -266,7 +271,7 @@ def observe_reconcile_command(
     if (
         command_snapshot.state is not ReconcileCommandState.PENDING
         or intent_snapshot.state is not EffectIntentState.RECONCILING
-        or intent_snapshot.state_version.value != 2
+        or intent_snapshot.state_version != EFFECT_INTENT_VERSION_RECONCILING
         or intent_record["reconciliation_owner_command_id"] != command_id
     ):
         raise DurableEffectConflict(
@@ -331,23 +336,27 @@ def commit_resolution(
             .where(
                 effect_intents.c.logical_key == logical_key,
                 effect_intents.c.state == EffectIntentState.PREPARED.value,
-                effect_intents.c.state_version == 0,
+                effect_intents.c.state_version == EFFECT_INTENT_VERSION_INITIAL.value,
             )
             .values(
                 state=EffectIntentState.WAITING_RECONCILIATION.value,
-                state_version=1,
+                state_version=EFFECT_INTENT_VERSION_WAITING.value,
             )
         )
-        run_update = session.execute(
-            runs.update()
-            .where(
-                runs.c.run_id == intent.binding.run_id.value,
-                runs.c.revision_hash == revision_hash,
-                runs.c.state == RunState.STARTED.value,
-            )
-            .values(state=RunState.WAITING_RECONCILIATION.value)
+        from atelier2.adapters.dbos.run_store import (
+            commit_reconciliation_required,
+            load_run,
         )
-        if intent_update.rowcount != 1 or run_update.rowcount != 1:
+
+        current = load_run(session, intent.binding.run_id)
+        commit_reconciliation_required(
+            session,
+            intent.binding.run_id,
+            intent.binding.workflow_revision_hash,
+            current.current_node_id,
+            intent.request.payload,
+        )
+        if intent_update.rowcount != 1:
             raise DurableEffectConflict("UNKNOWN must advance one prepared run")
         return RunState.WAITING_RECONCILIATION
 
@@ -396,9 +405,15 @@ def commit_resolution(
         if command_id is None
         else EffectIntentState.RECONCILING
     )
-    expected_version = 0 if command_id is None else 2
-    expected_run_state = (
-        RunState.STARTED if command_id is None else RunState.WAITING_RECONCILIATION
+    expected_version = (
+        EFFECT_INTENT_VERSION_INITIAL
+        if command_id is None
+        else EFFECT_INTENT_VERSION_RECONCILING
+    )
+    confirmed_version = (
+        EFFECT_INTENT_VERSION_CONFIRMED_INITIAL
+        if command_id is None
+        else EFFECT_INTENT_VERSION_CONFIRMED_RECONCILED
     )
     intent_update = session.execute(
         effect_intents.update()
@@ -406,26 +421,17 @@ def commit_resolution(
             effect_intents.c.logical_key == logical_key,
             effect_intents.c.workflow_revision_hash == revision_hash,
             effect_intents.c.state == expected_state.value,
-            effect_intents.c.state_version == expected_version,
+            effect_intents.c.state_version == expected_version.value,
             effect_intents.c.reconciliation_owner_command_id
             == (None if command_id is None else command_id.value),
         )
         .values(
             state=EffectIntentState.CONFIRMED.value,
-            state_version=expected_version + 1,
+            state_version=confirmed_version.value,
             reconciliation_owner_command_id=None,
         )
     )
-    run_update = session.execute(
-        runs.update()
-        .where(
-            runs.c.run_id == intent.binding.run_id.value,
-            runs.c.revision_hash == revision_hash,
-            runs.c.state == expected_run_state.value,
-        )
-        .values(state=RunState.COMPLETED.value)
-    )
-    if intent_update.rowcount != 1 or run_update.rowcount != 1:
+    if intent_update.rowcount != 1:
         raise DurableEffectConflict(
             "effect confirmation requires one exact run binding"
         )
@@ -441,4 +447,19 @@ def commit_resolution(
         )
         if command_update.rowcount != 1:
             raise DurableEffectConflict("confirmation must apply its owning command")
-    return RunState.COMPLETED
+        from atelier2.adapters.dbos.run_store import (
+            commit_reconciliation_resolved,
+            load_run,
+        )
+
+        current = load_run(session, intent.binding.run_id)
+        commit_reconciliation_resolved(
+            session,
+            intent.binding.run_id,
+            intent.binding.workflow_revision_hash,
+            current.current_node_id,
+            intent.binding.logical_key,
+            receipt.result.payload,
+            receipt.result.payload_hash,
+        )
+    return RunState.STARTED

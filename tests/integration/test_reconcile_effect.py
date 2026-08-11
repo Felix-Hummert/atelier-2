@@ -13,18 +13,30 @@ from dbos import DBOSClient
 from sqlalchemy import exc
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer
+from atelier2.adapters.dbos.advancer import (
+    DbosDurableRunAdvancer,
+    graph_action_intent,
+)
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.reconciler import (
     DbosEffectReconcileCommander,
     ReconcileCommandIdentityConflict,
     reconcile_workflow_id_for,
 )
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.run_store import (
+    commit_agent_completed,
+    commit_reconciliation_required,
+)
+from atelier2.adapters.dbos.runtime import (
+    DbosRuntime,
+    DbosRuntimeSettings,
+    canonical_write_transaction,
+)
 from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
     reconcile_commands,
+    run_events,
     runs,
 )
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
@@ -34,16 +46,13 @@ from atelier2.application.reconcile_effect import reconcile_effect
 from atelier2.application.start_run import start_run
 from atelier2.contracts.effects import (
     AdapterRevision,
-    CanonicalRequest,
     ConfirmationSource,
-    EffectBinding,
     EffectDestination,
     EffectId,
     EffectIntent,
     EffectIntentState,
     EffectIntentStateVersion,
     EffectResult,
-    LogicalEffectKey,
     OperatorAuthoritativeAbsence,
     OperatorFoundEffect,
     PerformedEffect,
@@ -54,6 +63,15 @@ from atelier2.contracts.effects import (
     ReconcileCommandState,
 )
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+
+WORKFLOW_DOCUMENT = b"""format_version: 1
+start: agent
+nodes:
+  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: waiting, type: wait, answer_type: integer, next: final}
+  - {id: action, type: action, next: waiting}
+  - {id: agent, type: agent, job: job-17, output: request, next: action}
+"""
 
 
 @pytest.fixture
@@ -69,37 +87,41 @@ def waiting(
         ),
     )
     runtime.initialize_storage()
-    revision = WorkflowRevision(b"workflow-v1")
+    revision = WorkflowRevision(WORKFLOW_DOCUMENT)
     start_run(
         StartRunRequest(RunId("run-1"), revision),
         DbosDurableRunStarter(runtime.engine, runtime.settings),
     )
-    intent = EffectIntent(
-        EffectBinding(
-            LogicalEffectKey("run-1/action-1"),
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_agent_completed(
+            connection, RunId("run-1"), revision.revision_hash, "agent", b"request"
+        )
+        intent = graph_action_intent(
+            connection,
             RunId("run-1"),
             revision.revision_hash,
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-            runtime.effect_adapter_binding.operational_identity,
-        ),
-        CanonicalRequest(b"request"),
-    )
+            runtime.effect_adapter_binding,
+        )
     advance_run(
         intent,
         DbosDurableRunAdvancer(
             runtime.engine, runtime.settings, runtime.effect_adapter_binding
         ),
     )
-    with runtime.engine.begin() as connection:
-        connection.execute(
+    with canonical_write_transaction(runtime.engine) as connection:
+        updated = connection.execute(
             effect_intents.update().values(
                 state=EffectIntentState.WAITING_RECONCILIATION.value,
                 state_version=1,
             )
         )
-        connection.execute(
-            runs.update().values(state=RunState.WAITING_RECONCILIATION.value)
+        assert updated.rowcount == 1
+        commit_reconciliation_required(
+            connection,
+            intent.binding.run_id,
+            intent.binding.workflow_revision_hash,
+            "action",
+            intent.request.payload,
         )
     try:
         yield (
@@ -281,7 +303,7 @@ def test_concurrent_opposing_commands_commit_one_pending_and_one_rejected(
         )
 
 
-def test_final_reconciliation_rolls_back_receipt_intent_run_and_command_together(
+def test_reconcile_commits_exact_receipt_run_cursor_and_resolved_event_together(
     waiting: tuple[DbosRuntime, DbosEffectReconcileCommander, EffectIntent],
 ) -> None:
     runtime, commander, intent = waiting
@@ -298,11 +320,11 @@ def test_final_reconciliation_rolls_back_receipt_intent_run_and_command_together
         connection.execute(
             sa.text(
                 """
-                CREATE TRIGGER fail_command_apply
-                BEFORE UPDATE OF state ON reconcile_commands
-                WHEN NEW.state = 'APPLIED'
+                CREATE TRIGGER fail_resolved_event
+                BEFORE INSERT ON run_events
+                WHEN NEW.event_kind = 'ACTION_RECONCILIATION_RESOLVED'
                 BEGIN
-                  SELECT RAISE(ABORT, 'injected final commit failure');
+                  SELECT RAISE(ABORT, 'injected resolved-event failure');
                 END
                 """
             )
@@ -331,6 +353,8 @@ def test_final_reconciliation_rolls_back_receipt_intent_run_and_command_together
                 effect_intents.c.state,
                 effect_intents.c.state_version,
                 runs.c.state,
+                runs.c.state_version,
+                runs.c.last_event_sequence,
                 reconcile_commands.c.state,
             )
             .select_from(effect_intents)
@@ -343,6 +367,8 @@ def test_final_reconciliation_rolls_back_receipt_intent_run_and_command_together
             EffectIntentState.RECONCILING.value,
             2,
             RunState.WAITING_RECONCILIATION.value,
+            2,
+            2,
             ReconcileCommandState.PENDING.value,
         )
         assert (
@@ -353,4 +379,70 @@ def test_final_reconciliation_rolls_back_receipt_intent_run_and_command_together
                 )
             )
             == 1
+        )
+
+    with runtime.engine.begin() as connection:
+        connection.execute(sa.text("DROP TRIGGER fail_resolved_event"))
+    with Session(runtime.engine) as session, session.begin():
+        assert (
+            commit_resolution(
+                session,
+                intent.binding.logical_key.value,
+                intent.binding.workflow_revision_hash.value,
+                resolved,
+                submitted.command_id,
+            )
+            is RunState.STARTED
+        )
+
+    with runtime.engine.connect() as connection:
+        assert connection.execute(
+            sa.select(
+                effect_intents.c.state,
+                effect_intents.c.state_version,
+                runs.c.state,
+                runs.c.state_version,
+                runs.c.last_event_sequence,
+                reconcile_commands.c.state,
+                effect_receipts.c.result,
+                effect_receipts.c.result_hash,
+                run_events.c.event_sequence,
+                run_events.c.event_kind,
+                run_events.c.payload,
+                run_events.c.payload_hash,
+                run_events.c.receipt_logical_key,
+                run_events.c.receipt_result_hash,
+            )
+            .select_from(effect_intents)
+            .join(runs, runs.c.run_id == effect_intents.c.run_id)
+            .join(
+                reconcile_commands,
+                reconcile_commands.c.logical_key == effect_intents.c.logical_key,
+            )
+            .join(
+                effect_receipts,
+                effect_receipts.c.logical_key == effect_intents.c.logical_key,
+            )
+            .join(
+                run_events,
+                sa.and_(
+                    run_events.c.run_id == runs.c.run_id,
+                    run_events.c.event_kind == "ACTION_RECONCILIATION_RESOLVED",
+                ),
+            )
+        ).one() == (
+            EffectIntentState.CONFIRMED.value,
+            3,
+            RunState.STARTED.value,
+            3,
+            3,
+            ReconcileCommandState.APPLIED.value,
+            b"result",
+            determination.result.payload_hash.value,
+            3,
+            "ACTION_RECONCILIATION_RESOLVED",
+            b"result",
+            determination.result.payload_hash.value,
+            intent.binding.logical_key.value,
+            determination.result.payload_hash.value,
         )

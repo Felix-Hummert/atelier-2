@@ -19,8 +19,14 @@ from atelier2.adapters.dbos.advancer import (
     EffectIntentIdentityConflict,
     RunEffectConflict,
     effect_workflow_id_for,
+    graph_action_intent,
 )
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.run_store import commit_agent_completed
+from atelier2.adapters.dbos.runtime import (
+    DbosRuntime,
+    DbosRuntimeSettings,
+    canonical_write_transaction,
+)
 from atelier2.adapters.dbos.schema import effect_intents
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
@@ -30,7 +36,6 @@ from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
     CanonicalRequest,
-    EffectBinding,
     EffectDestination,
     EffectIntent,
     EffectIntentSnapshot,
@@ -39,6 +44,15 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
 )
 from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+
+WORKFLOW_DOCUMENT = b"""format_version: 1
+start: agent
+nodes:
+  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: waiting, type: wait, answer_type: integer, next: final}
+  - {id: action, type: action, next: waiting}
+  - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
+"""
 
 
 @pytest.fixture
@@ -54,22 +68,21 @@ def storage(
         ),
     )
     runtime.initialize_storage()
-    revision = WorkflowRevision(b"workflow-v1")
+    revision = WorkflowRevision(WORKFLOW_DOCUMENT)
     start_run(
         StartRunRequest(RunId("run-1"), revision),
         DbosDurableRunStarter(runtime.engine, runtime.settings),
     )
-    intent = EffectIntent(
-        EffectBinding(
-            LogicalEffectKey("run-1/action-1"),
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_agent_completed(
+            connection, RunId("run-1"), revision.revision_hash, "agent", b"draft-17"
+        )
+        intent = graph_action_intent(
+            connection,
             RunId("run-1"),
             revision.revision_hash,
-            AdapterRevision("loopback-v1"),
-            EffectDestination("loopback-test"),
-            runtime.effect_adapter_binding.operational_identity,
-        ),
-        CanonicalRequest(b"exact-request\x00\xff"),
-    )
+            runtime.effect_adapter_binding,
+        )
     try:
         yield (
             runtime,

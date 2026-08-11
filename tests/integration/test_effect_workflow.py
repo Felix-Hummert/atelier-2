@@ -7,31 +7,40 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import exc
+from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.advancer import (
     DbosDurableRunAdvancer,
     effect_workflow_id_for,
+    graph_action_intent,
 )
+from atelier2.adapters.dbos.effect_store import commit_resolution
 from atelier2.adapters.dbos.reconciler import (
     DbosEffectReconcileCommander,
     reconcile_workflow_id_for,
 )
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import effect_intents, effect_receipts, runs
-from atelier2.adapters.dbos.starter import (
-    DbosDurableRunStarter,
-    bootstrap_workflow_id_for,
+from atelier2.adapters.dbos.run_store import commit_agent_completed
+from atelier2.adapters.dbos.runtime import (
+    DbosRuntime,
+    DbosRuntimeSettings,
+    canonical_write_transaction,
 )
+from atelier2.adapters.dbos.schema import (
+    effect_intents,
+    effect_receipts,
+    run_events,
+    runs,
+)
+from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.advance_run import advance_run
 from atelier2.application.reconcile_effect import reconcile_effect
 from atelier2.application.start_run import start_run
 from atelier2.contracts.effects import (
     AdapterRevision,
-    CanonicalRequest,
     ConfirmationSource,
     EffectAdapterBinding,
-    EffectBinding,
     EffectDestination,
     EffectId,
     EffectIntent,
@@ -40,7 +49,6 @@ from atelier2.contracts.effects import (
     EffectReadback,
     EffectResult,
     EffectUnknownOutcome,
-    LogicalEffectKey,
     OperatorAuthoritativeAbsence,
     OperatorFoundEffect,
     PerformedEffect,
@@ -53,6 +61,14 @@ from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRe
 from atelier2.ports.effects import EffectAdapter
 
 TIMEOUT_SECONDS = 5.0
+WORKFLOW_DOCUMENT = b"""format_version: 1
+start: agent
+nodes:
+  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: waiting, type: wait, answer_type: integer, next: final}
+  - {id: action, type: action, next: waiting}
+  - {id: agent, type: agent, job: job-17, output: exact-request, next: action}
+"""
 
 
 class UnknownReadbackAdapter:
@@ -103,22 +119,25 @@ def prepared(
         ),
     )
     runtime.initialize_storage()
-    revision = WorkflowRevision(b"workflow-v1")
+    revision = WorkflowRevision(WORKFLOW_DOCUMENT)
     start_run(
         StartRunRequest(RunId("run-1"), revision),
         DbosDurableRunStarter(runtime.engine, runtime.settings),
     )
-    intent = EffectIntent(
-        EffectBinding(
-            LogicalEffectKey("run-1/action-1"),
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_agent_completed(
+            connection,
             RunId("run-1"),
             revision.revision_hash,
-            runtime.effect_adapter_binding.adapter_revision,
-            runtime.effect_adapter_binding.destination,
-            runtime.effect_adapter_binding.operational_identity,
-        ),
-        CanonicalRequest(b"exact-request"),
-    )
+            "agent",
+            b"exact-request",
+        )
+        intent = graph_action_intent(
+            connection,
+            RunId("run-1"),
+            revision.revision_hash,
+            runtime.effect_adapter_binding,
+        )
     advance_run(
         intent,
         DbosDurableRunAdvancer(
@@ -149,6 +168,17 @@ def wait_for_workflow(runtime: DbosRuntime, workflow_id: str) -> str:
     return status
 
 
+def wait_for_run_state(runtime: DbosRuntime, expected: RunState) -> str:
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+    state = ""
+    while state != expected.value and time.monotonic() < deadline:
+        with runtime.engine.connect() as connection:
+            state = str(connection.scalar(sa.select(runs.c.state)))
+        if state != expected.value:
+            time.sleep(0.025)
+    return state
+
+
 def prepare_with_factory(
     tmp_path: Path, factory: UnknownReadbackFactory
 ) -> tuple[DbosRuntime, EffectIntent, Path]:
@@ -157,22 +187,25 @@ def prepare_with_factory(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"), factory
     )
     runtime.initialize_storage()
-    revision = WorkflowRevision(b"workflow-v1")
+    revision = WorkflowRevision(WORKFLOW_DOCUMENT)
     start_run(
         StartRunRequest(RunId("run-1"), revision),
         DbosDurableRunStarter(runtime.engine, runtime.settings),
     )
-    intent = EffectIntent(
-        EffectBinding(
-            LogicalEffectKey("run-1/action-1"),
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_agent_completed(
+            connection,
             RunId("run-1"),
             revision.revision_hash,
-            factory.binding.adapter_revision,
-            factory.binding.destination,
-            factory.binding.operational_identity,
-        ),
-        CanonicalRequest(b"exact-request"),
-    )
+            "agent",
+            b"exact-request",
+        )
+        intent = graph_action_intent(
+            connection,
+            RunId("run-1"),
+            revision.revision_hash,
+            factory.binding,
+        )
     advance_run(
         intent,
         DbosDurableRunAdvancer(runtime.engine, runtime.settings, factory.binding),
@@ -194,6 +227,78 @@ def reconcile_command(
     )
 
 
+def test_unknown_commits_waiting_state_and_required_event_together(
+    prepared: tuple[DbosRuntime, EffectIntent, Path],
+) -> None:
+    runtime, intent, _external = prepared
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                """
+                CREATE TRIGGER fail_required_event
+                BEFORE INSERT ON run_events
+                WHEN NEW.event_kind = 'ACTION_RECONCILIATION_REQUIRED'
+                BEGIN
+                  SELECT RAISE(ABORT, 'injected required-event failure');
+                END
+                """
+            )
+        )
+
+    with (
+        pytest.raises(exc.IntegrityError),
+        Session(runtime.engine) as session,
+        session.begin(),
+    ):
+        commit_resolution(
+            session,
+            intent.binding.logical_key.value,
+            intent.binding.workflow_revision_hash.value,
+            {"outcome": "UNKNOWN"},
+        )
+
+    with runtime.engine.connect() as connection:
+        assert connection.execute(
+            sa.select(runs.c.state, effect_intents.c.state).join(
+                effect_intents, effect_intents.c.run_id == runs.c.run_id
+            )
+        ).one() == (RunState.STARTED.value, EffectIntentState.PREPARED.value)
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(run_events)) == 1
+        )
+
+    with runtime.engine.begin() as connection:
+        connection.execute(sa.text("DROP TRIGGER fail_required_event"))
+    with Session(runtime.engine) as session, session.begin():
+        assert (
+            commit_resolution(
+                session,
+                intent.binding.logical_key.value,
+                intent.binding.workflow_revision_hash.value,
+                {"outcome": "UNKNOWN"},
+            )
+            is RunState.WAITING_RECONCILIATION
+        )
+
+    with runtime.engine.connect() as connection:
+        assert connection.execute(
+            sa.select(runs.c.state, effect_intents.c.state).join(
+                effect_intents, effect_intents.c.run_id == runs.c.run_id
+            )
+        ).one() == (
+            RunState.WAITING_RECONCILIATION.value,
+            EffectIntentState.WAITING_RECONCILIATION.value,
+        )
+        assert connection.execute(
+            sa.select(run_events.c.event_kind, run_events.c.payload).order_by(
+                run_events.c.event_sequence
+            )
+        ).all() == [
+            ("AGENT_COMPLETED", b"exact-request"),
+            ("ACTION_RECONCILIATION_REQUIRED", b"exact-request"),
+        ]
+
+
 def test_authoritative_absence_executes_once_and_atomically_confirms_the_run(
     prepared: tuple[DbosRuntime, EffectIntent, Path],
 ) -> None:
@@ -205,10 +310,7 @@ def test_authoritative_absence_executes_once_and_atomically_confirms_the_run(
         wait_for_workflow(runtime, effect_workflow_id_for(intent.binding.logical_key))
         == "SUCCESS"
     )
-    assert (
-        wait_for_workflow(runtime, bootstrap_workflow_id_for(intent.binding.run_id))
-        == "SUCCESS"
-    )
+    assert wait_for_run_state(runtime, RunState.WAITING_INPUT) == "WAITING_INPUT"
     with runtime.engine.connect() as connection:
         assert connection.execute(
             sa.select(
@@ -226,7 +328,7 @@ def test_authoritative_absence_executes_once_and_atomically_confirms_the_run(
                 effect_receipts.c.logical_key == effect_intents.c.logical_key,
             )
         ).one() == (
-            RunState.COMPLETED.value,
+            RunState.WAITING_INPUT.value,
             EffectIntentState.CONFIRMED.value,
             1,
             ConfirmationSource.ADAPTER_EXECUTION.value,
@@ -327,6 +429,7 @@ def test_unknown_waits_without_an_effect_then_an_operator_command_finishes(
             wait_for_workflow(runtime, reconcile_workflow_id_for(submitted.command_id))
             == "SUCCESS"
         )
+        assert wait_for_run_state(runtime, RunState.WAITING_INPUT) == "WAITING_INPUT"
 
         expected_source = (
             ConfirmationSource.OPERATOR_AUTHORIZED_EXECUTION
@@ -348,7 +451,7 @@ def test_unknown_waits_without_an_effect_then_an_operator_command_finishes(
                     effect_receipts.c.logical_key == effect_intents.c.logical_key,
                 )
             ).one() == (
-                RunState.COMPLETED.value,
+                RunState.WAITING_INPUT.value,
                 EffectIntentState.CONFIRMED.value,
                 3,
                 expected_source.value,
