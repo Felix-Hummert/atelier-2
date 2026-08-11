@@ -1,36 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, assert_never
+from typing import assert_never
 
 from atelier2.application.publish_workflow_revision import (
     DurableStateCorrupt,
     WriteUnavailable,
 )
-from atelier2.contracts.runs import Run, RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import Run
 from atelier2.ports.durable_runs import (
-    DurablePublishedRunResult,
+    DurablePublishedRunStarter,
     DurableRunCreated,
     DurableRunExisting,
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
     DurableWriteUnavailable,
+    StartPublishedRunRequest,
 )
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
-
-
-@dataclass(frozen=True)
-class StartPublishedRunRequest:
-    run_id: RunId
-    revision_hash: WorkflowRevisionHash
-
-
-class DurablePublishedRunStarter(Protocol):
-    def start_published(
-        self, request: StartPublishedRunRequest
-    ) -> DurablePublishedRunResult: ...
 
 
 @dataclass(frozen=True)

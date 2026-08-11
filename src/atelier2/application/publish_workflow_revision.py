@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflows import AgentNode, SubworkflowNode, WorkflowGraph
 from atelier2.ports.durable_runs import (
@@ -17,6 +16,7 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionCreated,
     DurableRevisionExisting,
     ProjectionLimitExceeded,
+    WorkflowDocumentParser,
     WorkflowRevisionProjection,
     WorkflowRevisionPublisher,
 )
@@ -100,11 +100,12 @@ class DurableStateCorrupt:
 def publish_workflow_revision(
     document: bytes,
     publisher: WorkflowRevisionPublisher,
+    parser: WorkflowDocumentParser,
     limits: WorkflowPublicationLimits | None = None,
 ) -> PublishWorkflowRevisionResult:
     try:
         revision = WorkflowRevision(document)
-        graph = parse_workflow_document(document)
+        graph = parser(document)
         if limits is not None:
             limits.validate(document, graph)
     except (TypeError, ValueError) as error:

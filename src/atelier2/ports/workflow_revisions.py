@@ -40,6 +40,10 @@ class WorkflowRevisionPublisher(Protocol):
     ) -> DurableRevisionPublicationResult: ...
 
 
+class WorkflowDocumentParser(Protocol):
+    def __call__(self, document: bytes) -> WorkflowGraph: ...
+
+
 class WorkflowProjectionLimit(Protocol):
     def validate_document(self, document: bytes) -> None: ...
 

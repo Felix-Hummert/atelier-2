@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -8,6 +7,7 @@ import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.effect_store import (
     intent_snapshot_from_record,
@@ -32,6 +32,7 @@ from atelier2.contracts.executions import (
     WaitAnswer,
     WaitAnswerSnapshot,
     WaitAnswerState,
+    is_canonical_integer_bytes,
     logical_effect_key_for,
     terminal_hash_for,
 )
@@ -66,9 +67,6 @@ from atelier2.ports.durable_runs import (
 
 class RunTransitionConflict(RuntimeError):
     """A retry or transition contradicts the exact durable graph/run/event binding."""
-
-
-_INTEGER_ANSWER = re.compile(rb"(?:0|-?[1-9][0-9]*)")
 
 
 def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> WorkflowGraph:
@@ -583,17 +581,16 @@ class DbosWaitAnswerer:
         result = self.submit_result(request)
         if isinstance(result, (DurableAnswerCreated, DurableAnswerExisting)):
             return result.snapshot
-        if (
-            isinstance(result, DurableAnswerStateConflict)
-            and _INTEGER_ANSWER.fullmatch(request.answer_bytes) is None
-        ):
+        if isinstance(
+            result, DurableAnswerStateConflict
+        ) and not is_canonical_integer_bytes(request.answer_bytes):
             raise ValueError(
                 "integer answer must be canonical base-10 bytes without whitespace or plus"
             )
         raise RunTransitionConflict(f"wait answer refused: {type(result).__name__}")
 
     def submit_result(self, request: SubmitWaitAnswerRequest) -> DurableAnswerResult:
-        if _INTEGER_ANSWER.fullmatch(request.answer_bytes) is None:
+        if not is_canonical_integer_bytes(request.answer_bytes):
             return DurableAnswerStateConflict()
         from atelier2.adapters.dbos.workflow import ANSWER_WORKFLOW_NAME, QUEUE_NAME
 
@@ -611,15 +608,16 @@ class DbosWaitAnswerer:
             else:
                 prepared_document = bytes(document)
                 graph = graph_from_document(request.revision_hash, prepared_document)
-        except OperationalError:
+        except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
 
-        client = DBOSClient(
-            system_database_engine=self._engine, use_listen_notify=False
-        )
+        client: DBOSClient | None = None
         try:
+            client = DBOSClient(
+                system_database_engine=self._engine, use_listen_notify=False
+            )
             with self._engine.connect() as connection:
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
                 try:
@@ -734,11 +732,16 @@ class DbosWaitAnswerer:
                     )
                     connection.commit()
                     return DurableAnswerCreated(snapshot)
-                except OperationalError:
+                except (OperationalError, PoolTimeoutError):
                     connection.rollback()
                     return DurableWriteUnavailable()
                 except (ValueError, RuntimeError, DatabaseError):
                     connection.rollback()
                     return DurableStateCorrupt()
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
         finally:
-            client.destroy()
+            if client is not None:
+                client.destroy()

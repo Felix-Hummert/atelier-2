@@ -31,11 +31,6 @@ class DurableReconciliationTargetMissing:
 
 
 @dataclass(frozen=True)
-class DurableReconciliationStale:
-    pass
-
-
-@dataclass(frozen=True)
 class DurableReconciliationCommandConflict:
     pass
 
@@ -49,7 +44,6 @@ type DurableReconciliationResult = (
     DurableReconciliationCreated
     | DurableReconciliationExisting
     | DurableReconciliationTargetMissing
-    | DurableReconciliationStale
     | DurableReconciliationCommandConflict
     | DurableReconciliationDeterminationConflict
     | DurableWriteUnavailable

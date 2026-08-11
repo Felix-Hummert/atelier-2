@@ -7,11 +7,14 @@ import pytest
 from fastapi.testclient import TestClient
 from openapi_spec_validator import OpenAPIV31SpecValidator, validate
 
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api import openapi as openapi_module
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.openapi import API_PREFIX, EVENT_NAMES, EVENT_PATH
-from atelier2.application.start_published_run import DurablePublishedRunStarter
-from atelier2.ports.durable_runs import TransactionalWaitAnswerer
+from atelier2.ports.durable_runs import (
+    DurablePublishedRunStarter,
+    TransactionalWaitAnswerer,
+)
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.run_events import RunEventQueries
 from atelier2.ports.run_queries import RunQueries
@@ -33,6 +36,7 @@ def empty_ports() -> ApiPorts:
         workflow_revision_queries=cast(WorkflowRevisionQueries, missing),
         run_queries=cast(RunQueries, missing),
         run_event_queries=cast(RunEventQueries, missing),
+        workflow_document_parser=parse_workflow_document,
     )
 
 

@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
-from atelier2.application.start_published_run import StartPublishedRunRequest
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -59,6 +58,7 @@ from atelier2.ports.durable_runs import (
     DurableRunRevisionMissing,
     DurableStateCorrupt,
     DurableWriteUnavailable,
+    StartPublishedRunRequest,
 )
 from atelier2.ports.effects import (
     DurableReconciliationCommandConflict,
@@ -66,7 +66,6 @@ from atelier2.ports.effects import (
     DurableReconciliationDeterminationConflict,
     DurableReconciliationExisting,
     DurableReconciliationResult,
-    DurableReconciliationStale,
 )
 from atelier2.ports.run_events import (
     CursorAhead,
@@ -79,6 +78,7 @@ from atelier2.ports.run_queries import (
     GetReconciliationRetryTargetResult,
     GetRunResult,
     ListRunsResult,
+    ReconciliationRetryCommandConflict,
     ReconciliationRetryTargetMissing,
     RunFound,
     RunPage,
@@ -467,10 +467,42 @@ PROBLEM_CASES = (
         "reconciliation-target-missing",
     ),
     (
+        "reconcile-retry-command-conflict",
+        "reconcile",
+        "reconcile-retry",
+        ReconciliationRetryCommandConflict(),
+        409,
+        "reconciliation-command-conflict",
+    ),
+    (
+        "reconcile-retry-run-missing",
+        "reconcile",
+        "reconcile-retry",
+        RunQueryMissing(),
+        404,
+        "run-not-found",
+    ),
+    (
+        "reconcile-retry-unavailable",
+        "reconcile",
+        "reconcile-retry",
+        ReadUnavailable(),
+        503,
+        "temporarily-unavailable",
+    ),
+    (
+        "reconcile-retry-corrupt",
+        "reconcile",
+        "reconcile-retry",
+        QueryDurableStateCorrupt(),
+        500,
+        "durable-state-corrupt",
+    ),
+    (
         "reconcile-stale",
         "reconcile",
         "commander",
-        DurableReconciliationStale(),
+        DurableReconciliationCreated(REJECTED_COMMAND),
         409,
         "reconciliation-stale",
     ),
@@ -678,6 +710,7 @@ def _ports(case: RouteResultCase) -> ApiPorts:
         queries,
         queries,
         queries,
+        parse_workflow_document,
     )
 
 

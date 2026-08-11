@@ -6,6 +6,7 @@ import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.run_store import run_from_record
 from atelier2.adapters.dbos.runtime import (
@@ -15,7 +16,6 @@ from atelier2.adapters.dbos.runtime import (
 from atelier2.adapters.dbos.schema import runs, workflow_revisions
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.start_published_run import StartPublishedRunRequest
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     Run,
@@ -33,6 +33,7 @@ from atelier2.ports.durable_runs import (
     DurableRunRevisionMissing,
     DurableStateCorrupt,
     DurableWriteUnavailable,
+    StartPublishedRunRequest,
 )
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
@@ -123,15 +124,16 @@ class DbosDurableRunStarter:
             if revision.revision_hash != request.revision_hash:
                 return DurableStateCorrupt()
             graph = parse_workflow_document(revision.document)
-        except OperationalError:
+        except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
 
-        client = DBOSClient(
-            system_database_engine=self._engine, use_listen_notify=False
-        )
+        client: DBOSClient | None = None
         try:
+            client = DBOSClient(
+                system_database_engine=self._engine, use_listen_notify=False
+            )
             with canonical_write_transaction(self._engine) as connection:
                 stored_document = connection.scalar(
                     sa.select(workflow_revisions.c.document).where(
@@ -193,12 +195,13 @@ class DbosDurableRunStarter:
                     request.revision_hash.value,
                 )
                 return DurableRunCreated(run)
-        except OperationalError:
+        except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
         finally:
-            client.destroy()
+            if client is not None:
+                client.destroy()
 
     @staticmethod
     def _insert_or_verify_revision(
@@ -266,7 +269,7 @@ class DbosWorkflowRevisionPublisher:
                 if inserted.rowcount == 1:
                     return DurableRevisionCreated(durable)
                 return DurableRevisionExisting(durable)
-        except OperationalError:
+        except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()

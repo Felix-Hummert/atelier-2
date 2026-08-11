@@ -5,6 +5,7 @@ from typing import cast
 
 import pytest
 
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     AnswerBytesConflict,
@@ -37,12 +38,10 @@ from atelier2.application.reconcile_effect import (
     reconcile_effect_result,
 )
 from atelier2.application.start_published_run import (
-    DurablePublishedRunStarter,
     RevisionMissing,
     RunCreated,
     RunExisting,
     RunIdentityConflict,
-    StartPublishedRunRequest,
     start_published_run,
 )
 from atelier2.contracts.effects import (
@@ -66,11 +65,13 @@ from atelier2.ports.durable_runs import (
     DurableAnswerRevisionConflict,
     DurableAnswerRunMissing,
     DurableAnswerStateConflict,
+    DurablePublishedRunStarter,
     DurableRunCreated,
     DurableRunExisting,
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
     DurableWriteUnavailable,
+    StartPublishedRunRequest,
     TransactionalWaitAnswerer,
 )
 from atelier2.ports.durable_runs import (
@@ -81,7 +82,6 @@ from atelier2.ports.effects import (
     DurableReconciliationCreated,
     DurableReconciliationDeterminationConflict,
     DurableReconciliationExisting,
-    DurableReconciliationStale,
     DurableReconciliationTargetMissing,
     TransactionalEffectReconcileCommander,
 )
@@ -137,6 +137,7 @@ def test_publication_maps_every_durable_result(
     result = publish_workflow_revision(
         b"format_version: 1\nstart: final\nnodes:\n  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n",
         cast(WorkflowRevisionPublisher, FakePort(port_result)),
+        parse_workflow_document,
     )
 
     assert isinstance(result, application_type)
@@ -146,6 +147,7 @@ def test_publication_rejects_invalid_yaml_before_the_write_port() -> None:
     result = publish_workflow_revision(
         b"!!python/object:unsafe {}",
         cast(WorkflowRevisionPublisher, FakePort(None)),
+        parse_workflow_document,
     )
 
     assert isinstance(result, PublicationInvalid)
@@ -161,6 +163,7 @@ def test_publication_returns_the_graph_validated_before_the_write() -> None:
             WorkflowRevisionPublisher,
             FakePort(DurableRevisionCreated(revision)),
         ),
+        parse_workflow_document,
     )
 
     assert isinstance(result, PublicationCreated)
@@ -256,7 +259,6 @@ def test_answer_maps_every_durable_result(
             ReconciliationExistingRejected,
         ),
         (DurableReconciliationTargetMissing(), ReconciliationTargetMissing),
-        (DurableReconciliationStale(), ReconciliationStale),
         (DurableReconciliationCommandConflict(), ReconciliationCommandConflict),
         (
             DurableReconciliationDeterminationConflict(),

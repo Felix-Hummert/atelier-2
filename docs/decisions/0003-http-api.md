@@ -20,11 +20,15 @@ Every mutation delegates to the runtime owner and decides created-versus-
 existing from the row written in that same transaction. Only a newly created
 command schedules continuation. Starting a run verifies its published revision
 inside the start transaction. Reads use short-lived SQLite connections behind
-separate bounded admission for ordinary control work and event-page polling,
-plus a per-query database deadline. An idle stream backs off deterministically
-to a configured ceiling and resets that delay after progress. Cancellation
-keeps the applicable bound occupied until the underlying blocking durable call
-has actually returned.
+separate bounded admission for ordinary control work and event-page polling.
+Admission has its own injected wait deadline; refusal is a pre-header 503 for
+control work and closes an already-started stream. Database timing has three
+explicit owners rather than one misleading clock: the composed SQLAlchemy engine
+bounds pool checkout, the query adapter bounds SQLite lock waiting, and its
+progress deadline starts only after checkout. None is described as cancelling a
+running thread. An idle stream backs off deterministically to a configured
+ceiling and resets that delay after progress. Cancellation keeps the applicable
+bound occupied until the underlying blocking durable call has actually returned.
 
 Run references are canonical `run1` encodings of the domain's UTF-8 run ID.
 Event cursors canonically bind that reference to a positive durable sequence as

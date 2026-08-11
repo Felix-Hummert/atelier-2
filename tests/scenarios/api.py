@@ -198,6 +198,7 @@ def api_limits(**changes: int) -> ApiLimits:
         event_page_size=50,
         maximum_control_queries=8,
         maximum_event_poll_queries=2,
+        maximum_query_admission_wait_milliseconds=1_000,
     )
     return replace(configured, **changes)
 

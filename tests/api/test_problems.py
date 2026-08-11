@@ -5,15 +5,18 @@ from typing import cast
 import pytest
 from fastapi.testclient import TestClient
 
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.problems import (
     PROBLEM_DEFINITIONS,
     PROBLEM_TYPE_PREFIX,
     problem_resource,
 )
-from atelier2.application.start_published_run import DurablePublishedRunStarter
 from atelier2.contracts.runs import RunId
-from atelier2.ports.durable_runs import TransactionalWaitAnswerer
+from atelier2.ports.durable_runs import (
+    DurablePublishedRunStarter,
+    TransactionalWaitAnswerer,
+)
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.run_events import RunEventQueries
 from atelier2.ports.run_queries import GetRunResult, ListRunsResult, RunQueries
@@ -187,6 +190,7 @@ def empty_ports() -> ApiPorts:
         workflow_revision_queries=cast(WorkflowRevisionQueries, missing),
         run_queries=cast(RunQueries, UnusedRunQueries()),
         run_event_queries=cast(RunEventQueries, missing),
+        workflow_document_parser=parse_workflow_document,
     )
 
 

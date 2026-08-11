@@ -13,7 +13,6 @@ from atelier2.api.references import (
     encode_canonical_base64,
     encode_event_cursor,
     encode_public_run_reference,
-    is_canonical_integer_bytes,
 )
 from atelier2.contracts.effects import (
     EffectReceipt,
@@ -21,7 +20,7 @@ from atelier2.contracts.effects import (
     OperatorFoundEffect,
     ReconcileCommand,
 )
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import RunEventKind, is_canonical_integer_bytes
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.workflows import (
     ActionNode,

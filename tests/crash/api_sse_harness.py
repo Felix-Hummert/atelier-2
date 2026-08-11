@@ -11,6 +11,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from tests.scenarios.api import api_limits, event_poll_backoff
 
@@ -30,6 +31,7 @@ app = create_app(
         queries,
         queries,
         queries,
+        parse_workflow_document,
     ),
     limits=api_limits(event_page_size=2),
     event_poll_backoff=event_poll_backoff(),

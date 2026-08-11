@@ -9,20 +9,26 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
-from atelier2.api.limits import ApiLimits, RequestBodyLimitMiddleware
+from atelier2.api.limits import ApiLimitExceeded, ApiLimits, RequestBodyLimitMiddleware
 from atelier2.api.openapi import API_PREFIX
-from atelier2.api.references import encode_canonical_base64, encode_public_run_reference
-from atelier2.application.start_published_run import DurablePublishedRunStarter
-from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.api.references import (
+    encode_canonical_base64,
+    encode_event_cursor,
+    encode_public_run_reference,
+)
+from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
 from atelier2.ports.durable_runs import (
     DurableAnswerRunMissing,
+    DurablePublishedRunStarter,
     DurableRunRevisionMissing,
     TransactionalWaitAnswerer,
 )
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
-from atelier2.ports.run_events import RunEventQueries
-from atelier2.ports.run_queries import RunQueries
+from atelier2.ports.run_events import PersistedRunEvent, RunEventQueries
+from atelier2.ports.run_queries import RunProjection, RunQueries
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCreated,
     WorkflowRevisionPublisher,
@@ -64,6 +70,7 @@ def client_for(mutations: RecordingMutationPorts, limits: ApiLimits) -> TestClie
                 cast(WorkflowRevisionQueries, unused),
                 cast(RunQueries, unused),
                 cast(RunEventQueries, unused),
+                parse_workflow_document,
             ),
             limits=limits,
             event_poll_backoff=event_poll_backoff(),
@@ -129,6 +136,13 @@ def test_encoded_projection_limit_branches_are_explicit(
 
 
 @pytest.mark.parametrize(
+    ("path", "problem_code"),
+    [
+        (API_PREFIX + "/workflow-revisions", "invalid-workflow-document"),
+        (API_PREFIX + "/runs", "invalid-request"),
+    ],
+)
+@pytest.mark.parametrize(
     "headers",
     [
         [(b"content-length", b"1"), (b"content-length", b"1")],
@@ -137,6 +151,8 @@ def test_encoded_projection_limit_branches_are_explicit(
     ],
 )
 def test_body_limit_rejects_noncanonical_content_length_directly(
+    path: str,
+    problem_code: str,
     headers: list[tuple[bytes, bytes]],
 ) -> None:
     async def scenario() -> tuple[int, bytes, bool]:
@@ -167,7 +183,7 @@ def test_body_limit_rejects_noncanonical_content_length_directly(
                 {
                     "type": "http",
                     "method": "POST",
-                    "path": API_PREFIX + "/runs",
+                    "path": path,
                     "headers": headers,
                 },
             ),
@@ -181,7 +197,7 @@ def test_body_limit_rejects_noncanonical_content_length_directly(
     status, body, reached_route = asyncio.run(scenario())
 
     assert status == 422
-    assert b"invalid-request" in body
+    assert problem_code.encode() in body
     assert not reached_route
 
 
@@ -301,18 +317,76 @@ def test_declared_and_chunked_body_overflow_have_the_same_exact_detail() -> None
 
 def test_overlong_decoded_reference_and_cursor_keep_their_existing_codes() -> None:
     mutations = RecordingMutationPorts()
-    client = client_for(mutations, api_limits(maximum_field_characters=5))
-    overlong_reference = encode_public_run_reference(RunId("123456"))
+    client = client_for(mutations, api_limits(maximum_field_characters=12))
+    overlong_reference = encode_public_run_reference(RunId("1234567890123"))
     valid_reference = encode_public_run_reference(RunId("run"))
 
     reference = client.get(f"/atelier/api/v1/runs/{overlong_reference}")
     cursor = client.get(
         f"/atelier/api/v1/runs/{valid_reference}/events",
-        headers={"accept": "text/event-stream", "last-event-id": "event1.cnVu.1"},
+        headers={
+            "accept": "text/event-stream",
+            "last-event-id": "event1.cnVu.123",
+        },
     )
 
     assert_problem(reference, 400, "invalid-public-run-reference")
     assert_problem(cursor, 400, "invalid-event-cursor")
+
+
+def test_public_reference_is_bounded_before_base64_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mutations = RecordingMutationPorts()
+    client = client_for(mutations, api_limits(maximum_field_characters=12))
+
+    def unexpected_decode(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("over-limit public reference reached base64 decoding")
+
+    monkeypatch.setattr("atelier2.api.references.base64.b64decode", unexpected_decode)
+
+    response = client.get("/atelier/api/v1/runs/run1." + "a" * 13)
+
+    assert_problem(response, 400, "invalid-public-run-reference")
+
+
+def test_wire_reference_and_cursor_are_bounded_by_their_own_encoding() -> None:
+    document = workflow_document()
+    revision = WorkflowRevision(document)
+    graph = parse_workflow_document(document)
+    run = Run(
+        RunId("x"),
+        revision.revision_hash,
+        RunState.STARTED,
+        "final",
+        0,
+        1,
+    )
+    projection = RunProjection(run, graph, None)
+    event = PersistedRunEvent(
+        RunEvent(
+            run.run_id,
+            run.revision_hash,
+            1,
+            "final",
+            NodeExecutionId.for_node(run.run_id, run.revision_hash, "final"),
+            RunEventKind.SUBWORKFLOW_COMPLETED,
+            b"3",
+        ),
+        None,
+    )
+    reference = encode_public_run_reference(run.run_id)
+    cursor = encode_event_cursor(run.run_id, 1)
+    assert len(reference) < len(cursor)
+
+    with pytest.raises(ApiLimitExceeded, match="public run reference"):
+        api_limits(maximum_field_characters=len(reference) - 1).require_run_projection(
+            projection
+        )
+    with pytest.raises(ApiLimitExceeded, match="event cursor"):
+        api_limits(maximum_field_characters=len(cursor) - 1).require_event_projection(
+            event
+        )
 
 
 def test_json_body_limit_runs_before_fastapi_buffers_or_validates_the_body() -> None:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
-from atelier2.contracts.runs import Run, StartRunRequest
+from atelier2.contracts.runs import Run, RunId, StartRunRequest, WorkflowRevisionHash
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,18 @@ type DurablePublishedRunResult = (
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )
+
+
+@dataclass(frozen=True)
+class StartPublishedRunRequest:
+    run_id: RunId
+    revision_hash: WorkflowRevisionHash
+
+
+class DurablePublishedRunStarter(Protocol):
+    def start_published(
+        self, request: StartPublishedRunRequest
+    ) -> DurablePublishedRunResult: ...
 
 
 @dataclass(frozen=True)

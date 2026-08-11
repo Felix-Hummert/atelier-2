@@ -31,7 +31,11 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.api.stream import BoundedQueryRunner
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.effects import EffectIntentState, ReconcileCommandState
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEventKind,
+    logical_effect_key_for,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import EventHistoryCorrupt, StreamReady
 from atelier2.ports.run_queries import RunPage
@@ -195,10 +199,31 @@ def test_pool_checkout_timeout_is_a_typed_read_unavailable(tmp_path: Path) -> No
     initialize_schema(configured)
     try:
         with configured.connect():
+            started = time.monotonic()
             result = DbosQueries(configured).list_workflow_revisions(None, 1)
         assert isinstance(result, ReadUnavailable)
+        assert time.monotonic() - started < 0.5
     finally:
         configured.dispose()
+
+
+@pytest.mark.parametrize(
+    ("busy_timeout_seconds", "query_deadline_seconds"),
+    [
+        (0.0005, 1.0),
+        (float("inf"), 1.0),
+        (1.0, float("nan")),
+    ],
+)
+def test_query_timing_rejects_unrepresentable_or_unbounded_values(
+    engine: Engine, busy_timeout_seconds: float, query_deadline_seconds: float
+) -> None:
+    with pytest.raises(ValueError, match="must be finite"):
+        DbosQueries(
+            engine,
+            busy_timeout_seconds=busy_timeout_seconds,
+            query_deadline_seconds=query_deadline_seconds,
+        )
 
 
 def test_restored_timeout_preserves_a_subsequent_contended_write(
@@ -347,7 +372,7 @@ def test_cancelled_real_query_restores_pooled_connection_before_reuse(
 
     async def scenario() -> None:
         event.listen(engine, "before_cursor_execute", block_revision_read)
-        runner = BoundedQueryRunner(1)
+        runner = BoundedQueryRunner(1, admission_timeout_seconds=1)
         try:
             task = asyncio.create_task(
                 runner.run(
@@ -746,6 +771,12 @@ nodes:
     )
     waiting_run_id = RunId("waiting")
     owned_run_id = RunId("reconciling")
+    logical_keys = {
+        run_id: logical_effect_key_for(
+            NodeExecutionId.for_node(run_id, revision.revision_hash, "action")
+        ).value
+        for run_id in (waiting_run_id, owned_run_id)
+    }
     request = b"request"
     with engine.begin() as connection:
         connection.execute(
@@ -774,7 +805,7 @@ nodes:
             effect_intents.insert(),
             [
                 {
-                    "logical_key": f"key-{run_id.value}",
+                    "logical_key": logical_keys[run_id],
                     "run_id": run_id.value,
                     "canonical_request": request,
                     "request_hash": hashlib.sha256(request).hexdigest(),
@@ -792,7 +823,7 @@ nodes:
         connection.execute(
             reconcile_commands.insert().values(
                 command_id="owner-command",
-                logical_key="key-reconciling",
+                logical_key=logical_keys[owned_run_id],
                 expected_intent_version=1,
                 determination="AUTHORITATIVE_NOT_FOUND",
                 actor="operator",
@@ -805,7 +836,7 @@ nodes:
         )
         connection.execute(
             effect_intents.update()
-            .where(effect_intents.c.logical_key == "key-reconciling")
+            .where(effect_intents.c.logical_key == logical_keys[owned_run_id])
             .values(
                 state=EffectIntentState.RECONCILING.value,
                 state_version=2,
@@ -813,6 +844,7 @@ nodes:
             )
         )
     selects = 0
+    intent_selects: list[str] = []
 
     def count_selects(
         _connection: Any,
@@ -825,6 +857,8 @@ nodes:
         nonlocal selects
         if statement.lstrip().upper().startswith("SELECT"):
             selects += 1
+        if "FROM effect_intents" in statement:
+            intent_selects.append(statement)
 
     event.listen(engine, "before_cursor_execute", count_selects)
     try:
@@ -834,6 +868,9 @@ nodes:
 
     assert isinstance(page, RunPage)
     assert selects == 4
+    assert len(intent_selects) == 1
+    assert "effect_intents.logical_key IN" in intent_selects[0]
+    assert "effect_intents.run_id IN" not in intent_selects[0]
     projections = {projection.run.run_id: projection for projection in page.runs}
     waiting = projections[waiting_run_id].reconciliation
     owned = projections[owned_run_id].reconciliation

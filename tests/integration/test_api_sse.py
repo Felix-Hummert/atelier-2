@@ -34,6 +34,7 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.application.advance_run import advance_run
 from atelier2.contracts.effects import (
@@ -178,6 +179,7 @@ def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
             queries,
             queries,
             queries,
+            parse_workflow_document,
         ),
         limits=api_limits(event_page_size=page_size),
         event_poll_backoff=event_poll_backoff(),

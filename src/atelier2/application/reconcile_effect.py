@@ -22,7 +22,6 @@ from atelier2.ports.effects import (
     DurableReconciliationCreated,
     DurableReconciliationDeterminationConflict,
     DurableReconciliationExisting,
-    DurableReconciliationStale,
     DurableReconciliationTargetMissing,
     EffectReconcileCommander,
     TransactionalEffectReconcileCommander,
@@ -107,8 +106,6 @@ def reconcile_effect_result(
             return ReconciliationExistingRejected(snapshot)
         case DurableReconciliationTargetMissing():
             return ReconciliationTargetMissing()
-        case DurableReconciliationStale():
-            return ReconciliationStale()
         case DurableReconciliationCommandConflict():
             return ReconciliationCommandConflict()
         case DurableReconciliationDeterminationConflict():

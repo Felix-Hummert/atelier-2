@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+
+_CANONICAL_INTEGER_BYTES = re.compile(rb"(?:0|-?[1-9][0-9]*)")
+
+
+def is_canonical_integer_bytes(value: bytes) -> bool:
+    return _CANONICAL_INTEGER_BYTES.fullmatch(value) is not None
 
 
 class NodeExecutionId(Sha256Hash):

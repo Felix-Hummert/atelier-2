@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -48,11 +49,11 @@ from atelier2.adapters.dbos.starter import (
     bootstrap_workflow_id_for,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.limits import ApiLimits
 from atelier2.api.references import encode_canonical_base64, encode_public_run_reference
 from atelier2.application.advance_run import advance_run
-from atelier2.application.start_published_run import StartPublishedRunRequest
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -86,6 +87,8 @@ from atelier2.ports.durable_runs import (
     DurableRunExisting,
     DurableRunRevisionMissing,
     DurableStateCorrupt,
+    DurableWriteUnavailable,
+    StartPublishedRunRequest,
 )
 from atelier2.ports.effects import (
     DurableReconciliationCommandConflict,
@@ -212,6 +215,57 @@ def test_concurrent_publication_has_one_created_fact(runtime: DbosRuntime) -> No
 
     assert sum(isinstance(result, DurableRevisionCreated) for result in results) == 1
     assert sum(isinstance(result, DurableRevisionExisting) for result in results) == 3
+
+
+@pytest.mark.parametrize("contention", ["pool", "writer-lock"])
+def test_every_typed_writer_maps_connection_contention_to_unavailable(
+    runtime: DbosRuntime, contention: str
+) -> None:
+    intent = _waiting_reconciliation(runtime)
+    revision = WorkflowRevision(ACTION_DOCUMENT)
+    configured = sa.create_engine(
+        runtime.engine.url,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.005,
+        connect_args={"check_same_thread": False, "timeout": 0.005},
+    )
+    operations = (
+        lambda: DbosWorkflowRevisionPublisher(configured).publish(revision),
+        lambda: DbosDurableRunStarter(configured, runtime.settings).start_published(
+            StartPublishedRunRequest(RunId("contended-start"), revision.revision_hash)
+        ),
+        lambda: DbosWaitAnswerer(
+            configured, runtime.settings.application_version
+        ).submit_result(
+            SubmitWaitAnswerRequest(
+                intent.binding.run_id,
+                intent.binding.workflow_revision_hash,
+                "wait",
+                b"17",
+            )
+        ),
+        lambda: DbosEffectReconcileCommander(
+            configured, runtime.settings
+        ).submit_result(_command(intent)),
+    )
+    started = time.monotonic()
+    try:
+        if contention == "pool":
+            with configured.connect():
+                results = tuple(operation() for operation in operations)
+        else:
+            with runtime.engine.connect() as lock_owner:
+                lock_owner.exec_driver_sql("BEGIN IMMEDIATE")
+                try:
+                    results = tuple(operation() for operation in operations)
+                finally:
+                    lock_owner.rollback()
+    finally:
+        configured.dispose()
+
+    assert all(isinstance(result, DurableWriteUnavailable) for result in results)
+    assert time.monotonic() - started < 1
 
 
 def test_missing_revision_is_a_typed_in_transaction_start_result(
@@ -603,6 +657,52 @@ def test_concurrent_same_command_http_reconciliation_creates_one_command_and_wor
             )
             == 1
         )
+        command_row = dict(
+            connection.execute(
+                sa.select(reconcile_commands).where(
+                    reconcile_commands.c.command_id == "concurrent-http-command"
+                )
+            )
+            .mappings()
+            .one()
+        )
+        intent_row = dict(
+            connection.execute(
+                sa.select(effect_intents).where(
+                    effect_intents.c.logical_key == intent.binding.logical_key.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+    result_bytes = b"concurrent-result"
+    assert command_row == {
+        "command_id": body["command_id"],
+        "logical_key": intent.binding.logical_key.value,
+        "expected_intent_version": body["expected_intent_state_version"],
+        "determination": "FOUND",
+        "actor": body["actor"],
+        "evidence": body["evidence"],
+        "found_effect_id": body["determination"]["effect_id"],
+        "found_result": result_bytes,
+        "found_result_hash": hashlib.sha256(result_bytes).hexdigest(),
+        "state": "PENDING",
+    }
+    assert intent_row == {
+        "logical_key": intent.binding.logical_key.value,
+        "run_id": intent.binding.run_id.value,
+        "canonical_request": intent.request.payload,
+        "request_hash": intent.request.request_hash.value,
+        "workflow_revision_hash": intent.binding.workflow_revision_hash.value,
+        "adapter_revision": intent.binding.adapter_revision.value,
+        "destination_identity": intent.binding.destination.value,
+        "adapter_operational_identity": (
+            intent.binding.adapter_operational_identity.value
+        ),
+        "state": "RECONCILING",
+        "state_version": 2,
+        "reconciliation_owner_command_id": body["command_id"],
+    }
 
 
 def test_run_projection_over_response_limit_is_temporarily_unavailable(
@@ -658,6 +758,7 @@ def _client(
                 workflow_revision_queries=queries,
                 run_queries=queries,
                 run_event_queries=queries,
+                workflow_document_parser=parse_workflow_document,
             ),
             limits=active_limits,
             event_poll_backoff=event_poll_backoff(),
@@ -1193,8 +1294,11 @@ def test_reconciliation_retry_conflicts_are_typed_without_mutation(
     commander = DbosEffectReconcileCommander(runtime.engine, runtime.settings)
     submitted = _command(intent)
     assert isinstance(commander.submit_result(submitted), DurableReconciliationCreated)
+    before_conflicts = _durable_snapshot(runtime)
 
     changed_command = commander.submit_result(_command(intent, evidence="changed"))
+    assert isinstance(changed_command, DurableReconciliationCommandConflict)
+    assert _durable_snapshot(runtime) == before_conflicts
     changed_determination = commander.submit_result(
         ReconcileCommand(
             submitted.command_id,
@@ -1206,8 +1310,8 @@ def test_reconciliation_retry_conflicts_are_typed_without_mutation(
         )
     )
 
-    assert isinstance(changed_command, DurableReconciliationCommandConflict)
     assert isinstance(changed_determination, DurableReconciliationDeterminationConflict)
+    assert _durable_snapshot(runtime) == before_conflicts
     with runtime.engine.connect() as connection:
         assert (
             connection.scalar(

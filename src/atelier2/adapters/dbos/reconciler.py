@@ -6,6 +6,7 @@ import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.effect_store import (
     command_snapshot_from_record,
@@ -72,10 +73,11 @@ class DbosEffectReconcileCommander:
         raise RuntimeError(f"reconcile command refused: {type(result).__name__}")
 
     def submit_result(self, command: ReconcileCommand) -> DurableReconciliationResult:
-        client = DBOSClient(
-            system_database_engine=self._engine, use_listen_notify=False
-        )
+        client: DBOSClient | None = None
         try:
+            client = DBOSClient(
+                system_database_engine=self._engine, use_listen_notify=False
+            )
             with canonical_write_transaction(self._engine) as connection:
                 intent_record = (
                     connection.execute(
@@ -186,12 +188,13 @@ class DbosEffectReconcileCommander:
                     command.intent_reference.binding.workflow_revision_hash.value,
                 )
                 return DurableReconciliationCreated(snapshot)
-        except OperationalError:
+        except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
         finally:
-            client.destroy()
+            if client is not None:
+                client.destroy()
 
     @staticmethod
     def _insert_command(

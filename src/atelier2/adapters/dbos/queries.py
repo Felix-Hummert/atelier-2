@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -36,7 +37,11 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
     ReconcileCommandState,
 )
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEventKind,
+    logical_effect_key_for,
+)
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     RunId,
@@ -92,8 +97,16 @@ class DbosQueries:
         query_deadline_seconds: float = 5.0,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        if busy_timeout_seconds <= 0 or query_deadline_seconds <= 0:
-            raise ValueError("query time bounds must be positive")
+        if (
+            not math.isfinite(busy_timeout_seconds)
+            or not math.isfinite(query_deadline_seconds)
+            or busy_timeout_seconds < 0.001
+            or query_deadline_seconds <= 0
+        ):
+            raise ValueError(
+                "query deadline must be finite and positive and SQLite busy timeout "
+                "must be finite and at least one millisecond"
+            )
         self._engine = engine
         self._busy_timeout_milliseconds = int(busy_timeout_seconds * 1000)
         self._query_deadline_seconds = query_deadline_seconds
@@ -349,24 +362,28 @@ class DbosQueries:
         waiting_runs = tuple(
             run for run in loaded_runs if run.state is RunState.WAITING_RECONCILIATION
         )
-        intent_records: dict[tuple[str, str], Mapping[Any, Any]] = {}
+        logical_keys_by_run = {
+            run.run_id: logical_effect_key_for(
+                NodeExecutionId.for_node(
+                    run.run_id, run.revision_hash, run.current_node_id
+                )
+            )
+            for run in waiting_runs
+        }
+        intent_records: dict[str, Mapping[Any, Any]] = {}
         if waiting_runs:
-            waiting_ids = tuple(run.run_id.value for run in waiting_runs)
             for record in connection.execute(
                 sa.select(effect_intents).where(
-                    effect_intents.c.run_id.in_(waiting_ids)
+                    effect_intents.c.logical_key.in_(
+                        tuple(key.value for key in logical_keys_by_run.values())
+                    )
                 )
             ).mappings():
-                key = (str(record["run_id"]), str(record["workflow_revision_hash"]))
+                key = str(record["logical_key"])
                 if key in intent_records:
-                    raise RunTransitionConflict(
-                        "waiting run has more than one durable intent"
-                    )
+                    raise RunTransitionConflict("durable intent primary key repeated")
                 intent_records[key] = record
-        expected_intent_keys = {
-            (run.run_id.value, run.revision_hash.value) for run in waiting_runs
-        }
-        if set(intent_records) != expected_intent_keys:
+        if set(intent_records) != {key.value for key in logical_keys_by_run.values()}:
             raise RunTransitionConflict(
                 "WAITING_RECONCILIATION run has no exact durable intent"
             )
@@ -395,10 +412,17 @@ class DbosQueries:
         for run in loaded_runs:
             reconciliation: WaitingReconciliationProjection | None = None
             if run.state is RunState.WAITING_RECONCILIATION:
-                intent_record = intent_records[
-                    (run.run_id.value, run.revision_hash.value)
-                ]
+                logical_key = logical_keys_by_run[run.run_id]
+                intent_record = intent_records[logical_key.value]
                 intent = intent_snapshot_from_record(intent_record)
+                if (
+                    intent.intent.binding.run_id != run.run_id
+                    or intent.intent.binding.workflow_revision_hash != run.revision_hash
+                    or intent.intent.binding.logical_key != logical_key
+                ):
+                    raise RunTransitionConflict(
+                        "waiting run intent binding disagrees with its logical key"
+                    )
                 pending = None
                 owner = intent_record["reconciliation_owner_command_id"]
                 if intent.state is EffectIntentState.RECONCILING:

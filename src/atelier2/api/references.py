@@ -17,7 +17,6 @@ _PUBLIC_REFERENCE_PREFIX = "run1."
 _EVENT_CURSOR_PREFIX = "event1."
 _UNPADDED_BASE64URL = re.compile(r"[A-Za-z0-9_-]+")
 _POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*")
-_CANONICAL_INTEGER_BYTES = re.compile(rb"(?:0|-?[1-9][0-9]*)")
 
 
 class InvalidPublicRunReference(ValueError):
@@ -40,10 +39,6 @@ class EventCursor:
     def __post_init__(self) -> None:
         if type(self.sequence) is not int or not 1 <= self.sequence <= MAX_SIGNED_INT64:
             raise InvalidEventCursor("event sequence must be a positive signed int64")
-
-
-def is_canonical_integer_bytes(value: bytes) -> bool:
-    return _CANONICAL_INTEGER_BYTES.fullmatch(value) is not None
 
 
 def encode_public_run_reference(run_id: RunId) -> str:

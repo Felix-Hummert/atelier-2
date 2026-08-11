@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import assert_never
@@ -39,7 +39,6 @@ from atelier2.api.references import (
     decode_canonical_base64,
     decode_public_run_reference,
     encode_public_run_reference,
-    is_canonical_integer_bytes,
     parse_event_cursor,
     parse_revision_hash,
 )
@@ -47,6 +46,7 @@ from atelier2.api.stream import (
     BoundedQueryRunner,
     EventPollBackoff,
     PreparedEventStream,
+    QueryAdmissionTimeout,
     stream_server_events,
 )
 from atelier2.application.answer_wait import (
@@ -82,12 +82,10 @@ from atelier2.application.reconcile_effect import (
 )
 from atelier2.application.reconcile_run import ReconcileRunRequest, reconcile_run
 from atelier2.application.start_published_run import (
-    DurablePublishedRunStarter,
     RevisionMissing,
     RunCreated,
     RunExisting,
     RunIdentityConflict,
-    StartPublishedRunRequest,
     start_published_run,
 )
 from atelier2.contracts.effects import (
@@ -99,9 +97,16 @@ from atelier2.contracts.effects import (
     ReconcileActor,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import SubmitWaitAnswerRequest
+from atelier2.contracts.executions import (
+    SubmitWaitAnswerRequest,
+    is_canonical_integer_bytes,
+)
 from atelier2.contracts.runs import RunId
-from atelier2.ports.durable_runs import TransactionalWaitAnswerer
+from atelier2.ports.durable_runs import (
+    DurablePublishedRunStarter,
+    StartPublishedRunRequest,
+    TransactionalWaitAnswerer,
+)
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.run_events import (
     CursorAhead,
@@ -120,6 +125,7 @@ from atelier2.ports.workflow_revisions import (
     PROJECTION_LIMIT_DETAIL,
     QueryDurableStateCorrupt,
     ReadUnavailable,
+    WorkflowDocumentParser,
     WorkflowProjectionLimit,
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
@@ -138,6 +144,7 @@ class ApiPorts:
     workflow_revision_queries: WorkflowRevisionQueries
     run_queries: RunQueries
     run_event_queries: RunEventQueries
+    workflow_document_parser: WorkflowDocumentParser
 
 
 def create_app(
@@ -165,8 +172,15 @@ def create_app(
         maximum_body_bytes=limits.maximum_request_body_bytes,
         api_prefix=API_PREFIX,
     )
-    runner = BoundedQueryRunner(limits.maximum_control_queries)
-    event_runner = BoundedQueryRunner(limits.maximum_event_poll_queries)
+    admission_timeout_seconds = limits.maximum_query_admission_wait_milliseconds / 1_000
+    runner = BoundedQueryRunner(
+        limits.maximum_control_queries,
+        admission_timeout_seconds=admission_timeout_seconds,
+    )
+    event_runner = BoundedQueryRunner(
+        limits.maximum_event_poll_queries,
+        admission_timeout_seconds=admission_timeout_seconds,
+    )
     workflow_projection_limit = WorkflowPublicationLimits(
         maximum_document_bytes=min(
             limits.maximum_request_body_bytes,
@@ -191,12 +205,14 @@ def create_app(
     async def publish_revision(request: Request) -> JSONResponse:
         _require_media_type(request, "application/yaml")
         document = await request.body()
-        result = await runner.run(
+        result = await _run_control_query(
+            runner,
             lambda: publish_workflow_revision(
                 document,
                 ports.workflow_revision_publisher,
+                ports.workflow_document_parser,
                 workflow_projection_limit,
-            )
+            ),
         )
         match result:
             case PublicationCreated(projection):
@@ -230,10 +246,11 @@ def create_app(
             except InvalidRevisionHash as error:
                 raise ApiProblem("invalid-revision-hash") from error
         parsed_limit = _parse_limit(limit)
-        result = await runner.run(
+        result = await _run_control_query(
+            runner,
             lambda: ports.workflow_revision_queries.list_workflow_revisions(
                 after, parsed_limit
-            )
+            ),
         )
         match result:
             case WorkflowRevisionPage(revision_hashes, next_after):
@@ -262,10 +279,11 @@ def create_app(
             parsed = parse_revision_hash(revision_hash)
         except InvalidRevisionHash as error:
             raise ApiProblem("invalid-revision-hash") from error
-        result = await runner.run(
+        result = await _run_control_query(
+            runner,
             lambda: ports.workflow_revision_queries.get_workflow_revision(
                 parsed, workflow_projection_limit
-            )
+            ),
         )
         match result:
             case WorkflowRevisionFound(projection):
@@ -295,8 +313,8 @@ def create_app(
         except InvalidRevisionHash as error:
             raise ApiProblem("invalid-revision-hash") from error
         request = StartPublishedRunRequest(RunId(body.run_id), revision_hash)
-        result = await runner.run(
-            lambda: start_published_run(request, ports.published_run_starter)
+        result = await _run_control_query(
+            runner, lambda: start_published_run(request, ports.published_run_starter)
         )
         match result:
             case RunCreated():
@@ -330,10 +348,11 @@ def create_app(
         if after is not None:
             boundary = _decode_public_reference(after, limits)
         parsed_limit = _parse_limit(limit)
-        result = await runner.run(
+        result = await _run_control_query(
+            runner,
             lambda: ports.run_queries.list_runs(
                 boundary, parsed_limit, workflow_projection_limit
-            )
+            ),
         )
         match result:
             case RunPage(runs, next_after):
@@ -386,8 +405,8 @@ def create_app(
         answer_request = SubmitWaitAnswerRequest(
             run_id, revision_hash, body.node_id, answer_bytes
         )
-        result = await runner.run(
-            lambda: answer_wait_result(answer_request, ports.wait_answerer)
+        result = await _run_control_query(
+            runner, lambda: answer_wait_result(answer_request, ports.wait_answerer)
         )
         match result:
             case AnswerAcceptedPending() | AnswerExistingPending():
@@ -456,13 +475,14 @@ def create_app(
             body.evidence,
             determination,
         )
-        result = await runner.run(
+        result = await _run_control_query(
+            runner,
             lambda: reconcile_run(
                 reconciliation_request,
                 ports.run_queries,
                 ports.reconcile_commander,
                 workflow_projection_limit,
-            )
+            ),
         )
         match result:
             case ReconciliationAcceptedPending() | ReconciliationExistingPending():
@@ -514,10 +534,11 @@ def create_app(
             if cursor.run_id != run_id:
                 raise ApiProblem("event-cursor-run-mismatch")
             after_sequence = cursor.sequence
-        result = await runner.run(
+        result = await _run_control_query(
+            runner,
             lambda: ports.run_event_queries.prepare_run_event_stream(
                 run_id, after_sequence
-            )
+            ),
         )
         match result:
             case StreamReady(head_sequence, terminal, first_after):
@@ -567,7 +588,9 @@ async def _load_run_resource(
     limits: ApiLimits,
     projection_limit: WorkflowProjectionLimit,
 ) -> RunResource:
-    result = await runner.run(lambda: queries.get_run(run_id, projection_limit))
+    result = await _run_control_query(
+        runner, lambda: queries.get_run(run_id, projection_limit)
+    )
     match result:
         case RunFound(projection):
             _require_run_projections((projection,), limits)
@@ -588,12 +611,22 @@ def _require_run_projections(
     try:
         for projection in projections:
             limits.require_run_projection(projection)
-    except (ApiLimitExceeded, UnicodeDecodeError) as error:
+    except ValueError as error:
         raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL) from error
+
+
+async def _run_control_query[Result](
+    runner: BoundedQueryRunner, query: Callable[[], Result]
+) -> Result:
+    try:
+        return await runner.run(query)
+    except QueryAdmissionTimeout as error:
+        raise ApiProblem("temporarily-unavailable") from error
 
 
 def _decode_public_reference(value: str, limits: ApiLimits) -> RunId:
     try:
+        limits.require_field(value)
         run_id = decode_public_run_reference(value)
         limits.require_field(run_id.value)
         return run_id

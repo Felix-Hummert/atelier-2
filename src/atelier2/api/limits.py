@@ -6,8 +6,10 @@ from typing import cast
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from atelier2.api.references import encode_event_cursor, encode_public_run_reference
 from atelier2.contracts.effects import OperatorFoundEffect
 from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import PersistedRunEvent
 from atelier2.ports.run_queries import RunProjection
 
@@ -26,6 +28,7 @@ class ApiLimits:
     event_page_size: int
     maximum_control_queries: int
     maximum_event_poll_queries: int
+    maximum_query_admission_wait_milliseconds: int
 
     def __post_init__(self) -> None:
         for name, value in self.__dict__.items():
@@ -60,8 +63,21 @@ class ApiLimits:
         if encoded_characters > self.maximum_base64_characters:
             raise ApiLimitExceeded("encoded payload exceeds its character limit")
 
+    def require_public_run_reference(self, run_id: RunId) -> None:
+        if len(encode_public_run_reference(run_id)) > self.maximum_field_characters:
+            raise ApiLimitExceeded("public run reference exceeds its character limit")
+
+    def require_event_cursor(self, run_id: RunId, sequence: int) -> None:
+        if len(encode_event_cursor(run_id, sequence)) > self.maximum_field_characters:
+            raise ApiLimitExceeded("event cursor exceeds its character limit")
+
     def require_run_projection(self, projection: RunProjection) -> None:
         self.require_field(projection.run.run_id.value)
+        self.require_public_run_reference(projection.run.run_id)
+        if projection.run.last_event_sequence > 0:
+            self.require_event_cursor(
+                projection.run.run_id, projection.run.last_event_sequence
+            )
         self.require_field(projection.run.current_node_id)
         reconciliation = projection.reconciliation
         if reconciliation is None:
@@ -84,6 +100,8 @@ class ApiLimits:
     def require_event_projection(self, projection: PersistedRunEvent) -> None:
         event = projection.event
         self.require_field(event.run_id.value)
+        self.require_public_run_reference(event.run_id)
+        self.require_event_cursor(event.run_id, event.event_sequence)
         self.require_field(event.node_id)
         self.require_encoded_payload(event.payload)
         if event.event_kind in {
@@ -135,12 +153,12 @@ class RequestBodyLimitMiddleware:
                 len(content_lengths) != 1
                 or re.fullmatch(rb"[0-9]+", content_lengths[0]) is None
             ):
-                await self._problem(scope, receive, send, "invalid-request")
+                await self._problem(scope, receive, send, limit_code)
                 return
             try:
                 declared_length = int(content_lengths[0])
             except ValueError:
-                await self._problem(scope, receive, send, "invalid-request")
+                await self._problem(scope, receive, send, limit_code)
                 return
             if declared_length > self._maximum_body_bytes:
                 await self._problem(
