@@ -87,6 +87,7 @@ from atelier2.ports.run_queries import (
     WaitingReconciliationProjection,
 )
 from atelier2.ports.workflow_revisions import (
+    DurableProjectionLimit,
     DurableRevisionCollision,
     DurableRevisionCreated,
     DurableRevisionExisting,
@@ -680,9 +681,12 @@ class MatrixQueries:
         raise AssertionError("matrix route unexpectedly read a run")
 
     def get_reconciliation_retry_target(
-        self, run_id: RunId, command_id: ReconcileCommandId
+        self,
+        run_id: RunId,
+        command_id: ReconcileCommandId,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetReconciliationRetryTargetResult:
-        del run_id, command_id
+        del run_id, command_id, projection_limit
         assert self.case.source == "reconcile-retry"
         return cast(GetReconciliationRetryTargetResult, self.case.result)
 
@@ -694,9 +698,13 @@ class MatrixQueries:
         return cast(PrepareRunEventStreamResult, self.case.result)
 
     def read_run_event_page(
-        self, run_id: RunId, after_sequence: int, limit: int
+        self,
+        run_id: RunId,
+        after_sequence: int,
+        limit: int,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> ReadRunEventPageResult:
-        del run_id, after_sequence, limit
+        del run_id, after_sequence, limit, projection_limit
         raise AssertionError("terminal matrix stream unexpectedly paged events")
 
 
@@ -829,3 +837,30 @@ def test_every_application_result_branch_has_exact_http_mapping(
     else:
         assert response.headers["content-type"] == "application/json"
         assert response.json() == _success_body(case.operation)
+
+
+def test_reconciliation_retry_preserves_durable_projection_limit_detail() -> None:
+    case = RouteResultCase(
+        "reconcile-retry-projection-limit",
+        "reconcile",
+        "reconcile-retry",
+        ReadUnavailable("Durable projection exceeds configured API limits."),
+        503,
+        "temporarily-unavailable",
+    )
+    client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=_ports(case),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+    response = _request(client, case)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Durable projection exceeds configured API limits."
+    )

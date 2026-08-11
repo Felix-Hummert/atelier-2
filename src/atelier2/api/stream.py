@@ -12,6 +12,7 @@ from atelier2.api.limits import ApiLimits
 from atelier2.api.models import run_event_resource
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import RunEventPage, RunEventQueries
+from atelier2.ports.workflow_revisions import DurableProjectionLimit
 
 Result = TypeVar("Result")
 
@@ -117,6 +118,7 @@ async def stream_server_events(
     page_size: int,
     limits: ApiLimits,
     poll_backoff: EventPollBackoff,
+    projection_limit: DurableProjectionLimit | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> AsyncIterator[ServerSentEvent]:
     after_sequence = prepared.after_sequence
@@ -125,13 +127,25 @@ async def stream_server_events(
         return
     while True:
         try:
-            result = await runner.run(
-                lambda current_after_sequence=after_sequence: (
-                    queries.read_run_event_page(
-                        prepared.run_id, current_after_sequence, page_size
+            if projection_limit is None:
+                result = await runner.run(
+                    lambda current_after_sequence=after_sequence: (
+                        queries.read_run_event_page(
+                            prepared.run_id, current_after_sequence, page_size
+                        )
                     )
                 )
-            )
+            else:
+                result = await runner.run(
+                    lambda current_after_sequence=after_sequence: (
+                        queries.read_run_event_page(
+                            prepared.run_id,
+                            current_after_sequence,
+                            page_size,
+                            projection_limit,
+                        )
+                    )
+                )
         except QueryAdmissionTimeout:
             return
         if not isinstance(result, RunEventPage):

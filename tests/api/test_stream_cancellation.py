@@ -124,7 +124,11 @@ def test_empty_stream_uses_capped_adaptive_backoff_with_injected_sleep() -> None
             self.calls = 0
 
         def read_run_event_page(
-            self, run_id: RunId, after_sequence: int, limit: int
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
         ) -> RunEventPage:
             del run_id, after_sequence, limit
             self.calls += 1
@@ -178,7 +182,11 @@ def test_poll_backoff_resets_to_initial_delay_immediately_after_progress() -> No
             self.calls = 0
 
         def read_run_event_page(
-            self, run_id: RunId, after_sequence: int, limit: int
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
         ) -> RunEventPage:
             del run_id, limit
             self.calls += 1
@@ -246,7 +254,11 @@ def test_saturated_event_poll_does_not_starve_an_app_control_route() -> None:
             return StreamReady(0, False, 0)
 
         def read_run_event_page(
-            self, run_id: RunId, after_sequence: int, limit: int
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
         ) -> RunEventPage:
             assert run_id == RUN_ID
             assert after_sequence == 0
@@ -367,6 +379,56 @@ def test_saturated_control_admission_returns_503_without_starting_another_query(
     asyncio.run(scenario())
 
 
+def test_event_poll_admission_timeout_mid_stream_closes_without_starting_query() -> (
+    None
+):
+    class UnreachedQueries:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def read_run_event_page(
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
+        ) -> RunEventPage:
+            del run_id, after_sequence, limit
+            self.calls += 1
+            return RunEventPage((), False)
+
+    async def scenario() -> None:
+        runner = BoundedQueryRunner(1, admission_timeout_seconds=0.01)
+        occupied = threading.Event()
+        release = threading.Event()
+
+        def hold_slot() -> None:
+            occupied.set()
+            release.wait(timeout=5)
+
+        occupying = asyncio.create_task(runner.run(hold_slot))
+        assert await asyncio.to_thread(occupied.wait, 5)
+        queries = UnreachedQueries()
+        received = [
+            item
+            async for item in stream_server_events(
+                PreparedEventStream(RUN_ID, 1, 2, False),
+                cast(RunEventQueries, queries),
+                runner,
+                page_size=1,
+                limits=api_limits(),
+                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
+            )
+        ]
+        release.set()
+        await occupying
+
+        assert received == []
+        assert queries.calls == 0
+
+    asyncio.run(scenario())
+
+
 def test_cancellation_while_waiting_for_slot_starts_no_query() -> None:
     async def scenario() -> None:
         runner = BoundedQueryRunner(
@@ -412,7 +474,11 @@ def test_stream_does_not_read_the_next_bounded_page_before_yielding_the_current_
             return StreamReady(3, True, 0)
 
         def read_run_event_page(
-            self, run_id: RunId, after_sequence: int, limit: int
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
         ) -> RunEventPage:
             assert run_id == RUN_ID
             assert limit == 2
@@ -479,7 +545,11 @@ def test_cancelled_stream_starts_no_next_query_and_blocked_query_closes_once() -
             return StreamReady(0, False, 0)
 
         def read_run_event_page(
-            self, run_id: RunId, after_sequence: int, limit: int
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
         ) -> RunEventPage:
             del run_id, after_sequence, limit
             self.calls += 1
@@ -530,7 +600,11 @@ def test_post_header_event_history_corruption_closes_without_synthetic_event() -
             self.calls = 0
 
         def read_run_event_page(
-            self, run_id: RunId, after_sequence: int, limit: int
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
         ) -> EventHistoryCorrupt:
             del run_id, after_sequence, limit
             self.calls += 1
@@ -564,7 +638,11 @@ def test_post_header_event_history_corruption_closes_without_synthetic_event() -
 def test_over_page_query_output_closes_before_any_event_is_serialized() -> None:
     class OverPageQueries:
         def read_run_event_page(
-            self, run_id: RunId, after_sequence: int, limit: int
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
         ) -> RunEventPage:
             del run_id, after_sequence
             assert limit == 1
@@ -610,7 +688,11 @@ def test_invalid_event_projection_closes_without_serialization(
             self.calls = 0
 
         def read_run_event_page(
-            self, run_id: RunId, after_sequence: int, limit: int
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
         ) -> RunEventPage:
             del run_id, after_sequence, limit
             self.calls += 1
@@ -659,7 +741,11 @@ def test_invalid_typed_event_conversion_closes_the_stream(
 ) -> None:
     class InvalidTypedQueries:
         def read_run_event_page(
-            self, run_id: RunId, after_sequence: int, limit: int
+            self,
+            run_id: RunId,
+            after_sequence: int,
+            limit: int,
+            projection_limit: object | None = None,
         ) -> RunEventPage:
             del run_id, after_sequence, limit
             return RunEventPage((persisted_event(1, kind, payload),), False)

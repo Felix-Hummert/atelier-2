@@ -50,6 +50,23 @@ class WorkflowProjectionLimit(Protocol):
     def validate_graph(self, graph: WorkflowGraph) -> None: ...
 
 
+class DurableProjectionLimit(WorkflowProjectionLimit, Protocol):
+    @property
+    def maximum_document_bytes(self) -> int: ...
+
+    @property
+    def maximum_field_characters(self) -> int: ...
+
+    @property
+    def maximum_payload_bytes(self) -> int: ...
+
+    def validate_document_length(self, byte_count: int) -> None: ...
+
+    def validate_field_length(self, character_count: int) -> None: ...
+
+    def validate_payload_length(self, byte_count: int) -> None: ...
+
+
 class ProjectionLimitExceeded(ValueError):
     pass
 
@@ -101,7 +118,7 @@ class WorkflowRevisionQueries(Protocol):
     def get_workflow_revision(
         self,
         revision_hash: WorkflowRevisionHash,
-        projection_limit: WorkflowProjectionLimit | None = None,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetWorkflowRevisionResult: ...
 
     def list_workflow_revisions(

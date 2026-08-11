@@ -110,8 +110,8 @@ def parse_revision_hash(value: str) -> WorkflowRevisionHash:
 
 
 def decode_canonical_base64(value: str) -> bytes:
-    if not value or any(character.isspace() for character in value):
-        raise ValueError("base64 must be nonempty and contain no whitespace")
+    if any(character.isspace() for character in value):
+        raise ValueError("base64 must contain no whitespace")
     try:
         decoded = base64.b64decode(value, validate=True)
     except (ValueError, binascii.Error) as error:

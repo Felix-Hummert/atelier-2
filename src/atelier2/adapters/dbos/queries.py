@@ -73,17 +73,102 @@ from atelier2.ports.run_queries import (
 )
 from atelier2.ports.workflow_revisions import (
     PROJECTION_LIMIT_DETAIL,
+    DurableProjectionLimit,
     GetWorkflowRevisionResult,
     ListWorkflowRevisionsResult,
     ProjectionLimitExceeded,
     QueryDurableStateCorrupt,
     ReadUnavailable,
-    WorkflowProjectionLimit,
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
+
+_LENGTH_LABEL_PREFIX = "_atelier_length_"
+_REVISION_DOCUMENT_COLUMNS = frozenset(("document",))
+_INTENT_PAYLOAD_COLUMNS = frozenset(("canonical_request",))
+_INTENT_FIELD_COLUMNS = frozenset(
+    (
+        "logical_key",
+        "run_id",
+        "adapter_revision",
+        "destination_identity",
+        "adapter_operational_identity",
+        "reconciliation_owner_command_id",
+    )
+)
+_COMMAND_PAYLOAD_COLUMNS = frozenset(("found_result",))
+_COMMAND_FIELD_COLUMNS = frozenset(
+    ("command_id", "logical_key", "actor", "evidence", "found_effect_id")
+)
+_EVENT_PAYLOAD_COLUMNS = frozenset(("payload",))
+_EVENT_FIELD_COLUMNS = frozenset(("run_id", "node_id", "receipt_logical_key"))
+_RECEIPT_PAYLOAD_COLUMNS = frozenset(("canonical_request", "result"))
+_RECEIPT_FIELD_COLUMNS = frozenset(
+    (
+        "logical_key",
+        "run_id",
+        "adapter_revision",
+        "destination_identity",
+        "adapter_operational_identity",
+        "effect_id",
+        "reconcile_command_id",
+    )
+)
+
+
+def _bounded_projection_select(
+    table: sa.Table,
+    projection_limit: DurableProjectionLimit | None,
+    *,
+    document_columns: frozenset[str] = frozenset(),
+    payload_columns: frozenset[str] = frozenset(),
+    field_columns: frozenset[str] = frozenset(),
+) -> sa.Select[Any]:
+    if projection_limit is None:
+        return sa.select(table)
+    projected: list[Any] = []
+    for column in table.c:
+        if column.name in document_columns:
+            maximum = projection_limit.maximum_document_bytes
+        elif column.name in payload_columns:
+            maximum = projection_limit.maximum_payload_bytes
+        elif column.name in field_columns:
+            maximum = projection_limit.maximum_field_characters
+        else:
+            projected.append(column)
+            continue
+        length = sa.func.length(column)
+        projected.append(
+            sa.case((length <= maximum, column), else_=None).label(column.name)
+        )
+        projected.append(length.label(_LENGTH_LABEL_PREFIX + column.name))
+    return sa.select(*projected)
+
+
+def _validate_bounded_record(
+    record: Mapping[Any, Any],
+    projection_limit: DurableProjectionLimit | None,
+    *,
+    document_columns: frozenset[str] = frozenset(),
+    payload_columns: frozenset[str] = frozenset(),
+    field_columns: frozenset[str] = frozenset(),
+) -> None:
+    if projection_limit is None:
+        return
+    for column_name in document_columns:
+        length = record[_LENGTH_LABEL_PREFIX + column_name]
+        if length is not None:
+            projection_limit.validate_document_length(int(length))
+    for column_name in payload_columns:
+        length = record[_LENGTH_LABEL_PREFIX + column_name]
+        if length is not None:
+            projection_limit.validate_payload_length(int(length))
+    for column_name in field_columns:
+        length = record[_LENGTH_LABEL_PREFIX + column_name]
+        if length is not None:
+            projection_limit.validate_field_length(int(length))
 
 
 class DbosQueries:
@@ -145,18 +230,31 @@ class DbosQueries:
     def get_workflow_revision(
         self,
         revision_hash: WorkflowRevisionHash,
-        projection_limit: WorkflowProjectionLimit | None = None,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetWorkflowRevisionResult:
         try:
             with self._connection() as connection:
-                document = connection.scalar(
-                    sa.select(workflow_revisions.c.document).where(
-                        workflow_revisions.c.revision_hash == revision_hash.value
+                record = (
+                    connection.execute(
+                        _bounded_projection_select(
+                            workflow_revisions,
+                            projection_limit,
+                            document_columns=_REVISION_DOCUMENT_COLUMNS,
+                        ).where(
+                            workflow_revisions.c.revision_hash == revision_hash.value
+                        )
                     )
+                    .mappings()
+                    .one_or_none()
                 )
-                if document is None:
+                if record is None:
                     return WorkflowRevisionMissing()
-                document_bytes = bytes(document)
+                _validate_bounded_record(
+                    record,
+                    projection_limit,
+                    document_columns=_REVISION_DOCUMENT_COLUMNS,
+                )
+                document_bytes = bytes(record["document"])
                 if projection_limit is not None:
                     projection_limit.validate_document(document_bytes)
                 revision = WorkflowRevision(document_bytes)
@@ -208,7 +306,7 @@ class DbosQueries:
     def get_run(
         self,
         run_id: RunId,
-        projection_limit: WorkflowProjectionLimit | None = None,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetRunResult:
         try:
             with self._connection() as connection:
@@ -235,7 +333,7 @@ class DbosQueries:
         self,
         after: RunId | None,
         limit: int,
-        projection_limit: WorkflowProjectionLimit | None = None,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> ListRunsResult:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("run page limit must be an integer from 1 to 100")
@@ -278,7 +376,10 @@ class DbosQueries:
             return QueryDurableStateCorrupt()
 
     def get_reconciliation_retry_target(
-        self, run_id: RunId, command_id: ReconcileCommandId
+        self,
+        run_id: RunId,
+        command_id: ReconcileCommandId,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetReconciliationRetryTargetResult:
         try:
             with self._connection() as connection:
@@ -289,18 +390,32 @@ class DbosQueries:
                     return RunQueryMissing()
                 command_record = (
                     connection.execute(
-                        sa.select(reconcile_commands).where(
-                            reconcile_commands.c.command_id == command_id.value
-                        )
+                        _bounded_projection_select(
+                            reconcile_commands,
+                            projection_limit,
+                            payload_columns=_COMMAND_PAYLOAD_COLUMNS,
+                            field_columns=_COMMAND_FIELD_COLUMNS,
+                        ).where(reconcile_commands.c.command_id == command_id.value)
                     )
                     .mappings()
                     .one_or_none()
                 )
                 if command_record is None:
                     return ReconciliationRetryTargetMissing()
+                _validate_bounded_record(
+                    command_record,
+                    projection_limit,
+                    payload_columns=_COMMAND_PAYLOAD_COLUMNS,
+                    field_columns=_COMMAND_FIELD_COLUMNS,
+                )
                 intent_record = (
                     connection.execute(
-                        sa.select(effect_intents).where(
+                        _bounded_projection_select(
+                            effect_intents,
+                            projection_limit,
+                            payload_columns=_INTENT_PAYLOAD_COLUMNS,
+                            field_columns=_INTENT_FIELD_COLUMNS,
+                        ).where(
                             effect_intents.c.logical_key
                             == command_record["logical_key"]
                         )
@@ -310,10 +425,18 @@ class DbosQueries:
                 )
                 if intent_record is None:
                     return QueryDurableStateCorrupt()
+                _validate_bounded_record(
+                    intent_record,
+                    projection_limit,
+                    payload_columns=_INTENT_PAYLOAD_COLUMNS,
+                    field_columns=_INTENT_FIELD_COLUMNS,
+                )
                 intent = intent_snapshot_from_record(intent_record)
                 if intent.intent.binding.run_id != run_id:
                     return ReconciliationRetryCommandConflict()
                 return ReconciliationRetryTargetFound(intent)
+        except ProjectionLimitExceeded:
+            return ReadUnavailable(PROJECTION_LIMIT_DETAIL)
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
@@ -323,26 +446,36 @@ class DbosQueries:
         self,
         connection: Connection,
         records: Sequence[Mapping[Any, Any]],
-        projection_limit: WorkflowProjectionLimit | None = None,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> tuple[RunProjection, ...]:
         if not records:
             return ()
         loaded_runs = tuple(run_from_record(record) for record in records)
         revision_hashes = {run.revision_hash for run in loaded_runs}
-        revision_records = {
-            WorkflowRevisionHash(str(record["revision_hash"])): bytes(
-                record["document"]
-            )
-            for record in connection.execute(
-                sa.select(
-                    workflow_revisions.c.revision_hash,
-                    workflow_revisions.c.document,
+        revision_rows = tuple(
+            connection.execute(
+                _bounded_projection_select(
+                    workflow_revisions,
+                    projection_limit,
+                    document_columns=_REVISION_DOCUMENT_COLUMNS,
                 ).where(
                     workflow_revisions.c.revision_hash.in_(
                         tuple(value.value for value in revision_hashes)
                     )
                 )
             ).mappings()
+        )
+        for record in revision_rows:
+            _validate_bounded_record(
+                record,
+                projection_limit,
+                document_columns=_REVISION_DOCUMENT_COLUMNS,
+            )
+        revision_records = {
+            WorkflowRevisionHash(str(record["revision_hash"])): bytes(
+                record["document"]
+            )
+            for record in revision_rows
         }
         if set(revision_records) != revision_hashes:
             raise RunTransitionConflict(
@@ -373,12 +506,23 @@ class DbosQueries:
         intent_records: dict[str, Mapping[Any, Any]] = {}
         if waiting_runs:
             for record in connection.execute(
-                sa.select(effect_intents).where(
+                _bounded_projection_select(
+                    effect_intents,
+                    projection_limit,
+                    payload_columns=_INTENT_PAYLOAD_COLUMNS,
+                    field_columns=_INTENT_FIELD_COLUMNS,
+                ).where(
                     effect_intents.c.logical_key.in_(
                         tuple(key.value for key in logical_keys_by_run.values())
                     )
                 )
             ).mappings():
+                _validate_bounded_record(
+                    record,
+                    projection_limit,
+                    payload_columns=_INTENT_PAYLOAD_COLUMNS,
+                    field_columns=_INTENT_FIELD_COLUMNS,
+                )
                 key = str(record["logical_key"])
                 if key in intent_records:
                     raise RunTransitionConflict("durable intent primary key repeated")
@@ -393,18 +537,28 @@ class DbosQueries:
             for record in intent_records.values()
             if record["reconciliation_owner_command_id"] is not None
         )
-        command_records = (
-            {
-                str(record["command_id"]): record
-                for record in connection.execute(
-                    sa.select(reconcile_commands).where(
-                        reconcile_commands.c.command_id.in_(owner_ids)
-                    )
+        command_rows = (
+            tuple(
+                connection.execute(
+                    _bounded_projection_select(
+                        reconcile_commands,
+                        projection_limit,
+                        payload_columns=_COMMAND_PAYLOAD_COLUMNS,
+                        field_columns=_COMMAND_FIELD_COLUMNS,
+                    ).where(reconcile_commands.c.command_id.in_(owner_ids))
                 ).mappings()
-            }
+            )
             if owner_ids
-            else {}
+            else ()
         )
+        for record in command_rows:
+            _validate_bounded_record(
+                record,
+                projection_limit,
+                payload_columns=_COMMAND_PAYLOAD_COLUMNS,
+                field_columns=_COMMAND_FIELD_COLUMNS,
+            )
+        command_records = {str(record["command_id"]): record for record in command_rows}
         if set(command_records) != set(owner_ids):
             raise RunTransitionConflict("reconciling intent command is missing")
 
@@ -513,7 +667,11 @@ class DbosQueries:
             return QueryDurableStateCorrupt()
 
     def read_run_event_page(
-        self, run_id: RunId, after_sequence: int, limit: int
+        self,
+        run_id: RunId,
+        after_sequence: int,
+        limit: int,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> ReadRunEventPageResult:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("event page limit must be an integer from 1 to 100")
@@ -535,7 +693,12 @@ class DbosQueries:
                     return EventHistoryCorrupt()
                 records = tuple(
                     connection.execute(
-                        sa.select(run_events)
+                        _bounded_projection_select(
+                            run_events,
+                            projection_limit,
+                            payload_columns=_EVENT_PAYLOAD_COLUMNS,
+                            field_columns=_EVENT_FIELD_COLUMNS,
+                        )
                         .where(
                             run_events.c.run_id == run_id.value,
                             run_events.c.event_sequence > after_sequence,
@@ -546,6 +709,13 @@ class DbosQueries:
                     .mappings()
                     .all()
                 )
+                for record in records:
+                    _validate_bounded_record(
+                        record,
+                        projection_limit,
+                        payload_columns=_EVENT_PAYLOAD_COLUMNS,
+                        field_columns=_EVENT_FIELD_COLUMNS,
+                    )
                 sequences = tuple(int(record["event_sequence"]) for record in records)
                 expected_sequences = tuple(
                     range(after_sequence + 1, min(head, after_sequence + limit) + 1)
@@ -565,12 +735,15 @@ class DbosQueries:
                 ):
                     return EventHistoryCorrupt()
                 events = tuple(
-                    self._event_projection(connection, record) for record in records
+                    self._event_projection(connection, record, projection_limit)
+                    for record in records
                 )
                 return RunEventPage(
                     events,
                     terminal_sequences == (head,),
                 )
+        except ProjectionLimitExceeded:
+            return ReadUnavailable(PROJECTION_LIMIT_DETAIL)
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (
@@ -585,7 +758,9 @@ class DbosQueries:
 
     @staticmethod
     def _event_projection(
-        connection: Connection, record: Mapping[Any, Any]
+        connection: Connection,
+        record: Mapping[Any, Any],
+        projection_limit: DurableProjectionLimit | None,
     ) -> PersistedRunEvent:
         event = event_from_record(record)
         if event.event_kind not in {
@@ -598,15 +773,24 @@ class DbosQueries:
             raise RunTransitionConflict("receipt event has no logical key")
         receipt_record = (
             connection.execute(
-                sa.select(effect_receipts).where(
-                    effect_receipts.c.logical_key == logical_key.value
-                )
+                _bounded_projection_select(
+                    effect_receipts,
+                    projection_limit,
+                    payload_columns=_RECEIPT_PAYLOAD_COLUMNS,
+                    field_columns=_RECEIPT_FIELD_COLUMNS,
+                ).where(effect_receipts.c.logical_key == logical_key.value)
             )
             .mappings()
             .one_or_none()
         )
         if receipt_record is None:
             raise RunTransitionConflict("receipt event has no durable receipt")
+        _validate_bounded_record(
+            receipt_record,
+            projection_limit,
+            payload_columns=_RECEIPT_PAYLOAD_COLUMNS,
+            field_columns=_RECEIPT_FIELD_COLUMNS,
+        )
         receipt = receipt_from_record(receipt_record)
         if (
             receipt.intent.binding.run_id != event.run_id

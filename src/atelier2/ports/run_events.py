@@ -7,7 +7,11 @@ from atelier2.contracts.effects import EffectReceipt
 from atelier2.contracts.executions import RunEvent
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_queries import RunQueryMissing
-from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt, ReadUnavailable
+from atelier2.ports.workflow_revisions import (
+    DurableProjectionLimit,
+    QueryDurableStateCorrupt,
+    ReadUnavailable,
+)
 
 
 @dataclass(frozen=True)
@@ -58,5 +62,9 @@ class RunEventQueries(Protocol):
     ) -> PrepareRunEventStreamResult: ...
 
     def read_run_event_page(
-        self, run_id: RunId, after_sequence: int, limit: int
+        self,
+        run_id: RunId,
+        after_sequence: int,
+        limit: int,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> ReadRunEventPageResult: ...

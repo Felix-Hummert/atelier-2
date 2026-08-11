@@ -104,7 +104,7 @@ class WorkflowRevisionPageResource(ApiModel):
 class OperatorFoundDeterminationResource(ApiModel):
     type: Literal["operator_found"]
     effect_id: str = Field(min_length=1)
-    result_base64: str = Field(min_length=1)
+    result_base64: str
 
 
 class OperatorAuthoritativeAbsenceDeterminationResource(ApiModel):

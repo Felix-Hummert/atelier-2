@@ -413,24 +413,35 @@ def test_json_body_limit_runs_before_fastapi_buffers_or_validates_the_body() -> 
     assert mutations.starts == []
 
 
-def test_field_and_workflow_node_limits_reject_before_write() -> None:
+@pytest.mark.parametrize(
+    ("maximum_field_characters", "run_id"),
+    [
+        (12, "abcdefghijkl"),
+        (10, "x"),
+    ],
+    ids=("public-reference-overflow", "maximum-cursor-only-overflow"),
+)
+def test_start_run_wire_identity_limits_reject_before_durable_work(
+    maximum_field_characters: int, run_id: str
+) -> None:
     mutations = RecordingMutationPorts()
     limited_fields = client_for(
         mutations,
-        api_limits(maximum_field_characters=5),
+        api_limits(maximum_field_characters=maximum_field_characters),
     )
-    exact_field = limited_fields.post(
+    response = limited_fields.post(
         "/atelier/api/v1/runs",
-        json={"run_id": "12345", "workflow_revision_hash": "0" * 64},
-    )
-    oversized_field = limited_fields.post(
-        "/atelier/api/v1/runs",
-        json={"run_id": "123456", "workflow_revision_hash": "0" * 64},
+        json={"run_id": run_id, "workflow_revision_hash": "0" * 64},
     )
 
-    assert exact_field.status_code == 404
-    assert_problem(oversized_field, 422, "invalid-request")
-    assert len(mutations.starts) == 1
+    assert_problem(response, 422, "invalid-request")
+    assert mutations.starts == []
+    assert mutations.publications == []
+    assert mutations.answers == []
+
+
+def test_field_and_workflow_node_limits_reject_before_write() -> None:
+    mutations = RecordingMutationPorts()
 
     node_limited = client_for(
         mutations,

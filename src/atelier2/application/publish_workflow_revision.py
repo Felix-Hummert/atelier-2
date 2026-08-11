@@ -27,6 +27,7 @@ class WorkflowPublicationLimits:
     maximum_document_bytes: int
     maximum_nodes: int
     maximum_string_characters: int
+    maximum_payload_bytes: int
 
     def __post_init__(self) -> None:
         for name, value in self.__dict__.items():
@@ -38,9 +39,28 @@ class WorkflowPublicationLimits:
         self.validate_graph(graph)
 
     def validate_document(self, document: bytes) -> None:
-        if len(document) > self.maximum_document_bytes:
+        self.validate_document_length(len(document))
+
+    @property
+    def maximum_field_characters(self) -> int:
+        return self.maximum_string_characters
+
+    def validate_document_length(self, byte_count: int) -> None:
+        if byte_count > self.maximum_document_bytes:
             raise ProjectionLimitExceeded(
                 "workflow document exceeds its encoded response limit"
+            )
+
+    def validate_field_length(self, character_count: int) -> None:
+        if character_count > self.maximum_string_characters:
+            raise ProjectionLimitExceeded(
+                "durable text exceeds its response character limit"
+            )
+
+    def validate_payload_length(self, byte_count: int) -> None:
+        if byte_count > self.maximum_payload_bytes:
+            raise ProjectionLimitExceeded(
+                "durable payload exceeds its encoded response limit"
             )
 
     def validate_graph(self, graph: WorkflowGraph) -> None:

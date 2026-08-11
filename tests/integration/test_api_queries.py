@@ -163,6 +163,32 @@ def test_projection_document_limit_refuses_before_workflow_parse(
             maximum_document_bytes=len(revision.document) - 1,
             maximum_nodes=10,
             maximum_string_characters=100,
+            maximum_payload_bytes=100,
+        ),
+    )
+
+    assert result == ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+
+
+def test_event_payload_limit_refuses_before_event_materialization(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = RunId("oversized-event")
+    revision = _seed_history(engine, run_id=run_id, head=10)
+
+    def unexpected_materialization(_record: object) -> object:
+        raise AssertionError("oversized durable event reached the event mapper")
+
+    monkeypatch.setattr(queries_module, "event_from_record", unexpected_materialization)
+    result = DbosQueries(engine).read_run_event_page(
+        run_id,
+        9,
+        1,
+        WorkflowPublicationLimits(
+            maximum_document_bytes=len(revision.document),
+            maximum_nodes=10,
+            maximum_string_characters=100,
+            maximum_payload_bytes=1,
         ),
     )
 
@@ -758,7 +784,7 @@ def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
 
 
 def test_run_page_batches_waiting_reconciliation_and_projects_command_owner_state(
-    engine: Engine,
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     revision = WorkflowRevision(
         b"""format_version: 1
@@ -810,7 +836,9 @@ nodes:
                     "canonical_request": request,
                     "request_hash": hashlib.sha256(request).hexdigest(),
                     "workflow_revision_hash": revision.revision_hash.value,
-                    "adapter_revision": "adapter-v1",
+                    "adapter_revision": (
+                        "a" * 65 if run_id == waiting_run_id else "adapter-v1"
+                    ),
                     "destination_identity": "destination",
                     "adapter_operational_identity": "operation",
                     "state": EffectIntentState.WAITING_RECONCILIATION.value,
@@ -825,12 +853,12 @@ nodes:
                 command_id="owner-command",
                 logical_key=logical_keys[owned_run_id],
                 expected_intent_version=1,
-                determination="AUTHORITATIVE_NOT_FOUND",
+                determination="FOUND",
                 actor="operator",
-                evidence="inspected exact request",
-                found_effect_id=None,
-                found_result=None,
-                found_result_hash=None,
+                evidence="e" * 65,
+                found_effect_id="effect",
+                found_result=b"command-result",
+                found_result_hash=hashlib.sha256(b"command-result").hexdigest(),
                 state=ReconcileCommandState.PENDING.value,
             )
         )
@@ -882,3 +910,45 @@ nodes:
     assert owned.pending_command is not None
     assert owned.pending_command.command.command_id.value == "owner-command"
     assert owned.pending_command.state is ReconcileCommandState.PENDING
+
+    def unexpected_materialization(_record: object) -> object:
+        raise AssertionError("oversized durable value reached its domain mapper")
+
+    def projection_limit(
+        *, maximum_field_characters: int, maximum_payload_bytes: int
+    ) -> WorkflowPublicationLimits:
+        return WorkflowPublicationLimits(
+            maximum_document_bytes=len(revision.document),
+            maximum_nodes=10,
+            maximum_string_characters=maximum_field_characters,
+            maximum_payload_bytes=maximum_payload_bytes,
+        )
+
+    cases = (
+        (
+            "intent_snapshot_from_record",
+            waiting_run_id,
+            projection_limit(maximum_field_characters=64, maximum_payload_bytes=100),
+        ),
+        (
+            "intent_snapshot_from_record",
+            waiting_run_id,
+            projection_limit(maximum_field_characters=100, maximum_payload_bytes=6),
+        ),
+        (
+            "command_snapshot_from_record",
+            owned_run_id,
+            projection_limit(maximum_field_characters=64, maximum_payload_bytes=100),
+        ),
+        (
+            "command_snapshot_from_record",
+            owned_run_id,
+            projection_limit(maximum_field_characters=100, maximum_payload_bytes=7),
+        ),
+    )
+    for mapper_name, bounded_run_id, limits in cases:
+        with monkeypatch.context() as context:
+            context.setattr(queries_module, mapper_name, unexpected_materialization)
+            assert DbosQueries(engine).get_run(bounded_run_id, limits) == (
+                ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+            ), mapper_name

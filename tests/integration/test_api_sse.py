@@ -5,9 +5,10 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
-from typing import cast
+from typing import Any, cast
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer, graph_action_intent
@@ -37,6 +38,7 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.application.advance_run import advance_run
+from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -53,6 +55,7 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
 from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from atelier2.ports.run_events import RunEventPage
 from tests.scenarios.api import (
     SSE_COMPLETE_HISTORY,
     SSE_CURSOR_AFTER_THREE,
@@ -245,3 +248,72 @@ def test_two_concurrent_readers_receive_the_same_durable_order(
             cast(dict[str, object], event["data"]).get("sequence")
             for event in histories[0]
         ] == list(range(1, 8))
+
+
+def test_receipt_result_limit_stays_in_each_indexed_snapshot_query(
+    tmp_path: Path,
+) -> None:
+    for runtime in _runtime(tmp_path):
+        run_id, revision = _complete_history(runtime)
+        receipt_selects: list[tuple[str, tuple[Any, ...]]] = []
+        connection_ids: set[int] = set()
+        transaction_states: list[bool] = []
+
+        def capture_receipt_select(
+            connection: Any,
+            _cursor: Any,
+            statement: str,
+            parameters: tuple[Any, ...],
+            _context: Any,
+            _executemany: bool,
+            captured_receipt_selects: list[tuple[str, tuple[Any, ...]]] = (
+                receipt_selects
+            ),
+            captured_connection_ids: set[int] = connection_ids,
+            captured_transaction_states: list[bool] = transaction_states,
+        ) -> None:
+            if "FROM effect_receipts" not in statement:
+                return
+            captured_receipt_selects.append((statement, parameters))
+            raw = connection.connection.driver_connection
+            captured_connection_ids.add(id(raw))
+            captured_transaction_states.append(bool(raw.in_transaction))
+
+        event.listen(runtime.engine, "before_cursor_execute", capture_receipt_select)
+        try:
+            page = DbosQueries(runtime.engine).read_run_event_page(
+                run_id,
+                2,
+                2,
+                WorkflowPublicationLimits(
+                    maximum_document_bytes=len(revision.document),
+                    maximum_nodes=10,
+                    maximum_string_characters=100,
+                    maximum_payload_bytes=100,
+                ),
+            )
+        finally:
+            event.remove(
+                runtime.engine, "before_cursor_execute", capture_receipt_select
+            )
+
+        assert isinstance(page, RunEventPage)
+        assert len(receipt_selects) == 2
+        assert connection_ids and len(connection_ids) == 1
+        assert transaction_states == [True, True]
+        for statement, parameters in receipt_selects:
+            assert "THEN effect_receipts.result END AS result" in statement
+            assert (
+                "length(effect_receipts.result) AS _atelier_length_result" in statement
+            )
+            with runtime.engine.connect() as connection:
+                plan = tuple(
+                    str(record[-1]).upper()
+                    for record in connection.exec_driver_sql(
+                        "EXPLAIN QUERY PLAN " + statement, parameters
+                    )
+                )
+            assert any(
+                "SEARCH EFFECT_RECEIPTS USING INDEX" in detail for detail in plan
+            )
+            assert all("SCAN" not in detail for detail in plan)

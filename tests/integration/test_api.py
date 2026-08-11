@@ -1131,6 +1131,102 @@ def test_http_reconciliation_preserves_accountable_binding_without_adapter_ident
     assert "sqlite" not in encoded
 
 
+def test_http_reconciliation_preserves_empty_result_bytes_on_exact_retry(
+    runtime: DbosRuntime,
+) -> None:
+    intent = _waiting_reconciliation(runtime)
+    client = _client(runtime)
+    path = (
+        f"/atelier/api/v1/runs/{encode_public_run_reference(intent.binding.run_id)}"
+        "/reconciliations"
+    )
+    body = {
+        "command_id": "empty-result-command",
+        "expected_intent_state_version": 1,
+        "actor": "operator-empty",
+        "evidence": "destination returned exact empty bytes",
+        "determination": {
+            "type": "operator_found",
+            "effect_id": "empty-effect",
+            "result_base64": "",
+        },
+    }
+
+    accepted = client.post(path, json=body)
+    existing = client.post(path, json=body)
+
+    assert accepted.status_code == existing.status_code == 202
+    assert accepted.json() == existing.json()
+    assert (
+        accepted.json()["waiting"]["pending_command"]["determination"]
+        == body["determination"]
+    )
+    with runtime.engine.connect() as connection:
+        command = dict(
+            connection.execute(
+                sa.select(reconcile_commands).where(
+                    reconcile_commands.c.command_id == "empty-result-command"
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert command["found_result"] == b""
+    assert command["found_result_hash"] == hashlib.sha256(b"").hexdigest()
+
+
+def test_http_stale_reconciliation_persists_rejection_then_exact_retry_reports_it(
+    runtime: DbosRuntime,
+) -> None:
+    intent = _waiting_reconciliation(runtime)
+    client = _client(runtime)
+    path = (
+        f"/atelier/api/v1/runs/{encode_public_run_reference(intent.binding.run_id)}"
+        "/reconciliations"
+    )
+    body = {
+        "command_id": "stale-command",
+        "expected_intent_state_version": 0,
+        "actor": "operator-stale",
+        "evidence": "stale observation retained for accountability",
+        "determination": {"type": "operator_authoritative_absence"},
+    }
+    before = _durable_snapshot(runtime)
+
+    stale = client.post(path, json=body)
+    after_stale = _durable_snapshot(runtime)
+    retry = client.post(path, json=body)
+
+    assert stale.status_code == 409
+    assert stale.json()["type"].endswith(":reconciliation-stale")
+    assert after_stale != before
+    assert retry.status_code == 409
+    assert retry.json()["type"].endswith(":reconciliation-rejected")
+    assert _durable_snapshot(runtime) == after_stale
+    with runtime.engine.connect() as connection:
+        command = dict(
+            connection.execute(
+                sa.select(reconcile_commands).where(
+                    reconcile_commands.c.command_id == "stale-command"
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert command == {
+        "command_id": "stale-command",
+        "logical_key": intent.binding.logical_key.value,
+        "expected_intent_version": 0,
+        "determination": "AUTHORITATIVE_NOT_FOUND",
+        "actor": "operator-stale",
+        "evidence": "stale observation retained for accountability",
+        "found_effect_id": None,
+        "found_result": None,
+        "found_result_hash": None,
+        "state": "REJECTED_CONFLICT",
+    }
+
+
 def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
     runtime: DbosRuntime, tmp_path: Path
 ) -> None:

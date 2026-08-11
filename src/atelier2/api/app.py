@@ -33,6 +33,7 @@ from atelier2.api.models import (
 from atelier2.api.openapi import API_PREFIX, install_custom_openapi
 from atelier2.api.problems import ApiProblem, install_problem_handlers
 from atelier2.api.references import (
+    MAX_SIGNED_INT64,
     InvalidEventCursor,
     InvalidPublicRunReference,
     InvalidRevisionHash,
@@ -123,10 +124,10 @@ from atelier2.ports.run_queries import (
 )
 from atelier2.ports.workflow_revisions import (
     PROJECTION_LIMIT_DETAIL,
+    DurableProjectionLimit,
     QueryDurableStateCorrupt,
     ReadUnavailable,
     WorkflowDocumentParser,
-    WorkflowProjectionLimit,
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
     WorkflowRevisionPage,
@@ -188,6 +189,10 @@ def create_app(
         ),
         maximum_nodes=limits.maximum_workflow_nodes,
         maximum_string_characters=limits.maximum_field_characters,
+        maximum_payload_bytes=min(
+            limits.maximum_decoded_payload_bytes,
+            limits.maximum_base64_decoded_bytes,
+        ),
     )
 
     @app.get(API_PREFIX + "/health", response_model=HealthResource)
@@ -307,12 +312,13 @@ def create_app(
         body: StartRunRequestResource,
         _media: None = Depends(_require_json_media_dependency),
     ) -> JSONResponse:
-        _require_field(body.run_id, limits)
+        run_id = RunId(body.run_id)
+        _require_new_run_identity(run_id, limits)
         try:
             revision_hash = parse_revision_hash(body.workflow_revision_hash)
         except InvalidRevisionHash as error:
             raise ApiProblem("invalid-revision-hash") from error
-        request = StartPublishedRunRequest(RunId(body.run_id), revision_hash)
+        request = StartPublishedRunRequest(run_id, revision_hash)
         result = await _run_control_query(
             runner, lambda: start_published_run(request, ports.published_run_starter)
         )
@@ -569,6 +575,7 @@ def create_app(
             event_runner,
             page_size=limits.event_page_size,
             limits=limits,
+            projection_limit=workflow_projection_limit,
             poll_backoff=event_poll_backoff,
         ):
             yield event
@@ -586,7 +593,7 @@ async def _load_run_resource(
     queries: RunQueries,
     runner: BoundedQueryRunner,
     limits: ApiLimits,
-    projection_limit: WorkflowProjectionLimit,
+    projection_limit: DurableProjectionLimit,
 ) -> RunResource:
     result = await _run_control_query(
         runner, lambda: queries.get_run(run_id, projection_limit)
@@ -658,6 +665,15 @@ def _require_field(value: str, limits: ApiLimits) -> None:
 def _require_fields(limits: ApiLimits, *values: str) -> None:
     for value in values:
         _require_field(value, limits)
+
+
+def _require_new_run_identity(run_id: RunId, limits: ApiLimits) -> None:
+    try:
+        limits.require_field(run_id.value)
+        limits.require_public_run_reference(run_id)
+        limits.require_event_cursor(run_id, MAX_SIGNED_INT64)
+    except ValueError as error:
+        raise ApiProblem("invalid-request") from error
 
 
 def _parse_limit(value: str) -> int:
