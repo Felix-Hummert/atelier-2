@@ -64,6 +64,15 @@ transition is another crash-safe transaction.
 [ADR 0001](decisions/0001-durable-runtime.md) owns the runtime and recovery
 boundary.
 
-There is still no cockpit, HTTP surface, provider or platform integration, or
-deployment code. The graph is a proven durable vertical, not yet a
-general-purpose workflow engine or remotely usable product.
+An HTTP API now projects that durable state under `/atelier/api/v1`. It can
+publish and inspect immutable workflow revisions; start, list, and inspect
+runs; answer a waiting node; submit an accountable reconciliation; and follow
+the closed durable event history as a resumable server-sent event stream. Its
+public references are transport identifiers, not new domain identities, and
+retries report whether a command was newly accepted or already existed without
+duplicating its durable write or wake-up. [ADR 0003](decisions/0003-http-api.md)
+owns the API and resume contract.
+
+There is still no cockpit, provider or platform integration, authentication
+boundary, or deployment code. The graph and API are a proven durable vertical,
+not yet a general-purpose workflow engine or a deployed remote product.

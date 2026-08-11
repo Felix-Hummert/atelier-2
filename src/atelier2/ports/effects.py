@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.effects import (
@@ -10,6 +11,49 @@ from atelier2.contracts.effects import (
     PerformedEffect,
     ReconcileCommand,
     ReconcileCommandSnapshot,
+)
+from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
+
+
+@dataclass(frozen=True)
+class DurableReconciliationCreated:
+    snapshot: ReconcileCommandSnapshot
+
+
+@dataclass(frozen=True)
+class DurableReconciliationExisting:
+    snapshot: ReconcileCommandSnapshot
+
+
+@dataclass(frozen=True)
+class DurableReconciliationTargetMissing:
+    pass
+
+
+@dataclass(frozen=True)
+class DurableReconciliationStale:
+    pass
+
+
+@dataclass(frozen=True)
+class DurableReconciliationCommandConflict:
+    pass
+
+
+@dataclass(frozen=True)
+class DurableReconciliationDeterminationConflict:
+    pass
+
+
+type DurableReconciliationResult = (
+    DurableReconciliationCreated
+    | DurableReconciliationExisting
+    | DurableReconciliationTargetMissing
+    | DurableReconciliationStale
+    | DurableReconciliationCommandConflict
+    | DurableReconciliationDeterminationConflict
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
 )
 
 
@@ -34,3 +78,9 @@ class DurableRunAdvancer(Protocol):
 
 class EffectReconcileCommander(Protocol):
     def submit(self, command: ReconcileCommand) -> ReconcileCommandSnapshot: ...
+
+
+class TransactionalEffectReconcileCommander(Protocol):
+    def submit_result(
+        self, command: ReconcileCommand
+    ) -> DurableReconciliationResult: ...

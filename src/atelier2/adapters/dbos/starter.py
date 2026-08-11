@@ -5,12 +5,17 @@ import hashlib
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DatabaseError, OperationalError
 
-from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
+from atelier2.adapters.dbos.run_store import run_from_record
+from atelier2.adapters.dbos.runtime import (
+    DbosRuntimeSettings,
+    canonical_write_transaction,
+)
 from atelier2.adapters.dbos.schema import runs, workflow_revisions
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.contracts.hashing import Sha256Hash
+from atelier2.application.start_published_run import StartPublishedRunRequest
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     Run,
@@ -18,7 +23,22 @@ from atelier2.contracts.runs import (
     RunIdentityConflict,
     RunState,
     StartRunRequest,
-    WorkflowRevisionHash,
+    WorkflowRevision,
+)
+from atelier2.ports.durable_runs import (
+    DurablePublishedRunResult,
+    DurableRunCreated,
+    DurableRunExisting,
+    DurableRunIdentityConflict,
+    DurableRunRevisionMissing,
+    DurableStateCorrupt,
+    DurableWriteUnavailable,
+)
+from atelier2.ports.workflow_revisions import (
+    DurableRevisionCollision,
+    DurableRevisionCreated,
+    DurableRevisionExisting,
+    DurableRevisionPublicationResult,
 )
 
 WORKFLOW_ID_PREFIX = "atelier2-run-"
@@ -85,6 +105,75 @@ class DbosDurableRunStarter:
         finally:
             client.destroy()
 
+    def start_published(
+        self, request: StartPublishedRunRequest
+    ) -> DurablePublishedRunResult:
+        client = DBOSClient(
+            system_database_engine=self._engine, use_listen_notify=False
+        )
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                document = connection.scalar(
+                    sa.select(workflow_revisions.c.document).where(
+                        workflow_revisions.c.revision_hash
+                        == request.revision_hash.value
+                    )
+                )
+                if document is None:
+                    return DurableRunRevisionMissing()
+                revision = WorkflowRevision(bytes(document))
+                if revision.revision_hash != request.revision_hash:
+                    return DurableStateCorrupt()
+                graph = parse_workflow_document(revision.document)
+                workflow_id = bootstrap_workflow_id_for(request.run_id)
+                inserted = connection.execute(
+                    runs.insert()
+                    .prefix_with("OR IGNORE")
+                    .values(
+                        run_id=request.run_id.value,
+                        bootstrap_workflow_id=workflow_id,
+                        revision_hash=request.revision_hash.value,
+                        current_node_id=graph.start,
+                        state=RunState.STARTED.value,
+                        state_version=0,
+                        last_event_sequence=0,
+                        terminal_hash=None,
+                    )
+                )
+                existing_record = (
+                    connection.execute(
+                        sa.select(runs).where(runs.c.run_id == request.run_id.value)
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing_record is None:
+                    raise RuntimeError("inserted run is not readable")
+                run = run_from_record(existing_record)
+                if inserted.rowcount == 0:
+                    if run.revision_hash != request.revision_hash:
+                        return DurableRunIdentityConflict()
+                    return DurableRunExisting(run)
+                options: EnqueueOptions = {
+                    "workflow_name": WORKFLOW_NAME,
+                    "queue_name": QUEUE_NAME,
+                    "workflow_id": workflow_id,
+                    "app_version": self._settings.application_version,
+                }
+                client.enqueue_in_transaction(
+                    connection,
+                    options,
+                    request.run_id.value,
+                    request.revision_hash.value,
+                )
+                return DurableRunCreated(run)
+        except OperationalError:
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+        finally:
+            client.destroy()
+
     @staticmethod
     def _insert_or_verify_revision(
         connection: sa.Connection, request: StartRunRequest
@@ -110,25 +199,48 @@ class DbosDurableRunStarter:
 
     @staticmethod
     def _existing_run(connection: sa.Connection, run_id: RunId) -> Run | None:
-        record = connection.execute(
-            sa.select(
-                runs.c.revision_hash,
-                runs.c.state,
-                runs.c.current_node_id,
-                runs.c.state_version,
-                runs.c.last_event_sequence,
-                runs.c.terminal_hash,
-            ).where(runs.c.run_id == run_id.value)
-        ).one_or_none()
+        record = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
+            .mappings()
+            .one_or_none()
+        )
         if record is None:
             return None
-        terminal = record.terminal_hash
-        return Run(
-            run_id,
-            WorkflowRevisionHash(str(record.revision_hash)),
-            RunState(str(record.state)),
-            str(record.current_node_id),
-            int(record.state_version),
-            int(record.last_event_sequence),
-            None if terminal is None else Sha256Hash(str(terminal)),
-        )
+        return run_from_record(record)
+
+
+class DbosWorkflowRevisionPublisher:
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+
+    def publish(self, revision: WorkflowRevision) -> DurableRevisionPublicationResult:
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                inserted = connection.execute(
+                    workflow_revisions.insert()
+                    .prefix_with("OR IGNORE")
+                    .values(
+                        revision_hash=revision.revision_hash.value,
+                        document=revision.document,
+                    )
+                )
+                stored = connection.scalar(
+                    sa.select(workflow_revisions.c.document).where(
+                        workflow_revisions.c.revision_hash
+                        == revision.revision_hash.value
+                    )
+                )
+                if stored is None:
+                    raise RuntimeError("inserted workflow revision is not readable")
+                durable = WorkflowRevision(bytes(stored))
+                if durable.revision_hash != revision.revision_hash:
+                    return DurableStateCorrupt()
+                if durable.document != revision.document:
+                    return DurableRevisionCollision()
+                if inserted.rowcount == 1:
+                    return DurableRevisionCreated(durable)
+                return DurableRevisionExisting(durable)
+        except OperationalError:
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()

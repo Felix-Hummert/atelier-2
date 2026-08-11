@@ -5,6 +5,7 @@ import hashlib
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DatabaseError, OperationalError
 
 from atelier2.adapters.dbos.effect_store import (
     command_snapshot_from_record,
@@ -23,6 +24,15 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
     ReconcileCommandSnapshot,
     ReconcileCommandState,
+)
+from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
+from atelier2.ports.effects import (
+    DurableReconciliationCommandConflict,
+    DurableReconciliationCreated,
+    DurableReconciliationDeterminationConflict,
+    DurableReconciliationExisting,
+    DurableReconciliationResult,
+    DurableReconciliationTargetMissing,
 )
 
 RECONCILE_WORKFLOW_ID_PREFIX = "atelier2-reconcile-"
@@ -45,41 +55,28 @@ class DbosEffectReconcileCommander:
         self._settings = settings
 
     def submit(self, command: ReconcileCommand) -> ReconcileCommandSnapshot:
+        result = self.submit_result(command)
+        if isinstance(
+            result, (DurableReconciliationCreated, DurableReconciliationExisting)
+        ):
+            return result.snapshot
+        if isinstance(
+            result,
+            (
+                DurableReconciliationCommandConflict,
+                DurableReconciliationDeterminationConflict,
+                DurableReconciliationTargetMissing,
+            ),
+        ):
+            raise ReconcileCommandIdentityConflict(type(result).__name__)
+        raise RuntimeError(f"reconcile command refused: {type(result).__name__}")
+
+    def submit_result(self, command: ReconcileCommand) -> DurableReconciliationResult:
         client = DBOSClient(
             system_database_engine=self._engine, use_listen_notify=False
         )
         try:
             with canonical_write_transaction(self._engine) as connection:
-                existing_record = (
-                    connection.execute(
-                        sa.select(reconcile_commands).where(
-                            reconcile_commands.c.command_id == command.command_id.value
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                if existing_record is not None:
-                    intent_record = (
-                        connection.execute(
-                            sa.select(effect_intents).where(
-                                effect_intents.c.logical_key
-                                == existing_record["logical_key"]
-                            )
-                        )
-                        .mappings()
-                        .one()
-                    )
-                    snapshot = command_snapshot_from_record(
-                        existing_record,
-                        intent_snapshot_from_record(intent_record).intent,
-                    )
-                    if snapshot.command != command:
-                        raise ReconcileCommandIdentityConflict(
-                            "command identifier already belongs to another decision"
-                        )
-                    return snapshot
-
                 intent_record = (
                     connection.execute(
                         sa.select(effect_intents).where(
@@ -91,14 +88,10 @@ class DbosEffectReconcileCommander:
                     .one_or_none()
                 )
                 if intent_record is None:
-                    raise ReconcileCommandIdentityConflict(
-                        "command names no prepared durable intent"
-                    )
+                    return DurableReconciliationTargetMissing()
                 intent_snapshot = intent_snapshot_from_record(intent_record)
                 if intent_snapshot.intent.reference != command.intent_reference:
-                    raise ReconcileCommandIdentityConflict(
-                        "command does not name the exact durable intent"
-                    )
+                    return DurableReconciliationCommandConflict()
 
                 accepted = (
                     intent_snapshot.state is EffectIntentState.WAITING_RECONCILIATION
@@ -114,9 +107,50 @@ class DbosEffectReconcileCommander:
                     intent_snapshot.intent.resolve_reconciliation(
                         command, intent_snapshot.state_version
                     )
-                self._insert_command(connection, command, state)
+                inserted = self._insert_command(connection, command, state)
+                stored_record = (
+                    connection.execute(
+                        sa.select(reconcile_commands).where(
+                            reconcile_commands.c.command_id == command.command_id.value
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if stored_record is None:
+                    raise RuntimeError("inserted reconcile command is not readable")
+                stored_intent_record = (
+                    connection.execute(
+                        sa.select(effect_intents).where(
+                            effect_intents.c.logical_key == stored_record["logical_key"]
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if stored_intent_record is None:
+                    raise RuntimeError("reconcile command intent is not readable")
+                snapshot = command_snapshot_from_record(
+                    stored_record,
+                    intent_snapshot_from_record(stored_intent_record).intent,
+                )
+                if inserted.rowcount == 0:
+                    if snapshot.command == command:
+                        return DurableReconciliationExisting(snapshot)
+                    if (
+                        snapshot.command.command_id == command.command_id
+                        and snapshot.command.intent_reference
+                        == command.intent_reference
+                        and snapshot.command.expected_intent_state_version
+                        == command.expected_intent_state_version
+                        and snapshot.command.actor == command.actor
+                        and snapshot.command.evidence == command.evidence
+                        and snapshot.command.determination != command.determination
+                    ):
+                        return DurableReconciliationDeterminationConflict()
+                    return DurableReconciliationCommandConflict()
                 if not accepted:
-                    return ReconcileCommandSnapshot(command, state)
+                    return DurableReconciliationCreated(snapshot)
 
                 updated = connection.execute(
                     effect_intents.update()
@@ -136,7 +170,7 @@ class DbosEffectReconcileCommander:
                 )
                 if updated.rowcount != 1:
                     raise RuntimeError(
-                        "serialized reconciliation CAS did not own one intent"
+                        "serialized reconciliation update lost ownership"
                     )
                 workflow_id = reconcile_workflow_id_for(command.command_id)
                 options: EnqueueOptions = {
@@ -151,7 +185,11 @@ class DbosEffectReconcileCommander:
                     command.command_id.value,
                     command.intent_reference.binding.workflow_revision_hash.value,
                 )
-                return ReconcileCommandSnapshot(command, state)
+                return DurableReconciliationCreated(snapshot)
+        except OperationalError:
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
         finally:
             client.destroy()
 
@@ -160,11 +198,13 @@ class DbosEffectReconcileCommander:
         connection: sa.Connection,
         command: ReconcileCommand,
         state: ReconcileCommandState,
-    ) -> None:
+    ) -> sa.CursorResult[object]:
         determination = command.determination
         found = isinstance(determination, OperatorFoundEffect)
-        connection.execute(
-            reconcile_commands.insert().values(
+        return connection.execute(
+            reconcile_commands.insert()
+            .prefix_with("OR IGNORE")
+            .values(
                 command_id=command.command_id.value,
                 logical_key=command.intent_reference.binding.logical_key.value,
                 expected_intent_version=command.expected_intent_state_version.value,
