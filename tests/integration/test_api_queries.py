@@ -622,6 +622,89 @@ def _seed_runs(
         )
 
 
+@pytest.mark.parametrize(
+    ("run_id_value", "current_node_id"),
+    [
+        ("r" * 10_000, "agent"),
+        ("run\0" + "r" * 10_000, "agent"),
+        ("run", "n" * 10_000),
+        ("run", "agent\0" + "n" * 10_000),
+    ],
+    ids=(
+        "oversized-run-id",
+        "nul-suffix-run-id",
+        "oversized-current-node",
+        "nul-suffix-current-node",
+    ),
+)
+def test_run_core_text_limits_refuse_before_mapper_without_selecting_bootstrap_id(
+    engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+    run_id_value: str,
+    current_node_id: str,
+) -> None:
+    revision = WorkflowRevision(_workflow_document("bounded-run-row"))
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=revision.revision_hash.value,
+                document=revision.document,
+            )
+        )
+        connection.execute(
+            runs.insert().values(
+                run_id=run_id_value,
+                bootstrap_workflow_id="unused-bootstrap-identity",
+                revision_hash=revision.revision_hash.value,
+                current_node_id=current_node_id,
+                state=RunState.STARTED.value,
+                state_version=0,
+                last_event_sequence=0,
+                terminal_hash=None,
+            )
+        )
+
+    def unexpected_materialization(_record: object) -> object:
+        raise AssertionError("oversized durable run text reached the run mapper")
+
+    monkeypatch.setattr(queries_module, "run_from_record", unexpected_materialization)
+    run_selects: list[str] = []
+
+    def capture_run_select(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: object,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if "FROM runs" in statement:
+            run_selects.append(statement)
+
+    projection_limit = WorkflowPublicationLimits(
+        maximum_document_bytes=len(revision.document),
+        maximum_nodes=10,
+        maximum_string_characters=64,
+        maximum_payload_bytes=100,
+    )
+    event.listen(engine, "before_cursor_execute", capture_run_select)
+    try:
+        detail = ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+        assert (
+            DbosQueries(engine).get_run(RunId(run_id_value), projection_limit) == detail
+        )
+        assert DbosQueries(engine).list_runs(None, 100, projection_limit) == detail
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_run_select)
+
+    assert len(run_selects) == 2
+    for statement in run_selects:
+        selected_columns = statement.partition("FROM runs")[0]
+        assert "bootstrap_workflow_id" not in selected_columns
+        assert "CAST(runs.run_id AS BLOB)" in selected_columns
+        assert "CAST(runs.current_node_id AS BLOB)" in selected_columns
+
+
 def test_run_pages_follow_exact_utf8_bytes_from_existing_or_missing_boundary(
     engine: Engine,
 ) -> None:

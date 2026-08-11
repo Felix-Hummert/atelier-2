@@ -86,6 +86,17 @@ from atelier2.ports.workflow_revisions import (
 )
 
 _LENGTH_LABEL_PREFIX = "_atelier_length_"
+_MAXIMUM_UTF8_BYTES_PER_CHARACTER = 4
+_RUN_PROJECTION_COLUMNS: tuple[sa.Column[Any], ...] = (
+    runs.c.run_id,
+    runs.c.revision_hash,
+    runs.c.current_node_id,
+    runs.c.state,
+    runs.c.state_version,
+    runs.c.last_event_sequence,
+    runs.c.terminal_hash,
+)
+_RUN_FIELD_COLUMNS = frozenset(("run_id", "current_node_id"))
 _REVISION_DOCUMENT_COLUMNS = frozenset(("document",))
 _INTENT_PAYLOAD_COLUMNS = frozenset(("canonical_request",))
 _INTENT_FIELD_COLUMNS = frozenset(
@@ -122,24 +133,31 @@ def _bounded_projection_select(
     table: sa.Table,
     projection_limit: DurableProjectionLimit | None,
     *,
+    columns: Sequence[sa.Column[Any]] | None = None,
     document_columns: frozenset[str] = frozenset(),
     payload_columns: frozenset[str] = frozenset(),
     field_columns: frozenset[str] = frozenset(),
 ) -> sa.Select[Any]:
+    selected_columns = tuple(table.c) if columns is None else columns
     if projection_limit is None:
-        return sa.select(table)
+        return sa.select(*selected_columns)
     projected: list[Any] = []
-    for column in table.c:
+    for column in selected_columns:
         if column.name in document_columns:
             maximum = projection_limit.maximum_document_bytes
+            length = sa.func.length(column)
         elif column.name in payload_columns:
             maximum = projection_limit.maximum_payload_bytes
+            length = sa.func.length(column)
         elif column.name in field_columns:
-            maximum = projection_limit.maximum_field_characters
+            maximum = (
+                _MAXIMUM_UTF8_BYTES_PER_CHARACTER
+                * projection_limit.maximum_field_characters
+            )
+            length = sa.func.length(sa.cast(column, sa.LargeBinary()))
         else:
             projected.append(column)
             continue
-        length = sa.func.length(column)
         projected.append(
             sa.case((length <= maximum, column), else_=None).label(column.name)
         )
@@ -167,8 +185,14 @@ def _validate_bounded_record(
             projection_limit.validate_payload_length(int(length))
     for column_name in field_columns:
         length = record[_LENGTH_LABEL_PREFIX + column_name]
-        if length is not None:
-            projection_limit.validate_field_length(int(length))
+        if length is None:
+            continue
+        value = record[column_name]
+        if value is None:
+            raise ProjectionLimitExceeded(
+                "durable text exceeds its response allocation limit"
+            )
+        projection_limit.validate_field_length(len(str(value)))
 
 
 class DbosQueries:
@@ -312,13 +336,23 @@ class DbosQueries:
             with self._connection() as connection:
                 record = (
                     connection.execute(
-                        sa.select(runs).where(runs.c.run_id == run_id.value)
+                        _bounded_projection_select(
+                            runs,
+                            projection_limit,
+                            columns=_RUN_PROJECTION_COLUMNS,
+                            field_columns=_RUN_FIELD_COLUMNS,
+                        ).where(runs.c.run_id == run_id.value)
                     )
                     .mappings()
                     .one_or_none()
                 )
                 if record is None:
                     return RunQueryMissing()
+                _validate_bounded_record(
+                    record,
+                    projection_limit,
+                    field_columns=_RUN_FIELD_COLUMNS,
+                )
                 return RunFound(
                     self._run_projections(connection, (record,), projection_limit)[0]
                 )
@@ -339,7 +373,12 @@ class DbosQueries:
             raise ValueError("run page limit must be an integer from 1 to 100")
         try:
             with self._connection() as connection:
-                statement = sa.select(runs)
+                statement = _bounded_projection_select(
+                    runs,
+                    projection_limit,
+                    columns=_RUN_PROJECTION_COLUMNS,
+                    field_columns=_RUN_FIELD_COLUMNS,
+                )
                 if after is not None:
                     statement = statement.where(runs.c.run_id > after.value)
                 records = tuple(
@@ -349,6 +388,12 @@ class DbosQueries:
                 )
                 has_more = len(records) > limit
                 item_records = records[:limit]
+                for record in item_records:
+                    _validate_bounded_record(
+                        record,
+                        projection_limit,
+                        field_columns=_RUN_FIELD_COLUMNS,
+                    )
                 projections = self._run_projections(
                     connection, item_records, projection_limit
                 )

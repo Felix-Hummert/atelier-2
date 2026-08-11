@@ -127,25 +127,16 @@ async def stream_server_events(
         return
     while True:
         try:
-            if projection_limit is None:
-                result = await runner.run(
-                    lambda current_after_sequence=after_sequence: (
-                        queries.read_run_event_page(
-                            prepared.run_id, current_after_sequence, page_size
-                        )
+            result = await runner.run(
+                lambda current_after_sequence=after_sequence: (
+                    queries.read_run_event_page(
+                        prepared.run_id,
+                        current_after_sequence,
+                        page_size,
+                        projection_limit,
                     )
                 )
-            else:
-                result = await runner.run(
-                    lambda current_after_sequence=after_sequence: (
-                        queries.read_run_event_page(
-                            prepared.run_id,
-                            current_after_sequence,
-                            page_size,
-                            projection_limit,
-                        )
-                    )
-                )
+            )
         except QueryAdmissionTimeout:
             return
         if not isinstance(result, RunEventPage):

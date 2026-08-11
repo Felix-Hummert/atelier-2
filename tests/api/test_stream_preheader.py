@@ -51,9 +51,13 @@ class FakeEventQueries:
         return self.prepared
 
     def read_run_event_page(
-        self, run_id: RunId, after_sequence: int, limit: int
+        self,
+        run_id: RunId,
+        after_sequence: int,
+        limit: int,
+        projection_limit: object | None = None,
     ) -> ReadRunEventPageResult:
-        del run_id, after_sequence, limit
+        del run_id, after_sequence, limit, projection_limit
         self.page_calls += 1
         raise AssertionError("pre-header rejection started event paging")
 
