@@ -7,9 +7,11 @@ import {
   failResource,
   markConnecting,
   markLive,
+  projectNodeRail,
   startLoading,
   streamProjection
 } from "../../src/lib/runProjection";
+import type { Run, WorkflowRevisionDetail } from "../../src/api/client";
 
 const digest = "a".repeat(64);
 
@@ -80,6 +82,87 @@ describe("contiguous durable SSE projection", () => {
     expect(rejected.events).toEqual([event(1)]);
     expect(rejected.last_sequence).toBe(1);
   });
+
+  it("refuses an event whose node identity or kind is absent from the bound graph", () => {
+    const wrongNode = decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify(event(1, { node_id: "missing" })),
+      workflow().graph
+    );
+    const wrongKind = decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify({ ...waitInputEvent(1), node_id: "agent" }),
+      workflow().graph
+    );
+
+    expect(wrongNode.protocol_problem).toEqual({ type: "decoder" });
+    expect(wrongKind.protocol_problem).toEqual({ type: "decoder" });
+  });
+});
+
+describe("read-only node rail", () => {
+  it("orders the graph from its start edge and projects all four durable node states", () => {
+    const events = [
+      event(1),
+      actionEvent(2, "ACTION_COMPLETED"),
+      waitInputEvent(3)
+    ];
+
+    const rail = projectNodeRail(waitingRun(), workflow().graph, events);
+
+    expect(rail.map(({ node }) => node.node_id)).toEqual(["agent", "action", "wait", "final"]);
+    expect(rail.map(({ state }) => state)).toEqual(["done", "done", "needs_you", "queued"]);
+    expect(rail.map(({ last_event }) => last_event?.event ?? null)).toEqual([
+      "AGENT_COMPLETED",
+      "ACTION_COMPLETED",
+      "WAITING_INPUT",
+      null
+    ]);
+  });
+
+  it("shows an accepted reconciliation as Working even while the snapshot still waits", () => {
+    const value = waitingRun();
+    const pending: Run = {
+      ...value,
+      state: "WAITING_RECONCILIATION",
+      current_node: workflow().graph.nodes[1]!,
+      waiting: {
+        type: "WAITING_RECONCILIATION",
+        node_id: "action",
+        logical_effect_key: "effect",
+        request_hash: digest,
+        request_base64: "cmVxdWVzdA==",
+        intent_state_version: 2,
+        pending_command: {
+          command_id: "command",
+          actor: "operator",
+          evidence: "inspected exact request",
+          state: "PENDING",
+          determination: { type: "operator_authoritative_absence" }
+        }
+      }
+    };
+
+    expect(projectNodeRail(pending, workflow().graph, [event(1)])[1]?.state).toBe("working");
+  });
+
+  it("keeps the authoritative snapshot while replay catches up, then advances from later events", () => {
+    const initial = startedRun();
+    const caughtUp = projectNodeRail(initial, workflow().graph, [event(1)]);
+    const newlyWaiting = projectNodeRail(initial, workflow().graph, [
+      event(1),
+      reconciliationRequiredEvent(2)
+    ]);
+    const advanced = projectNodeRail(initial, workflow().graph, [
+      event(1),
+      reconciliationRequiredEvent(2),
+      actionEvent(3, "ACTION_COMPLETED")
+    ]);
+
+    expect(caughtUp.map(({ state }) => state)).toEqual(["done", "working", "queued", "queued"]);
+    expect(newlyWaiting.map(({ state }) => state)).toEqual(["done", "needs_you", "queued", "queued"]);
+    expect(advanced.map(({ state }) => state)).toEqual(["done", "done", "working", "queued"]);
+  });
 });
 
 function projection() {
@@ -92,6 +175,7 @@ function event(
     cursor: string;
     public_run_reference: string;
     workflow_revision_hash: string;
+    node_id: string;
   }> = {}
 ) {
   return {
@@ -115,5 +199,98 @@ function problem() {
     title: "Temporarily unavailable" as const,
     status: 503 as const,
     detail: "Retry later."
+  };
+}
+
+function workflow(): WorkflowRevisionDetail {
+  return {
+    revision_hash: digest,
+    document_base64: "",
+    graph: {
+      format_version: 1,
+      start_node_id: "agent",
+      nodes: [
+        { type: "agent", node_id: "agent", job: "Build it", output: "candidate", next_node_id: "action" },
+        { type: "action", node_id: "action", next_node_id: "wait" },
+        { type: "wait", node_id: "wait", answer_type: "integer", next_node_id: "final" },
+        { type: "subworkflow", node_id: "final", operation: "add", operands: [2, 3], next_node_id: null }
+      ]
+    }
+  };
+}
+
+function waitingRun(): Run {
+  return {
+    run_id: "run",
+    public_run_reference: "run1.cnVu",
+    workflow_revision_hash: digest,
+    state_version: 3,
+    state: "WAITING_INPUT",
+    current_node: workflow().graph.nodes[2]!,
+    waiting: { type: "WAITING_INPUT", node_id: "wait", answer_type: "integer" },
+    terminal_hash: null,
+    latest_event_cursor: "event1.cnVu.3"
+  };
+}
+
+function startedRun(): Run {
+  return {
+    ...waitingRun(),
+    state_version: 1,
+    state: "STARTED",
+    current_node: workflow().graph.nodes[1]!,
+    waiting: { type: "NONE" },
+    latest_event_cursor: "event1.cnVu.1"
+  };
+}
+
+function actionEvent(sequence: number, kind: "ACTION_COMPLETED") {
+  return {
+    cursor: `event1.cnVu.${sequence}`,
+    sequence,
+    public_run_reference: "run1.cnVu",
+    workflow_revision_hash: digest,
+    node_id: "action",
+    node_execution_id: digest,
+    event_hash: digest,
+    event: kind,
+    receipt: {
+      logical_effect_key: "effect",
+      request_hash: digest,
+      effect_id: "effect-1",
+      result_hash: digest,
+      result_base64: "cmVzdWx0",
+      confirmation_source: "ADAPTER_EXECUTION" as const,
+      reconcile_command_id: null
+    }
+  };
+}
+
+function waitInputEvent(sequence: number) {
+  return {
+    cursor: `event1.cnVu.${sequence}`,
+    sequence,
+    public_run_reference: "run1.cnVu",
+    workflow_revision_hash: digest,
+    node_id: "wait",
+    node_execution_id: digest,
+    event_hash: digest,
+    event: "WAITING_INPUT" as const,
+    answer_type: "integer" as const
+  };
+}
+
+function reconciliationRequiredEvent(sequence: number) {
+  return {
+    cursor: `event1.cnVu.${sequence}`,
+    sequence,
+    public_run_reference: "run1.cnVu",
+    workflow_revision_hash: digest,
+    node_id: "action",
+    node_execution_id: digest,
+    event_hash: digest,
+    event: "ACTION_RECONCILIATION_REQUIRED" as const,
+    request_base64: "cmVxdWVzdA==",
+    request_hash: digest
   };
 }

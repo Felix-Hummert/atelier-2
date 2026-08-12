@@ -315,6 +315,8 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     publish: vi.fn(async () => ({ status: 201, value: revision() })),
     start: vi.fn(async () => ({ status: 201, value: run() })),
     getRun: vi.fn(async () => run()),
+    getWorkflowRevision: vi.fn(async () => revision()),
+    openRunEvents: vi.fn(() => ({ close: vi.fn() })),
     ...overrides
   };
 }
@@ -354,6 +356,13 @@ function graph() {
         job: "Build the feature",
         output: "result",
         next_node_id: "done"
+      },
+      {
+        type: "subworkflow" as const,
+        node_id: "done",
+        operation: "add" as const,
+        operands: [2, 3] as [number, number],
+        next_node_id: null
       }
     ]
   };

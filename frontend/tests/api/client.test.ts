@@ -72,6 +72,40 @@ describe("closed API decoders", () => {
     expect(() => decodeWorkflowRevisionDetail({ ...decoded, invented: true })).toThrow();
   });
 
+  it.each([
+    ["duplicate node", { start_node_id: "final", nodes: [terminal("final"), terminal("final")] }],
+    ["missing start", { start_node_id: "missing", nodes: [terminal("final")] }],
+    [
+      "missing successor",
+      {
+        start_node_id: "agent",
+        nodes: [
+          { type: "agent", node_id: "agent", job: "work", output: "result", next_node_id: "missing" },
+          terminal("final")
+        ]
+      }
+    ],
+    [
+      "unreachable node",
+      {
+        start_node_id: "wait",
+        nodes: [
+          { type: "wait", node_id: "wait", answer_type: "integer", next_node_id: "final" },
+          { type: "wait", node_id: "lost", answer_type: "integer", next_node_id: "final" },
+          terminal("final")
+        ]
+      }
+    ]
+  ])("refuses a structurally invalid projected graph: %s", (_case, graph) => {
+    expect(() =>
+      decodeWorkflowRevisionDetail({
+        revision_hash: digest,
+        document_base64: "",
+        graph: { format_version: 1, ...graph }
+      })
+    ).toThrow();
+  });
+
   it.each(["not-base64", "YQ", "YQ===", "Y Q==", "YQ-_", "===="])(
     "refuses a noncanonical document base64 value: %s",
     (document_base64) => {
@@ -363,5 +397,15 @@ function receipt() {
     result_base64: "",
     confirmation_source: "OPERATOR_FOUND",
     reconcile_command_id: "command"
+  };
+}
+
+function terminal(node_id: string) {
+  return {
+    type: "subworkflow",
+    node_id,
+    operation: "add",
+    operands: [2, 3],
+    next_node_id: null
   };
 }

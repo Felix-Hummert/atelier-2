@@ -66,7 +66,56 @@ const workflowGraphSchema = z
     start_node_id: z.string().min(1),
     nodes: z.array(nodeSchema)
   })
-  .strict();
+  .strict()
+  .superRefine((graph, context) => {
+    const byId = new Map(graph.nodes.map((node) => [node.node_id, node]));
+    if (graph.nodes.length === 0 || byId.size !== graph.nodes.length) {
+      context.addIssue({ code: "custom", message: "workflow nodes must be nonempty and unique" });
+      return;
+    }
+    const start = byId.get(graph.start_node_id);
+    if (start === undefined || start.type === "action") {
+      context.addIssue({ code: "custom", message: "workflow start is missing or invalid" });
+      return;
+    }
+    const terminalCount = graph.nodes.filter((node) => node.type === "subworkflow").length;
+    const actions = graph.nodes.filter((node) => node.type === "action");
+    if (terminalCount !== 1 || actions.length > 1) {
+      context.addIssue({ code: "custom", message: "workflow terminal or Action count is invalid" });
+      return;
+    }
+    const predecessors = new Map<string, typeof graph.nodes>();
+    for (const node of graph.nodes) predecessors.set(node.node_id, []);
+    for (const node of graph.nodes) {
+      if (node.next_node_id === null) continue;
+      const successor = byId.get(node.next_node_id);
+      if (successor === undefined) {
+        context.addIssue({ code: "custom", message: "workflow successor is missing" });
+        return;
+      }
+      predecessors.get(successor.node_id)?.push(node);
+    }
+    for (const action of actions) {
+      const incoming = predecessors.get(action.node_id) ?? [];
+      if (incoming.length !== 1 || incoming[0]?.type !== "agent") {
+        context.addIssue({ code: "custom", message: "Action requires one Agent predecessor" });
+        return;
+      }
+    }
+    const visited = new Set<string>();
+    let current: z.infer<typeof nodeSchema> | undefined = start;
+    while (current !== undefined) {
+      if (visited.has(current.node_id)) {
+        context.addIssue({ code: "custom", message: "workflow graph contains a cycle" });
+        return;
+      }
+      visited.add(current.node_id);
+      current = current.next_node_id === null ? undefined : byId.get(current.next_node_id);
+    }
+    if (visited.size !== graph.nodes.length) {
+      context.addIssue({ code: "custom", message: "workflow graph contains unreachable nodes" });
+    }
+  });
 
 const workflowRevisionSummarySchema = z
   .object({ revision_hash: sha256 })
@@ -303,6 +352,8 @@ export const problemSchema = z.discriminatedUnion("type", [
 export type Problem = z.infer<typeof problemSchema>;
 export type Run = z.infer<typeof runSchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
+export type WorkflowGraph = z.infer<typeof workflowGraphSchema>;
+export type WorkflowNode = z.infer<typeof nodeSchema>;
 export type WorkflowRevisionDetail = z.infer<typeof workflowRevisionDetailSchema>;
 export type RunPage = z.infer<typeof runPageSchema>;
 export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
@@ -318,7 +369,25 @@ export interface CockpitApi {
   publish(mutation: PublishMutation): Promise<HttpResult<WorkflowRevisionDetail>>;
   start(mutation: StartMutation): Promise<HttpResult<Run>>;
   getRun(publicReference: string): Promise<Run>;
+  getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
+  openRunEvents(publicReference: string, handlers: RunEventHandlers): RunEventSubscription;
 }
+
+export interface RunEventHandlers {
+  opened(): void;
+  event(rawData: string): void;
+  disconnected(): void;
+}
+
+export interface RunEventSubscription {
+  close(): void;
+}
+
+export interface EventSourcePort extends RunEventSubscription {
+  addEventListener(type: string, listener: EventListener): void;
+}
+
+export type EventSourceFactory = (target: string) => EventSourcePort;
 
 export class CockpitRequestError extends Error {
   constructor(
@@ -330,7 +399,10 @@ export class CockpitRequestError extends Error {
   }
 }
 
-export function createCockpitApi(fetcher: typeof fetch = globalThis.fetch): CockpitApi {
+export function createCockpitApi(
+  fetcher: typeof fetch = globalThis.fetch,
+  eventSourceFactory: EventSourceFactory = (target) => new EventSource(target)
+): CockpitApi {
   return {
     listRuns: () => requestJson(fetcher, "/atelier/api/v1/runs?limit=50", {}, [200], runPageSchema),
     listWorkflowRevisions: () =>
@@ -372,9 +444,50 @@ export function createCockpitApi(fetcher: typeof fetch = globalThis.fetch): Cock
         {},
         [200],
         runSchema
-      )
+      ),
+    getWorkflowRevision: async (revisionHash) => {
+      const revision = await requestJson(
+        fetcher,
+        `/atelier/api/v1/workflow-revisions/${encodeURIComponent(revisionHash)}`,
+        {},
+        [200],
+        workflowRevisionDetailSchema
+      );
+      if (revision.revision_hash !== revisionHash) {
+        throw new CockpitRequestError("The workflow response did not match the requested revision.");
+      }
+      return revision;
+    },
+    openRunEvents: (publicReference, handlers) => {
+      if (decodePublicRunReference(publicReference) === null) {
+        throw new CockpitRequestError("The run event target was not a valid public reference.");
+      }
+      const source = eventSourceFactory(
+        `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}/events`
+      );
+      source.addEventListener("open", () => handlers.opened());
+      for (const eventName of durableEventNames) {
+        source.addEventListener(eventName, (event) => {
+          if (event instanceof MessageEvent && typeof event.data === "string") {
+            handlers.event(event.data);
+          }
+        });
+      }
+      source.addEventListener("error", () => handlers.disconnected());
+      return source;
+    }
   };
 }
+
+const durableEventNames = [
+  "AGENT_COMPLETED",
+  "ACTION_RECONCILIATION_REQUIRED",
+  "ACTION_RECONCILIATION_RESOLVED",
+  "ACTION_COMPLETED",
+  "WAITING_INPUT",
+  "WAIT_ANSWERED",
+  "SUBWORKFLOW_COMPLETED"
+] as const;
 
 export function decodeProblem(value: unknown): Problem {
   return problemSchema.parse(value);
