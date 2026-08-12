@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -13,6 +14,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
+from atelier2.ports.agent_executions import AgentExecutorRegistry
 from tests.scenarios.api import api_limits, event_poll_backoff
 
 database_path = Path(os.environ["ATELIER2_TEST_DATABASE"])
@@ -32,6 +34,7 @@ app = create_app(
         queries,
         queries,
         parse_workflow_document,
+        DbosAgentConfigurationCatalog(engine, AgentExecutorRegistry()),
     ),
     limits=api_limits(event_page_size=2),
     event_poll_backoff=event_poll_backoff(),

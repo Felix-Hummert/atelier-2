@@ -10,12 +10,19 @@ from fastapi.openapi.utils import get_openapi
 
 from atelier2.api.models import (
     ActionCompletedEventResource,
+    ActionCompletedEventResourceV2,
     ActionReconciliationRequiredEventResource,
+    ActionReconciliationRequiredEventResourceV2,
     ActionReconciliationResolvedEventResource,
+    ActionReconciliationResolvedEventResourceV2,
     AgentCompletedEventResource,
+    AgentCompletedEventResourceV2,
     SubworkflowCompletedEventResource,
+    SubworkflowCompletedEventResourceV2,
     WaitAnsweredEventResource,
+    WaitAnsweredEventResourceV2,
     WaitingInputEventResource,
+    WaitingInputEventResourceV2,
 )
 from atelier2.api.problems import PROBLEM_DEFINITIONS, PROBLEM_TYPE_PREFIX
 from atelier2.api.references import (
@@ -37,10 +44,38 @@ EVENT_MODELS = (
     WaitAnsweredEventResource,
     SubworkflowCompletedEventResource,
 )
+EVENT_MODELS_V2 = (
+    AgentCompletedEventResourceV2,
+    ActionReconciliationRequiredEventResourceV2,
+    ActionReconciliationResolvedEventResourceV2,
+    ActionCompletedEventResourceV2,
+    WaitingInputEventResourceV2,
+    WaitAnsweredEventResourceV2,
+    SubworkflowCompletedEventResourceV2,
+)
 EVENT_NAMES = tuple(kind.value for kind in RunEventKind)
 
 OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/health", "get"): ("internal-error",),
+    (API_PREFIX + "/auth-profile-revisions", "post"): (
+        "invalid-request",
+        "auth-profile-revision-conflict",
+        "auth-profile-revision-collision",
+        "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (API_PREFIX + "/agent-configuration-revisions", "post"): (
+        "invalid-request",
+        "auth-profile-revision-not-found",
+        "agent-executor-binding-unavailable",
+        "agent-configuration-revision-collision",
+        "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (API_PREFIX + "/workflow-revisions", "post"): (
         "invalid-workflow-document",
         "revision-collision",
@@ -68,6 +103,9 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-request",
         "unsupported-media-type",
         "workflow-revision-not-found",
+        "invalid-agent-bindings",
+        "agent-configuration-revision-not-found",
+        "agent-executor-binding-unavailable",
         "run-identity-conflict",
         "temporarily-unavailable",
         "durable-state-corrupt",
@@ -149,6 +187,7 @@ def install_custom_openapi(app: FastAPI) -> None:
         _install_publication_request_body(schema)
         _install_event_components(schema)
         _install_parameter_contracts(schema)
+        _install_versioned_run_unions(schema)
         _install_sse_contract(schema)
         OpenAPI.model_validate(schema)
         app.openapi_schema = schema
@@ -245,6 +284,32 @@ def _install_event_components(schema: dict[str, Any]) -> None:
             },
         },
     }
+    for model in EVENT_MODELS_V2:
+        generated = model.model_json_schema(
+            mode="serialization", ref_template="#/components/schemas/{model}"
+        )
+        definitions = generated.pop("$defs", {})
+        components.update(definitions)
+        components[model.__name__] = generated
+    components["RunEventResourceV2"] = {
+        "oneOf": [
+            {"$ref": f"#/components/schemas/{model.__name__}"}
+            for model in EVENT_MODELS_V2
+        ],
+        "discriminator": {
+            "propertyName": "event",
+            "mapping": {
+                name: f"#/components/schemas/{model.__name__}"
+                for name, model in zip(EVENT_NAMES, EVENT_MODELS_V2, strict=True)
+            },
+        },
+    }
+    components["VersionedRunEventResource"] = {
+        "oneOf": [
+            {"$ref": "#/components/schemas/RunEventResource"},
+            {"$ref": "#/components/schemas/RunEventResourceV2"},
+        ]
+    }
     components["EventCursor"] = {
         "type": "string",
         "pattern": EVENT_CURSOR_PATTERN,
@@ -313,6 +378,43 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
         )
 
 
+def _install_versioned_run_unions(schema: dict[str, Any]) -> None:
+    start_operation = schema["paths"][API_PREFIX + "/runs"]["post"]
+    _rename_any_of_to_one_of(
+        start_operation["requestBody"]["content"]["application/json"]["schema"]
+    )
+    for path, method, statuses in (
+        (API_PREFIX + "/runs", "post", ("200", "201")),
+        (API_PREFIX + "/runs/{public_ref}", "get", ("200",)),
+        (API_PREFIX + "/runs/{public_ref}/answers", "post", ("200", "202")),
+        (
+            API_PREFIX + "/runs/{public_ref}/reconciliations",
+            "post",
+            ("200", "202"),
+        ),
+    ):
+        for status in statuses:
+            _rename_any_of_to_one_of(
+                schema["paths"][path][method]["responses"][status]["content"][
+                    "application/json"
+                ]["schema"]
+            )
+    schema["paths"][API_PREFIX + "/runs"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] = {"$ref": "#/components/schemas/VersionedRunPageResource"}
+    page_items = schema["components"]["schemas"]["VersionedRunPageResource"][
+        "properties"
+    ]["items"]["items"]
+    _rename_any_of_to_one_of(page_items)
+
+
+def _rename_any_of_to_one_of(candidate: dict[str, Any]) -> None:
+    variants = candidate.pop("anyOf", None)
+    if not isinstance(variants, list):
+        raise TypeError("generated OpenAPI omitted a versioned union")
+    candidate["oneOf"] = variants
+
+
 def _replace_parameter_schema(
     operation: dict[str, Any],
     name: str,
@@ -344,7 +446,7 @@ def _install_sse_contract(schema: dict[str, Any]) -> None:
             "x-atelier2-sse-v1": {
                 "id": {"$ref": "#/components/schemas/EventCursor"},
                 "event": {"enum": list(EVENT_NAMES)},
-                "data": {"$ref": "#/components/schemas/RunEventResource"},
+                "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
             },
         }
     }

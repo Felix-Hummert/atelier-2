@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Literal, TypedDict, cast
 
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
@@ -19,6 +20,7 @@ from atelier2.adapters.dbos.effect_store import (
 from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
     commit_agent_completed,
+    commit_agent_completed_v2,
     commit_subworkflow_completed,
     commit_wait_answered,
     commit_waiting_input,
@@ -27,9 +29,20 @@ from atelier2.adapters.dbos.run_store import (
     load_wait_answer,
 )
 from atelier2.contracts.agents import (
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionHash,
     AgentExecutionRequest,
+    AgentExecutionRequestV2,
     AgentExecutorBinding,
+    AgentExecutorOperationalIdentity,
+    AgentExecutorRevision,
+    AgentRole,
+    AuthMode,
+    AuthProfileRevision,
+    AuthProfileRevisionHash,
     ExactOutputContract,
+    ProviderId,
+    ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
@@ -41,6 +54,7 @@ from atelier2.contracts.executions import (
     node_workflow_id_for,
     subworkflow_workflow_id_for,
 )
+from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -49,10 +63,15 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.workflows import (
     ActionNode,
     AgentNode,
+    AgentNodeV2,
     SubworkflowNode,
     WaitNode,
 )
-from atelier2.ports.agent_executions import AgentExecutor
+from atelier2.ports.agent_executions import (
+    AgentExecutor,
+    AgentExecutorKey,
+    AgentExecutorV2,
+)
 from atelier2.ports.effects import EffectAdapter
 
 WORKFLOW_NAME = "atelier2_durable_run"
@@ -85,6 +104,20 @@ class EncodedAgentBinding(TypedDict):
     output: str
 
 
+class EncodedAgentBindingV2(TypedDict):
+    type: Literal["agent-v2"]
+    role: str
+    job: str
+    configuration_hash: str
+    auth_hash: str
+    profile_id: str
+    revision_number: int
+    provider_id: str
+    auth_mode: str
+    model: str
+    executor_revision: str
+
+
 class EncodedActionBinding(TypedDict):
     type: Literal["action"]
 
@@ -101,6 +134,7 @@ class EncodedSubworkflowBinding(TypedDict):
 
 type EncodedNodeBinding = (
     EncodedAgentBinding
+    | EncodedAgentBindingV2
     | EncodedActionBinding
     | EncodedWaitBinding
     | EncodedSubworkflowBinding
@@ -162,6 +196,34 @@ def _node_binding(
         node = load_graph(session, revision_hash).node(node_id)
         if isinstance(node, AgentNode):
             return {"type": "agent", "job": node.job, "output": node.output}
+        if isinstance(node, AgentNodeV2):
+            if not isinstance(run, RunV2):
+                raise RunTransitionConflict("V2 Agent node belongs to a V1 run")
+            resolved = next(
+                (
+                    binding
+                    for binding in run.agent_bindings
+                    if binding.role.value == node.role
+                ),
+                None,
+            )
+            if resolved is None:
+                raise RunTransitionConflict("V2 Agent role has no durable binding")
+            configuration = resolved.configuration
+            auth = resolved.auth_profile
+            return {
+                "type": "agent-v2",
+                "role": resolved.role.value,
+                "job": node.job,
+                "configuration_hash": configuration.revision_hash.value,
+                "auth_hash": auth.revision_hash.value,
+                "profile_id": auth.profile_id,
+                "revision_number": auth.revision_number,
+                "provider_id": auth.provider_id.value,
+                "auth_mode": auth.auth_mode.value,
+                "model": configuration.model,
+                "executor_revision": configuration.executor_revision.value,
+            }
         if isinstance(node, ActionNode):
             return {"type": "action"}
         if isinstance(node, WaitNode):
@@ -184,6 +246,9 @@ def register_durable_run_workflow(
     datasource: SQLAlchemyDatasource,
     agent_executor: AgentExecutor,
     agent_binding: AgentExecutorBinding,
+    agent_executors_v2: Mapping[
+        AgentExecutorKey, tuple[AgentExecutorV2, AgentExecutorOperationalIdentity]
+    ],
     adapter: EffectAdapter,
     effect_binding: EffectAdapterBinding,
 ) -> None:
@@ -231,6 +296,54 @@ def register_durable_run_workflow(
                         execution_request,
                         agent_binding,
                         result,
+                    ).current_node_id
+                ),
+            )
+            start_node(typed_run_id, typed_revision, str(successor))
+            return RunState.STARTED.value
+        if binding["type"] == "agent-v2":
+            auth = AuthProfileRevision(
+                binding["profile_id"],
+                binding["revision_number"],
+                ProviderId(binding["provider_id"]),
+                AuthMode(binding["auth_mode"]),
+            )
+            if auth.revision_hash != AuthProfileRevisionHash(binding["auth_hash"]):
+                raise RunBindingConflict(
+                    "V2 auth fields differ from their durable hash"
+                )
+            configuration = AgentConfigurationRevision(
+                binding["model"],
+                auth.revision_hash,
+                AgentExecutorRevision(binding["executor_revision"]),
+            )
+            if configuration.revision_hash != AgentConfigurationRevisionHash(
+                binding["configuration_hash"]
+            ):
+                raise RunBindingConflict(
+                    "V2 configuration fields differ from their durable hash"
+                )
+            resolved = ResolvedAgentBinding(
+                AgentRole(binding["role"]), configuration, auth
+            )
+            executor, operational_identity = agent_executors_v2[
+                AgentExecutorKey(auth.provider_id, configuration.executor_revision)
+            ]
+            execution_request_v2 = AgentExecutionRequestV2(
+                NodeExecutionId.for_node(typed_run_id, typed_revision, node_id),
+                typed_run_id,
+                typed_revision,
+                node_id,
+                resolved,
+                operational_identity,
+                binding["job"].encode("utf-8"),
+            )
+            result = executor.execute(execution_request_v2)
+            successor = datasource.run_tx_step(
+                {"name": AGENT_COMMIT_STEP_NAME},
+                lambda: (
+                    commit_agent_completed_v2(
+                        datasource.sql_session(), execution_request_v2, result
                     ).current_node_id
                 ),
             )

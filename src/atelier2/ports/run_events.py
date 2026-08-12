@@ -18,6 +18,11 @@ from atelier2.ports.workflow_revisions import (
 class PersistedRunEvent:
     event: RunEvent
     receipt: EffectReceipt | None
+    workflow_format_version: int = 1
+
+    def __post_init__(self) -> None:
+        if self.workflow_format_version not in (1, 2):
+            raise ValueError("persisted event workflow format must be V1 or V2")
 
 
 @dataclass(frozen=True)

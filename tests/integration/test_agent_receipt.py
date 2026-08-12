@@ -16,7 +16,6 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeBindingConflict,
     DbosRuntimeSettings,
-    canonical_write_transaction,
 )
 from atelier2.adapters.dbos.schema import (
     agent_receipts,
@@ -24,6 +23,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import (
     EXACT_OUTPUT_EXECUTOR_BINDING,
     ExactOutputAgentExecutorFactory,

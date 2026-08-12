@@ -5,8 +5,10 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Barrier
+from typing import Never
 
 import pytest
 import sqlalchemy as sa
@@ -22,17 +24,26 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeBindingConflict,
     DbosRuntimeLeaseClosed,
     DbosRuntimeSettings,
-    canonical_write_transaction,
 )
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     bootstrap_workflow_id_for,
 )
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.advance_run import advance_run
 from atelier2.application.start_run import start_run
+from atelier2.contracts.agents import (
+    AgentExecutionRequestV2,
+    AgentExecutionResult,
+    AgentExecutorOperationalIdentity,
+    AgentExecutorRevision,
+    ProviderId,
+)
 from atelier2.contracts.effects import (
+    AdapterOperationalIdentity,
     AdapterRevision,
     EffectAdapterBinding,
     EffectDestination,
@@ -41,8 +52,15 @@ from atelier2.contracts.effects import (
     PerformedEffect,
 )
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+from atelier2.ports.agent_executions import (
+    AgentExecutorFactoryV2,
+    AgentExecutorKey,
+)
 from atelier2.ports.effects import EffectAdapter
-from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    commit_configured_agent,
+)
 from tests.scenarios.runtime import exact_output_runtime
 
 WORKFLOW_TIMEOUT_SECONDS = 5.0
@@ -547,3 +565,603 @@ def test_existing_hardlink_alias_is_refused_before_external_store_mutation(
             "SELECT COUNT(*) FROM sqlite_master "
             "WHERE type='table' AND name LIKE 'loopback_effect%'"
         ).fetchone() == (0,)
+
+
+def _runtime_with_v2(
+    root: Path,
+    factories: tuple[AgentExecutorFactoryV2, ...],
+    application_version: str = "v2-life",
+) -> DbosRuntime:
+    return DbosRuntime(
+        DbosRuntimeSettings(root / "atelier.sqlite", application_version),
+        LoopbackEffectAdapterFactory(
+            root / "effects.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("lifecycle"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        factories,
+    )
+
+
+@dataclass
+class CloseFailingExecutor:
+    name: str
+    lifecycle: list[str]
+
+    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult:
+        del request
+        return AgentExecutionResult(b"")
+
+    def close(self) -> None:
+        self.lifecycle.append(f"close:{self.name}")
+        raise RuntimeError(f"cleanup:{self.name}")
+
+
+@dataclass
+class CloseFailingFactory:
+    provider: str
+    lifecycle: list[str]
+
+    @property
+    def key(self) -> AgentExecutorKey:
+        return AgentExecutorKey(
+            ProviderId(self.provider), AgentExecutorRevision(f"{self.provider}/v1")
+        )
+
+    @property
+    def operational_identity(self) -> AgentExecutorOperationalIdentity:
+        return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
+
+    def open(self) -> CloseFailingExecutor:
+        self.lifecycle.append(f"open:{self.provider}")
+        return CloseFailingExecutor(self.provider, self.lifecycle)
+
+
+@dataclass
+class ChangingKeyExecutor:
+    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult:
+        del request
+        return AgentExecutionResult(b"")
+
+    def close(self) -> None:
+        return None
+
+
+@dataclass
+class ChangingKeyFactory:
+    key_reads: int = 0
+    identity_reads: int = 0
+    opens: int = 0
+
+    @property
+    def key(self) -> AgentExecutorKey:
+        self.key_reads += 1
+        suffix = str(self.key_reads)
+        return AgentExecutorKey(
+            ProviderId(f"provider-{suffix}"),
+            AgentExecutorRevision(f"executor/{suffix}"),
+        )
+
+    @property
+    def operational_identity(self) -> AgentExecutorOperationalIdentity:
+        self.identity_reads += 1
+        return AgentExecutorOperationalIdentity(f"operation-{self.identity_reads}")
+
+    def open(self) -> ChangingKeyExecutor:
+        self.opens += 1
+        return ChangingKeyExecutor()
+
+
+@dataclass
+class BaseExceptionOpenFactory:
+    provider: str
+    failure: BaseException
+    lifecycle: list[str]
+
+    @property
+    def key(self) -> AgentExecutorKey:
+        return AgentExecutorKey(
+            ProviderId(self.provider), AgentExecutorRevision(f"{self.provider}/v1")
+        )
+
+    @property
+    def operational_identity(self) -> AgentExecutorOperationalIdentity:
+        return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
+
+    def open(self) -> Never:
+        self.lifecycle.append(f"open:{self.provider}")
+        raise self.failure
+
+
+@dataclass
+class BaseExceptionCloseExecutor:
+    provider: str
+    failure: BaseException
+    lifecycle: list[str]
+
+    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult:
+        del request
+        return AgentExecutionResult(b"")
+
+    def close(self) -> Never:
+        self.lifecycle.append(f"close:{self.provider}")
+        raise self.failure
+
+
+@dataclass
+class BaseExceptionCloseFactory:
+    provider: str
+    failure: BaseException
+    lifecycle: list[str]
+
+    @property
+    def key(self) -> AgentExecutorKey:
+        return AgentExecutorKey(
+            ProviderId(self.provider), AgentExecutorRevision(f"{self.provider}/v1")
+        )
+
+    @property
+    def operational_identity(self) -> AgentExecutorOperationalIdentity:
+        return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
+
+    def open(self) -> BaseExceptionCloseExecutor:
+        self.lifecycle.append(f"open:{self.provider}")
+        return BaseExceptionCloseExecutor(self.provider, self.failure, self.lifecycle)
+
+
+@dataclass
+class BaseExceptionEffectFactory:
+    binding_value: EffectAdapterBinding
+    failure: BaseException
+    lifecycle: list[str]
+
+    @property
+    def binding(self) -> EffectAdapterBinding:
+        return self.binding_value
+
+    def open(self) -> Never:
+        self.lifecycle.append("open:effect")
+        raise self.failure
+
+
+def test_v2_factories_open_sorted_and_last_lease_closes_them_reverse_once(
+    tmp_path: Path,
+) -> None:
+    lifecycle: list[str] = []
+    first_factories = (
+        RecordingAgentExecutorFactoryV2(
+            "openai", "codex/v1", "codex-operation", b"", lifecycle
+        ),
+        RecordingAgentExecutorFactoryV2(
+            "anthropic", "claude/v1", "claude-operation", b"", lifecycle
+        ),
+    )
+    second_factories = (
+        RecordingAgentExecutorFactoryV2(
+            "anthropic", "claude/v1", "claude-operation", b""
+        ),
+        RecordingAgentExecutorFactoryV2("openai", "codex/v1", "codex-operation", b""),
+    )
+
+    first = _runtime_with_v2(tmp_path, first_factories)
+    second = _runtime_with_v2(tmp_path, second_factories)
+
+    assert lifecycle == ["open:anthropic", "open:openai"]
+    assert [factory.opens for factory in first_factories] == [1, 1]
+    assert [factory.opens for factory in second_factories] == [0, 0]
+    first.close()
+    assert lifecycle == ["open:anthropic", "open:openai"]
+    second.close()
+    assert lifecycle == [
+        "open:anthropic",
+        "open:openai",
+        "close:openai",
+        "close:anthropic",
+    ]
+    assert all(
+        factory.opened is not None and factory.opened.closes == 1
+        for factory in first_factories
+    )
+
+
+def test_duplicate_v2_registry_key_is_refused_before_any_factory_opens(
+    tmp_path: Path,
+) -> None:
+    factories = (
+        RecordingAgentExecutorFactoryV2(
+            "anthropic", "claude/v1", "first-operation", b""
+        ),
+        RecordingAgentExecutorFactoryV2(
+            "anthropic", "claude/v1", "second-operation", b""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="keys must be unique"):
+        _runtime_with_v2(tmp_path, factories)
+
+    assert [factory.opens for factory in factories] == [0, 0]
+    assert [factory.key_reads for factory in factories] == [1, 1]
+    assert [factory.identity_reads for factory in factories] == [1, 1]
+    assert not (tmp_path / "atelier.sqlite").exists()
+    assert not (tmp_path / "effects.sqlite").exists()
+
+
+def test_v2_factory_identity_is_captured_once_before_open(tmp_path: Path) -> None:
+    factory = ChangingKeyFactory()
+    runtime = _runtime_with_v2(tmp_path, (factory,))
+    try:
+        assert factory.key_reads == 1
+        assert factory.identity_reads == 1
+        assert factory.opens == 1
+    finally:
+        runtime.close()
+
+
+def test_same_v2_factory_object_is_refused_without_durable_mutation(
+    tmp_path: Path,
+) -> None:
+    factory = ChangingKeyFactory()
+    runtime: DbosRuntime | None = None
+    try:
+        with pytest.raises(ValueError, match="factory objects must be unique"):
+            runtime = _runtime_with_v2(tmp_path, (factory, factory))
+    finally:
+        if runtime is not None:
+            runtime.close()
+
+    assert factory.key_reads == 0
+    assert factory.identity_reads == 0
+    assert factory.opens == 0
+    assert not (tmp_path / "atelier.sqlite").exists()
+    assert not (tmp_path / "effects.sqlite").exists()
+
+
+def test_partial_v2_open_failure_closes_prior_executor_and_releases_owner(
+    tmp_path: Path,
+) -> None:
+    lifecycle: list[str] = []
+    opened = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude/v1", "claude-operation", b"", lifecycle
+    )
+
+    class FailingFactory:
+        @property
+        def key(self) -> AgentExecutorKey:
+            return AgentExecutorKey(
+                ProviderId("openai"), AgentExecutorRevision("codex/v1")
+            )
+
+        @property
+        def operational_identity(self) -> AgentExecutorOperationalIdentity:
+            return AgentExecutorOperationalIdentity("codex-operation")
+
+        def open(self) -> Never:
+            lifecycle.append("open:openai")
+            raise RuntimeError("injected V2 open failure")
+
+    with pytest.raises(RuntimeError, match="injected V2 open failure"):
+        _runtime_with_v2(tmp_path, (FailingFactory(), opened))
+
+    assert lifecycle == ["open:anthropic", "open:openai", "close:anthropic"]
+    assert opened.opened is not None and opened.opened.closes == 1
+    recovered = _runtime_with_v2(tmp_path, ())
+    recovered.close()
+
+
+def test_v2_base_exception_open_closes_prior_executor_and_releases_owner(
+    tmp_path: Path,
+) -> None:
+    lifecycle: list[str] = []
+    opened = RecordingAgentExecutorFactoryV2(
+        "alpha", "alpha/v1", "alpha-operation", b"", lifecycle
+    )
+    failure = KeyboardInterrupt("open:beta failed")
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        _runtime_with_v2(
+            tmp_path,
+            (opened, BaseExceptionOpenFactory("beta", failure, lifecycle)),
+        )
+
+    assert captured.value is failure
+    assert lifecycle == ["open:alpha", "open:beta", "close:alpha"]
+    assert opened.opened is not None and opened.opened.closes == 1
+    recovered = _runtime_with_v2(tmp_path, (), application_version="recovered")
+    recovered.close()
+
+
+def test_v2_registration_failure_closes_all_opened_executors_reverse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lifecycle: list[str] = []
+    factories = (
+        RecordingAgentExecutorFactoryV2(
+            "openai", "codex/v1", "codex-operation", b"", lifecycle
+        ),
+        RecordingAgentExecutorFactoryV2(
+            "anthropic", "claude/v1", "claude-operation", b"", lifecycle
+        ),
+    )
+
+    def fail_registration(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("injected registration failure")
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            "atelier2.adapters.dbos.runtime.register_durable_run_workflow",
+            fail_registration,
+        )
+        with pytest.raises(RuntimeError, match="injected registration failure"):
+            _runtime_with_v2(tmp_path, factories)
+
+    assert lifecycle == [
+        "open:anthropic",
+        "open:openai",
+        "close:openai",
+        "close:anthropic",
+    ]
+    assert all(
+        factory.opened is not None and factory.opened.closes == 1
+        for factory in factories
+    )
+    recovered = _runtime_with_v2(tmp_path, ())
+    recovered.close()
+
+
+def test_v2_open_and_cleanup_failures_preserve_original_then_cleanup_order(
+    tmp_path: Path,
+) -> None:
+    lifecycle: list[str] = []
+
+    class OpenFailingFactory:
+        @property
+        def key(self) -> AgentExecutorKey:
+            return AgentExecutorKey(
+                ProviderId("openai"), AgentExecutorRevision("openai/v1")
+            )
+
+        @property
+        def operational_identity(self) -> AgentExecutorOperationalIdentity:
+            return AgentExecutorOperationalIdentity("openai-operation")
+
+        def open(self) -> Never:
+            lifecycle.append("open:openai")
+            raise RuntimeError("open:openai failed")
+
+    with pytest.raises(ExceptionGroup) as captured:
+        _runtime_with_v2(
+            tmp_path,
+            (OpenFailingFactory(), CloseFailingFactory("anthropic", lifecycle)),
+        )
+
+    assert lifecycle == ["open:anthropic", "open:openai", "close:anthropic"]
+    assert [str(error) for error in captured.value.exceptions] == [
+        "open:openai failed",
+        "cleanup:anthropic",
+    ]
+    recovered = _runtime_with_v2(tmp_path, ())
+    recovered.close()
+
+
+def test_base_exception_open_and_multiple_cleanup_failures_preserve_order(
+    tmp_path: Path,
+) -> None:
+    lifecycle: list[str] = []
+    alpha_cleanup = KeyboardInterrupt("cleanup:alpha")
+    beta_cleanup = SystemExit("cleanup:beta")
+    original = KeyboardInterrupt("open:gamma")
+
+    with pytest.raises(BaseExceptionGroup) as captured:
+        _runtime_with_v2(
+            tmp_path,
+            (
+                BaseExceptionCloseFactory("alpha", alpha_cleanup, lifecycle),
+                BaseExceptionCloseFactory("beta", beta_cleanup, lifecycle),
+                BaseExceptionOpenFactory("gamma", original, lifecycle),
+            ),
+        )
+
+    assert lifecycle == [
+        "open:alpha",
+        "open:beta",
+        "open:gamma",
+        "close:beta",
+        "close:alpha",
+    ]
+    assert captured.value.exceptions == (original, beta_cleanup, alpha_cleanup)
+    recovered = _runtime_with_v2(tmp_path, (), application_version="recovered")
+    recovered.close()
+
+
+def test_registration_base_exception_runs_all_cleanup_and_preserves_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lifecycle: list[str] = []
+    original = SystemExit("registration")
+    factory = RecordingAgentExecutorFactoryV2(
+        "alpha", "alpha/v1", "alpha-operation", b"", lifecycle
+    )
+
+    def fail_registration(*_arguments: object, **_keywords: object) -> Never:
+        lifecycle.append("register")
+        raise original
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            "atelier2.adapters.dbos.runtime.register_durable_run_workflow",
+            fail_registration,
+        )
+        with pytest.raises(SystemExit) as captured:
+            _runtime_with_v2(tmp_path, (factory,))
+
+    assert captured.value is original
+    assert lifecycle == ["open:alpha", "register", "close:alpha"]
+    recovered = _runtime_with_v2(tmp_path, (), application_version="recovered")
+    recovered.close()
+
+
+def test_effect_open_base_exception_closes_provider_and_releases_owner(
+    tmp_path: Path,
+) -> None:
+    lifecycle: list[str] = []
+    original = KeyboardInterrupt("effect open")
+    factory = RecordingAgentExecutorFactoryV2(
+        "alpha", "alpha/v1", "alpha-operation", b"", lifecycle
+    )
+    effect_factory = BaseExceptionEffectFactory(
+        EffectAdapterBinding(
+            AdapterRevision("failing/v1"),
+            EffectDestination("failing"),
+            AdapterOperationalIdentity(str((tmp_path / "effects.sqlite").resolve())),
+        ),
+        original,
+        lifecycle,
+    )
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        DbosRuntime(
+            DbosRuntimeSettings(tmp_path / "atelier.sqlite", "effect-open"),
+            effect_factory,
+            ExactOutputAgentExecutorFactory(),
+            (factory,),
+        )
+
+    assert captured.value is original
+    assert lifecycle == ["open:alpha", "open:effect", "close:alpha"]
+    recovered = _runtime_with_v2(tmp_path, (), application_version="recovered")
+    recovered.close()
+
+
+def test_last_close_runs_every_v2_cleanup_and_releases_owner_despite_failures(
+    tmp_path: Path,
+) -> None:
+    lifecycle: list[str] = []
+    runtime = _runtime_with_v2(
+        tmp_path,
+        (
+            CloseFailingFactory("openai", lifecycle),
+            CloseFailingFactory("anthropic", lifecycle),
+        ),
+    )
+
+    with pytest.raises(ExceptionGroup) as captured:
+        runtime.close()
+
+    assert lifecycle == [
+        "open:anthropic",
+        "open:openai",
+        "close:openai",
+        "close:anthropic",
+    ]
+    assert [str(error) for error in captured.value.exceptions] == [
+        "cleanup:openai",
+        "cleanup:anthropic",
+    ]
+    runtime.close()
+    recovered = _runtime_with_v2(tmp_path, ())
+    recovered.close()
+
+
+def test_last_close_continues_after_base_exception_and_resets_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lifecycle: list[str] = []
+    factories = (
+        RecordingAgentExecutorFactoryV2(
+            "beta", "beta/v1", "beta-operation", b"", lifecycle
+        ),
+        RecordingAgentExecutorFactoryV2(
+            "alpha", "alpha/v1", "alpha-operation", b"", lifecycle
+        ),
+    )
+    runtime = _runtime_with_v2(tmp_path, factories)
+    failure = SystemExit("effect close failed")
+    disposed: list[str] = []
+    original_dispose = runtime.engine.dispose
+
+    def fail_effect_close() -> Never:
+        lifecycle.append("close:effect")
+        raise failure
+
+    def dispose() -> None:
+        disposed.append("engine")
+        original_dispose()
+
+    with monkeypatch.context() as context:
+        context.setattr(runtime.effect_adapter, "close", fail_effect_close)
+        context.setattr(runtime.engine, "dispose", dispose)
+        with pytest.raises(SystemExit) as captured:
+            runtime.close()
+
+    assert captured.value is failure
+    assert lifecycle == [
+        "open:alpha",
+        "open:beta",
+        "close:effect",
+        "close:beta",
+        "close:alpha",
+    ]
+    assert disposed == ["engine"]
+    assert all(
+        factory.opened is not None and factory.opened.closes == 1
+        for factory in factories
+    )
+    recovered = _runtime_with_v2(tmp_path, (), application_version="recovered")
+    recovered.close()
+
+
+def test_last_close_aggregates_destroy_close_and_dispose_base_exceptions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lifecycle: list[str] = []
+    alpha_cleanup = KeyboardInterrupt("cleanup:alpha")
+    beta_cleanup = SystemExit("cleanup:beta")
+    runtime = _runtime_with_v2(
+        tmp_path,
+        (
+            BaseExceptionCloseFactory("alpha", alpha_cleanup, lifecycle),
+            BaseExceptionCloseFactory("beta", beta_cleanup, lifecycle),
+        ),
+    )
+    destroy_failure = KeyboardInterrupt("destroy")
+    effect_failure = SystemExit("cleanup:effect")
+    dispose_failure = KeyboardInterrupt("dispose")
+
+    def destroy(**_arguments: object) -> Never:
+        lifecycle.append("destroy")
+        raise destroy_failure
+
+    def close_effect() -> Never:
+        lifecycle.append("close:effect")
+        raise effect_failure
+
+    def dispose() -> Never:
+        lifecycle.append("dispose")
+        raise dispose_failure
+
+    with monkeypatch.context() as context:
+        context.setattr("atelier2.adapters.dbos.runtime.DBOS.destroy", destroy)
+        context.setattr(runtime.effect_adapter, "close", close_effect)
+        context.setattr(runtime.engine, "dispose", dispose)
+        with pytest.raises(BaseExceptionGroup) as captured:
+            runtime.close()
+
+    assert lifecycle == [
+        "open:alpha",
+        "open:beta",
+        "destroy",
+        "close:effect",
+        "close:beta",
+        "close:alpha",
+        "dispose",
+    ]
+    assert captured.value.exceptions == (
+        destroy_failure,
+        effect_failure,
+        beta_cleanup,
+        alpha_cleanup,
+        dispose_failure,
+    )
+    recovered = _runtime_with_v2(tmp_path, (), application_version="recovered")
+    recovered.close()

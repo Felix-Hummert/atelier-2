@@ -21,7 +21,7 @@ from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
     event_from_record,
     graph_from_document,
-    run_from_record,
+    run_from_record_with_bindings,
     validate_run_graph_binding,
 )
 from atelier2.adapters.dbos.schema import (
@@ -90,6 +90,8 @@ _MAXIMUM_UTF8_BYTES_PER_CHARACTER = 4
 _RUN_PROJECTION_COLUMNS: tuple[sa.Column[Any], ...] = (
     runs.c.run_id,
     runs.c.revision_hash,
+    runs.c.workflow_format_version,
+    runs.c.agent_binding_set_hash,
     runs.c.current_node_id,
     runs.c.state,
     runs.c.state_version,
@@ -495,7 +497,9 @@ class DbosQueries:
     ) -> tuple[RunProjection, ...]:
         if not records:
             return ()
-        loaded_runs = tuple(run_from_record(record) for record in records)
+        loaded_runs = tuple(
+            run_from_record_with_bindings(connection, record) for record in records
+        )
         revision_hashes = {run.revision_hash for run in loaded_runs}
         revision_rows = tuple(
             connection.execute(
@@ -724,9 +728,11 @@ class DbosQueries:
             with self._connection() as connection:
                 run_record = (
                     connection.execute(
-                        sa.select(runs.c.state, runs.c.last_event_sequence).where(
-                            runs.c.run_id == run_id.value
-                        )
+                        sa.select(
+                            runs.c.state,
+                            runs.c.last_event_sequence,
+                            runs.c.workflow_format_version,
+                        ).where(runs.c.run_id == run_id.value)
                     )
                     .mappings()
                     .one_or_none()
@@ -780,7 +786,12 @@ class DbosQueries:
                 ):
                     return EventHistoryCorrupt()
                 events = tuple(
-                    self._event_projection(connection, record, projection_limit)
+                    self._event_projection(
+                        connection,
+                        record,
+                        projection_limit,
+                        int(run_record["workflow_format_version"]),
+                    )
                     for record in records
                 )
                 return RunEventPage(
@@ -806,13 +817,14 @@ class DbosQueries:
         connection: Connection,
         record: Mapping[Any, Any],
         projection_limit: DurableProjectionLimit | None,
+        workflow_format_version: int,
     ) -> PersistedRunEvent:
         event = event_from_record(record)
         if event.event_kind not in {
             RunEventKind.ACTION_RECONCILIATION_RESOLVED,
             RunEventKind.ACTION_COMPLETED,
         }:
-            return PersistedRunEvent(event, None)
+            return PersistedRunEvent(event, None, workflow_format_version)
         logical_key = event.receipt_logical_key
         if logical_key is None:
             raise RunTransitionConflict("receipt event has no logical key")
@@ -843,4 +855,4 @@ class DbosQueries:
             or receipt.result.payload_hash != event.receipt_result_hash
         ):
             raise RunTransitionConflict("receipt event binding disagrees")
-        return PersistedRunEvent(event, receipt)
+        return PersistedRunEvent(event, receipt, workflow_format_version)

@@ -28,6 +28,41 @@ class ApiProblem(Exception):
 
 
 PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
+    "auth-profile-revision-conflict": ProblemDefinition(
+        409,
+        "Auth profile revision conflict",
+        "Use a new revision_number or retry the exact original auth profile revision.",
+    ),
+    "auth-profile-revision-collision": ProblemDefinition(
+        409,
+        "Auth profile revision collision",
+        "Stop mutation and inspect durable auth profile revision integrity.",
+    ),
+    "auth-profile-revision-not-found": ProblemDefinition(
+        404,
+        "Auth profile revision not found",
+        "Publish the exact auth profile revision before publishing an agent configuration.",
+    ),
+    "agent-executor-binding-unavailable": ProblemDefinition(
+        409,
+        "Agent executor binding unavailable",
+        "Register the exact provider and executor revision before publishing or starting this configuration.",
+    ),
+    "agent-configuration-revision-collision": ProblemDefinition(
+        409,
+        "Agent configuration revision collision",
+        "Stop mutation and inspect durable agent configuration revision integrity.",
+    ),
+    "agent-configuration-revision-not-found": ProblemDefinition(
+        404,
+        "Agent configuration revision not found",
+        "Publish every exact agent configuration revision before starting the run.",
+    ),
+    "invalid-agent-bindings": ProblemDefinition(
+        422,
+        "Invalid agent bindings",
+        "Bind every workflow agent role exactly once and no other role.",
+    ),
     "invalid-public-run-reference": ProblemDefinition(
         400, "Invalid public run reference", "Use a canonical run1 public reference."
     ),
@@ -166,15 +201,22 @@ def problem_response(code: str, detail: str | None = None) -> JSONResponse:
     )
 
 
-def install_problem_handlers(app: FastAPI) -> None:
+def install_problem_handlers(app: FastAPI, *, versioned_run_start_path: str) -> None:
     @app.exception_handler(ApiProblem)
     async def typed_problem(_request: Request, error: ApiProblem) -> JSONResponse:
         return problem_response(error.code, error.detail)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(
-        _request: Request, _error: RequestValidationError
+        request: Request, error: RequestValidationError
     ) -> JSONResponse:
+        if (
+            request.method == "POST"
+            and request.url.path == versioned_run_start_path
+            and isinstance(error.body, dict)
+            and {"workflow_format_version", "agent_bindings"}.intersection(error.body)
+        ):
+            return problem_response("invalid-agent-bindings")
         return problem_response("invalid-request")
 
     @app.exception_handler(HTTPException)

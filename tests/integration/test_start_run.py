@@ -162,6 +162,25 @@ def test_invalid_graph_writes_no_revision_run_event_answer_or_dbos_workflow(
     assert count(runtime.engine, "workflow_status") == 0
 
 
+def test_v1_direct_start_refuses_a_v2_graph_before_any_durable_write(
+    storage: tuple[DbosRuntime, DbosDurableRunStarter],
+) -> None:
+    runtime, starter = storage
+    document = b"""format_version: 2
+start: build
+nodes:
+  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: build, type: agent, role: builder, job: build, next: done}
+"""
+
+    with pytest.raises(TypeError, match="V1 direct-start"):
+        start_run(request(document=document), starter)
+
+    for table in PRODUCT_TABLE_NAMES - {"atelier_schema_versions"}:
+        assert count(runtime.engine, table) == 0
+    assert count(runtime.engine, "workflow_status") == 0
+
+
 def test_identical_retry_returns_current_run_without_enqueueing_again(
     storage: tuple[DbosRuntime, DbosDurableRunStarter], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -329,7 +348,7 @@ def test_pre_release_schema_versions_require_no_mutating_runtime_migration(
     assert database_path.read_bytes() == before
 
 
-def test_schema_version_four_opens_idempotently(tmp_path: Path) -> None:
+def test_schema_version_five_opens_idempotently(tmp_path: Path) -> None:
     runtime = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
         LoopbackEffectAdapterFactory(
@@ -346,7 +365,7 @@ def test_schema_version_four_opens_idempotently(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_concurrent_first_schema_initializers_converge_on_version_four(
+def test_concurrent_first_schema_initializers_converge_on_version_five(
     tmp_path: Path,
 ) -> None:
     participants = 4
@@ -378,7 +397,7 @@ def test_concurrent_first_schema_initializers_converge_on_version_four(
                 )
             )
 
-        assert results == [[4]] * participants
+        assert results == [[5]] * participants
 
 
 def test_initialized_runtime_can_execute_a_later_seeded_workflow(

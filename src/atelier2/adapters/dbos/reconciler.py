@@ -12,11 +12,9 @@ from atelier2.adapters.dbos.effect_store import (
     command_snapshot_from_record,
     intent_snapshot_from_record,
 )
-from atelier2.adapters.dbos.runtime import (
-    DbosRuntimeSettings,
-    canonical_write_transaction,
-)
+from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents, reconcile_commands
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, RECONCILE_WORKFLOW_NAME
 from atelier2.contracts.effects import (
     EffectIntentState,

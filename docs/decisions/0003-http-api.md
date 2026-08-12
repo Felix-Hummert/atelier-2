@@ -11,10 +11,20 @@ process receives the request.
 ## Decision
 
 FastAPI owns a thin, versioned adapter at `/atelier/api/v1`. The API publishes
-exact safe-YAML workflow bytes, starts runs from published revisions, projects
-revision and run pages, accepts Wait answers and reconciliation commands, and
-streams the seven implemented durable event kinds. It does not own a parallel
-run, command, or event state machine.
+secret-free auth-profile and agent-configuration revisions and exact safe-YAML
+workflow bytes, starts runs from published revisions, projects revision and run
+pages, accepts Wait answers and reconciliation commands, and streams the seven
+implemented durable event kinds. It does not accept credentials or own a
+parallel run, command, or event state machine.
+
+V1 and V2 workflow, start, run, and SSE resources coexist as exact closed
+unions. Workflow and run resources carry `format_version` or
+`workflow_format_version`; start uses the closed shape itself to select the
+version. A V2 run projection includes its immutable, public binding matrix. A V2
+`AGENT_COMPLETED` event carries canonical Base64 plus the exact output hash so
+arbitrary bytes never pass through UTF-8 decoding. The preexisting V1 raw JSON
+and named OpenAPI components are byte-frozen; adding V2 does not silently widen
+them.
 
 Every mutation delegates to the runtime owner and decides created-versus-
 existing from the row written in that same transaction. Only a newly created
@@ -64,6 +74,8 @@ mechanisms.
   progress by reconnecting with the last cursor they have durably consumed.
 - Adding a new public event or problem kind changes a closed contract and must
   be treated as an API-version decision.
+- Auth-profile and agent-configuration publication stores selection metadata,
+  not credentials; credential lookup remains a future host/provider concern.
 - This boundary supplies no authentication, browser CORS policy, provider or
   platform integration, cockpit, process supervision, or deployment. A host
   must supply any required access boundary before exposing it beyond a trusted

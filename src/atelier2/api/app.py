@@ -19,16 +19,24 @@ from atelier2.api.limits import (
     RequestBodyLimitMiddleware,
 )
 from atelier2.api.models import (
+    AgentConfigurationRevisionResource,
     AnswerWaitRequestResource,
+    AnyRunPageResource,
+    AnyRunResource,
+    AnyStartRunRequestResource,
+    AuthProfileRevisionResource,
     HealthResource,
     OperatorFoundDeterminationResource,
+    PublishAgentConfigurationRevisionRequestResource,
+    PublishAuthProfileRevisionRequestResource,
     ReconcileRunRequestResource,
-    RunPageResource,
-    RunResource,
-    StartRunRequestResource,
+    StartRunRequestResourceV2,
+    VersionedRunPageResource,
     WorkflowRevisionDetailResource,
     WorkflowRevisionPageResource,
     WorkflowRevisionSummaryResource,
+    agent_configuration_revision_resource,
+    auth_profile_revision_resource,
     run_resource,
     workflow_revision_detail_resource,
 )
@@ -85,11 +93,28 @@ from atelier2.application.reconcile_effect import (
 )
 from atelier2.application.reconcile_run import ReconcileRunRequest, reconcile_run
 from atelier2.application.start_published_run import (
+    AgentConfigurationRevisionMissing,
+    InvalidAgentBindings,
     RevisionMissing,
     RunCreated,
     RunExisting,
     RunIdentityConflict,
     start_published_run,
+)
+from atelier2.application.start_published_run import (
+    AgentExecutorBindingUnavailable as StartAgentExecutorBindingUnavailable,
+)
+from atelier2.contracts.agents import (
+    AgentBinding,
+    AgentBindingSet,
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionHash,
+    AgentExecutorRevision,
+    AgentRole,
+    AuthMode,
+    AuthProfileRevision,
+    AuthProfileRevisionHash,
+    ProviderId,
 )
 from atelier2.contracts.effects import (
     EffectId,
@@ -105,10 +130,27 @@ from atelier2.contracts.executions import (
     is_canonical_integer_bytes,
 )
 from atelier2.contracts.runs import RunId
+from atelier2.ports.agent_configurations import (
+    AgentConfigurationCatalog,
+    AgentConfigurationRevisionCollision,
+    AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionExisting,
+    AgentExecutorBindingUnavailable,
+    AuthProfileRevisionCollision,
+    AuthProfileRevisionConflict,
+    AuthProfileRevisionCreated,
+    AuthProfileRevisionExisting,
+    AuthProfileRevisionMissing,
+)
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
+    DurableWriteUnavailable,
     StartPublishedRunRequest,
+    StartPublishedRunRequestV2,
     TransactionalWaitAnswerer,
+)
+from atelier2.ports.durable_runs import (
+    DurableStateCorrupt as PortDurableStateCorrupt,
 )
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.run_events import (
@@ -148,6 +190,7 @@ class ApiPorts:
     run_queries: RunQueries
     run_event_queries: RunEventQueries
     workflow_document_parser: WorkflowDocumentParser
+    agent_configuration_catalog: AgentConfigurationCatalog
 
 
 def create_app(
@@ -170,7 +213,7 @@ def create_app(
         docs_url=None,
         redoc_url=None,
     )
-    install_problem_handlers(app)
+    install_problem_handlers(app, versioned_run_start_path=API_PREFIX + "/runs")
     app.add_middleware(
         RequestBodyLimitMiddleware,
         maximum_body_bytes=limits.maximum_request_body_bytes,
@@ -244,6 +287,91 @@ def create_app(
     async def health() -> HealthResource:
         return HealthResource(
             status="serving", source_commit=source_commit, source_tree=source_tree
+        )
+
+    @app.post(
+        API_PREFIX + "/auth-profile-revisions",
+        response_model=AuthProfileRevisionResource,
+        status_code=HTTPStatus.CREATED,
+        responses={HTTPStatus.OK: {"model": AuthProfileRevisionResource}},
+    )
+    async def publish_auth_profile_revision_route(
+        body: PublishAuthProfileRevisionRequestResource,
+        _media: None = Depends(_require_json_media_dependency),
+    ) -> JSONResponse:
+        try:
+            revision = AuthProfileRevision(
+                body.profile_id,
+                body.revision_number,
+                ProviderId(body.provider_id),
+                AuthMode(body.auth_mode),
+            )
+        except (TypeError, ValueError) as error:
+            raise ApiProblem("invalid-request") from error
+        catalog = ports.agent_configuration_catalog
+        result = await _run_control_query(
+            runner,
+            lambda: catalog.publish_auth_profile_revision(revision),
+        )
+        match result:
+            case AuthProfileRevisionCreated(stored):
+                status = HTTPStatus.CREATED
+            case AuthProfileRevisionExisting(stored):
+                status = HTTPStatus.OK
+            case AuthProfileRevisionConflict():
+                raise ApiProblem("auth-profile-revision-conflict")
+            case AuthProfileRevisionCollision():
+                raise ApiProblem("auth-profile-revision-collision")
+            case DurableWriteUnavailable():
+                raise ApiProblem("temporarily-unavailable")
+            case PortDurableStateCorrupt():
+                raise ApiProblem("durable-state-corrupt")
+            case _ as unreachable:
+                assert_never(unreachable)
+        return _resource_response(auth_profile_revision_resource(stored), status)
+
+    @app.post(
+        API_PREFIX + "/agent-configuration-revisions",
+        response_model=AgentConfigurationRevisionResource,
+        status_code=HTTPStatus.CREATED,
+        responses={HTTPStatus.OK: {"model": AgentConfigurationRevisionResource}},
+    )
+    async def publish_agent_configuration_revision_route(
+        body: PublishAgentConfigurationRevisionRequestResource,
+        _media: None = Depends(_require_json_media_dependency),
+    ) -> JSONResponse:
+        try:
+            revision = AgentConfigurationRevision(
+                body.model,
+                AuthProfileRevisionHash(body.auth_profile_revision_hash),
+                AgentExecutorRevision(body.executor_revision),
+            )
+        except (TypeError, ValueError) as error:
+            raise ApiProblem("invalid-request") from error
+        catalog = ports.agent_configuration_catalog
+        result = await _run_control_query(
+            runner,
+            lambda: catalog.publish_agent_configuration_revision(revision),
+        )
+        match result:
+            case AgentConfigurationRevisionCreated(stored, auth_profile):
+                status = HTTPStatus.CREATED
+            case AgentConfigurationRevisionExisting(stored, auth_profile):
+                status = HTTPStatus.OK
+            case AuthProfileRevisionMissing():
+                raise ApiProblem("auth-profile-revision-not-found")
+            case AgentExecutorBindingUnavailable():
+                raise ApiProblem("agent-executor-binding-unavailable")
+            case AgentConfigurationRevisionCollision():
+                raise ApiProblem("agent-configuration-revision-collision")
+            case DurableWriteUnavailable():
+                raise ApiProblem("temporarily-unavailable")
+            case PortDurableStateCorrupt():
+                raise ApiProblem("durable-state-corrupt")
+            case _ as unreachable:
+                assert_never(unreachable)
+        return _resource_response(
+            agent_configuration_revision_resource(stored, auth_profile), status
         )
 
     @app.post(
@@ -349,12 +477,12 @@ def create_app(
 
     @app.post(
         API_PREFIX + "/runs",
-        response_model=RunResource,
+        response_model=AnyRunResource,
         status_code=HTTPStatus.CREATED,
-        responses={HTTPStatus.OK: {"model": RunResource}},
+        responses={HTTPStatus.OK: {"model": AnyRunResource}},
     )
     async def start_run_route(
-        body: StartRunRequestResource,
+        body: AnyStartRunRequestResource,
         _media: None = Depends(_require_json_media_dependency),
     ) -> JSONResponse:
         run_id = RunId(body.run_id)
@@ -363,7 +491,27 @@ def create_app(
             revision_hash = parse_revision_hash(body.workflow_revision_hash)
         except InvalidRevisionHash as error:
             raise ApiProblem("invalid-revision-hash") from error
-        request = StartPublishedRunRequest(run_id, revision_hash)
+        if isinstance(body, StartRunRequestResourceV2):
+            try:
+                request = StartPublishedRunRequestV2(
+                    run_id,
+                    revision_hash,
+                    AgentBindingSet(
+                        tuple(
+                            AgentBinding(
+                                AgentRole(binding.role),
+                                AgentConfigurationRevisionHash(
+                                    binding.agent_configuration_revision_hash
+                                ),
+                            )
+                            for binding in body.agent_bindings
+                        )
+                    ),
+                )
+            except (TypeError, ValueError) as error:
+                raise ApiProblem("invalid-agent-bindings") from error
+        else:
+            request = StartPublishedRunRequest(run_id, revision_hash)
         result = await _run_control_query(
             runner, lambda: start_published_run(request, ports.published_run_starter)
         )
@@ -376,6 +524,12 @@ def create_app(
                 raise ApiProblem("workflow-revision-not-found")
             case RunIdentityConflict():
                 raise ApiProblem("run-identity-conflict")
+            case InvalidAgentBindings():
+                raise ApiProblem("invalid-agent-bindings")
+            case AgentConfigurationRevisionMissing():
+                raise ApiProblem("agent-configuration-revision-not-found")
+            case StartAgentExecutorBindingUnavailable():
+                raise ApiProblem("agent-executor-binding-unavailable")
             case WriteUnavailable(detail):
                 raise ApiProblem("temporarily-unavailable", detail)
             case DurableStateCorrupt():
@@ -393,8 +547,10 @@ def create_app(
             status,
         )
 
-    @app.get(API_PREFIX + "/runs", response_model=RunPageResource)
-    async def list_runs(after: str | None = None, limit: str = "50") -> RunPageResource:
+    @app.get(API_PREFIX + "/runs", response_model=AnyRunPageResource)
+    async def list_runs(
+        after: str | None = None, limit: str = "50"
+    ) -> AnyRunPageResource:
         boundary = None
         if after is not None:
             boundary = _decode_public_reference(after, limits)
@@ -408,7 +564,7 @@ def create_app(
         match result:
             case RunPage(runs, next_after):
                 _require_run_projections(runs, limits)
-                return RunPageResource(
+                return VersionedRunPageResource(
                     items=tuple(run_resource(run) for run in runs),
                     next_after=(
                         None
@@ -423,8 +579,8 @@ def create_app(
             case _ as unreachable:
                 assert_never(unreachable)
 
-    @app.get(API_PREFIX + "/runs/{public_ref}", response_model=RunResource)
-    async def get_run_route(public_ref: str) -> RunResource:
+    @app.get(API_PREFIX + "/runs/{public_ref}", response_model=AnyRunResource)
+    async def get_run_route(public_ref: str) -> AnyRunResource:
         return await _load_run_resource(
             _decode_public_reference(public_ref, limits),
             ports.run_queries,
@@ -435,9 +591,9 @@ def create_app(
 
     @app.post(
         API_PREFIX + "/runs/{public_ref}/answers",
-        response_model=RunResource,
+        response_model=AnyRunResource,
         status_code=HTTPStatus.ACCEPTED,
-        responses={HTTPStatus.OK: {"model": RunResource}},
+        responses={HTTPStatus.OK: {"model": AnyRunResource}},
     )
     async def answer_run_route(
         public_ref: str,
@@ -493,9 +649,9 @@ def create_app(
 
     @app.post(
         API_PREFIX + "/runs/{public_ref}/reconciliations",
-        response_model=RunResource,
+        response_model=AnyRunResource,
         status_code=HTTPStatus.ACCEPTED,
-        responses={HTTPStatus.OK: {"model": RunResource}},
+        responses={HTTPStatus.OK: {"model": AnyRunResource}},
     )
     async def reconcile_run_route(
         public_ref: str,
@@ -655,7 +811,7 @@ async def _load_run_resource(
     runner: BoundedQueryRunner,
     limits: ApiLimits,
     projection_limit: DurableProjectionLimit,
-) -> RunResource:
+) -> AnyRunResource:
     result = await _run_control_query(
         runner, lambda: queries.get_run(run_id, projection_limit)
     )

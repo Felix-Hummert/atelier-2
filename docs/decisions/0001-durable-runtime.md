@@ -30,9 +30,9 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V4 only in a truly empty canonical store and reopens
-only an exact V4 product schema. A V1, V2, or V3 store, or any nonempty store
-without the V4 version owner, is rejected without mutation. V1 provides no runtime
+The runtime creates schema V5 only in a truly empty canonical store and reopens
+only an exact V5 product schema. An older store, or any nonempty store without
+the V5 version owner, is rejected without mutation. V1 provides no runtime
 upgrade or downgrade migration.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
@@ -47,6 +47,17 @@ existing `AGENT_COMPLETED` event, and the configured successor transition in one
 canonical transaction. The first executor implements the format-version-1 exact
 output contract; provider attempts, streams, failures, and cancellation remain
 outside this slice.
+
+Format-version-2 Agent nodes name roles rather than providers. Start resolves
+every role to immutable, secret-free auth-profile and agent-configuration
+revisions, rejects an incomplete matrix or unavailable executor key before any
+run mutation, and persists the sorted complete matrix with the run. A host owns
+an immutable registry keyed by provider ID and executor revision. Each V2 Agent
+request and receipt binds the role, configuration and auth hashes and fields,
+executor operational identity, job, and exact result bytes. At most 49,152
+output bytes are accepted; an oversized result is rejected before receipt,
+event, or run mutation. The receipt, `AGENT_COMPLETED` event, and run CAS share
+one canonical transaction.
 
 Before an external call, Atelier durably records an effect intent bound to the
 logical key, exact request bytes and hash, workflow revision, adapter revision,
@@ -71,20 +82,21 @@ executor recovery fence. [ADR 0002](0002-exact-yaml-graph.md) owns the workflow
 document and graph semantics above this execution boundary.
 
 A process owns exactly one compatible DBOS binding of canonical database path,
-application version, resource-free `AgentExecutorBinding`, and resource-free
-effect-adapter binding. The agent binding contains adapter revision and stable
-operational identity and is persisted in Agent receipts; the effect binding
-contains revision, destination, and stable operational/store identity and is
-persisted in intents and receipts. Restart refuses configuration contradicting
-durable Agent receipts or effect intents. Identical callers share one opened
-Agent executor, effect adapter, and runtime under counted leases; an incompatible
-lease is refused before either executable boundary opens or global state mutates.
-Only the last release destroys DBOS, closes both executor and effect adapter, and
-disposes the engine, each exactly once. H2 has one concrete file-backed effect
-adapter, so its resolved operational identity is also checked against the
-canonical file identity, including hardlink aliases, before either store is
-opened. This is a bounded loopback invariant rather than a generic provider
-contract.
+application version, the V1 `AgentExecutorBinding`, the sorted V2 executor
+manifest, and the effect-adapter binding. Restart refuses a registry missing a
+provider/executor key required by a nonterminal durable V2 run, configuration
+contradicting durable V1 Agent receipts, or an effect binding contradicting
+durable intents. Identical callers share one opened V1 executor, every V2
+executor, effect adapter, and runtime under counted leases; an incompatible
+lease is refused before either executable boundary opens or global state
+mutates. V2 factories open in manifest order and close in reverse order. Only
+the last release destroys DBOS, closes all resources, and disposes the engine,
+each exactly once; partial open, registration, and cleanup failures release the
+process owner and preserve the initiating failure. H2 has one concrete
+file-backed effect adapter, so its resolved operational identity is also checked
+against the canonical file identity, including hardlink aliases, before either
+store is opened. This is a bounded loopback invariant rather than a generic
+provider contract.
 
 ## Executable evidence
 
@@ -98,6 +110,7 @@ contract.
 | Reconciliation | FOUND and authorized-absence commands preserve operator provenance; concurrent opposing commands commit one CAS winner and one rejected loser. |
 | Atomic product events | Reconciliation state and its required/resolved event, plus receipt, intent, run, and owning command, commit or roll back together under injected database failures. |
 | Runtime lifecycle | Equivalent leases share one engine, Agent executor, and effect adapter; conflicts, failed initialization, concurrent close, durable binding drift, and two-process recovery preserve one binding and result. |
+| V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 
 The repository gate is `.github/workflows/ci.yml`; the local crash lane is
 `uv run --locked pytest -n auto tests/crash`.

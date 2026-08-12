@@ -9,14 +9,22 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.agent_catalog import (
+    agent_configuration_from_record,
+    auth_profile_from_record,
+)
 from atelier2.adapters.dbos.effect_store import (
     intent_snapshot_from_record,
     receipt_from_record,
 )
 from atelier2.adapters.dbos.schema import (
+    agent_configuration_revisions,
     agent_receipts,
+    agent_receipts_v2,
+    auth_profile_revisions,
     effect_intents,
     effect_receipts,
+    run_agent_bindings,
     run_events,
     runs,
     wait_answers,
@@ -24,8 +32,11 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.contracts.agents import (
+    AgentBindingSetHash,
+    AgentConfigurationRevisionHash,
     AgentExecutionRequest,
     AgentExecutionRequestHash,
+    AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
@@ -33,6 +44,12 @@ from atelier2.contracts.agents import (
     AgentOutputHash,
     AgentReceipt,
     AgentReceiptHash,
+    AgentReceiptV2,
+    AgentRole,
+    AuthMode,
+    AuthProfileRevisionHash,
+    ProviderId,
+    ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import (
@@ -49,6 +66,7 @@ from atelier2.contracts.executions import (
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.run_bindings import AnyRun, RunV2
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     Run,
@@ -59,9 +77,11 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.workflows import (
     ActionNode,
+    AgentNodeV2,
+    AnyWorkflowGraph,
     SubworkflowNode,
     WaitNode,
-    WorkflowGraph,
+    WorkflowGraphV2,
 )
 from atelier2.ports.durable_runs import (
     DurableAnswerBytesConflict,
@@ -85,7 +105,7 @@ class AgentReceiptConflict(RunTransitionConflict):
     """One stable node execution contradicts its durable agent receipt."""
 
 
-def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> WorkflowGraph:
+def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> AnyWorkflowGraph:
     document = session.scalar(
         sa.select(workflow_revisions.c.document).where(
             workflow_revisions.c.revision_hash == revision_hash.value
@@ -98,7 +118,7 @@ def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> WorkflowGra
 
 def graph_from_document(
     revision_hash: WorkflowRevisionHash, document: bytes
-) -> WorkflowGraph:
+) -> AnyWorkflowGraph:
     revision = WorkflowRevision(bytes(document))
     if revision.revision_hash != revision_hash:
         raise RevisionHashCollision(
@@ -108,6 +128,11 @@ def graph_from_document(
 
 
 def run_from_record(record: Mapping[Any, Any]) -> Run:
+    if (
+        int(record["workflow_format_version"]) != 1
+        or record["agent_binding_set_hash"] is not None
+    ):
+        raise RunTransitionConflict("V1 run record carries a V2 binding")
     terminal = record["terminal_hash"]
     return Run(
         RunId(str(record["run_id"])),
@@ -120,7 +145,95 @@ def run_from_record(record: Mapping[Any, Any]) -> Run:
     )
 
 
-def load_run(session: Any, run_id: RunId) -> Run:
+def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> AnyRun:
+    version = int(record["workflow_format_version"])
+    if version == 1:
+        return run_from_record(record)
+    if version != 2 or record["agent_binding_set_hash"] is None:
+        raise RunTransitionConflict("run format version and binding set disagree")
+    run_id = RunId(str(record["run_id"]))
+    revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
+    binding_set_hash = AgentBindingSetHash(str(record["agent_binding_set_hash"]))
+    rows = tuple(
+        session.execute(
+            sa.select(
+                run_agent_bindings.c.revision_hash.label("run_revision_hash"),
+                run_agent_bindings.c.binding_set_hash,
+                run_agent_bindings.c.role,
+                run_agent_bindings.c.agent_configuration_revision_hash,
+                agent_configuration_revisions.c.revision_hash.label(
+                    "configuration_revision_hash"
+                ),
+                agent_configuration_revisions.c.model,
+                agent_configuration_revisions.c.auth_profile_revision_hash,
+                agent_configuration_revisions.c.executor_revision,
+                auth_profile_revisions.c.revision_hash.label("auth_revision_hash"),
+                auth_profile_revisions.c.profile_id,
+                auth_profile_revisions.c.revision_number,
+                auth_profile_revisions.c.provider_id,
+                auth_profile_revisions.c.auth_mode,
+            )
+            .join(
+                agent_configuration_revisions,
+                agent_configuration_revisions.c.revision_hash
+                == run_agent_bindings.c.agent_configuration_revision_hash,
+            )
+            .join(
+                auth_profile_revisions,
+                auth_profile_revisions.c.revision_hash
+                == agent_configuration_revisions.c.auth_profile_revision_hash,
+            )
+            .where(run_agent_bindings.c.run_id == run_id.value)
+            .order_by(sa.cast(run_agent_bindings.c.role, sa.LargeBinary()))
+        ).mappings()
+    )
+    resolved: list[ResolvedAgentBinding] = []
+    for row in rows:
+        if (
+            str(row["run_revision_hash"]) != revision_hash.value
+            or str(row["binding_set_hash"]) != binding_set_hash.value
+        ):
+            raise RunTransitionConflict("run agent binding row disagrees with run")
+        configuration = agent_configuration_from_record(
+            {
+                "revision_hash": row["configuration_revision_hash"],
+                "model": row["model"],
+                "auth_profile_revision_hash": row["auth_profile_revision_hash"],
+                "executor_revision": row["executor_revision"],
+            }
+        )
+        auth = auth_profile_from_record(
+            {
+                "revision_hash": row["auth_revision_hash"],
+                "profile_id": row["profile_id"],
+                "revision_number": row["revision_number"],
+                "provider_id": row["provider_id"],
+                "auth_mode": row["auth_mode"],
+            }
+        )
+        if (
+            str(row["agent_configuration_revision_hash"])
+            != configuration.revision_hash.value
+        ):
+            raise RunTransitionConflict("run agent configuration binding disagrees")
+        resolved.append(
+            ResolvedAgentBinding(AgentRole(str(row["role"])), configuration, auth)
+        )
+    terminal = record["terminal_hash"]
+    return RunV2(
+        run_id,
+        revision_hash,
+        binding_set_hash,
+        tuple(resolved),
+        RunState(str(record["state"])),
+        str(record["current_node_id"]),
+        int(record["state_version"]),
+        int(record["last_event_sequence"]),
+        None if terminal is None else Sha256Hash(str(terminal)),
+    )
+
+
+def load_run(session: Any, run_id: RunId) -> AnyRun:
     record = (
         session.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
         .mappings()
@@ -128,13 +241,21 @@ def load_run(session: Any, run_id: RunId) -> Run:
     )
     if record is None:
         raise RunTransitionConflict("run does not exist")
-    run = run_from_record(record)
+    run = run_from_record_with_bindings(session, record)
     graph = load_graph(session, run.revision_hash)
     validate_run_graph_binding(run, graph)
     return run
 
 
-def validate_run_graph_binding(run: Run, graph: WorkflowGraph) -> None:
+def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowGraph) -> None:
+    if isinstance(run, RunV2) != isinstance(graph, WorkflowGraphV2):
+        raise RunTransitionConflict("run version differs from workflow graph version")
+    if isinstance(run, RunV2):
+        expected_roles = {
+            node.role for node in graph.nodes if isinstance(node, AgentNodeV2)
+        }
+        if expected_roles != {binding.role.value for binding in run.agent_bindings}:
+            raise RunTransitionConflict("run agent roles differ from workflow graph")
     node = graph.node(run.current_node_id)
     if run.state is RunState.WAITING_INPUT and not isinstance(node, WaitNode):
         raise RunTransitionConflict("WAITING_INPUT must name a Wait node")
@@ -407,6 +528,121 @@ def commit_agent_completed(
     )
     if _agent_receipt_from_record(durable_record) != receipt:
         raise AgentReceiptConflict("durable agent receipt differs from exact retry")
+    return _commit_event(
+        session,
+        request.run_id,
+        request.workflow_revision_hash,
+        request.node_id,
+        RunEventKind.AGENT_COMPLETED,
+        result.output_bytes,
+        RunState.STARTED,
+        RunState.STARTED,
+        graph.successor(request.node_id).id,
+    )
+
+
+def _agent_receipt_v2_values(receipt: AgentReceiptV2) -> dict[str, object]:
+    return {
+        "node_execution_id": receipt.node_execution_id.value,
+        "request_hash": receipt.request_hash.value,
+        "run_id": receipt.run_id.value,
+        "workflow_revision_hash": receipt.workflow_revision_hash.value,
+        "node_id": receipt.node_id,
+        "role": receipt.role.value,
+        "binding_set_hash": receipt.binding_set_hash.value,
+        "agent_configuration_revision_hash": (
+            receipt.agent_configuration_revision_hash.value
+        ),
+        "auth_profile_revision_hash": receipt.auth_profile_revision_hash.value,
+        "profile_id": receipt.profile_id,
+        "revision_number": receipt.revision_number,
+        "provider_id": receipt.provider_id.value,
+        "auth_mode": receipt.auth_mode.value,
+        "model": receipt.model,
+        "executor_revision": receipt.executor_revision.value,
+        "executor_operational_identity": (receipt.executor_operational_identity.value),
+        "output_bytes": receipt.output_bytes,
+        "output_hash": receipt.output_hash.value,
+        "receipt_hash": receipt.receipt_hash.value,
+    }
+
+
+def _agent_receipt_v2_from_record(record: Mapping[Any, Any]) -> AgentReceiptV2:
+    try:
+        return AgentReceiptV2(
+            AgentExecutionRequestHash(str(record["request_hash"])),
+            NodeExecutionId(str(record["node_execution_id"])),
+            RunId(str(record["run_id"])),
+            WorkflowRevisionHash(str(record["workflow_revision_hash"])),
+            str(record["node_id"]),
+            AgentRole(str(record["role"])),
+            AgentBindingSetHash(str(record["binding_set_hash"])),
+            AgentConfigurationRevisionHash(
+                str(record["agent_configuration_revision_hash"])
+            ),
+            AuthProfileRevisionHash(str(record["auth_profile_revision_hash"])),
+            str(record["profile_id"]),
+            int(record["revision_number"]),
+            ProviderId(str(record["provider_id"])),
+            AuthMode(str(record["auth_mode"])),
+            str(record["model"]),
+            AgentExecutorRevision(str(record["executor_revision"])),
+            AgentExecutorOperationalIdentity(
+                str(record["executor_operational_identity"])
+            ),
+            bytes(record["output_bytes"]),
+            AgentOutputHash(str(record["output_hash"])),
+            AgentReceiptHash(str(record["receipt_hash"])),
+        )
+    except ValueError as error:
+        raise AgentReceiptConflict(
+            "durable V2 agent receipt hash binding disagrees"
+        ) from error
+
+
+def commit_agent_completed_v2(
+    session: Any,
+    request: AgentExecutionRequestV2,
+    result: AgentExecutionResult,
+) -> TransitionSnapshot:
+    run = load_run(session, request.run_id)
+    graph = load_graph(session, request.workflow_revision_hash)
+    if not isinstance(run, RunV2) or not isinstance(graph, WorkflowGraphV2):
+        raise AgentReceiptConflict("V2 agent request does not name a V2 run")
+    node = graph.node(request.node_id)
+    if (
+        not isinstance(node, AgentNodeV2)
+        or node.role != request.resolved_binding.role.value
+        or node.job.encode("utf-8") != request.job_bytes
+    ):
+        raise AgentReceiptConflict("V2 agent request differs from durable graph")
+    durable_binding = next(
+        (
+            binding
+            for binding in run.agent_bindings
+            if binding.role == request.resolved_binding.role
+        ),
+        None,
+    )
+    if durable_binding != request.resolved_binding:
+        raise AgentReceiptConflict("V2 request differs from durable role configuration")
+    receipt = AgentReceiptV2.for_execution(request, run.binding_set_hash, result)
+    session.execute(
+        agent_receipts_v2.insert()
+        .prefix_with("OR IGNORE")
+        .values(_agent_receipt_v2_values(receipt))
+    )
+    durable_record = (
+        session.execute(
+            sa.select(agent_receipts_v2).where(
+                agent_receipts_v2.c.node_execution_id == request.node_execution_id.value
+            )
+        )
+        .mappings()
+        .one()
+    )
+    if _agent_receipt_v2_from_record(durable_record) != receipt:
+        raise AgentReceiptConflict("durable V2 agent receipt differs from exact retry")
     return _commit_event(
         session,
         request.run_id,
@@ -704,7 +940,7 @@ class DbosWaitAnswerer:
                     if run_record is None:
                         connection.rollback()
                         return DurableAnswerRunMissing()
-                    run = run_from_record(run_record)
+                    run = run_from_record_with_bindings(connection, run_record)
                     if run.revision_hash != request.revision_hash:
                         connection.rollback()
                         return DurableAnswerRevisionConflict()

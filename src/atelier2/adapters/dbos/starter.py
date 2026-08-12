@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import assert_never
 
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
@@ -8,14 +9,31 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
-from atelier2.adapters.dbos.run_store import run_from_record
-from atelier2.adapters.dbos.runtime import (
-    DbosRuntimeSettings,
-    canonical_write_transaction,
+from atelier2.adapters.dbos.agent_catalog import (
+    agent_configuration_from_record,
+    auth_profile_from_record,
 )
-from atelier2.adapters.dbos.schema import runs, workflow_revisions
+from atelier2.adapters.dbos.run_store import (
+    run_from_record,
+    run_from_record_with_bindings,
+)
+from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import (
+    agent_configuration_revisions,
+    auth_profile_revisions,
+    run_agent_bindings,
+    runs,
+    workflow_revisions,
+)
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.contracts.agents import (
+    AgentBindingSet,
+    ResolvedAgentBinding,
+)
+from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     Run,
@@ -25,7 +43,13 @@ from atelier2.contracts.runs import (
     StartRunRequest,
     WorkflowRevision,
 )
+from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraph, WorkflowGraphV2
+from atelier2.ports.agent_executions import AgentExecutorKey, AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
+    AnyStartPublishedRunRequest,
+    DurableAgentConfigurationRevisionMissing,
+    DurableAgentExecutorBindingUnavailable,
+    DurableInvalidAgentBindings,
     DurablePublishedRunResult,
     DurableRunCreated,
     DurableRunExisting,
@@ -34,6 +58,7 @@ from atelier2.ports.durable_runs import (
     DurableStateCorrupt,
     DurableWriteUnavailable,
     StartPublishedRunRequest,
+    StartPublishedRunRequestV2,
 )
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
@@ -50,12 +75,24 @@ def bootstrap_workflow_id_for(run_id: RunId) -> str:
 
 
 class DbosDurableRunStarter:
-    def __init__(self, engine: Engine, settings: DbosRuntimeSettings) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        settings: DbosRuntimeSettings,
+        agent_executor_registry: AgentExecutorRegistry | None = None,
+    ) -> None:
         self._engine = engine
         self._settings = settings
+        self._agent_executor_registry = (
+            AgentExecutorRegistry()
+            if agent_executor_registry is None
+            else agent_executor_registry
+        )
 
     def start(self, request: StartRunRequest) -> Run:
         graph = parse_workflow_document(request.revision.document)
+        if not isinstance(graph, WorkflowGraph):
+            raise TypeError("the V1 direct-start contract requires a V1 workflow")
         client = DBOSClient(
             system_database_engine=self._engine, use_listen_notify=False
         )
@@ -76,6 +113,8 @@ class DbosDurableRunStarter:
                         run_id=request.run_id.value,
                         bootstrap_workflow_id=workflow_id,
                         revision_hash=request.revision.revision_hash.value,
+                        workflow_format_version=1,
+                        agent_binding_set_hash=None,
                         current_node_id=graph.start,
                         state=RunState.STARTED.value,
                         state_version=0,
@@ -107,7 +146,7 @@ class DbosDurableRunStarter:
             client.destroy()
 
     def start_published(
-        self, request: StartPublishedRunRequest
+        self, request: AnyStartPublishedRunRequest
     ) -> DurablePublishedRunResult:
         try:
             with self._engine.connect() as read_connection:
@@ -153,6 +192,90 @@ class DbosDurableRunStarter:
                     raise RuntimeError(
                         "published revision bytes disagree with their hash"
                     )
+                if isinstance(graph, WorkflowGraph):
+                    if not isinstance(request, StartPublishedRunRequest):
+                        return DurableInvalidAgentBindings()
+                    resolved_bindings: tuple[ResolvedAgentBinding, ...] = ()
+                    binding_set: AgentBindingSet | None = None
+                elif isinstance(graph, WorkflowGraphV2):
+                    if not isinstance(request, StartPublishedRunRequestV2):
+                        return DurableInvalidAgentBindings()
+                    expected_roles = {
+                        node.role
+                        for node in graph.nodes
+                        if isinstance(node, AgentNodeV2)
+                    }
+                    requested_roles = {
+                        binding.role.value
+                        for binding in request.agent_bindings.bindings
+                    }
+                    if expected_roles != requested_roles:
+                        return DurableInvalidAgentBindings()
+                    binding_set = request.agent_bindings
+                    existing_record = (
+                        connection.execute(
+                            sa.select(runs).where(runs.c.run_id == request.run_id.value)
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if existing_record is not None:
+                        if (
+                            str(existing_record["revision_hash"])
+                            != request.revision_hash.value
+                            or int(existing_record["workflow_format_version"]) != 2
+                            or str(existing_record["agent_binding_set_hash"])
+                            != binding_set.binding_set_hash.value
+                        ):
+                            return DurableRunIdentityConflict()
+                        return DurableRunExisting(
+                            run_from_record_with_bindings(connection, existing_record)
+                        )
+                    resolved: list[ResolvedAgentBinding] = []
+                    for binding in request.agent_bindings.bindings:
+                        configuration_record = (
+                            connection.execute(
+                                sa.select(agent_configuration_revisions).where(
+                                    agent_configuration_revisions.c.revision_hash
+                                    == binding.agent_configuration_revision_hash.value
+                                )
+                            )
+                            .mappings()
+                            .one_or_none()
+                        )
+                        if configuration_record is None:
+                            return DurableAgentConfigurationRevisionMissing()
+                        configuration = agent_configuration_from_record(
+                            configuration_record
+                        )
+                        auth_record = (
+                            connection.execute(
+                                sa.select(auth_profile_revisions).where(
+                                    auth_profile_revisions.c.revision_hash
+                                    == configuration.auth_profile_revision_hash.value
+                                )
+                            )
+                            .mappings()
+                            .one_or_none()
+                        )
+                        if auth_record is None:
+                            raise RuntimeError(
+                                "agent configuration auth profile is missing"
+                            )
+                        auth = auth_profile_from_record(auth_record)
+                        if not self._agent_executor_registry.contains(
+                            AgentExecutorKey(
+                                auth.provider_id, configuration.executor_revision
+                            )
+                        ):
+                            return DurableAgentExecutorBindingUnavailable()
+                        resolved.append(
+                            ResolvedAgentBinding(binding.role, configuration, auth)
+                        )
+                    resolved_bindings = tuple(resolved)
+                else:
+                    assert_never(graph)
+
                 workflow_id = bootstrap_workflow_id_for(request.run_id)
                 inserted = connection.execute(
                     runs.insert()
@@ -161,6 +284,12 @@ class DbosDurableRunStarter:
                         run_id=request.run_id.value,
                         bootstrap_workflow_id=workflow_id,
                         revision_hash=request.revision_hash.value,
+                        workflow_format_version=graph.format_version,
+                        agent_binding_set_hash=(
+                            None
+                            if binding_set is None
+                            else binding_set.binding_set_hash.value
+                        ),
                         current_node_id=graph.start,
                         state=RunState.STARTED.value,
                         state_version=0,
@@ -177,11 +306,57 @@ class DbosDurableRunStarter:
                 )
                 if existing_record is None:
                     raise RuntimeError("inserted run is not readable")
-                run = run_from_record(existing_record)
+                if isinstance(graph, WorkflowGraph):
+                    run = run_from_record(existing_record)
+                else:
+                    assert binding_set is not None
+                    terminal_hash = existing_record["terminal_hash"]
+                    run = RunV2(
+                        request.run_id,
+                        request.revision_hash,
+                        binding_set.binding_set_hash,
+                        resolved_bindings,
+                        RunState(str(existing_record["state"])),
+                        str(existing_record["current_node_id"]),
+                        int(existing_record["state_version"]),
+                        int(existing_record["last_event_sequence"]),
+                        (
+                            None
+                            if terminal_hash is None
+                            else Sha256Hash(str(terminal_hash))
+                        ),
+                    )
                 if inserted.rowcount == 0:
-                    if run.revision_hash != request.revision_hash:
+                    existing_set = existing_record["agent_binding_set_hash"]
+                    requested_set = (
+                        None
+                        if binding_set is None
+                        else binding_set.binding_set_hash.value
+                    )
+                    if (
+                        run.revision_hash != request.revision_hash
+                        or int(existing_record["workflow_format_version"])
+                        != graph.format_version
+                        or existing_set != requested_set
+                    ):
                         return DurableRunIdentityConflict()
                     return DurableRunExisting(run)
+                if binding_set is not None and binding_set.bindings:
+                    connection.execute(
+                        run_agent_bindings.insert(),
+                        [
+                            {
+                                "run_id": request.run_id.value,
+                                "revision_hash": request.revision_hash.value,
+                                "binding_set_hash": binding_set.binding_set_hash.value,
+                                "role": binding.role.value,
+                                "agent_configuration_revision_hash": (
+                                    binding.agent_configuration_revision_hash.value
+                                ),
+                            }
+                            for binding in binding_set.bindings
+                        ],
+                    )
                 options: EnqueueOptions = {
                     "workflow_name": WORKFLOW_NAME,
                     "queue_name": QUEUE_NAME,

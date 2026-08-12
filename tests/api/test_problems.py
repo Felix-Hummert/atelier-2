@@ -13,6 +13,7 @@ from atelier2.api.problems import (
     problem_resource,
 )
 from atelier2.contracts.runs import RunId
+from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     TransactionalWaitAnswerer,
@@ -27,6 +28,41 @@ from atelier2.ports.workflow_revisions import (
 from tests.scenarios.api import api_limits, event_poll_backoff
 
 EXPECTED_PROBLEMS = {
+    "auth-profile-revision-conflict": (
+        409,
+        "Auth profile revision conflict",
+        "Use a new revision_number or retry the exact original auth profile revision.",
+    ),
+    "auth-profile-revision-collision": (
+        409,
+        "Auth profile revision collision",
+        "Stop mutation and inspect durable auth profile revision integrity.",
+    ),
+    "auth-profile-revision-not-found": (
+        404,
+        "Auth profile revision not found",
+        "Publish the exact auth profile revision before publishing an agent configuration.",
+    ),
+    "agent-executor-binding-unavailable": (
+        409,
+        "Agent executor binding unavailable",
+        "Register the exact provider and executor revision before publishing or starting this configuration.",
+    ),
+    "agent-configuration-revision-collision": (
+        409,
+        "Agent configuration revision collision",
+        "Stop mutation and inspect durable agent configuration revision integrity.",
+    ),
+    "agent-configuration-revision-not-found": (
+        404,
+        "Agent configuration revision not found",
+        "Publish every exact agent configuration revision before starting the run.",
+    ),
+    "invalid-agent-bindings": (
+        422,
+        "Invalid agent bindings",
+        "Bind every workflow agent role exactly once and no other role.",
+    ),
     "invalid-public-run-reference": (
         400,
         "Invalid public run reference",
@@ -191,6 +227,7 @@ def empty_ports() -> ApiPorts:
         run_queries=cast(RunQueries, UnusedRunQueries()),
         run_event_queries=cast(RunEventQueries, missing),
         workflow_document_parser=parse_workflow_document,
+        agent_configuration_catalog=cast(AgentConfigurationCatalog, missing),
     )
 
 

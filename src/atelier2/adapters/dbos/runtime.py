@@ -3,8 +3,6 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,18 +10,23 @@ from typing import Any
 import sqlalchemy as sa
 from dbos import DBOS, DBOSConfig, SQLAlchemyDatasource
 from sqlalchemy import event
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.schema import (
+    agent_configuration_revisions,
     agent_receipts,
+    auth_profile_revisions,
     effect_intents,
     initialize_schema,
+    run_agent_bindings,
+    runs,
 )
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, register_durable_run_workflow
 from atelier2.contracts.agents import (
     AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
+    ProviderId,
 )
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
@@ -31,7 +34,15 @@ from atelier2.contracts.effects import (
     EffectAdapterBinding,
     EffectDestination,
 )
-from atelier2.ports.agent_executions import AgentExecutor, AgentExecutorFactory
+from atelier2.ports.agent_executions import (
+    AgentExecutor,
+    AgentExecutorFactory,
+    AgentExecutorFactoryV2,
+    AgentExecutorKey,
+    AgentExecutorManifestEntry,
+    AgentExecutorRegistry,
+    AgentExecutorV2,
+)
 from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
 
 EXECUTOR_ID = "atelier2-local"
@@ -60,6 +71,7 @@ class DbosRuntimeBinding:
     canonical_database_path: Path
     application_version: str
     agent_executor: AgentExecutorBinding
+    agent_executors_v2: tuple[AgentExecutorManifestEntry, ...]
     effect_adapter: EffectAdapterBinding
 
 
@@ -75,12 +87,14 @@ class DbosRuntimeSettings:
     def binding(
         self,
         agent_executor: AgentExecutorBinding,
+        agent_executors_v2: tuple[AgentExecutorManifestEntry, ...],
         effect_adapter: EffectAdapterBinding,
     ) -> DbosRuntimeBinding:
         return DbosRuntimeBinding(
             self.database_path.resolve(),
             self.application_version,
             agent_executor,
+            agent_executors_v2,
             effect_adapter,
         )
 
@@ -111,21 +125,6 @@ def create_canonical_engine(database_path: Path) -> Engine:
     return engine
 
 
-@contextmanager
-def canonical_write_transaction(engine: Engine) -> Iterator[Connection]:
-    """Serialize a read-decide-write invariant from its first observation."""
-
-    with engine.connect() as connection:
-        connection.exec_driver_sql("BEGIN IMMEDIATE")
-        try:
-            yield connection
-        except BaseException:
-            connection.rollback()
-            raise
-        else:
-            connection.commit()
-
-
 def _establish_wal_journal_mode(connection: Any) -> None:
     deadline = time.monotonic() + _SQLITE_LOCK_TIMEOUT_SECONDS
     while True:
@@ -151,6 +150,8 @@ class _BoundRuntime:
     datasource: SQLAlchemyDatasource
     agent_executor_binding: AgentExecutorBinding
     agent_executor: AgentExecutor
+    agent_executor_registry: AgentExecutorRegistry
+    agent_executors_v2: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...]
     effect_adapter_binding: EffectAdapterBinding
     effect_adapter: EffectAdapter
     leases: int = 0
@@ -162,6 +163,8 @@ def _open_binding(
     settings: DbosRuntimeSettings,
     agent_factory: AgentExecutorFactory,
     agent_binding: AgentExecutorBinding,
+    agent_registry: AgentExecutorRegistry,
+    agent_manifest: tuple[AgentExecutorManifestEntry, ...],
     effect_factory: EffectAdapterFactory,
     effect_binding: EffectAdapterBinding,
 ) -> _BoundRuntime:
@@ -185,6 +188,7 @@ def _open_binding(
         )
     engine = create_canonical_engine(settings.database_path)
     agent_executor: AgentExecutor | None = None
+    agent_executors_v2: list[tuple[AgentExecutorManifestEntry, AgentExecutorV2]] = []
     adapter: EffectAdapter | None = None
     try:
         initialize_schema(engine)
@@ -219,6 +223,38 @@ def _open_binding(
                     ).distinct()
                 )
             }
+            required_v2_keys = {
+                AgentExecutorKey(
+                    ProviderId(str(record.provider_id)),
+                    AgentExecutorRevision(str(record.executor_revision)),
+                )
+                for record in connection.execute(
+                    sa.select(
+                        auth_profile_revisions.c.provider_id,
+                        agent_configuration_revisions.c.executor_revision,
+                    )
+                    .select_from(runs)
+                    .join(
+                        run_agent_bindings,
+                        run_agent_bindings.c.run_id == runs.c.run_id,
+                    )
+                    .join(
+                        agent_configuration_revisions,
+                        agent_configuration_revisions.c.revision_hash
+                        == run_agent_bindings.c.agent_configuration_revision_hash,
+                    )
+                    .join(
+                        auth_profile_revisions,
+                        auth_profile_revisions.c.revision_hash
+                        == agent_configuration_revisions.c.auth_profile_revision_hash,
+                    )
+                    .where(
+                        runs.c.workflow_format_version == 2,
+                        runs.c.state != "COMPLETED",
+                    )
+                    .distinct()
+                )
+            }
         if durable_agent_bindings and durable_agent_bindings != {agent_binding}:
             raise DbosRuntimeBindingConflict(
                 "runtime agent binding differs from durable agent receipts"
@@ -227,7 +263,15 @@ def _open_binding(
             raise DbosRuntimeBindingConflict(
                 "runtime adapter binding differs from durable effect intents"
             )
+        if not required_v2_keys.issubset(agent_registry.keys):
+            raise DbosRuntimeBindingConflict(
+                "runtime V2 registry is missing a nonterminal durable executor binding"
+            )
         agent_executor = agent_factory.open()
+        for registry_entry in agent_registry.entries:
+            agent_executors_v2.append(
+                (registry_entry.manifest_entry, registry_entry.factory.open())
+            )
         adapter = effect_factory.open()
         datasource = SQLAlchemyDatasource.create(
             sqlite_url(settings.database_path), engine=engine
@@ -236,19 +280,34 @@ def _open_binding(
             datasource,
             agent_executor,
             agent_binding,
+            {
+                entry.key: (executor, entry.operational_identity)
+                for entry, executor in agent_executors_v2
+            },
             adapter,
             effect_binding,
         )
-    except Exception:
-        try:
+    except BaseException as original:
+        cleanup_errors: list[BaseException] = []
+        resources: list[EffectAdapter | AgentExecutorV2 | AgentExecutor] = []
+        if adapter is not None:
+            resources.append(adapter)
+        resources.extend(executor for _entry, executor in reversed(agent_executors_v2))
+        if agent_executor is not None:
+            resources.append(agent_executor)
+        for resource in resources:
             try:
-                if adapter is not None:
-                    adapter.close()
-            finally:
-                if agent_executor is not None:
-                    agent_executor.close()
-        finally:
+                resource.close()
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+        try:
             engine.dispose()
+        except BaseException as cleanup_error:
+            cleanup_errors.append(cleanup_error)
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "runtime open and cleanup both failed", [original, *cleanup_errors]
+            ) from None
         raise
     return _BoundRuntime(
         settings,
@@ -256,6 +315,8 @@ def _open_binding(
         datasource,
         agent_binding,
         agent_executor,
+        agent_registry,
+        tuple(agent_executors_v2),
         effect_binding,
         adapter,
     )
@@ -291,30 +352,37 @@ class _DbosProcessOwner:
         self,
         settings: DbosRuntimeSettings,
         agent_factory: AgentExecutorFactory,
+        agent_registry: AgentExecutorRegistry,
         effect_factory: EffectAdapterFactory,
     ) -> _BoundRuntime:
         with self._lock:
             agent_binding = agent_factory.binding
+            agent_manifest = agent_registry.manifest
             effect_binding = effect_factory.binding
-            requested_binding = settings.binding(agent_binding, effect_binding)
+            requested_binding = settings.binding(
+                agent_binding, agent_manifest, effect_binding
+            )
             if self._bound is None:
                 self._bound = _open_binding(
                     settings,
                     agent_factory,
                     agent_binding,
+                    agent_registry,
+                    agent_manifest,
                     effect_factory,
                     effect_binding,
                 )
             elif (
                 self._bound.settings.binding(
                     self._bound.agent_executor_binding,
+                    tuple(entry for entry, _executor in self._bound.agent_executors_v2),
                     self._bound.effect_adapter_binding,
                 )
                 != requested_binding
             ):
                 raise DbosRuntimeBindingConflict(
                     "this process already owns "
-                    f"{self._bound.settings.binding(self._bound.agent_executor_binding, self._bound.effect_adapter_binding)}; "
+                    f"{self._bound.settings.binding(self._bound.agent_executor_binding, tuple(entry for entry, _executor in self._bound.agent_executors_v2), self._bound.effect_adapter_binding)}; "
                     f"refusing {requested_binding}"
                 )
             self._bound.leases += 1
@@ -326,21 +394,40 @@ class _DbosProcessOwner:
             if bound.leases > 0:
                 return
             try:
-                DBOS.destroy(
-                    destroy_registry=True,
-                    workflow_completion_timeout_sec=(
-                        _SHUTDOWN_WORKFLOW_COMPLETION_SECONDS if bound.launched else 0
-                    ),
-                )
-            finally:
+                errors: list[BaseException] = []
                 try:
-                    bound.effect_adapter.close()
-                finally:
+                    DBOS.destroy(
+                        destroy_registry=True,
+                        workflow_completion_timeout_sec=(
+                            _SHUTDOWN_WORKFLOW_COMPLETION_SECONDS
+                            if bound.launched
+                            else 0
+                        ),
+                    )
+                except BaseException as error:
+                    errors.append(error)
+                resources: list[EffectAdapter | AgentExecutorV2 | AgentExecutor] = [
+                    bound.effect_adapter
+                ]
+                resources.extend(
+                    executor for _entry, executor in reversed(bound.agent_executors_v2)
+                )
+                resources.append(bound.agent_executor)
+                for resource in resources:
                     try:
-                        bound.agent_executor.close()
-                    finally:
-                        bound.engine.dispose()
-                        self._bound = None
+                        resource.close()
+                    except BaseException as error:
+                        errors.append(error)
+                try:
+                    bound.engine.dispose()
+                except BaseException as error:
+                    errors.append(error)
+            finally:
+                self._bound = None
+            if len(errors) == 1:
+                raise errors[0]
+            if errors:
+                raise BaseExceptionGroup("runtime close failed", errors)
 
     def launch(self, bound: _BoundRuntime) -> None:
         with self._lock:
@@ -381,10 +468,12 @@ class DbosRuntime:
         settings: DbosRuntimeSettings,
         effect_adapter_factory: EffectAdapterFactory,
         agent_executor_factory: AgentExecutorFactory,
+        agent_executor_factories_v2: tuple[AgentExecutorFactoryV2, ...] = (),
     ) -> None:
         self._close_lock = threading.Lock()
+        registry = AgentExecutorRegistry(agent_executor_factories_v2)
         self._bound: _BoundRuntime | None = _PROCESS_OWNER.acquire(
-            settings, agent_executor_factory, effect_adapter_factory
+            settings, agent_executor_factory, registry, effect_adapter_factory
         )
 
     @property
@@ -410,6 +499,10 @@ class DbosRuntime:
     @property
     def agent_executor_binding(self) -> AgentExecutorBinding:
         return self._held().agent_executor_binding
+
+    @property
+    def agent_executor_registry(self) -> AgentExecutorRegistry:
+        return self._held().agent_executor_registry
 
     @property
     def effect_adapter_binding(self) -> EffectAdapterBinding:

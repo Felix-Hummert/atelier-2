@@ -11,6 +11,7 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api import openapi as openapi_module
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.openapi import API_PREFIX, EVENT_NAMES, EVENT_PATH
+from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     TransactionalWaitAnswerer,
@@ -37,11 +38,14 @@ def empty_ports() -> ApiPorts:
         run_queries=cast(RunQueries, missing),
         run_event_queries=cast(RunEventQueries, missing),
         workflow_document_parser=parse_workflow_document,
+        agent_configuration_catalog=cast(AgentConfigurationCatalog, missing),
     )
 
 
 EXPECTED_PATHS = {
     API_PREFIX + "/health",
+    API_PREFIX + "/auth-profile-revisions",
+    API_PREFIX + "/agent-configuration-revisions",
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/{revision_hash}",
     API_PREFIX + "/runs",
@@ -53,6 +57,8 @@ EXPECTED_PATHS = {
 
 EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/health", "get"): {"200"},
+    (API_PREFIX + "/auth-profile-revisions", "post"): {"200", "201"},
+    (API_PREFIX + "/agent-configuration-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
     (API_PREFIX + "/workflow-revisions/{revision_hash}", "get"): {"200"},
@@ -105,7 +111,9 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     extension = content["text/event-stream"]["x-atelier2-sse-v1"]
     assert extension["id"] == {"$ref": "#/components/schemas/EventCursor"}
     assert extension["event"] == {"enum": list(EVENT_NAMES)}
-    assert extension["data"] == {"$ref": "#/components/schemas/RunEventResource"}
+    assert extension["data"] == {
+        "$ref": "#/components/schemas/VersionedRunEventResource"
+    }
     event_union = schema["components"]["schemas"]["RunEventResource"]
     assert len(event_union["oneOf"]) == 7
     assert set(event_union["discriminator"]["mapping"]) == set(EVENT_NAMES)
@@ -167,6 +175,8 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
     }
 
     for path in (
+        API_PREFIX + "/auth-profile-revisions",
+        API_PREFIX + "/agent-configuration-revisions",
         API_PREFIX + "/runs",
         API_PREFIX + "/runs/{public_ref}/answers",
         API_PREFIX + "/runs/{public_ref}/reconciliations",

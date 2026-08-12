@@ -81,6 +81,29 @@ def test_populated_version_one_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
+def test_version_four_is_refused_without_changing_any_file_byte(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE atelier_schema_versions(version INTEGER PRIMARY KEY);
+            CREATE TABLE v4_durable_state(value BLOB NOT NULL);
+            INSERT INTO atelier_schema_versions VALUES(4);
+            INSERT INTO v4_durable_state VALUES(X'00FF');
+            """
+        )
+    before_files = _file_snapshot(tmp_path)
+    engine = create_canonical_engine(database_path)
+
+    with pytest.raises(MigrationRequired, match="schema version 4"):
+        initialize_schema(engine)
+
+    engine.dispose()
+    assert _file_snapshot(tmp_path) == before_files
+
+
 @pytest.mark.parametrize(
     "schema_sql",
     [
@@ -124,7 +147,7 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
-def test_new_database_has_the_version_four_runtime_ledger(tmp_path: Path) -> None:
+def test_new_database_has_the_version_five_runtime_ledger(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
 
@@ -133,7 +156,7 @@ def test_new_database_has_the_version_four_runtime_ledger(tmp_path: Path) -> Non
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
-            == 4
+            == 5
         )
         assert set(sa.inspect(connection).get_table_names()) >= {
             effect_intents.name,
@@ -146,6 +169,8 @@ def test_new_database_has_the_version_four_runtime_ledger(tmp_path: Path) -> Non
             "run_id",
             "bootstrap_workflow_id",
             "revision_hash",
+            "workflow_format_version",
+            "agent_binding_set_hash",
             "current_node_id",
             "state",
             "state_version",
@@ -180,6 +205,8 @@ def ledger_engine(tmp_path: Path) -> Iterator[Engine]:
                 run_id="run-1",
                 bootstrap_workflow_id="workflow-1",
                 revision_hash=revision_hash,
+                workflow_format_version=1,
+                agent_binding_set_hash=None,
                 current_node_id="agent",
                 state="STARTED",
                 state_version=0,
@@ -420,6 +447,8 @@ def test_run_state_tokens_are_exact(
         run_id="candidate-run",
         bootstrap_workflow_id="candidate-workflow",
         revision_hash=hashlib.sha256(b"workflow-v1").hexdigest(),
+        workflow_format_version=1,
+        agent_binding_set_hash=None,
         current_node_id=("final" if state == "COMPLETED" else "node"),
         state=state,
         state_version=0,
@@ -662,6 +691,8 @@ def test_every_effect_intent_binding_column_is_immutable(
                 run_id="run-2",
                 bootstrap_workflow_id="workflow-2",
                 revision_hash=alternate_revision_hash,
+                workflow_format_version=1,
+                agent_binding_set_hash=None,
                 current_node_id="agent",
                 state="STARTED",
                 state_version=0,

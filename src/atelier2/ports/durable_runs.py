@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
+from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import Run, RunId, StartRunRequest, WorkflowRevisionHash
 
 
@@ -19,12 +21,12 @@ class DurableStateCorrupt:
 
 @dataclass(frozen=True)
 class DurableRunCreated:
-    run: Run
+    run: AnyRun
 
 
 @dataclass(frozen=True)
 class DurableRunExisting:
-    run: Run
+    run: AnyRun
 
 
 @dataclass(frozen=True)
@@ -37,11 +39,29 @@ class DurableRunIdentityConflict:
     pass
 
 
+@dataclass(frozen=True)
+class DurableInvalidAgentBindings:
+    pass
+
+
+@dataclass(frozen=True)
+class DurableAgentConfigurationRevisionMissing:
+    pass
+
+
+@dataclass(frozen=True)
+class DurableAgentExecutorBindingUnavailable:
+    pass
+
+
 type DurablePublishedRunResult = (
     DurableRunCreated
     | DurableRunExisting
     | DurableRunRevisionMissing
     | DurableRunIdentityConflict
+    | DurableInvalidAgentBindings
+    | DurableAgentConfigurationRevisionMissing
+    | DurableAgentExecutorBindingUnavailable
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )
@@ -53,9 +73,19 @@ class StartPublishedRunRequest:
     revision_hash: WorkflowRevisionHash
 
 
+@dataclass(frozen=True)
+class StartPublishedRunRequestV2:
+    run_id: RunId
+    revision_hash: WorkflowRevisionHash
+    agent_bindings: AgentBindingSet
+
+
+type AnyStartPublishedRunRequest = StartPublishedRunRequest | StartPublishedRunRequestV2
+
+
 class DurablePublishedRunStarter(Protocol):
     def start_published(
-        self, request: StartPublishedRunRequest
+        self, request: AnyStartPublishedRunRequest
     ) -> DurablePublishedRunResult: ...
 
 

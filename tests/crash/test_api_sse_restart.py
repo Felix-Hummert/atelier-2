@@ -30,10 +30,10 @@ from atelier2.adapters.dbos.run_store import (
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
-    canonical_write_transaction,
 )
 from atelier2.adapters.dbos.schema import effect_intents, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.references import encode_event_cursor, encode_public_run_reference

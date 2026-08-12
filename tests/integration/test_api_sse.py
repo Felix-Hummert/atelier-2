@@ -12,6 +12,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer, graph_action_intent
+from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
@@ -26,13 +27,13 @@ from atelier2.adapters.dbos.run_store import (
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
-    canonical_write_transaction,
 )
 from atelier2.adapters.dbos.schema import effect_intents
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
@@ -175,13 +176,18 @@ def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
         source_tree="tree",
         ports=ApiPorts(
             DbosWorkflowRevisionPublisher(runtime.engine),
-            DbosDurableRunStarter(runtime.engine, runtime.settings),
+            DbosDurableRunStarter(
+                runtime.engine, runtime.settings, runtime.agent_executor_registry
+            ),
             DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
             DbosEffectReconcileCommander(runtime.engine, runtime.settings),
             queries,
             queries,
             queries,
             parse_workflow_document,
+            DbosAgentConfigurationCatalog(
+                runtime.engine, runtime.agent_executor_registry
+            ),
         ),
         limits=api_limits(event_page_size=page_size),
         event_poll_backoff=event_poll_backoff(),

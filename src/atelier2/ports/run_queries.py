@@ -8,8 +8,9 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
     ReconcileCommandSnapshot,
 )
-from atelier2.contracts.runs import Run, RunId
-from atelier2.contracts.workflows import WorkflowGraph
+from atelier2.contracts.run_bindings import AnyRun
+from atelier2.contracts.runs import RunId
+from atelier2.contracts.workflows import AnyWorkflowGraph
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
     QueryDurableStateCorrupt,
@@ -25,8 +26,8 @@ class WaitingReconciliationProjection:
 
 @dataclass(frozen=True)
 class RunProjection:
-    run: Run
-    graph: WorkflowGraph
+    run: AnyRun
+    graph: AnyWorkflowGraph
     reconciliation: WaitingReconciliationProjection | None
 
 

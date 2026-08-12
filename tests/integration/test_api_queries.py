@@ -127,6 +127,8 @@ def _seed_history(
                 run_id=run_id.value,
                 bootstrap_workflow_id=f"workflow-{run_id.value}",
                 revision_hash=revision.revision_hash.value,
+                workflow_format_version=1,
+                agent_binding_set_hash=None,
                 current_node_id="final" if state is RunState.COMPLETED else "agent",
                 state=state.value,
                 state_version=head,
@@ -610,6 +612,8 @@ def _seed_runs(
                     "run_id": run_id.value,
                     "bootstrap_workflow_id": f"workflow-{index}",
                     "revision_hash": revision.revision_hash.value,
+                    "workflow_format_version": 1,
+                    "agent_binding_set_hash": None,
                     "current_node_id": "agent",
                     "state": RunState.STARTED.value,
                     "state_version": 0,
@@ -655,6 +659,8 @@ def test_run_core_text_limits_refuse_before_mapper_without_selecting_bootstrap_i
                 run_id=run_id_value,
                 bootstrap_workflow_id="unused-bootstrap-identity",
                 revision_hash=revision.revision_hash.value,
+                workflow_format_version=1,
+                agent_binding_set_hash=None,
                 current_node_id=current_node_id,
                 state=RunState.STARTED.value,
                 state_version=0,
@@ -666,7 +672,9 @@ def test_run_core_text_limits_refuse_before_mapper_without_selecting_bootstrap_i
     def unexpected_materialization(_record: object) -> object:
         raise AssertionError("oversized durable run text reached the run mapper")
 
-    monkeypatch.setattr(queries_module, "run_from_record", unexpected_materialization)
+    monkeypatch.setattr(
+        queries_module, "run_from_record_with_bindings", unexpected_materialization
+    )
     run_selects: list[str] = []
 
     def capture_run_select(
@@ -900,6 +908,8 @@ nodes:
                     "run_id": run_id.value,
                     "bootstrap_workflow_id": f"workflow-{run_id.value}",
                     "revision_hash": revision.revision_hash.value,
+                    "workflow_format_version": 1,
+                    "agent_binding_set_hash": None,
                     "current_node_id": "action",
                     "state": RunState.WAITING_RECONCILIATION.value,
                     "state_version": 1,

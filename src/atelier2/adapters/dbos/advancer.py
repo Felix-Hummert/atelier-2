@@ -9,11 +9,9 @@ from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.run_store import load_graph, load_run
-from atelier2.adapters.dbos.runtime import (
-    DbosRuntimeSettings,
-    canonical_write_transaction,
-)
+from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents, run_events
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import EFFECT_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.contracts.effects import (
     CanonicalRequest,
@@ -32,7 +30,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
-from atelier2.contracts.workflows import ActionNode, AgentNode
+from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
 
 EFFECT_WORKFLOW_ID_PREFIX = "atelier2-effect-"
 
@@ -68,7 +66,7 @@ def graph_action_intent(
     ):
         raise RunEffectConflict("effect requires the current STARTED Action")
     predecessor = graph.predecessor(action.id)
-    if not isinstance(predecessor, AgentNode):
+    if not isinstance(predecessor, (AgentNode, AgentNodeV2)):
         raise RunEffectConflict("Action predecessor is not an Agent")
     record = session.execute(
         sa.select(run_events.c.payload, run_events.c.payload_hash).where(
@@ -81,9 +79,15 @@ def graph_action_intent(
     if record is None:
         raise RunEffectConflict("Action has no durable Agent output")
     payload = bytes(record.payload)
-    if Sha256Hash.of(
-        payload
-    ).value != record.payload_hash or payload != predecessor.output.encode("utf-8"):
+    expected_output = (
+        predecessor.output.encode("utf-8")
+        if isinstance(predecessor, AgentNode)
+        else payload
+    )
+    if (
+        Sha256Hash.of(payload).value != record.payload_hash
+        or payload != expected_output
+    ):
         raise RunEffectConflict("Action predecessor output binding changed")
     execution_id = NodeExecutionId.for_node(run_id, revision_hash, action.id)
     binding = EffectBinding(

@@ -104,10 +104,10 @@ class ApiLimits:
         self.require_event_cursor(event.run_id, event.event_sequence)
         self.require_field(event.node_id)
         self.require_encoded_payload(event.payload)
-        if event.event_kind in {
-            RunEventKind.AGENT_COMPLETED,
-            RunEventKind.WAIT_ANSWERED,
-        }:
+        if (
+            event.event_kind is RunEventKind.AGENT_COMPLETED
+            and projection.workflow_format_version == 1
+        ) or event.event_kind is RunEventKind.WAIT_ANSWERED:
             self.require_field(event.payload.decode("utf-8"))
         receipt = projection.receipt
         if receipt is None:

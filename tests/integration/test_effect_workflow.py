@@ -23,7 +23,6 @@ from atelier2.adapters.dbos.reconciler import (
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
-    canonical_write_transaction,
 )
 from atelier2.adapters.dbos.schema import (
     effect_intents,
@@ -32,6 +31,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.advance_run import advance_run
 from atelier2.application.reconcile_effect import reconcile_effect

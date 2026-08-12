@@ -16,6 +16,7 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.references import encode_event_cursor, encode_public_run_reference
 from atelier2.contracts.runs import RunId
+from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     TransactionalWaitAnswerer,
@@ -76,6 +77,7 @@ def app_for(queries: FakeEventQueries):
             cast(RunQueries, unused),
             cast(RunEventQueries, queries),
             parse_workflow_document,
+            cast(AgentConfigurationCatalog, unused),
         ),
         limits=api_limits(),
         event_poll_backoff=event_poll_backoff(),

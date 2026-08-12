@@ -96,7 +96,7 @@ def engine_snapshot(
     return schema, rows
 
 
-def test_fresh_v4_has_the_closed_product_tables_and_reopens_idempotently(
+def test_fresh_v5_has_the_closed_product_tables_and_reopens_idempotently(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -107,7 +107,7 @@ def test_fresh_v4_has_the_closed_product_tables_and_reopens_idempotently(
         with engine.connect() as connection:
             assert connection.execute(
                 sa.text("SELECT version FROM atelier_schema_versions")
-            ).all() == [(4,)]
+            ).all() == [(5,)]
             assert PRODUCT_TABLE_NAMES.issubset(
                 sa.inspect(connection).get_table_names()
             )
@@ -115,18 +115,211 @@ def test_fresh_v4_has_the_closed_product_tables_and_reopens_idempotently(
         engine.dispose()
 
 
-def test_malformed_v4_is_refused_without_mutation(tmp_path: Path) -> None:
+def test_v2_tables_have_exact_secret_free_columns(tmp_path: Path) -> None:
+    engine = create_canonical_engine(tmp_path / "atelier.sqlite")
+    initialize_schema(engine)
+    expected = {
+        "auth_profile_revisions": (
+            "revision_hash",
+            "profile_id",
+            "revision_number",
+            "provider_id",
+            "auth_mode",
+        ),
+        "agent_configuration_revisions": (
+            "revision_hash",
+            "model",
+            "auth_profile_revision_hash",
+            "executor_revision",
+        ),
+        "run_agent_bindings": (
+            "run_id",
+            "revision_hash",
+            "binding_set_hash",
+            "role",
+            "agent_configuration_revision_hash",
+        ),
+        "agent_receipts_v2": (
+            "node_execution_id",
+            "request_hash",
+            "run_id",
+            "workflow_revision_hash",
+            "node_id",
+            "role",
+            "binding_set_hash",
+            "agent_configuration_revision_hash",
+            "auth_profile_revision_hash",
+            "profile_id",
+            "revision_number",
+            "provider_id",
+            "auth_mode",
+            "model",
+            "executor_revision",
+            "executor_operational_identity",
+            "output_bytes",
+            "output_hash",
+            "receipt_hash",
+        ),
+    }
+
+    with engine.connect() as connection:
+        inspector = sa.inspect(connection)
+        observed = {
+            table: tuple(column["name"] for column in inspector.get_columns(table))
+            for table in expected
+        }
+    engine.dispose()
+
+    assert observed == expected
+    assert all(
+        forbidden not in column.lower()
+        for columns in observed.values()
+        for column in columns
+        for forbidden in ("secret", "credential", "key_value", "handle")
+    )
+
+
+def _seed_v2_constraint_rows(connection: sa.Connection) -> None:
+    connection.exec_driver_sql(
+        "INSERT INTO workflow_revisions VALUES (?, ?)", ("c" * 64, b"graph-v2")
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO auth_profile_revisions VALUES (?, ?, ?, ?, ?)",
+        ("a" * 64, "max", 1, "anthropic", "subscription"),
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO agent_configuration_revisions VALUES (?, ?, ?, ?)",
+        ("b" * 64, "opus", "a" * 64, "claude-cli/v1"),
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("run-v2", "bootstrap", "c" * 64, 2, "d" * 64, "build", "STARTED", 0, 0, None),
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO run_agent_bindings VALUES (?, ?, ?, ?, ?)",
+        ("run-v2", "c" * 64, "d" * 64, "builder", "b" * 64),
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO agent_receipts_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "f" * 64,
+            "1" * 64,
+            "run-v2",
+            "c" * 64,
+            "build",
+            "builder",
+            "d" * 64,
+            "b" * 64,
+            "a" * 64,
+            "max",
+            1,
+            "anthropic",
+            "subscription",
+            "opus",
+            "claude-cli/v1",
+            "process",
+            b"output",
+            "e" * 64,
+            "9" * 64,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("statement", "parameters"),
+    (
+        (
+            "INSERT INTO auth_profile_revisions VALUES (:hash,'other',2,'Anthropic','subscription')",
+            {"hash": "2" * 64},
+        ),
+        (
+            "INSERT INTO agent_configuration_revisions VALUES (:hash,'model',:auth,'executor')",
+            {"hash": "2" * 64, "auth": "3" * 64},
+        ),
+        (
+            "INSERT INTO run_agent_bindings VALUES ('run-v2',:revision,:binding,'reviewer',:configuration)",
+            {
+                "revision": "c" * 64,
+                "binding": "3" * 64,
+                "configuration": "b" * 64,
+            },
+        ),
+        (
+            (
+                "INSERT INTO agent_receipts_v2 SELECT "
+                ":execution,request_hash,run_id,workflow_revision_hash,'other',role,"
+                "binding_set_hash,agent_configuration_revision_hash,"
+                "auth_profile_revision_hash,profile_id,revision_number,provider_id,"
+                "auth_mode,'wrong-model',executor_revision,"
+                "executor_operational_identity,output_bytes,output_hash,"
+                ":receipt FROM agent_receipts_v2"
+            ),
+            {"execution": "2" * 64, "receipt": "3" * 64},
+        ),
+        (
+            (
+                "INSERT INTO agent_receipts_v2 SELECT "
+                ":execution,request_hash,run_id,workflow_revision_hash,'other',role,"
+                "binding_set_hash,agent_configuration_revision_hash,"
+                "auth_profile_revision_hash,profile_id,revision_number,provider_id,"
+                "auth_mode,model,executor_revision,executor_operational_identity,"
+                ":output,output_hash,:receipt FROM agent_receipts_v2"
+            ),
+            {
+                "execution": "2" * 64,
+                "output": b"x" * 49_153,
+                "receipt": "3" * 64,
+            },
+        ),
+        (
+            "UPDATE auth_profile_revisions SET profile_id='changed'",
+            {},
+        ),
+        ("DELETE FROM agent_configuration_revisions", {}),
+        ("UPDATE run_agent_bindings SET role='reviewer'", {}),
+        ("DELETE FROM agent_receipts_v2", {}),
+    ),
+    ids=(
+        "auth-check",
+        "configuration-auth-foreign-key",
+        "run-binding-composite-foreign-key",
+        "receipt-configuration-composite-foreign-key",
+        "receipt-output-bound",
+        "auth-immutable",
+        "configuration-immutable",
+        "run-binding-immutable",
+        "receipt-immutable",
+    ),
+)
+def test_v2_schema_checks_foreign_keys_and_immutability_refuse_canaries(
+    tmp_path: Path, statement: str, parameters: dict[str, object]
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database)
+    initialize_schema(engine)
+    with engine.begin() as connection:
+        _seed_v2_constraint_rows(connection)
+    before = rows_snapshot(database)
+
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(sa.text(statement), parameters)
+
+    assert rows_snapshot(database) == before
+    engine.dispose()
+
+
+def test_malformed_v5_is_refused_without_mutation(tmp_path: Path) -> None:
     database = tmp_path / "atelier.sqlite"
     with sqlite3.connect(database) as connection:
         connection.execute(
             "CREATE TABLE atelier_schema_versions(version INTEGER PRIMARY KEY)"
         )
-        connection.execute("INSERT INTO atelier_schema_versions VALUES(4)")
+        connection.execute("INSERT INTO atelier_schema_versions VALUES(5)")
         connection.execute("CREATE TABLE workflow_revisions(wrong TEXT)")
     before = snapshot(database)
     engine = sa.create_engine(f"sqlite:///{database}")
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v4"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v5"):
         initialize_schema(engine)
 
     engine.dispose()
@@ -143,7 +336,7 @@ def test_malformed_v4_is_refused_without_mutation(tmp_path: Path) -> None:
         "changed-nullability",
     ],
 )
-def test_existing_v4_rejects_every_product_schema_drift_without_mutation(
+def test_existing_v5_rejects_every_product_schema_drift_without_mutation(
     tmp_path: Path, malformation: str
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -192,7 +385,7 @@ def test_existing_v4_rejects_every_product_schema_drift_without_mutation(
     before_schema = snapshot(database)
     before_rows = rows_snapshot(database)
     reopened = sa.create_engine(f"sqlite:///{database}")
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v4"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v5"):
         initialize_schema(reopened)
     reopened.dispose()
 
@@ -200,7 +393,7 @@ def test_existing_v4_rejects_every_product_schema_drift_without_mutation(
     assert rows_snapshot(database) == before_rows
 
 
-def test_existing_malformed_in_memory_v4_is_refused() -> None:
+def test_existing_malformed_in_memory_v5_is_refused() -> None:
     engine = sa.create_engine("sqlite://")
     initialize_schema(engine)
     with engine.begin() as connection:
@@ -212,7 +405,7 @@ def test_existing_malformed_in_memory_v4_is_refused() -> None:
             )
         )
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v4"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v5"):
         initialize_schema(engine)
     engine.dispose()
 
@@ -238,7 +431,7 @@ def test_nonempty_dbos_only_in_memory_database_is_not_treated_as_fresh() -> None
     engine.dispose()
 
 
-def test_dbos_owned_tables_are_allowed_and_unchanged_by_v4_preflight(
+def test_dbos_owned_tables_are_allowed_and_unchanged_by_v5_preflight(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -281,7 +474,7 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
         connection.execute(
             sa.text(
                 "INSERT INTO runs VALUES "
-                "('run-1','bootstrap',:revision,'action','STARTED',0,0,NULL)"
+                "('run-1','bootstrap',:revision,1,NULL,'action','STARTED',0,0,NULL)"
             ),
             {"revision": revision},
         )
@@ -383,7 +576,7 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
         connection.execute(
             sa.text(
                 "INSERT INTO runs VALUES "
-                "('run-1','bootstrap',:revision,'action','STARTED',0,0,NULL)"
+                "('run-1','bootstrap',:revision,1,NULL,'action','STARTED',0,0,NULL)"
             ),
             {"revision": revision},
         )
@@ -501,7 +694,7 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
             connection.execute(
                 sa.text(
                     "INSERT INTO runs VALUES "
-                    "(:run,:bootstrap,:revision,'action','STARTED',0,0,NULL)"
+                    "(:run,:bootstrap,:revision,1,NULL,'action','STARTED',0,0,NULL)"
                 ),
                 {
                     "run": f"run-{index}",

@@ -13,6 +13,7 @@ from urllib.request import urlopen
 import pytest
 from fastapi.testclient import TestClient
 
+from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -136,7 +137,9 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
     queries = DbosQueries(runtime.engine)
     return ApiPorts(
         workflow_revision_publisher=DbosWorkflowRevisionPublisher(runtime.engine),
-        published_run_starter=DbosDurableRunStarter(runtime.engine, runtime.settings),
+        published_run_starter=DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        ),
         wait_answerer=DbosWaitAnswerer(
             runtime.engine, runtime.settings.application_version
         ),
@@ -147,6 +150,9 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
         run_queries=queries,
         run_event_queries=queries,
         workflow_document_parser=parse_workflow_document,
+        agent_configuration_catalog=DbosAgentConfigurationCatalog(
+            runtime.engine, runtime.agent_executor_registry
+        ),
     )
 
 

@@ -35,5 +35,10 @@ pythonpath = ["src"]
 [tool.pyright]
 extraPaths = ["src"]
 
+[tool.ruff.lint.per-file-ignores]
+# Runtime lifecycle must preserve the initiating failure while collecting every
+# independently failing third-party cleanup operation.
+"src/atelier2/adapters/dbos/runtime.py" = ["BLE001"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/atelier2"]

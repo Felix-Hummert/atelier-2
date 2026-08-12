@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -14,6 +14,10 @@ from atelier2.api.references import (
     encode_event_cursor,
     encode_public_run_reference,
 )
+from atelier2.contracts.agents import (
+    AgentConfigurationRevision,
+    AuthProfileRevision,
+)
 from atelier2.contracts.effects import (
     EffectReceipt,
     OperatorAuthoritativeAbsence,
@@ -21,14 +25,18 @@ from atelier2.contracts.effects import (
     ReconcileCommand,
 )
 from atelier2.contracts.executions import RunEventKind, is_canonical_integer_bytes
+from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.workflows import (
     ActionNode,
     AgentNode,
+    AgentNodeV2,
     SubworkflowNode,
     WaitNode,
     WorkflowGraph,
+    WorkflowGraphV2,
     WorkflowNode,
+    WorkflowNodeV2,
 )
 from atelier2.ports.run_events import PersistedRunEvent
 from atelier2.ports.run_queries import RunProjection
@@ -45,11 +53,49 @@ class HealthResource(ApiModel):
     source_tree: str
 
 
+class PublishAuthProfileRevisionRequestResource(ApiModel):
+    profile_id: str = Field(min_length=1, max_length=1_024)
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    provider_id: str = Field(min_length=1, max_length=64)
+    auth_mode: Literal["subscription", "api_key"]
+
+
+class AuthProfileRevisionResource(ApiModel):
+    profile_id: str = Field(min_length=1, max_length=1_024)
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    provider_id: str = Field(min_length=1, max_length=64)
+    auth_mode: Literal["subscription", "api_key"]
+    auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class PublishAgentConfigurationRevisionRequestResource(ApiModel):
+    model: str = Field(min_length=1, max_length=1_024)
+    auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    executor_revision: str = Field(min_length=1, max_length=1_024)
+
+
+class AgentConfigurationRevisionResource(ApiModel):
+    model: str = Field(min_length=1, max_length=1_024)
+    auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    executor_revision: str = Field(min_length=1, max_length=1_024)
+    provider_id: str = Field(min_length=1, max_length=64)
+    auth_mode: Literal["subscription", "api_key"]
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
 class AgentNodeResource(ApiModel):
     type: Literal["agent"]
     node_id: str = Field(min_length=1)
     job: str = Field(min_length=1)
     output: str = Field(min_length=1)
+    next_node_id: str = Field(min_length=1)
+
+
+class AgentNodeResourceV2(ApiModel):
+    type: Literal["agent"]
+    node_id: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    job: str = Field(min_length=1)
     next_node_id: str = Field(min_length=1)
 
 
@@ -79,11 +125,31 @@ NodeResource = Annotated[
     Field(discriminator="type"),
 ]
 
+NodeResourceV2 = Annotated[
+    AgentNodeResourceV2
+    | ActionNodeResource
+    | WaitNodeResource
+    | SubworkflowNodeResource,
+    Field(discriminator="type"),
+]
+
 
 class WorkflowGraphResource(ApiModel):
     format_version: Literal[1]
     start_node_id: str = Field(min_length=1)
     nodes: tuple[NodeResource, ...]
+
+
+class WorkflowGraphResourceV2(ApiModel):
+    format_version: Literal[2]
+    start_node_id: str = Field(min_length=1)
+    nodes: tuple[NodeResourceV2, ...]
+
+
+AnyWorkflowGraphResource = Annotated[
+    WorkflowGraphResource | WorkflowGraphResourceV2,
+    Field(discriminator="format_version"),
+]
 
 
 class WorkflowRevisionSummaryResource(ApiModel):
@@ -93,7 +159,7 @@ class WorkflowRevisionSummaryResource(ApiModel):
 class WorkflowRevisionDetailResource(ApiModel):
     revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     document_base64: str
-    graph: WorkflowGraphResource
+    graph: AnyWorkflowGraphResource
 
 
 class WorkflowRevisionPageResource(ApiModel):
@@ -197,9 +263,106 @@ class RunResource(ApiModel):
         return self
 
 
+class AgentBindingResourceV2(ApiModel):
+    role: str = Field(min_length=1, max_length=1_024)
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    profile_id: str = Field(min_length=1, max_length=1_024)
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    provider_id: str = Field(min_length=1, max_length=64)
+    auth_mode: Literal["subscription", "api_key"]
+    model: str = Field(min_length=1, max_length=1_024)
+    executor_revision: str = Field(min_length=1, max_length=1_024)
+
+
+class NoWaitingResourceV2(ApiModel):
+    type: Literal["NONE"]
+
+
+class WaitingInputResourceV2(ApiModel):
+    type: Literal["WAITING_INPUT"]
+    node_id: str = Field(min_length=1)
+    answer_type: Literal["integer"]
+
+
+class WaitingReconciliationResourceV2(ApiModel):
+    type: Literal["WAITING_RECONCILIATION"]
+    node_id: str = Field(min_length=1)
+    logical_effect_key: str = Field(min_length=1)
+    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    request_base64: str
+    intent_state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
+    pending_command: ReconciliationCommandResource | None
+
+
+WaitingResourceV2 = Annotated[
+    NoWaitingResourceV2 | WaitingInputResourceV2 | WaitingReconciliationResourceV2,
+    Field(discriminator="type"),
+]
+
+
+class RunResourceV2(ApiModel):
+    workflow_format_version: Literal[2]
+    run_id: str = Field(min_length=1)
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    agent_binding_set_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    agent_bindings: tuple[AgentBindingResourceV2, ...] = Field(max_length=100)
+    state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
+    state: Literal["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]
+    current_node: NodeResourceV2
+    waiting: WaitingResourceV2
+    terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
+    latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
+
+    @model_validator(mode="after")
+    def validate_state_shape(self) -> RunResourceV2:
+        if self.state == "STARTED":
+            valid = (
+                isinstance(self.waiting, NoWaitingResourceV2)
+                and self.terminal_hash is None
+            )
+        elif self.state == "WAITING_INPUT":
+            valid = (
+                isinstance(self.current_node, WaitNodeResource)
+                and isinstance(self.waiting, WaitingInputResourceV2)
+                and self.waiting.node_id == self.current_node.node_id
+                and self.terminal_hash is None
+            )
+        elif self.state == "WAITING_RECONCILIATION":
+            valid = (
+                isinstance(self.current_node, ActionNodeResource)
+                and isinstance(self.waiting, WaitingReconciliationResourceV2)
+                and self.waiting.node_id == self.current_node.node_id
+                and self.terminal_hash is None
+            )
+        else:
+            valid = (
+                isinstance(self.current_node, SubworkflowNodeResource)
+                and isinstance(self.waiting, NoWaitingResourceV2)
+                and self.terminal_hash is not None
+            )
+        if not valid:
+            raise ValueError(
+                "V2 run state, current node, waiting reason, and terminal hash disagree"
+            )
+        return self
+
+
+AnyRunResource = RunResource | RunResourceV2
+
+
 class RunPageResource(ApiModel):
     items: tuple[RunResource, ...]
     next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+
+
+class VersionedRunPageResource(ApiModel):
+    items: tuple[AnyRunResource, ...]
+    next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+
+
+AnyRunPageResource = RunPageResource | VersionedRunPageResource
 
 
 class EffectReceiptResource(ApiModel):
@@ -278,9 +441,90 @@ RunEventResource = Annotated[
 ]
 
 
+class RunEventBaseResourceV2(ApiModel):
+    workflow_format_version: Literal[2]
+    cursor: str = Field(pattern=EVENT_CURSOR_PATTERN)
+    sequence: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    node_id: str = Field(min_length=1)
+    node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    event_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class AgentCompletedEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["AGENT_COMPLETED"]
+    output_base64: str
+    output_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ActionReconciliationRequiredEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["ACTION_RECONCILIATION_REQUIRED"]
+    request_base64: str
+    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ActionReconciliationResolvedEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["ACTION_RECONCILIATION_RESOLVED"]
+    receipt: EffectReceiptResource
+
+
+class ActionCompletedEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["ACTION_COMPLETED"]
+    receipt: EffectReceiptResource
+
+
+class WaitingInputEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["WAITING_INPUT"]
+    answer_type: Literal["integer"]
+
+
+class WaitAnsweredEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["WAIT_ANSWERED"]
+    answer: str
+    answer_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class SubworkflowCompletedEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["SUBWORKFLOW_COMPLETED"]
+    result: int
+    result_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+RunEventResourceV2 = Annotated[
+    AgentCompletedEventResourceV2
+    | ActionReconciliationRequiredEventResourceV2
+    | ActionReconciliationResolvedEventResourceV2
+    | ActionCompletedEventResourceV2
+    | WaitingInputEventResourceV2
+    | WaitAnsweredEventResourceV2
+    | SubworkflowCompletedEventResourceV2,
+    Field(discriminator="event"),
+]
+
+AnyRunEventResource = RunEventResource | RunEventResourceV2
+
+
 class StartRunRequestResource(ApiModel):
     run_id: str = Field(min_length=1)
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+
+
+class StartRunAgentBindingResourceV2(ApiModel):
+    role: str = Field(min_length=1, max_length=1_024)
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class StartRunRequestResourceV2(ApiModel):
+    workflow_format_version: Literal[2]
+    run_id: str = Field(min_length=1)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    agent_bindings: tuple[StartRunAgentBindingResourceV2, ...] = Field(
+        max_length=100, strict=False
+    )
+
+
+AnyStartRunRequestResource = StartRunRequestResource | StartRunRequestResourceV2
 
 
 class AnswerWaitRequestResource(ApiModel):
@@ -304,13 +548,47 @@ class ProblemResource(ApiModel):
     detail: str
 
 
-def node_resource(node: WorkflowNode) -> NodeResource:
+def auth_profile_revision_resource(
+    revision: AuthProfileRevision,
+) -> AuthProfileRevisionResource:
+    return AuthProfileRevisionResource(
+        profile_id=revision.profile_id,
+        revision_number=revision.revision_number,
+        provider_id=revision.provider_id.value,
+        auth_mode=revision.auth_mode.value,
+        auth_profile_revision_hash=revision.revision_hash.value,
+    )
+
+
+def agent_configuration_revision_resource(
+    revision: AgentConfigurationRevision,
+    auth_profile: AuthProfileRevision,
+) -> AgentConfigurationRevisionResource:
+    return AgentConfigurationRevisionResource(
+        model=revision.model,
+        auth_profile_revision_hash=revision.auth_profile_revision_hash.value,
+        executor_revision=revision.executor_revision.value,
+        provider_id=auth_profile.provider_id.value,
+        auth_mode=auth_profile.auth_mode.value,
+        agent_configuration_revision_hash=revision.revision_hash.value,
+    )
+
+
+def node_resource(node: WorkflowNode | WorkflowNodeV2) -> NodeResource | NodeResourceV2:
     if isinstance(node, AgentNode):
         return AgentNodeResource(
             type="agent",
             node_id=node.id,
             job=node.job,
             output=node.output,
+            next_node_id=node.next,
+        )
+    if isinstance(node, AgentNodeV2):
+        return AgentNodeResourceV2(
+            type="agent",
+            node_id=node.id,
+            role=node.role,
+            job=node.job,
             next_node_id=node.next,
         )
     if isinstance(node, ActionNode):
@@ -335,13 +613,23 @@ def node_resource(node: WorkflowNode) -> NodeResource:
     raise AssertionError("closed workflow node union was extended without API mapping")
 
 
-def graph_resource(graph: WorkflowGraph) -> WorkflowGraphResource:
-    return WorkflowGraphResource(
-        format_version=graph.format_version,
+def graph_resource(
+    graph: WorkflowGraph | WorkflowGraphV2,
+) -> WorkflowGraphResource | WorkflowGraphResourceV2:
+    ordered = sorted(graph.nodes, key=lambda item: item.id.encode("utf-8"))
+    if isinstance(graph, WorkflowGraph):
+        return WorkflowGraphResource(
+            format_version=1,
+            start_node_id=graph.start,
+            nodes=cast(
+                tuple[NodeResource, ...], tuple(node_resource(item) for item in ordered)
+            ),
+        )
+    return WorkflowGraphResourceV2(
+        format_version=2,
         start_node_id=graph.start,
-        nodes=tuple(
-            node_resource(node)
-            for node in sorted(graph.nodes, key=lambda item: item.id.encode("utf-8"))
+        nodes=cast(
+            tuple[NodeResourceV2, ...], tuple(node_resource(item) for item in ordered)
         ),
     )
 
@@ -380,9 +668,11 @@ def command_resource(command: ReconcileCommand) -> ReconciliationCommandResource
     )
 
 
-def run_resource(projection: RunProjection) -> RunResource:
+def run_resource(projection: RunProjection) -> AnyRunResource:
     run = projection.run
     node = projection.graph.node(run.current_node_id)
+    if isinstance(run, RunV2):
+        return _run_resource_v2(projection, run, node)
     if run.state is RunState.WAITING_INPUT:
         if not isinstance(node, WaitNode):
             raise ValueError("waiting input run does not name a Wait node")
@@ -415,7 +705,75 @@ def run_resource(projection: RunProjection) -> RunResource:
         workflow_revision_hash=run.revision_hash.value,
         state_version=run.state_version,
         state=run.state.value,
-        current_node=node_resource(node),
+        current_node=cast(NodeResource, node_resource(node)),
+        waiting=waiting,
+        terminal_hash=None if run.terminal_hash is None else run.terminal_hash.value,
+        latest_event_cursor=(
+            None
+            if run.last_event_sequence == 0
+            else encode_event_cursor(run.run_id, run.last_event_sequence)
+        ),
+    )
+
+
+def _run_resource_v2(
+    projection: RunProjection,
+    run: RunV2,
+    node: WorkflowNode | WorkflowNodeV2,
+) -> RunResourceV2:
+    if not isinstance(projection.graph, WorkflowGraphV2):
+        raise TypeError("V2 run projection has a V1 workflow graph")
+    if run.state is RunState.WAITING_INPUT:
+        if not isinstance(node, WaitNode):
+            raise ValueError("waiting input V2 run does not name a Wait node")
+        waiting: WaitingResourceV2 = WaitingInputResourceV2(
+            type="WAITING_INPUT", node_id=node.id, answer_type=node.answer_type
+        )
+    elif run.state is RunState.WAITING_RECONCILIATION:
+        reconciliation = projection.reconciliation
+        if reconciliation is None:
+            raise ValueError("waiting reconciliation V2 run has no intent projection")
+        intent = reconciliation.intent
+        waiting = WaitingReconciliationResourceV2(
+            type="WAITING_RECONCILIATION",
+            node_id=node.id,
+            logical_effect_key=intent.intent.binding.logical_key.value,
+            request_hash=intent.intent.request.request_hash.value,
+            request_base64=encode_canonical_base64(intent.intent.request.payload),
+            intent_state_version=intent.state_version.value,
+            pending_command=(
+                None
+                if reconciliation.pending_command is None
+                else command_resource(reconciliation.pending_command.command)
+            ),
+        )
+    else:
+        waiting = NoWaitingResourceV2(type="NONE")
+    return RunResourceV2(
+        workflow_format_version=2,
+        run_id=run.run_id.value,
+        public_run_reference=encode_public_run_reference(run.run_id),
+        workflow_revision_hash=run.revision_hash.value,
+        agent_binding_set_hash=run.binding_set_hash.value,
+        agent_bindings=tuple(
+            AgentBindingResourceV2(
+                role=binding.role.value,
+                agent_configuration_revision_hash=(
+                    binding.configuration.revision_hash.value
+                ),
+                auth_profile_revision_hash=binding.auth_profile.revision_hash.value,
+                profile_id=binding.auth_profile.profile_id,
+                revision_number=binding.auth_profile.revision_number,
+                provider_id=binding.auth_profile.provider_id.value,
+                auth_mode=binding.auth_profile.auth_mode.value,
+                model=binding.configuration.model,
+                executor_revision=binding.configuration.executor_revision.value,
+            )
+            for binding in run.agent_bindings
+        ),
+        state_version=run.state_version,
+        state=run.state.value,
+        current_node=cast(NodeResourceV2, node_resource(node)),
         waiting=waiting,
         terminal_hash=None if run.terminal_hash is None else run.terminal_hash.value,
         latest_event_cursor=(
@@ -442,7 +800,9 @@ def receipt_resource(receipt: EffectReceipt) -> EffectReceiptResource:
     )
 
 
-def run_event_resource(projection: PersistedRunEvent) -> RunEventResource:
+def run_event_resource(projection: PersistedRunEvent) -> AnyRunEventResource:
+    if projection.workflow_format_version == 2:
+        return _run_event_resource_v2(projection)
     event = projection.event
     common = {
         "cursor": encode_event_cursor(event.run_id, event.event_sequence),
@@ -507,3 +867,72 @@ def run_event_resource(projection: PersistedRunEvent) -> RunEventResource:
             **common,
         )
     raise AssertionError("closed event union was extended without API mapping")
+
+
+def _run_event_resource_v2(projection: PersistedRunEvent) -> RunEventResourceV2:
+    event = projection.event
+    common = {
+        "workflow_format_version": 2,
+        "cursor": encode_event_cursor(event.run_id, event.event_sequence),
+        "sequence": event.event_sequence,
+        "public_run_reference": encode_public_run_reference(event.run_id),
+        "workflow_revision_hash": event.revision_hash.value,
+        "node_id": event.node_id,
+        "node_execution_id": event.node_execution_id.value,
+        "event_hash": event.event_hash.value,
+    }
+    if event.event_kind is RunEventKind.AGENT_COMPLETED:
+        return AgentCompletedEventResourceV2(
+            event=event.event_kind.value,
+            output_base64=encode_canonical_base64(event.payload),
+            output_hash=event.payload_hash.value,
+            **common,
+        )
+    if event.event_kind is RunEventKind.ACTION_RECONCILIATION_REQUIRED:
+        return ActionReconciliationRequiredEventResourceV2(
+            event=event.event_kind.value,
+            request_base64=encode_canonical_base64(event.payload),
+            request_hash=event.payload_hash.value,
+            **common,
+        )
+    if event.event_kind is RunEventKind.ACTION_RECONCILIATION_RESOLVED:
+        if projection.receipt is None:
+            raise ValueError("resolved V2 event has no receipt")
+        return ActionReconciliationResolvedEventResourceV2(
+            event=event.event_kind.value,
+            receipt=receipt_resource(projection.receipt),
+            **common,
+        )
+    if event.event_kind is RunEventKind.ACTION_COMPLETED:
+        if projection.receipt is None:
+            raise ValueError("completed V2 Action event has no receipt")
+        return ActionCompletedEventResourceV2(
+            event=event.event_kind.value,
+            receipt=receipt_resource(projection.receipt),
+            **common,
+        )
+    if event.event_kind is RunEventKind.WAITING_INPUT:
+        return WaitingInputEventResourceV2(
+            event=event.event_kind.value, answer_type="integer", **common
+        )
+    if event.event_kind is RunEventKind.WAIT_ANSWERED:
+        if not is_canonical_integer_bytes(event.payload):
+            raise ValueError("durable V2 wait answer is not canonical integer text")
+        return WaitAnsweredEventResourceV2(
+            event=event.event_kind.value,
+            answer=event.payload.decode("ascii"),
+            answer_hash=event.payload_hash.value,
+            **common,
+        )
+    if event.event_kind is RunEventKind.SUBWORKFLOW_COMPLETED:
+        if not is_canonical_integer_bytes(event.payload):
+            raise ValueError(
+                "durable V2 subworkflow result is not canonical integer text"
+            )
+        return SubworkflowCompletedEventResourceV2(
+            event=event.event_kind.value,
+            result=int(event.payload.decode("ascii")),
+            result_hash=event.payload_hash.value,
+            **common,
+        )
+    raise AssertionError("closed V2 event union was extended without API mapping")

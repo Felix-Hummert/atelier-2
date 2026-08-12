@@ -8,6 +8,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 
+from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -129,7 +130,9 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                     runtime.engine
                 ),
                 published_run_starter=DbosDurableRunStarter(
-                    runtime.engine, runtime.settings
+                    runtime.engine,
+                    runtime.settings,
+                    runtime.agent_executor_registry,
                 ),
                 wait_answerer=DbosWaitAnswerer(
                     runtime.engine, runtime.settings.application_version
@@ -141,6 +144,9 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 run_queries=queries,
                 run_event_queries=queries,
                 workflow_document_parser=parse_workflow_document,
+                agent_configuration_catalog=DbosAgentConfigurationCatalog(
+                    runtime.engine, runtime.agent_executor_registry
+                ),
             ),
             limits=settings.limits,
             event_poll_backoff=settings.event_poll_backoff,

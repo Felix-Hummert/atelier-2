@@ -16,7 +16,11 @@ from yaml.tokens import (
     TagToken,
 )
 
-from atelier2.contracts.workflows import WorkflowGraph
+from atelier2.contracts.workflows import (
+    AnyWorkflowGraph,
+    WorkflowGraph,
+    WorkflowGraphV2,
+)
 
 
 class InvalidWorkflowDocument(ValueError):
@@ -57,7 +61,7 @@ class StrictWorkflowLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
-def parse_workflow_document(document: bytes) -> WorkflowGraph:
+def parse_workflow_document(document: bytes) -> AnyWorkflowGraph:
     if not document or document.startswith(b"\xef\xbb\xbf"):
         raise InvalidWorkflowDocument("workflow must be nonempty UTF-8 without BOM")
     try:
@@ -82,7 +86,19 @@ def parse_workflow_document(document: bytes) -> WorkflowGraph:
                 if isinstance(node, dict) and isinstance(node.get("operands"), list):
                     node["operands"] = tuple(node["operands"])
             loaded["nodes"] = tuple(nodes)
-        return WorkflowGraph.model_validate(loaded, strict=True)
+        if (
+            not isinstance(loaded, dict)
+            or type(loaded.get("format_version")) is not int
+        ):
+            raise InvalidWorkflowDocument(
+                "workflow format version must be a strict integer"
+            )
+        version = loaded["format_version"]
+        if version == 1:
+            return WorkflowGraph.model_validate(loaded, strict=True)
+        if version == 2:
+            return WorkflowGraphV2.model_validate(loaded, strict=True)
+        raise InvalidWorkflowDocument("workflow format version is unsupported")
     except InvalidWorkflowDocument:
         raise
     except (

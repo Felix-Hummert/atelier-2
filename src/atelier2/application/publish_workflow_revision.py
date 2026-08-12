@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from typing import assert_never
 
 from atelier2.contracts.runs import WorkflowRevision
-from atelier2.contracts.workflows import AgentNode, SubworkflowNode, WorkflowGraph
+from atelier2.contracts.workflows import (
+    AgentNode,
+    AgentNodeV2,
+    AnyWorkflowGraph,
+    SubworkflowNode,
+)
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
@@ -34,7 +39,7 @@ class WorkflowPublicationLimits:
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
 
-    def validate(self, document: bytes, graph: WorkflowGraph) -> None:
+    def validate(self, document: bytes, graph: AnyWorkflowGraph) -> None:
         self.validate_document(document)
         self.validate_graph(graph)
 
@@ -63,7 +68,7 @@ class WorkflowPublicationLimits:
                 "durable payload exceeds its encoded response limit"
             )
 
-    def validate_graph(self, graph: WorkflowGraph) -> None:
+    def validate_graph(self, graph: AnyWorkflowGraph) -> None:
         if len(graph.nodes) > self.maximum_nodes:
             raise ProjectionLimitExceeded("workflow exceeds its node limit")
         values = [graph.start]
@@ -71,6 +76,8 @@ class WorkflowPublicationLimits:
             values.append(node.id)
             if isinstance(node, AgentNode):
                 values.extend((node.job, node.output))
+            if isinstance(node, AgentNodeV2):
+                values.extend((node.role, node.job))
             if not isinstance(node, SubworkflowNode):
                 values.append(node.next)
         if any(len(value) > self.maximum_string_characters for value in values):

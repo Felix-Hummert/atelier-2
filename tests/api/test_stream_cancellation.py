@@ -20,6 +20,7 @@ from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     TransactionalWaitAnswerer,
@@ -289,6 +290,7 @@ def test_saturated_event_poll_does_not_starve_an_app_control_route() -> None:
                 cast(RunQueries, queries),
                 queries,
                 parse_workflow_document,
+                cast(AgentConfigurationCatalog, unused),
             ),
             limits=api_limits(
                 maximum_control_queries=1,
@@ -355,6 +357,7 @@ def test_saturated_control_admission_returns_503_without_starting_another_query(
                 cast(RunQueries, unused),
                 cast(RunEventQueries, unused),
                 parse_workflow_document,
+                cast(AgentConfigurationCatalog, unused),
             ),
             limits=api_limits(
                 maximum_control_queries=1,

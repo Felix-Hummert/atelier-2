@@ -42,7 +42,9 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
+    AnyStartPublishedRunRequest,
     DurableAnswerBytesConflict,
     DurableAnswerCreated,
     DurableAnswerExisting,
@@ -58,7 +60,6 @@ from atelier2.ports.durable_runs import (
     DurableRunRevisionMissing,
     DurableStateCorrupt,
     DurableWriteUnavailable,
-    StartPublishedRunRequest,
 )
 from atelier2.ports.effects import (
     DurableReconciliationCommandConflict,
@@ -603,7 +604,7 @@ class MatrixStarter:
     case: RouteResultCase
 
     def start_published(
-        self, request: StartPublishedRunRequest
+        self, request: AnyStartPublishedRunRequest
     ) -> DurablePublishedRunResult:
         del request
         assert self.case.source == "starter"
@@ -719,6 +720,7 @@ def _ports(case: RouteResultCase) -> ApiPorts:
         queries,
         queries,
         parse_workflow_document,
+        cast(AgentConfigurationCatalog, queries),
     )
 
 

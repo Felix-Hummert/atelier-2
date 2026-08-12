@@ -20,6 +20,7 @@ from atelier2.api.references import (
 )
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
+from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     DurableAnswerRunMissing,
     DurablePublishedRunStarter,
@@ -71,6 +72,7 @@ def client_for(mutations: RecordingMutationPorts, limits: ApiLimits) -> TestClie
                 cast(RunQueries, unused),
                 cast(RunEventQueries, unused),
                 parse_workflow_document,
+                cast(AgentConfigurationCatalog, unused),
             ),
             limits=limits,
             event_poll_backoff=event_poll_backoff(),

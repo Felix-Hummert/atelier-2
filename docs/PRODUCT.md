@@ -46,6 +46,16 @@ answer resumes the same run, and the terminal event binds the completed history
 to one terminal hash. Process restarts resume from durable checkpoints without
 duplicating the Action effect.
 
+Workflow format V2 adds provider-neutral Agent roles. Before a run starts, every
+role is resolved to one immutable, secret-free agent-configuration revision and
+authentication-profile revision; the complete matrix is frozen into that run.
+The runtime dispatches each role through the exact configured provider and
+executor revision, records the non-secret operational identity and arbitrary
+output bytes in one atomic receipt/event/transition, and resumes after process
+death without rebinding or duplicating durable results. This is the durable
+multi-provider contract, not yet a real Claude or Codex process integration:
+production currently composes no V2 provider factories.
+
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically
 records a distinct success receipt with its existing event and successor. Action
@@ -67,13 +77,16 @@ transition is another crash-safe transaction.
 boundary.
 
 An HTTP API now projects that durable state under `/atelier/api/v1`. It can
-publish and inspect immutable workflow revisions; start, list, and inspect
-runs; answer a waiting node; submit an accountable reconciliation; and follow
-the closed durable event history as a resumable server-sent event stream. Its
-public references are transport identifiers, not new domain identities, and
-retries report whether a command was newly accepted or already existed without
-duplicating its durable write or wake-up. [ADR 0003](decisions/0003-http-api.md)
-owns the API and resume contract.
+publish secret-free auth-profile and agent-configuration revisions; publish and
+inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs;
+answer a waiting node; submit an accountable reconciliation; and follow the
+closed durable event history as a resumable server-sent event stream. Existing
+V1 JSON and OpenAPI component bytes remain frozen while exact V2 unions expose
+the run's safe binding matrix and byte-safe Agent output. Public references are
+transport identifiers, not new domain identities, and retries report whether a
+command was newly accepted or already existed without duplicating its durable
+write or wake-up. [ADR 0003](decisions/0003-http-api.md) owns the API and resume
+contract.
 
 A narrow local cockpit can list runs, publish and start a workflow from `/new`,
 and project one durable run's bound revision, state, nodes, and resumable event

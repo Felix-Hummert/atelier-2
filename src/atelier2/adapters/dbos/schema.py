@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 metadata = sa.MetaData()
 
@@ -38,14 +38,24 @@ runs = sa.Table(
         sa.ForeignKey("workflow_revisions.revision_hash"),
         nullable=False,
     ),
+    sa.Column("workflow_format_version", sa.Integer, nullable=False),
+    sa.Column("agent_binding_set_hash", sa.Text, nullable=True),
     sa.Column("current_node_id", sa.Text, nullable=False),
     sa.Column("state", sa.Text, nullable=False),
     sa.Column("state_version", sa.Integer, nullable=False),
     sa.Column("last_event_sequence", sa.Integer, nullable=False),
     sa.Column("terminal_hash", sa.Text, nullable=True),
     sa.UniqueConstraint("run_id", "revision_hash"),
+    sa.UniqueConstraint("run_id", "revision_hash", "agent_binding_set_hash"),
     sa.CheckConstraint("length(run_id) > 0"),
     sa.CheckConstraint("length(current_node_id) > 0"),
+    sa.CheckConstraint("workflow_format_version IN (1, 2)"),
+    sa.CheckConstraint(
+        "(workflow_format_version = 1 AND agent_binding_set_hash IS NULL) OR "
+        "(workflow_format_version = 2 AND agent_binding_set_hash IS NOT NULL "
+        "AND length(agent_binding_set_hash) = 64 "
+        "AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*')"
+    ),
     sa.CheckConstraint(
         "state IN ('STARTED', 'WAITING_RECONCILIATION', 'WAITING_INPUT', 'COMPLETED')"
     ),
@@ -55,6 +65,97 @@ runs = sa.Table(
         "(state = 'COMPLETED' AND terminal_hash IS NOT NULL "
         "AND length(terminal_hash) = 64 AND terminal_hash NOT GLOB '*[^0-9a-f]*') "
         "OR (state <> 'COMPLETED' AND terminal_hash IS NULL)"
+    ),
+)
+auth_profile_revisions = sa.Table(
+    "auth_profile_revisions",
+    metadata,
+    sa.Column("revision_hash", sa.Text, primary_key=True),
+    sa.Column("profile_id", sa.Text, nullable=False),
+    sa.Column("revision_number", sa.Integer, nullable=False),
+    sa.Column("provider_id", sa.Text, nullable=False),
+    sa.Column("auth_mode", sa.Text, nullable=False),
+    sa.UniqueConstraint("profile_id", "revision_number"),
+    sa.UniqueConstraint(
+        "revision_hash",
+        "profile_id",
+        "revision_number",
+        "provider_id",
+        "auth_mode",
+    ),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(profile_id) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint("revision_number BETWEEN 1 AND 9223372036854775807"),
+    sa.CheckConstraint("length(provider_id) BETWEEN 1 AND 64"),
+    sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
+    sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint("auth_mode IN ('subscription', 'api_key')"),
+)
+agent_configuration_revisions = sa.Table(
+    "agent_configuration_revisions",
+    metadata,
+    sa.Column("revision_hash", sa.Text, primary_key=True),
+    sa.Column("model", sa.Text, nullable=False),
+    sa.Column(
+        "auth_profile_revision_hash",
+        sa.Text,
+        sa.ForeignKey("auth_profile_revisions.revision_hash"),
+        nullable=False,
+    ),
+    sa.Column("executor_revision", sa.Text, nullable=False),
+    sa.UniqueConstraint(
+        "revision_hash",
+        "auth_profile_revision_hash",
+        "model",
+        "executor_revision",
+    ),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(model) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        "length(auth_profile_revision_hash) = 64 "
+        "AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(executor_revision) BETWEEN 1 AND 1024"),
+)
+run_agent_bindings = sa.Table(
+    "run_agent_bindings",
+    metadata,
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("revision_hash", sa.Text, nullable=False),
+    sa.Column("binding_set_hash", sa.Text, nullable=False),
+    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("agent_configuration_revision_hash", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("run_id", "role"),
+    sa.ForeignKeyConstraint(
+        ("run_id", "revision_hash", "binding_set_hash"),
+        ("runs.run_id", "runs.revision_hash", "runs.agent_binding_set_hash"),
+    ),
+    sa.ForeignKeyConstraint(
+        ("agent_configuration_revision_hash",),
+        ("agent_configuration_revisions.revision_hash",),
+    ),
+    sa.UniqueConstraint(
+        "run_id",
+        "revision_hash",
+        "binding_set_hash",
+        "role",
+        "agent_configuration_revision_hash",
+    ),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(binding_set_hash) = 64 AND binding_set_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(role) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        "length(agent_configuration_revision_hash) = 64 "
+        "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
 effect_intents = sa.Table(
@@ -258,6 +359,118 @@ agent_receipts = sa.Table(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
+agent_receipts_v2 = sa.Table(
+    "agent_receipts_v2",
+    metadata,
+    sa.Column("node_execution_id", sa.Text, primary_key=True),
+    sa.Column("request_hash", sa.Text, nullable=False),
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
+    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("binding_set_hash", sa.Text, nullable=False),
+    sa.Column("agent_configuration_revision_hash", sa.Text, nullable=False),
+    sa.Column("auth_profile_revision_hash", sa.Text, nullable=False),
+    sa.Column("profile_id", sa.Text, nullable=False),
+    sa.Column("revision_number", sa.Integer, nullable=False),
+    sa.Column("provider_id", sa.Text, nullable=False),
+    sa.Column("auth_mode", sa.Text, nullable=False),
+    sa.Column("model", sa.Text, nullable=False),
+    sa.Column("executor_revision", sa.Text, nullable=False),
+    sa.Column("executor_operational_identity", sa.Text, nullable=False),
+    sa.Column("output_bytes", sa.LargeBinary, nullable=False),
+    sa.Column("output_hash", sa.Text, nullable=False),
+    sa.Column("receipt_hash", sa.Text, nullable=False, unique=True),
+    sa.UniqueConstraint("run_id", "workflow_revision_hash", "node_id"),
+    sa.ForeignKeyConstraint(
+        (
+            "run_id",
+            "workflow_revision_hash",
+            "binding_set_hash",
+            "role",
+            "agent_configuration_revision_hash",
+        ),
+        (
+            "run_agent_bindings.run_id",
+            "run_agent_bindings.revision_hash",
+            "run_agent_bindings.binding_set_hash",
+            "run_agent_bindings.role",
+            "run_agent_bindings.agent_configuration_revision_hash",
+        ),
+    ),
+    sa.ForeignKeyConstraint(
+        (
+            "agent_configuration_revision_hash",
+            "auth_profile_revision_hash",
+            "model",
+            "executor_revision",
+        ),
+        (
+            "agent_configuration_revisions.revision_hash",
+            "agent_configuration_revisions.auth_profile_revision_hash",
+            "agent_configuration_revisions.model",
+            "agent_configuration_revisions.executor_revision",
+        ),
+    ),
+    sa.ForeignKeyConstraint(
+        (
+            "auth_profile_revision_hash",
+            "profile_id",
+            "revision_number",
+            "provider_id",
+            "auth_mode",
+        ),
+        (
+            "auth_profile_revisions.revision_hash",
+            "auth_profile_revisions.profile_id",
+            "auth_profile_revisions.revision_number",
+            "auth_profile_revisions.provider_id",
+            "auth_profile_revisions.auth_mode",
+        ),
+    ),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(
+        "length(workflow_revision_hash) = 64 "
+        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(node_id) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint("length(role) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        "length(binding_set_hash) = 64 AND binding_set_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(agent_configuration_revision_hash) = 64 "
+        "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(auth_profile_revision_hash) = 64 "
+        "AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(profile_id) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint("revision_number BETWEEN 1 AND 9223372036854775807"),
+    sa.CheckConstraint("length(provider_id) BETWEEN 1 AND 64"),
+    sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
+    sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint("auth_mode IN ('subscription', 'api_key')"),
+    sa.CheckConstraint("length(model) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint("length(executor_revision) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint("length(executor_operational_identity) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        "typeof(output_bytes) = 'blob' AND length(output_bytes) <= 49152"
+    ),
+    sa.CheckConstraint(
+        "length(output_hash) = 64 AND output_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
 run_events = sa.Table(
     "run_events",
     metadata,
@@ -368,8 +581,46 @@ _PRODUCT_TRIGGERS = {
     """,
     "runs_binding_no_update": """
         CREATE TRIGGER runs_binding_no_update
-        BEFORE UPDATE OF run_id, bootstrap_workflow_id, revision_hash ON runs BEGIN
+        BEFORE UPDATE OF run_id, bootstrap_workflow_id, revision_hash,
+                         workflow_format_version, agent_binding_set_hash
+        ON runs BEGIN
           SELECT RAISE(ABORT, 'run bindings are immutable');
+        END
+    """,
+    "auth_profile_revisions_no_update": """
+        CREATE TRIGGER auth_profile_revisions_no_update
+        BEFORE UPDATE ON auth_profile_revisions BEGIN
+          SELECT RAISE(ABORT, 'auth profile revisions are immutable');
+        END
+    """,
+    "auth_profile_revisions_no_delete": """
+        CREATE TRIGGER auth_profile_revisions_no_delete
+        BEFORE DELETE ON auth_profile_revisions BEGIN
+          SELECT RAISE(ABORT, 'auth profile revisions are immutable');
+        END
+    """,
+    "agent_configuration_revisions_no_update": """
+        CREATE TRIGGER agent_configuration_revisions_no_update
+        BEFORE UPDATE ON agent_configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'agent configuration revisions are immutable');
+        END
+    """,
+    "agent_configuration_revisions_no_delete": """
+        CREATE TRIGGER agent_configuration_revisions_no_delete
+        BEFORE DELETE ON agent_configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'agent configuration revisions are immutable');
+        END
+    """,
+    "run_agent_bindings_no_update": """
+        CREATE TRIGGER run_agent_bindings_no_update
+        BEFORE UPDATE ON run_agent_bindings BEGIN
+          SELECT RAISE(ABORT, 'run agent bindings are immutable');
+        END
+    """,
+    "run_agent_bindings_no_delete": """
+        CREATE TRIGGER run_agent_bindings_no_delete
+        BEFORE DELETE ON run_agent_bindings BEGIN
+          SELECT RAISE(ABORT, 'run agent bindings are immutable');
         END
     """,
     "effect_intents_binding_no_update": """
@@ -409,6 +660,18 @@ _PRODUCT_TRIGGERS = {
         CREATE TRIGGER agent_receipts_no_delete
         BEFORE DELETE ON agent_receipts BEGIN
           SELECT RAISE(ABORT, 'agent receipts are immutable');
+        END
+    """,
+    "agent_receipts_v2_no_update": """
+        CREATE TRIGGER agent_receipts_v2_no_update
+        BEFORE UPDATE ON agent_receipts_v2 BEGIN
+          SELECT RAISE(ABORT, 'v2 agent receipts are immutable');
+        END
+    """,
+    "agent_receipts_v2_no_delete": """
+        CREATE TRIGGER agent_receipts_v2_no_delete
+        BEFORE DELETE ON agent_receipts_v2 BEGIN
+          SELECT RAISE(ABORT, 'v2 agent receipts are immutable');
         END
     """,
     "reconcile_commands_payload_no_update": """
@@ -482,7 +745,7 @@ class MigrationRequired(UnsupportedSchemaVersion):
 
 def _require_supported_versions(versions: Sequence[int]) -> None:
     normalized = tuple(versions)
-    if normalized in {(1,), (2,), (3,)}:
+    if normalized in {(1,), (2,), (3,), (4,)}:
         raise MigrationRequired(normalized[0])
     if normalized != (SCHEMA_VERSION,):
         raise UnsupportedSchemaVersion(normalized)
