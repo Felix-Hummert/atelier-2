@@ -12,12 +12,18 @@
   import HumanActionCard from "../components/HumanActionCard.svelte";
   import NodeRail from "../components/NodeRail.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
+  import ReconciliationActionCard from "../components/ReconciliationActionCard.svelte";
   import {
     MutationJournal,
+    reconciliationCommand,
+    reconciliationMutation,
     waitAnswer,
     waitMutation,
     waitMutationId,
     type JournalEntry,
+    type ReconciliationCommand,
+    type ReconciliationDeterminationInput,
+    type ReconciliationMutation,
     type WaitMutation
   } from "../lib/mutationJournal";
   import {
@@ -38,6 +44,7 @@
   export let mutationJournal: MutationJournal;
   export let publicReference: string;
   export let navigate: (path: string) => void;
+  export let createReconcileCommandId: () => string;
 
   interface RunSnapshot {
     run: Run;
@@ -57,13 +64,20 @@
   let waitValidationMessage: string | null = null;
   let waitFailureMessage: string | null = null;
   let humanActionCard: HumanActionCard;
+  let pendingReconciliation: Extract<JournalEntry, { kind: "reconciliation" }> | null = null;
+  let reconciliationAccepted = false;
+  let reconciliationBusy = false;
+  let reconciliationFailureMessage: string | null = null;
+  let reconciliationActionCard: ReconciliationActionCard;
   let runStateElement: { focus(): void };
   let loadGeneration = 0;
   let disposed = false;
   $: pendingAnswer = pendingWait === null ? null : waitAnswer(pendingWait);
-  $: workingHumanNodeIds = pendingWait === null
-    ? new Set<string>()
-    : new Set([pendingWait.node_id]);
+  $: workingHumanNodeIds = new Set(
+    [pendingWait?.node_id, pendingReconciliation?.node_id].filter(
+      (nodeId): nodeId is string => nodeId !== undefined
+    )
+  );
 
   onMount(() => {
     void load();
@@ -91,6 +105,7 @@
       ensureEventStream(run);
       try {
         await loadPendingWait(run);
+        await loadPendingReconciliation(run);
       } catch (error) {
         failureMessage = error instanceof Error
           ? error.message
@@ -201,6 +216,32 @@
           waitAccepted = false;
           waitFailureMessage = null;
         }
+      } else if (event.event === "ACTION_RECONCILIATION_RESOLVED") {
+        const commandId = event.receipt.reconcile_command_id;
+        if (commandId !== null) {
+          const mutationId = `reconciliation:${event.public_run_reference}:${commandId}`;
+          const entry = await mutationJournal.get(mutationId);
+          const source = event.receipt.confirmation_source;
+          const resolved = entry?.kind === "reconciliation" &&
+            (source === "OPERATOR_FOUND" || source === "OPERATOR_AUTHORIZED_EXECUTION") &&
+            await mutationJournal.resolve(mutationId, {
+              type: "reconciliation_resolved",
+              public_run_reference: event.public_run_reference,
+              workflow_revision_hash: event.workflow_revision_hash,
+              node_id: event.node_id,
+              command_id: commandId,
+              request_hash: event.receipt.request_hash,
+              effect_id: event.receipt.effect_id,
+              confirmation_source: source,
+              result_base64: event.receipt.result_base64,
+              result_hash: event.receipt.result_hash
+            });
+          if (resolved) {
+            pendingReconciliation = null;
+            reconciliationAccepted = false;
+            reconciliationFailureMessage = null;
+          }
+        }
       }
     } catch (error) {
       journalFailure = error instanceof Error
@@ -209,6 +250,7 @@
     }
     await load();
     if (event.event === "WAIT_ANSWERED") await focusRunState();
+    if (event.event === "ACTION_RECONCILIATION_RESOLVED") await focusRunState();
     if (journalFailure !== null) failureMessage = journalFailure;
   }
 
@@ -237,6 +279,48 @@
     }
     if (pendingWait?.mutation_id !== entry.mutation_id) waitAccepted = false;
     pendingWait = entry;
+  }
+
+  async function loadPendingReconciliation(run: Run): Promise<void> {
+    if (run.state !== "WAITING_RECONCILIATION" || run.waiting.type !== "WAITING_RECONCILIATION") {
+      pendingReconciliation = null;
+      reconciliationAccepted = false;
+      return;
+    }
+    const waiting = run.waiting;
+    const entries = (await mutationJournal.entries()).filter(
+      (entry): entry is Extract<JournalEntry, { kind: "reconciliation" }> =>
+        entry.kind === "reconciliation" &&
+        entry.target === `/atelier/api/v1/runs/${run.public_run_reference}/reconciliations` &&
+        entry.node_id === waiting.node_id
+    );
+    if (entries.length > 1) {
+      throw new Error("More than one exact reconciliation is saved for this node.");
+    }
+    const entry = entries[0] ?? null;
+    if (entry === null) {
+      pendingReconciliation = null;
+      reconciliationAccepted = false;
+      return;
+    }
+    if (
+      entry.workflow_revision_hash !== run.workflow_revision_hash ||
+      entry.request_base64 !== waiting.request_base64 ||
+      entry.request_hash !== waiting.request_hash
+    ) {
+      throw new Error("The saved exact decision does not belong to this reconciliation.");
+    }
+    const pendingCommand = waiting.pending_command;
+    const command = reconciliationCommand(entry);
+    if (pendingCommand !== null) {
+      if (!pendingCommandMatches(pendingCommand, command)) {
+        throw new Error("The pending durable command differs from the saved exact decision.");
+      }
+    }
+    if (pendingReconciliation?.mutation_id !== entry.mutation_id) {
+      reconciliationAccepted = pendingCommand !== null;
+    }
+    pendingReconciliation = entry;
   }
 
   async function submitWait(answer: string): Promise<void> {
@@ -301,6 +385,230 @@
     waitFailureMessage = null;
     await tick();
     humanActionCard?.focusInput();
+  }
+
+  async function submitReconciliation(
+    actor: string,
+    evidence: string,
+    determination: ReconciliationDeterminationInput
+  ): Promise<void> {
+    const run = snapshot.confirmed?.run;
+    if (run?.state !== "WAITING_RECONCILIATION" || run.waiting.type !== "WAITING_RECONCILIATION") {
+      return;
+    }
+    reconciliationBusy = true;
+    reconciliationFailureMessage = null;
+    let mutation: ReconciliationMutation | null = null;
+    try {
+      await tick();
+      reconciliationActionCard?.focusStatus();
+      mutation = await reconciliationMutation(
+        run.public_run_reference,
+        run.workflow_revision_hash,
+        run.waiting.node_id,
+        run.waiting.request_base64,
+        run.waiting.request_hash,
+        run.waiting.intent_state_version,
+        createReconcileCommandId(),
+        actor,
+        evidence,
+        determination
+      );
+      const prepared = await mutationJournal.prepare(mutation);
+      if (prepared.kind !== "reconciliation") {
+        throw new Error("The exact request has the wrong kind.");
+      }
+      pendingReconciliation = prepared;
+      reconciliationAccepted = false;
+      await deliverReconciliation(mutation);
+      await focusAfterReconciliationDelivery();
+    } catch (error) {
+      if (mutation !== null) {
+        await recordReconciliationFailure(mutation.mutation_id, error);
+      }
+      reconciliationFailureMessage = error instanceof Error
+        ? error.message
+        : "The decision could not be confirmed.";
+    } finally {
+      reconciliationBusy = false;
+      if (reconciliationFailureMessage !== null) {
+        await tick();
+        if (pendingReconciliation !== null) {
+          reconciliationActionCard?.focusRetry();
+        } else {
+          reconciliationActionCard?.focusInput();
+        }
+      }
+    }
+  }
+
+  async function retryReconciliation(): Promise<void> {
+    if (pendingReconciliation === null) return;
+    reconciliationBusy = true;
+    reconciliationFailureMessage = null;
+    try {
+      await deliverReconciliation(pendingReconciliation);
+      await focusAfterReconciliationDelivery();
+    } catch (error) {
+      await recordReconciliationFailure(pendingReconciliation.mutation_id, error);
+      reconciliationFailureMessage = error instanceof Error
+        ? error.message
+        : "The exact retry could not be confirmed.";
+    } finally {
+      reconciliationBusy = false;
+      if (reconciliationFailureMessage !== null) {
+        await tick();
+        reconciliationActionCard?.focusRetry();
+      }
+    }
+  }
+
+  async function discardReconciliation(): Promise<void> {
+    if (pendingReconciliation === null) return;
+    await mutationJournal.discard(pendingReconciliation.mutation_id);
+    pendingReconciliation = null;
+    reconciliationAccepted = false;
+    reconciliationFailureMessage = null;
+    await tick();
+    reconciliationActionCard?.focusInput();
+  }
+
+  async function deliverReconciliation(mutation: ReconciliationMutation): Promise<void> {
+    const result = await cockpitApi.reconcile(mutation);
+    const resolved = await mutationJournal.resolve(mutation.mutation_id, {
+      type: "reconciliation_response",
+      status: result.status,
+      target: mutation.target,
+      request_body_base64: mutation.body_base64
+    });
+    const eventAlreadyProvedDecision = matchingReconciliationEventExists(mutation);
+    if (result.status === 200 && !resolved && !eventAlreadyProvedDecision) {
+      throw new Error("The reconciliation response did not prove the exact request.");
+    }
+    if (result.status === 202 && resolved) {
+      throw new Error("A pending decision was incorrectly treated as durable completion.");
+    }
+    requireRequestedRun(result.value);
+    const revision = snapshot.confirmed?.revision;
+    if (revision === undefined) throw new Error("The bound workflow revision is unavailable.");
+    requireBoundRevision(result.value, revision);
+    if (eventAlreadyProvedDecision) {
+      pendingReconciliation = null;
+      reconciliationAccepted = false;
+      await load();
+      return;
+    }
+    snapshot = confirmResource(snapshot, { run: result.value, revision });
+    if (result.status === 202) {
+      requireMatchingPendingCommand(result.value, mutation);
+      let uncertain: JournalEntry;
+      try {
+        uncertain = await mutationJournal.markUncertain(mutation.mutation_id);
+      } catch (error) {
+        if (
+          matchingReconciliationEventExists(mutation) &&
+          await mutationJournal.get(mutation.mutation_id) === null
+        ) {
+          pendingReconciliation = null;
+          reconciliationAccepted = false;
+          await load();
+          return;
+        }
+        throw error;
+      }
+      if (uncertain.kind !== "reconciliation") {
+        throw new Error("The accepted request changed kind.");
+      }
+      pendingReconciliation = uncertain;
+      reconciliationAccepted = true;
+    } else {
+      pendingReconciliation = null;
+      reconciliationAccepted = false;
+    }
+  }
+
+  function requireMatchingPendingCommand(run: Run, mutation: ReconciliationMutation): void {
+    if (run.state !== "WAITING_RECONCILIATION" || run.waiting.type !== "WAITING_RECONCILIATION") {
+      throw new Error("The accepted decision did not remain bound to its reconciliation.");
+    }
+    const command = reconciliationCommand(mutation);
+    if (
+      run.waiting.pending_command === null ||
+      !pendingCommandMatches(run.waiting.pending_command, command)
+    ) {
+      throw new Error("The accepted durable command differs from the exact request.");
+    }
+  }
+
+  function pendingCommandMatches(
+    pending: NonNullable<Extract<Run["waiting"], { type: "WAITING_RECONCILIATION" }>["pending_command"]>,
+    command: ReconciliationCommand
+  ): boolean {
+    if (
+      pending.command_id !== command.command_id ||
+      pending.actor !== command.actor ||
+      pending.evidence !== command.evidence ||
+      pending.state !== "PENDING" ||
+      pending.determination.type !== command.determination.type
+    ) {
+      return false;
+    }
+    if (
+      pending.determination.type === "operator_found" &&
+      command.determination.type === "operator_found"
+    ) {
+      return pending.determination.effect_id === command.determination.effect_id &&
+        pending.determination.result_base64 === command.determination.result_base64;
+    }
+    return pending.determination.type === "operator_authoritative_absence" &&
+      command.determination.type === "operator_authoritative_absence";
+  }
+
+  function matchingReconciliationEventExists(mutation: ReconciliationMutation): boolean {
+    const command = reconciliationCommand(mutation);
+    return projection?.events.some((event) => {
+      if (
+        event.event !== "ACTION_RECONCILIATION_RESOLVED" ||
+        event.public_run_reference !== publicReference ||
+        event.workflow_revision_hash !== mutation.workflow_revision_hash ||
+        event.node_id !== mutation.node_id ||
+        event.receipt.reconcile_command_id !== command.command_id ||
+        event.receipt.request_hash !== mutation.request_hash
+      ) {
+        return false;
+      }
+      if (command.determination.type === "operator_found") {
+        return event.receipt.confirmation_source === "OPERATOR_FOUND" &&
+          event.receipt.effect_id === command.determination.effect_id &&
+          event.receipt.result_base64 === command.determination.result_base64 &&
+          event.receipt.result_hash === mutation.result_hash;
+      }
+      return event.receipt.confirmation_source === "OPERATOR_AUTHORIZED_EXECUTION";
+    }) ?? false;
+  }
+
+  async function recordReconciliationFailure(mutationId: string, error: unknown): Promise<void> {
+    if (error instanceof CockpitRequestError && error.definitive_failure) {
+      await mutationJournal.discard(mutationId);
+      pendingReconciliation = null;
+      reconciliationAccepted = false;
+      return;
+    }
+    const entry = await mutationJournal.get(mutationId);
+    if (entry?.kind === "reconciliation") {
+      const uncertain = await mutationJournal.markUncertain(mutationId);
+      if (uncertain.kind === "reconciliation") pendingReconciliation = uncertain;
+      reconciliationAccepted = false;
+    }
+  }
+
+  async function focusAfterReconciliationDelivery(): Promise<void> {
+    await tick();
+    if (pendingReconciliation !== null && reconciliationAccepted) {
+      reconciliationActionCard?.focusStatus();
+    } else if (pendingReconciliation === null) {
+      await focusRunState();
+    }
   }
 
   async function focusAfterDelivery(): Promise<void> {
@@ -488,6 +796,20 @@
         onAnswer={(answer) => { void submitWait(answer); }}
         onRetry={() => { void retryWait(); }}
         onDiscard={() => { void discardWait(); }}
+      />
+    {/if}
+
+    {#if snapshot.confirmed.run.state === "WAITING_RECONCILIATION" && snapshot.confirmed.run.waiting.type === "WAITING_RECONCILIATION"}
+      <ReconciliationActionCard
+        bind:this={reconciliationActionCard}
+        waiting={snapshot.confirmed.run.waiting}
+        pending={pendingReconciliation}
+        accepted={reconciliationAccepted}
+        busy={reconciliationBusy}
+        failureMessage={reconciliationFailureMessage}
+        onResolve={submitReconciliation}
+        onRetry={() => { void retryReconciliation(); }}
+        onDiscard={() => { void discardReconciliation(); }}
       />
     {/if}
 

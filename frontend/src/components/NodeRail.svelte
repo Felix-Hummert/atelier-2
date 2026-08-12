@@ -33,10 +33,9 @@
     const event = projection.last_event;
     if (
       projection.node.node_id === run.current_node.node_id &&
-      run.waiting.type === "WAITING_RECONCILIATION" &&
-      (event === null || event.event !== "ACTION_RECONCILIATION_REQUIRED")
+      run.waiting.type === "WAITING_RECONCILIATION"
     ) {
-      return encodedContext("Request", run.waiting.request_base64, run.waiting.request_hash);
+      return null;
     }
     if (event === null) return null;
     if (event.event === "AGENT_COMPLETED") {

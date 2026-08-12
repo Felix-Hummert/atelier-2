@@ -315,6 +315,7 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     publish: vi.fn(async () => ({ status: 201, value: revision() })),
     start: vi.fn(async () => ({ status: 201, value: run() })),
     answer: vi.fn(),
+    reconcile: vi.fn(),
     getRun: vi.fn(async () => run()),
     getWorkflowRevision: vi.fn(async () => revision()),
     openRunEvents: vi.fn(() => ({ close: vi.fn() })),

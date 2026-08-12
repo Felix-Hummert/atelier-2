@@ -77,7 +77,12 @@ owns the API and resume contract.
 
 A narrow local cockpit can list runs, publish and start a workflow from `/new`,
 and project one durable run's bound revision, state, nodes, and resumable event
-history. It does not yet steer a Wait or provide provider or platform
-integration, an authentication boundary, or deployment code. The graph, API,
-and local cockpit are a proven durable vertical, not yet a general-purpose
-workflow engine or a deployed remote product.
+history. It can answer the exact integer requested by a Wait node and resolve an
+unknown Action outcome as either an exact found effect or an accountable,
+confirmed absence. Its session-scoped mutation journal preserves exact retry
+bytes without becoming a second durable truth. [ADR 0004](decisions/0004-local-cockpit.md)
+owns this browser boundary. The cockpit still provides no provider or platform
+integration, authentication boundary, public deployment, or general-purpose
+workflow editing. The graph, API, and local cockpit are a proven durable
+vertical, not yet a general-purpose workflow engine or a deployed remote
+product.

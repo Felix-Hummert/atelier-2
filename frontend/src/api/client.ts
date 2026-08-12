@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import type { PublishMutation, StartMutation, WaitMutation } from "../lib/mutationJournal";
+import type {
+  PublishMutation,
+  ReconciliationMutation,
+  StartMutation,
+  WaitMutation
+} from "../lib/mutationJournal";
 
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 const standardBase64 = z.string().refine(isCanonicalStandardBase64, "base64 must use the canonical standard alphabet and padding");
@@ -369,6 +374,7 @@ export interface CockpitApi {
   publish(mutation: PublishMutation): Promise<HttpResult<WorkflowRevisionDetail>>;
   start(mutation: StartMutation): Promise<HttpResult<Run>>;
   answer(mutation: WaitMutation): Promise<HttpResult<Run>>;
+  reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
   getRun(publicReference: string): Promise<Run>;
   getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
   openRunEvents(publicReference: string, handlers: RunEventHandlers): RunEventSubscription;
@@ -455,6 +461,29 @@ export function createCockpitApi(
         result.value.workflow_revision_hash !== mutation.workflow_revision_hash
       ) {
         throw new CockpitRequestError("The answer response did not match the exact durable run.");
+      }
+      return result;
+    },
+    reconcile: async (mutation) => {
+      const result = await requestJsonResult(
+        fetcher,
+        mutation.target,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: exactBody(mutation.body_base64)
+        },
+        [200, 202],
+        runSchema
+      );
+      const target = `/atelier/api/v1/runs/${result.value.public_run_reference}/reconciliations`;
+      if (
+        target !== mutation.target ||
+        result.value.workflow_revision_hash !== mutation.workflow_revision_hash
+      ) {
+        throw new CockpitRequestError(
+          "The reconciliation response did not match the exact durable run."
+        );
       }
       return result;
     },

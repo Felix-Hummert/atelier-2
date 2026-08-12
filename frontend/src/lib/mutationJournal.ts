@@ -117,6 +117,98 @@ export interface ReconciliationMutation extends MutationBase {
   result_hash: string | null;
 }
 
+export type ReconciliationDeterminationInput =
+  | { type: "operator_found"; effect_id: string; result_base64: string }
+  | { type: "operator_authoritative_absence" };
+
+export type ReconciliationCommand = {
+  command_id: string;
+  expected_intent_state_version: number;
+  actor: string;
+  evidence: string;
+  determination:
+    | { type: "operator_found"; effect_id: string; result_base64: string }
+    | { type: "operator_authoritative_absence" };
+};
+
+export function createReconcileCommandId(): string {
+  return `reconcile-${globalThis.crypto.randomUUID()}`;
+}
+
+export async function reconciliationMutation(
+  publicRunReference: string,
+  workflowRevisionHash: string,
+  nodeId: string,
+  requestBase64: string,
+  requestHash: string,
+  expectedIntentStateVersion: number,
+  commandId: string,
+  actor: string,
+  evidence: string,
+  determination: ReconciliationDeterminationInput
+): Promise<ReconciliationMutation> {
+  if (
+    decodePublicRunReference(publicRunReference) === null ||
+    !digestPattern.test(workflowRevisionHash) ||
+    nodeId.length === 0 ||
+    commandId.length === 0 ||
+    actor.trim().length === 0 ||
+    evidence.trim().length === 0 ||
+    !Number.isSafeInteger(expectedIntentStateVersion) ||
+    expectedIntentStateVersion < 0
+  ) {
+    throw new Error("invalid reconciliation identity or accountable evidence");
+  }
+  const request = decodeCanonicalBase64(requestBase64);
+  if (request === null || (await sha256Hex(request)) !== requestHash) {
+    throw new Error("reconciliation request hash differs from its exact bytes");
+  }
+  let commandDetermination: ReconciliationCommand["determination"];
+  let resultHash: string | null;
+  if (determination.type === "operator_found") {
+    if (determination.effect_id.trim().length === 0) {
+      throw new Error("a found effect requires an effect identity");
+    }
+    const result = decodeCanonicalBase64(determination.result_base64);
+    if (result === null) {
+      throw new Error("a found result must be canonical standard base64");
+    }
+    commandDetermination = {
+      type: "operator_found",
+      effect_id: determination.effect_id,
+      result_base64: determination.result_base64
+    };
+    resultHash = await sha256Hex(result);
+  } else {
+    commandDetermination = { type: "operator_authoritative_absence" };
+    resultHash = null;
+  }
+  const command: ReconciliationCommand = {
+    command_id: commandId,
+    expected_intent_state_version: expectedIntentStateVersion,
+    actor,
+    evidence,
+    determination: commandDetermination
+  };
+  return {
+    mutation_id: `reconciliation:${publicRunReference}:${commandId}`,
+    kind: "reconciliation",
+    target: `/atelier/api/v1/runs/${publicRunReference}/reconciliations`,
+    content_type: "application/json",
+    body_base64: encodeBase64(new TextEncoder().encode(JSON.stringify(command))),
+    workflow_revision_hash: workflowRevisionHash,
+    node_id: nodeId,
+    request_base64: requestBase64,
+    request_hash: requestHash,
+    result_hash: resultHash
+  };
+}
+
+export function reconciliationCommand(mutation: ReconciliationMutation): ReconciliationCommand {
+  const value = requireJsonBody(mutation.body_base64);
+  return value as ReconciliationCommand;
+}
+
 export type MutationEnvelope =
   | PublishMutation
   | StartMutation
