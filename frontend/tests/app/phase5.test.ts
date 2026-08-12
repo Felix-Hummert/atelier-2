@@ -22,6 +22,20 @@ const emptyResultHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991
 const publicReference = "run1.cnVu";
 
 beforeEach(() => {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: {
+      configurable: true,
+      value(this: HTMLDialogElement): void {
+        this.open = true;
+      }
+    },
+    close: {
+      configurable: true,
+      value(this: HTMLDialogElement): void {
+        this.open = false;
+      }
+    }
+  });
   sessionStorage.clear();
   window.history.replaceState(null, "", `/atelier/runs/${publicReference}`);
 });
@@ -167,9 +181,10 @@ describe("Phase 5 reconciliation control", () => {
     await fireEvent.click(review);
 
     expect(reconcile).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "Execute this exact effect?" })).toBeTruthy();
+    const dialog = screen.getByRole("dialog", { name: "Execute this exact effect?" });
+    expect(dialog).toBeInstanceOf(HTMLDialogElement);
     expect(screen.getByText("Atelier will execute the exact request once.")).toBeTruthy();
-    await fireEvent.keyDown(window, { key: "Escape" });
+    await fireEvent(dialog, new Event("cancel", { cancelable: true }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(review);
     expect(reconcile).not.toHaveBeenCalled();

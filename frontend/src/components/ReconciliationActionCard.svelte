@@ -32,7 +32,9 @@
   let validationMessage: string | null = null;
   let absenceDialog = false;
   let reviewButton: { focus(): void };
-  let dialogElement: { focus(): void };
+  let dialogElement: globalThis.HTMLDialogElement;
+  let cancelButton: HTMLButtonElement;
+  let executeButton: HTMLButtonElement;
   let actorInput: { focus(): void };
   let retryButton: { focus(): void };
   let statusHeading: { focus(): void };
@@ -71,23 +73,36 @@
     if (validationMessage !== null) return;
     absenceDialog = true;
     await tick();
-    dialogElement.focus();
+    dialogElement.showModal();
+    cancelButton.focus();
   }
 
   async function closeAbsenceDialog(): Promise<void> {
+    dialogElement.close();
     absenceDialog = false;
     await tick();
     reviewButton.focus();
   }
 
   async function executeAbsence(): Promise<void> {
+    dialogElement.close();
     absenceDialog = false;
     await onResolve(actor, evidence, { type: "operator_authoritative_absence" });
   }
 
-  function handleEscape(event: KeyboardEvent): void {
-    if (absenceDialog && event.key === "Escape") {
-      void closeAbsenceDialog();
+  function handleDialogCancel(event: Event): void {
+    event.preventDefault();
+    void closeAbsenceDialog();
+  }
+
+  function containDialogFocus(event: KeyboardEvent): void {
+    if (event.key !== "Tab") return;
+    if (event.shiftKey && globalThis.document.activeElement === cancelButton) {
+      event.preventDefault();
+      executeButton.focus();
+    } else if (!event.shiftKey && globalThis.document.activeElement === executeButton) {
+      event.preventDefault();
+      cancelButton.focus();
     }
   }
 
@@ -112,8 +127,6 @@
     }
   }
 </script>
-
-<svelte:window onkeydown={handleEscape} />
 
 <section
   class="human-action reconciliation-action"
@@ -208,21 +221,28 @@
 </section>
 
 {#if absenceDialog}
-  <div class="modal-backdrop">
-    <div
-      class="dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="absence-title"
-      tabindex="-1"
-      bind:this={dialogElement}
-    >
-      <h2 id="absence-title">Execute this exact effect?</h2>
-      <p>Atelier will execute the exact request once.</p>
-      <div class="dialog-actions">
-        <button class="quiet" type="button" onclick={() => { void closeAbsenceDialog(); }}>Cancel</button>
-        <button class="primary" type="button" onclick={() => { void executeAbsence(); }}>Execute</button>
-      </div>
+  <dialog
+    class="dialog"
+    aria-labelledby="absence-title"
+    bind:this={dialogElement}
+    oncancel={handleDialogCancel}
+    onkeydown={containDialogFocus}
+  >
+    <h2 id="absence-title">Execute this exact effect?</h2>
+    <p>Atelier will execute the exact request once.</p>
+    <div class="dialog-actions">
+      <button
+        class="quiet"
+        type="button"
+        bind:this={cancelButton}
+        onclick={() => { void closeAbsenceDialog(); }}
+      >Cancel</button>
+      <button
+        class="primary"
+        type="button"
+        bind:this={executeButton}
+        onclick={() => { void executeAbsence(); }}
+      >Execute</button>
     </div>
-  </div>
+  </dialog>
 {/if}

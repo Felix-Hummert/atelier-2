@@ -874,21 +874,17 @@ textarea {
   color: var(--muted);
 }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 1rem;
-  background: rgb(12 22 17 / 55%);
-}
-
 .dialog {
   width: min(100%, 30rem);
+  max-width: calc(100% - 2rem);
   border-radius: 0.9rem;
   padding: 1.25rem;
   background: var(--paper);
   box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 20%);
+}
+
+.dialog::backdrop {
+  background: rgb(12 22 17 / 55%);
 }
 
 @media (max-width: 28rem) {
