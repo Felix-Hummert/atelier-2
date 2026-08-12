@@ -14,6 +14,7 @@ from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.reconcile_effect import reconcile_effect
 from atelier2.application.start_run import start_run
@@ -107,6 +108,7 @@ def runtime(
         HarnessEffectAdapterFactory(
             external, force_unknown_marker, after_execute_crash_marker
         ),
+        ExactOutputAgentExecutorFactory(),
     )
 
 

@@ -30,9 +30,9 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V3 only in a truly empty canonical store and reopens
-only an exact V3 product schema. A V1 or V2 store, or any nonempty store without
-the V3 version owner, is rejected without mutation. V1 provides no runtime
+The runtime creates schema V4 only in a truly empty canonical store and reopens
+only an exact V4 product schema. A V1, V2, or V3 store, or any nonempty store
+without the V4 version owner, is rejected without mutation. V1 provides no runtime
 upgrade or downgrade migration.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
@@ -40,6 +40,13 @@ Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 datasource transaction without making the cockpit lie. Atelier's immutable
 `WorkflowRevisionHash` is a product identity and remains distinct from DBOS
 `application_version`, which fences executor compatibility.
+
+An Agent node delegates its exact request through an injected, provider-neutral
+executor port. Its successful result commits one immutable `AgentReceipt`, the
+existing `AGENT_COMPLETED` event, and the configured successor transition in one
+canonical transaction. The first executor implements the format-version-1 exact
+output contract; provider attempts, streams, failures, and cancellation remain
+outside this slice.
 
 Before an external call, Atelier durably records an effect intent bound to the
 logical key, exact request bytes and hash, workflow revision, adapter revision,
@@ -56,8 +63,9 @@ workflow revisions, caller-supplied run identifiers, effect lifecycles, exact
 payloads, and reconciliation decisions. Application functions depend on narrow
 start, advance, answer, and reconcile ports. The adapter owns the canonical
 engine, schema, durable codecs and transactions, explicit application version,
-and the node, effect, reconciliation, answer, and continuation workflows. DBOS
-and SQLAlchemy do not cross that boundary. Workflow-revision hashes remain
+and the node, agent-result, effect, reconciliation, answer, and continuation
+workflows. DBOS and SQLAlchemy do not cross that boundary. Workflow-revision
+hashes remain
 product identity, while the configured DBOS application version remains the
 executor recovery fence. [ADR 0002](0002-exact-yaml-graph.md) owns the workflow
 document and graph semantics above this execution boundary.

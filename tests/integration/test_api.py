@@ -25,7 +25,6 @@ from atelier2.adapters.dbos.reconciler import (
 )
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
-    commit_agent_completed,
     commit_reconciliation_required,
     commit_waiting_input,
 )
@@ -100,6 +99,7 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionCreated,
     DurableRevisionExisting,
 )
+from tests.scenarios.agents import commit_configured_agent
 from tests.scenarios.api import (
     RECONCILIATION_APPLIED_RESULT_HASH,
     RECONCILIATION_LOGICAL_KEY,
@@ -108,6 +108,7 @@ from tests.scenarios.api import (
     api_limits,
     event_poll_backoff,
 )
+from tests.scenarios.runtime import exact_output_runtime
 
 DOCUMENT = b"""format_version: 1
 start: agent
@@ -128,7 +129,7 @@ nodes:
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    configured = DbosRuntime(
+    configured = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "api-tests"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
@@ -384,8 +385,8 @@ def test_concurrent_wait_answer_enqueues_only_the_created_answer(
         StartRunRequest(RunId("wait-run"), revision)
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
-            connection, RunId("wait-run"), revision.revision_hash, "agent", b"payload"
+        commit_configured_agent(
+            connection, RunId("wait-run"), revision.revision_hash, "agent"
         )
         commit_waiting_input(
             connection, RunId("wait-run"), revision.revision_hash, "wait"
@@ -464,12 +465,11 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
         StartRunRequest(answer_run_id, revision)
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
+        commit_configured_agent(
             connection,
             answer_run_id,
             revision.revision_hash,
             "agent",
-            b"payload",
         )
         commit_waiting_input(connection, answer_run_id, revision.revision_hash, "wait")
     answer_path = (
@@ -530,12 +530,11 @@ def _waiting_reconciliation(runtime: DbosRuntime) -> EffectIntent:
         StartRunRequest(RunId("reconcile-run"), revision)
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
+        commit_configured_agent(
             connection,
             RunId("reconcile-run"),
             revision.revision_hash,
             "agent",
-            b"request",
         )
         intent = graph_action_intent(
             connection,
@@ -1051,9 +1050,7 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
         StartRunRequest(run_id, revision)
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
-            connection, run_id, revision.revision_hash, "agent", b"payload"
-        )
+        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
     client = _client(runtime)
     path = f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/answers"
@@ -1467,9 +1464,7 @@ def test_wait_answer_parses_workflow_before_begin_immediate(
         StartRunRequest(run_id, revision)
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
-            connection, run_id, revision.revision_hash, "agent", b"payload"
-        )
+        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
     original_parser = run_store_module.parse_workflow_document
     monkeypatch.setattr(
@@ -1547,9 +1542,7 @@ def test_wait_answer_rechecks_revision_bytes_after_outside_parse_without_mutatio
         StartRunRequest(run_id, revision)
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
-            connection, run_id, revision.revision_hash, "agent", b"payload"
-        )
+        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
     changed_document = DOCUMENT.replace(b"output: payload", b"output: changed")
     original_parser = run_store_module.parse_workflow_document

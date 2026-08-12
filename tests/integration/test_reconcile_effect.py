@@ -24,7 +24,6 @@ from atelier2.adapters.dbos.reconciler import (
     reconcile_workflow_id_for,
 )
 from atelier2.adapters.dbos.run_store import (
-    commit_agent_completed,
     commit_reconciliation_required,
 )
 from atelier2.adapters.dbos.runtime import (
@@ -63,6 +62,8 @@ from atelier2.contracts.effects import (
     ReconcileCommandState,
 )
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.runtime import exact_output_runtime
 
 WORKFLOW_DOCUMENT = b"""format_version: 1
 start: agent
@@ -78,7 +79,7 @@ nodes:
 def waiting(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, DbosEffectReconcileCommander, EffectIntent]]:
-    runtime = DbosRuntime(
+    runtime = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
@@ -93,8 +94,8 @@ def waiting(
         DbosDurableRunStarter(runtime.engine, runtime.settings),
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
-            connection, RunId("run-1"), revision.revision_hash, "agent", b"request"
+        commit_configured_agent(
+            connection, RunId("run-1"), revision.revision_hash, "agent"
         )
         intent = graph_action_intent(
             connection,

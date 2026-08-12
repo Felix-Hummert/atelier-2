@@ -20,7 +20,6 @@ from atelier2.adapters.dbos.reconciler import (
     DbosEffectReconcileCommander,
     reconcile_workflow_id_for,
 )
-from atelier2.adapters.dbos.run_store import commit_agent_completed
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
@@ -59,6 +58,8 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
 from atelier2.ports.effects import EffectAdapter
+from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.runtime import exact_output_runtime
 
 TIMEOUT_SECONDS = 5.0
 WORKFLOW_DOCUMENT = b"""format_version: 1
@@ -110,7 +111,7 @@ def prepared(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, EffectIntent, Path]]:
     external = tmp_path / "external.sqlite"
-    runtime = DbosRuntime(
+    runtime = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
         LoopbackEffectAdapterFactory(
             external,
@@ -125,12 +126,11 @@ def prepared(
         DbosDurableRunStarter(runtime.engine, runtime.settings),
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
+        commit_configured_agent(
             connection,
             RunId("run-1"),
             revision.revision_hash,
             "agent",
-            b"exact-request",
         )
         intent = graph_action_intent(
             connection,
@@ -183,7 +183,7 @@ def prepare_with_factory(
     tmp_path: Path, factory: UnknownReadbackFactory
 ) -> tuple[DbosRuntime, EffectIntent, Path]:
     external = tmp_path / "external.sqlite"
-    runtime = DbosRuntime(
+    runtime = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"), factory
     )
     runtime.initialize_storage()
@@ -193,12 +193,11 @@ def prepare_with_factory(
         DbosDurableRunStarter(runtime.engine, runtime.settings),
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
+        commit_configured_agent(
             connection,
             RunId("run-1"),
             revision.revision_hash,
             "agent",
-            b"exact-request",
         )
         intent = graph_action_intent(
             connection,

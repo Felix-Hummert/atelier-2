@@ -16,6 +16,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
@@ -116,6 +117,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
             AdapterRevision(settings.effect_adapter_revision),
             EffectDestination(settings.effect_destination),
         ),
+        ExactOutputAgentExecutorFactory(),
     )
     try:
         queries = DbosQueries(runtime.engine)

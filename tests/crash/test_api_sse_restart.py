@@ -21,7 +21,6 @@ from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
     commit_action_completed,
-    commit_agent_completed,
     commit_reconciliation_required,
     commit_subworkflow_completed,
     commit_wait_answered,
@@ -35,6 +34,7 @@ from atelier2.adapters.dbos.runtime import (
 )
 from atelier2.adapters.dbos.schema import effect_intents, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.references import encode_event_cursor, encode_public_run_reference
 from atelier2.application.advance_run import advance_run
@@ -56,6 +56,7 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
 from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from tests.scenarios.agents import commit_configured_agent
 
 DOCUMENT = b"""format_version: 1
 start: agent
@@ -86,6 +87,7 @@ def _open_runtime(database_path: Path, external_path: Path) -> DbosRuntime:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        ExactOutputAgentExecutorFactory(),
     )
     runtime.initialize_storage()
     return runtime
@@ -102,9 +104,7 @@ def _seed_first_three_events(
             StartRunRequest(run_id, revision)
         )
         with canonical_write_transaction(runtime.engine) as connection:
-            commit_agent_completed(
-                connection, run_id, revision.revision_hash, "agent", b"request"
-            )
+            commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
             intent = graph_action_intent(
                 connection,
                 run_id,

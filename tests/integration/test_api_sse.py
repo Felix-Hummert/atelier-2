@@ -18,7 +18,6 @@ from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
     commit_action_completed,
-    commit_agent_completed,
     commit_subworkflow_completed,
     commit_wait_answered,
     commit_waiting_input,
@@ -56,6 +55,7 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
 from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
 from atelier2.ports.run_events import RunEventPage
+from tests.scenarios.agents import commit_configured_agent
 from tests.scenarios.api import (
     SSE_COMPLETE_HISTORY,
     SSE_CURSOR_AFTER_THREE,
@@ -63,6 +63,7 @@ from tests.scenarios.api import (
     api_limits,
     event_poll_backoff,
 )
+from tests.scenarios.runtime import exact_output_runtime
 
 DOCUMENT = b"""format_version: 1
 start: agent
@@ -75,7 +76,7 @@ nodes:
 
 
 def _runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    runtime = DbosRuntime(
+    runtime = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "sse-tests"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
@@ -97,9 +98,7 @@ def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
         StartRunRequest(run_id, revision)
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
-            connection, run_id, revision.revision_hash, "agent", b"request"
-        )
+        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         intent = graph_action_intent(
             connection,
             run_id,

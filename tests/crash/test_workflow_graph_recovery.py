@@ -11,7 +11,11 @@ from atelier2.adapters.dbos.continuation import (
     ACTION_CHECKPOINT_STEP_NAME,
     action_continuation_workflow_id_for,
 )
-from atelier2.adapters.dbos.workflow import ANSWER_COMMIT_STEP_NAME, COMMIT_STEP_NAME
+from atelier2.adapters.dbos.workflow import (
+    AGENT_COMMIT_STEP_NAME,
+    ANSWER_COMMIT_STEP_NAME,
+    COMMIT_STEP_NAME,
+)
 from atelier2.contracts.executions import (
     NodeExecutionId,
     answer_workflow_id_for,
@@ -279,6 +283,7 @@ def assert_exact_c3_completed_vector(root: Path) -> None:
         "WHERE name='atelier2_action_continuation'",
     ) == (continuation_id,)
     assert scalar(root, "SELECT COUNT(*) FROM effect_receipts") == 1
+    assert scalar(root, "SELECT COUNT(*) FROM agent_receipts") == 1
     assert scalar(root, "SELECT COUNT(*) FROM reconcile_commands") == 1
     assert (
         scalar(
@@ -500,6 +505,43 @@ def test_effect_commit_crash_recovers_one_action_continuation(tmp_path: Path) ->
     assert workflow_identity_rows(tmp_path, identities.continuation) == (
         (identities.continuation, "atelier2_action_continuation"),
     )
+
+
+def test_agent_commit_crash_recovers_one_receipt_event_and_successor(
+    tmp_path: Path,
+) -> None:
+    initialize_and_seed(tmp_path)
+    marker = tmp_path / "agent-crash"
+
+    child(
+        tmp_path,
+        "execute-until-wait",
+        "run-1",
+        str(marker),
+        AGENT_COMMIT_STEP_NAME,
+        expected=CRASHED,
+    )
+
+    assert marker.read_text() == f"{AGENT_COMMIT_STEP_NAME}:before-record"
+    assert scalar(tmp_path, "SELECT COUNT(*) FROM agent_receipts") == 1
+    assert (
+        scalar(
+            tmp_path,
+            "SELECT COUNT(*) FROM run_events WHERE event_kind='AGENT_COMPLETED'",
+        )
+        == 1
+    )
+    child(tmp_path, "execute-until-wait", "run-1", "NONE", "NONE")
+    assert scalar(tmp_path, "SELECT COUNT(*) FROM agent_receipts") == 1
+    assert (
+        scalar(
+            tmp_path,
+            "SELECT COUNT(*) FROM run_events WHERE event_kind='AGENT_COMPLETED'",
+        )
+        == 1
+    )
+    assert scalar(tmp_path, "SELECT COUNT(*) FROM effect_receipts") == 1
+    assert scalar(tmp_path, "SELECT state FROM runs") == "WAITING_INPUT"
 
 
 def test_action_checkpoint_crash_recovers_one_successor(tmp_path: Path) -> None:

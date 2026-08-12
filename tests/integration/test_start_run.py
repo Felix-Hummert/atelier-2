@@ -45,6 +45,7 @@ from atelier2.contracts.runs import (
     StartRunRequest,
     WorkflowRevision,
 )
+from tests.scenarios.runtime import exact_output_runtime
 
 WORKFLOW_DOCUMENT = b"""format_version: 1
 start: agent
@@ -58,7 +59,7 @@ nodes:
 
 @pytest.fixture
 def storage(tmp_path: Path) -> Iterator[tuple[DbosRuntime, DbosDurableRunStarter]]:
-    runtime = DbosRuntime(
+    runtime = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
@@ -288,7 +289,7 @@ def test_revision_document_cannot_be_updated_or_deleted(
         )
 
 
-@pytest.mark.parametrize("version", [0, 4])
+@pytest.mark.parametrize("version", [0, 5])
 def test_unsupported_schema_version_is_refused_without_mutation(
     tmp_path: Path, version: int
 ) -> None:
@@ -308,13 +309,16 @@ def test_unsupported_schema_version_is_refused_without_mutation(
     assert database_path.read_bytes() == before
 
 
-def test_schema_version_one_requires_an_explicit_migration(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_pre_release_schema_versions_require_no_mutating_runtime_migration(
+    tmp_path: Path, version: int
+) -> None:
     database_path = tmp_path / "atelier.sqlite"
     with sqlite3.connect(database_path) as connection:
         connection.execute(
             "CREATE TABLE atelier_schema_versions(version INTEGER PRIMARY KEY)"
         )
-        connection.execute("INSERT INTO atelier_schema_versions VALUES(1)")
+        connection.execute("INSERT INTO atelier_schema_versions VALUES(?)", (version,))
     before = database_path.read_bytes()
     engine = sa.create_engine(f"sqlite:///{database_path}")
 
@@ -325,8 +329,8 @@ def test_schema_version_one_requires_an_explicit_migration(tmp_path: Path) -> No
     assert database_path.read_bytes() == before
 
 
-def test_schema_version_three_opens_idempotently(tmp_path: Path) -> None:
-    runtime = DbosRuntime(
+def test_schema_version_four_opens_idempotently(tmp_path: Path) -> None:
+    runtime = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
@@ -342,7 +346,7 @@ def test_schema_version_three_opens_idempotently(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_concurrent_first_schema_initializers_converge_on_version_three(
+def test_concurrent_first_schema_initializers_converge_on_version_four(
     tmp_path: Path,
 ) -> None:
     participants = 4
@@ -374,7 +378,7 @@ def test_concurrent_first_schema_initializers_converge_on_version_three(
                 )
             )
 
-        assert results == [[3]] * participants
+        assert results == [[4]] * participants
 
 
 def test_initialized_runtime_can_execute_a_later_seeded_workflow(

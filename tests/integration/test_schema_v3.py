@@ -96,7 +96,7 @@ def engine_snapshot(
     return schema, rows
 
 
-def test_fresh_v3_has_the_closed_product_tables_and_reopens_idempotently(
+def test_fresh_v4_has_the_closed_product_tables_and_reopens_idempotently(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -107,7 +107,7 @@ def test_fresh_v3_has_the_closed_product_tables_and_reopens_idempotently(
         with engine.connect() as connection:
             assert connection.execute(
                 sa.text("SELECT version FROM atelier_schema_versions")
-            ).all() == [(3,)]
+            ).all() == [(4,)]
             assert PRODUCT_TABLE_NAMES.issubset(
                 sa.inspect(connection).get_table_names()
             )
@@ -115,18 +115,18 @@ def test_fresh_v3_has_the_closed_product_tables_and_reopens_idempotently(
         engine.dispose()
 
 
-def test_malformed_v3_is_refused_without_mutation(tmp_path: Path) -> None:
+def test_malformed_v4_is_refused_without_mutation(tmp_path: Path) -> None:
     database = tmp_path / "atelier.sqlite"
     with sqlite3.connect(database) as connection:
         connection.execute(
             "CREATE TABLE atelier_schema_versions(version INTEGER PRIMARY KEY)"
         )
-        connection.execute("INSERT INTO atelier_schema_versions VALUES(3)")
+        connection.execute("INSERT INTO atelier_schema_versions VALUES(4)")
         connection.execute("CREATE TABLE workflow_revisions(wrong TEXT)")
     before = snapshot(database)
     engine = sa.create_engine(f"sqlite:///{database}")
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v3"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v4"):
         initialize_schema(engine)
 
     engine.dispose()
@@ -143,7 +143,7 @@ def test_malformed_v3_is_refused_without_mutation(tmp_path: Path) -> None:
         "changed-nullability",
     ],
 )
-def test_existing_v3_rejects_every_product_schema_drift_without_mutation(
+def test_existing_v4_rejects_every_product_schema_drift_without_mutation(
     tmp_path: Path, malformation: str
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -192,7 +192,7 @@ def test_existing_v3_rejects_every_product_schema_drift_without_mutation(
     before_schema = snapshot(database)
     before_rows = rows_snapshot(database)
     reopened = sa.create_engine(f"sqlite:///{database}")
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v3"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v4"):
         initialize_schema(reopened)
     reopened.dispose()
 
@@ -200,7 +200,7 @@ def test_existing_v3_rejects_every_product_schema_drift_without_mutation(
     assert rows_snapshot(database) == before_rows
 
 
-def test_existing_malformed_in_memory_v3_is_refused() -> None:
+def test_existing_malformed_in_memory_v4_is_refused() -> None:
     engine = sa.create_engine("sqlite://")
     initialize_schema(engine)
     with engine.begin() as connection:
@@ -212,7 +212,7 @@ def test_existing_malformed_in_memory_v3_is_refused() -> None:
             )
         )
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v3"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v4"):
         initialize_schema(engine)
     engine.dispose()
 
@@ -238,7 +238,7 @@ def test_nonempty_dbos_only_in_memory_database_is_not_treated_as_fresh() -> None
     engine.dispose()
 
 
-def test_dbos_owned_tables_are_allowed_and_unchanged_by_v3_preflight(
+def test_dbos_owned_tables_are_allowed_and_unchanged_by_v4_preflight(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"

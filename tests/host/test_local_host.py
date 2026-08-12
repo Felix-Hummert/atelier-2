@@ -28,6 +28,7 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.host import HostSettings, api_limits, event_poll_backoff
 from tests.scenarios.api import api_limits as scenario_api_limits
 from tests.scenarios.api import event_poll_backoff as scenario_event_poll_backoff
+from tests.scenarios.runtime import exact_output_runtime
 
 
 @pytest.mark.parametrize(
@@ -116,7 +117,7 @@ def frontend_dist(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    configured = DbosRuntime(
+    configured = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "host-test"),
         LoopbackEffectAdapterFactory(
             tmp_path / "effects.sqlite",

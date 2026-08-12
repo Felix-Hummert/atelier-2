@@ -14,6 +14,7 @@ from atelier2.adapters.dbos.effect_store import (
     receipt_from_record,
 )
 from atelier2.adapters.dbos.schema import (
+    agent_receipts,
     effect_intents,
     effect_receipts,
     run_events,
@@ -22,6 +23,17 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.contracts.agents import (
+    AgentExecutionRequest,
+    AgentExecutionRequestHash,
+    AgentExecutionResult,
+    AgentExecutorBinding,
+    AgentExecutorOperationalIdentity,
+    AgentExecutorRevision,
+    AgentOutputHash,
+    AgentReceipt,
+    AgentReceiptHash,
+)
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -67,6 +79,10 @@ from atelier2.ports.durable_runs import (
 
 class RunTransitionConflict(RuntimeError):
     """A retry or transition contradicts the exact durable graph/run/event binding."""
+
+
+class AgentReceiptConflict(RunTransitionConflict):
+    """One stable node execution contradicts its durable agent receipt."""
 
 
 def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> WorkflowGraph:
@@ -326,24 +342,81 @@ def _commit_event(
     )
 
 
+def _agent_receipt_values(receipt: AgentReceipt) -> dict[str, object]:
+    return {
+        "node_execution_id": receipt.node_execution_id.value,
+        "request_hash": receipt.request_hash.value,
+        "run_id": receipt.run_id.value,
+        "workflow_revision_hash": receipt.workflow_revision_hash.value,
+        "node_id": receipt.node_id,
+        "executor_adapter_revision": (receipt.executor_binding.adapter_revision.value),
+        "executor_operational_identity": (
+            receipt.executor_binding.operational_identity.value
+        ),
+        "output_bytes": receipt.output_bytes,
+        "output_hash": receipt.output_hash.value,
+        "receipt_hash": receipt.receipt_hash.value,
+    }
+
+
+def _agent_receipt_from_record(record: Mapping[Any, Any]) -> AgentReceipt:
+    try:
+        return AgentReceipt(
+            AgentExecutionRequestHash(str(record["request_hash"])),
+            NodeExecutionId(str(record["node_execution_id"])),
+            RunId(str(record["run_id"])),
+            WorkflowRevisionHash(str(record["workflow_revision_hash"])),
+            str(record["node_id"]),
+            AgentExecutorBinding(
+                AgentExecutorRevision(str(record["executor_adapter_revision"])),
+                AgentExecutorOperationalIdentity(
+                    str(record["executor_operational_identity"])
+                ),
+            ),
+            bytes(record["output_bytes"]),
+            AgentOutputHash(str(record["output_hash"])),
+            AgentReceiptHash(str(record["receipt_hash"])),
+        )
+    except ValueError as error:
+        raise AgentReceiptConflict(
+            "durable agent receipt hash binding disagrees"
+        ) from error
+
+
 def commit_agent_completed(
     session: Any,
-    run_id: RunId,
-    revision_hash: WorkflowRevisionHash,
-    node_id: str,
-    output: bytes,
+    request: AgentExecutionRequest,
+    executor_binding: AgentExecutorBinding,
+    result: AgentExecutionResult,
 ) -> TransitionSnapshot:
-    graph = load_graph(session, revision_hash)
+    graph = load_graph(session, request.workflow_revision_hash)
+    receipt = AgentReceipt.for_execution(request, executor_binding, result)
+    session.execute(
+        agent_receipts.insert()
+        .prefix_with("OR IGNORE")
+        .values(_agent_receipt_values(receipt))
+    )
+    durable_record = (
+        session.execute(
+            sa.select(agent_receipts).where(
+                agent_receipts.c.node_execution_id == request.node_execution_id.value
+            )
+        )
+        .mappings()
+        .one()
+    )
+    if _agent_receipt_from_record(durable_record) != receipt:
+        raise AgentReceiptConflict("durable agent receipt differs from exact retry")
     return _commit_event(
         session,
-        run_id,
-        revision_hash,
-        node_id,
+        request.run_id,
+        request.workflow_revision_hash,
+        request.node_id,
         RunEventKind.AGENT_COMPLETED,
-        output,
+        result.output_bytes,
         RunState.STARTED,
         RunState.STARTED,
-        graph.successor(node_id).id,
+        graph.successor(request.node_id).id,
     )
 
 

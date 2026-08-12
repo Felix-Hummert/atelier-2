@@ -21,7 +21,6 @@ from atelier2.adapters.dbos.advancer import (
     effect_workflow_id_for,
     graph_action_intent,
 )
-from atelier2.adapters.dbos.run_store import commit_agent_completed
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
@@ -44,6 +43,8 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
 )
 from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.runtime import exact_output_runtime
 
 WORKFLOW_DOCUMENT = b"""format_version: 1
 start: agent
@@ -59,7 +60,7 @@ nodes:
 def storage(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, DbosDurableRunAdvancer, EffectIntent]]:
-    runtime = DbosRuntime(
+    runtime = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
@@ -74,8 +75,8 @@ def storage(
         DbosDurableRunStarter(runtime.engine, runtime.settings),
     )
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
-            connection, RunId("run-1"), revision.revision_hash, "agent", b"draft-17"
+        commit_configured_agent(
+            connection, RunId("run-1"), revision.revision_hash, "agent"
         )
         intent = graph_action_intent(
             connection,

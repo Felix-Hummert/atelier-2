@@ -17,7 +17,6 @@ from atelier2.adapters.dbos.advancer import (
     DbosDurableRunAdvancer,
     graph_action_intent,
 )
-from atelier2.adapters.dbos.run_store import commit_agent_completed
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeBindingConflict,
@@ -43,6 +42,8 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
 from atelier2.ports.effects import EffectAdapter
+from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.runtime import exact_output_runtime
 
 WORKFLOW_TIMEOUT_SECONDS = 5.0
 WORKFLOW_POLL_SECONDS = 0.025
@@ -157,7 +158,7 @@ def acquire() -> Iterator[AcquireLease]:
     leases: list[DbosRuntime] = []
 
     def acquire_lease(settings: DbosRuntimeSettings) -> DbosRuntime:
-        lease = DbosRuntime(
+        lease = exact_output_runtime(
             settings,
             LoopbackEffectAdapterFactory(
                 settings.database_path.parent / "external-effect.sqlite",
@@ -382,8 +383,8 @@ def test_equivalent_factories_open_once_and_last_lease_closes_once(
         )
     )
     second_factory = CountingFactory(first_factory._delegate)
-    first = DbosRuntime(settings, first_factory)
-    second = DbosRuntime(settings, second_factory)
+    first = exact_output_runtime(settings, first_factory)
+    second = exact_output_runtime(settings, second_factory)
 
     assert first_factory.opens == 1
     assert second_factory.opens == 0
@@ -399,7 +400,7 @@ def test_incompatible_factory_is_refused_before_it_opens_or_mutates_its_store(
     tmp_path: Path,
 ) -> None:
     settings = runtime_settings(canonical_database(tmp_path))
-    active = DbosRuntime(
+    active = exact_output_runtime(
         settings,
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
@@ -417,7 +418,7 @@ def test_incompatible_factory_is_refused_before_it_opens_or_mutates_its_store(
     )
     try:
         with pytest.raises(DbosRuntimeBindingConflict):
-            DbosRuntime(settings, refused)
+            exact_output_runtime(settings, refused)
         assert refused.opens == 0
         assert not refused_path.parent.exists()
     finally:
@@ -442,12 +443,12 @@ def test_initialization_failure_closes_the_opened_adapter_and_releases_binding(
     with monkeypatch.context() as context:
         context.setattr(SQLAlchemyDatasource, "create", fail_datasource)
         with pytest.raises(RuntimeError, match="injected datasource failure"):
-            DbosRuntime(settings, factory)
+            exact_output_runtime(settings, factory)
 
     assert factory.opens == 1
     assert factory.opened is not None
     assert factory.opened.closes == 1
-    recovered = DbosRuntime(settings, factory._delegate)
+    recovered = exact_output_runtime(settings, factory._delegate)
     recovered.close()
 
 
@@ -460,16 +461,15 @@ def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
         AdapterRevision("loopback-v1"),
         EffectDestination("loopback-test"),
     )
-    runtime = DbosRuntime(settings, original_factory)
+    runtime = exact_output_runtime(settings, original_factory)
     runtime.initialize_storage()
     started = start_run(start_request(), starter_for(runtime))
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_agent_completed(
+        commit_configured_agent(
             connection,
             started.run_id,
             started.revision_hash,
             "agent",
-            b"request",
         )
         intent = graph_action_intent(
             connection,
@@ -487,7 +487,7 @@ def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
     changed_path = tmp_path / "changed" / "external.sqlite"
 
     with pytest.raises(DbosRuntimeBindingConflict, match="durable effect intents"):
-        DbosRuntime(
+        exact_output_runtime(
             settings,
             LoopbackEffectAdapterFactory(
                 changed_path,
@@ -503,7 +503,7 @@ def test_canonical_and_external_store_must_be_distinct(tmp_path: Path) -> None:
     database = canonical_database(tmp_path)
 
     with pytest.raises(DbosRuntimeBindingConflict, match="must be distinct"):
-        DbosRuntime(
+        exact_output_runtime(
             runtime_settings(database),
             LoopbackEffectAdapterFactory(
                 database,
@@ -517,7 +517,7 @@ def test_existing_hardlink_alias_is_refused_before_external_store_mutation(
     tmp_path: Path,
 ) -> None:
     database = canonical_database(tmp_path)
-    original = DbosRuntime(
+    original = exact_output_runtime(
         runtime_settings(database),
         LoopbackEffectAdapterFactory(
             tmp_path / "original-external.sqlite",
@@ -531,7 +531,7 @@ def test_existing_hardlink_alias_is_refused_before_external_store_mutation(
     os.link(database, external_alias)
 
     with pytest.raises(DbosRuntimeBindingConflict, match="must be distinct"):
-        DbosRuntime(
+        exact_output_runtime(
             runtime_settings(database),
             LoopbackEffectAdapterFactory(
                 external_alias,

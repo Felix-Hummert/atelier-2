@@ -49,6 +49,7 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
 from atelier2.ports.effects import EffectAdapter
+from tests.scenarios.runtime import exact_output_runtime
 
 UNORDERED_WORKFLOW = b"""format_version: 1
 start: agent
@@ -104,7 +105,7 @@ def runtime(root: Path, *, unknown_marker: Path | None = None) -> DbosRuntime:
         if unknown_marker is None
         else UnknownAdapterFactory(root, unknown_marker)
     )
-    return DbosRuntime(
+    return exact_output_runtime(
         DbosRuntimeSettings(root / "atelier.sqlite", "executor-A"), factory
     )
 

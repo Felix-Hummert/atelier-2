@@ -15,6 +15,7 @@ from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.answer_wait import answer_wait
 from atelier2.application.reconcile_effect import reconcile_effect
@@ -84,6 +85,7 @@ def runtime(
     return DbosRuntime(
         DbosRuntimeSettings(database, version),
         HarnessEffectAdapterFactory(external, force_unknown_marker),
+        ExactOutputAgentExecutorFactory(),
     )
 
 

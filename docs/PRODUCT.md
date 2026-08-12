@@ -46,8 +46,10 @@ answer resumes the same run, and the terminal event binds the completed history
 to one terminal hash. Process restarts resume from durable checkpoints without
 duplicating the Action effect.
 
-V1's graph is intentionally narrow: Agent emits configured bytes, Action owns
-the existing exact effect and reconciliation contract, Wait accepts one exact
+V1's graph is intentionally narrow: Agent delegates its configured job and exact
+output contract through an injected provider-neutral executor and atomically
+records a distinct success receipt with its existing event and successor. Action
+owns the existing exact effect and reconciliation contract, Wait accepts one exact
 integer answer, and the terminal Subworkflow adds two configured integers. The
 document is a closed safe-YAML contract; unknown fields, unsafe YAML features,
 cycles, unreachable nodes, changed retry identities, and contradictory answers

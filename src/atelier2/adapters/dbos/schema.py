@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 metadata = sa.MetaData()
 
@@ -219,6 +219,45 @@ effect_receipts = sa.Table(
         "AND length(reconcile_command_id) > 0)"
     ),
 )
+agent_receipts = sa.Table(
+    "agent_receipts",
+    metadata,
+    sa.Column("node_execution_id", sa.Text, primary_key=True),
+    sa.Column("request_hash", sa.Text, nullable=False),
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
+    sa.Column("executor_adapter_revision", sa.Text, nullable=False),
+    sa.Column("executor_operational_identity", sa.Text, nullable=False),
+    sa.Column("output_bytes", sa.LargeBinary, nullable=False),
+    sa.Column("output_hash", sa.Text, nullable=False),
+    sa.Column("receipt_hash", sa.Text, nullable=False, unique=True),
+    sa.UniqueConstraint("run_id", "workflow_revision_hash", "node_id"),
+    sa.ForeignKeyConstraint(
+        ("run_id", "workflow_revision_hash"),
+        ("runs.run_id", "runs.revision_hash"),
+    ),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(
+        "length(workflow_revision_hash) = 64 "
+        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint("length(executor_adapter_revision) > 0"),
+    sa.CheckConstraint("length(executor_operational_identity) > 0"),
+    sa.CheckConstraint(
+        "length(output_hash) = 64 AND output_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
 run_events = sa.Table(
     "run_events",
     metadata,
@@ -360,6 +399,18 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'effect receipts are immutable');
         END
     """,
+    "agent_receipts_no_update": """
+        CREATE TRIGGER agent_receipts_no_update
+        BEFORE UPDATE ON agent_receipts BEGIN
+          SELECT RAISE(ABORT, 'agent receipts are immutable');
+        END
+    """,
+    "agent_receipts_no_delete": """
+        CREATE TRIGGER agent_receipts_no_delete
+        BEFORE DELETE ON agent_receipts BEGIN
+          SELECT RAISE(ABORT, 'agent receipts are immutable');
+        END
+    """,
     "reconcile_commands_payload_no_update": """
         CREATE TRIGGER reconcile_commands_payload_no_update
         BEFORE UPDATE OF command_id, logical_key, expected_intent_version,
@@ -431,7 +482,7 @@ class MigrationRequired(UnsupportedSchemaVersion):
 
 def _require_supported_versions(versions: Sequence[int]) -> None:
     normalized = tuple(versions)
-    if normalized in {(1,), (2,)}:
+    if normalized in {(1,), (2,), (3,)}:
         raise MigrationRequired(normalized[0])
     if normalized != (SCHEMA_VERSION,):
         raise UnsupportedSchemaVersion(normalized)
@@ -499,7 +550,9 @@ def _table_fingerprint(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
     ).fetchone()
     if create_record is None or create_record[0] is None:
-        raise UnsupportedSchemaVersion(f"malformed v3 product table {table_name}")
+        raise UnsupportedSchemaVersion(
+            f"malformed v{SCHEMA_VERSION} product table {table_name}"
+        )
     quoted_table = _quoted_identifier(table_name)
     columns = tuple(
         tuple(record)
@@ -564,7 +617,7 @@ def _product_schema_fingerprint(
 def _sqlite_connection(connection: sa.Connection) -> sqlite3.Connection:
     raw_connection = connection.connection.driver_connection
     if not isinstance(raw_connection, sqlite3.Connection):
-        raise UnsupportedSchemaVersion("Atelier v3 requires SQLite")
+        raise UnsupportedSchemaVersion(f"Atelier v{SCHEMA_VERSION} requires SQLite")
     return raw_connection
 
 
@@ -580,12 +633,14 @@ def _expected_product_schema_fingerprint() -> _ProductSchemaFingerprint:
         engine.dispose()
 
 
-def _require_v3_product_shape(connection: sqlite3.Connection) -> None:
+def _require_current_product_shape(connection: sqlite3.Connection) -> None:
     if (
         _product_schema_fingerprint(connection)
         != _expected_product_schema_fingerprint()
     ):
-        raise UnsupportedSchemaVersion("malformed v3 product schema fingerprint")
+        raise UnsupportedSchemaVersion(
+            f"malformed v{SCHEMA_VERSION} product schema fingerprint"
+        )
 
 
 def _preflight_existing_schema(engine: Engine) -> None:
@@ -622,7 +677,7 @@ def _preflight_existing_schema(engine: Engine) -> None:
                     raise TypeError("schema version must be stored as an integer")
                 versions.append(version)
             _require_supported_versions(versions)
-            _require_v3_product_shape(connection)
+            _require_current_product_shape(connection)
     except UnsupportedSchemaVersion:
         raise
     except (sqlite3.DatabaseError, TypeError, ValueError) as error:
@@ -636,7 +691,7 @@ def _create_triggers(connection: sa.Connection, statements: Iterable[str]) -> No
 
 def initialize_schema(engine: Engine) -> None:
     if engine.url.get_backend_name() != "sqlite":
-        raise UnsupportedSchemaVersion("Atelier v3 requires SQLite")
+        raise UnsupportedSchemaVersion(f"Atelier v{SCHEMA_VERSION} requires SQLite")
     _preflight_existing_schema(engine)
     with engine.connect() as connection:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
@@ -660,7 +715,7 @@ def initialize_schema(engine: Engine) -> None:
                 .all()
             )
             _require_supported_versions(versions)
-            _require_v3_product_shape(_sqlite_connection(connection))
+            _require_current_product_shape(_sqlite_connection(connection))
             connection.commit()
         except BaseException:
             connection.rollback()

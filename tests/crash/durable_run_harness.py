@@ -10,6 +10,7 @@ from pathlib import Path
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.workflow import BOOTSTRAP_STEP_NAME
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.start_run import start_run
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
@@ -26,6 +27,7 @@ def _runtime(database: Path, application_version: str) -> DbosRuntime:
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
+        ExactOutputAgentExecutorFactory(),
     )
 
 

@@ -18,7 +18,6 @@ from sqlalchemy.engine import Engine
 from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos import run_store
 from atelier2.adapters.dbos.queries import DbosQueries
-from atelier2.adapters.dbos.run_store import commit_agent_completed
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     effect_intents,
@@ -46,6 +45,7 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionFound,
     WorkflowRevisionPage,
 )
+from tests.scenarios.agents import commit_configured_agent
 
 
 @pytest.fixture
@@ -480,12 +480,11 @@ def test_event_query_keeps_one_old_snapshot_when_history_appends_between_selects
     revision = _seed_history(engine, run_id=run_id, head=0)
     if initial_head:
         with engine.begin() as connection:
-            commit_agent_completed(
+            commit_configured_agent(
                 connection,
                 run_id,
                 revision.revision_hash,
                 "agent",
-                b"1",
             )
     appended = False
 

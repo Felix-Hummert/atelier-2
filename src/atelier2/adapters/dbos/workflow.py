@@ -26,6 +26,11 @@ from atelier2.adapters.dbos.run_store import (
     load_run,
     load_wait_answer,
 )
+from atelier2.contracts.agents import (
+    AgentExecutionRequest,
+    AgentExecutorBinding,
+    ExactOutputContract,
+)
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
     LogicalEffectKey,
@@ -47,6 +52,7 @@ from atelier2.contracts.workflows import (
     SubworkflowNode,
     WaitNode,
 )
+from atelier2.ports.agent_executions import AgentExecutor
 from atelier2.ports.effects import EffectAdapter
 
 WORKFLOW_NAME = "atelier2_durable_run"
@@ -75,6 +81,7 @@ class RunBindingConflict(RuntimeError):
 
 class EncodedAgentBinding(TypedDict):
     type: Literal["agent"]
+    job: str
     output: str
 
 
@@ -154,7 +161,7 @@ def _node_binding(
             )
         node = load_graph(session, revision_hash).node(node_id)
         if isinstance(node, AgentNode):
-            return {"type": "agent", "output": node.output}
+            return {"type": "agent", "job": node.job, "output": node.output}
         if isinstance(node, ActionNode):
             return {"type": "action"}
         if isinstance(node, WaitNode):
@@ -175,6 +182,8 @@ def _node_binding(
 
 def register_durable_run_workflow(
     datasource: SQLAlchemyDatasource,
+    agent_executor: AgentExecutor,
+    agent_binding: AgentExecutorBinding,
     adapter: EffectAdapter,
     effect_binding: EffectAdapterBinding,
 ) -> None:
@@ -205,15 +214,23 @@ def register_durable_run_workflow(
         typed_revision = WorkflowRevisionHash(revision_hash)
         binding = _node_binding(datasource, typed_run_id, typed_revision, node_id)
         if binding["type"] == "agent":
+            execution_request = AgentExecutionRequest(
+                NodeExecutionId.for_node(typed_run_id, typed_revision, node_id),
+                typed_run_id,
+                typed_revision,
+                node_id,
+                binding["job"].encode("utf-8"),
+                ExactOutputContract(binding["output"].encode("utf-8")),
+            )
+            result = agent_executor.execute(execution_request)
             successor = datasource.run_tx_step(
                 {"name": AGENT_COMMIT_STEP_NAME},
                 lambda: (
                     commit_agent_completed(
                         datasource.sql_session(),
-                        typed_run_id,
-                        typed_revision,
-                        node_id,
-                        binding["output"].encode("utf-8"),
+                        execution_request,
+                        agent_binding,
+                        result,
                     ).current_node_id
                 ),
             )
