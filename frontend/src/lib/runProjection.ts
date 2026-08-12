@@ -74,6 +74,24 @@ export function streamProjection(
   };
 }
 
+export function restartStreamProjection(
+  projection: StreamProjection,
+  publicRunReference: string,
+  workflowRevisionHash: string
+): StreamProjection {
+  if (
+    projection.public_run_reference !== publicRunReference ||
+    projection.workflow_revision_hash !== workflowRevisionHash
+  ) {
+    throw new Error("the durable stream identity changed during restart");
+  }
+  return {
+    ...projection,
+    connection: "connecting",
+    protocol_problem: null
+  };
+}
+
 export function markConnecting(
   projection: StreamProjection,
   reconnecting = false

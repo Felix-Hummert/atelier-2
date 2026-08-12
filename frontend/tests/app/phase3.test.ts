@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -81,6 +81,69 @@ describe("Phase 3 read-only run cockpit", () => {
     expect(await screen.findByText("Event gap")).toBeTruthy();
     expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2);
     expect(feed.closed).toBe(true);
+  });
+
+  it("reloads the visible run snapshot after a durable Wait answer advances the run", async () => {
+    const feed = new FakeFeed();
+    const getRun = vi
+      .fn()
+      .mockResolvedValueOnce(waitingRun())
+      .mockResolvedValueOnce(waitingRun())
+      .mockResolvedValueOnce(afterAnswerRun());
+    render(App, {
+      props: {
+        cockpitApi: api({ openRunEvents: feed.open, getRun }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { name: "Run run" });
+
+    feed.handlers?.event(JSON.stringify(agentCompleted(1)));
+    feed.handlers?.event(JSON.stringify(actionCompleted(2)));
+    feed.handlers?.event(JSON.stringify(waitingInput(3)));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("waiting input").isConnected).toBe(true);
+
+    feed.handlers?.event(JSON.stringify(waitAnswered(4)));
+
+    expect(await screen.findByText("started")).toBeTruthy();
+    expect(getRun).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("article", { name: "wait — Done" }).isConnected).toBe(true);
+    expect(screen.getByRole("article", { name: "final — Working" }).isConnected).toBe(true);
+  });
+
+  it("refreshes a failed stream without ever clearing its confirmed event truth", async () => {
+    const feed = new FakeFeed();
+    let resolveRefresh!: (run: Run) => void;
+    const getRun = vi
+      .fn()
+      .mockResolvedValueOnce(startedRun())
+      .mockImplementationOnce(() => new Promise<Run>((resolve) => { resolveRefresh = resolve; }));
+    render(App, {
+      props: {
+        cockpitApi: api({ openRunEvents: feed.open, getRun }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { name: "Run run" });
+    const raw = JSON.stringify(agentCompleted(1));
+    feed.handlers?.event(raw);
+    feed.handlers?.event(JSON.stringify(actionCompleted(3)));
+    await screen.findByText("Event gap");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expectOneConfirmedAgentEvent();
+    resolveRefresh(actionStartedRun());
+    await waitFor(() => expect(feed.open).toHaveBeenCalledTimes(2));
+    expectOneConfirmedAgentEvent();
+
+    feed.handlers?.event(raw);
+    expectOneConfirmedAgentEvent();
+    expect(screen.queryByText("Event conflict")).toBeNull();
+    feed.handlers?.event(`${raw} `);
+
+    expect(await screen.findByText("Event conflict")).toBeTruthy();
+    expectOneConfirmedAgentEvent();
   });
 
   it("shows honest loading and projects an initial RFC 9457 failure", async () => {
@@ -197,6 +260,24 @@ function waitingRun(): Run {
   };
 }
 
+function actionStartedRun(): Run {
+  return {
+    ...startedRun(),
+    state_version: 1,
+    current_node: revision().graph.nodes[1]!,
+    latest_event_cursor: "event1.cnVu.1"
+  };
+}
+
+function afterAnswerRun(): Run {
+  return {
+    ...startedRun(),
+    state_version: 4,
+    current_node: revision().graph.nodes[3]!,
+    latest_event_cursor: "event1.cnVu.4"
+  };
+}
+
 function agentCompleted(sequence: number) {
   return {
     cursor: `event1.cnVu.${sequence}`,
@@ -232,4 +313,41 @@ function actionCompleted(sequence: number) {
       reconcile_command_id: null
     }
   };
+}
+
+function waitingInput(sequence: number) {
+  return {
+    cursor: `event1.cnVu.${sequence}`,
+    sequence,
+    public_run_reference: publicReference,
+    workflow_revision_hash: digest,
+    node_id: "wait",
+    node_execution_id: digest,
+    event_hash: digest,
+    event: "WAITING_INPUT",
+    answer_type: "integer"
+  };
+}
+
+function waitAnswered(sequence: number) {
+  return {
+    cursor: `event1.cnVu.${sequence}`,
+    sequence,
+    public_run_reference: publicReference,
+    workflow_revision_hash: digest,
+    node_id: "wait",
+    node_execution_id: digest,
+    event_hash: digest,
+    event: "WAIT_ANSWERED",
+    answer: "5",
+    answer_hash: digest
+  };
+}
+
+function expectOneConfirmedAgentEvent(): void {
+  expect(screen.getByText("Events", { exact: false, selector: "summary" }).textContent).toContain("1");
+  expect(screen.queryByText("No durable events yet.")).toBeNull();
+  expect(screen.getByRole("article", { name: "agent — Done" }).isConnected).toBe(true);
+  expect(screen.getByRole("article", { name: "action — Working" }).isConnected).toBe(true);
+  expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2);
 }

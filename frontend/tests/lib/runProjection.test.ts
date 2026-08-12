@@ -8,6 +8,7 @@ import {
   markConnecting,
   markLive,
   projectNodeRail,
+  restartStreamProjection,
   startLoading,
   streamProjection
 } from "../../src/lib/runProjection";
@@ -54,6 +55,33 @@ describe("contiguous durable SSE projection", () => {
 
     expect(conflict.protocol_problem).toEqual({ type: "conflicting_duplicate", cursor: event(1).cursor });
     expect(conflict.events).toEqual([event(1)]);
+  });
+
+  it("restarts after a protocol problem without forgetting confirmed bytes or accepting a conflicting replay", () => {
+    const raw = JSON.stringify(event(1));
+    const confirmed = applyDurableEvent(projection(), raw, event(1));
+    const failed = applyDurableEvent(confirmed, JSON.stringify(event(3)), event(3));
+
+    const restarted = restartStreamProjection(failed, "run1.cnVu", digest);
+
+    expect(restarted.events).toEqual([event(1)]);
+    expect(restarted.last_sequence).toBe(1);
+    expect(restarted.payload_bytes_by_cursor.get(event(1).cursor)).toEqual(
+      new TextEncoder().encode(raw)
+    );
+    expect(restarted.connection).toBe("connecting");
+    expect(restarted.protocol_problem).toBeNull();
+
+    const replayed = applyDurableEvent(restarted, raw, event(1));
+    expect(replayed.events).toHaveLength(1);
+    expect(replayed.protocol_problem).toBeNull();
+
+    const conflict = applyDurableEvent(replayed, `${raw} `, event(1));
+    expect(conflict.events).toHaveLength(1);
+    expect(conflict.protocol_problem).toEqual({
+      type: "conflicting_duplicate",
+      cursor: event(1).cursor
+    });
   });
 
   it("treats EventSource error as reconnecting without inventing an API problem", () => {

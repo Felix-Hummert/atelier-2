@@ -18,6 +18,7 @@
     markComplete,
     markConnecting,
     markLive,
+    restartStreamProjection,
     startLoading,
     streamProjection,
     type RetainedResource,
@@ -99,7 +100,13 @@
 
   function ensureEventStream(run: Run): void {
     if (stream !== null || projection?.connection === "complete") return;
-    projection = streamProjection(run.public_run_reference, run.workflow_revision_hash);
+    projection = projection === null
+      ? streamProjection(run.public_run_reference, run.workflow_revision_hash)
+      : restartStreamProjection(
+          projection,
+          run.public_run_reference,
+          run.workflow_revision_hash
+        );
     try {
       stream = cockpitApi.openRunEvents(run.public_run_reference, {
         opened: () => {
@@ -137,7 +144,8 @@
     } else if (
       latest?.event === "ACTION_RECONCILIATION_REQUIRED" ||
       latest?.event === "ACTION_RECONCILIATION_RESOLVED" ||
-      latest?.event === "WAITING_INPUT"
+      latest?.event === "WAITING_INPUT" ||
+      latest?.event === "WAIT_ANSWERED"
     ) {
       void load();
     }
