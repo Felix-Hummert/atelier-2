@@ -1,23 +1,384 @@
 :root {
-  font-family: system-ui, sans-serif;
-  color: #18211d;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #17201c;
   background: #f4f1e8;
   font-synthesis: none;
+  line-height: 1.5;
+  --ink: #17201c;
+  --muted: #617068;
+  --paper: #fffdf7;
+  --line: #cdd3ca;
+  --accent: #145c43;
+  --danger: #8f342e;
+}
+
+* {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+html,
+body {
+  margin: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
-  margin: 0;
+  min-height: 100vh;
+}
+
+button,
+select,
+textarea,
+input {
+  font: inherit;
+}
+
+button,
+.button,
+.back-link,
+.run-card,
+label:has(input[type="radio"]) {
+  min-height: 44px;
+}
+
+button,
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ink);
+  border-radius: 0.55rem;
+  padding: 0.65rem 1rem;
+  color: var(--ink);
+  background: var(--paper);
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+input:focus-visible {
+  outline: 3px solid #d69b2f;
+  outline-offset: 3px;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+button.primary,
+.button.primary {
+  border-color: var(--accent);
+  color: white;
+  background: var(--accent);
+}
+
+button.quiet {
+  border-color: transparent;
+  background: transparent;
 }
 
 main {
-  box-sizing: border-box;
-  max-width: 42rem;
+  width: 100%;
+  max-width: 48rem;
   min-height: 100vh;
-  padding: 2rem 1.25rem;
+  margin: 0 auto;
+  padding: clamp(1rem, 4vw, 2rem);
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 1.5rem;
+  font-size: clamp(2rem, 9vw, 3.5rem);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+h2 {
+  line-height: 1.15;
+}
+
+code,
+small {
+  overflow-wrap: anywhere;
 }
 
 .eyebrow {
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  margin-bottom: 0.45rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+.page-header,
+.toolbar,
+.start-card,
+.pending-row,
+.actions,
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.toolbar {
+  justify-content: flex-end;
+  margin-bottom: 1rem;
+}
+
+.toolbar p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.card-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  color: var(--ink);
+  background: var(--paper);
+  text-decoration: none;
+}
+
+.run-card span,
+.muted {
+  color: var(--muted);
+}
+
+.run-card .state-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #8a5e09;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.run-card .state-label.state-waiting {
+  color: #7a580e;
+}
+
+.run-card .state-label.state-done {
+  color: var(--accent);
+}
+
+.empty,
+.pending,
+.start-card,
+.notice,
+.run-summary {
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: var(--paper);
+}
+
+.notice {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+  border-color: #d4a39d;
+  color: var(--danger);
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.mode-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 1.5rem 0;
+  border: 0;
+  padding: 0;
+}
+
+.revision-picker {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.revision-picker legend {
+  margin-bottom: 0.35rem;
+  font-weight: 700;
+}
+
+.revision-picker label {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  padding: 0.65rem;
+  background: var(--paper);
+}
+
+.mode-picker legend {
+  grid-column: 1 / -1;
+  margin-bottom: 0.25rem;
+  font-weight: 700;
+}
+
+.mode-picker label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  padding: 0.6rem;
+  background: var(--paper);
+}
+
+.field {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.field > label {
+  font-weight: 700;
+}
+
+select,
+textarea {
+  width: 100%;
+  max-width: 100%;
+  border: 1px solid #8d9891;
+  border-radius: 0.55rem;
+  padding: 0.75rem;
+  color: var(--ink);
+  background: white;
+}
+
+select {
+  min-height: 44px;
+}
+
+textarea {
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.start-card,
+.pending {
+  margin-top: 1.25rem;
+}
+
+.start-card h2 {
+  margin: 0 0 0.25rem;
+}
+
+.pending h2 {
+  font-size: 1rem;
+}
+
+.pending-row {
+  border-top: 1px solid var(--line);
+  padding: 0.75rem 0;
+}
+
+.pending-row > span:first-child {
+  display: grid;
+}
+
+.run-summary {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.run-summary div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.run-summary dt {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.run-summary dd {
+  margin: 0;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(12 22 17 / 55%);
+}
+
+.dialog {
+  width: min(100%, 30rem);
+  border-radius: 0.9rem;
+  padding: 1.25rem;
+  background: var(--paper);
+  box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 20%);
+}
+
+@media (max-width: 28rem) {
+  .page-header,
+  .start-card,
+  .pending-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .page-header .button,
+  .start-card button,
+  .pending-row .actions {
+    width: 100%;
+  }
+
+  .actions > * {
+    flex: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

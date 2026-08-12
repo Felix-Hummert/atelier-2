@@ -22,6 +22,36 @@ export interface StartMutation extends MutationBase {
   content_type: "application/json";
 }
 
+export async function publicationMutation(document: string): Promise<PublishMutation> {
+  const bytes = new TextEncoder().encode(document);
+  const revisionHash = await sha256Hex(bytes);
+  return {
+    mutation_id: `publish:${revisionHash}`,
+    kind: "publish",
+    target: "/atelier/api/v1/workflow-revisions",
+    content_type: "application/yaml",
+    body_base64: encodeBase64(bytes),
+    revision_hash: revisionHash
+  };
+}
+
+export function startMutation(runId: string, workflowRevisionHash: string): StartMutation {
+  const body = new TextEncoder().encode(
+    JSON.stringify({ run_id: runId, workflow_revision_hash: workflowRevisionHash })
+  );
+  return {
+    mutation_id: `start:${runId}`,
+    kind: "start",
+    target: "/atelier/api/v1/runs",
+    content_type: "application/json",
+    body_base64: encodeBase64(body)
+  };
+}
+
+export function createRunId(): string {
+  return `run-${globalThis.crypto.randomUUID()}`;
+}
+
 export interface WaitMutation extends MutationBase {
   kind: "wait";
   content_type: "application/json";
@@ -540,4 +570,13 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(
     ""
   );
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
 }

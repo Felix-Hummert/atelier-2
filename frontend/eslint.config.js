@@ -6,5 +6,19 @@ export default tseslint.config(
   { ignores: ["dist/**", "node_modules/**", ".svelte-kit/**"] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
-  ...svelte.configs["flat/recommended"]
+  ...svelte.configs["flat/recommended"],
+  {
+    files: ["**/*.svelte"],
+    languageOptions: {
+      parserOptions: { parser: tseslint.parser },
+      globals: {
+        window: "readonly",
+        sessionStorage: "readonly",
+        Event: "readonly",
+        KeyboardEvent: "readonly",
+        HTMLButtonElement: "readonly",
+        HTMLDivElement: "readonly"
+      }
+    }
+  }
 );

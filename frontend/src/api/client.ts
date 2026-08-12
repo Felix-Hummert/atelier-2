@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { PublishMutation, StartMutation } from "../lib/mutationJournal";
+
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 const standardBase64 = z.string().refine(isCanonicalStandardBase64, "base64 must use the canonical standard alphabet and padding");
 const publicRunReference = z.string().refine(
@@ -302,6 +304,77 @@ export type Problem = z.infer<typeof problemSchema>;
 export type Run = z.infer<typeof runSchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
 export type WorkflowRevisionDetail = z.infer<typeof workflowRevisionDetailSchema>;
+export type RunPage = z.infer<typeof runPageSchema>;
+export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
+
+export interface HttpResult<T> {
+  status: number;
+  value: T;
+}
+
+export interface CockpitApi {
+  listRuns(): Promise<RunPage>;
+  listWorkflowRevisions(): Promise<WorkflowRevisionPage>;
+  publish(mutation: PublishMutation): Promise<HttpResult<WorkflowRevisionDetail>>;
+  start(mutation: StartMutation): Promise<HttpResult<Run>>;
+  getRun(publicReference: string): Promise<Run>;
+}
+
+export class CockpitRequestError extends Error {
+  constructor(
+    message: string,
+    readonly problem: Problem | null = null,
+    readonly definitive_failure = false
+  ) {
+    super(message);
+  }
+}
+
+export function createCockpitApi(fetcher: typeof fetch = globalThis.fetch): CockpitApi {
+  return {
+    listRuns: () => requestJson(fetcher, "/atelier/api/v1/runs?limit=50", {}, [200], runPageSchema),
+    listWorkflowRevisions: () =>
+      requestJson(
+        fetcher,
+        "/atelier/api/v1/workflow-revisions?limit=50",
+        {},
+        [200],
+        workflowRevisionPageSchema
+      ),
+    publish: async (mutation) =>
+      requestJsonResult(
+        fetcher,
+        mutation.target,
+        {
+          method: "POST",
+          headers: { "content-type": "application/yaml" },
+          body: exactBody(mutation.body_base64)
+        },
+        [200, 201],
+        workflowRevisionDetailSchema
+      ),
+    start: async (mutation) =>
+      requestJsonResult(
+        fetcher,
+        mutation.target,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: exactBody(mutation.body_base64)
+        },
+        [200, 201],
+        runSchema
+      ),
+    getRun: (publicReference) =>
+      requestJson(
+        fetcher,
+        `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}`,
+        {},
+        [200],
+        runSchema
+      )
+  };
+}
 
 export function decodeProblem(value: unknown): Problem {
   return problemSchema.parse(value);
@@ -317,6 +390,68 @@ export function decodeRunEvent(value: unknown): RunEvent {
 
 export function decodeWorkflowRevisionDetail(value: unknown): WorkflowRevisionDetail {
   return workflowRevisionDetailSchema.parse(value);
+}
+
+async function requestJson<T>(
+  fetcher: typeof fetch,
+  target: string,
+  init: RequestInit,
+  acceptedStatuses: readonly number[],
+  schema: z.ZodType<T>
+): Promise<T> {
+  return (await requestJsonResult(fetcher, target, init, acceptedStatuses, schema)).value;
+}
+
+async function requestJsonResult<T>(
+  fetcher: typeof fetch,
+  target: string,
+  init: RequestInit,
+  acceptedStatuses: readonly number[],
+  schema: z.ZodType<T>
+): Promise<HttpResult<T>> {
+  let response: Response;
+  try {
+    response = await fetcher(target, { ...init, headers: { accept: "application/json", ...init.headers } });
+  } catch (error) {
+    throw new CockpitRequestError(errorMessage(error));
+  }
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    throw new CockpitRequestError("The API response was not valid JSON.");
+  }
+  if (!acceptedStatuses.includes(response.status)) {
+    try {
+      const problem = decodeProblem(value);
+      if (problem.status !== response.status) {
+        throw new CockpitRequestError("The problem body disagreed with the HTTP status.");
+      }
+      throw new CockpitRequestError(problem.detail, problem, problem.status < 500);
+    } catch (error) {
+      if (error instanceof CockpitRequestError) throw error;
+      throw new CockpitRequestError(`The API returned undocumented HTTP ${response.status}.`);
+    }
+  }
+  try {
+    return { status: response.status, value: schema.parse(value) };
+  } catch {
+    throw new CockpitRequestError("The API response did not match the durable wire contract.");
+  }
+}
+
+function exactBody(bodyBase64: string): ArrayBuffer {
+  const bytes = decodeCanonicalBase64(bodyBase64);
+  if (bytes === null) {
+    throw new CockpitRequestError("The saved exact request bytes are corrupt.");
+  }
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "The API request failed.";
 }
 
 function problemVariant<
