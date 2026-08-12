@@ -95,7 +95,10 @@
         >
           <header class="node-header">
             <span class="node-kind">{projection.node.type}</span>
-            <StateMark state={projection.state} />
+            <StateMark
+              state={projection.state}
+              animated={!workingHumanNodeIds.has(projection.node.node_id)}
+            />
           </header>
           <h3>{projection.node.node_id}</h3>
           {#if projection.node.type === "agent"}

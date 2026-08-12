@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
 
   import {
     CockpitRequestError,
@@ -55,6 +55,9 @@
   let waitAccepted = false;
   let waitBusy = false;
   let waitValidationMessage: string | null = null;
+  let waitFailureMessage: string | null = null;
+  let humanActionCard: HumanActionCard;
+  let runStateElement: { focus(): void };
   let loadGeneration = 0;
   let disposed = false;
   $: pendingAnswer = pendingWait === null ? null : waitAnswer(pendingWait);
@@ -196,6 +199,7 @@
         if (resolved) {
           pendingWait = null;
           waitAccepted = false;
+          waitFailureMessage = null;
         }
       }
     } catch (error) {
@@ -204,6 +208,7 @@
         : "The durable event could not reconcile the saved exact answer.";
     }
     await load();
+    if (event.event === "WAIT_ANSWERED") await focusRunState();
     if (journalFailure !== null) failureMessage = journalFailure;
   }
 
@@ -236,6 +241,7 @@
 
   async function submitWait(answer: string): Promise<void> {
     waitValidationMessage = null;
+    waitFailureMessage = null;
     if (!/^(?:0|-?[1-9][0-9]*)$/.test(answer)) {
       waitValidationMessage = "Use one canonical integer.";
       return;
@@ -243,7 +249,6 @@
     const run = snapshot.confirmed?.run;
     if (run?.state !== "WAITING_INPUT" || run.waiting.type !== "WAITING_INPUT") return;
     waitBusy = true;
-    failureMessage = null;
     let mutation: WaitMutation | null = null;
     try {
       mutation = await waitMutation(
@@ -257,25 +262,33 @@
       pendingWait = prepared;
       waitAccepted = false;
       await deliverWait(mutation);
+      await focusAfterDelivery();
     } catch (error) {
       if (mutation !== null) await recordWaitFailure(mutation.mutation_id, error);
-      failureMessage = error instanceof Error ? error.message : "The answer could not be confirmed.";
+      waitFailureMessage = error instanceof Error ? error.message : "The answer could not be confirmed.";
     } finally {
       waitBusy = false;
+      if (waitFailureMessage !== null) {
+        await focusWaitFailure();
+      }
     }
   }
 
   async function retryWait(): Promise<void> {
     if (pendingWait === null) return;
     waitBusy = true;
-    failureMessage = null;
+    waitFailureMessage = null;
     try {
       await deliverWait(pendingWait);
+      await focusAfterDelivery();
     } catch (error) {
       await recordWaitFailure(pendingWait.mutation_id, error);
-      failureMessage = error instanceof Error ? error.message : "The exact retry could not be confirmed.";
+      waitFailureMessage = error instanceof Error ? error.message : "The exact retry could not be confirmed.";
     } finally {
       waitBusy = false;
+      if (waitFailureMessage !== null) {
+        await focusWaitFailure();
+      }
     }
   }
 
@@ -285,6 +298,32 @@
     pendingWait = null;
     waitAccepted = false;
     waitValidationMessage = null;
+    waitFailureMessage = null;
+    await tick();
+    humanActionCard?.focusInput();
+  }
+
+  async function focusAfterDelivery(): Promise<void> {
+    await tick();
+    if (pendingWait !== null && waitAccepted) {
+      humanActionCard?.focusStatus();
+    } else if (pendingWait === null) {
+      await focusRunState();
+    }
+  }
+
+  async function focusWaitFailure(): Promise<void> {
+    await tick();
+    if (pendingWait !== null) {
+      humanActionCard?.focusRetry();
+    } else {
+      humanActionCard?.focusInput();
+    }
+  }
+
+  async function focusRunState(): Promise<void> {
+    await tick();
+    runStateElement?.focus();
   }
 
   async function deliverWait(mutation: WaitMutation): Promise<void> {
@@ -430,7 +469,7 @@
     {/if}
 
     <dl class="run-summary">
-      <div><dt>State</dt><dd>{snapshot.confirmed.run.state.replaceAll("_", " ").toLowerCase()}</dd></div>
+      <div><dt>State</dt><dd tabindex="-1" bind:this={runStateElement} data-testid="run-state">{snapshot.confirmed.run.state.replaceAll("_", " ").toLowerCase()}</dd></div>
       <div><dt>Workflow</dt><dd><code>{snapshot.confirmed.run.workflow_revision_hash}</code></dd></div>
       {#if snapshot.confirmed.run.terminal_hash !== null}
         <div><dt>Terminal hash</dt><dd><code>{snapshot.confirmed.run.terminal_hash}</code></dd></div>
@@ -439,11 +478,13 @@
 
     {#if snapshot.confirmed.run.state === "WAITING_INPUT" && snapshot.confirmed.run.waiting.type === "WAITING_INPUT"}
       <HumanActionCard
+        bind:this={humanActionCard}
         pending={pendingWait}
         {pendingAnswer}
         accepted={waitAccepted}
         busy={waitBusy}
         validationMessage={waitValidationMessage}
+        failureMessage={waitFailureMessage}
         onAnswer={(answer) => { void submitWait(answer); }}
         onRetry={() => { void retryWait(); }}
         onDiscard={() => { void discardWait(); }}

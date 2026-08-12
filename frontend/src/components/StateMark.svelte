@@ -2,6 +2,7 @@
   import type { NodeState } from "../lib/runProjection";
 
   export let state: NodeState;
+  export let animated = true;
 
   const labels: Record<NodeState, string> = {
     queued: "Queued",
@@ -17,7 +18,7 @@
   };
 </script>
 
-<span class="state-mark state-{state}" data-state={state}>
+<span class="state-mark state-{state}" class:state-still={!animated} data-state={state}>
   <span class="state-shape" aria-hidden="true"><span>{shapes[state]}</span></span>
   <strong>{labels[state]}</strong>
 </span>

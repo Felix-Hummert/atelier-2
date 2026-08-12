@@ -527,6 +527,9 @@ textarea {
   border: 0;
   color: var(--working);
   font-size: 1.35rem;
+}
+
+.state-working:not(.state-still) .state-shape {
   animation: working-pulse 1.5s ease-in-out infinite;
 }
 
@@ -641,10 +644,74 @@ textarea {
   border-color: var(--working);
 }
 
+.human-action-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.human-action-shape {
+  display: inline-grid;
+  width: 1.65rem;
+  height: 1.65rem;
+  flex: 0 0 auto;
+  place-items: center;
+  color: white;
+  font-size: 0.85rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.human-action-shape-needs {
+  background: var(--danger);
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+}
+
+.human-action-shape-working {
+  color: var(--working);
+  font-size: 1.55rem;
+}
+
+.wait-alert {
+  display: flex;
+  align-items: start;
+  gap: 0.55rem;
+  color: var(--warning);
+}
+
+.wait-alert > span:last-child {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.wait-alert small {
+  color: var(--muted);
+}
+
+.wait-alert-shape {
+  display: inline-grid;
+  width: 1.35rem;
+  height: 1.35rem;
+  flex: 0 0 auto;
+  place-items: center;
+  color: white;
+  background: var(--warning);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
 .human-action h2,
 .human-action .eyebrow,
 .human-action .field-error {
   margin: 0;
+}
+
+.human-action h2:focus-visible,
+.run-summary dd:focus-visible {
+  outline: 3px solid #d69b2f;
+  outline-offset: 3px;
 }
 
 .wait-form {

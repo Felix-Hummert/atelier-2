@@ -54,6 +54,8 @@ describe("Phase 4 Wait control", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Answer" }));
 
     expect(await screen.findByRole("heading", { name: "Answer uncertain" })).toBeTruthy();
+    expect(screen.getByRole("alert", { name: "Send uncertain" })).toBeTruthy();
+    expect(screen.queryByText("Run unavailable")).toBeNull();
     expect(answer).toHaveBeenCalledTimes(1);
     const firstRequest = answer.mock.calls[0]?.[0] as WaitMutation;
     expect(exactBody(firstRequest)).toBe(
@@ -61,12 +63,16 @@ describe("Phase 4 Wait control", () => {
     );
     expect(firstRequest.answer_hash).toBe(answerHash);
     expect(screen.getByRole("article", { name: "wait — Working" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: "wait — Working" }).querySelector(".state-mark")?.classList).toContain("state-still");
+    expect(screen.getByRole("region", { name: "Answer uncertain" }).querySelector(".human-action-shape-working")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Retry" })));
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(answer).toHaveBeenCalledTimes(2);
     expect(answer.mock.calls[1]?.[0]).toMatchObject(firstRequest);
     expect(await screen.findByRole("heading", { name: "Answer pending" })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Answer pending" })));
     expect(await journal.get(firstRequest.mutation_id)).toMatchObject({
       ...firstRequest,
       delivery: "uncertain"
@@ -81,6 +87,7 @@ describe("Phase 4 Wait control", () => {
     expect(screen.queryByRole("heading", { name: /Answer/ })).toBeNull();
     expect(screen.getByRole("article", { name: "wait — Done" })).toBeTruthy();
     expect(screen.getByRole("article", { name: "final — Working" })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("run-state")));
   });
 
   it.each(["", "01", "+1", "-0", " 1", "1 ", "1.0"])(
@@ -115,7 +122,8 @@ describe("Phase 4 Wait control", () => {
     expect(screen.getByRole("article", { name: "wait — Working" })).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "Discard" }));
 
-    expect(await screen.findByLabelText("Integer answer")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Integer answer")));
+    expect(screen.getByRole("region", { name: "Answer needed" }).querySelector(".human-action-shape-needs")).toBeTruthy();
     expect(screen.getByRole("article", { name: "wait — Needs you" })).toBeTruthy();
     expect(await journal.get(waitMutationId(publicReference, "wait"))).toBeNull();
   });
