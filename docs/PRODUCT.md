@@ -75,6 +75,9 @@ retries report whether a command was newly accepted or already existed without
 duplicating its durable write or wake-up. [ADR 0003](decisions/0003-http-api.md)
 owns the API and resume contract.
 
-There is still no cockpit, provider or platform integration, authentication
-boundary, or deployment code. The graph and API are a proven durable vertical,
-not yet a general-purpose workflow engine or a deployed remote product.
+A narrow local cockpit can list runs, publish and start a workflow from `/new`,
+and project one durable run's bound revision, state, nodes, and resumable event
+history. It does not yet steer a Wait or provide provider or platform
+integration, an authentication boundary, or deployment code. The graph, API,
+and local cockpit are a proven durable vertical, not yet a general-purpose
+workflow engine or a deployed remote product.

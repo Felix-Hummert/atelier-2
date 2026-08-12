@@ -71,28 +71,33 @@ executor recovery fence. [ADR 0002](0002-exact-yaml-graph.md) owns the workflow
 document and graph semantics above this execution boundary.
 
 A process owns exactly one compatible DBOS binding of canonical database path,
-application version, and resource-free effect-adapter binding. The latter
+application version, resource-free `AgentExecutorBinding`, and resource-free
+effect-adapter binding. The agent binding contains adapter revision and stable
+operational identity and is persisted in Agent receipts; the effect binding
 contains revision, destination, and stable operational/store identity and is
 persisted in intents and receipts. Restart refuses configuration contradicting
-durable intents. Identical callers share one opened adapter and runtime under
-counted leases; an incompatible lease is refused before adapter open or global
-mutation. Only the last release destroys DBOS, closes the adapter, and disposes
-the engine, each exactly once. H2 has one concrete file-backed adapter, so its
-resolved operational identity is also checked against the canonical file
-identity, including hardlink aliases, before either store is opened. This is a
-bounded loopback invariant rather than a generic provider contract.
+durable Agent receipts or effect intents. Identical callers share one opened
+Agent executor, effect adapter, and runtime under counted leases; an incompatible
+lease is refused before either executable boundary opens or global state mutates.
+Only the last release destroys DBOS, closes both executor and effect adapter, and
+disposes the engine, each exactly once. H2 has one concrete file-backed effect
+adapter, so its resolved operational identity is also checked against the
+canonical file identity, including hardlink aliases, before either store is
+opened. This is a bounded loopback invariant rather than a generic provider
+contract.
 
 ## Executable evidence
 
 | Production proof | What it establishes |
 | --- | --- |
 | Atomic start, advance, and answer | Revision/run/bootstrap, intent/effect enqueue, and exact Wait answer/enqueue each commit or roll back together; exact retries do not enqueue again. |
+| Agent result | Pinned request and receipt vectors bind the invocation, executor, and exact output; receipt, `AGENT_COMPLETED`, and successor commit together, exact recovery remains singular, and binding drift is refused before executor open. |
 | Bootstrap recovery | A matching application version fills the outer DBOS ledger after a datasource commit without changing or regressing the product run. |
 | Effect recovery | Real subprocess kills after recorded observation (C1), after external commit (C2), and after product confirmation converge with one external call, one receipt, and the configured Wait successor. |
 | Unknown outcome | A committed unknown remains waiting across restart and provider-state change; no effect occurs until an operator command owns the intent. |
 | Reconciliation | FOUND and authorized-absence commands preserve operator provenance; concurrent opposing commands commit one CAS winner and one rejected loser. |
 | Atomic product events | Reconciliation state and its required/resolved event, plus receipt, intent, run, and owning command, commit or roll back together under injected database failures. |
-| Runtime lifecycle | Equivalent leases share one engine and adapter; conflicts, failed initialization, concurrent close, store drift, and two-process recovery preserve one binding and result. |
+| Runtime lifecycle | Equivalent leases share one engine, Agent executor, and effect adapter; conflicts, failed initialization, concurrent close, durable binding drift, and two-process recovery preserve one binding and result. |
 
 The repository gate is `.github/workflows/ci.yml`; the local crash lane is
 `uv run --locked pytest -n auto tests/crash`.
