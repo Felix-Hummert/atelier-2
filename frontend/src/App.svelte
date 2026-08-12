@@ -38,7 +38,7 @@
   {:else if route.page === "new"}
     <NewRunPage {cockpitApi} {mutationJournal} {navigate} {createRunId} />
   {:else if route.page === "run"}
-    <RunCockpitPage {cockpitApi} publicReference={route.publicReference} {navigate} />
+    <RunCockpitPage {cockpitApi} {mutationJournal} publicReference={route.publicReference} {navigate} />
   {:else}
     <section><p class="eyebrow">Atelier 2</p><h1>Page not found</h1><a class="button" href="/atelier/runs" onclick={(event) => { event.preventDefault(); navigate("/atelier/runs"); }}>Runs</a></section>
   {/if}

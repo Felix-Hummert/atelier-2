@@ -172,7 +172,8 @@ export function applyDurableEvent(
 export function projectNodeRail(
   run: Run,
   graph: WorkflowGraph,
-  events: readonly RunEvent[]
+  events: readonly RunEvent[],
+  workingHumanNodeIds: ReadonlySet<string> = new Set()
 ): readonly NodeProjection[] {
   const nodes = orderedNodes(graph);
   const currentIndex = nodes.findIndex((node) => node.node_id === run.current_node.node_id);
@@ -184,11 +185,15 @@ export function projectNodeRail(
     latestEvent !== null && latestEvent.sequence > snapshotEventSequence(run);
   return nodes.map((node, index) => {
     const lastEvent = lastNodeEvent(events, node.node_id);
+    const durableState = eventsLeadSnapshot
+      ? eventDrivenNodeState(node, lastEvent, latestEvent, nodes)
+      : snapshotNodeState(run, node, index, currentIndex, lastEvent);
     return {
       node,
-      state: eventsLeadSnapshot
-        ? eventDrivenNodeState(node, lastEvent, latestEvent, nodes)
-        : snapshotNodeState(run, node, index, currentIndex, lastEvent),
+      state:
+        durableState === "needs_you" && workingHumanNodeIds.has(node.node_id)
+          ? "working"
+          : durableState,
       last_event: lastEvent
     };
   });

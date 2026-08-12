@@ -12,8 +12,9 @@
   export let run: Run;
   export let graph: WorkflowGraph;
   export let events: readonly RunEvent[];
+  export let workingHumanNodeIds: ReadonlySet<string> = new Set();
 
-  $: rail = projectNodeRail(run, graph, events);
+  $: rail = projectNodeRail(run, graph, events, workingHumanNodeIds);
 
   function stateLabel(node: NodeProjection): string {
     return {

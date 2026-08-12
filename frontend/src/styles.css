@@ -297,7 +297,8 @@ small {
 }
 
 select,
-textarea {
+textarea,
+input[type="text"] {
   width: 100%;
   max-width: 100%;
   border: 1px solid #8d9891;
@@ -624,6 +625,55 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 0.75rem;
   background: var(--paper);
+}
+
+.human-action {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 1rem;
+  border: 2px solid var(--danger);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: var(--paper);
+}
+
+.human-action-working {
+  border-color: var(--working);
+}
+
+.human-action h2,
+.human-action .eyebrow,
+.human-action .field-error {
+  margin: 0;
+}
+
+.wait-form {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.wait-form label {
+  font-weight: 800;
+}
+
+.wait-form input {
+  min-height: 44px;
+}
+
+.field-error {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.exact-answer {
+  display: block;
+  border-radius: 0.55rem;
+  padding: 0.75rem;
+  color: var(--ink);
+  background: #f0eadb;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 1.15rem;
+  overflow-wrap: anywhere;
 }
 
 .event-log summary {

@@ -55,7 +55,56 @@ export function createRunId(): string {
 export interface WaitMutation extends MutationBase {
   kind: "wait";
   content_type: "application/json";
+  public_run_reference: string;
+  workflow_revision_hash: string;
+  node_id: string;
+  answer_base64: string;
   answer_hash: string;
+}
+
+export function waitMutationId(publicRunReference: string, nodeId: string): string {
+  return `wait:${publicRunReference}:${nodeId}`;
+}
+
+export async function waitMutation(
+  publicRunReference: string,
+  workflowRevisionHash: string,
+  nodeId: string,
+  answer: string
+): Promise<WaitMutation> {
+  if (!canonicalIntegerPattern.test(answer)) {
+    throw new Error("wait answer must be one canonical integer");
+  }
+  const answerBytes = new TextEncoder().encode(answer);
+  const answerBase64 = encodeBase64(answerBytes);
+  const body = new TextEncoder().encode(
+    JSON.stringify({
+      revision_hash: workflowRevisionHash,
+      node_id: nodeId,
+      answer_base64: answerBase64
+    })
+  );
+  return {
+    mutation_id: waitMutationId(publicRunReference, nodeId),
+    kind: "wait",
+    target: `/atelier/api/v1/runs/${publicRunReference}/answers`,
+    content_type: "application/json",
+    body_base64: encodeBase64(body),
+    public_run_reference: publicRunReference,
+    workflow_revision_hash: workflowRevisionHash,
+    node_id: nodeId,
+    answer_base64: answerBase64,
+    answer_hash: await sha256Hex(answerBytes)
+  };
+}
+
+export function waitAnswer(mutation: WaitMutation): string {
+  const bytes = decodeCanonicalBase64(mutation.answer_base64);
+  const answer = bytes === null ? null : decodeUtf8(bytes);
+  if (answer === null || !canonicalIntegerPattern.test(answer)) {
+    throw new Error("saved wait answer is not one canonical integer");
+  }
+  return answer;
 }
 
 export interface ReconciliationMutation extends MutationBase {
@@ -295,13 +344,17 @@ async function requireWait(envelope: WaitMutation): Promise<void> {
     envelope.content_type !== "application/json" ||
     publicReference === undefined ||
     decodePublicRunReference(publicReference) === null ||
+    envelope.public_run_reference !== publicReference ||
     typeof body.revision_hash !== "string" ||
     !digestPattern.test(body.revision_hash) ||
+    envelope.workflow_revision_hash !== body.revision_hash ||
     typeof body.node_id !== "string" ||
     body.node_id.length === 0 ||
+    envelope.node_id !== body.node_id ||
+    envelope.answer_base64 !== body.answer_base64 ||
     answer === null ||
     !canonicalIntegerPattern.test(answer) ||
-    envelope.mutation_id !== `wait:${publicReference}:${body.node_id}`
+    envelope.mutation_id !== waitMutationId(publicReference, body.node_id)
   ) {
     throw new Error("invalid wait mutation envelope");
   }
@@ -528,7 +581,14 @@ function envelopeKeys(envelope: MutationEnvelope): string[] {
     case "start":
       return common;
     case "wait":
-      return [...common, "answer_hash"];
+      return [
+        ...common,
+        "public_run_reference",
+        "workflow_revision_hash",
+        "node_id",
+        "answer_base64",
+        "answer_hash"
+      ];
     case "reconciliation":
       return [
         ...common,

@@ -211,6 +211,7 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     listWorkflowRevisions: vi.fn(async () => ({ items: [], next_after_revision_hash: null })),
     publish: vi.fn(),
     start: vi.fn(),
+    answer: vi.fn(),
     getRun: vi.fn(async () => startedRun()),
     getWorkflowRevision: vi.fn(async () => revision()),
     openRunEvents: vi.fn(),

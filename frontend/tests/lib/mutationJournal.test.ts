@@ -295,6 +295,10 @@ function wait(): MutationEnvelope {
     target: `/atelier/api/v1/runs/${publicReference}/answers`,
     content_type: "application/json",
     body_base64: utf8Base64(waitBody("wait")),
+    public_run_reference: publicReference,
+    workflow_revision_hash: revisionHash,
+    node_id: "wait",
+    answer_base64: "MTc=",
     answer_hash: answerHash
   };
 }
