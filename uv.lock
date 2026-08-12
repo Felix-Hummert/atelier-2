@@ -36,13 +36,14 @@ wheels = [
 [[package]]
 name = "atelier-2"
 version = "0.0.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "dbos" },
     { name = "fastapi" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -53,7 +54,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-xdist" },
     { name = "ruff" },
-    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -63,6 +63,7 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "sqlalchemy", specifier = "==2.0.51" },
+    { name = "uvicorn", specifier = "==0.52.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -73,7 +74,6 @@ dev = [
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-xdist", specifier = "==3.8.0" },
     { name = "ruff", specifier = "==0.16.2" },
-    { name = "uvicorn", specifier = "==0.52.1" },
 ]
 
 [[package]]

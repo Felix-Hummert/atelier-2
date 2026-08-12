@@ -16,6 +16,40 @@ permissions:
   contents: read
 
 jobs:
+  frontend:
+    name: Cockpit static and behavior
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out the event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Select Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install locked frontend dependencies
+        run: npm ci
+
+      - name: Check frontend types
+        run: npm run check
+
+      - name: Lint frontend source
+        run: npm run lint
+
+      - name: Test frontend behavior
+        run: npm test
+
+      - name: Build the production cockpit
+        run: npm run build
+
   quality:
     name: Static and behavior
     runs-on: ubuntu-latest

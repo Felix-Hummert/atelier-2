@@ -4,11 +4,13 @@ import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from http import HTTPStatus
+from pathlib import Path
 from typing import assert_never
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from atelier2.api.limits import (
@@ -155,6 +157,7 @@ def create_app(
     ports: ApiPorts,
     limits: ApiLimits,
     event_poll_backoff: EventPollBackoff,
+    frontend_dist: Path | None = None,
 ) -> FastAPI:
     if not source_commit:
         raise ValueError("source_commit must be injected at application construction")
@@ -194,6 +197,48 @@ def create_app(
             limits.maximum_base64_decoded_bytes,
         ),
     )
+
+    if frontend_dist is not None:
+        index_file, assets_directory = _frontend_distribution(frontend_dist)
+        app.mount(
+            "/atelier/assets",
+            StaticFiles(directory=assets_directory, check_dir=True),
+            name="atelier-assets",
+        )
+
+        async def frontend_index() -> FileResponse:
+            return FileResponse(index_file, media_type="text/html")
+
+        app.add_api_route(
+            "/atelier",
+            frontend_index,
+            methods=["GET"],
+            include_in_schema=False,
+        )
+        app.add_api_route(
+            "/atelier/",
+            frontend_index,
+            methods=["GET"],
+            include_in_schema=False,
+        )
+        app.add_api_route(
+            "/atelier/runs",
+            frontend_index,
+            methods=["GET"],
+            include_in_schema=False,
+        )
+        app.add_api_route(
+            "/atelier/new",
+            frontend_index,
+            methods=["GET"],
+            include_in_schema=False,
+        )
+        app.add_api_route(
+            "/atelier/runs/{public_ref}",
+            frontend_index,
+            methods=["GET"],
+            include_in_schema=False,
+        )
 
     @app.get(API_PREFIX + "/health", response_model=HealthResource)
     async def health() -> HealthResource:
@@ -582,6 +627,22 @@ def create_app(
 
     install_custom_openapi(app)
     return app
+
+
+def _frontend_distribution(frontend_dist: Path) -> tuple[Path, Path]:
+    distribution = frontend_dist.resolve()
+    index_file = distribution / "index.html"
+    assets_directory = distribution / "assets"
+    if not index_file.is_file() or not assets_directory.is_dir():
+        raise ValueError(
+            "frontend distribution must contain a readable index.html and assets directory"
+        )
+    try:
+        index_file.open("rb").close()
+        next(assets_directory.iterdir(), None)
+    except OSError as error:
+        raise ValueError("frontend distribution must be readable") from error
+    return index_file, assets_directory
 
 
 def _resource_response(resource: BaseModel, status: HTTPStatus) -> JSONResponse:

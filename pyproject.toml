@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling==1.29.0"]
+build-backend = "hatchling.build"
+
 [project]
 name = "atelier-2"
 version = "0.0.0"
@@ -8,7 +12,11 @@ dependencies = [
     "pydantic==2.13.4",
     "pyyaml==6.0.3",
     "sqlalchemy==2.0.51",
+    "uvicorn==0.52.1",
 ]
+
+[project.scripts]
+atelier2 = "atelier2.host:main"
 
 [dependency-groups]
 dev = [
@@ -18,7 +26,6 @@ dev = [
     "pytest-xdist==3.8.0",
     "pyright==1.1.411",
     "ruff==0.16.2",
-    "uvicorn==0.52.1",
 ]
 
 [tool.pytest.ini_options]
@@ -27,3 +34,6 @@ pythonpath = ["src"]
 
 [tool.pyright]
 extraPaths = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/atelier2"]
