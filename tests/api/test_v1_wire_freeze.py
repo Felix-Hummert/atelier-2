@@ -122,3 +122,9 @@ def test_v1_openapi_components_remain_byte_identical_while_v2_is_added() -> None
     }
 
     assert actual == _OPENAPI_COMPONENT_HASHES
+
+
+def test_b02_leaves_v1_json_and_openapi_components_byte_exact() -> None:
+    test_v1_workflow_and_run_resources_keep_their_exact_raw_bytes()
+    test_all_seven_v1_sse_data_resources_keep_their_exact_raw_bytes()
+    test_v1_openapi_components_remain_byte_identical_while_v2_is_added()

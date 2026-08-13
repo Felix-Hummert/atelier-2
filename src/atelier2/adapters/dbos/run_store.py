@@ -20,7 +20,6 @@ from atelier2.adapters.dbos.effect_store import (
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     agent_receipts,
-    agent_receipts_v2,
     auth_profile_revisions,
     effect_intents,
     effect_receipts,
@@ -36,7 +35,6 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionHash,
     AgentExecutionRequest,
     AgentExecutionRequestHash,
-    AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
@@ -598,62 +596,6 @@ def _agent_receipt_v2_from_record(record: Mapping[Any, Any]) -> AgentReceiptV2:
         raise AgentReceiptConflict(
             "durable V2 agent receipt hash binding disagrees"
         ) from error
-
-
-def commit_agent_completed_v2(
-    session: Any,
-    request: AgentExecutionRequestV2,
-    result: AgentExecutionResult,
-) -> TransitionSnapshot:
-    run = load_run(session, request.run_id)
-    graph = load_graph(session, request.workflow_revision_hash)
-    if not isinstance(run, RunV2) or not isinstance(graph, WorkflowGraphV2):
-        raise AgentReceiptConflict("V2 agent request does not name a V2 run")
-    node = graph.node(request.node_id)
-    if (
-        not isinstance(node, AgentNodeV2)
-        or node.role != request.resolved_binding.role.value
-        or node.job.encode("utf-8") != request.job_bytes
-    ):
-        raise AgentReceiptConflict("V2 agent request differs from durable graph")
-    durable_binding = next(
-        (
-            binding
-            for binding in run.agent_bindings
-            if binding.role == request.resolved_binding.role
-        ),
-        None,
-    )
-    if durable_binding != request.resolved_binding:
-        raise AgentReceiptConflict("V2 request differs from durable role configuration")
-    receipt = AgentReceiptV2.for_execution(request, run.binding_set_hash, result)
-    session.execute(
-        agent_receipts_v2.insert()
-        .prefix_with("OR IGNORE")
-        .values(_agent_receipt_v2_values(receipt))
-    )
-    durable_record = (
-        session.execute(
-            sa.select(agent_receipts_v2).where(
-                agent_receipts_v2.c.node_execution_id == request.node_execution_id.value
-            )
-        )
-        .mappings()
-        .one()
-    )
-    if _agent_receipt_v2_from_record(durable_record) != receipt:
-        raise AgentReceiptConflict("durable V2 agent receipt differs from exact retry")
-    return _commit_event(
-        session,
-        request.run_id,
-        request.workflow_revision_hash,
-        request.node_id,
-        RunEventKind.AGENT_COMPLETED,
-        result.output_bytes,
-        RunState.STARTED,
-        RunState.STARTED,
-        graph.successor(request.node_id).id,
-    )
 
 
 def commit_waiting_input(

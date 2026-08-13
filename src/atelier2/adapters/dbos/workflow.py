@@ -20,7 +20,6 @@ from atelier2.adapters.dbos.effect_store import (
 from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
     commit_agent_completed,
-    commit_agent_completed_v2,
     commit_subworkflow_completed,
     commit_wait_answered,
     commit_waiting_input,
@@ -28,6 +27,7 @@ from atelier2.adapters.dbos.run_store import (
     load_run,
     load_wait_answer,
 )
+from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionHash,
@@ -67,6 +67,7 @@ from atelier2.contracts.workflows import (
     SubworkflowNode,
     WaitNode,
 )
+from atelier2.ports.agent_attempts import AgentAttemptStore, AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
     AgentExecutor,
     AgentExecutorKey,
@@ -249,6 +250,7 @@ def register_durable_run_workflow(
     agent_executors_v2: Mapping[
         AgentExecutorKey, tuple[AgentExecutorV2, AgentExecutorOperationalIdentity]
     ],
+    agent_attempt_store: AgentAttemptStore,
     adapter: EffectAdapter,
     effect_binding: EffectAdapterBinding,
 ) -> None:
@@ -338,16 +340,12 @@ def register_durable_run_workflow(
                 operational_identity,
                 binding["job"].encode("utf-8"),
             )
-            result = executor.execute(execution_request_v2)
-            successor = datasource.run_tx_step(
-                {"name": AGENT_COMMIT_STEP_NAME},
-                lambda: (
-                    commit_agent_completed_v2(
-                        datasource.sql_session(), execution_request_v2, result
-                    ).current_node_id
-                ),
+            outcome = execute_agent_attempt(
+                execution_request_v2, executor, agent_attempt_store
             )
-            start_node(typed_run_id, typed_revision, str(successor))
+            if not isinstance(outcome, AgentAttemptSucceeded):
+                return RunState.STARTED.value
+            start_node(typed_run_id, typed_revision, outcome.successor_node_id)
             return RunState.STARTED.value
         if binding["type"] == "action":
             from atelier2.adapters.dbos.advancer import (

@@ -5,6 +5,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from atelier2.api.models import (
     ActionNodeResource,
+    AgentAttemptResourceV2,
     AgentCompletedEventResource,
     AgentNodeResource,
     NoWaitingResource,
@@ -18,6 +19,27 @@ from atelier2.api.models import (
 
 HASH = "0" * 64
 EXECUTION = "1" * 64
+
+
+def test_agent_attempt_resource_rejects_incongruent_failure_shape() -> None:
+    common = {
+        "attempt_id": HASH,
+        "node_execution_id": EXECUTION,
+        "request_hash": "2" * 64,
+        "attempt_ordinal": 1,
+    }
+    with pytest.raises(ValidationError):
+        AgentAttemptResourceV2.model_validate(
+            {**common, "state": "FAILED", "failure_code": None}
+        )
+    with pytest.raises(ValidationError):
+        AgentAttemptResourceV2.model_validate(
+            {
+                **common,
+                "state": "PREPARED",
+                "failure_code": "PROCESS_EXITED_UNSUCCESSFULLY",
+            }
+        )
 
 
 def agent_node() -> AgentNodeResource:

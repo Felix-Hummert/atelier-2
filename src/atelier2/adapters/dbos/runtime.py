@@ -12,6 +12,7 @@ from dbos import DBOS, DBOSConfig, SQLAlchemyDatasource
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     agent_receipts,
@@ -284,6 +285,7 @@ def _open_binding(
                 entry.key: (executor, entry.operational_identity)
                 for entry, executor in agent_executors_v2
             },
+            DbosAgentAttemptStore(engine),
             adapter,
             effect_binding,
         )

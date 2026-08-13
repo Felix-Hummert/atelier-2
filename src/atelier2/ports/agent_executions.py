@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     AgentExecutionRequest,
     AgentExecutionRequestV2,
@@ -39,8 +40,15 @@ class AgentExecutorManifestEntry:
     operational_identity: AgentExecutorOperationalIdentity
 
 
+@dataclass(frozen=True)
+class AgentExecutionFailure:
+    code: AgentAttemptFailureCode
+
+
 class AgentExecutorV2(Protocol):
-    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult: ...
+    def execute(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentExecutionResult | AgentExecutionFailure: ...
 
     def close(self) -> None: ...
 

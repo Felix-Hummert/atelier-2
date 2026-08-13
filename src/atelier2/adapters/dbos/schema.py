@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 metadata = sa.MetaData()
 
@@ -471,6 +471,59 @@ agent_receipts_v2 = sa.Table(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
+agent_attempts = sa.Table(
+    "agent_attempts",
+    metadata,
+    sa.Column("attempt_id", sa.Text, primary_key=True),
+    sa.Column("node_execution_id", sa.Text, nullable=False),
+    sa.Column("request_hash", sa.Text, nullable=False),
+    sa.Column("executor_operational_identity", sa.Text, nullable=False),
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
+    sa.Column("attempt_ordinal", sa.Integer, nullable=False),
+    sa.Column("state", sa.Text, nullable=False),
+    sa.Column("state_version", sa.Integer, nullable=False),
+    sa.Column("failure_code", sa.Text, nullable=True),
+    sa.Column(
+        "receipt_hash",
+        sa.Text,
+        sa.ForeignKey("agent_receipts_v2.receipt_hash", ondelete="RESTRICT"),
+        unique=True,
+        nullable=True,
+    ),
+    sa.UniqueConstraint("node_execution_id", "attempt_ordinal"),
+    sa.ForeignKeyConstraint(
+        ("run_id", "workflow_revision_hash"),
+        ("runs.run_id", "runs.revision_hash"),
+    ),
+    sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(executor_operational_identity) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(
+        "length(workflow_revision_hash) = 64 "
+        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(node_id) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint("attempt_ordinal = 1"),
+    sa.CheckConstraint(
+        "(state = 'PREPARED' AND state_version = 0 "
+        "AND failure_code IS NULL AND receipt_hash IS NULL) OR "
+        "(state = 'LAUNCH_ARMED' AND state_version = 1 "
+        "AND failure_code IS NULL AND receipt_hash IS NULL) OR "
+        "(state = 'SUCCEEDED' AND state_version = 2 "
+        "AND failure_code IS NULL AND receipt_hash IS NOT NULL) OR "
+        "(state = 'FAILED' AND state_version = 2 "
+        "AND failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY' "
+        "AND receipt_hash IS NULL)"
+    ),
+)
 run_events = sa.Table(
     "run_events",
     metadata,
@@ -511,7 +564,8 @@ run_events = sa.Table(
         "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint(
-        "event_kind IN ('AGENT_COMPLETED', 'ACTION_RECONCILIATION_REQUIRED', "
+        "event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED', "
+        "'ACTION_RECONCILIATION_REQUIRED', "
         "'ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED', 'WAITING_INPUT', "
         "'WAIT_ANSWERED', 'SUBWORKFLOW_COMPLETED')"
     ),
@@ -701,6 +755,55 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'run events are immutable');
         END
     """,
+    "agent_attempts_state_transition": """
+        CREATE TRIGGER agent_attempts_state_transition
+        BEFORE UPDATE ON agent_attempts
+        WHEN NOT (
+          OLD.attempt_id = NEW.attempt_id
+          AND OLD.node_execution_id = NEW.node_execution_id
+          AND OLD.request_hash = NEW.request_hash
+          AND OLD.executor_operational_identity = NEW.executor_operational_identity
+          AND OLD.run_id = NEW.run_id
+          AND OLD.workflow_revision_hash = NEW.workflow_revision_hash
+          AND OLD.node_id = NEW.node_id
+          AND OLD.attempt_ordinal = NEW.attempt_ordinal
+          AND (
+            (OLD.state = 'PREPARED' AND OLD.state_version = 0
+             AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+             AND NEW.state = 'LAUNCH_ARMED' AND NEW.state_version = 1
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'LAUNCH_ARMED' AND OLD.state_version = 1
+             AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+             AND NEW.state = 'SUCCEEDED' AND NEW.state_version = 2
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM agent_receipts_v2 AS receipt
+               WHERE receipt.receipt_hash = NEW.receipt_hash
+                 AND receipt.request_hash = NEW.request_hash
+                 AND receipt.executor_operational_identity = NEW.executor_operational_identity
+                 AND receipt.node_execution_id = NEW.node_execution_id
+                 AND receipt.run_id = NEW.run_id
+                 AND receipt.workflow_revision_hash = NEW.workflow_revision_hash
+                 AND receipt.node_id = NEW.node_id
+             ))
+            OR
+            (OLD.state = 'LAUNCH_ARMED' AND OLD.state_version = 1
+             AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+             AND NEW.state = 'FAILED' AND NEW.state_version = 2
+             AND NEW.failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY'
+             AND NEW.receipt_hash IS NULL)
+          )
+        ) BEGIN
+          SELECT RAISE(ABORT, 'invalid agent attempt transition');
+        END
+    """,
+    "agent_attempts_no_delete": """
+        CREATE TRIGGER agent_attempts_no_delete
+        BEFORE DELETE ON agent_attempts BEGIN
+          SELECT RAISE(ABORT, 'agent attempts are immutable');
+        END
+    """,
     "wait_answers_payload_no_update": """
         CREATE TRIGGER wait_answers_payload_no_update
         BEFORE UPDATE OF run_id, revision_hash, node_id, node_execution_id,
@@ -745,7 +848,7 @@ class MigrationRequired(UnsupportedSchemaVersion):
 
 def _require_supported_versions(versions: Sequence[int]) -> None:
     normalized = tuple(versions)
-    if normalized in {(1,), (2,), (3,), (4,)}:
+    if normalized in {(1,), (2,), (3,), (4,), (5,)}:
         raise MigrationRequired(normalized[0])
     if normalized != (SCHEMA_VERSION,):
         raise UnsupportedSchemaVersion(normalized)

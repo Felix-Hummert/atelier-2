@@ -17,6 +17,7 @@ from atelier2.api.models import (
     ActionReconciliationResolvedEventResourceV2,
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
+    AgentFailedEventResourceV2,
     SubworkflowCompletedEventResource,
     SubworkflowCompletedEventResourceV2,
     WaitAnsweredEventResource,
@@ -46,6 +47,7 @@ EVENT_MODELS = (
 )
 EVENT_MODELS_V2 = (
     AgentCompletedEventResourceV2,
+    AgentFailedEventResourceV2,
     ActionReconciliationRequiredEventResourceV2,
     ActionReconciliationResolvedEventResourceV2,
     ActionCompletedEventResourceV2,
@@ -53,7 +55,10 @@ EVENT_MODELS_V2 = (
     WaitAnsweredEventResourceV2,
     SubworkflowCompletedEventResourceV2,
 )
-EVENT_NAMES = tuple(kind.value for kind in RunEventKind)
+EVENT_NAMES = tuple(
+    kind.value for kind in RunEventKind if kind is not RunEventKind.AGENT_FAILED
+)
+EVENT_NAMES_V2 = tuple(kind.value for kind in RunEventKind)
 
 OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/health", "get"): ("internal-error",),
@@ -300,7 +305,7 @@ def _install_event_components(schema: dict[str, Any]) -> None:
             "propertyName": "event",
             "mapping": {
                 name: f"#/components/schemas/{model.__name__}"
-                for name, model in zip(EVENT_NAMES, EVENT_MODELS_V2, strict=True)
+                for name, model in zip(EVENT_NAMES_V2, EVENT_MODELS_V2, strict=True)
             },
         },
     }
@@ -445,7 +450,7 @@ def _install_sse_contract(schema: dict[str, Any]) -> None:
             "schema": {"type": "string"},
             "x-atelier2-sse-v1": {
                 "id": {"$ref": "#/components/schemas/EventCursor"},
-                "event": {"enum": list(EVENT_NAMES)},
+                "event": {"enum": list(EVENT_NAMES_V2)},
                 "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
             },
         }

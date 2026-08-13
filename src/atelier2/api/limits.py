@@ -79,6 +79,14 @@ class ApiLimits:
                 projection.run.run_id, projection.run.last_event_sequence
             )
         self.require_field(projection.run.current_node_id)
+        attempt = projection.current_agent_attempt
+        if attempt is not None:
+            self.require_field(attempt.attempt_id.value)
+            self.require_field(attempt.node_execution_id.value)
+            self.require_field(attempt.request_hash.value)
+            self.require_field(attempt.state)
+            if attempt.failure_code is not None:
+                self.require_field(attempt.failure_code.value)
         reconciliation = projection.reconciliation
         if reconciliation is None:
             return
@@ -103,6 +111,8 @@ class ApiLimits:
         self.require_public_run_reference(event.run_id)
         self.require_event_cursor(event.run_id, event.event_sequence)
         self.require_field(event.node_id)
+        if event.event_kind is RunEventKind.AGENT_FAILED:
+            self.require_field(event.payload.decode("ascii"))
         self.require_encoded_payload(event.payload)
         if (
             event.event_kind is RunEventKind.AGENT_COMPLETED

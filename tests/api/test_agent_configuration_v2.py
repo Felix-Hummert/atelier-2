@@ -416,6 +416,7 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
             "job": "build",
             "next_node_id": "done",
         },
+        "current_agent_attempt": None,
         "waiting": {"type": "NONE"},
         "terminal_hash": None,
         "latest_event_cursor": None,
@@ -484,7 +485,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_one_of() -> None:
         ]
     }
     v2 = schema["components"]["schemas"]["RunEventResourceV2"]
-    assert len(v2["oneOf"]) == 7
+    assert len(v2["oneOf"]) == 8
     assert set(v2["discriminator"]["mapping"]) == {kind.value for kind in RunEventKind}
     common = {
         "workflow_format_version",
@@ -499,6 +500,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_one_of() -> None:
     }
     payloads = {
         "AGENT_COMPLETED": {"output_base64", "output_hash"},
+        "AGENT_FAILED": {"failure_code"},
         "ACTION_RECONCILIATION_REQUIRED": {"request_base64", "request_hash"},
         "ACTION_RECONCILIATION_RESOLVED": {"receipt"},
         "ACTION_COMPLETED": {"receipt"},

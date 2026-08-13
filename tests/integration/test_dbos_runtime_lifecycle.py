@@ -798,6 +798,19 @@ def test_v2_factory_identity_is_captured_once_before_open(tmp_path: Path) -> Non
         runtime.close()
 
 
+def test_factory_open_never_enters_agent_invocation(tmp_path: Path) -> None:
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude/v1", "operation", b"unused"
+    )
+    runtime = _runtime_with_v2(tmp_path, (factory,))
+    try:
+        assert factory.opens == 1
+        assert factory.opened is not None
+        assert factory.opened.requests == []
+    finally:
+        runtime.close()
+
+
 def test_same_v2_factory_object_is_refused_without_durable_mutation(
     tmp_path: Path,
 ) -> None:

@@ -49,12 +49,15 @@ duplicating the Action effect.
 Workflow format V2 adds provider-neutral Agent roles. Before a run starts, every
 role is resolved to one immutable, secret-free agent-configuration revision and
 authentication-profile revision; the complete matrix is frozen into that run.
-The runtime dispatches each role through the exact configured provider and
-executor revision, records the non-secret operational identity and arbitrary
-output bytes in one atomic receipt/event/transition, and resumes after process
-death without rebinding or duplicating durable results. This is the durable
-multi-provider contract, not yet a real Claude or Codex process integration:
-production currently composes no V2 provider factories.
+Before invoking the exact configured provider/executor, the runtime persists one
+ordinal-1 attempt and crosses a live atomic `PREPARED` to `LAUNCH_ARMED` boundary.
+Only that transaction's winner may invoke. A restart may reclaim `PREPARED`, but
+an unresolved `LAUNCH_ARMED` attempt is projected as `POSSIBLY_RAN` and is never
+silently repeated. A known reaped unsuccessful child becomes `FAILED`; a success
+records the non-secret operational identity and arbitrary output bytes in one
+atomic attempt/receipt/event/run transition. This is the durable multi-provider
+contract, not yet a real Claude or Codex process integration: production currently
+composes no V2 provider factories, and retry/cancellation remain later work.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically

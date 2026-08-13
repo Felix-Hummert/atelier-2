@@ -3,11 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptFailureCode,
+    AgentAttemptId,
+)
+from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import (
     EffectIntentSnapshot,
     ReconcileCommandId,
     ReconcileCommandSnapshot,
 )
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.workflows import AnyWorkflowGraph
@@ -25,10 +31,21 @@ class WaitingReconciliationProjection:
 
 
 @dataclass(frozen=True)
+class AgentAttemptProjection:
+    attempt_id: AgentAttemptId
+    node_execution_id: NodeExecutionId
+    request_hash: AgentExecutionRequestHash
+    attempt_ordinal: int
+    state: str
+    failure_code: AgentAttemptFailureCode | None
+
+
+@dataclass(frozen=True)
 class RunProjection:
     run: AnyRun
     graph: AnyWorkflowGraph
     reconciliation: WaitingReconciliationProjection | None
+    current_agent_attempt: AgentAttemptProjection | None = None
 
 
 @dataclass(frozen=True)

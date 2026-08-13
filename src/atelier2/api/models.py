@@ -295,6 +295,21 @@ class WaitingReconciliationResourceV2(ApiModel):
     pending_command: ReconciliationCommandResource | None
 
 
+class AgentAttemptResourceV2(ApiModel):
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1]
+    state: Literal["PREPARED", "POSSIBLY_RAN", "FAILED"]
+    failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"] | None
+
+    @model_validator(mode="after")
+    def validate_failure_shape(self) -> AgentAttemptResourceV2:
+        if (self.state == "FAILED") != (self.failure_code is not None):
+            raise ValueError("agent attempt state and failure code disagree")
+        return self
+
+
 WaitingResourceV2 = Annotated[
     NoWaitingResourceV2 | WaitingInputResourceV2 | WaitingReconciliationResourceV2,
     Field(discriminator="type"),
@@ -311,6 +326,7 @@ class RunResourceV2(ApiModel):
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]
     current_node: NodeResourceV2
+    current_agent_attempt: AgentAttemptResourceV2 | None = None
     waiting: WaitingResourceV2
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
     latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
@@ -458,6 +474,11 @@ class AgentCompletedEventResourceV2(RunEventBaseResourceV2):
     output_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class AgentFailedEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["AGENT_FAILED"]
+    failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"]
+
+
 class ActionReconciliationRequiredEventResourceV2(RunEventBaseResourceV2):
     event: Literal["ACTION_RECONCILIATION_REQUIRED"]
     request_base64: str
@@ -493,6 +514,7 @@ class SubworkflowCompletedEventResourceV2(RunEventBaseResourceV2):
 
 RunEventResourceV2 = Annotated[
     AgentCompletedEventResourceV2
+    | AgentFailedEventResourceV2
     | ActionReconciliationRequiredEventResourceV2
     | ActionReconciliationResolvedEventResourceV2
     | ActionCompletedEventResourceV2
@@ -774,6 +796,27 @@ def _run_resource_v2(
         state_version=run.state_version,
         state=run.state.value,
         current_node=cast(NodeResourceV2, node_resource(node)),
+        current_agent_attempt=(
+            None
+            if projection.current_agent_attempt is None
+            else AgentAttemptResourceV2(
+                attempt_id=projection.current_agent_attempt.attempt_id.value,
+                node_execution_id=(
+                    projection.current_agent_attempt.node_execution_id.value
+                ),
+                request_hash=projection.current_agent_attempt.request_hash.value,
+                attempt_ordinal=1,
+                state=cast(
+                    Literal["PREPARED", "POSSIBLY_RAN", "FAILED"],
+                    projection.current_agent_attempt.state,
+                ),
+                failure_code=(
+                    None
+                    if projection.current_agent_attempt.failure_code is None
+                    else projection.current_agent_attempt.failure_code.value
+                ),
+            )
+        ),
         waiting=waiting,
         terminal_hash=None if run.terminal_hash is None else run.terminal_hash.value,
         latest_event_cursor=(
@@ -804,6 +847,8 @@ def run_event_resource(projection: PersistedRunEvent) -> AnyRunEventResource:
     if projection.workflow_format_version == 2:
         return _run_event_resource_v2(projection)
     event = projection.event
+    if event.event_kind is RunEventKind.AGENT_FAILED:
+        raise ValueError("a V1 run cannot carry AGENT_FAILED")
     common = {
         "cursor": encode_event_cursor(event.run_id, event.event_sequence),
         "sequence": event.event_sequence,
@@ -886,6 +931,15 @@ def _run_event_resource_v2(projection: PersistedRunEvent) -> RunEventResourceV2:
             event=event.event_kind.value,
             output_base64=encode_canonical_base64(event.payload),
             output_hash=event.payload_hash.value,
+            **common,
+        )
+    if event.event_kind is RunEventKind.AGENT_FAILED:
+        failure_code = event.payload.decode("ascii")
+        if failure_code != "PROCESS_EXITED_UNSUCCESSFULLY":
+            raise ValueError("durable agent failure payload is not canonical")
+        return AgentFailedEventResourceV2(
+            event=event.event_kind.value,
+            failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
             **common,
         )
     if event.event_kind is RunEventKind.ACTION_RECONCILIATION_REQUIRED:

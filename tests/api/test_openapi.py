@@ -10,7 +10,7 @@ from openapi_spec_validator import OpenAPIV31SpecValidator, validate
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api import openapi as openapi_module
 from atelier2.api.app import ApiPorts, create_app
-from atelier2.api.openapi import API_PREFIX, EVENT_NAMES, EVENT_PATH
+from atelier2.api.openapi import API_PREFIX, EVENT_NAMES, EVENT_NAMES_V2, EVENT_PATH
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
@@ -110,7 +110,7 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     assert content["text/event-stream"]["schema"] == {"type": "string"}
     extension = content["text/event-stream"]["x-atelier2-sse-v1"]
     assert extension["id"] == {"$ref": "#/components/schemas/EventCursor"}
-    assert extension["event"] == {"enum": list(EVENT_NAMES)}
+    assert extension["event"] == {"enum": list(EVENT_NAMES_V2)}
     assert extension["data"] == {
         "$ref": "#/components/schemas/VersionedRunEventResource"
     }

@@ -12,6 +12,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits, RequestBodyLimitMiddleware
+from atelier2.api.models import AgentAttemptResourceV2
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import (
     encode_canonical_base64,
@@ -78,6 +79,21 @@ def client_for(mutations: RecordingMutationPorts, limits: ApiLimits) -> TestClie
             event_poll_backoff=event_poll_backoff(),
         )
     )
+
+
+def test_agent_attempt_public_fields_use_the_shared_field_bound() -> None:
+    limits = api_limits(maximum_field_characters=63)
+    attempt = AgentAttemptResourceV2(
+        attempt_id="0" * 64,
+        node_execution_id="1" * 64,
+        request_hash="2" * 64,
+        attempt_ordinal=1,
+        state="POSSIBLY_RAN",
+        failure_code=None,
+    )
+
+    with pytest.raises(ApiLimitExceeded):
+        limits.require_field(attempt.attempt_id)
 
 
 def workflow_document(*, job: str = "work", include_agent: bool = False) -> bytes:

@@ -25,12 +25,24 @@ from atelier2.adapters.dbos.run_store import (
     validate_run_graph_binding,
 )
 from atelier2.adapters.dbos.schema import (
+    agent_attempts,
     effect_intents,
     effect_receipts,
     reconcile_commands,
     run_events,
     runs,
     workflow_revisions,
+)
+from atelier2.contracts.agent_attempts import (
+    AGENT_ATTEMPT_ORDINAL,
+    AgentAttemptFailureCode,
+    AgentAttemptId,
+    AgentAttemptState,
+)
+from atelier2.contracts.agents import (
+    AgentExecutionRequestHash,
+    AgentExecutionRequestV2,
+    AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.effects import (
     EffectIntentState,
@@ -42,6 +54,7 @@ from atelier2.contracts.executions import (
     RunEventKind,
     logical_effect_key_for,
 )
+from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     RunId,
@@ -49,6 +62,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2
 from atelier2.ports.run_events import (
     CursorAhead,
     EventHistoryCorrupt,
@@ -59,6 +73,7 @@ from atelier2.ports.run_events import (
     StreamReady,
 )
 from atelier2.ports.run_queries import (
+    AgentAttemptProjection,
     GetReconciliationRetryTargetResult,
     GetRunResult,
     ListRunsResult,
@@ -117,6 +132,9 @@ _COMMAND_FIELD_COLUMNS = frozenset(
 )
 _EVENT_PAYLOAD_COLUMNS = frozenset(("payload",))
 _EVENT_FIELD_COLUMNS = frozenset(("run_id", "node_id", "receipt_logical_key"))
+_ATTEMPT_FIELD_COLUMNS = frozenset(
+    ("executor_operational_identity", "run_id", "node_id")
+)
 _RECEIPT_PAYLOAD_COLUMNS = frozenset(("canonical_request", "result"))
 _RECEIPT_FIELD_COLUMNS = frozenset(
     (
@@ -195,6 +213,88 @@ def _validate_bounded_record(
                 "durable text exceeds its response allocation limit"
             )
         projection_limit.validate_field_length(len(str(value)))
+
+
+def _current_attempt_projection(
+    record: Mapping[Any, Any],
+    *,
+    run: RunV2,
+    graph: WorkflowGraphV2,
+) -> AgentAttemptProjection:
+    node = graph.node(run.current_node_id)
+    if not isinstance(node, AgentNodeV2):
+        raise RunTransitionConflict("current attempt does not belong to a V2 agent")
+    binding = next(
+        (binding for binding in run.agent_bindings if binding.role.value == node.role),
+        None,
+    )
+    if binding is None:
+        raise RunTransitionConflict("current agent has no exact durable binding")
+    operational_identity = AgentExecutorOperationalIdentity(
+        str(record["executor_operational_identity"])
+    )
+    execution_id = NodeExecutionId.for_node(
+        run.run_id, run.revision_hash, run.current_node_id
+    )
+    exact_request = AgentExecutionRequestV2(
+        execution_id,
+        run.run_id,
+        run.revision_hash,
+        run.current_node_id,
+        binding,
+        operational_identity,
+        node.job.encode("utf-8"),
+    )
+    request_hash = AgentExecutionRequestHash(str(record["request_hash"]))
+    attempt_id = AgentAttemptId(str(record["attempt_id"]))
+    ordinal = int(record["attempt_ordinal"])
+    if (
+        ordinal != AGENT_ATTEMPT_ORDINAL
+        or NodeExecutionId(str(record["node_execution_id"])) != execution_id
+        or RunId(str(record["run_id"])) != run.run_id
+        or WorkflowRevisionHash(str(record["workflow_revision_hash"]))
+        != run.revision_hash
+        or str(record["node_id"]) != run.current_node_id
+        or request_hash != exact_request.request_hash
+        or attempt_id
+        != AgentAttemptId.for_execution(
+            execution_id, exact_request.request_hash, ordinal
+        )
+    ):
+        raise RunTransitionConflict("current agent attempt binding disagrees")
+    durable_state = AgentAttemptState(str(record["state"]))
+    failure_value = record["failure_code"]
+    receipt_value = record["receipt_hash"]
+    state_version = int(record["state_version"])
+    if durable_state is AgentAttemptState.PREPARED:
+        if state_version != 0 or receipt_value is not None:
+            raise RunTransitionConflict("prepared agent attempt shape disagrees")
+        public_state = "PREPARED"
+        failure = None
+    elif durable_state is AgentAttemptState.LAUNCH_ARMED:
+        if state_version != 1 or receipt_value is not None:
+            raise RunTransitionConflict("armed agent attempt shape disagrees")
+        public_state = "POSSIBLY_RAN"
+        failure = None
+    elif durable_state is AgentAttemptState.FAILED:
+        if state_version != 2 or receipt_value is not None:
+            raise RunTransitionConflict("failed agent attempt shape disagrees")
+        public_state = "FAILED"
+        failure = AgentAttemptFailureCode(str(failure_value))
+    else:
+        raise RunTransitionConflict(
+            "successful current attempt has no atomic successor transition"
+        )
+    if (failure_value is None) != (failure is None):
+        raise RunTransitionConflict("current agent attempt failure shape disagrees")
+    return AgentAttemptProjection(
+        attempt_id,
+        execution_id,
+        request_hash,
+        ordinal,
+        public_state,
+        failure,
+    )
 
 
 class DbosQueries:
@@ -541,6 +641,43 @@ class DbosQueries:
         for run in loaded_runs:
             validate_run_graph_binding(run, graphs[run.revision_hash])
 
+        current_agent_executions = {
+            run.run_id: NodeExecutionId.for_node(
+                run.run_id, run.revision_hash, run.current_node_id
+            )
+            for run in loaded_runs
+            if isinstance(
+                graphs[run.revision_hash].node(run.current_node_id), AgentNodeV2
+            )
+        }
+        attempt_records: dict[str, Mapping[Any, Any]] = {}
+        if current_agent_executions:
+            for record in connection.execute(
+                _bounded_projection_select(
+                    agent_attempts,
+                    projection_limit,
+                    field_columns=_ATTEMPT_FIELD_COLUMNS,
+                ).where(
+                    agent_attempts.c.node_execution_id.in_(
+                        tuple(
+                            execution.value
+                            for execution in current_agent_executions.values()
+                        )
+                    )
+                )
+            ).mappings():
+                _validate_bounded_record(
+                    record,
+                    projection_limit,
+                    field_columns=_ATTEMPT_FIELD_COLUMNS,
+                )
+                execution_value = str(record["node_execution_id"])
+                if execution_value in attempt_records:
+                    raise RunTransitionConflict(
+                        "current node has more than one ordinal-1 attempt"
+                    )
+                attempt_records[execution_value] = record
+
         waiting_runs = tuple(
             run for run in loaded_runs if run.state is RunState.WAITING_RECONCILIATION
         )
@@ -648,8 +785,28 @@ class DbosQueries:
                         "waiting reconciliation run has inconsistent intent state"
                     )
                 reconciliation = WaitingReconciliationProjection(intent, pending)
+            attempt_projection = None
+            execution = current_agent_executions.get(run.run_id)
+            if execution is not None:
+                if not isinstance(run, RunV2):
+                    raise RunTransitionConflict("V2 agent node belongs to a V1 run")
+                attempt_record = attempt_records.get(execution.value)
+                if attempt_record is not None:
+                    graph = graphs[run.revision_hash]
+                    if not isinstance(graph, WorkflowGraphV2):
+                        raise RunTransitionConflict("V2 run has a V1 workflow graph")
+                    attempt_projection = _current_attempt_projection(
+                        attempt_record,
+                        run=run,
+                        graph=graph,
+                    )
             projections.append(
-                RunProjection(run, graphs[run.revision_hash], reconciliation)
+                RunProjection(
+                    run,
+                    graphs[run.revision_hash],
+                    reconciliation,
+                    attempt_projection,
+                )
             )
         return tuple(projections)
 
@@ -820,6 +977,15 @@ class DbosQueries:
         workflow_format_version: int,
     ) -> PersistedRunEvent:
         event = event_from_record(record)
+        if (
+            event.event_kind is RunEventKind.AGENT_FAILED
+            and workflow_format_version != 2
+        ):
+            raise RunTransitionConflict("V1 run carries a V2 agent failure event")
+        if event.event_kind is RunEventKind.AGENT_FAILED and event.payload != (
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value.encode("ascii")
+        ):
+            raise RunTransitionConflict("agent failure event payload is not canonical")
         if event.event_kind not in {
             RunEventKind.ACTION_RECONCILIATION_RESOLVED,
             RunEventKind.ACTION_COMPLETED,

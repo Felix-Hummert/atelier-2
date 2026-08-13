@@ -10,10 +10,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
-from atelier2.adapters.dbos.run_store import DbosWaitAnswerer, commit_agent_completed_v2
+from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
@@ -25,7 +26,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
@@ -720,24 +720,23 @@ def test_v2_output_bound_is_checked_before_atomic_receipt_event_and_run_cas(
         )
 
         if accepted:
-            with canonical_write_transaction(runtime.engine) as connection:
-                snapshot = commit_agent_completed_v2(
-                    connection, request, AgentExecutionResult(b"x" * output_size)
-                )
-            with canonical_write_transaction(runtime.engine) as connection:
-                retried = commit_agent_completed_v2(
-                    connection, request, AgentExecutionResult(b"x" * output_size)
-                )
-            assert snapshot.state_version == 1
+            store = DbosAgentAttemptStore(runtime.engine)
+            store.prepare(request)
+            store.claim(request)
+            snapshot = store.complete_success(
+                request, AgentExecutionResult(b"x" * output_size)
+            )
+            retried = store.claim(request)
+            assert snapshot.attempt.state_version == 2
             assert retried == snapshot
             expected_receipts = expected_events = 1
         else:
-            with (
-                pytest.raises(AgentOutputLimitExceeded),
-                canonical_write_transaction(runtime.engine) as connection,
-            ):
-                commit_agent_completed_v2(
-                    connection, request, AgentExecutionResult(b"x" * output_size)
+            store = DbosAgentAttemptStore(runtime.engine)
+            store.prepare(request)
+            store.claim(request)
+            with pytest.raises(AgentOutputLimitExceeded):
+                store.complete_success(
+                    request, AgentExecutionResult(b"x" * output_size)
                 )
             expected_receipts = expected_events = 0
 

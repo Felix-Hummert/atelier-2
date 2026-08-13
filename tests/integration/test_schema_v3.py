@@ -96,7 +96,7 @@ def engine_snapshot(
     return schema, rows
 
 
-def test_fresh_v5_has_the_closed_product_tables_and_reopens_idempotently(
+def test_fresh_v6_has_the_closed_product_tables_and_reopens_idempotently(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -107,7 +107,7 @@ def test_fresh_v5_has_the_closed_product_tables_and_reopens_idempotently(
         with engine.connect() as connection:
             assert connection.execute(
                 sa.text("SELECT version FROM atelier_schema_versions")
-            ).all() == [(5,)]
+            ).all() == [(6,)]
             assert PRODUCT_TABLE_NAMES.issubset(
                 sa.inspect(connection).get_table_names()
             )
@@ -158,6 +158,20 @@ def test_v2_tables_have_exact_secret_free_columns(tmp_path: Path) -> None:
             "executor_operational_identity",
             "output_bytes",
             "output_hash",
+            "receipt_hash",
+        ),
+        "agent_attempts": (
+            "attempt_id",
+            "node_execution_id",
+            "request_hash",
+            "executor_operational_identity",
+            "run_id",
+            "workflow_revision_hash",
+            "node_id",
+            "attempt_ordinal",
+            "state",
+            "state_version",
+            "failure_code",
             "receipt_hash",
         ),
     }
@@ -308,18 +322,18 @@ def test_v2_schema_checks_foreign_keys_and_immutability_refuse_canaries(
     engine.dispose()
 
 
-def test_malformed_v5_is_refused_without_mutation(tmp_path: Path) -> None:
+def test_malformed_v6_is_refused_without_mutation(tmp_path: Path) -> None:
     database = tmp_path / "atelier.sqlite"
     with sqlite3.connect(database) as connection:
         connection.execute(
             "CREATE TABLE atelier_schema_versions(version INTEGER PRIMARY KEY)"
         )
-        connection.execute("INSERT INTO atelier_schema_versions VALUES(5)")
+        connection.execute("INSERT INTO atelier_schema_versions VALUES(6)")
         connection.execute("CREATE TABLE workflow_revisions(wrong TEXT)")
     before = snapshot(database)
     engine = sa.create_engine(f"sqlite:///{database}")
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v5"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v6"):
         initialize_schema(engine)
 
     engine.dispose()
@@ -336,7 +350,7 @@ def test_malformed_v5_is_refused_without_mutation(tmp_path: Path) -> None:
         "changed-nullability",
     ],
 )
-def test_existing_v5_rejects_every_product_schema_drift_without_mutation(
+def test_existing_v6_rejects_every_product_schema_drift_without_mutation(
     tmp_path: Path, malformation: str
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -385,7 +399,7 @@ def test_existing_v5_rejects_every_product_schema_drift_without_mutation(
     before_schema = snapshot(database)
     before_rows = rows_snapshot(database)
     reopened = sa.create_engine(f"sqlite:///{database}")
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v5"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v6"):
         initialize_schema(reopened)
     reopened.dispose()
 
@@ -393,7 +407,7 @@ def test_existing_v5_rejects_every_product_schema_drift_without_mutation(
     assert rows_snapshot(database) == before_rows
 
 
-def test_existing_malformed_in_memory_v5_is_refused() -> None:
+def test_existing_malformed_in_memory_v6_is_refused() -> None:
     engine = sa.create_engine("sqlite://")
     initialize_schema(engine)
     with engine.begin() as connection:
@@ -405,7 +419,7 @@ def test_existing_malformed_in_memory_v5_is_refused() -> None:
             )
         )
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v5"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v6"):
         initialize_schema(engine)
     engine.dispose()
 
@@ -431,7 +445,7 @@ def test_nonempty_dbos_only_in_memory_database_is_not_treated_as_fresh() -> None
     engine.dispose()
 
 
-def test_dbos_owned_tables_are_allowed_and_unchanged_by_v5_preflight(
+def test_dbos_owned_tables_are_allowed_and_unchanged_by_v6_preflight(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"

@@ -30,9 +30,9 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V5 only in a truly empty canonical store and reopens
-only an exact V5 product schema. An older store, or any nonempty store without
-the V5 version owner, is rejected without mutation. V1 provides no runtime
+The runtime creates schema V6 only in a truly empty canonical store and reopens
+only an exact V6 product schema. An older store, or any nonempty store without
+the V6 version owner, is rejected without mutation. V1 provides no runtime
 upgrade or downgrade migration.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
@@ -58,6 +58,19 @@ executor operational identity, job, and exact result bytes. At most 49,152
 output bytes are accepted; an oversized result is rejected before receipt,
 event, or run mutation. The receipt, `AGENT_COMPLETED` event, and run CAS share
 one canonical transaction.
+
+Every format-version-2 external invocation first persists one exact ordinal-1
+attempt. Preparation, launch claim, and finalization use live canonical database
+transactions rather than memoized DBOS step results. Only the call whose compare
+and-set changes `PREPARED` to `LAUNCH_ARMED` may invoke the executor. Recovery may
+claim `PREPARED` again, but it projects unresolved `LAUNCH_ARMED` as
+`POSSIBLY_RAN` and does not invoke. The attempt binds the request hash and bounded,
+non-secret executor operational identity; that identity is an integrity input,
+not process authority. Success atomically commits attempt, receipt, event, and
+successor. A typed, authoritatively reaped unsuccessful child atomically commits
+`FAILED`, `AGENT_FAILED`, and the same current run node. Ambiguous exceptions stay
+`LAUNCH_ARMED`. Retry, cancellation, and ordinal growth are intentionally not
+owned by schema V6.
 
 Before an external call, Atelier durably records an effect intent bound to the
 logical key, exact request bytes and hash, workflow revision, adapter revision,
@@ -111,6 +124,7 @@ provider contract.
 | Atomic product events | Reconciliation state and its required/resolved event, plus receipt, intent, run, and owning command, commit or roll back together under injected database failures. |
 | Runtime lifecycle | Equivalent leases share one engine, Agent executor, and effect adapter; conflicts, failed initialization, concurrent close, durable binding drift, and two-process recovery preserve one binding and result. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
+| V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 
 The repository gate is `.github/workflows/ci.yml`; the local crash lane is
 `uv run --locked pytest -n auto tests/crash`.

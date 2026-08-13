@@ -17,9 +17,11 @@ from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos import run_store
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
+    agent_attempts,
     effect_intents,
     initialize_schema,
     reconcile_commands,
@@ -29,6 +31,8 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.api.stream import BoundedQueryRunner
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
+from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import EffectIntentState, ReconcileCommandState
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -37,7 +41,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import EventHistoryCorrupt, StreamReady
-from atelier2.ports.run_queries import RunPage
+from atelier2.ports.run_queries import RunFound, RunPage
 from atelier2.ports.workflow_revisions import (
     PROJECTION_LIMIT_DETAIL,
     QueryDurableStateCorrupt,
@@ -78,6 +82,43 @@ nodes:
   - {{id: agent, type: agent, job: test, output: {output}, next: final}}
   - {{id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}}
 """.encode()
+
+
+def test_current_attempt_projection_is_exact_or_fails_as_corrupt(
+    tmp_path: Path,
+) -> None:
+    from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/query-integrity")
+        store = DbosAgentAttemptStore(runtime.engine)
+        store.prepare(request)
+        store.claim(request)
+        found = DbosQueries(runtime.engine).get_run(request.run_id)
+        assert isinstance(found, RunFound)
+        assert found.projection.current_agent_attempt is not None
+
+        forged_hash = AgentExecutionRequestHash("f" * 64)
+        forged_attempt_id = AgentAttemptId.for_execution(
+            request.node_execution_id, forged_hash
+        )
+        with runtime.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER agent_attempts_state_transition")
+            connection.execute(
+                agent_attempts.update().values(
+                    request_hash=forged_hash.value,
+                    attempt_id=forged_attempt_id.value,
+                )
+            )
+
+        assert isinstance(
+            DbosQueries(runtime.engine).get_run(request.run_id),
+            QueryDurableStateCorrupt,
+        )
+    finally:
+        runtime.close()
 
 
 def _seed_history(

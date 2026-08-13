@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 from typing import Any, cast
 
+import pytest
+import sqlalchemy as sa
+from fastapi.sse import ServerSentEvent
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer, graph_action_intent
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.queries import DbosQueries
@@ -34,9 +40,16 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.references import encode_public_run_reference
+from atelier2.api.stream import (
+    BoundedQueryRunner,
+    PreparedEventStream,
+    stream_server_events,
+)
 from atelier2.application.advance_run import advance_run
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.effects import (
@@ -56,7 +69,10 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
 from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
 from atelier2.ports.run_events import RunEventPage
-from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    commit_configured_agent,
+)
 from tests.scenarios.api import (
     SSE_COMPLETE_HISTORY,
     SSE_CURSOR_AFTER_THREE,
@@ -207,6 +223,83 @@ def _parse_events(body: str) -> list[dict[str, object]]:
             }
         )
     return parsed
+
+
+def test_agent_failed_stream_is_bounded_and_secret_free(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from tests.integration.test_agent_attempts import attempt_request
+
+    canary = "private-agent-secret-41b8e0"
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "controlled-process", b"unused"
+    )
+    factory.__dict__["private_material"] = canary
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "failed-sse"),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("failed-sse"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (factory,),
+    )
+    runtime.initialize_storage()
+    try:
+        caplog.set_level(logging.DEBUG)
+        request = attempt_request(runtime, "attempt/failed-sse")
+        store = DbosAgentAttemptStore(runtime.engine)
+        store.prepare(request)
+        store.claim(request)
+        store.complete_known_failure(request)
+        queries = DbosQueries(runtime.engine)
+
+        async def first_event() -> ServerSentEvent:
+            stream = aiter(
+                stream_server_events(
+                    PreparedEventStream(request.run_id, 0, 1, False),
+                    queries,
+                    BoundedQueryRunner(1, admission_timeout_seconds=1),
+                    page_size=1,
+                    limits=api_limits(),
+                    poll_backoff=event_poll_backoff(),
+                )
+            )
+            return await anext(stream)
+
+        streamed = asyncio.run(first_event())
+        stream_json = streamed.model_dump_json()
+        run_json = (
+            _client(runtime)
+            .get("/atelier/api/v1/runs/" + encode_public_run_reference(request.run_id))
+            .text
+        )
+        with runtime.engine.connect() as connection:
+            durable = {
+                table: tuple(
+                    tuple(row)
+                    for row in connection.exec_driver_sql(f'SELECT * FROM "{table}"')
+                )
+                for table in sa.inspect(connection).get_table_names()
+            }
+
+        assert '"event":"AGENT_FAILED"' in stream_json
+        assert '"failure_code":"PROCESS_EXITED_UNSUCCESSFULLY"' in stream_json
+        assert all(
+            canary not in channel
+            for channel in (
+                repr(durable),
+                run_json,
+                stream_json,
+                "\n".join(record.getMessage() for record in caplog.records),
+            )
+        )
+        assert "payload" not in stream_json
+        assert "base64" not in stream_json
+        assert "stderr" not in stream_json
+    finally:
+        runtime.close()
 
 
 def test_sse_emits_all_seven_persisted_events_and_resumes_after_cursor(

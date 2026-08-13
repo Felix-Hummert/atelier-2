@@ -147,7 +147,7 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
-def test_new_database_has_the_version_five_runtime_ledger(tmp_path: Path) -> None:
+def test_new_database_has_the_version_six_runtime_ledger(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
 
@@ -156,7 +156,7 @@ def test_new_database_has_the_version_five_runtime_ledger(tmp_path: Path) -> Non
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
-            == 5
+            == 6
         )
         assert set(sa.inspect(connection).get_table_names()) >= {
             effect_intents.name,
