@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
-from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_attempts import (
+    AgentAttempt,
+    AgentAttemptCancellationDisposition,
+    AgentAttemptFailureCode,
+    AgentProcessOwnerId,
+    WatchdogGenerationId,
+)
 from atelier2.contracts.agents import (
     AgentExecutionRequest,
     AgentExecutionRequestV2,
@@ -13,6 +20,7 @@ from atelier2.contracts.agents import (
     AgentExecutorRevision,
     ProviderId,
 )
+from atelier2.contracts.executions import AgentAttemptExecution
 
 
 class AgentExecutor(Protocol):
@@ -45,12 +53,82 @@ class AgentExecutionFailure:
     code: AgentAttemptFailureCode
 
 
+@dataclass(frozen=True)
+class AgentProcessInvocation:
+    """One provider process invocation, kept exclusively in live memory."""
+
+    arguments: tuple[str, ...]
+    working_directory: Path
+    environment: tuple[tuple[str, str], ...] = ()
+    standard_input: bytes = b""
+
+    def __post_init__(self) -> None:
+        if not self.arguments or any(not value for value in self.arguments):
+            raise ValueError("agent process arguments must be nonempty")
+        if not self.working_directory.is_absolute():
+            raise ValueError("agent process working directory must be absolute")
+        names = tuple(name for name, _value in self.environment)
+        if len(set(names)) != len(names) or any(not name for name in names):
+            raise ValueError(
+                "agent process environment names must be unique and nonempty"
+            )
+
+
+@dataclass(frozen=True)
+class AgentProcessCompletion:
+    return_code: int
+    standard_output: bytes
+    standard_error: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.return_code) is not int:
+            raise TypeError("agent process return code must be an integer")
+
+
 class AgentExecutorV2(Protocol):
-    def execute(
+    def prepare_process(
         self, request: AgentExecutionRequestV2
+    ) -> AgentProcessInvocation:
+        """Prepare a live-only invocation without starting a child."""
+        ...
+
+    def decode_process_completion(
+        self, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure: ...
 
     def close(self) -> None: ...
+
+
+class AgentProcessRunner(Protocol):
+    def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt: ...
+
+    def launch_and_wait(
+        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+    ) -> AgentProcessCompletion: ...
+
+    def cancel(
+        self, attempt: AgentAttempt
+    ) -> tuple[
+        AgentAttemptCancellationDisposition,
+        AgentProcessOwnerId,
+        WatchdogGenerationId,
+    ]: ...
+
+    def recover(
+        self, attempt: AgentAttempt
+    ) -> tuple[
+        AgentAttemptCancellationDisposition,
+        AgentProcessOwnerId,
+        WatchdogGenerationId,
+    ]: ...
+
+    def release(self, attempt: AgentAttempt) -> None: ...
+
+    def finalize(self, execution: AgentAttemptExecution) -> None: ...
+
+
+class AgentProcessOwnerNotLocal(Exception):
+    pass
 
 
 class AgentExecutorFactoryV2(Protocol):

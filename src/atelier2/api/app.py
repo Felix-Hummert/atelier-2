@@ -25,6 +25,7 @@ from atelier2.api.models import (
     AnyRunResource,
     AnyStartRunRequestResource,
     AuthProfileRevisionResource,
+    CancelAgentAttemptRequestResource,
     HealthResource,
     OperatorFoundDeterminationResource,
     PublishAgentConfigurationRevisionRequestResource,
@@ -71,6 +72,7 @@ from atelier2.application.answer_wait import (
     RunMissing,
     answer_wait_result,
 )
+from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
 from atelier2.application.publish_workflow_revision import (
     DurableStateCorrupt,
     PublicationCollision,
@@ -104,6 +106,11 @@ from atelier2.application.start_published_run import (
 from atelier2.application.start_published_run import (
     AgentExecutorBindingUnavailable as StartAgentExecutorBindingUnavailable,
 )
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptId,
+    AgentAttemptReplacement,
+    CancelAgentAttemptRequest,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -130,6 +137,17 @@ from atelier2.contracts.executions import (
     is_canonical_integer_bytes,
 )
 from atelier2.contracts.runs import RunId
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
+    AgentAttemptCancellationCommandConflict,
+    AgentAttemptCancellationNotCurrent,
+    AgentAttemptCancellationRunMissing,
+    AgentAttemptCancellationStale,
+    AgentAttemptCancellationTargetMissing,
+    AgentAttemptCancellationTerminalConflict,
+    AgentAttemptReplacementNotAllowed,
+    TransactionalAgentAttemptCanceller,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationCatalog,
     AgentConfigurationRevisionCollision,
@@ -191,6 +209,7 @@ class ApiPorts:
     run_event_queries: RunEventQueries
     workflow_document_parser: WorkflowDocumentParser
     agent_configuration_catalog: AgentConfigurationCatalog
+    agent_attempt_canceller: TransactionalAgentAttemptCanceller | None = None
 
 
 def create_app(
@@ -587,6 +606,71 @@ def create_app(
             runner,
             limits,
             workflow_projection_limit,
+        )
+
+    @app.post(
+        API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations",
+        response_model=AnyRunResource,
+        status_code=HTTPStatus.ACCEPTED,
+        responses={HTTPStatus.OK: {"model": AnyRunResource}},
+    )
+    async def cancel_agent_attempt_route(
+        public_ref: str,
+        attempt_id: str,
+        body: CancelAgentAttemptRequestResource,
+        _media: None = Depends(_require_json_media_dependency),
+    ) -> JSONResponse:
+        run_id = _decode_public_reference(public_ref, limits)
+        try:
+            limits.require_field(attempt_id)
+            parsed_attempt_id = AgentAttemptId(attempt_id)
+            request = CancelAgentAttemptRequest(
+                run_id,
+                parsed_attempt_id,
+                body.command_id,
+                body.expected_attempt_state_version,
+                AgentAttemptReplacement(body.replacement),
+            )
+        except (ApiLimitExceeded, TypeError, ValueError) as error:
+            raise ApiProblem("invalid-agent-attempt-id") from error
+        canceller = ports.agent_attempt_canceller
+        if canceller is None:
+            raise ApiProblem("internal-error")
+        result = await _run_control_query(
+            runner, lambda: cancel_agent_attempt(request, canceller)
+        )
+        match result:
+            case AgentAttemptCancellationAccepted(terminal=terminal):
+                status = HTTPStatus.OK if terminal else HTTPStatus.ACCEPTED
+            case AgentAttemptCancellationRunMissing():
+                raise ApiProblem("run-not-found")
+            case AgentAttemptCancellationTargetMissing():
+                raise ApiProblem("agent-attempt-not-found")
+            case AgentAttemptCancellationNotCurrent():
+                raise ApiProblem("agent-attempt-not-current")
+            case AgentAttemptCancellationStale():
+                raise ApiProblem("agent-attempt-cancellation-stale")
+            case AgentAttemptCancellationTerminalConflict():
+                raise ApiProblem("agent-attempt-terminal")
+            case AgentAttemptCancellationCommandConflict():
+                raise ApiProblem("cancellation-command-conflict")
+            case AgentAttemptReplacementNotAllowed():
+                raise ApiProblem("replacement-not-allowed")
+            case DurableWriteUnavailable():
+                raise ApiProblem("temporarily-unavailable")
+            case PortDurableStateCorrupt():
+                raise ApiProblem("durable-state-corrupt")
+            case _ as unreachable:
+                assert_never(unreachable)
+        return _resource_response(
+            await _load_run_resource(
+                run_id,
+                ports.run_queries,
+                runner,
+                limits,
+                workflow_projection_limit,
+            ),
+            status,
         )
 
     @app.post(

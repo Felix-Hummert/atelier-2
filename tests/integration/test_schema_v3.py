@@ -96,7 +96,7 @@ def engine_snapshot(
     return schema, rows
 
 
-def test_fresh_v6_has_the_closed_product_tables_and_reopens_idempotently(
+def test_fresh_v7_has_the_closed_product_tables_and_reopens_idempotently(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -107,7 +107,7 @@ def test_fresh_v6_has_the_closed_product_tables_and_reopens_idempotently(
         with engine.connect() as connection:
             assert connection.execute(
                 sa.text("SELECT version FROM atelier_schema_versions")
-            ).all() == [(6,)]
+            ).all() == [(7,)]
             assert PRODUCT_TABLE_NAMES.issubset(
                 sa.inspect(connection).get_table_names()
             )
@@ -171,6 +171,15 @@ def test_v2_tables_have_exact_secret_free_columns(tmp_path: Path) -> None:
             "attempt_ordinal",
             "state",
             "state_version",
+            "process_phase",
+            "process_owner_id",
+            "watchdog_generation_id",
+            "cancellation_command_id",
+            "cancellation_expected_state_version",
+            "replacement",
+            "redrive_state",
+            "cancellation_disposition",
+            "cancellation_workflow_id",
             "failure_code",
             "receipt_hash",
         ),
@@ -322,18 +331,18 @@ def test_v2_schema_checks_foreign_keys_and_immutability_refuse_canaries(
     engine.dispose()
 
 
-def test_malformed_v6_is_refused_without_mutation(tmp_path: Path) -> None:
+def test_malformed_v7_is_refused_without_mutation(tmp_path: Path) -> None:
     database = tmp_path / "atelier.sqlite"
     with sqlite3.connect(database) as connection:
         connection.execute(
             "CREATE TABLE atelier_schema_versions(version INTEGER PRIMARY KEY)"
         )
-        connection.execute("INSERT INTO atelier_schema_versions VALUES(6)")
+        connection.execute("INSERT INTO atelier_schema_versions VALUES(7)")
         connection.execute("CREATE TABLE workflow_revisions(wrong TEXT)")
     before = snapshot(database)
     engine = sa.create_engine(f"sqlite:///{database}")
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v6"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v7"):
         initialize_schema(engine)
 
     engine.dispose()
@@ -350,7 +359,7 @@ def test_malformed_v6_is_refused_without_mutation(tmp_path: Path) -> None:
         "changed-nullability",
     ],
 )
-def test_existing_v6_rejects_every_product_schema_drift_without_mutation(
+def test_existing_v7_rejects_every_product_schema_drift_without_mutation(
     tmp_path: Path, malformation: str
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -399,7 +408,7 @@ def test_existing_v6_rejects_every_product_schema_drift_without_mutation(
     before_schema = snapshot(database)
     before_rows = rows_snapshot(database)
     reopened = sa.create_engine(f"sqlite:///{database}")
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v6"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v7"):
         initialize_schema(reopened)
     reopened.dispose()
 
@@ -407,7 +416,7 @@ def test_existing_v6_rejects_every_product_schema_drift_without_mutation(
     assert rows_snapshot(database) == before_rows
 
 
-def test_existing_malformed_in_memory_v6_is_refused() -> None:
+def test_existing_malformed_in_memory_v7_is_refused() -> None:
     engine = sa.create_engine("sqlite://")
     initialize_schema(engine)
     with engine.begin() as connection:
@@ -419,7 +428,7 @@ def test_existing_malformed_in_memory_v6_is_refused() -> None:
             )
         )
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v6"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v7"):
         initialize_schema(engine)
     engine.dispose()
 
@@ -445,7 +454,7 @@ def test_nonempty_dbos_only_in_memory_database_is_not_treated_as_fresh() -> None
     engine.dispose()
 
 
-def test_dbos_owned_tables_are_allowed_and_unchanged_by_v6_preflight(
+def test_dbos_owned_tables_are_allowed_and_unchanged_by_v7_preflight(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -521,7 +530,10 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
         )
         connection.execute(
             sa.text(
-                "INSERT INTO run_events VALUES "
+                "INSERT INTO run_events("
+                "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+                "event_kind,payload,payload_hash,receipt_logical_key,"
+                "receipt_result_hash,event_hash) VALUES "
                 "('run-1',:revision,1,'action',:node,'ACTION_COMPLETED',"
                 ":payload,:payload_hash,'key',:result_hash,:event_hash)"
             ),
@@ -615,7 +627,10 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
         for sequence, event_kind in enumerate(receipt_kinds, start=1):
             connection.execute(
                 sa.text(
-                    "INSERT INTO run_events VALUES "
+                    "INSERT INTO run_events("
+                    "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+                    "event_kind,payload,payload_hash,receipt_logical_key,"
+                    "receipt_result_hash,event_hash) VALUES "
                     "('run-1',:revision,:sequence,'action',:node,:event_kind,"
                     ":payload,:payload_hash,'key',:result_hash,:event_hash)"
                 ),
@@ -670,7 +685,10 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
         with pytest.raises(IntegrityError), engine.begin() as connection:
             connection.execute(
                 sa.text(
-                    "INSERT INTO run_events VALUES "
+                    "INSERT INTO run_events("
+                    "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+                    "event_kind,payload,payload_hash,receipt_logical_key,"
+                    "receipt_result_hash,event_hash) VALUES "
                     "('run-1',:revision,3,'node',:node,:event_kind,"
                     ":payload,:payload_hash,:receipt_logical_key,"
                     ":receipt_result_hash,:event_hash)"
@@ -763,7 +781,10 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
             sa.text(
-                "INSERT INTO run_events VALUES "
+                "INSERT INTO run_events("
+                "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+                "event_kind,payload,payload_hash,receipt_logical_key,"
+                "receipt_result_hash,event_hash) VALUES "
                 "('run-2',:revision,1,'action',:node,'ACTION_COMPLETED',"
                 ":payload,:payload_hash,'key-1',:payload_hash,:event_hash)"
             ),

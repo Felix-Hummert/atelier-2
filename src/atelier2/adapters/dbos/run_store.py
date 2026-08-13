@@ -30,6 +30,7 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
     AgentBindingSetHash,
     AgentConfigurationRevisionHash,
@@ -278,6 +279,18 @@ def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
         bytes(record["payload"]),
         None if logical_key is None else LogicalEffectKey(str(logical_key)),
         None if result_hash is None else Sha256Hash(str(result_hash)),
+        None if record["agent_attempt_id"] is None else str(record["agent_attempt_id"]),
+        None if record["attempt_ordinal"] is None else int(record["attempt_ordinal"]),
+        None
+        if record["cancellation_command_id"] is None
+        else str(record["cancellation_command_id"]),
+        None if record["replacement"] is None else str(record["replacement"]),
+        None
+        if record["cancellation_disposition"] is None
+        else str(record["cancellation_disposition"]),
+        None
+        if record["replacement_attempt_id"] is None
+        else str(record["replacement_attempt_id"]),
     )
     if event.payload_hash.value != record["payload_hash"]:
         raise RunTransitionConflict("durable event payload hash disagrees")
@@ -295,6 +308,7 @@ def _existing_event(
     payload: bytes,
     receipt_logical_key: LogicalEffectKey | None,
     receipt_result_hash: Sha256Hash | None,
+    agent_attempt_id: AgentAttemptId | None = None,
 ) -> TransitionSnapshot | None:
     record = (
         session.execute(
@@ -303,6 +317,11 @@ def _existing_event(
                 run_events.c.revision_hash == revision_hash.value,
                 run_events.c.node_id == node_id,
                 run_events.c.event_kind == event_kind.value,
+                (
+                    run_events.c.agent_attempt_id.is_(None)
+                    if agent_attempt_id is None
+                    else run_events.c.agent_attempt_id == agent_attempt_id.value
+                ),
             )
         )
         .mappings()
@@ -355,6 +374,12 @@ def _insert_event(session: Any, event: RunEvent) -> None:
                 else event.receipt_result_hash.value
             ),
             event_hash=event.event_hash.value,
+            agent_attempt_id=event.agent_attempt_id,
+            attempt_ordinal=event.attempt_ordinal,
+            cancellation_command_id=event.cancellation_command_id,
+            replacement=event.replacement,
+            cancellation_disposition=event.cancellation_disposition,
+            replacement_attempt_id=event.replacement_attempt_id,
         )
     )
 
@@ -372,6 +397,8 @@ def _commit_event(
     receipt_logical_key: LogicalEffectKey | None = None,
     receipt_result_hash: Sha256Hash | None = None,
     terminal: bool = False,
+    agent_attempt_id: AgentAttemptId | None = None,
+    attempt_ordinal: int | None = None,
 ) -> TransitionSnapshot:
     existing = _existing_event(
         session,
@@ -382,6 +409,7 @@ def _commit_event(
         payload,
         receipt_logical_key,
         receipt_result_hash,
+        agent_attempt_id,
     )
     if existing is not None:
         return existing
@@ -415,6 +443,8 @@ def _commit_event(
         payload,
         receipt_logical_key,
         receipt_result_hash,
+        None if agent_attempt_id is None else agent_attempt_id.value,
+        attempt_ordinal,
     )
     terminal_hash: Sha256Hash | None = None
     if terminal:

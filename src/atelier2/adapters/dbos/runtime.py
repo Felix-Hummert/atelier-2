@@ -12,6 +12,10 @@ from dbos import DBOS, DBOSConfig, SQLAlchemyDatasource
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.agent_processes import (
+    AgentProcessSupervisor,
+    delegated_cgroup_root,
+)
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
@@ -51,6 +55,7 @@ _SQLITE_LOCK_TIMEOUT_SECONDS = 30.0
 _SQLITE_WAL_RETRY_SECONDS = 0.01
 _SQLITE_RETRYABLE_ERRORS = frozenset((sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
 _SHUTDOWN_WORKFLOW_COMPLETION_SECONDS = 1
+_DEFAULT_AGENT_TERMINATION_GRACE_SECONDS = 2.0
 
 
 class DbosRuntimeBindingConflict(RuntimeError):
@@ -74,16 +79,36 @@ class DbosRuntimeBinding:
     agent_executor: AgentExecutorBinding
     agent_executors_v2: tuple[AgentExecutorManifestEntry, ...]
     effect_adapter: EffectAdapterBinding
+    agent_process_control_root: Path
+    agent_process_cgroup_root: Path
+    agent_termination_grace_seconds: float
 
 
 @dataclass(frozen=True)
 class DbosRuntimeSettings:
     database_path: Path
     application_version: str
+    agent_process_control_root: Path | None = None
+    agent_process_cgroup_root: Path | None = None
+    agent_termination_grace_seconds: float = _DEFAULT_AGENT_TERMINATION_GRACE_SECONDS
 
     def __post_init__(self) -> None:
         if not self.application_version.strip():
             raise ValueError("application_version must be nonempty")
+        if self.agent_termination_grace_seconds <= 0:
+            raise ValueError("agent termination grace must be positive")
+
+    def process_control_root(self) -> Path:
+        root = self.agent_process_control_root
+        return (
+            (self.database_path.parent / ".atelier2-agent-control").resolve()
+            if root is None
+            else root.resolve()
+        )
+
+    def process_cgroup_root(self) -> Path:
+        root = self.agent_process_cgroup_root
+        return delegated_cgroup_root() if root is None else root.resolve()
 
     def binding(
         self,
@@ -97,6 +122,9 @@ class DbosRuntimeSettings:
             agent_executor,
             agent_executors_v2,
             effect_adapter,
+            self.process_control_root(),
+            self.process_cgroup_root(),
+            self.agent_termination_grace_seconds,
         )
 
 
@@ -155,6 +183,7 @@ class _BoundRuntime:
     agent_executors_v2: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...]
     effect_adapter_binding: EffectAdapterBinding
     effect_adapter: EffectAdapter
+    agent_process_supervisor: AgentProcessSupervisor
     leases: int = 0
     launched: bool = False
     storage_ready: bool = False
@@ -191,6 +220,7 @@ def _open_binding(
     agent_executor: AgentExecutor | None = None
     agent_executors_v2: list[tuple[AgentExecutorManifestEntry, AgentExecutorV2]] = []
     adapter: EffectAdapter | None = None
+    agent_process_supervisor: AgentProcessSupervisor | None = None
     try:
         initialize_schema(engine)
         with engine.connect() as connection:
@@ -277,6 +307,13 @@ def _open_binding(
         datasource = SQLAlchemyDatasource.create(
             sqlite_url(settings.database_path), engine=engine
         )
+        attempt_store = DbosAgentAttemptStore(engine, settings.application_version)
+        agent_process_supervisor = AgentProcessSupervisor(
+            attempt_store,
+            settings.process_control_root(),
+            settings.process_cgroup_root(),
+            grace_seconds=settings.agent_termination_grace_seconds,
+        )
         register_durable_run_workflow(
             datasource,
             agent_executor,
@@ -285,12 +322,18 @@ def _open_binding(
                 entry.key: (executor, entry.operational_identity)
                 for entry, executor in agent_executors_v2
             },
-            DbosAgentAttemptStore(engine),
+            attempt_store,
+            agent_process_supervisor,
             adapter,
             effect_binding,
         )
     except BaseException as original:
         cleanup_errors: list[BaseException] = []
+        if agent_process_supervisor is not None:
+            try:
+                agent_process_supervisor.close()
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
         resources: list[EffectAdapter | AgentExecutorV2 | AgentExecutor] = []
         if adapter is not None:
             resources.append(adapter)
@@ -321,6 +364,7 @@ def _open_binding(
         tuple(agent_executors_v2),
         effect_binding,
         adapter,
+        agent_process_supervisor,
     )
 
 
@@ -411,6 +455,10 @@ class _DbosProcessOwner:
                 resources: list[EffectAdapter | AgentExecutorV2 | AgentExecutor] = [
                     bound.effect_adapter
                 ]
+                try:
+                    bound.agent_process_supervisor.close()
+                except BaseException as error:
+                    errors.append(error)
                 resources.extend(
                     executor for _entry, executor in reversed(bound.agent_executors_v2)
                 )
@@ -505,6 +553,10 @@ class DbosRuntime:
     @property
     def agent_executor_registry(self) -> AgentExecutorRegistry:
         return self._held().agent_executor_registry
+
+    @property
+    def agent_process_supervisor(self) -> AgentProcessSupervisor:
+        return self._held().agent_process_supervisor
 
     @property
     def effect_adapter_binding(self) -> EffectAdapterBinding:

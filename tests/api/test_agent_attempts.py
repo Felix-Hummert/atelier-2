@@ -59,16 +59,18 @@ nodes:
         ),
         graph,
         None,
-        AgentAttemptProjection(
-            AgentAttemptId.for_execution(execution_id, request_hash),
-            execution_id,
-            request_hash,
-            1,
-            state,
-            (
-                AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-                if failure
-                else None
+        (
+            AgentAttemptProjection(
+                AgentAttemptId.for_execution(execution_id, request_hash),
+                execution_id,
+                request_hash,
+                1,
+                state,
+                (
+                    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+                    if failure
+                    else None
+                ),
             ),
         ),
     )
@@ -83,14 +85,17 @@ def test_attempt_surfaces_are_canonical_bounded_and_secret_free() -> None:
     attempt = projection.current_agent_attempt
     assert attempt is not None
 
-    assert payload["current_agent_attempt"] == {
-        "attempt_id": attempt.attempt_id.value,
-        "node_execution_id": attempt.node_execution_id.value,
-        "request_hash": "1" * 64,
-        "attempt_ordinal": 1,
-        "state": "POSSIBLY_RAN",
-        "failure_code": None,
-    }
+    assert payload["agent_attempts"] == [
+        {
+            "attempt_id": attempt.attempt_id.value,
+            "node_execution_id": attempt.node_execution_id.value,
+            "request_hash": "1" * 64,
+            "attempt_ordinal": 1,
+            "state": "POSSIBLY_RAN",
+            "failure_code": None,
+            "cancellation": None,
+        }
+    ]
     assert all(
         forbidden not in repr(payload).lower()
         for forbidden in (
@@ -107,8 +112,8 @@ def test_attempt_surfaces_are_canonical_bounded_and_secret_free() -> None:
 def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
     projection = _projection("FAILED", failure=True)
     attempt_resource = run_resource(projection).model_dump(mode="json")[
-        "current_agent_attempt"
-    ]
+        "agent_attempts"
+    ][0]
     attempt = projection.current_agent_attempt
     assert attempt is not None
     run = projection.run
@@ -120,6 +125,8 @@ def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
         attempt.node_execution_id,
         RunEventKind.AGENT_FAILED,
         b"PROCESS_EXITED_UNSUCCESSFULLY",
+        agent_attempt_id=attempt.attempt_id.value,
+        attempt_ordinal=1,
     )
     persisted = PersistedRunEvent(event, None, 2)
     event_resource = run_event_resource(persisted)
@@ -138,4 +145,6 @@ def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
         "event_hash": event.event_hash.value,
         "event": "AGENT_FAILED",
         "failure_code": "PROCESS_EXITED_UNSUCCESSFULLY",
+        "attempt_id": attempt.attempt_id.value,
+        "attempt_ordinal": 1,
     }

@@ -71,6 +71,7 @@ from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
 from atelier2.ports.run_events import RunEventPage
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
+    agent_attempt_execution,
     commit_configured_agent,
 )
 from tests.scenarios.api import (
@@ -250,9 +251,9 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
         caplog.set_level(logging.DEBUG)
         request = attempt_request(runtime, "attempt/failed-sse")
         store = DbosAgentAttemptStore(runtime.engine)
-        store.prepare(request)
-        store.claim(request)
-        store.complete_known_failure(request)
+        store.prepare(agent_attempt_execution(request))
+        store.claim(agent_attempt_execution(request))
+        store.complete_known_failure(agent_attempt_execution(request))
         queries = DbosQueries(runtime.engine)
 
         async def first_event() -> ServerSentEvent:

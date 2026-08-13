@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 metadata = sa.MetaData()
 
@@ -484,6 +484,15 @@ agent_attempts = sa.Table(
     sa.Column("attempt_ordinal", sa.Integer, nullable=False),
     sa.Column("state", sa.Text, nullable=False),
     sa.Column("state_version", sa.Integer, nullable=False),
+    sa.Column("process_phase", sa.Text, nullable=False),
+    sa.Column("process_owner_id", sa.Text, nullable=True),
+    sa.Column("watchdog_generation_id", sa.Text, nullable=True),
+    sa.Column("cancellation_command_id", sa.Text, nullable=True),
+    sa.Column("cancellation_expected_state_version", sa.Integer, nullable=True),
+    sa.Column("replacement", sa.Text, nullable=True),
+    sa.Column("redrive_state", sa.Text, nullable=True),
+    sa.Column("cancellation_disposition", sa.Text, nullable=True),
+    sa.Column("cancellation_workflow_id", sa.Text, unique=True, nullable=True),
     sa.Column("failure_code", sa.Text, nullable=True),
     sa.Column(
         "receipt_hash",
@@ -511,15 +520,66 @@ agent_attempts = sa.Table(
         "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint("length(node_id) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("attempt_ordinal = 1"),
+    sa.CheckConstraint("attempt_ordinal IN (1, 2)"),
+    sa.CheckConstraint(
+        "process_phase IN ('NONE', 'WATCHDOG_READY', 'LAUNCH_AUTHORIZED', "
+        "'PROCESS_OBSERVED', 'CLEANUP_ATTESTED')"
+    ),
+    sa.CheckConstraint(
+        "(process_phase = 'NONE' AND process_owner_id IS NULL "
+        "AND watchdog_generation_id IS NULL) OR "
+        "(process_phase = 'CLEANUP_ATTESTED' "
+        "AND cancellation_disposition = 'NEVER_LAUNCHED' "
+        "AND process_owner_id IS NULL AND watchdog_generation_id IS NULL) OR "
+        "(process_phase <> 'NONE' AND length(process_owner_id) BETWEEN 1 AND 1024 "
+        "AND length(watchdog_generation_id) BETWEEN 1 AND 1024)"
+    ),
+    sa.CheckConstraint(
+        "(cancellation_command_id IS NULL "
+        "AND cancellation_expected_state_version IS NULL "
+        "AND replacement IS NULL AND redrive_state IS NULL "
+        "AND cancellation_disposition IS NULL AND cancellation_workflow_id IS NULL) "
+        "OR (length(cancellation_command_id) BETWEEN 1 AND 1024 "
+        "AND cancellation_expected_state_version >= 0 "
+        "AND replacement IN ('NONE', 'ONE') "
+        "AND redrive_state IN ('PENDING', 'OWNER_NOT_LOCAL', 'CLEANUP_ATTESTED') "
+        "AND length(cancellation_workflow_id) > 0 "
+        "AND ((redrive_state = 'CLEANUP_ATTESTED' "
+        "AND cancellation_disposition IN ('NEVER_LAUNCHED', 'EXITED_BEFORE_SIGNAL', "
+        "'REAPED_AFTER_TERM', 'REAPED_AFTER_KILL', "
+        "'OWNER_LOST_AFTER_PARENT_DEATH')) OR "
+        "(redrive_state <> 'CLEANUP_ATTESTED' "
+        "AND cancellation_disposition IS NULL)))"
+    ),
     sa.CheckConstraint(
         "(state = 'PREPARED' AND state_version = 0 "
+        "AND process_phase = 'NONE' AND cancellation_command_id IS NULL "
+        "AND failure_code IS NULL AND receipt_hash IS NULL) OR "
+        "(state = 'PREPARED' AND state_version = 1 "
+        "AND process_phase = 'WATCHDOG_READY' AND cancellation_command_id IS NULL "
         "AND failure_code IS NULL AND receipt_hash IS NULL) OR "
         "(state = 'LAUNCH_ARMED' AND state_version = 1 "
+        "AND process_phase IN ('NONE', 'LAUNCH_AUTHORIZED') "
+        "AND cancellation_command_id IS NULL "
         "AND failure_code IS NULL AND receipt_hash IS NULL) OR "
-        "(state = 'SUCCEEDED' AND state_version = 2 "
+        "(state = 'LAUNCH_ARMED' AND state_version >= 2 "
+        "AND process_phase IN ('LAUNCH_AUTHORIZED', 'PROCESS_OBSERVED') "
+        "AND cancellation_command_id IS NULL "
+        "AND failure_code IS NULL AND receipt_hash IS NULL) OR "
+        "(state = 'CANCEL_REQUESTED' AND state_version >= 1 "
+        "AND cancellation_command_id IS NOT NULL "
+        "AND cancellation_disposition IS NULL "
+        "AND failure_code IS NULL AND receipt_hash IS NULL) OR "
+        "(state IN ('CANCELLED', 'INTERRUPTED') AND state_version >= 2 "
+        "AND process_phase = 'CLEANUP_ATTESTED' "
+        "AND cancellation_command_id IS NOT NULL "
+        "AND cancellation_disposition IS NOT NULL "
+        "AND failure_code IS NULL AND receipt_hash IS NULL) OR "
+        "(state = 'SUCCEEDED' AND state_version >= 2 "
+        "AND cancellation_command_id IS NULL "
         "AND failure_code IS NULL AND receipt_hash IS NOT NULL) OR "
-        "(state = 'FAILED' AND state_version = 2 "
+        "(state = 'FAILED' AND state_version >= 2 "
+        "AND cancellation_command_id IS NULL "
         "AND failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY' "
         "AND receipt_hash IS NULL)"
     ),
@@ -538,9 +598,13 @@ run_events = sa.Table(
     sa.Column("receipt_logical_key", sa.Text, nullable=True),
     sa.Column("receipt_result_hash", sa.Text, nullable=True),
     sa.Column("event_hash", sa.Text, nullable=False),
+    sa.Column("agent_attempt_id", sa.Text, nullable=True),
+    sa.Column("attempt_ordinal", sa.Integer, nullable=True),
+    sa.Column("cancellation_command_id", sa.Text, nullable=True),
+    sa.Column("replacement", sa.Text, nullable=True),
+    sa.Column("cancellation_disposition", sa.Text, nullable=True),
+    sa.Column("replacement_attempt_id", sa.Text, nullable=True),
     sa.PrimaryKeyConstraint("run_id", "event_sequence"),
-    sa.UniqueConstraint("run_id", "revision_hash", "node_id", "event_kind"),
-    sa.UniqueConstraint("node_execution_id", "event_kind"),
     sa.ForeignKeyConstraint(
         ("run_id", "revision_hash"), ("runs.run_id", "runs.revision_hash")
     ),
@@ -565,6 +629,7 @@ run_events = sa.Table(
     ),
     sa.CheckConstraint(
         "event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED', "
+        "'AGENT_CANCEL_REQUESTED', 'AGENT_CANCELLED', 'AGENT_INTERRUPTED', "
         "'ACTION_RECONCILIATION_REQUIRED', "
         "'ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED', 'WAITING_INPUT', "
         "'WAIT_ANSWERED', 'SUBWORKFLOW_COMPLETED')"
@@ -585,6 +650,48 @@ run_events = sa.Table(
         "('ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED') "
         "AND receipt_logical_key IS NULL AND receipt_result_hash IS NULL)"
     ),
+    sa.CheckConstraint(
+        "(agent_attempt_id IS NULL AND attempt_ordinal IS NULL "
+        "AND cancellation_command_id IS NULL AND replacement IS NULL "
+        "AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) "
+        "OR (length(agent_attempt_id) = 64 "
+        "AND agent_attempt_id NOT GLOB '*[^0-9a-f]*' "
+        "AND attempt_ordinal IN (1, 2) "
+        "AND ((event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED') "
+        "AND cancellation_command_id IS NULL AND replacement IS NULL "
+        "AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) "
+        "OR (event_kind = 'AGENT_CANCEL_REQUESTED' "
+        "AND length(cancellation_command_id) BETWEEN 1 AND 1024 "
+        "AND replacement IN ('NONE', 'ONE') "
+        "AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) "
+        "OR (event_kind IN ('AGENT_CANCELLED', 'AGENT_INTERRUPTED') "
+        "AND length(cancellation_command_id) BETWEEN 1 AND 1024 "
+        "AND replacement IN ('NONE', 'ONE') "
+        "AND cancellation_disposition IS NOT NULL)))"
+    ),
+)
+sa.Index(
+    "run_events_legacy_kind_unique",
+    run_events.c.run_id,
+    run_events.c.revision_hash,
+    run_events.c.node_id,
+    run_events.c.event_kind,
+    unique=True,
+    sqlite_where=run_events.c.agent_attempt_id.is_(None),
+)
+sa.Index(
+    "run_events_legacy_execution_kind_unique",
+    run_events.c.node_execution_id,
+    run_events.c.event_kind,
+    unique=True,
+    sqlite_where=run_events.c.agent_attempt_id.is_(None),
+)
+sa.Index(
+    "run_events_attempt_kind_unique",
+    run_events.c.agent_attempt_id,
+    run_events.c.event_kind,
+    unique=True,
+    sqlite_where=run_events.c.agent_attempt_id.is_not(None),
 )
 wait_answers = sa.Table(
     "wait_answers",
@@ -767,16 +874,33 @@ _PRODUCT_TRIGGERS = {
           AND OLD.workflow_revision_hash = NEW.workflow_revision_hash
           AND OLD.node_id = NEW.node_id
           AND OLD.attempt_ordinal = NEW.attempt_ordinal
+          AND NEW.state_version > OLD.state_version
           AND (
             (OLD.state = 'PREPARED' AND OLD.state_version = 0
              AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
-             AND NEW.state = 'LAUNCH_ARMED' AND NEW.state_version = 1
-             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+             AND NEW.state = 'PREPARED' AND NEW.state_version = 1
+             AND NEW.process_phase = 'WATCHDOG_READY'
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
             OR
-            (OLD.state = 'LAUNCH_ARMED' AND OLD.state_version = 1
+            (OLD.state = 'PREPARED'
+             AND NEW.state = 'LAUNCH_ARMED'
+             AND NEW.process_phase IN ('NONE', 'LAUNCH_AUTHORIZED')
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
+             AND OLD.process_phase = 'LAUNCH_AUTHORIZED'
+             AND NEW.state = 'LAUNCH_ARMED'
+             AND NEW.process_phase = 'PROCESS_OBSERVED'
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
              AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
-             AND NEW.state = 'SUCCEEDED' AND NEW.state_version = 2
+             AND NEW.state = 'SUCCEEDED'
              AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NOT NULL
+             AND NEW.cancellation_command_id IS NULL
              AND EXISTS (
                SELECT 1 FROM agent_receipts_v2 AS receipt
                WHERE receipt.receipt_hash = NEW.receipt_hash
@@ -788,11 +912,33 @@ _PRODUCT_TRIGGERS = {
                  AND receipt.node_id = NEW.node_id
              ))
             OR
-            (OLD.state = 'LAUNCH_ARMED' AND OLD.state_version = 1
+            (OLD.state = 'LAUNCH_ARMED'
              AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
-             AND NEW.state = 'FAILED' AND NEW.state_version = 2
+             AND NEW.state = 'FAILED'
              AND NEW.failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY'
-             AND NEW.receipt_hash IS NULL)
+             AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state IN ('PREPARED', 'LAUNCH_ARMED')
+             AND OLD.cancellation_command_id IS NULL
+             AND NEW.state = 'CANCEL_REQUESTED'
+             AND NEW.cancellation_command_id IS NOT NULL
+             AND NEW.cancellation_expected_state_version = OLD.state_version
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND NEW.state = 'CANCEL_REQUESTED'
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.redrive_state = 'OWNER_NOT_LOCAL'
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND NEW.state IN ('CANCELLED', 'INTERRUPTED')
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.process_phase = 'CLEANUP_ATTESTED'
+             AND NEW.redrive_state = 'CLEANUP_ATTESTED'
+             AND NEW.cancellation_disposition IS NOT NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
           )
         ) BEGIN
           SELECT RAISE(ABORT, 'invalid agent attempt transition');
@@ -848,7 +994,7 @@ class MigrationRequired(UnsupportedSchemaVersion):
 
 def _require_supported_versions(versions: Sequence[int]) -> None:
     normalized = tuple(versions)
-    if normalized in {(1,), (2,), (3,), (4,), (5,)}:
+    if normalized in {(1,), (2,), (3,), (4,), (5,), (6,)}:
         raise MigrationRequired(normalized[0])
     if normalized != (SCHEMA_VERSION,):
         raise UnsupportedSchemaVersion(normalized)

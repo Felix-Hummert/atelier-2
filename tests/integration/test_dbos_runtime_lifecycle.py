@@ -55,6 +55,8 @@ from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRe
 from atelier2.ports.agent_executions import (
     AgentExecutorFactoryV2,
     AgentExecutorKey,
+    AgentProcessCompletion,
+    AgentProcessInvocation,
 )
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import (
@@ -589,8 +591,16 @@ class CloseFailingExecutor:
     name: str
     lifecycle: list[str]
 
-    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult:
+    def prepare_process(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentProcessInvocation:
         del request
+        return AgentProcessInvocation(("/bin/true",), Path.cwd())
+
+    def decode_process_completion(
+        self, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult:
+        del completion
         return AgentExecutionResult(b"")
 
     def close(self) -> None:
@@ -620,8 +630,16 @@ class CloseFailingFactory:
 
 @dataclass
 class ChangingKeyExecutor:
-    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult:
+    def prepare_process(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentProcessInvocation:
         del request
+        return AgentProcessInvocation(("/bin/true",), Path.cwd())
+
+    def decode_process_completion(
+        self, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult:
+        del completion
         return AgentExecutionResult(b"")
 
     def close(self) -> None:
@@ -680,8 +698,16 @@ class BaseExceptionCloseExecutor:
     failure: BaseException
     lifecycle: list[str]
 
-    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult:
+    def prepare_process(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentProcessInvocation:
         del request
+        return AgentProcessInvocation(("/bin/true",), Path.cwd())
+
+    def decode_process_completion(
+        self, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult:
+        del completion
         return AgentExecutionResult(b"")
 
     def close(self) -> Never:

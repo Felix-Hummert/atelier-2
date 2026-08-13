@@ -299,14 +299,48 @@ class AgentAttemptResourceV2(ApiModel):
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
     request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    attempt_ordinal: Literal[1]
-    state: Literal["PREPARED", "POSSIBLY_RAN", "FAILED"]
+    attempt_ordinal: Literal[1, 2]
+    state: Literal[
+        "PREPARED",
+        "POSSIBLY_RAN",
+        "CANCEL_REQUESTED",
+        "CANCELLED",
+        "INTERRUPTED",
+        "FAILED",
+    ]
     failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"] | None
+    cancellation: AgentAttemptCancellationResourceV2 | None
 
     @model_validator(mode="after")
     def validate_failure_shape(self) -> AgentAttemptResourceV2:
         if (self.state == "FAILED") != (self.failure_code is not None):
             raise ValueError("agent attempt state and failure code disagree")
+        if (self.state in {"CANCEL_REQUESTED", "CANCELLED", "INTERRUPTED"}) != (
+            self.cancellation is not None
+        ):
+            raise ValueError("agent attempt state and cancellation disagree")
+        return self
+
+
+class AgentAttemptCancellationResourceV2(ApiModel):
+    command_id: str = Field(min_length=1, max_length=1_024)
+    replacement: Literal["NONE", "ONE"]
+    redrive_state: Literal["PENDING", "OWNER_NOT_LOCAL", "CLEANUP_ATTESTED"]
+    disposition: (
+        Literal[
+            "NEVER_LAUNCHED",
+            "EXITED_BEFORE_SIGNAL",
+            "REAPED_AFTER_TERM",
+            "REAPED_AFTER_KILL",
+            "OWNER_LOST_AFTER_PARENT_DEATH",
+        ]
+        | None
+    )
+
+    @model_validator(mode="after")
+    def validate_attestation_shape(self) -> AgentAttemptCancellationResourceV2:
+        if (self.redrive_state == "CLEANUP_ATTESTED") != (self.disposition is not None):
+            raise ValueError("cleanup attestation and disposition disagree")
         return self
 
 
@@ -326,7 +360,7 @@ class RunResourceV2(ApiModel):
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]
     current_node: NodeResourceV2
-    current_agent_attempt: AgentAttemptResourceV2 | None = None
+    agent_attempts: tuple[AgentAttemptResourceV2, ...] = Field(max_length=2)
     waiting: WaitingResourceV2
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
     latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
@@ -472,11 +506,55 @@ class AgentCompletedEventResourceV2(RunEventBaseResourceV2):
     event: Literal["AGENT_COMPLETED"]
     output_base64: str
     output_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
 
 
 class AgentFailedEventResourceV2(RunEventBaseResourceV2):
     event: Literal["AGENT_FAILED"]
     failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"]
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
+
+
+class AgentCancelRequestedEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["AGENT_CANCEL_REQUESTED"]
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
+    command_id: str = Field(min_length=1, max_length=1_024)
+    replacement: Literal["NONE", "ONE"]
+
+
+class AgentCancelledEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["AGENT_CANCELLED"]
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
+    command_id: str = Field(min_length=1, max_length=1_024)
+    replacement: Literal["NONE", "ONE"]
+    disposition: Literal[
+        "NEVER_LAUNCHED",
+        "EXITED_BEFORE_SIGNAL",
+        "REAPED_AFTER_TERM",
+        "REAPED_AFTER_KILL",
+        "OWNER_LOST_AFTER_PARENT_DEATH",
+    ]
+    replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class AgentInterruptedEventResourceV2(RunEventBaseResourceV2):
+    event: Literal["AGENT_INTERRUPTED"]
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
+    command_id: str = Field(min_length=1, max_length=1_024)
+    replacement: Literal["NONE", "ONE"]
+    disposition: Literal[
+        "NEVER_LAUNCHED",
+        "EXITED_BEFORE_SIGNAL",
+        "REAPED_AFTER_TERM",
+        "REAPED_AFTER_KILL",
+        "OWNER_LOST_AFTER_PARENT_DEATH",
+    ]
+    replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 
 class ActionReconciliationRequiredEventResourceV2(RunEventBaseResourceV2):
@@ -515,6 +593,9 @@ class SubworkflowCompletedEventResourceV2(RunEventBaseResourceV2):
 RunEventResourceV2 = Annotated[
     AgentCompletedEventResourceV2
     | AgentFailedEventResourceV2
+    | AgentCancelRequestedEventResourceV2
+    | AgentCancelledEventResourceV2
+    | AgentInterruptedEventResourceV2
     | ActionReconciliationRequiredEventResourceV2
     | ActionReconciliationResolvedEventResourceV2
     | ActionCompletedEventResourceV2
@@ -561,6 +642,12 @@ class ReconcileRunRequestResource(ApiModel):
     actor: str = Field(min_length=1)
     evidence: str = Field(min_length=1)
     determination: ReconciliationDeterminationResource
+
+
+class CancelAgentAttemptRequestResource(ApiModel):
+    command_id: str = Field(min_length=1, max_length=1_024)
+    expected_attempt_state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
+    replacement: Literal["NONE", "ONE"]
 
 
 class ProblemResource(ApiModel):
@@ -796,26 +883,42 @@ def _run_resource_v2(
         state_version=run.state_version,
         state=run.state.value,
         current_node=cast(NodeResourceV2, node_resource(node)),
-        current_agent_attempt=(
-            None
-            if projection.current_agent_attempt is None
-            else AgentAttemptResourceV2(
-                attempt_id=projection.current_agent_attempt.attempt_id.value,
-                node_execution_id=(
-                    projection.current_agent_attempt.node_execution_id.value
-                ),
-                request_hash=projection.current_agent_attempt.request_hash.value,
-                attempt_ordinal=1,
+        agent_attempts=tuple(
+            AgentAttemptResourceV2(
+                attempt_id=attempt.attempt_id.value,
+                node_execution_id=attempt.node_execution_id.value,
+                request_hash=attempt.request_hash.value,
+                attempt_ordinal=cast(Literal[1, 2], attempt.attempt_ordinal),
                 state=cast(
-                    Literal["PREPARED", "POSSIBLY_RAN", "FAILED"],
-                    projection.current_agent_attempt.state,
+                    Literal[
+                        "PREPARED",
+                        "POSSIBLY_RAN",
+                        "CANCEL_REQUESTED",
+                        "CANCELLED",
+                        "INTERRUPTED",
+                        "FAILED",
+                    ],
+                    attempt.state,
                 ),
                 failure_code=(
+                    None if attempt.failure_code is None else attempt.failure_code.value
+                ),
+                cancellation=(
                     None
-                    if projection.current_agent_attempt.failure_code is None
-                    else projection.current_agent_attempt.failure_code.value
+                    if attempt.cancellation is None
+                    else AgentAttemptCancellationResourceV2(
+                        command_id=attempt.cancellation.command_id,
+                        replacement=attempt.cancellation.replacement.value,
+                        redrive_state=attempt.cancellation.redrive_state.value,
+                        disposition=(
+                            None
+                            if attempt.cancellation.disposition is None
+                            else attempt.cancellation.disposition.value
+                        ),
+                    )
                 ),
             )
+            for attempt in projection.agent_attempts
         ),
         waiting=waiting,
         terminal_hash=None if run.terminal_hash is None else run.terminal_hash.value,
@@ -927,20 +1030,80 @@ def _run_event_resource_v2(projection: PersistedRunEvent) -> RunEventResourceV2:
         "event_hash": event.event_hash.value,
     }
     if event.event_kind is RunEventKind.AGENT_COMPLETED:
+        if event.agent_attempt_id is None or event.attempt_ordinal is None:
+            raise ValueError("V2 agent completion has no exact attempt binding")
         return AgentCompletedEventResourceV2(
             event=event.event_kind.value,
             output_base64=encode_canonical_base64(event.payload),
             output_hash=event.payload_hash.value,
+            attempt_id=event.agent_attempt_id,
+            attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
             **common,
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
         failure_code = event.payload.decode("ascii")
         if failure_code != "PROCESS_EXITED_UNSUCCESSFULLY":
             raise ValueError("durable agent failure payload is not canonical")
+        if event.agent_attempt_id is None or event.attempt_ordinal is None:
+            raise ValueError("V2 agent failure has no exact attempt binding")
         return AgentFailedEventResourceV2(
             event=event.event_kind.value,
             failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+            attempt_id=event.agent_attempt_id,
+            attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
             **common,
+        )
+    if event.event_kind is RunEventKind.AGENT_CANCEL_REQUESTED:
+        if (
+            event.agent_attempt_id is None
+            or event.attempt_ordinal is None
+            or event.cancellation_command_id is None
+            or event.replacement is None
+        ):
+            raise ValueError("V2 cancellation request has no exact binding")
+        return AgentCancelRequestedEventResourceV2(
+            event=event.event_kind.value,
+            attempt_id=event.agent_attempt_id,
+            attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
+            command_id=event.cancellation_command_id,
+            replacement=cast(Literal["NONE", "ONE"], event.replacement),
+            **common,
+        )
+    if event.event_kind in {
+        RunEventKind.AGENT_CANCELLED,
+        RunEventKind.AGENT_INTERRUPTED,
+    }:
+        if (
+            event.agent_attempt_id is None
+            or event.attempt_ordinal is None
+            or event.cancellation_command_id is None
+            or event.replacement is None
+            or event.cancellation_disposition is None
+        ):
+            raise ValueError("V2 cancellation terminal has no exact binding")
+        terminal_common = {
+            "attempt_id": event.agent_attempt_id,
+            "attempt_ordinal": cast(Literal[1, 2], event.attempt_ordinal),
+            "command_id": event.cancellation_command_id,
+            "replacement": cast(Literal["NONE", "ONE"], event.replacement),
+            "disposition": cast(
+                Literal[
+                    "NEVER_LAUNCHED",
+                    "EXITED_BEFORE_SIGNAL",
+                    "REAPED_AFTER_TERM",
+                    "REAPED_AFTER_KILL",
+                    "OWNER_LOST_AFTER_PARENT_DEATH",
+                ],
+                event.cancellation_disposition,
+            ),
+            "replacement_attempt_id": event.replacement_attempt_id,
+        }
+        if event.event_kind is RunEventKind.AGENT_CANCELLED:
+            return AgentCancelledEventResourceV2(
+                event=event.event_kind.value, **terminal_common, **common
+            )
+        return AgentInterruptedEventResourceV2(
+            event="AGENT_INTERRUPTED", **terminal_common, **common
         )
     if event.event_kind is RunEventKind.ACTION_RECONCILIATION_REQUIRED:
         return ActionReconciliationRequiredEventResourceV2(

@@ -5,6 +5,11 @@ from typing import Any, Literal, TypedDict, cast
 
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
+from atelier2.adapters.agent_processes import AgentProcessSupervisor
+from atelier2.adapters.dbos.agent_attempt_store import (
+    CANCELLATION_WORKFLOW_NAME,
+    REPLACEMENT_WORKFLOW_NAME,
+)
 from atelier2.adapters.dbos.continuation import (
     ACTION_CONTINUATION_WORKFLOW_NAME,
     checkpoint_confirmed_action,
@@ -27,7 +32,14 @@ from atelier2.adapters.dbos.run_store import (
     load_run,
     load_wait_answer,
 )
+from atelier2.application.cancel_agent_attempt import (
+    continue_agent_attempt_cancellation,
+)
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptId,
+    CancelAgentAttemptRequest,
+)
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionHash,
@@ -50,6 +62,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.executions import (
+    AgentAttemptExecution,
     NodeExecutionId,
     node_workflow_id_for,
     subworkflow_workflow_id_for,
@@ -93,6 +106,7 @@ ANSWER_COMMIT_STEP_NAME = "answer-commit/0"
 OBSERVE_STEP_NAME = "observe/0"
 RESOLVE_STEP_NAME = "resolve/1"
 COMMIT_STEP_NAME = "commit/2"
+CANCELLATION_REDRIVE_SECONDS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0)
 
 
 class RunBindingConflict(RuntimeError):
@@ -243,6 +257,44 @@ def _node_binding(
     )
 
 
+def _agent_request_v2(
+    binding: EncodedAgentBindingV2,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    operational_identity: AgentExecutorOperationalIdentity,
+) -> AgentExecutionRequestV2:
+    auth = AuthProfileRevision(
+        binding["profile_id"],
+        binding["revision_number"],
+        ProviderId(binding["provider_id"]),
+        AuthMode(binding["auth_mode"]),
+    )
+    if auth.revision_hash != AuthProfileRevisionHash(binding["auth_hash"]):
+        raise RunBindingConflict("V2 auth fields differ from their durable hash")
+    configuration = AgentConfigurationRevision(
+        binding["model"],
+        auth.revision_hash,
+        AgentExecutorRevision(binding["executor_revision"]),
+    )
+    if configuration.revision_hash != AgentConfigurationRevisionHash(
+        binding["configuration_hash"]
+    ):
+        raise RunBindingConflict(
+            "V2 configuration fields differ from their durable hash"
+        )
+    resolved = ResolvedAgentBinding(AgentRole(binding["role"]), configuration, auth)
+    return AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run_id, revision_hash, node_id),
+        run_id,
+        revision_hash,
+        node_id,
+        resolved,
+        operational_identity,
+        binding["job"].encode("utf-8"),
+    )
+
+
 def register_durable_run_workflow(
     datasource: SQLAlchemyDatasource,
     agent_executor: AgentExecutor,
@@ -251,6 +303,7 @@ def register_durable_run_workflow(
         AgentExecutorKey, tuple[AgentExecutorV2, AgentExecutorOperationalIdentity]
     ],
     agent_attempt_store: AgentAttemptStore,
+    agent_process_supervisor: AgentProcessSupervisor,
     adapter: EffectAdapter,
     effect_binding: EffectAdapterBinding,
 ) -> None:
@@ -274,6 +327,85 @@ def register_durable_run_workflow(
     @DBOS.workflow(name=SUBWORKFLOW_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_add(left: int, right: int) -> int:
         return left + right
+
+    @DBOS.workflow(name=CANCELLATION_WORKFLOW_NAME, max_recovery_attempts=None)
+    def durable_agent_attempt_cancellation(
+        run_id: str, attempt_id: str, command_id: str
+    ) -> str:
+        attempt = agent_attempt_store.load(AgentAttemptId(attempt_id))
+        cancellation = attempt.cancellation
+        if cancellation is None or attempt.run_id != RunId(run_id):
+            raise RunTransitionConflict(
+                "cancellation workflow differs from its durable attempt"
+            )
+        request = CancelAgentAttemptRequest(
+            attempt.run_id,
+            attempt.attempt_id,
+            command_id,
+            cancellation.expected_attempt_state_version,
+            cancellation.replacement,
+        )
+        redrive_index = 0
+        while (
+            continue_agent_attempt_cancellation(
+                request, agent_attempt_store, agent_process_supervisor
+            )
+            is None
+        ):
+            DBOS.sleep(
+                CANCELLATION_REDRIVE_SECONDS[
+                    min(redrive_index, len(CANCELLATION_REDRIVE_SECONDS) - 1)
+                ]
+            )
+            redrive_index += 1
+        return agent_attempt_store.load(attempt.attempt_id).state.value
+
+    @DBOS.workflow(name=REPLACEMENT_WORKFLOW_NAME, max_recovery_attempts=None)
+    def durable_agent_attempt_replacement(attempt_id: str) -> str:
+        replacement = agent_attempt_store.load(AgentAttemptId(attempt_id))
+        binding = _node_binding(
+            datasource,
+            replacement.run_id,
+            replacement.workflow_revision_hash,
+            replacement.node_id,
+        )
+        if binding["type"] != "agent-v2":
+            raise RunTransitionConflict("replacement attempt is not a V2 agent node")
+        executor, operational_identity = agent_executors_v2[
+            AgentExecutorKey(
+                ProviderId(binding["provider_id"]),
+                AgentExecutorRevision(binding["executor_revision"]),
+            )
+        ]
+        request = _agent_request_v2(
+            binding,
+            replacement.run_id,
+            replacement.workflow_revision_hash,
+            replacement.node_id,
+            operational_identity,
+        )
+        if (
+            request.node_execution_id != replacement.node_execution_id
+            or request.request_hash != replacement.request_hash
+            or request.executor_operational_identity
+            != replacement.executor_operational_identity
+        ):
+            raise RunTransitionConflict(
+                "replacement workflow differs from its durable attempt binding"
+            )
+        outcome = execute_agent_attempt(
+            AgentAttemptExecution(request, replacement.attempt_id, 2),
+            executor,
+            agent_attempt_store,
+            agent_process_supervisor,
+        )
+        if isinstance(outcome, AgentAttemptSucceeded):
+            start_node(
+                replacement.run_id,
+                replacement.workflow_revision_hash,
+                outcome.successor_node_id,
+            )
+        return outcome.attempt.state.value
 
     @DBOS.workflow(name=NODE_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_node(run_id: str, revision_hash: str, node_id: str) -> str:
@@ -340,8 +472,20 @@ def register_durable_run_workflow(
                 operational_identity,
                 binding["job"].encode("utf-8"),
             )
+            attempt_execution = AgentAttemptExecution(
+                execution_request_v2,
+                AgentAttemptId.for_execution(
+                    execution_request_v2.node_execution_id,
+                    execution_request_v2.request_hash,
+                    1,
+                ),
+                1,
+            )
             outcome = execute_agent_attempt(
-                execution_request_v2, executor, agent_attempt_store
+                attempt_execution,
+                executor,
+                agent_attempt_store,
+                agent_process_supervisor,
             )
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value

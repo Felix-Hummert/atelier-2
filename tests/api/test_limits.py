@@ -90,6 +90,7 @@ def test_agent_attempt_public_fields_use_the_shared_field_bound() -> None:
         attempt_ordinal=1,
         state="POSSIBLY_RAN",
         failure_code=None,
+        cancellation=None,
     )
 
     with pytest.raises(ApiLimitExceeded):

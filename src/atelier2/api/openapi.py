@@ -15,9 +15,12 @@ from atelier2.api.models import (
     ActionReconciliationRequiredEventResourceV2,
     ActionReconciliationResolvedEventResource,
     ActionReconciliationResolvedEventResourceV2,
+    AgentCancelledEventResourceV2,
+    AgentCancelRequestedEventResourceV2,
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
     AgentFailedEventResourceV2,
+    AgentInterruptedEventResourceV2,
     SubworkflowCompletedEventResource,
     SubworkflowCompletedEventResourceV2,
     WaitAnsweredEventResource,
@@ -30,11 +33,15 @@ from atelier2.api.references import (
     EVENT_CURSOR_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
+    SHA256_HASH_PATTERN,
 )
 from atelier2.contracts.executions import RunEventKind
 
 API_PREFIX = "/atelier/api/v1"
 EVENT_PATH = API_PREFIX + "/runs/{public_ref}/events"
+CANCELLATION_PATH = (
+    API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations"
+)
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -48,6 +55,9 @@ EVENT_MODELS = (
 EVENT_MODELS_V2 = (
     AgentCompletedEventResourceV2,
     AgentFailedEventResourceV2,
+    AgentCancelRequestedEventResourceV2,
+    AgentCancelledEventResourceV2,
+    AgentInterruptedEventResourceV2,
     ActionReconciliationRequiredEventResourceV2,
     ActionReconciliationResolvedEventResourceV2,
     ActionCompletedEventResourceV2,
@@ -56,7 +66,15 @@ EVENT_MODELS_V2 = (
     SubworkflowCompletedEventResourceV2,
 )
 EVENT_NAMES = tuple(
-    kind.value for kind in RunEventKind if kind is not RunEventKind.AGENT_FAILED
+    kind.value
+    for kind in RunEventKind
+    if kind
+    not in {
+        RunEventKind.AGENT_FAILED,
+        RunEventKind.AGENT_CANCEL_REQUESTED,
+        RunEventKind.AGENT_CANCELLED,
+        RunEventKind.AGENT_INTERRUPTED,
+    }
 )
 EVENT_NAMES_V2 = tuple(kind.value for kind in RunEventKind)
 
@@ -126,6 +144,22 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/runs/{public_ref}", "get"): (
         "invalid-public-run-reference",
         "run-not-found",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (CANCELLATION_PATH, "post"): (
+        "invalid-public-run-reference",
+        "invalid-agent-attempt-id",
+        "invalid-request",
+        "unsupported-media-type",
+        "run-not-found",
+        "agent-attempt-not-found",
+        "agent-attempt-not-current",
+        "agent-attempt-cancellation-stale",
+        "agent-attempt-terminal",
+        "cancellation-command-conflict",
+        "replacement-not-allowed",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -327,6 +361,10 @@ def _install_event_components(schema: dict[str, Any]) -> None:
         "type": "string",
         "pattern": REVISION_HASH_PATTERN,
     }
+    components["AgentAttemptId"] = {
+        "type": "string",
+        "pattern": SHA256_HASH_PATTERN,
+    }
 
 
 def _install_parameter_contracts(schema: dict[str, Any]) -> None:
@@ -334,6 +372,7 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
         "PublicRunReference": (
             (API_PREFIX + "/runs", "get", "after", "query"),
             (API_PREFIX + "/runs/{public_ref}", "get", "public_ref", "path"),
+            (CANCELLATION_PATH, "post", "public_ref", "path"),
             (
                 API_PREFIX + "/runs/{public_ref}/answers",
                 "post",
@@ -371,6 +410,12 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
                 location,
                 {"$ref": f"#/components/schemas/{component}"},
             )
+    _replace_parameter_schema(
+        schema["paths"][CANCELLATION_PATH]["post"],
+        "attempt_id",
+        "path",
+        {"$ref": "#/components/schemas/AgentAttemptId"},
+    )
     limit_schema = {
         "type": "integer",
         "minimum": 1,
@@ -391,6 +436,7 @@ def _install_versioned_run_unions(schema: dict[str, Any]) -> None:
     for path, method, statuses in (
         (API_PREFIX + "/runs", "post", ("200", "201")),
         (API_PREFIX + "/runs/{public_ref}", "get", ("200",)),
+        (CANCELLATION_PATH, "post", ("200", "202")),
         (API_PREFIX + "/runs/{public_ref}/answers", "post", ("200", "202")),
         (
             API_PREFIX + "/runs/{public_ref}/reconciliations",

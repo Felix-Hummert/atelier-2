@@ -10,7 +10,13 @@ from openapi_spec_validator import OpenAPIV31SpecValidator, validate
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api import openapi as openapi_module
 from atelier2.api.app import ApiPorts, create_app
-from atelier2.api.openapi import API_PREFIX, EVENT_NAMES, EVENT_NAMES_V2, EVENT_PATH
+from atelier2.api.openapi import (
+    API_PREFIX,
+    CANCELLATION_PATH,
+    EVENT_NAMES,
+    EVENT_NAMES_V2,
+    EVENT_PATH,
+)
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
@@ -52,6 +58,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/runs/{public_ref}",
     API_PREFIX + "/runs/{public_ref}/answers",
     API_PREFIX + "/runs/{public_ref}/reconciliations",
+    CANCELLATION_PATH,
     EVENT_PATH,
 }
 
@@ -67,6 +74,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}/answers", "post"): {"200", "202"},
     (API_PREFIX + "/runs/{public_ref}/reconciliations", "post"): {"200", "202"},
+    (CANCELLATION_PATH, "post"): {"200", "202"},
     (EVENT_PATH, "get"): {"200"},
 }
 
@@ -180,6 +188,7 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
         API_PREFIX + "/runs",
         API_PREFIX + "/runs/{public_ref}/answers",
         API_PREFIX + "/runs/{public_ref}/reconciliations",
+        CANCELLATION_PATH,
     ):
         assert set(schema["paths"][path]["post"]["requestBody"]["content"]) == {
             "application/json"

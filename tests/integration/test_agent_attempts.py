@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import threading
+import sys
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -28,7 +28,6 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
-    AgentAttemptState,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -58,11 +57,18 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionCreated,
     AuthProfileRevisionExisting,
 )
-from atelier2.ports.agent_executions import AgentExecutionFailure
+from atelier2.ports.agent_executions import (
+    AgentExecutionFailure,
+    AgentProcessCompletion,
+    AgentProcessInvocation,
+)
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.run_queries import RunFound
 from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_attempt_execution,
+)
 
 _DOCUMENT = b"""format_version: 2
 start: build
@@ -138,18 +144,33 @@ def attempt_request(
 @dataclass
 class _InspectingExecutor:
     runtime: DbosRuntime
+    output: bytes = b"done"
+    delay_seconds: float = 0
     calls: int = 0
 
-    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult:
+    def prepare_process(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentProcessInvocation:
+        del request
+        return AgentProcessInvocation(
+            (
+                sys.executable,
+                "-c",
+                "import os,time,sys; time.sleep(float(sys.argv[1])); os.write(1,bytes.fromhex(sys.argv[2]))",
+                str(self.delay_seconds),
+                self.output.hex(),
+            ),
+            Path.cwd(),
+        )
+
+    def decode_process_completion(
+        self, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult:
         with self.runtime.engine.connect() as connection:
-            state = connection.scalar(
-                sa.select(agent_attempts.c.state).where(
-                    agent_attempts.c.request_hash == request.request_hash.value
-                )
-            )
-        assert state == AgentAttemptState.LAUNCH_ARMED.value
+            state = connection.scalar(sa.select(agent_attempts.c.process_phase))
+        assert state == "PROCESS_OBSERVED"
         self.calls += 1
-        return AgentExecutionResult(b"done")
+        return AgentExecutionResult(completion.standard_output)
 
     def close(self) -> None:
         pass
@@ -165,7 +186,10 @@ def test_attempt_is_prepared_before_controlled_executor_invocation(
         executor = _InspectingExecutor(runtime)
 
         outcome = execute_agent_attempt(
-            request, executor, DbosAgentAttemptStore(runtime.engine)
+            agent_attempt_execution(request),
+            executor,
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
@@ -174,40 +198,25 @@ def test_attempt_is_prepared_before_controlled_executor_invocation(
         runtime.close()
 
 
-@dataclass
-class _BlockingExecutor:
-    entered: threading.Event
-    release: threading.Event
-    lock: threading.Lock = field(default_factory=threading.Lock)
-    calls: int = 0
-
-    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult:
-        del request
-        with self.lock:
-            self.calls += 1
-        self.entered.set()
-        if not self.release.wait(5):
-            raise AssertionError("concurrent claim proof did not release executor")
-        return AgentExecutionResult(b"once")
-
-    def close(self) -> None:
-        pass
-
-
 def test_thirty_two_claims_invoke_one_controlled_executor(tmp_path: Path) -> None:
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
     try:
         request = attempt_request(runtime, "attempt/concurrent")
-        executor = _BlockingExecutor(threading.Event(), threading.Event())
+        executor = _InspectingExecutor(runtime, b"once", 0.25)
         store = DbosAgentAttemptStore(runtime.engine)
+        execution = agent_attempt_execution(request)
         with ThreadPoolExecutor(max_workers=32) as pool:
             futures = [
-                pool.submit(execute_agent_attempt, request, executor, store)
+                pool.submit(
+                    execute_agent_attempt,
+                    execution,
+                    executor,
+                    store,
+                    runtime.agent_process_supervisor,
+                )
                 for _ in range(32)
             ]
-            assert executor.entered.wait(5)
-            executor.release.set()
             outcomes = tuple(future.result(timeout=5) for future in futures)
 
         assert executor.calls == 1
@@ -230,8 +239,18 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
         store = DbosAgentAttemptStore(runtime.engine)
         executor = _InspectingExecutor(runtime)
 
-        first = execute_agent_attempt(request, executor, store)
-        recovered = execute_agent_attempt(request, executor, store)
+        first = execute_agent_attempt(
+            agent_attempt_execution(request),
+            executor,
+            store,
+            runtime.agent_process_supervisor,
+        )
+        recovered = execute_agent_attempt(
+            agent_attempt_execution(request),
+            executor,
+            store,
+            runtime.agent_process_supervisor,
+        )
 
         assert isinstance(first, AgentAttemptSucceeded)
         assert recovered == first
@@ -243,14 +262,17 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
 def test_dbos_replayed_claim_result_can_never_authorize_invocation() -> None:
     source = Path(__file__).parents[2] / "src/atelier2/adapters/dbos/workflow.py"
     workflow_source = source.read_text(encoding="utf-8")
+    durable_node_source = workflow_source[
+        workflow_source.index("    def durable_node(") :
+    ]
 
-    assert "execute_agent_attempt(" in workflow_source
+    assert "execute_agent_attempt(" in durable_node_source
     assert (
         "run_tx_step"
-        not in workflow_source[
-            workflow_source.index(
+        not in durable_node_source[
+            durable_node_source.index(
                 "outcome = execute_agent_attempt("
-            ) : workflow_source.index('if binding["type"] == "action"')
+            ) : durable_node_source.index('if binding["type"] == "action"')
         ]
     )
     assert "commit_agent_completed_v2" not in workflow_source
@@ -264,8 +286,8 @@ def test_current_attempt_projection_maps_armed_and_rejects_broken_id(
     try:
         request = attempt_request(runtime, "attempt/projection")
         store = DbosAgentAttemptStore(runtime.engine)
-        store.prepare(request)
-        store.claim(request)
+        store.prepare(agent_attempt_execution(request))
+        store.claim(agent_attempt_execution(request))
 
         found = DbosQueries(runtime.engine).get_run(request.run_id)
 
@@ -298,10 +320,17 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
         store = DbosAgentAttemptStore(runtime.engine)
 
         class _TerminalExecutor:
-            def execute(
+            def prepare_process(
                 self, request: AgentExecutionRequestV2
-            ) -> AgentExecutionResult | AgentExecutionFailure:
+            ) -> AgentProcessInvocation:
                 del request
+                return AgentProcessInvocation(
+                    (sys.executable, "-c", "raise SystemExit(7)"), Path.cwd()
+                )
+
+            def decode_process_completion(
+                self, completion: AgentProcessCompletion
+            ) -> AgentExecutionResult | AgentExecutionFailure:
                 if known_failure:
                     return AgentExecutionFailure(
                         AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
@@ -311,7 +340,12 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
             def close(self) -> None:
                 pass
 
-        outcome = execute_agent_attempt(request, _TerminalExecutor(), store)
+        outcome = execute_agent_attempt(
+            agent_attempt_execution(request),
+            _TerminalExecutor(),
+            store,
+            runtime.agent_process_supervisor,
+        )
         with runtime.engine.connect() as connection:
             attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
             event = connection.execute(sa.select(run_events)).mappings().one()
@@ -411,16 +445,18 @@ def test_each_terminal_write_failpoint_rolls_back_the_whole_attempt(
     try:
         request = attempt_request(runtime, f"attempt/failpoint/{failpoint}")
         store = DbosAgentAttemptStore(runtime.engine)
-        store.prepare(request)
-        store.claim(request)
+        store.prepare(agent_attempt_execution(request))
+        store.claim(agent_attempt_execution(request))
         with runtime.engine.begin() as connection:
             connection.exec_driver_sql(trigger)
 
         with pytest.raises(DatabaseError, match="failpoint"):
             if terminal == "success":
-                store.complete_success(request, AgentExecutionResult(b"done"))
+                store.complete_success(
+                    agent_attempt_execution(request), AgentExecutionResult(b"done")
+                )
             else:
-                store.complete_known_failure(request)
+                store.complete_known_failure(agent_attempt_execution(request))
 
         with runtime.engine.connect() as connection:
             attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
@@ -457,7 +493,7 @@ def test_attempt_trigger_rejects_binding_skips_and_deletion(
     try:
         request = attempt_request(runtime, "attempt/trigger-canary")
         store = DbosAgentAttemptStore(runtime.engine)
-        store.prepare(request)
+        store.prepare(agent_attempt_execution(request))
 
         with pytest.raises(IntegrityError), runtime.engine.begin() as connection:
             connection.exec_driver_sql(mutation)
@@ -481,9 +517,9 @@ def test_attempt_trigger_rejects_terminal_rewrite_and_mismatched_receipt(
     try:
         request = attempt_request(runtime, "attempt/trigger-terminal")
         store = DbosAgentAttemptStore(runtime.engine)
-        store.prepare(request)
-        store.claim(request)
-        failed = store.complete_known_failure(request)
+        store.prepare(agent_attempt_execution(request))
+        store.claim(agent_attempt_execution(request))
+        failed = store.complete_known_failure(agent_attempt_execution(request))
 
         with pytest.raises(IntegrityError), runtime.engine.begin() as connection:
             connection.execute(
@@ -493,19 +529,19 @@ def test_attempt_trigger_rejects_terminal_rewrite_and_mismatched_receipt(
                     failure_code=None,
                 )
             )
-        assert store.claim(request) == failed
+        assert store.claim(agent_attempt_execution(request)) == failed
 
         completed_request = attempt_request(runtime, "attempt/trigger-receipt-source")
-        store.prepare(completed_request)
-        store.claim(completed_request)
+        store.prepare(agent_attempt_execution(completed_request))
+        store.claim(agent_attempt_execution(completed_request))
         completed = store.complete_success(
-            completed_request, AgentExecutionResult(b"wrong")
+            agent_attempt_execution(completed_request), AgentExecutionResult(b"wrong")
         )
         assert completed.attempt.receipt_hash is not None
 
         second = attempt_request(runtime, "attempt/trigger-receipt-target")
-        store.prepare(second)
-        store.claim(second)
+        store.prepare(agent_attempt_execution(second))
+        store.claim(agent_attempt_execution(second))
         with (
             runtime.engine.begin() as connection,
             pytest.raises(IntegrityError),

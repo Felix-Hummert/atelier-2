@@ -3,10 +3,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+
+if TYPE_CHECKING:
+    from atelier2.contracts.agent_attempts import AgentAttemptId
+    from atelier2.contracts.agents import AgentExecutionRequestV2
 
 _CANONICAL_INTEGER_BYTES = re.compile(rb"(?:0|-?[1-9][0-9]*)")
 
@@ -30,9 +35,31 @@ class NodeExecutionId(Sha256Hash):
         )
 
 
+@dataclass(frozen=True)
+class AgentAttemptExecution:
+    request: AgentExecutionRequestV2
+    attempt_id: AgentAttemptId
+    ordinal: int
+
+    def __post_init__(self) -> None:
+        from atelier2.contracts.agent_attempts import AgentAttemptId
+        from atelier2.contracts.agents import AgentExecutionRequestV2
+
+        if not isinstance(self.request, AgentExecutionRequestV2):
+            raise TypeError("agent attempt execution request must be typed")
+        expected = AgentAttemptId.for_execution(
+            self.request.node_execution_id, self.request.request_hash, self.ordinal
+        )
+        if self.attempt_id != expected:
+            raise ValueError("agent attempt execution differs from its exact identity")
+
+
 class RunEventKind(StrEnum):
     AGENT_COMPLETED = "AGENT_COMPLETED"
     AGENT_FAILED = "AGENT_FAILED"
+    AGENT_CANCEL_REQUESTED = "AGENT_CANCEL_REQUESTED"
+    AGENT_CANCELLED = "AGENT_CANCELLED"
+    AGENT_INTERRUPTED = "AGENT_INTERRUPTED"
     ACTION_RECONCILIATION_REQUIRED = "ACTION_RECONCILIATION_REQUIRED"
     ACTION_RECONCILIATION_RESOLVED = "ACTION_RECONCILIATION_RESOLVED"
     ACTION_COMPLETED = "ACTION_COMPLETED"
@@ -58,6 +85,12 @@ class RunEvent:
     payload_hash: Sha256Hash = field(init=False)
     receipt_logical_key: LogicalEffectKey | None = None
     receipt_result_hash: Sha256Hash | None = None
+    agent_attempt_id: str | None = None
+    attempt_ordinal: int | None = None
+    cancellation_command_id: str | None = None
+    replacement: str | None = None
+    cancellation_disposition: str | None = None
+    replacement_attempt_id: str | None = None
     event_hash: Sha256Hash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -87,12 +120,61 @@ class RunEvent:
             self.receipt_logical_key is not None or self.receipt_result_hash is not None
         ):
             raise ValueError("nonreceipt event may not carry receipt fields")
+        attempt_bound = self.agent_attempt_id is not None
+        if attempt_bound != (self.attempt_ordinal is not None):
+            raise ValueError("attempt event requires both exact attempt fields")
+        if self.attempt_ordinal not in (None, 1, 2):
+            raise ValueError("attempt event ordinal must be exactly 1 or 2")
+        cancellation_kind = self.event_kind in {
+            RunEventKind.AGENT_CANCEL_REQUESTED,
+            RunEventKind.AGENT_CANCELLED,
+            RunEventKind.AGENT_INTERRUPTED,
+        }
+        if cancellation_kind:
+            if (
+                not attempt_bound
+                or self.cancellation_command_id is None
+                or self.replacement not in {"NONE", "ONE"}
+            ):
+                raise ValueError(
+                    "cancellation event requires its exact command binding"
+                )
+            terminal_cancellation = self.event_kind in {
+                RunEventKind.AGENT_CANCELLED,
+                RunEventKind.AGENT_INTERRUPTED,
+            }
+            if terminal_cancellation != (self.cancellation_disposition is not None):
+                raise ValueError("cancellation event disposition shape disagrees")
+        elif any(
+            value is not None
+            for value in (
+                self.cancellation_command_id,
+                self.replacement,
+                self.cancellation_disposition,
+                self.replacement_attempt_id,
+            )
+        ):
+            raise ValueError("noncancellation event may not carry cancellation fields")
+        use_v2_hash = cancellation_kind or self.attempt_ordinal == 2
+        hash_domain = "node-event-hash/v2" if use_v2_hash else "node-event-hash/v1"
+        extra_fields = (
+            (
+                (self.agent_attempt_id or "").encode("ascii"),
+                str(self.attempt_ordinal or "").encode("ascii"),
+                (self.cancellation_command_id or "").encode("utf-8"),
+                (self.replacement or "").encode("ascii"),
+                (self.cancellation_disposition or "").encode("ascii"),
+                (self.replacement_attempt_id or "").encode("ascii"),
+            )
+            if use_v2_hash
+            else ()
+        )
         object.__setattr__(
             self,
             "event_hash",
             Sha256Hash.of(
                 frame(
-                    "node-event-hash/v1",
+                    hash_domain,
                     self.run_id.value.encode("utf-8"),
                     self.revision_hash.value.encode("ascii"),
                     str(self.event_sequence).encode("ascii"),
@@ -110,6 +192,7 @@ class RunEvent:
                         if self.receipt_result_hash is None
                         else self.receipt_result_hash.value.encode("ascii")
                     ),
+                    *extra_fields,
                 )
             ),
         )

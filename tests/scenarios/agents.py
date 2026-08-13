@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from atelier2.adapters.dbos.run_store import commit_agent_completed, load_graph
 from atelier2.adapters.exact_output_agent import EXACT_OUTPUT_EXECUTOR_BINDING
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptId
 from atelier2.contracts.agents import (
     AgentExecutionRequest,
     AgentExecutionRequestV2,
@@ -14,10 +17,19 @@ from atelier2.contracts.agents import (
     ExactOutputContract,
     ProviderId,
 )
-from atelier2.contracts.executions import NodeExecutionId, TransitionSnapshot
+from atelier2.contracts.executions import (
+    AgentAttemptExecution,
+    NodeExecutionId,
+    TransitionSnapshot,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.workflows import AgentNode
-from atelier2.ports.agent_executions import AgentExecutorKey
+from atelier2.ports.agent_executions import (
+    AgentExecutionFailure,
+    AgentExecutorKey,
+    AgentProcessCompletion,
+    AgentProcessInvocation,
+)
 
 
 def configured_agent_request(
@@ -53,6 +65,18 @@ def commit_configured_agent(
     )
 
 
+def agent_attempt_execution(
+    request: AgentExecutionRequestV2, ordinal: int = 1
+) -> AgentAttemptExecution:
+    return AgentAttemptExecution(
+        request,
+        AgentAttemptId.for_execution(
+            request.node_execution_id, request.request_hash, ordinal
+        ),
+        ordinal,
+    )
+
+
 @dataclass
 class RecordingAgentExecutorV2:
     output: bytes
@@ -61,10 +85,29 @@ class RecordingAgentExecutorV2:
     name: str
     closes: int = 0
 
-    def execute(self, request: AgentExecutionRequestV2) -> AgentExecutionResult:
+    def prepare_process(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentProcessInvocation:
         self.requests.append(request)
         self.lifecycle.append(f"execute:{self.name}")
-        return AgentExecutionResult(self.output)
+        return AgentProcessInvocation(
+            (
+                sys.executable,
+                "-c",
+                "import os; os.write(1, bytes.fromhex(__import__('sys').argv[1]))",
+                self.output.hex(),
+            ),
+            Path.cwd(),
+        )
+
+    def decode_process_completion(
+        self, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        if completion.return_code != 0:
+            return AgentExecutionFailure(
+                AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+            )
+        return AgentExecutionResult(completion.standard_output)
 
     def close(self) -> None:
         self.closes += 1

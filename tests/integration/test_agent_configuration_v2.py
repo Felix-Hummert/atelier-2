@@ -56,7 +56,10 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.run_queries import RunFound, RunPage
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_attempt_execution,
+)
 from tests.scenarios.api import api_limits, event_poll_backoff
 
 _DOCUMENT = b"""format_version: 2
@@ -721,22 +724,24 @@ def test_v2_output_bound_is_checked_before_atomic_receipt_event_and_run_cas(
 
         if accepted:
             store = DbosAgentAttemptStore(runtime.engine)
-            store.prepare(request)
-            store.claim(request)
+            store.prepare(agent_attempt_execution(request))
+            store.claim(agent_attempt_execution(request))
             snapshot = store.complete_success(
-                request, AgentExecutionResult(b"x" * output_size)
+                agent_attempt_execution(request),
+                AgentExecutionResult(b"x" * output_size),
             )
-            retried = store.claim(request)
+            retried = store.claim(agent_attempt_execution(request))
             assert snapshot.attempt.state_version == 2
             assert retried == snapshot
             expected_receipts = expected_events = 1
         else:
             store = DbosAgentAttemptStore(runtime.engine)
-            store.prepare(request)
-            store.claim(request)
+            store.prepare(agent_attempt_execution(request))
+            store.claim(agent_attempt_execution(request))
             with pytest.raises(AgentOutputLimitExceeded):
                 store.complete_success(
-                    request, AgentExecutionResult(b"x" * output_size)
+                    agent_attempt_execution(request),
+                    AgentExecutionResult(b"x" * output_size),
                 )
             expected_receipts = expected_events = 0
 

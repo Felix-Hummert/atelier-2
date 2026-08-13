@@ -30,9 +30,9 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V6 only in a truly empty canonical store and reopens
-only an exact V6 product schema. An older store, or any nonempty store without
-the V6 version owner, is rejected without mutation. V1 provides no runtime
+The runtime creates schema V7 only in a truly empty canonical store and reopens
+only an exact V7 product schema. An older store, or any nonempty store without
+the V7 version owner, is rejected without mutation. V1 provides no runtime
 upgrade or downgrade migration.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
@@ -68,9 +68,18 @@ claim `PREPARED` again, but it projects unresolved `LAUNCH_ARMED` as
 non-secret executor operational identity; that identity is an integrity input,
 not process authority. Success atomically commits attempt, receipt, event, and
 successor. A typed, authoritatively reaped unsuccessful child atomically commits
-`FAILED`, `AGENT_FAILED`, and the same current run node. Ambiguous exceptions stay
-`LAUNCH_ARMED`. Retry, cancellation, and ordinal growth are intentionally not
-owned by schema V6.
+`FAILED`, `AGENT_FAILED`, and the same current run node. Ambiguous exceptions
+stay `LAUNCH_ARMED` until an exact cancellation owns their cleanup. Schema V7
+makes cancellation durable before any signal. A live supervisor binds a Unix
+control endpoint, watchdog generation, and delegated cgroup; an exec guard joins
+the provider child to that cgroup and dies if the watchdog parent disappears.
+The cancellation workflow sends `TERM`, waits the configured finite grace,
+escalates to `KILL`, and reaps before it records `CANCELLED`. After an owner
+process dies, recovery stores `OWNER_NOT_LOCAL` and uses the exact empty
+cgroup—not a persisted PID or invocation—to attest `INTERRUPTED`. Only an
+explicit `ONE` policy creates one distinct ordinal-2 `PREPARED` attempt and
+workflow after cleanup; ordinal 3, automatic retry, and provider-session resume
+are absent.
 
 Before an external call, Atelier durably records an effect intent bound to the
 logical key, exact request bytes and hash, workflow revision, adapter revision,
@@ -125,6 +134,7 @@ provider contract.
 | Runtime lifecycle | Equivalent leases share one engine, Agent executor, and effect adapter; conflicts, failed initialization, concurrent close, durable binding drift, and two-process recovery preserve one binding and result. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
+| V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |
 
 The repository gate is `.github/workflows/ci.yml`; the local crash lane is
 `uv run --locked pytest -n auto tests/crash`.

@@ -8,6 +8,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
@@ -146,6 +147,9 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 workflow_document_parser=parse_workflow_document,
                 agent_configuration_catalog=DbosAgentConfigurationCatalog(
                     runtime.engine, runtime.agent_executor_registry
+                ),
+                agent_attempt_canceller=DbosAgentAttemptStore(
+                    runtime.engine, runtime.settings.application_version
                 ),
             ),
             limits=settings.limits,

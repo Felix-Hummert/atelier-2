@@ -4,8 +4,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
     AgentAttemptId,
+    AgentAttemptRedriveState,
+    AgentAttemptReplacement,
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import (
@@ -31,6 +34,14 @@ class WaitingReconciliationProjection:
 
 
 @dataclass(frozen=True)
+class AgentAttemptCancellationProjection:
+    command_id: str
+    replacement: AgentAttemptReplacement
+    redrive_state: AgentAttemptRedriveState
+    disposition: AgentAttemptCancellationDisposition | None
+
+
+@dataclass(frozen=True)
 class AgentAttemptProjection:
     attempt_id: AgentAttemptId
     node_execution_id: NodeExecutionId
@@ -38,6 +49,7 @@ class AgentAttemptProjection:
     attempt_ordinal: int
     state: str
     failure_code: AgentAttemptFailureCode | None
+    cancellation: AgentAttemptCancellationProjection | None = None
 
 
 @dataclass(frozen=True)
@@ -45,7 +57,11 @@ class RunProjection:
     run: AnyRun
     graph: AnyWorkflowGraph
     reconciliation: WaitingReconciliationProjection | None
-    current_agent_attempt: AgentAttemptProjection | None = None
+    agent_attempts: tuple[AgentAttemptProjection, ...] = ()
+
+    @property
+    def current_agent_attempt(self) -> AgentAttemptProjection | None:
+        return self.agent_attempts[-1] if self.agent_attempts else None
 
 
 @dataclass(frozen=True)

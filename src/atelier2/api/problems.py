@@ -63,6 +63,41 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Invalid agent bindings",
         "Bind every workflow agent role exactly once and no other role.",
     ),
+    "invalid-agent-attempt-id": ProblemDefinition(
+        400,
+        "Invalid agent attempt id",
+        "Use exactly 64 lowercase hexadecimal characters.",
+    ),
+    "agent-attempt-not-found": ProblemDefinition(
+        404,
+        "Agent attempt not found",
+        "Cancel an attempt that belongs to the referenced run.",
+    ),
+    "agent-attempt-not-current": ProblemDefinition(
+        409,
+        "Agent attempt is not current",
+        "Reload the run and cancel only its current attempt.",
+    ),
+    "agent-attempt-cancellation-stale": ProblemDefinition(
+        409,
+        "Agent attempt cancellation is stale",
+        "Reload the run and bind the command to its current attempt state version.",
+    ),
+    "agent-attempt-terminal": ProblemDefinition(
+        409,
+        "Agent attempt is terminal",
+        "A completed attempt can no longer be cancelled.",
+    ),
+    "cancellation-command-conflict": ProblemDefinition(
+        409,
+        "Cancellation command conflict",
+        "Use a new command_id or retry the exact original cancellation command.",
+    ),
+    "replacement-not-allowed": ProblemDefinition(
+        409,
+        "Replacement is not allowed",
+        "Only ordinal one may request the single replacement attempt.",
+    ),
     "invalid-public-run-reference": ProblemDefinition(
         400, "Invalid public run reference", "Use a canonical run1 public reference."
     ),

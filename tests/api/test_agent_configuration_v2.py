@@ -13,10 +13,12 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.models import RunEventResourceV2, run_event_resource
 from atelier2.api.openapi import API_PREFIX
+from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
+    AgentExecutionRequestHash,
     AgentExecutorRevision,
     AgentRole,
     AuthMode,
@@ -416,7 +418,7 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
             "job": "build",
             "next_node_id": "done",
         },
-        "current_agent_attempt": None,
+        "agent_attempts": [],
         "waiting": {"type": "NONE"},
         "terminal_hash": None,
         "latest_event_cursor": None,
@@ -434,6 +436,12 @@ def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None
         NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),
         RunEventKind.AGENT_COMPLETED,
         b"\x00\xffoutput",
+        agent_attempt_id=AgentAttemptId.for_execution(
+            NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),
+            AgentExecutionRequestHash("1" * 64),
+            1,
+        ).value,
+        attempt_ordinal=1,
     )
 
     resource = run_event_resource(PersistedRunEvent(event, None, 2))
@@ -451,6 +459,8 @@ def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None
         "event": "AGENT_COMPLETED",
         "output_base64": "AP9vdXRwdXQ=",
         "output_hash": event.payload_hash.value,
+        "attempt_id": event.agent_attempt_id,
+        "attempt_ordinal": 1,
     }
 
 
@@ -464,6 +474,8 @@ def test_all_seven_v2_event_dtos_have_the_exact_closed_wire_shape() -> None:
             output = cast(str, expected.pop("output"))
             expected["output_base64"] = base64.b64encode(output.encode()).decode()
             expected["output_hash"] = expected.pop("payload_hash")
+            expected["attempt_id"] = "a" * 64
+            expected["attempt_ordinal"] = 1
 
         resource = adapter.validate_python(expected)
 
@@ -485,7 +497,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_one_of() -> None:
         ]
     }
     v2 = schema["components"]["schemas"]["RunEventResourceV2"]
-    assert len(v2["oneOf"]) == 8
+    assert len(v2["oneOf"]) == 11
     assert set(v2["discriminator"]["mapping"]) == {kind.value for kind in RunEventKind}
     common = {
         "workflow_format_version",
@@ -499,8 +511,35 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_one_of() -> None:
         "event",
     }
     payloads = {
-        "AGENT_COMPLETED": {"output_base64", "output_hash"},
-        "AGENT_FAILED": {"failure_code"},
+        "AGENT_COMPLETED": {
+            "output_base64",
+            "output_hash",
+            "attempt_id",
+            "attempt_ordinal",
+        },
+        "AGENT_FAILED": {"failure_code", "attempt_id", "attempt_ordinal"},
+        "AGENT_CANCEL_REQUESTED": {
+            "attempt_id",
+            "attempt_ordinal",
+            "command_id",
+            "replacement",
+        },
+        "AGENT_CANCELLED": {
+            "attempt_id",
+            "attempt_ordinal",
+            "command_id",
+            "replacement",
+            "disposition",
+            "replacement_attempt_id",
+        },
+        "AGENT_INTERRUPTED": {
+            "attempt_id",
+            "attempt_ordinal",
+            "command_id",
+            "replacement",
+            "disposition",
+            "replacement_attempt_id",
+        },
         "ACTION_RECONCILIATION_REQUIRED": {"request_base64", "request_hash"},
         "ACTION_RECONCILIATION_RESOLVED": {"receipt"},
         "ACTION_COMPLETED": {"receipt"},

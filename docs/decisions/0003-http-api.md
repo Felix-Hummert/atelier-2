@@ -13,9 +13,12 @@ process receives the request.
 FastAPI owns a thin, versioned adapter at `/atelier/api/v1`. The API publishes
 secret-free auth-profile and agent-configuration revisions and exact safe-YAML
 workflow bytes, starts runs from published revisions, projects revision and run
-pages, accepts Wait answers and reconciliation commands, and streams the seven
-implemented durable event kinds. It does not accept credentials or own a
-parallel run, command, or event state machine.
+pages, accepts Wait answers, current-attempt cancellation commands, and
+reconciliation commands, and streams the eleven implemented durable event
+kinds. It does not accept credentials or own a parallel run, command, or event
+state machine. Cancellation returns `202` while cleanup is pending and `200` for
+an exact terminal retry. Stale, terminal, non-current, conflicting-command, and
+forbidden-replacement requests are distinct closed problems.
 
 V1 and V2 workflow, start, run, and SSE resources coexist as exact closed
 unions. Workflow and run resources carry `format_version` or

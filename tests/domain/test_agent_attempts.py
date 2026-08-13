@@ -7,10 +7,18 @@ import pytest
 
 from atelier2.contracts.agent_attempts import (
     AGENT_ATTEMPT_ORDINAL,
+    REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttempt,
+    AgentAttemptCancellation,
+    AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
     AgentAttemptId,
+    AgentAttemptProcessPhase,
+    AgentAttemptRedriveState,
+    AgentAttemptReplacement,
     AgentAttemptState,
+    AgentProcessOwnerId,
+    WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
@@ -43,11 +51,54 @@ def test_attempt_id_has_fixed_canonical_vector() -> None:
         NodeExecutionId("0" * 64),
         AgentExecutionRequestHash("1" * 64),
     )
-
     assert (
         attempt_id.value
         == "6ea67ad4ac9b01be7a7eddef32e44a8b3bd7391fe69f89eb8407bd05a7dc1129"
     )
+
+
+def test_attempt_identity_accepts_exactly_two_ordinals() -> None:
+    execution_id = NodeExecutionId("0" * 64)
+    request_hash = AgentExecutionRequestHash("1" * 64)
+
+    first = AgentAttemptId.for_execution(execution_id, request_hash, 1)
+    replacement = AgentAttemptId.for_execution(execution_id, request_hash, 2)
+
+    assert first != replacement
+    assert AGENT_ATTEMPT_ORDINAL == 1
+    assert REPLACEMENT_AGENT_ATTEMPT_ORDINAL == 2
+    for invalid in (0, 3, True):
+        with pytest.raises(ValueError, match="ordinal"):
+            AgentAttemptId.for_execution(execution_id, request_hash, invalid)
+
+
+def test_cancellation_contract_has_one_closed_canonical_terminal_shape() -> None:
+    cancellation = AgentAttemptCancellation(
+        command_id="cancel-17",
+        expected_attempt_state_version=1,
+        replacement=AgentAttemptReplacement.ONE,
+        redrive_state=AgentAttemptRedriveState.CLEANUP_ATTESTED,
+        disposition=AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
+    )
+    armed = replace(
+        _attempt(AgentAttemptState.LAUNCH_ARMED),
+        process_phase=AgentAttemptProcessPhase.LAUNCH_AUTHORIZED,
+        process_owner_id=AgentProcessOwnerId("owner-17"),
+        watchdog_generation_id=WatchdogGenerationId("generation-17"),
+    )
+    cancelled = replace(
+        armed,
+        state=AgentAttemptState.CANCELLED,
+        state_version=3,
+        process_phase=AgentAttemptProcessPhase.CLEANUP_ATTESTED,
+        cancellation=cancellation,
+    )
+
+    assert cancelled.cancellation == cancellation
+    assert cancelled.state is AgentAttemptState.CANCELLED
+
+    with pytest.raises(ValueError, match="cancellation"):
+        replace(cancelled, cancellation=None)
 
 
 def test_attempt_contract_accepts_only_the_four_exact_state_shapes() -> None:

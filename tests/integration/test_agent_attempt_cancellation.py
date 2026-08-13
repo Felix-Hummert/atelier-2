@@ -1,0 +1,312 @@
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+
+import pytest
+import sqlalchemy as sa
+
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.run_store import RunTransitionConflict
+from atelier2.adapters.dbos.schema import agent_attempts, run_events
+from atelier2.application.execute_agent_attempt import execute_agent_attempt
+from atelier2.contracts.agent_attempts import (
+    AgentAttempt,
+    AgentAttemptCancellationDisposition,
+    AgentAttemptId,
+    AgentAttemptProcessPhase,
+    AgentAttemptReplacement,
+    AgentAttemptState,
+    CancelAgentAttemptRequest,
+)
+from atelier2.contracts.agents import AgentExecutionResult
+from atelier2.contracts.executions import RunEventKind
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
+    AgentAttemptCancellationCommandConflict,
+    AgentAttemptReplacementNotAllowed,
+)
+from tests.integration.test_agent_attempts import (
+    _InspectingExecutor,
+    attempt_request,
+    attempt_runtime,
+)
+from tests.scenarios.agents import agent_attempt_execution
+
+
+def test_cancel_commits_before_signal_and_exact_retry_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(attempt_request(runtime, "cancel/durable"))
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        prepared = store.prepare(execution)
+        command = CancelAgentAttemptRequest(
+            execution.request.run_id,
+            execution.attempt_id,
+            "cancel-1",
+            prepared.state_version,
+            AgentAttemptReplacement.NONE,
+        )
+
+        accepted = store.request_cancellation(command)
+        retried = store.request_cancellation(command)
+
+        assert isinstance(accepted, AgentAttemptCancellationAccepted)
+        assert accepted.attempt.state is AgentAttemptState.CANCEL_REQUESTED
+        assert retried == accepted
+        conflict = store.request_cancellation(
+            CancelAgentAttemptRequest(
+                execution.request.run_id,
+                execution.attempt_id,
+                "cancel-2",
+                prepared.state_version,
+                AgentAttemptReplacement.NONE,
+            )
+        )
+        assert isinstance(conflict, AgentAttemptCancellationCommandConflict)
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(run_events)
+                    .where(
+                        run_events.c.event_kind
+                        == RunEventKind.AGENT_CANCEL_REQUESTED.value
+                    )
+                )
+                == 1
+            )
+
+        terminal = store.attest_cancellation_cleanup(
+            command,
+            AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            None,
+            None,
+        )
+        assert terminal.attempt.state is AgentAttemptState.CANCELLED
+        assert (
+            store.attest_cancellation_cleanup(
+                command,
+                AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+                None,
+                None,
+            )
+            == terminal
+        )
+        with pytest.raises(RunTransitionConflict, match="armed current attempt"):
+            store.complete_success(execution, AgentExecutionResult(b"late"))
+    finally:
+        runtime.close()
+
+
+def test_cancel_replacement_creates_exactly_ordinal_two_and_never_three(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(attempt_request(runtime, "cancel/replace"))
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        prepared = store.prepare(execution)
+        command = CancelAgentAttemptRequest(
+            execution.request.run_id,
+            execution.attempt_id,
+            "replace-1",
+            prepared.state_version,
+            AgentAttemptReplacement.ONE,
+        )
+        assert isinstance(
+            store.request_cancellation(command), AgentAttemptCancellationAccepted
+        )
+        terminal = store.attest_cancellation_cleanup(
+            command,
+            AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            None,
+            None,
+        )
+        expected = AgentAttemptId.for_execution(
+            execution.request.node_execution_id, execution.request.request_hash, 2
+        )
+        assert terminal.replacement_attempt_id == expected
+        with runtime.engine.connect() as connection:
+            assert tuple(
+                connection.execute(
+                    sa.select(agent_attempts.c.attempt_ordinal).order_by(
+                        agent_attempts.c.attempt_ordinal
+                    )
+                ).scalars()
+            ) == (1, 2)
+
+        replacement = store.load(expected)
+        refused = store.request_cancellation(
+            CancelAgentAttemptRequest(
+                replacement.run_id,
+                replacement.attempt_id,
+                "replace-2",
+                replacement.state_version,
+                AgentAttemptReplacement.ONE,
+            )
+        )
+        assert isinstance(refused, AgentAttemptReplacementNotAllowed)
+        runtime.launch()
+        replacement = _wait_for_state(store, expected, AgentAttemptState.SUCCEEDED)
+        assert replacement.attempt_ordinal == 2
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(agent_attempts)
+                )
+                == 2
+            )
+    finally:
+        runtime.close()
+
+
+def test_durable_cancellation_workflow_reaps_the_exact_running_process(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "cancel/running-process")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        executor = _InspectingExecutor(runtime, delay_seconds=60)
+        failures: list[RuntimeError] = []
+
+        def run_attempt() -> None:
+            try:
+                execute_agent_attempt(
+                    execution,
+                    executor,
+                    store,
+                    runtime.agent_process_supervisor,
+                )
+            except RuntimeError as error:
+                failures.append(error)
+
+        worker = threading.Thread(target=run_attempt)
+        worker.start()
+        _wait_for_process_phase(
+            store,
+            execution.attempt_id,
+            AgentAttemptProcessPhase.PROCESS_OBSERVED,
+        )
+        current = store.load(execution.attempt_id)
+        result = store.request_cancellation(
+            CancelAgentAttemptRequest(
+                current.run_id,
+                current.attempt_id,
+                "cancel-running",
+                current.state_version,
+                AgentAttemptReplacement.NONE,
+            )
+        )
+
+        assert isinstance(result, AgentAttemptCancellationAccepted)
+        runtime.launch()
+        terminal = _wait_for_state(
+            store, execution.attempt_id, AgentAttemptState.CANCELLED
+        )
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert terminal.cancellation is not None
+        assert terminal.cancellation.disposition in {
+            AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
+            AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
+        }
+        assert len(failures) == 1
+        assert isinstance(failures[0], RunTransitionConflict)
+    finally:
+        runtime.close()
+
+
+def test_durable_cancellation_before_watchdog_attests_never_launched(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "cancel/never-launched")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        prepared = store.prepare(execution)
+        accepted = store.request_cancellation(
+            CancelAgentAttemptRequest(
+                prepared.run_id,
+                prepared.attempt_id,
+                "cancel-before-watchdog",
+                prepared.state_version,
+                AgentAttemptReplacement.NONE,
+            )
+        )
+        assert isinstance(accepted, AgentAttemptCancellationAccepted)
+
+        runtime.launch()
+        terminal = _wait_for_state(
+            store, execution.attempt_id, AgentAttemptState.CANCELLED
+        )
+
+        assert terminal.cancellation is not None
+        assert (
+            terminal.cancellation.disposition
+            is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+        )
+        assert terminal.process_owner_id is None
+        assert terminal.watchdog_generation_id is None
+    finally:
+        runtime.close()
+
+
+def _wait_for_state(
+    store: DbosAgentAttemptStore,
+    attempt_id: AgentAttemptId,
+    state: AgentAttemptState,
+) -> AgentAttempt:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            attempt = store.load(attempt_id)
+        except RunTransitionConflict as error:
+            if str(error) != "agent attempt is missing":
+                raise
+            time.sleep(0.01)
+            continue
+        if attempt.state is state:
+            return attempt
+        time.sleep(0.01)
+    raise AssertionError(f"attempt never reached {state.value}")
+
+
+def _wait_for_process_phase(
+    store: DbosAgentAttemptStore,
+    attempt_id: AgentAttemptId,
+    phase: AgentAttemptProcessPhase,
+) -> AgentAttempt:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            attempt = store.load(attempt_id)
+        except RunTransitionConflict as error:
+            if str(error) != "agent attempt is missing":
+                raise
+            time.sleep(0.01)
+            continue
+        if attempt.process_phase is phase:
+            return attempt
+        time.sleep(0.01)
+    raise AssertionError(f"attempt never reached {phase.value}")

@@ -9,6 +9,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy import exc
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
@@ -147,7 +148,7 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
-def test_new_database_has_the_version_six_runtime_ledger(tmp_path: Path) -> None:
+def test_empty_database_creates_exact_v7_and_reopens(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
 
@@ -156,7 +157,7 @@ def test_new_database_has_the_version_six_runtime_ledger(tmp_path: Path) -> None
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
-            == 6
+            == 7
         )
         assert set(sa.inspect(connection).get_table_names()) >= {
             effect_intents.name,
@@ -186,6 +187,160 @@ def test_new_database_has_the_version_six_runtime_ledger(tmp_path: Path) -> None
 
     assert _logical_dump(database_path) == first_dump
     engine.dispose()
+
+
+def test_v6_requires_nonmutating_recreate(tmp_path: Path) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE atelier_schema_versions(version INTEGER PRIMARY KEY);
+            CREATE TABLE durable_v6_witness(value BLOB NOT NULL);
+            CREATE TRIGGER durable_v6_witness_no_delete
+            BEFORE DELETE ON durable_v6_witness BEGIN
+              SELECT RAISE(ABORT, 'immutable');
+            END;
+            INSERT INTO atelier_schema_versions VALUES(6);
+            INSERT INTO durable_v6_witness VALUES(X'00FF');
+            """
+        )
+    before_files = _file_snapshot(tmp_path)
+    before_logical = _logical_dump(database_path)
+    before_hash = hashlib.sha256(database_path.read_bytes()).hexdigest()
+    engine = create_canonical_engine(database_path)
+
+    with pytest.raises(MigrationRequired, match="schema version 6"):
+        initialize_schema(engine)
+
+    engine.dispose()
+    assert _logical_dump(database_path) == before_logical
+    assert _file_snapshot(tmp_path) == before_files
+    assert hashlib.sha256(database_path.read_bytes()).hexdigest() == before_hash
+
+
+def test_v7_preserves_both_legacy_event_guards_and_scopes_attempt_events(
+    ledger_engine: Engine,
+) -> None:
+    with ledger_engine.begin() as connection:
+        revision = str(
+            connection.scalar(
+                sa.select(runs.c.revision_hash).where(runs.c.run_id == "run-1")
+            )
+        )
+        connection.execute(
+            runs.insert().values(
+                run_id="run-2",
+                bootstrap_workflow_id="workflow-2",
+                revision_hash=revision,
+                workflow_format_version=1,
+                agent_binding_set_hash=None,
+                current_node_id="other",
+                state="STARTED",
+                state_version=0,
+                last_event_sequence=0,
+                terminal_hash=None,
+            )
+        )
+
+    def insert_event(
+        connection: Connection,
+        *,
+        run_id: str,
+        sequence: int,
+        node_id: str,
+        execution_id: str,
+        kind: str,
+        attempt_id: str | None = None,
+        ordinal: int | None = None,
+    ) -> None:
+        connection.exec_driver_sql(
+            "INSERT INTO run_events("
+            "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+            "event_kind,payload,payload_hash,receipt_logical_key,"
+            "receipt_result_hash,event_hash,agent_attempt_id,attempt_ordinal,"
+            "cancellation_command_id,replacement,cancellation_disposition,"
+            "replacement_attempt_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id,
+                revision,
+                sequence,
+                node_id,
+                execution_id,
+                kind,
+                b"event",
+                hashlib.sha256(b"event").hexdigest(),
+                None,
+                None,
+                f"{sequence:x}" * 64,
+                attempt_id,
+                ordinal,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+
+    with ledger_engine.begin() as connection:
+        insert_event(
+            connection,
+            run_id="run-1",
+            sequence=1,
+            node_id="agent",
+            execution_id="1" * 64,
+            kind="AGENT_COMPLETED",
+        )
+    with pytest.raises(IntegrityError), ledger_engine.begin() as connection:
+        insert_event(
+            connection,
+            run_id="run-1",
+            sequence=2,
+            node_id="agent",
+            execution_id="2" * 64,
+            kind="AGENT_COMPLETED",
+        )
+    with pytest.raises(IntegrityError), ledger_engine.begin() as connection:
+        insert_event(
+            connection,
+            run_id="run-2",
+            sequence=1,
+            node_id="other",
+            execution_id="1" * 64,
+            kind="AGENT_COMPLETED",
+        )
+
+    with ledger_engine.begin() as connection:
+        insert_event(
+            connection,
+            run_id="run-1",
+            sequence=2,
+            node_id="agent",
+            execution_id="1" * 64,
+            kind="AGENT_FAILED",
+            attempt_id="a" * 64,
+            ordinal=1,
+        )
+        insert_event(
+            connection,
+            run_id="run-1",
+            sequence=3,
+            node_id="agent",
+            execution_id="1" * 64,
+            kind="AGENT_FAILED",
+            attempt_id="b" * 64,
+            ordinal=2,
+        )
+    with pytest.raises(IntegrityError), ledger_engine.begin() as connection:
+        insert_event(
+            connection,
+            run_id="run-1",
+            sequence=4,
+            node_id="agent",
+            execution_id="1" * 64,
+            kind="AGENT_FAILED",
+            attempt_id="a" * 64,
+            ordinal=1,
+        )
 
 
 @pytest.fixture

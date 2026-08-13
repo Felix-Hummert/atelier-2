@@ -49,7 +49,7 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionFound,
     WorkflowRevisionPage,
 )
-from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.agents import agent_attempt_execution, commit_configured_agent
 
 
 @pytest.fixture
@@ -94,8 +94,8 @@ def test_current_attempt_projection_is_exact_or_fails_as_corrupt(
     try:
         request = attempt_request(runtime, "attempt/query-integrity")
         store = DbosAgentAttemptStore(runtime.engine)
-        store.prepare(request)
-        store.claim(request)
+        store.prepare(agent_attempt_execution(request))
+        store.claim(agent_attempt_execution(request))
         found = DbosQueries(runtime.engine).get_run(request.run_id)
         assert isinstance(found, RunFound)
         assert found.projection.current_agent_attempt is not None
