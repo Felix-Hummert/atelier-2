@@ -65,7 +65,39 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Test the production cockpit in Chromium
-        run: npm run e2e
+        run: |
+          set -euo pipefail
+          unit="atelier2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-frontend"
+          cleanup() {
+            status="$1"
+            trap - EXIT INT TERM
+            sudo systemctl stop "${unit}.service" >/dev/null 2>&1 || true
+            sudo systemctl reset-failed "${unit}.service" >/dev/null 2>&1 || true
+            exit "${status}"
+          }
+          trap 'cleanup "$?"' EXIT
+          trap 'cleanup 130' INT
+          trap 'cleanup 143' TERM
+          npm_path="$(command -v npm)"
+          sudo systemd-run --quiet --wait --collect --pipe \
+            --unit="${unit}" \
+            --uid="$(id -u)" \
+            --gid="$(id -g)" \
+            --property=Type=exec \
+            --property=Delegate=yes \
+            --property=DelegateSubgroup=workload \
+            --property=KillMode=control-group \
+            --property=TimeoutStopSec=15s \
+            --working-directory="${GITHUB_WORKSPACE}/frontend" \
+            --setenv=HOME="${HOME}" \
+            --setenv=PATH="${PATH}" \
+            --setenv=CI="${CI:-true}" \
+            --setenv=GITHUB_ACTIONS="${GITHUB_ACTIONS:-true}" \
+            --setenv=GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            --setenv=UV_PYTHON="${UV_PYTHON}" \
+            --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
+            --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
+            "${npm_path}" run e2e
 
   quality:
     name: Static and behavior
@@ -102,7 +134,39 @@ jobs:
         run: uv run --locked pyright src tests
 
       - name: Test non-crash behavior
-        run: uv run --locked pytest -n auto --ignore=tests/crash tests -q
+        run: |
+          set -euo pipefail
+          unit="atelier2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-quality"
+          cleanup() {
+            status="$1"
+            trap - EXIT INT TERM
+            sudo systemctl stop "${unit}.service" >/dev/null 2>&1 || true
+            sudo systemctl reset-failed "${unit}.service" >/dev/null 2>&1 || true
+            exit "${status}"
+          }
+          trap 'cleanup "$?"' EXIT
+          trap 'cleanup 130' INT
+          trap 'cleanup 143' TERM
+          uv_path="$(command -v uv)"
+          sudo systemd-run --quiet --wait --collect --pipe \
+            --unit="${unit}" \
+            --uid="$(id -u)" \
+            --gid="$(id -g)" \
+            --property=Type=exec \
+            --property=Delegate=yes \
+            --property=DelegateSubgroup=workload \
+            --property=KillMode=control-group \
+            --property=TimeoutStopSec=15s \
+            --working-directory="${GITHUB_WORKSPACE}" \
+            --setenv=HOME="${HOME}" \
+            --setenv=PATH="${PATH}" \
+            --setenv=CI="${CI:-true}" \
+            --setenv=GITHUB_ACTIONS="${GITHUB_ACTIONS:-true}" \
+            --setenv=GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            --setenv=UV_PYTHON="${UV_PYTHON}" \
+            --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
+            --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
+            "${uv_path}" run --locked pytest -n auto --ignore=tests/crash tests -q
 
   crash-recovery:
     name: Crash recovery
@@ -125,4 +189,36 @@ jobs:
         run: uv sync --locked --all-groups
 
       - name: Test crash-recovery behavior
-        run: uv run --locked pytest -n auto tests/crash -q
+        run: |
+          set -euo pipefail
+          unit="atelier2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-crash"
+          cleanup() {
+            status="$1"
+            trap - EXIT INT TERM
+            sudo systemctl stop "${unit}.service" >/dev/null 2>&1 || true
+            sudo systemctl reset-failed "${unit}.service" >/dev/null 2>&1 || true
+            exit "${status}"
+          }
+          trap 'cleanup "$?"' EXIT
+          trap 'cleanup 130' INT
+          trap 'cleanup 143' TERM
+          uv_path="$(command -v uv)"
+          sudo systemd-run --quiet --wait --collect --pipe \
+            --unit="${unit}" \
+            --uid="$(id -u)" \
+            --gid="$(id -g)" \
+            --property=Type=exec \
+            --property=Delegate=yes \
+            --property=DelegateSubgroup=workload \
+            --property=KillMode=control-group \
+            --property=TimeoutStopSec=15s \
+            --working-directory="${GITHUB_WORKSPACE}" \
+            --setenv=HOME="${HOME}" \
+            --setenv=PATH="${PATH}" \
+            --setenv=CI="${CI:-true}" \
+            --setenv=GITHUB_ACTIONS="${GITHUB_ACTIONS:-true}" \
+            --setenv=GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            --setenv=UV_PYTHON="${UV_PYTHON}" \
+            --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
+            --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
+            "${uv_path}" run --locked pytest -n auto tests/crash -q
