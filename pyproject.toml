@@ -21,6 +21,7 @@ atelier2 = "atelier2.host:main"
 [dependency-groups]
 dev = [
     "httpx==0.28.1",
+    "import-linter==2.13",
     "openapi-spec-validator==0.9.0",
     "pytest==9.1.1",
     "pytest-xdist==3.8.0",
@@ -34,6 +35,59 @@ pythonpath = ["src"]
 
 [tool.pyright]
 extraPaths = ["src"]
+
+[tool.importlinter]
+root_package = "atelier2"
+include_external_packages = true
+exclude_type_checking_imports = false
+
+[[tool.importlinter.contracts]]
+id = "layers"
+name = "Atelier package layers"
+type = "layers"
+containers = ["atelier2"]
+layers = [
+    "__main__",
+    "host",
+    "api | adapters",
+    "application",
+    "ports",
+    "contracts",
+]
+exhaustive = true
+
+[[tool.importlinter.contracts]]
+id = "root-facade"
+name = "Root facade cannot bypass ports"
+type = "forbidden"
+source_modules = ["atelier2"]
+forbidden_modules = [
+    "atelier2.__main__",
+    "atelier2.host",
+    "atelier2.api",
+    "atelier2.api.**",
+    "atelier2.adapters",
+    "atelier2.adapters.**",
+    "atelier2.application",
+    "atelier2.application.**",
+    "atelier2.ports",
+    "atelier2.ports.**",
+]
+as_packages = false
+
+[[tool.importlinter.contracts]]
+id = "dbos-owner"
+name = "DBOS and SQLAlchemy stay inside their adapter"
+type = "forbidden"
+source_modules = ["atelier2"]
+forbidden_modules = ["dbos", "sqlalchemy"]
+allow_indirect_imports = true
+as_packages = true
+ignore_imports = [
+    "atelier2.adapters.dbos.** -> dbos",
+    "atelier2.adapters.dbos.** -> sqlalchemy",
+]
+unmatched_ignore_imports_alerting = "error"
 
 [tool.ruff.lint.per-file-ignores]
 # Runtime lifecycle must preserve the initiating failure while collecting every

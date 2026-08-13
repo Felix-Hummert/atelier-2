@@ -89,6 +89,9 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --all-groups
 
+      - name: Check architecture contracts
+        run: uv run --locked python scripts/check_architecture.py
+
       - name: Check source
         run: uv run --locked ruff check .
 
