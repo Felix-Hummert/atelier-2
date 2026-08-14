@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import threading
@@ -276,7 +277,12 @@ def test_owner_eof_before_launch_preserves_witness_until_recovery(
 def test_failed_watchdog_spawn_releases_prepared_process_resources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime = attempt_runtime(tmp_path)
+    cgroup_token = hashlib.sha256(os.fsencode(tmp_path.resolve())).hexdigest()[:16]
+    test_cgroup_root = (
+        process_module.delegated_cgroup_root() / f"atelier2-test-{cgroup_token}"
+    )
+    test_cgroup_root.mkdir()
+    runtime = attempt_runtime(tmp_path, agent_process_cgroup_root=test_cgroup_root)
     runtime.initialize_storage()
     try:
         execution = agent_attempt_execution(
@@ -315,7 +321,13 @@ def test_failed_watchdog_spawn_releases_prepared_process_resources(
         )
         assert tuple(runtime.settings.process_control_root().glob("*.sock")) == ()
     finally:
-        runtime.close()
+        try:
+            runtime.close()
+        finally:
+            for cgroup in tuple(test_cgroup_root.iterdir()):
+                if cgroup.is_dir():
+                    cgroup.rmdir()
+            test_cgroup_root.rmdir()
 
 
 def _wait_for_observed_process(

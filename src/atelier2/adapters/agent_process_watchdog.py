@@ -23,6 +23,7 @@ from atelier2.ports.agent_executions import (
 )
 
 MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES = 262_144
+MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES = 4_096
 CONTROL_FRAME_TIMEOUT_SECONDS = 1.0
 
 
@@ -33,12 +34,17 @@ def encode_control_frame(payload: dict[str, object]) -> bytes:
 
 
 def _maximum_completed_frame() -> bytes:
-    encoded = base64.b64encode(b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2).decode("ascii")
+    standard_output = base64.b64encode(b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2).decode(
+        "ascii"
+    )
+    standard_error = base64.b64encode(
+        b"x" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
+    ).decode("ascii")
     return encode_control_frame(
         {
             "return_code": -(2**31),
-            "standard_error": encoded,
-            "standard_output": encoded,
+            "standard_error": standard_error,
+            "standard_output": standard_output,
             "type": "COMPLETED",
         }
     )
@@ -81,6 +87,7 @@ class _Connection:
     response_deadline: float | None = None
     slot: str = "UNCLASSIFIED"
     operation: str | None = None
+    refuse_as_busy: bool = False
 
 
 class Watchdog:
@@ -108,8 +115,7 @@ class Watchdog:
         self._standard_input_offset = 0
         self._standard_output = bytearray()
         self._standard_error = bytearray()
-        self._launch_frame: bytes | None = None
-        self._launch_response: bytes | None = None
+        self._launch_replay: tuple[bytes, bytes] | None = None
         self._wait_response: bytes | None = None
         self._cancel_response: bytes | None = None
         self._finalize_response: bytes | None = None
@@ -207,9 +213,9 @@ class Watchdog:
         state = _Connection(connection, now)
         descriptor = connection.fileno()
         if "UNCLASSIFIED" in self._slots:
+            state.refuse_as_busy = True
             self._connections[descriptor] = state
-            self._selector.register(connection, selectors.EVENT_WRITE, state)
-            self._queue_response(state, {"type": "BUSY"}, now)
+            self._selector.register(connection, selectors.EVENT_READ, state)
             return
         self._slots["UNCLASSIFIED"] = descriptor
         self._connections[descriptor] = state
@@ -249,7 +255,11 @@ class Watchdog:
         if chunk:
             state.input_bytes.extend(chunk)
             if len(state.input_bytes) > MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES:
-                self._queue_response(state, {"type": "FRAME_TOO_LARGE"}, now)
+                response = "BUSY" if state.refuse_as_busy else "FRAME_TOO_LARGE"
+                self._queue_response(state, {"type": response}, now)
+            return
+        if state.refuse_as_busy:
+            self._queue_response(state, {"type": "BUSY"}, now)
             return
         self._classify_request(state, bytes(state.input_bytes), now)
 
@@ -297,26 +307,27 @@ class Watchdog:
         frame: bytes,
         now: float,
     ) -> None:
-        if self._launch_frame is not None:
+        launch_replay = self._launch_replay
+        if launch_replay is not None:
+            launch_frame, launch_response = launch_replay
             response = (
-                self._launch_response
-                if frame == self._launch_frame
+                launch_response
+                if frame == launch_frame
                 else encode_control_frame({"type": "LAUNCH_MISMATCH"})
             )
-            assert response is not None
             self._queue_encoded_response(connection, response, now)
             return
-        self._launch_frame = frame
         if self._state is not _CoordinatorState.READY:
-            self._launch_response = encode_control_frame(
+            launch_response = encode_control_frame(
                 {
                     "outcome": "STOPPED",
                     "type": "TERMINAL_BEFORE_START",
                 }
             )
+            self._launch_replay = (frame, launch_response)
             self._publish_wait({"type": "STOPPED"}, now)
             self._termination_disposition = "NEVER_LAUNCHED"
-            self._queue_encoded_response(connection, self._launch_response, now)
+            self._queue_encoded_response(connection, launch_response, now)
             return
         self._state = _CoordinatorState.LAUNCHING
         try:
@@ -352,7 +363,7 @@ class Watchdog:
             )
             self._process = process
             self._standard_input = standard_input
-            self._launch_response = encode_control_frame({"type": "STARTED"})
+            launch_response = encode_control_frame({"type": "STARTED"})
             try:
                 self._configure_provider_descriptors(process)
             except (OSError, RuntimeError, ValueError):
@@ -362,7 +373,7 @@ class Watchdog:
                 self._state = _CoordinatorState.RUNNING
         except (KeyError, OSError, subprocess.SubprocessError, TypeError, ValueError):
             self._close_provider_descriptors()
-            self._launch_response = encode_control_frame(
+            launch_response = encode_control_frame(
                 {
                     "outcome": "SUPERVISION_FAILED",
                     "type": "TERMINAL_BEFORE_START",
@@ -370,7 +381,8 @@ class Watchdog:
             )
             self._termination_disposition = "REAPED_AFTER_PROCESS_BOUNDARY_FAILURE"
             self._publish_wait({"type": "SUPERVISION_FAILED"}, now)
-        self._queue_encoded_response(connection, self._launch_response, now)
+        self._launch_replay = (frame, launch_response)
+        self._queue_encoded_response(connection, launch_response, now)
 
     def _handle_wait(self, connection: _Connection, now: float) -> None:
         if self._wait_response is not None:
@@ -629,7 +641,7 @@ class Watchdog:
             return
         encoded = encode_control_frame(response)
         if len(encoded) > MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2:
-            encoded = encode_control_frame({"type": "SUPERVISION_FAILED"})
+            raise RuntimeError("watchdog wait response exceeds its exact bound")
         self._wait_response = encoded
         self._state = _CoordinatorState.TERMINATED
         for connection in tuple(self._connections.values()):
@@ -643,9 +655,10 @@ class Watchdog:
                     connection.operation is None
                     and now >= connection.accepted_at + CONTROL_FRAME_TIMEOUT_SECONDS
                 ):
-                    self._queue_response(
-                        connection, {"type": "CONTROL_FRAME_TIMEOUT"}, now
+                    response = (
+                        "BUSY" if connection.refuse_as_busy else "CONTROL_FRAME_TIMEOUT"
                     )
+                    self._queue_response(connection, {"type": response}, now)
             elif (
                 connection.response_deadline is not None
                 and now >= connection.response_deadline

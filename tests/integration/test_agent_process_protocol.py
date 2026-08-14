@@ -5,13 +5,13 @@ import json
 import os
 import select
 import selectors
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -19,6 +19,8 @@ import pytest
 from atelier2.adapters import agent_process_watchdog as watchdog_module
 from atelier2.adapters import agent_processes as process_module
 from atelier2.adapters.agent_process_watchdog import (
+    CONTROL_FRAME_TIMEOUT_SECONDS,
+    MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
     MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES,
     MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
     Watchdog,
@@ -139,80 +141,195 @@ def test_recovery_handoff_publication_and_retries_reuse_cached_bytes(
 
 
 def test_running_watchdog_bounds_four_control_roles_independently(
-    running_wire_watchdog: tuple[Watchdog, Path],
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    watchdog, endpoint = running_wire_watchdog
-    held = {operation: threading.Event() for operation in ("LAUNCH", "WAIT", "CANCEL")}
-    for handler, event in zip(
-        ("_handle_launch", "_handle_wait", "_handle_cancel"),
-        held.values(),
-        strict=True,
-    ):
-        monkeypatch.setattr(watchdog, handler, lambda *_args, event=event: event.set())
+    endpoint = tmp_path / "control.sock"
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    cgroup_events = cgroup / "cgroup.events"
+    cgroup_events.write_text("populated 1\n", encoding="ascii")
+    provider_ready = tmp_path / "provider-ready"
+    provider = subprocess.Popen(
+        (
+            sys.executable,
+            "-c",
+            "import signal,sys; from pathlib import Path; signal.signal(signal.SIGTERM, lambda *_: None); Path(sys.argv[1]).touch()\nwhile True:\n signal.pause()",
+            str(provider_ready),
+        ),
+        start_new_session=True,
+    )
+    _wait_until(provider_ready.exists)
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, cgroup, owner_pipe, 5.0)
+    watchdog._process = provider
+    launch_admitted = threading.Event()
 
-    with ExitStack() as clients:
-        for operation, admitted in held.items():
-            clients.enter_context(
-                _send_without_reading(
-                    endpoint, encode_control_frame({"operation": operation})
-                )
-            )
-            assert admitted.wait(timeout=2)
-        unclassified = clients.enter_context(_connect_control(endpoint))
-        _wait_until(lambda: "UNCLASSIFIED" in watchdog._slots)
-        with _connect_control(endpoint) as competing:
-            assert _receive_control_bytes(competing) == encode_control_frame(
-                {"type": "BUSY"}
-            )
-        unclassified.close()
-        _wait_until(lambda: "UNCLASSIFIED" not in watchdog._slots)
+    def hold_launch_slot(
+        connection: watchdog_module._Connection,
+        _request: dict[str, object],
+        _frame: bytes,
+        _now: float,
+    ) -> None:
+        watchdog._selector.unregister(connection.socket)
+        launch_admitted.set()
+
+    monkeypatch.setattr(watchdog, "_handle_launch", hold_launch_slot)
+    errors: list[Exception] = []
+    thread = _start_wire_watchdog(watchdog, endpoint, errors)
+    clients: list[socket.socket] = []
+    owner_open = True
+    try:
+        launch = _send_without_reading(
+            endpoint, encode_control_frame({"operation": "LAUNCH"})
+        )
+        clients.append(launch)
+        assert launch_admitted.wait(timeout=2)
+
+        waiting = _send_without_reading(
+            endpoint, encode_control_frame({"operation": "WAIT"})
+        )
+        clients.append(waiting)
+        _wait_until(lambda: "WAIT" in watchdog._slots)
+
+        cancelling = _send_without_reading(
+            endpoint, encode_control_frame({"operation": "CANCEL"})
+        )
+        clients.append(cancelling)
+        _wait_until(lambda: "TERMINAL_CONTROL" in watchdog._slots)
 
         for operation in ("LAUNCH", "WAIT", "FINALIZE"):
             assert _request_control_bytes(
                 endpoint, encode_control_frame({"operation": operation})
             ) == encode_control_frame({"type": "BUSY"})
 
+        unclassified = _connect_control(endpoint)
+        clients.append(unclassified)
+        _wait_until(lambda: "UNCLASSIFIED" in watchdog._slots)
+        assert _request_control_bytes(
+            endpoint, encode_control_frame({"operation": "WAIT"})
+        ) == encode_control_frame({"type": "BUSY"})
+
+        os.killpg(provider.pid, signal.SIGKILL)
+        provider.wait(timeout=5)
+        cgroup_events.write_text("populated 0\n", encoding="ascii")
+        assert _receive_control(waiting)["type"] == "COMPLETED"
+        assert _receive_control(cancelling)["type"] == "CANCELLED"
+        os.close(owner_writer)
+        owner_open = False
+        thread.join(timeout=5)
+    finally:
+        if provider.poll() is None:
+            os.killpg(provider.pid, signal.SIGKILL)
+            provider.wait(timeout=5)
+            cgroup_events.write_text("populated 0\n", encoding="ascii")
+        for client in clients:
+            client.close()
+        if owner_open:
+            if thread.is_alive():
+                _wait_until(lambda: watchdog._wait_response is not None)
+            os.close(owner_writer)
+        thread.join(timeout=5)
+        endpoint.unlink(missing_ok=True)
+    assert not thread.is_alive()
+    assert errors == []
+
 
 def test_running_watchdog_times_out_a_stalled_response_then_replays_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = tmp_path / "control.sock"
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.events").write_text("populated 0\n", encoding="ascii")
+    owner_pipe, owner_writer = os.pipe()
+    process = subprocess.Popen((sys.executable, "-c", "pass"))
+    process.wait(timeout=5)
+    watchdog = Watchdog(endpoint, cgroup, owner_pipe, 0.1)
+    watchdog._process = process
+    watchdog._standard_error.extend(b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES)
+    watchdog._standard_output.extend(b"o" * MAXIMUM_AGENT_OUTPUT_BYTES_V2)
+    handle_wait = watchdog._handle_wait
+
+    def constrain_response_buffer(
+        connection: watchdog_module._Connection, now: float
+    ) -> None:
+        connection.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1_024)
+        handle_wait(connection, now)
+
+    monkeypatch.setattr(watchdog, "_handle_wait", constrain_response_buffer)
+    expected = encode_control_frame(
+        {
+            "return_code": process.returncode,
+            "standard_error": base64.b64encode(
+                b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
+            ).decode("ascii"),
+            "standard_output": base64.b64encode(
+                b"o" * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+            ).decode("ascii"),
+            "type": "COMPLETED",
+        }
+    )
+    assert MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES < len(expected)
+    assert len(expected) <= MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2
+    errors: list[Exception] = []
+    thread = _start_wire_watchdog(watchdog, endpoint, errors)
+    owner_open = True
+    try:
+        with _send_without_reading(
+            endpoint, encode_control_frame({"operation": "WAIT"})
+        ) as stalled:
+            readable, _writable, _failed = select.select((stalled,), (), (), 2)
+            assert readable == [stalled]
+            assert _request_control_bytes(
+                endpoint, encode_control_frame({"operation": "WAIT"})
+            ) == encode_control_frame({"type": "BUSY"})
+            replayed = _request_until_not_busy(
+                endpoint, encode_control_frame({"operation": "WAIT"})
+            )
+            assert replayed == expected
+        os.close(owner_writer)
+        owner_open = False
+        thread.join(timeout=5)
+    finally:
+        if thread.is_alive():
+            if owner_open:
+                os.close(owner_writer)
+            thread.join(timeout=5)
+        endpoint.unlink(missing_ok=True)
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def test_watchdog_fails_loud_if_wait_response_exceeds_protocol_bound(
+    tmp_path: Path,
+) -> None:
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(tmp_path / "control.sock", tmp_path / "cgroup", owner_pipe, 0.1)
+    try:
+        with pytest.raises(RuntimeError, match="wait response exceeds"):
+            watchdog._publish_wait(
+                {"detail": "x" * MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2}, 1.0
+            )
+
+        assert watchdog._wait_response is None
+    finally:
+        watchdog._selector.close()
+        os.close(owner_pipe)
+        os.close(owner_writer)
+
+
+def test_unclassified_busy_reply_survives_a_complete_contender_frame(
     running_wire_watchdog: tuple[Watchdog, Path],
 ) -> None:
     watchdog, endpoint = running_wire_watchdog
-    with _send_without_reading(endpoint, encode_control_frame({"operation": "WAIT"})):
-        _wait_until(
-            lambda: any(
-                connection.operation == "WAIT"
-                for connection in watchdog._connections.values()
-            )
-        )
-        connection = next(iter(watchdog._connections.values()))
-        connection.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1_024)
-        watchdog._publish_wait(
-            {
-                "return_code": -(2**31),
-                "standard_error": base64.b64encode(
-                    b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
-                ).decode("ascii"),
-                "standard_output": base64.b64encode(
-                    b"o" * MAXIMUM_AGENT_OUTPUT_BYTES_V2
-                ).decode("ascii"),
-                "type": "COMPLETED",
-            },
-            time.monotonic(),
-        )
-        cached = watchdog._wait_response
-        assert cached is not None
-        assert len(cached) == MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2
-        _wait_until(lambda: 0 < connection.output_offset < len(cached))
-        _wait_until(lambda: connection.socket.fileno() == -1)
-        assert connection.response_deadline is not None
-        assert time.monotonic() >= connection.response_deadline
-        assert (
-            _request_control_bytes(
-                endpoint, encode_control_frame({"operation": "WAIT"})
-            )
-            == cached
-        )
+    with _connect_control(endpoint):
+        _wait_until(lambda: "UNCLASSIFIED" in watchdog._slots)
+
+        assert _request_control_bytes(
+            endpoint, encode_control_frame({"operation": "WAIT"})
+        ) == encode_control_frame({"type": "BUSY"})
 
 
 def test_supervisor_drains_exactly_bounded_outputs_after_closed_input(
@@ -290,11 +407,13 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
             (
                 sys.executable,
                 "-c",
-                "from pathlib import Path; import os,sys,time; Path(sys.argv[1]).open('ab').write(b'x'); time.sleep(.2); os.write(1,b'done')",
+                "from pathlib import Path; import os,sys; Path(sys.argv[1]).open('ab').write(b'x'); Path(sys.argv[2]).open('rb', buffering=0).read(1); os.write(1,b'done')",
                 str(counter),
+                str(tmp_path / "provider-release"),
             ),
             Path.cwd(),
         )
+        os.mkfifo(tmp_path / "provider-release")
         store.prepare(execution)
         supervisor.prepare(execution)
         store.claim(execution)
@@ -310,6 +429,8 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
         partial_wait = _send_without_reading(
             owned.endpoint, encode_control_frame({"operation": "WAIT"})
         )
+        with (tmp_path / "provider-release").open("wb", buffering=0) as release:
+            release.write(b"x")
         assert partial_wait.recv(8) == b'{"return'
         partial_wait.close()
 
@@ -438,11 +559,17 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
             request: dict[str, object],
             *,
             timeout_seconds: float | None = 30,
+            maximum_response_bytes: int,
         ) -> dict[str, object]:
             nonlocal cancel_requests
             if request.get("operation") == "CANCEL":
                 cancel_requests += 1
-            return request_once(endpoint, request, timeout_seconds=timeout_seconds)
+            return request_once(
+                endpoint,
+                request,
+                timeout_seconds=timeout_seconds,
+                maximum_response_bytes=maximum_response_bytes,
+            )
 
         monkeypatch.setattr(supervisor, "_request", count_cancel_requests)
         disposition, owner, generation = supervisor.cancel(
@@ -452,7 +579,7 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
         lost_cancel.close()
         with blocked:
             assert _receive_control(blocked) == {"type": "CONTROL_FRAME_TIMEOUT"}
-        assert cancel_requests == 2
+        assert cancel_requests == process_module.MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS
         assert disposition is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
         terminal = store.attest_cancellation_cleanup(
             command, disposition, owner, generation
@@ -469,7 +596,10 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
         ("send", b""),
         ("partial-read", b'{"type":'),
         ("decode-noncanonical", b'{"type": "STARTED"}'),
-        ("decode-oversized", b"x" * 4_097),
+        (
+            "decode-oversized",
+            b"x" * (MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES + 1),
+        ),
     ),
 )
 def test_real_transport_failures_retain_exact_durable_launch_authority(
@@ -570,7 +700,7 @@ def _serve_control_responses(
             server.listen()
             server.settimeout(5)
             ready.set()
-            for _retry in range(2):
+            for _retry in range(process_module.MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS):
                 with server.accept()[0] as connection:
                     connection.settimeout(2)
                     request = bytearray()
@@ -593,13 +723,9 @@ def _serve_control_responses(
     return thread
 
 
-@pytest.fixture
-def running_wire_watchdog(tmp_path: Path) -> Iterator[tuple[Watchdog, Path]]:
-    endpoint = tmp_path / "control.sock"
-    owner_pipe, owner_writer = os.pipe()
-    watchdog = Watchdog(endpoint, tmp_path / "cgroup", owner_pipe, 0.1)
-    errors: list[Exception] = []
-
+def _start_wire_watchdog(
+    watchdog: Watchdog, endpoint: Path, errors: list[Exception]
+) -> threading.Thread:
     def serve() -> None:
         try:
             watchdog.serve()
@@ -609,6 +735,16 @@ def running_wire_watchdog(tmp_path: Path) -> Iterator[tuple[Watchdog, Path]]:
     thread = threading.Thread(target=serve)
     thread.start()
     _wait_until(endpoint.is_socket)
+    return thread
+
+
+@pytest.fixture
+def running_wire_watchdog(tmp_path: Path) -> Iterator[tuple[Watchdog, Path]]:
+    endpoint = tmp_path / "control.sock"
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, tmp_path / "cgroup", owner_pipe, 0.1)
+    errors: list[Exception] = []
+    thread = _start_wire_watchdog(watchdog, endpoint, errors)
     try:
         yield watchdog, endpoint
     finally:
@@ -639,6 +775,18 @@ def _request_control_bytes(endpoint: Path, frame: bytes) -> bytes:
         return _receive_control_bytes(connection)
 
 
+def _request_until_not_busy(endpoint: Path, frame: bytes) -> bytes:
+    busy = encode_control_frame({"type": "BUSY"})
+    deadline = time.monotonic() + (CONTROL_FRAME_TIMEOUT_SECONDS * 3)
+    while True:
+        response = _request_control_bytes(endpoint, frame)
+        if response != busy:
+            return response
+        if time.monotonic() >= deadline:
+            raise AssertionError("control role did not release in bounds")
+        time.sleep(0.005)
+
+
 def _receive_control_bytes(connection: socket.socket) -> bytes:
     response = bytearray()
     while chunk := connection.recv(65_536):
@@ -660,9 +808,11 @@ def _connect_control(endpoint: Path) -> socket.socket:
 
 def _receive_control(connection: socket.socket) -> dict[str, object]:
     response_bytes = bytearray()
-    while chunk := connection.recv(4_097 - len(response_bytes)):
+    while chunk := connection.recv(
+        MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES + 1 - len(response_bytes)
+    ):
         response_bytes.extend(chunk)
-        if len(response_bytes) > 4_096:
+        if len(response_bytes) > MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES:
             raise AssertionError("control response exceeded its test bound")
     response = json.loads(bytes(response_bytes).decode("ascii"))
     assert isinstance(response, dict)
