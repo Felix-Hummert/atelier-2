@@ -73,11 +73,25 @@ the declared `CLAUDE_CONFIG_DIR` credential boundary and the serving host's
 executable search path; nothing else of the server's environment is inherited. A
 configuration binding a non-subscription profile to this executor is refused
 before any process is prepared. An unsuccessful exit, an unreadable envelope, an
-envelope declaring a provider error, and an answer larger than the durable output
-bound all fail the attempt instead of recording invented output. Undeclared, the
-host composes no V2 provider factory and behaves exactly as before. Codex remains
-absent, and the isolated read, edit, and test tools an agent needs to change its
-own workspace are not part of this contract.
+envelope declaring a provider error, a raw frame past the provider-frame bound,
+and an answer larger than the durable output bound all fail the attempt instead
+of recording invented output. Undeclared, the host composes no V2 provider
+factory and behaves exactly as before. Codex remains absent, and the isolated
+read, edit, and test tools an agent needs to change its own workspace are not
+part of this contract.
+
+That provider frame has its own bound, distinct from the durable output bound,
+because the durable answer travels inside a JSON envelope: it is sized so no
+answer the durable contract accepts can be refused as a frame, and anything
+larger fails the attempt.
+
+The call itself is deliberately the barest one its authentication allows: no
+tools, no hooks, no MCP servers, no plugins or skills, no project configuration
+discovery, no persisted session, and a bounded turn count, so the credentials it
+is handed answer text and do nothing else. That is containment, not isolation —
+the process still runs as the serving user — so this executor may only be
+declared for a loopback bind. Serving it on a reachable address is refused at
+startup, because starting a billed provider is unauthenticated on this API.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically

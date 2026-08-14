@@ -31,6 +31,7 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.host import (
+    DEFAULT_HOST,
     HostSettings,
     api_limits,
     compose_application,
@@ -191,11 +192,14 @@ def test_host_settings_own_named_production_defaults(tmp_path: Path) -> None:
 
 
 def served_settings(
-    tmp_path: Path, claude_subscription: ClaudeSubscriptionSettings | None = None
+    tmp_path: Path,
+    claude_subscription: ClaudeSubscriptionSettings | None = None,
+    host: str = DEFAULT_HOST,
 ) -> HostSettings:
     frontend = tmp_path / "frontend"
-    (frontend / "assets").mkdir(parents=True)
-    (frontend / "index.html").write_text("index")
+    if not frontend.is_dir():
+        (frontend / "assets").mkdir(parents=True)
+        (frontend / "index.html").write_text("index")
     return HostSettings(
         database_path=tmp_path / "durable.sqlite",
         effect_store_path=tmp_path / "effects.sqlite",
@@ -205,6 +209,7 @@ def served_settings(
         source_commit="commit",
         source_tree="tree",
         frontend_dist=frontend,
+        host=host,
         claude_subscription=claude_subscription,
     )
 
@@ -240,37 +245,82 @@ def test_a_declared_claude_deployment_offers_its_executor_to_every_run(
         runtime.close()
 
 
-def test_a_partly_declared_claude_deployment_refuses_to_serve(tmp_path: Path) -> None:
+def serve_arguments(tmp_path: Path, *extra: str) -> list[str]:
     frontend = tmp_path / "frontend"
-    (frontend / "assets").mkdir(parents=True)
-    (frontend / "index.html").write_text("index")
+    if not frontend.is_dir():
+        (frontend / "assets").mkdir(parents=True)
+        (frontend / "index.html").write_text("index")
+    return [
+        "serve",
+        "--database",
+        str(tmp_path / "durable.sqlite"),
+        "--effect-store",
+        str(tmp_path / "effects.sqlite"),
+        "--effect-adapter-revision",
+        "loopback-v1",
+        "--effect-destination",
+        "local",
+        "--application-version",
+        "refusal-test",
+        "--source-commit",
+        "commit",
+        "--source-tree",
+        "tree",
+        "--frontend-dist",
+        str(frontend),
+        *extra,
+    ]
+
+
+def test_a_partly_declared_claude_deployment_refuses_to_serve(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as refusal:
+        main(serve_arguments(tmp_path, "--claude-executable", str(tmp_path / "claude")))
+
+    assert refusal.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "bind",
+    ["0.0.0.0", "::", "192.168.1.10", "localhost", "cockpit.example"],
+)
+def test_a_claude_deployment_off_loopback_refuses_to_serve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], bind: str
+) -> None:
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = claude_subscription_deployment(deployment, INERT_CLAUDE)
 
     with pytest.raises(SystemExit) as refusal:
         main(
-            [
-                "serve",
-                "--database",
-                str(tmp_path / "durable.sqlite"),
-                "--effect-store",
-                str(tmp_path / "effects.sqlite"),
-                "--effect-adapter-revision",
-                "loopback-v1",
-                "--effect-destination",
-                "local",
-                "--application-version",
-                "refusal-test",
-                "--source-commit",
-                "commit",
-                "--source-tree",
-                "tree",
-                "--frontend-dist",
-                str(frontend),
+            serve_arguments(
+                tmp_path,
+                "--host",
+                bind,
                 "--claude-executable",
-                str(tmp_path / "claude"),
-            ]
+                str(settings.executable),
+                "--claude-workspace",
+                str(settings.workspace),
+                "--claude-credential-directory",
+                str(settings.credential_directory),
+            )
         )
 
     assert refusal.value.code == 2
+    assert "loopback" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bind", ["127.0.0.1", "127.0.0.2", "::1"])
+def test_a_claude_deployment_on_loopback_is_accepted(tmp_path: Path, bind: str) -> None:
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+
+    settings = served_settings(
+        tmp_path,
+        claude_subscription=claude_subscription_deployment(deployment, INERT_CLAUDE),
+        host=bind,
+    )
+
+    assert settings.host == bind
 
 
 def test_real_console_launcher_starts_and_closes_one_runtime(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -115,6 +116,26 @@ class HostSettings:
             or not (frontend_dist / "assets").is_dir()
         ):
             raise ValueError("frontend distribution must contain index.html and assets")
+        if self.claude_subscription is not None and not _is_loopback(self.host):
+            raise ValueError(
+                f"serving Claude subscription agents requires a loopback bind, "
+                f"not {self.host!r}: starting a billed provider is unauthenticated "
+                "on this API, so the billed boundary stays on this machine until "
+                "an authenticated boundary exists"
+            )
+
+
+def _is_loopback(host: str) -> bool:
+    """Only a literal loopback address proves the bind stays on this machine.
+
+    A name resolves elsewhere at bind time, so a host this function cannot read
+    as an address is refused rather than trusted.
+    """
+
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
 
 
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
@@ -189,21 +210,23 @@ def main(arguments: Sequence[str] | None = None) -> None:
     if parsed.command != "serve":
         parser.error("a command is required")
     try:
-        serve(
-            HostSettings(
-                database_path=parsed.database,
-                effect_store_path=parsed.effect_store,
-                effect_adapter_revision=parsed.effect_adapter_revision,
-                effect_destination=parsed.effect_destination,
-                application_version=parsed.application_version,
-                source_commit=parsed.source_commit,
-                source_tree=parsed.source_tree,
-                frontend_dist=parsed.frontend_dist,
-                host=parsed.host,
-                port=parsed.port,
-                claude_subscription=_claude_subscription_settings(parser, parsed),
-            )
+        settings = HostSettings(
+            database_path=parsed.database,
+            effect_store_path=parsed.effect_store,
+            effect_adapter_revision=parsed.effect_adapter_revision,
+            effect_destination=parsed.effect_destination,
+            application_version=parsed.application_version,
+            source_commit=parsed.source_commit,
+            source_tree=parsed.source_tree,
+            frontend_dist=parsed.frontend_dist,
+            host=parsed.host,
+            port=parsed.port,
+            claude_subscription=_claude_subscription_settings(parser, parsed),
         )
+    except ValueError as refusal:
+        parser.error(str(refusal))
+    try:
+        serve(settings)
     except KeyboardInterrupt:
         return
 

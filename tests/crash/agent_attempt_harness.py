@@ -48,6 +48,7 @@ from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
+    AgentExecutionMode,
     AgentExecutorKey,
     AgentProcessCompletion,
     AgentProcessInvocation,
@@ -98,6 +99,10 @@ class InertFactory:
     @property
     def operational_identity(self) -> AgentExecutorOperationalIdentity:
         return AgentExecutorOperationalIdentity("controlled-process")
+
+    @property
+    def supported_modes(self) -> frozenset[AgentExecutionMode]:
+        return frozenset({AgentExecutionMode.HEADLESS})
 
     def open(self) -> InertExecutor:
         return InertExecutor()
