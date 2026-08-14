@@ -12,7 +12,14 @@ import pytest
 
 from atelier2.adapters import agent_processes as process_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
-from atelier2.contracts.agent_attempts import AgentAttemptId, AgentAttemptProcessPhase
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptId,
+    AgentAttemptProcessPhase,
+    AgentAttemptReplacement,
+    AgentAttemptState,
+    CancelAgentAttemptRequest,
+)
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
@@ -25,7 +32,7 @@ from tests.scenarios.agents import agent_attempt_execution
 
 
 def test_concurrent_local_waiters_share_one_process_completion(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
@@ -53,6 +60,15 @@ def test_concurrent_local_waiters_share_one_process_completion(
         start = threading.Barrier(3)
         outcomes: list[AgentProcessCompletion] = []
         failures: list[BaseException] = []
+        decode_completion = process_module._completion_from_response
+        decode_count = 0
+
+        def count_decode(response: dict[str, object]) -> AgentProcessCompletion:
+            nonlocal decode_count
+            decode_count += 1
+            return decode_completion(response)
+
+        monkeypatch.setattr(process_module, "_completion_from_response", count_decode)
 
         def invoke() -> None:
             start.wait()
@@ -70,6 +86,7 @@ def test_concurrent_local_waiters_share_one_process_completion(
 
         assert failures == []
         assert len(outcomes) == 2
+        assert decode_count == 1
         assert outcomes[0] is outcomes[1]
         assert outcomes[0].standard_output == b"done"
         assert counter.read_bytes() == b"x"
@@ -199,6 +216,60 @@ def test_close_prevents_a_paused_prepare_from_publishing_a_watchdog(
         assert unpublished.process.poll() is not None
         assert not unpublished.endpoint.exists()
         assert not unpublished.cgroup.exists()
+    finally:
+        runtime.close()
+
+
+def test_owner_eof_before_launch_preserves_witness_until_recovery(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "process/eof-before-launch")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        supervisor = runtime.agent_process_supervisor
+        store.prepare(execution)
+        supervisor.prepare(execution)
+        store.claim(execution)
+        owned = supervisor._owned[execution.attempt_id]
+        assert owned is not None
+
+        supervisor.close()
+
+        assert owned.process.poll() is not None
+        assert supervisor._owned == {}
+        assert owned.endpoint.is_socket()
+        assert owned.cgroup.is_dir()
+        durable = store.load(execution.attempt_id)
+        assert durable.state is AgentAttemptState.LAUNCH_ARMED
+        assert durable.process_phase is AgentAttemptProcessPhase.LAUNCH_AUTHORIZED
+
+        command = CancelAgentAttemptRequest(
+            durable.run_id,
+            durable.attempt_id,
+            "recover-eof-before-launch",
+            durable.state_version,
+            AgentAttemptReplacement.NONE,
+        )
+        store.request_cancellation(command)
+        disposition, owner, generation = supervisor.recover(
+            store.load(execution.attempt_id)
+        )
+        assert (
+            disposition
+            is AgentAttemptCancellationDisposition.OWNER_LOST_AFTER_PARENT_DEATH
+        )
+        terminal = store.attest_cancellation_cleanup(
+            command, disposition, owner, generation
+        )
+        supervisor.release(terminal.attempt)
+        assert not owned.endpoint.exists()
+        assert not owned.cgroup.exists()
     finally:
         runtime.close()
 
