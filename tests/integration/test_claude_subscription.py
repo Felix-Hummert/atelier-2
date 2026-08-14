@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -16,8 +20,10 @@ from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_FRAME_BYTES,
     CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
     CONFORMANT_CLAUDE_VERSIONS,
+    CREDENTIAL_RECORD_ENTRY,
     MANAGED_POLICY_ENTRIES,
     MANAGED_POLICY_ROOTS,
+    PERSONAL_SUBSCRIPTION_TYPES,
     REMOTE_MANAGED_POLICY_ENTRY,
     ClaudeExecutableUnsupported,
     ClaudeManagedPolicyPresent,
@@ -31,8 +37,10 @@ from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
     run_agent_bindings,
+    run_events,
     runs,
 )
+from atelier2.api.openapi import API_PREFIX
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
@@ -71,9 +79,11 @@ from tests.scenarios.agents import (
     MEASURED_CLAUDE_VERSION,
     claude_subscription_attempt,
     claude_subscription_deployment,
+    claude_subscription_publication,
     claude_subscription_runtime,
     claude_subscription_start,
 )
+from tests.scenarios.api import durable_api_client
 
 REAL_CLAUDE_EXECUTABLE_VARIABLE = "ATELIER2_REAL_CLAUDE_EXECUTABLE"
 REAL_CLAUDE_CREDENTIAL_DIRECTORY_VARIABLE = "ATELIER2_REAL_CLAUDE_CONFIG_DIR"
@@ -458,7 +468,7 @@ def test_an_unusable_claude_deployment_is_refused_at_configuration(
     if broken == "workspace":
         settings.workspace.rmdir()
     if broken == "credentials":
-        settings.credential_directory.rmdir()
+        shutil.rmtree(settings.credential_directory)
     search_path = {
         "search_path": "",
         "bubblewrap": str(tmp_path),
@@ -647,6 +657,74 @@ def test_a_host_without_administrator_policy_is_attested(tmp_path: Path) -> None
     )
 
 
+@pytest.mark.parametrize(
+    "subscription_type",
+    [
+        pytest.param("enterprise", id="an enterprise account"),
+        pytest.param("team", id="a team account"),
+        pytest.param(None, id="an account naming no type"),
+    ],
+)
+def test_a_credential_outside_a_personal_subscription_refuses_to_compose(
+    tmp_path: Path, subscription_type: str | None
+) -> None:
+    """Server-delivered policy is refused at the account, not at its cache.
+
+    A managed account's settings are fetched when the CLI starts, which is
+    after every scan preceding the call could see them and still in time to
+    bring a hook into it, so no disk scan can be the guard. What decides
+    whether they are fetched at all is the account, and an account that names
+    no type is one the CLI fetches for -- so it is refused, not assumed
+    personal.
+    """
+
+    settings = claude_subscription_deployment(
+        tmp_path, INTROSPECTING_CLAUDE, subscription_type=subscription_type
+    )
+
+    with pytest.raises(ClaudeManagedPolicyPresent, match="personal subscription"):
+        attest_no_managed_policy(settings.credential_directory, MANAGED_POLICY_ROOTS)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        pytest.param("missing", id="no credential record at all"),
+        pytest.param("unreadable", id="a credential record that is not JSON"),
+    ],
+)
+def test_a_credential_that_cannot_be_read_refuses_to_compose(
+    tmp_path: Path, damage: str
+) -> None:
+    """An unreadable account is an unknown one, and unknown is not personal."""
+
+    settings = claude_subscription_deployment(tmp_path, INTROSPECTING_CLAUDE)
+    record = settings.credential_directory / CREDENTIAL_RECORD_ENTRY
+    if damage == "missing":
+        record.unlink()
+    else:
+        record.write_text("not a credential record", encoding="utf-8")
+
+    with pytest.raises(ClaudeManagedPolicyPresent, match="personal subscription"):
+        attest_no_managed_policy(settings.credential_directory, MANAGED_POLICY_ROOTS)
+
+
+@pytest.mark.parametrize("subscription_type", sorted(PERSONAL_SUBSCRIPTION_TYPES))
+def test_a_personal_subscription_credential_is_attested(
+    tmp_path: Path, subscription_type: str
+) -> None:
+    settings = claude_subscription_deployment(
+        tmp_path, INTROSPECTING_CLAUDE, subscription_type=subscription_type
+    )
+
+    assert (
+        attest_no_managed_policy(
+            settings.credential_directory, (tmp_path / "no-policy-here",)
+        )
+        is None
+    )
+
+
 def test_an_executable_that_refuses_to_report_its_version_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -776,6 +854,63 @@ def test_a_node_demanding_interactive_is_refused_before_any_run_exists(
     assert refused_bindings == 0
 
 
+def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The public answer to the capability this provider cannot serve.
+
+    The refusal above is the starter's; this is what a caller of the composed
+    server actually receives for it -- 409 `agent-executor-binding-unavailable`
+    -- and it arrives before the run row, the binding row, the run event, the
+    durable queue, and any launch of the provider at all. The recording fake
+    would leave a file behind the moment it were started, so its absence is
+    what proves the last one.
+    """
+
+    deployment = tmp_path / "deployment"
+    deployment.mkdir()
+    settings = claude_subscription_deployment(deployment, RECORDING_CLAUDE)
+    runtime = claude_subscription_runtime(tmp_path, settings)
+    runtime.initialize_storage()
+
+    def unexpected_enqueue(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("an unservable capability reached the durable queue")
+
+    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
+    try:
+        configuration, workflow = claude_subscription_publication(
+            runtime, requested_capability=AgentExecutionCapability.INTERACTIVE
+        )
+        refused = durable_api_client(runtime).post(
+            API_PREFIX + "/runs",
+            json={
+                "workflow_format_version": 2,
+                "run_id": "claude-interactive-over-http",
+                "workflow_revision_hash": workflow.revision_hash.value,
+                "agent_bindings": [
+                    {
+                        "role": "builder",
+                        "agent_configuration_revision_hash": (
+                            configuration.revision_hash.value
+                        ),
+                    }
+                ],
+            },
+        )
+        with runtime.engine.connect() as connection:
+            written = tuple(
+                connection.scalar(sa.select(sa.func.count()).select_from(table))
+                for table in (runs, run_agent_bindings, run_events)
+            )
+    finally:
+        runtime.close()
+
+    assert refused.status_code == 409
+    assert refused.json()["type"].endswith(":agent-executor-binding-unavailable")
+    assert written == (0, 0, 0)
+    assert not (deployment / PROBE_RECORD_NAME).exists()
+
+
 def test_a_supervised_provider_answer_becomes_exactly_one_durable_receipt(
     tmp_path: Path,
 ) -> None:
@@ -847,7 +982,7 @@ def test_a_raw_frame_one_byte_past_its_bound_never_becomes_an_answer(
 ) -> None:
     """Supervision holds this provider to the frame this executor declared.
 
-    TODO(#35 follow-up): supervision refuses the overrun, but reports it as an
+    TODO(#16 Phase 2): supervision refuses the overrun, but reports it as an
     untyped `RuntimeError`, so an attempt this executor would call FAILED is
     indistinguishable from a supervision defect. Passing the watchdog's
     `OUTPUT_LIMIT_EXCEEDED` on as a typed provider outcome belongs to the
@@ -942,29 +1077,76 @@ def baited_workspace(root: Path) -> Path:
     return workspace
 
 
-def credential_artifacts(credential_directory: Path, workspace: Path) -> list[Path]:
-    """Every credential-directory path this exact run could have left behind.
+CONFORMANCE_LEASE = Path(tempfile.gettempdir()) / "atelier2-claude-conformance.lock"
 
-    Claude names a session transcript directory after the working directory
-    with every separator replaced, so this run's paths cannot collide with
-    another session's. Prompt-history and debug artifacts are named instead by
-    what they are, so they are matched by name.
+
+@contextmanager
+def exclusive_conformance_lease() -> Iterator[None]:
+    """Hold the machine's one lease on billing a real subscription answer.
+
+    The call this guards spends the operator's subscription and reads their
+    real credential directory, so a second one at the same time would both bill
+    twice and make each run's before/after snapshot meaningless. A contended
+    lease is refused rather than waited for: a second holder is a mistake to
+    see, not a queue to join.
     """
 
-    slug = str(workspace).replace(os.sep, "-")
-    artifact_names = ("history", "debug", "session", "transcript", "shell-snapshot")
-    found: list[Path] = []
+    with CONFORMANCE_LEASE.open("w", encoding="utf-8") as held:
+        try:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise AssertionError(
+                f"another real subscription conformance run holds {CONFORMANCE_LEASE}"
+            ) from error
+        try:
+            yield
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+
+
+CredentialDirectoryState = Mapping[Path, tuple[int, int] | None]
+
+
+def credential_directory_state(credential_directory: Path) -> CredentialDirectoryState:
+    """Every path under the credential directory, as a write would leave it.
+
+    A path that cannot be read is kept with no state rather than dropped, so a
+    path that appears or disappears across the pair of snapshots is a
+    difference like any other.
+    """
+
+    state: dict[Path, tuple[int, int] | None] = {}
     for path in credential_directory.rglob("*"):
-        if slug in path.name or (
-            path.is_file()
-            and any(name in path.name for name in artifact_names)
-            and path.stat().st_mtime >= _RUN_STARTED_AT
-        ):
-            found.append(path)
-    return found
+        try:
+            status = path.lstat()
+        except OSError:
+            state[path] = None
+            continue
+        state[path] = (status.st_size, status.st_mtime_ns)
+    return state
 
 
-_RUN_STARTED_AT = time.time()
+def credential_artifacts(
+    credential_directory: Path,
+    before: CredentialDirectoryState,
+    after: CredentialDirectoryState,
+) -> list[Path]:
+    """Every credential-directory path the call between two snapshots touched.
+
+    Two snapshots taken around the call itself are the precise form of "this
+    call left nothing": they name what appeared, vanished or changed inside
+    that window, needing neither a clock nor a guess at what an artifact would
+    be called. The credential record is the one path excused, because keeping
+    the operator authenticated is maintenance of the credential and not a
+    record of this job.
+    """
+
+    maintained = credential_directory / CREDENTIAL_RECORD_ENTRY
+    return sorted(
+        path
+        for path in before.keys() | after.keys()
+        if path != maintained and before.get(path) != after.get(path)
+    )
 
 
 @pytest.mark.skipif(
@@ -982,7 +1164,14 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
 
     Gate time and subscription spend are budgets, so every containment claim
     this executor makes is asserted against a single real answer rather than
-    one call per claim.
+    one call per claim. The call runs under the machine's exclusive lease, and
+    the credential directory is snapshotted immediately either side of it, so
+    what the assertion below reports is exactly what this call did.
+
+    That directory is the operator's live one: nothing here can stop a Claude
+    session they started themselves from writing to it, and such a write is
+    reported as an artifact. That is the honest failure -- it names the path,
+    and it is investigated rather than silently passed.
     """
 
     workspace = baited_workspace(tmp_path)
@@ -1004,9 +1193,12 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
             "then answer with the single word pong and nothing else."
         ).encode(),
     )
-    started_at = time.time()
+    invocation = executor.prepare_process(request)
 
-    completion = launched(executor.prepare_process(request))
+    with exclusive_conformance_lease():
+        before = credential_directory_state(credential_directory)
+        completion = launched(invocation)
+        after = credential_directory_state(credential_directory)
     result = executor.decode_process_completion(completion)
 
     assert isinstance(result, AgentExecutionResult)
@@ -1028,7 +1220,7 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
     assert envelope["num_turns"] == 1
 
     # Nothing durable was left under the operator's credential directory.
-    assert credential_artifacts(credential_directory, workspace) == []
+    assert credential_artifacts(credential_directory, before, after) == []
 
     # The raw frame stays far inside its bound, and its metadata is the
     # measured basis for CLAUDE_SUBSCRIPTION_FRAME_BYTES' metadata allowance.
@@ -1052,4 +1244,3 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
         request, binding_set.binding_set_hash, result
     )
     assert receipt.output_bytes == result.output_bytes
-    assert started_at <= time.time()

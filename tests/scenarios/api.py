@@ -2,6 +2,19 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from fastapi.testclient import TestClient
+
+from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.queries import DbosQueries
+from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
+from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
+from atelier2.adapters.dbos.runtime import DbosRuntime
+from atelier2.adapters.dbos.starter import (
+    DbosDurableRunStarter,
+    DbosWorkflowRevisionPublisher,
+)
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.limits import ApiLimits
 from atelier2.api.stream import EventPollBackoff
 
@@ -205,3 +218,43 @@ def api_limits(**changes: int) -> ApiLimits:
 
 def event_poll_backoff() -> EventPollBackoff:
     return EventPollBackoff(0.01, 0.25, 2)
+
+
+def durable_api_client(runtime: DbosRuntime) -> TestClient:
+    """The real HTTP boundary in front of one real durable runtime.
+
+    Whether a request is refused before anything durable exists is a property
+    of the composed server, not of a starter called by hand, so a test that
+    claims an HTTP answer asks for it here.
+    """
+
+    queries = DbosQueries(runtime.engine)
+    return TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=ApiPorts(
+                workflow_revision_publisher=DbosWorkflowRevisionPublisher(
+                    runtime.engine
+                ),
+                published_run_starter=DbosDurableRunStarter(
+                    runtime.engine, runtime.settings, runtime.agent_executor_registry
+                ),
+                wait_answerer=DbosWaitAnswerer(
+                    runtime.engine, runtime.settings.application_version
+                ),
+                reconcile_commander=DbosEffectReconcileCommander(
+                    runtime.engine, runtime.settings
+                ),
+                workflow_revision_queries=queries,
+                run_queries=queries,
+                run_event_queries=queries,
+                workflow_document_parser=parse_workflow_document,
+                agent_configuration_catalog=DbosAgentConfigurationCatalog(
+                    runtime.engine, runtime.agent_executor_registry
+                ),
+            ),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )

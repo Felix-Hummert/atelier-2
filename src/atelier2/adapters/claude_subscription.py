@@ -91,6 +91,20 @@ MANAGED_POLICY_ENTRIES = (
 # policy root and this is its entry.
 REMOTE_MANAGED_POLICY_ENTRY = "remote-settings.json"
 
+# The credential record the CLI keeps in that same directory, and the field of
+# it that decides whether server-managed settings are delivered at all. Read
+# out of the 2.1.221 executable: a first-party OAuth session fetches managed
+# settings at startup -- after any scan of the cache above could see them --
+# when this persisted subscription type is `enterprise` or `team`, and also
+# when it is absent, and it does not fetch them for a personal subscription.
+# So the delivery this executor cannot scan for is refused by attesting the
+# same value the CLI's own delivery gate reads, and an absent or unreadable
+# type is refused rather than read as personal.
+CREDENTIAL_RECORD_ENTRY = ".credentials.json"
+PERSONAL_SUBSCRIPTION_TYPES = frozenset({"max", "pro"})
+_OAUTH_CREDENTIAL_FIELD = "claudeAiOauth"
+_SUBSCRIPTION_TYPE_FIELD = "subscriptionType"
+
 _PRINT_FLAG = "-p"
 _OUTPUT_FORMAT_FLAG = "--output-format"
 _JSON_OUTPUT_FORMAT = "json"
@@ -162,7 +176,7 @@ class ClaudeExecutableUnsupported(ValueError):
 
 
 class ClaudeManagedPolicyPresent(ValueError):
-    """This host carries administrator policy, which no invocation flag disables."""
+    """Administrator policy can act here, and no invocation flag disables it."""
 
 
 def _parsed_version(reported: str) -> tuple[int, int, int] | None:
@@ -331,13 +345,30 @@ def _managed_policy_surfaces(
     yield credential_directory / REMOTE_MANAGED_POLICY_ENTRY
 
 
+def _stored_subscription_type(credential_directory: Path) -> str | None:
+    """Read the subscription type the CLI's delivery gate reads, or nothing."""
+
+    record = credential_directory / CREDENTIAL_RECORD_ENTRY
+    try:
+        stored: object = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    oauth = stored.get(_OAUTH_CREDENTIAL_FIELD)
+    if not isinstance(oauth, dict):
+        return None
+    subscription_type = oauth.get(_SUBSCRIPTION_TYPE_FIELD)
+    return subscription_type if isinstance(subscription_type, str) else None
+
+
 def attest_no_managed_policy(
     credential_directory: Path, policy_roots: Sequence[Path]
 ) -> None:
-    """Refuse composition on a host where administrator policy can still act.
+    """Refuse composition where administrator policy can still act.
 
-    The tool-free containment premise this executor rests on holds only on a
-    host with no managed policy, and this attestation is what enforces exactly
+    The tool-free containment premise this executor rests on holds only where
+    no managed policy can act, and this attestation is what enforces exactly
     that. Safe mode, `--setting-sources=` and `--tools=` stop project and user
     customization, but administrator policy is outside all of them by design --
     safe mode's own help says so -- so policy-configured hooks, status line and
@@ -345,9 +376,21 @@ def attest_no_managed_policy(
     process beside the credential directory this invocation is handed. Refusing
     the deployment is the only honest answer, because no flag can disable them.
 
-    It attests the policy surfaces that live on disk. Full OS isolation remains
-    the planned stronger boundary and is what would make the premise hold
-    regardless of the host.
+    Policy reaches a run two ways, and both are refused here. It can already be
+    on disk, which the policy surfaces above are scanned for; or it can be
+    delivered by Anthropic to a managed account when the CLI starts, which no
+    scan preceding the call can ever see, and which a non-interactive `claude
+    -p` applies for that run. What decides whether that delivery happens at all
+    is the account, so the credential offered for it is attested to be a
+    personal subscription -- reading the same persisted subscription type the
+    CLI's own delivery gate reads, and refusing every other value including an
+    absent one, because an unknown type is a fetching one.
+
+    That is a disk attestation of the account, not proof about the network: it
+    trusts a record the CLI itself writes, and it is read once at composition,
+    so an account converted to a managed one while the server runs is outside
+    it. Full OS isolation remains the planned stronger boundary and is what
+    would make the premise hold regardless of the host or the account.
     """
 
     for surface in _managed_policy_surfaces(credential_directory, policy_roots):
@@ -359,6 +402,19 @@ def attest_no_managed_policy(
                 "and managed policy can still start a child beside the "
                 "credential directory whatever the invocation asks for"
             )
+    subscription_type = _stored_subscription_type(credential_directory)
+    if subscription_type not in PERSONAL_SUBSCRIPTION_TYPES:
+        personal = ", ".join(sorted(PERSONAL_SUBSCRIPTION_TYPES))
+        offered = subscription_type if subscription_type is not None else "no"
+        raise ClaudeManagedPolicyPresent(
+            "serving Claude subscription agents requires a personal "
+            f"subscription credential ({personal}), but "
+            f"{credential_directory / CREDENTIAL_RECORD_ENTRY} carries "
+            f"{offered} subscription type: an account outside that set can be "
+            "delivered administrator-managed settings when the CLI starts, "
+            "which is after any policy scan can see them and still in time to "
+            "run a hook for this invocation"
+        )
 
 
 @dataclass(frozen=True)
@@ -449,16 +505,24 @@ class ClaudeSubscriptionExecutor:
     unset. It is not this executor's containment guarantee -- it is what limits
     a child this invocation does not expect to have.
 
+    The deployment contract this V1 is measured for, and the only one it is
+    composed for: a personal subscription credential (`max` or `pro`), on a
+    host carrying no administrator policy, serving a loopback deployment (see
+    `atelier2.host`). The narrowing is not advice. Managed settings are
+    delivered to a managed account when the CLI starts, which is after any scan
+    this executor could run and still in time to bring a hook into the billed
+    call, so `attest_no_managed_policy` refuses composition against a credential
+    outside that set -- and against one that will not say which it is.
+
     Residual risk, deliberately not claimed as closed. The process still runs
     as the serving user and can read `CLAUDE_CONFIG_DIR`; tool-free, it spawns
     no descendant that could inherit it, but nothing in the operating system
-    forbids one. Administrator-managed policy is outside every control above by
-    design -- `--safe-mode`'s own help says so -- and can still start a child,
-    which is why `attest_no_managed_policy` refuses to compose this executor on
-    a host carrying one. The operator ruled on 2026-08-14 that OS-enforced
-    isolation stays planned as its own slice but does not gate this local
-    heartbeat; until it lands, this executor is composed only for a loopback
-    deployment (see `atelier2.host`).
+    forbids one. The account attestation is a disk read of a record the CLI
+    itself writes, taken once at composition, so it neither proves what the
+    network will deliver nor survives an account converted while the server
+    runs. The operator ruled on 2026-08-14 that OS-enforced isolation stays
+    planned as its own slice but does not gate this local heartbeat; it is what
+    would make the premise hold regardless of the host or the account.
     """
 
     settings: ClaudeSubscriptionSettings
