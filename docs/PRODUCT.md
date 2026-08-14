@@ -79,7 +79,10 @@ standard input rather than its command line, and grants the launched process onl
 the declared `CLAUDE_CONFIG_DIR` credential boundary and the serving host's
 executable search path; nothing else of the server's environment is inherited. A
 configuration binding a non-subscription profile to this executor is refused
-before any process is prepared. It attests exactly one execution capability,
+before any process is prepared, and V1 admits only a personal `max` or `pro`
+credential, refusing a Team, Enterprise, absent or unreadable one, because an
+account outside that set can be handed administrator-managed settings when the
+CLI starts. It attests exactly one execution capability,
 `headless`, because a print call is the only shape it can serve, so a node
 demanding an interactive one is refused before that run exists at all. An
 unsuccessful exit, an unreadable envelope, an envelope declaring a provider

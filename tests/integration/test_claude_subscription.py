@@ -3,11 +3,13 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -1104,49 +1106,202 @@ def exclusive_conformance_lease() -> Iterator[None]:
             fcntl.flock(held, fcntl.LOCK_UN)
 
 
-CredentialDirectoryState = Mapping[Path, tuple[int, int] | None]
+CredentialDirectoryState = Mapping[Path, tuple[int, int, int] | None]
+
+# What the pinned CLI rewrites beside the credentials on every start, whatever
+# job it is given. Each is account or cache state, so a change to one is
+# maintenance of the installation and never a record of this job.
+CREDENTIAL_MAINTENANCE_ENTRIES = (
+    # The credential record: a refreshed OAuth token is what keeps the operator
+    # authenticated between runs.
+    CREDENTIAL_RECORD_ENTRY,
+    # The CLI's own account and cache state -- last-used account, startup
+    # counters, cached release metadata -- written before a job is even read.
+    ".claude.json",
+)
+# Where the CLI would keep a resumable session, which this invocation asks it
+# never to create.
+SESSIONS_ENTRY = "sessions"
+
+CANARY_BYTES = 16
+CANARY_SCAN_CHUNK_BYTES = 1 << 20
+# The gate-time bound on one scan of the operator's real credential tree.
+# Exhausting it fails the proof rather than passing it, because a file that was
+# never read is not a file that was cleared.
+CANARY_SCAN_BUDGET_BYTES = 8 << 30
+
+
+def run_canary() -> str:
+    """A token this run invents, so a file carrying it can only be this run's.
+
+    No literal written into this file could do the job. The operator's live
+    Claude sessions share the credential directory, and a session reviewing
+    this test would write any fixed marker it contains into a transcript there,
+    which is a hit that attributes nothing.
+    """
+
+    return secrets.token_hex(CANARY_BYTES)
 
 
 def credential_directory_state(credential_directory: Path) -> CredentialDirectoryState:
     """Every path under the credential directory, as a write would leave it.
 
-    A path that cannot be read is kept with no state rather than dropped, so a
-    path that appears or disappears across the pair of snapshots is a
-    difference like any other.
+    Size and modification time alone would miss a rewrite that keeps the size
+    and restores the time, so the inode change time is recorded beside them:
+    Linux gives userspace no way to set it, which is exactly what makes a
+    restored modification time visible. A path that cannot be read is kept with
+    no state rather than dropped, so a path that appears or disappears across
+    the pair of snapshots is a difference like any other.
     """
 
-    state: dict[Path, tuple[int, int] | None] = {}
+    state: dict[Path, tuple[int, int, int] | None] = {}
     for path in credential_directory.rglob("*"):
         try:
             status = path.lstat()
         except OSError:
             state[path] = None
             continue
-        state[path] = (status.st_size, status.st_mtime_ns)
+        state[path] = (status.st_size, status.st_mtime_ns, status.st_ctime_ns)
     return state
 
 
-def credential_artifacts(
+def unexplained_credential_changes(
     credential_directory: Path,
     before: CredentialDirectoryState,
     after: CredentialDirectoryState,
 ) -> list[Path]:
-    """Every credential-directory path the call between two snapshots touched.
+    """Every path that changed between two snapshots and is not maintenance.
 
-    Two snapshots taken around the call itself are the precise form of "this
-    call left nothing": they name what appeared, vanished or changed inside
-    that window, needing neither a clock nor a guess at what an artifact would
-    be called. The credential record is the one path excused, because keeping
-    the operator authenticated is maintenance of the credential and not a
-    record of this job.
+    This names what moved inside a window; it attributes none of it to the call
+    that window encloses. The operator's own live Claude sessions write to this
+    same directory and hold none of this test's lease, so their writes land in
+    here too. It is the report an investigation starts from, never an
+    invariant.
     """
 
-    maintained = credential_directory / CREDENTIAL_RECORD_ENTRY
+    maintained = {
+        credential_directory / entry for entry in CREDENTIAL_MAINTENANCE_ENTRIES
+    }
     return sorted(
         path
         for path in before.keys() | after.keys()
-        if path != maintained and before.get(path) != after.get(path)
+        if path not in maintained and before.get(path) != after.get(path)
     )
+
+
+def files_created_in_sessions(
+    credential_directory: Path,
+    before: CredentialDirectoryState,
+    after: CredentialDirectoryState,
+) -> list[Path]:
+    """Every regular file that appeared under `sessions/` inside a window."""
+
+    sessions = credential_directory / SESSIONS_ENTRY
+    return sorted(
+        path
+        for path in after.keys() - before.keys()
+        if path.is_relative_to(sessions) and regular_file(path)
+    )
+
+
+def regular_file(path: Path) -> bool:
+    """Whether the path is a regular file now, without following a link."""
+
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def paths_carrying(paths: Iterable[Path], canary: str) -> list[Path]:
+    """Every one of those paths whose name or content carries the canary.
+
+    Content is read in chunks that overlap by a token, so a canary split across
+    two reads is still found, and under one total budget. A path that vanishes
+    mid-scan is not retained and is skipped; any other read failure is raised,
+    because an unread file has not been cleared.
+    """
+
+    token = canary.encode("ascii")
+    remaining = CANARY_SCAN_BUDGET_BYTES
+    carrying: list[Path] = []
+    for path in paths:
+        if canary in path.name:
+            carrying.append(path)
+            continue
+        if not regular_file(path):
+            continue
+        try:
+            with path.open("rb") as content:
+                overlap = b""
+                while chunk := content.read(CANARY_SCAN_CHUNK_BYTES):
+                    remaining -= len(chunk)
+                    if remaining < 0:
+                        raise AssertionError(
+                            f"scanning {path} passed the "
+                            f"{CANARY_SCAN_BUDGET_BYTES} byte budget for one "
+                            "credential-tree scan: an unscanned file is not a "
+                            "cleared one"
+                        )
+                    if token in overlap + chunk:
+                        carrying.append(path)
+                        break
+                    overlap = chunk[-len(token) :]
+        except FileNotFoundError:
+            continue
+    return carrying
+
+
+def test_a_same_size_rewrite_that_restores_its_time_is_still_a_change(
+    tmp_path: Path,
+) -> None:
+    credential_directory = tmp_path / "credentials"
+    credential_directory.mkdir()
+    cache = credential_directory / "cache.json"
+    cache.write_text("aaaa", encoding="utf-8")
+
+    before = credential_directory_state(credential_directory)
+    unchanged = cache.lstat()
+    cache.write_text("bbbb", encoding="utf-8")
+    os.utime(cache, ns=(unchanged.st_atime_ns, unchanged.st_mtime_ns))
+    after = credential_directory_state(credential_directory)
+
+    assert cache.lstat().st_size == unchanged.st_size
+    assert cache.lstat().st_mtime_ns == unchanged.st_mtime_ns
+    assert unexplained_credential_changes(credential_directory, before, after) == [
+        cache
+    ]
+
+
+def test_the_maintained_credential_record_is_not_reported_as_a_change(
+    tmp_path: Path,
+) -> None:
+    credential_directory = tmp_path / "credentials"
+    credential_directory.mkdir()
+    record = credential_directory / CREDENTIAL_RECORD_ENTRY
+    record.write_text("{}", encoding="utf-8")
+
+    before = credential_directory_state(credential_directory)
+    record.write_text('{"refreshed": true}', encoding="utf-8")
+    after = credential_directory_state(credential_directory)
+
+    assert unexplained_credential_changes(credential_directory, before, after) == []
+
+
+def test_the_canary_scan_reads_names_and_content_across_read_boundaries(
+    tmp_path: Path,
+) -> None:
+    canary = run_canary()
+    quiet = tmp_path / "quiet.jsonl"
+    quiet.write_bytes(b"." * CANARY_SCAN_CHUNK_BYTES)
+    straddling = tmp_path / "straddling.jsonl"
+    # Placed so half the token falls on each side of a read boundary.
+    filler = b"." * (CANARY_SCAN_CHUNK_BYTES - len(canary) // 2)
+    straddling.write_bytes(filler + canary.encode("ascii") + filler)
+    named = tmp_path / f"session-{canary}.jsonl"
+    named.write_text("", encoding="utf-8")
+
+    assert paths_carrying([quiet, straddling, named], canary) == [straddling, named]
 
 
 @pytest.mark.skipif(
@@ -1165,13 +1320,16 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
     Gate time and subscription spend are budgets, so every containment claim
     this executor makes is asserted against a single real answer rather than
     one call per claim. The call runs under the machine's exclusive lease, and
-    the credential directory is snapshotted immediately either side of it, so
-    what the assertion below reports is exactly what this call did.
+    the credential directory is snapshotted immediately either side of it.
 
-    That directory is the operator's live one: nothing here can stop a Claude
-    session they started themselves from writing to it, and such a write is
-    reported as an artifact. That is the honest failure -- it names the path,
-    and it is investigated rather than silently passed.
+    That directory is the operator's live one, and nothing here can stop a
+    Claude session they started themselves from writing to it while the call
+    runs, so the lease bounds this test and not that tree. The snapshots
+    therefore bound the window and name what appeared in it; they cannot say
+    who wrote it. What attributes a write to this call is the canary this run
+    invents and puts in the job: the claim proved below is that no retained
+    file under that directory carries this run's job, by name or by content,
+    and that the session directory gained no file of ours at all.
     """
 
     workspace = baited_workspace(tmp_path)
@@ -1186,11 +1344,13 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
 
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
     tool_evidence = tmp_path / "tool-fired"
+    canary = run_canary()
     request = subscription_request(
         model=os.environ[REAL_CLAUDE_MODEL_VARIABLE],
         job=(
             f"Create the file {tool_evidence} using your Bash tool, "
-            "then answer with the single word pong and nothing else."
+            f"then answer with exactly the two words pong {canary} "
+            "and nothing else."
         ).encode(),
     )
     invocation = executor.prepare_process(request)
@@ -1208,6 +1368,14 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
     assert b"pong" in answer
     assert b"banana" not in answer
 
+    # The job came back, which is what makes the scan below meaningful: a
+    # canary the model never saw could not be written anywhere either. It is
+    # compared through a name so no failure prints it -- a live Claude session
+    # reading that output would write this run's canary into the very tree the
+    # scan trusts.
+    answer_carried_the_job = canary.encode("ascii") in answer
+    assert answer_carried_the_job
+
     # No customization ran: no hook, no skill, no MCP server, and no tool.
     for sentinel in ("hook-fired", "skill-fired", "mcp-fired", "tool-fired"):
         assert not (tmp_path / sentinel).exists()
@@ -1219,8 +1387,25 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
     assert not envelope.get("mcp_servers")
     assert envelope["num_turns"] == 1
 
-    # Nothing durable was left under the operator's credential directory.
-    assert credential_artifacts(credential_directory, before, after) == []
+    # No session survived the call: of the files that appeared under the
+    # session directory inside the window -- the operator's live sessions write
+    # there too -- none carries this run's job.
+    assert (
+        paths_carrying(
+            files_created_in_sessions(credential_directory, before, after), canary
+        )
+        == []
+    )
+
+    # And nothing anywhere under the credential directory carries it either,
+    # including the maintenance paths, which may be rewritten but may not hold
+    # a prompt or an answer. What changed inside the window is reported with
+    # the failure, because that is where an investigation starts.
+    retained = paths_carrying(credential_directory.rglob("*"), canary)
+    assert retained == [], (
+        f"the call left its job in {retained}; paths changed inside the "
+        f"window: {unexplained_credential_changes(credential_directory, before, after)}"
+    )
 
     # The raw frame stays far inside its bound, and its metadata is the
     # measured basis for CLAUDE_SUBSCRIPTION_FRAME_BYTES' metadata allowance.
