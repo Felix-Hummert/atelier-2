@@ -78,9 +78,15 @@ nodes:
 """
 
 
-def attempt_runtime(root: Path) -> DbosRuntime:
+def attempt_runtime(
+    root: Path, *, agent_process_cgroup_root: Path | None = None
+) -> DbosRuntime:
     return DbosRuntime(
-        DbosRuntimeSettings(root / "atelier.sqlite", "attempt-test"),
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "attempt-test",
+            agent_process_cgroup_root=agent_process_cgroup_root,
+        ),
         LoopbackEffectAdapterFactory(
             root / "effects.sqlite",
             AdapterRevision("loopback-v1"),

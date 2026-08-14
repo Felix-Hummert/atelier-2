@@ -39,6 +39,8 @@ from atelier2.ports.agent_executions import (
     AgentProcessOwnerNotLocal,
 )
 
+MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS = 2
+
 
 @dataclass
 class _OwnedWatchdog:
@@ -50,6 +52,14 @@ class _OwnedWatchdog:
     owner_pipe: int
     launched: bool = False
     wait_completed: threading.Event = field(default_factory=threading.Event)
+    condition: threading.Condition = field(default_factory=threading.Condition)
+    launch_frame: bytes | None = None
+    completion: AgentProcessCompletion | None = None
+    failure: str | None = None
+    owner_not_local_failure: bool = False
+    closed: bool = False
+    finalizing: bool = False
+    finalized: bool = False
 
 
 class AgentProcessSupervisor:
@@ -73,10 +83,14 @@ class AgentProcessSupervisor:
         self._registry_lock = threading.Lock()
         self._attempt_locks: dict[AgentAttemptId, threading.Lock] = {}
         self._owned: dict[AgentAttemptId, _OwnedWatchdog | None] = {}
+        self._closed = False
         if grace_seconds <= 0 or ready_timeout_seconds <= 0:
             raise ValueError("agent process bounds must be positive")
 
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
+        with self._registry_lock:
+            if self._closed:
+                raise RuntimeError("agent process supervisor is closed")
         lock = self._attempt_lock(execution.attempt_id)
         with lock:
             existing = self._owned.get(execution.attempt_id)
@@ -96,54 +110,77 @@ class AgentProcessSupervisor:
             self._control_root.mkdir(parents=True, exist_ok=True, mode=0o700)
             os.chmod(self._control_root, 0o700)
             cgroup.mkdir(mode=0o700)
-            read_pipe, write_pipe = os.pipe()
-            control_directory = os.open(
-                self._control_root, os.O_RDONLY | os.O_DIRECTORY
-            )
             try:
-                process = subprocess.Popen(
-                    (
-                        sys.executable,
-                        "-m",
-                        "atelier2.adapters.agent_process_watchdog",
-                        "--endpoint",
-                        str(
-                            Path("/proc/self/fd")
-                            / str(control_directory)
-                            / endpoint.name
-                        ),
-                        "--cgroup",
-                        str(cgroup),
-                        "--owner-pipe",
-                        str(read_pipe),
-                        "--grace",
-                        str(self._grace_seconds),
-                    ),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    pass_fds=(read_pipe, control_directory),
-                )
-            finally:
-                os.close(control_directory)
+                read_pipe, write_pipe = os.pipe()
+                try:
+                    control_directory = os.open(
+                        self._control_root, os.O_RDONLY | os.O_DIRECTORY
+                    )
+                    try:
+                        process = subprocess.Popen(
+                            (
+                                sys.executable,
+                                "-m",
+                                "atelier2.adapters.agent_process_watchdog",
+                                "--endpoint",
+                                str(
+                                    Path("/proc/self/fd")
+                                    / str(control_directory)
+                                    / endpoint.name
+                                ),
+                                "--cgroup",
+                                str(cgroup),
+                                "--owner-pipe",
+                                str(read_pipe),
+                                "--grace",
+                                str(self._grace_seconds),
+                            ),
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            pass_fds=(read_pipe, control_directory),
+                        )
+                    finally:
+                        os.close(control_directory)
+                except BaseException:
+                    os.close(read_pipe)
+                    os.close(write_pipe)
+                    raise
+            except BaseException:
+                try:
+                    cgroup.rmdir()
+                except OSError:
+                    pass
+                raise
             os.close(read_pipe)
             owned = _OwnedWatchdog(
                 self._owner, generation, endpoint, cgroup, process, write_pipe
             )
             try:
                 self._wait_ready(owned)
-                durable = self._store.bind_watchdog(execution, self._owner, generation)
+                with self._registry_lock:
+                    if self._closed:
+                        publish = False
+                    else:
+                        durable = self._store.bind_watchdog(
+                            execution, self._owner, generation
+                        )
+                        self._owned[execution.attempt_id] = owned
+                        publish = True
             except BaseException:
                 os.close(write_pipe)
                 process.kill()
                 process.wait()
+                _close_watchdog_pipes(process)
                 endpoint.unlink(missing_ok=True)
                 try:
                     cgroup.rmdir()
                 except OSError:
                     pass
                 raise
-            self._owned[execution.attempt_id] = owned
+            if not publish:
+                self._close_owned(owned)
+                raise RuntimeError("agent process supervisor closed during prepare")
             return durable
 
     def launch_and_wait(
@@ -167,29 +204,53 @@ class AgentProcessSupervisor:
                 or durable.watchdog_generation_id != owned.generation
             ):
                 raise AgentProcessOwnerNotLocal
-            response = self._request_with_retry(
-                owned.endpoint,
+            with owned.condition:
+                if owned.closed or owned.finalized:
+                    raise AgentProcessOwnerNotLocal
+                if owned.launch_frame is None:
+                    owned.launch_frame = launch_frame
+                    leads_attempt = True
+                elif owned.launch_frame != launch_frame:
+                    raise RuntimeError("local watchdog invocation changed")
+                else:
+                    leads_attempt = False
+        if not leads_attempt:
+            return self._await_shared_completion(owned)
+        try:
+            launch_response = self._request_with_retry(
+                owned,
                 launch_request,
                 timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS,
                 maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
             )
-            if response.get("type") == "STARTED":
+            if launch_response.get("type") == "STARTED":
                 owned.launched = True
                 self._store.observe_process(execution, owned.owner, owned.generation)
-            elif response.get("type") == "TERMINAL_BEFORE_START":
+            elif launch_response.get("type") == "TERMINAL_BEFORE_START":
                 raise AgentProcessOwnerNotLocal
             else:
                 raise RuntimeError("watchdog refused the exact launch")
-        try:
-            response = self._request_with_retry(
-                owned.endpoint,
+            wait_response = self._request_with_retry(
+                owned,
                 {"operation": "WAIT"},
                 timeout_seconds=None,
                 maximum_response_bytes=MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
             )
-            return _completion_from_response(response)
-        finally:
+            completion = _completion_from_response(wait_response)
+        except Exception as error:
+            with owned.condition:
+                owned.failure = str(error) or type(error).__name__
+                owned.owner_not_local_failure = isinstance(
+                    error, AgentProcessOwnerNotLocal
+                )
+                owned.wait_completed.set()
+                owned.condition.notify_all()
+            raise
+        with owned.condition:
+            owned.completion = completion
             owned.wait_completed.set()
+            owned.condition.notify_all()
+            return completion
 
     def cancel(
         self, attempt: AgentAttempt
@@ -208,7 +269,7 @@ class AgentProcessSupervisor:
             ):
                 raise AgentProcessOwnerNotLocal
         response = self._request_with_retry(
-            owned.endpoint,
+            owned,
             {"operation": "CANCEL"},
             timeout_seconds=(self._grace_seconds * 2) + 2,
             maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
@@ -271,15 +332,15 @@ class AgentProcessSupervisor:
         lock = self._attempt_lock(attempt.attempt_id)
         with lock:
             owned = self._owned.get(attempt.attempt_id)
-            if owned is not None:
-                if (
-                    owned.owner != attempt.process_owner_id
-                    or owned.generation != attempt.watchdog_generation_id
-                ):
-                    raise AgentProcessOwnerNotLocal
-                self._finalize_owned(owned)
-                self._owned.pop(attempt.attempt_id, None)
-                return
+            if owned is not None and (
+                owned.owner != attempt.process_owner_id
+                or owned.generation != attempt.watchdog_generation_id
+            ):
+                raise AgentProcessOwnerNotLocal
+        if owned is not None:
+            self._finalize_owned(attempt.attempt_id, owned)
+            return
+        with lock:
             cgroup = self._cgroup_for(attempt)
             if cgroup.is_dir():
                 _kill_cgroup_and_wait_empty(cgroup, self._ready_timeout_seconds)
@@ -300,24 +361,56 @@ class AgentProcessSupervisor:
                 AgentAttemptState.FAILED,
             }:
                 raise RuntimeError("only a terminal attempt can release its watchdog")
-            self._owned[execution.attempt_id] = None
-        try:
-            self._finalize_owned(owned)
-        except BaseException:
-            with lock:
-                if (
-                    execution.attempt_id in self._owned
-                    and self._owned[execution.attempt_id] is None
-                ):
-                    self._owned[execution.attempt_id] = owned
-            raise
+        self._finalize_owned(execution.attempt_id, owned)
 
     def close(self) -> None:
         with self._registry_lock:
+            self._closed = True
             owned = tuple(value for value in self._owned.values() if value is not None)
             self._owned.clear()
         for handle in owned:
+            with handle.condition:
+                handle.closed = True
+                handle.condition.notify_all()
             self._detach_owned(handle)
+
+    def _finalize_owned(
+        self, attempt_id: AgentAttemptId, owned: _OwnedWatchdog
+    ) -> None:
+        deadline = time.monotonic() + self._ready_timeout_seconds
+        with owned.condition:
+            while owned.finalizing and not owned.finalized:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("watchdog finalization did not finish in bounds")
+                owned.condition.wait(timeout=remaining)
+            if owned.finalized:
+                return
+            owned.finalizing = True
+        try:
+            response = self._request_with_retry(
+                owned,
+                {"operation": "FINALIZE"},
+                timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS,
+                maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
+            )
+            if response.get("type") != "FINALIZE_ACCEPTED":
+                raise RuntimeError("watchdog refused terminal finalization")
+            self._close_owned(owned)
+        except Exception:
+            with owned.condition:
+                owned.finalizing = False
+                owned.condition.notify_all()
+            raise
+        with owned.condition:
+            owned.finalizing = False
+            owned.finalized = True
+            owned.closed = True
+            owned.condition.notify_all()
+        lock = self._attempt_lock(attempt_id)
+        with lock:
+            if self._owned.get(attempt_id) is owned:
+                self._owned.pop(attempt_id, None)
 
     def _attempt_lock(self, attempt_id: AgentAttemptId) -> threading.Lock:
         with self._registry_lock:
@@ -352,21 +445,34 @@ class AgentProcessSupervisor:
         ):
             raise RuntimeError("watchdog readiness attestation disagrees")
 
+    @staticmethod
+    def _await_shared_completion(owned: _OwnedWatchdog) -> AgentProcessCompletion:
+        with owned.condition:
+            while (
+                owned.completion is None and owned.failure is None and not owned.closed
+            ):
+                owned.condition.wait()
+            if owned.completion is not None:
+                return owned.completion
+            if owned.owner_not_local_failure or owned.closed:
+                raise AgentProcessOwnerNotLocal
+            raise RuntimeError(owned.failure or "shared process attempt failed")
+
     def _request_with_retry(
         self,
-        endpoint: Path,
+        owned: _OwnedWatchdog,
         request: dict[str, object],
         *,
         timeout_seconds: float | None,
         maximum_response_bytes: int,
     ) -> dict[str, object]:
         last_error: BaseException | None = None
-        for retry in range(2):
+        for retry in range(MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS):
             if retry:
                 time.sleep(CONTROL_FRAME_TIMEOUT_SECONDS)
             try:
                 response = self._request(
-                    endpoint,
+                    owned.endpoint,
                     request,
                     timeout_seconds=timeout_seconds,
                     maximum_response_bytes=maximum_response_bytes,
@@ -409,7 +515,10 @@ class AgentProcessSupervisor:
                 response_bytes = bytearray()
                 while True:
                     chunk = connection.recv(
-                        min(65_536, maximum_response_bytes + 1 - len(response_bytes))
+                        min(
+                            65_536,
+                            maximum_response_bytes + 1 - len(response_bytes),
+                        )
                     )
                     if not chunk:
                         break
@@ -427,17 +536,6 @@ class AgentProcessSupervisor:
         ):
             raise RuntimeError("watchdog response is noncanonical")
         return response
-
-    def _finalize_owned(self, owned: _OwnedWatchdog) -> None:
-        response = self._request_with_retry(
-            owned.endpoint,
-            {"operation": "FINALIZE"},
-            timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS,
-            maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
-        )
-        if response.get("type") != "FINALIZE_ACCEPTED":
-            raise RuntimeError("watchdog refused terminal finalization")
-        self._close_owned(owned)
 
     def _close_owned(self, owned: _OwnedWatchdog) -> None:
         try:
