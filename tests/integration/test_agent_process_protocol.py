@@ -13,7 +13,12 @@ import pytest
 
 from atelier2.adapters import agent_process_watchdog as watchdog_module
 from atelier2.adapters import agent_processes as process_module
-from atelier2.adapters.agent_process_watchdog import Watchdog, encode_control_frame
+from atelier2.adapters.agent_process_watchdog import (
+    MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
+    MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
+    Watchdog,
+    encode_control_frame,
+)
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -121,6 +126,24 @@ def test_recovery_handoff_publication_and_retries_reuse_cached_bytes(
     finally:
         for peer in peers:
             peer.close()
+        watchdog._selector.close()
+        os.close(owner_pipe)
+        os.close(owner_writer)
+
+
+def test_watchdog_fails_loud_if_wait_response_exceeds_protocol_bound(
+    tmp_path: Path,
+) -> None:
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(tmp_path / "control.sock", tmp_path / "cgroup", owner_pipe, 0.1)
+    try:
+        with pytest.raises(RuntimeError, match="wait response exceeds"):
+            watchdog._publish_wait(
+                {"detail": "x" * MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2}, 1.0
+            )
+
+        assert watchdog._wait_response is None
+    finally:
         watchdog._selector.close()
         os.close(owner_pipe)
         os.close(owner_writer)
@@ -318,11 +341,17 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
             request: dict[str, object],
             *,
             timeout_seconds: float | None = 30,
+            maximum_response_bytes: int,
         ) -> dict[str, object]:
             nonlocal cancel_requests
             if request.get("operation") == "CANCEL":
                 cancel_requests += 1
-            return request_once(endpoint, request, timeout_seconds=timeout_seconds)
+            return request_once(
+                endpoint,
+                request,
+                timeout_seconds=timeout_seconds,
+                maximum_response_bytes=maximum_response_bytes,
+            )
 
         monkeypatch.setattr(supervisor, "_request", count_cancel_requests)
         disposition, owner, generation = supervisor.cancel(
@@ -363,9 +392,11 @@ def _connect_control(endpoint: Path) -> socket.socket:
 
 def _receive_control(connection: socket.socket) -> dict[str, object]:
     response_bytes = bytearray()
-    while chunk := connection.recv(4_097 - len(response_bytes)):
+    while chunk := connection.recv(
+        MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES + 1 - len(response_bytes)
+    ):
         response_bytes.extend(chunk)
-        if len(response_bytes) > 4_096:
+        if len(response_bytes) > MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES:
             raise AssertionError("control response exceeded its test bound")
     response = json.loads(bytes(response_bytes).decode("ascii"))
     assert isinstance(response, dict)
