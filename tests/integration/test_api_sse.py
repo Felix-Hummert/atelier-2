@@ -52,6 +52,7 @@ from atelier2.api.stream import (
 )
 from atelier2.application.advance_run import advance_run
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -226,8 +227,11 @@ def _parse_events(body: str) -> list[dict[str, object]]:
     return parsed
 
 
+@pytest.mark.parametrize("failure_code", tuple(AgentAttemptFailureCode))
 def test_agent_failed_stream_is_bounded_and_secret_free(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    failure_code: AgentAttemptFailureCode,
 ) -> None:
     from tests.integration.test_agent_attempts import attempt_request
 
@@ -253,7 +257,10 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
         store = DbosAgentAttemptStore(runtime.engine)
         store.prepare(agent_attempt_execution(request))
         store.claim(agent_attempt_execution(request))
-        store.complete_known_failure(agent_attempt_execution(request))
+        store.complete_known_failure(
+            agent_attempt_execution(request),
+            failure_code,
+        )
         queries = DbosQueries(runtime.engine)
 
         async def first_event() -> ServerSentEvent:
@@ -286,7 +293,7 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
             }
 
         assert '"event":"AGENT_FAILED"' in stream_json
-        assert '"failure_code":"PROCESS_EXITED_UNSUCCESSFULLY"' in stream_json
+        assert f'"failure_code":"{failure_code.value}"' in stream_json
         assert all(
             canary not in channel
             for channel in (

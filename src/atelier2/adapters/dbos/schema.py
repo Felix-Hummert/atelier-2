@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 metadata = sa.MetaData()
 
@@ -547,6 +547,7 @@ agent_attempts = sa.Table(
         "AND ((redrive_state = 'CLEANUP_ATTESTED' "
         "AND cancellation_disposition IN ('NEVER_LAUNCHED', 'EXITED_BEFORE_SIGNAL', "
         "'REAPED_AFTER_TERM', 'REAPED_AFTER_KILL', "
+        "'REAPED_AFTER_PROCESS_BOUNDARY_FAILURE', "
         "'OWNER_LOST_AFTER_PARENT_DEATH')) OR "
         "(redrive_state <> 'CLEANUP_ATTESTED' "
         "AND cancellation_disposition IS NULL)))"
@@ -580,7 +581,8 @@ agent_attempts = sa.Table(
         "AND failure_code IS NULL AND receipt_hash IS NOT NULL) OR "
         "(state = 'FAILED' AND state_version >= 2 "
         "AND cancellation_command_id IS NULL "
-        "AND failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY' "
+        "AND failure_code IN ('PROCESS_EXITED_UNSUCCESSFULLY', "
+        "'PROCESS_OUTPUT_LIMIT_EXCEEDED', 'PROCESS_SUPERVISION_FAILED') "
         "AND receipt_hash IS NULL)"
     ),
 )
@@ -915,7 +917,9 @@ _PRODUCT_TRIGGERS = {
             (OLD.state = 'LAUNCH_ARMED'
              AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
              AND NEW.state = 'FAILED'
-             AND NEW.failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY'
+             AND NEW.failure_code IN ('PROCESS_EXITED_UNSUCCESSFULLY',
+                                      'PROCESS_OUTPUT_LIMIT_EXCEEDED',
+                                      'PROCESS_SUPERVISION_FAILED')
              AND NEW.receipt_hash IS NULL
              AND NEW.cancellation_command_id IS NULL)
             OR
@@ -994,7 +998,7 @@ class MigrationRequired(UnsupportedSchemaVersion):
 
 def _require_supported_versions(versions: Sequence[int]) -> None:
     normalized = tuple(versions)
-    if normalized in {(1,), (2,), (3,), (4,), (5,), (6,)}:
+    if normalized in {(1,), (2,), (3,), (4,), (5,), (6,), (7,)}:
         raise MigrationRequired(normalized[0])
     if normalized != (SCHEMA_VERSION,):
         raise UnsupportedSchemaVersion(normalized)

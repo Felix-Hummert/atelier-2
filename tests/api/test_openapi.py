@@ -17,6 +17,7 @@ from atelier2.api.openapi import (
     EVENT_NAMES_V2,
     EVENT_PATH,
 )
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
@@ -135,6 +136,30 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     assert parameters[("public_ref", "path")]["schema"] == {
         "$ref": "#/components/schemas/PublicRunReference"
     }
+
+
+def test_openapi_exposes_only_the_three_durable_agent_failure_tokens() -> None:
+    schema = create_app(
+        source_commit="commit",
+        source_tree="tree",
+        ports=empty_ports(),
+        limits=api_limits(),
+        event_poll_backoff=event_poll_backoff(),
+    ).openapi()
+    expected = [failure.value for failure in AgentAttemptFailureCode]
+
+    assert (
+        schema["components"]["schemas"]["AgentAttemptResourceV2"]["properties"][
+            "failure_code"
+        ]["anyOf"][0]["enum"]
+        == expected
+    )
+    assert (
+        schema["components"]["schemas"]["AgentFailedEventResourceV2"]["properties"][
+            "failure_code"
+        ]["enum"]
+        == expected
+    )
 
 
 def test_every_declared_error_response_is_problem_json_one_of() -> None:

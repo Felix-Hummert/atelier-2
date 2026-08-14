@@ -59,7 +59,7 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
-    AgentProcessCompletion,
+    AgentProcessExited,
     AgentProcessInvocation,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
@@ -164,7 +164,7 @@ class _InspectingExecutor:
         )
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, completion: AgentProcessExited
     ) -> AgentExecutionResult:
         with self.runtime.engine.connect() as connection:
             state = connection.scalar(sa.select(agent_attempts.c.process_phase))
@@ -329,7 +329,7 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
                 )
 
             def decode_process_completion(
-                self, completion: AgentProcessCompletion
+                self, completion: AgentProcessExited
             ) -> AgentExecutionResult | AgentExecutionFailure:
                 if known_failure:
                     return AgentExecutionFailure(
@@ -456,7 +456,10 @@ def test_each_terminal_write_failpoint_rolls_back_the_whole_attempt(
                     agent_attempt_execution(request), AgentExecutionResult(b"done")
                 )
             else:
-                store.complete_known_failure(agent_attempt_execution(request))
+                store.complete_known_failure(
+                    agent_attempt_execution(request),
+                    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+                )
 
         with runtime.engine.connect() as connection:
             attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
@@ -519,7 +522,10 @@ def test_attempt_trigger_rejects_terminal_rewrite_and_mismatched_receipt(
         store = DbosAgentAttemptStore(runtime.engine)
         store.prepare(agent_attempt_execution(request))
         store.claim(agent_attempt_execution(request))
-        failed = store.complete_known_failure(agent_attempt_execution(request))
+        failed = store.complete_known_failure(
+            agent_attempt_execution(request),
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+        )
 
         with pytest.raises(IntegrityError), runtime.engine.begin() as connection:
             connection.execute(

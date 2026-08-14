@@ -21,6 +21,10 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.ports.agent_attempts import AgentAttemptExecutionOutcome
+
+MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
+MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = 49_152
 
 
 class AgentExecutor(Protocol):
@@ -72,10 +76,15 @@ class AgentProcessInvocation:
             raise ValueError(
                 "agent process environment names must be unique and nonempty"
             )
+        if len(self.standard_input) > MAXIMUM_AGENT_PROCESS_INPUT_BYTES:
+            raise ValueError(
+                "agent process standard input exceeds "
+                f"{MAXIMUM_AGENT_PROCESS_INPUT_BYTES} bytes"
+            )
 
 
 @dataclass(frozen=True)
-class AgentProcessCompletion:
+class AgentProcessExited:
     return_code: int
     standard_output: bytes
     standard_error: bytes
@@ -83,6 +92,29 @@ class AgentProcessCompletion:
     def __post_init__(self) -> None:
         if type(self.return_code) is not int:
             raise TypeError("agent process return code must be an integer")
+
+
+@dataclass(frozen=True)
+class AgentProcessOutputLimitExceeded:
+    pass
+
+
+@dataclass(frozen=True)
+class AgentProcessSupervisionFailed:
+    pass
+
+
+@dataclass(frozen=True)
+class AgentProcessStopped:
+    pass
+
+
+type AgentProcessOutcome = (
+    AgentProcessExited
+    | AgentProcessOutputLimitExceeded
+    | AgentProcessSupervisionFailed
+    | AgentProcessStopped
+)
 
 
 class AgentExecutorV2(Protocol):
@@ -93,18 +125,20 @@ class AgentExecutorV2(Protocol):
         ...
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, completion: AgentProcessExited
     ) -> AgentExecutionResult | AgentExecutionFailure: ...
 
     def close(self) -> None: ...
 
 
 class AgentProcessRunner(Protocol):
-    def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt: ...
+    def prepare(
+        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+    ) -> AgentAttempt: ...
 
     def launch_and_wait(
-        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
-    ) -> AgentProcessCompletion: ...
+        self, execution: AgentAttemptExecution
+    ) -> AgentProcessOutcome | AgentAttemptExecutionOutcome: ...
 
     def cancel(
         self, attempt: AgentAttempt

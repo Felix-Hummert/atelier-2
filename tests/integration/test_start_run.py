@@ -365,7 +365,7 @@ def test_schema_version_five_opens_idempotently(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_concurrent_first_schema_initializers_converge_on_version_seven(
+def test_concurrent_first_schema_initializers_converge_on_version_eight(
     tmp_path: Path,
 ) -> None:
     participants = 4
@@ -397,7 +397,7 @@ def test_concurrent_first_schema_initializers_converge_on_version_seven(
                 )
             )
 
-        assert results == [[7]] * participants
+        assert results == [[8]] * participants
 
 
 def test_initialized_runtime_can_execute_a_later_seeded_workflow(

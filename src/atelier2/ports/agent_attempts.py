@@ -6,6 +6,7 @@ from typing import Protocol
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptCancellationDisposition,
+    AgentAttemptFailureCode,
     AgentAttemptId,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
@@ -111,11 +112,17 @@ class AgentAttemptStore(Protocol):
 
     def complete_success(
         self, execution: AgentAttemptExecution, result: AgentExecutionResult
-    ) -> AgentAttemptSucceeded: ...
+    ) -> AgentAttemptExecutionOutcome: ...
 
     def complete_known_failure(
+        self,
+        execution: AgentAttemptExecution,
+        failure_code: AgentAttemptFailureCode,
+    ) -> AgentAttemptExecutionOutcome: ...
+
+    def observe_process_stopped(
         self, execution: AgentAttemptExecution
-    ) -> AgentAttemptFailed: ...
+    ) -> AgentAttemptPossiblyRan: ...
 
     def request_cancellation(
         self, request: CancelAgentAttemptRequest

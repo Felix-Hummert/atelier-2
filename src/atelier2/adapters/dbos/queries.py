@@ -1021,9 +1021,9 @@ class DbosQueries:
             and workflow_format_version != 2
         ):
             raise RunTransitionConflict("V1 run carries a V2 agent failure event")
-        if event.event_kind is RunEventKind.AGENT_FAILED and event.payload != (
-            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value.encode("ascii")
-        ):
+        if event.event_kind is RunEventKind.AGENT_FAILED and event.payload not in {
+            failure.value.encode("ascii") for failure in AgentAttemptFailureCode
+        }:
             raise RunTransitionConflict("agent failure event payload is not canonical")
         if event.event_kind not in {
             RunEventKind.ACTION_RECONCILIATION_RESOLVED,

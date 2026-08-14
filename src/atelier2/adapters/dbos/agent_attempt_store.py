@@ -65,6 +65,7 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationTerminalConflict,
     AgentAttemptClaimedByThisCall,
     AgentAttemptClaimResult,
+    AgentAttemptExecutionOutcome,
     AgentAttemptFailed,
     AgentAttemptPossiblyRan,
     AgentAttemptReplacementNotAllowed,
@@ -472,14 +473,22 @@ class DbosAgentAttemptStore:
             _validate_request(connection, execution.request)
             durable = _load_attempt(connection, execution.attempt_id)
             _require_attempt_binding(durable, execution)
+            if (
+                durable.process_owner_id != process_owner_id
+                or durable.watchdog_generation_id != watchdog_generation_id
+            ):
+                raise RunTransitionConflict(
+                    "process observation differs from durable generation"
+                )
             if durable.process_phase is AgentAttemptProcessPhase.PROCESS_OBSERVED:
-                if (
-                    durable.process_owner_id != process_owner_id
-                    or durable.watchdog_generation_id != watchdog_generation_id
-                ):
-                    raise RunTransitionConflict(
-                        "observed process retry differs from durable generation"
-                    )
+                return durable
+            if durable.state in {
+                AgentAttemptState.CANCEL_REQUESTED,
+                AgentAttemptState.CANCELLED,
+                AgentAttemptState.INTERRUPTED,
+                AgentAttemptState.SUCCEEDED,
+                AgentAttemptState.FAILED,
+            }:
                 return durable
             updated = connection.execute(
                 agent_attempts.update()
@@ -502,19 +511,56 @@ class DbosAgentAttemptStore:
                 raise RunTransitionConflict("process observation lost its attempt CAS")
             return _load_attempt(connection, durable.attempt_id)
 
+    def observe_process_stopped(
+        self, execution: AgentAttemptExecution
+    ) -> AgentAttemptPossiblyRan:
+        with self._engine.connect() as connection:
+            _validate_request(connection, execution.request)
+            durable = _load_attempt(connection, execution.attempt_id)
+            _require_attempt_binding(durable, execution)
+        if durable.state not in {
+            AgentAttemptState.CANCEL_REQUESTED,
+            AgentAttemptState.CANCELLED,
+            AgentAttemptState.INTERRUPTED,
+        }:
+            raise RunTransitionConflict(
+                "stopped process requires an exact cancellation state"
+            )
+        return AgentAttemptPossiblyRan(durable)
+
     def load(self, attempt_id: AgentAttemptId) -> AgentAttempt:
         with self._engine.connect() as connection:
             return _load_attempt(connection, attempt_id)
 
     def complete_success(
         self, execution: AgentAttemptExecution, result: AgentExecutionResult
-    ) -> AgentAttemptSucceeded:
+    ) -> AgentAttemptExecutionOutcome:
         request = execution.request
         attempt_id = execution.attempt_id
         with canonical_write_transaction(self._engine) as connection:
             run, graph = _validate_request(connection, request)
             durable = _load_attempt(connection, attempt_id)
             _require_attempt_binding(durable, execution)
+            if durable.state in {
+                AgentAttemptState.CANCEL_REQUESTED,
+                AgentAttemptState.CANCELLED,
+                AgentAttemptState.INTERRUPTED,
+            }:
+                return AgentAttemptPossiblyRan(durable)
+            receipt = AgentReceiptV2.for_execution(
+                request, run.binding_set_hash, result
+            )
+            if durable.state is AgentAttemptState.SUCCEEDED:
+                successor = graph.successor(request.node_id).id
+                if (
+                    durable.receipt_hash != receipt.receipt_hash
+                    or run.state is not RunState.STARTED
+                    or run.current_node_id != successor
+                ):
+                    raise RunTransitionConflict(
+                        "successful attempt retry differs from durable result"
+                    )
+                return AgentAttemptSucceeded(durable, successor)
             if (
                 durable.state is not AgentAttemptState.LAUNCH_ARMED
                 or run.state is not RunState.STARTED
@@ -523,9 +569,6 @@ class DbosAgentAttemptStore:
                 raise RunTransitionConflict(
                     "only the armed current attempt can succeed"
                 )
-            receipt = AgentReceiptV2.for_execution(
-                request, run.binding_set_hash, result
-            )
             connection.execute(
                 agent_receipts_v2.insert()
                 .prefix_with("OR IGNORE")
@@ -578,15 +621,30 @@ class DbosAgentAttemptStore:
             return AgentAttemptSucceeded(durable_success, successor)
 
     def complete_known_failure(
-        self, execution: AgentAttemptExecution
-    ) -> AgentAttemptFailed:
+        self,
+        execution: AgentAttemptExecution,
+        failure_code: AgentAttemptFailureCode,
+    ) -> AgentAttemptExecutionOutcome:
         request = execution.request
         attempt_id = execution.attempt_id
-        failure = AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+        if not isinstance(failure_code, AgentAttemptFailureCode):
+            raise TypeError("agent attempt failure code must be typed")
         with canonical_write_transaction(self._engine) as connection:
             run, _graph = _validate_request(connection, request)
             durable = _load_attempt(connection, attempt_id)
             _require_attempt_binding(durable, execution)
+            if durable.state in {
+                AgentAttemptState.CANCEL_REQUESTED,
+                AgentAttemptState.CANCELLED,
+                AgentAttemptState.INTERRUPTED,
+            }:
+                return AgentAttemptPossiblyRan(durable)
+            if durable.state is AgentAttemptState.FAILED:
+                if durable.failure_code is not failure_code:
+                    raise RunTransitionConflict(
+                        "failed attempt retry differs from durable failure"
+                    )
+                return AgentAttemptFailed(durable)
             if (
                 durable.state is not AgentAttemptState.LAUNCH_ARMED
                 or run.state is not RunState.STARTED
@@ -603,7 +661,7 @@ class DbosAgentAttemptStore:
                 .values(
                     state=AgentAttemptState.FAILED.value,
                     state_version=durable.state_version + 1,
-                    failure_code=failure.value,
+                    failure_code=failure_code.value,
                 )
             )
             if updated.rowcount != 1:
@@ -615,7 +673,7 @@ class DbosAgentAttemptStore:
                 request.workflow_revision_hash,
                 request.node_id,
                 RunEventKind.AGENT_FAILED,
-                failure.value.encode("ascii"),
+                failure_code.value.encode("ascii"),
                 RunState.STARTED,
                 RunState.STARTED,
                 request.node_id,

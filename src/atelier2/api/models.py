@@ -47,6 +47,21 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
+AgentFailureCodeV2 = Literal[
+    "PROCESS_EXITED_UNSUCCESSFULLY",
+    "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+    "PROCESS_SUPERVISION_FAILED",
+]
+AgentCancellationDispositionV2 = Literal[
+    "NEVER_LAUNCHED",
+    "EXITED_BEFORE_SIGNAL",
+    "REAPED_AFTER_TERM",
+    "REAPED_AFTER_KILL",
+    "REAPED_AFTER_PROCESS_BOUNDARY_FAILURE",
+    "OWNER_LOST_AFTER_PARENT_DEATH",
+]
+
+
 class HealthResource(ApiModel):
     status: Literal["serving"]
     source_commit: str
@@ -308,7 +323,7 @@ class AgentAttemptResourceV2(ApiModel):
         "INTERRUPTED",
         "FAILED",
     ]
-    failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"] | None
+    failure_code: AgentFailureCodeV2 | None
     cancellation: AgentAttemptCancellationResourceV2 | None
 
     @model_validator(mode="after")
@@ -326,16 +341,7 @@ class AgentAttemptCancellationResourceV2(ApiModel):
     command_id: str = Field(min_length=1, max_length=1_024)
     replacement: Literal["NONE", "ONE"]
     redrive_state: Literal["PENDING", "OWNER_NOT_LOCAL", "CLEANUP_ATTESTED"]
-    disposition: (
-        Literal[
-            "NEVER_LAUNCHED",
-            "EXITED_BEFORE_SIGNAL",
-            "REAPED_AFTER_TERM",
-            "REAPED_AFTER_KILL",
-            "OWNER_LOST_AFTER_PARENT_DEATH",
-        ]
-        | None
-    )
+    disposition: AgentCancellationDispositionV2 | None
 
     @model_validator(mode="after")
     def validate_attestation_shape(self) -> AgentAttemptCancellationResourceV2:
@@ -512,7 +518,7 @@ class AgentCompletedEventResourceV2(RunEventBaseResourceV2):
 
 class AgentFailedEventResourceV2(RunEventBaseResourceV2):
     event: Literal["AGENT_FAILED"]
-    failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"]
+    failure_code: AgentFailureCodeV2
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
 
@@ -531,13 +537,7 @@ class AgentCancelledEventResourceV2(RunEventBaseResourceV2):
     attempt_ordinal: Literal[1, 2]
     command_id: str = Field(min_length=1, max_length=1_024)
     replacement: Literal["NONE", "ONE"]
-    disposition: Literal[
-        "NEVER_LAUNCHED",
-        "EXITED_BEFORE_SIGNAL",
-        "REAPED_AFTER_TERM",
-        "REAPED_AFTER_KILL",
-        "OWNER_LOST_AFTER_PARENT_DEATH",
-    ]
+    disposition: AgentCancellationDispositionV2
     replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 
@@ -547,13 +547,7 @@ class AgentInterruptedEventResourceV2(RunEventBaseResourceV2):
     attempt_ordinal: Literal[1, 2]
     command_id: str = Field(min_length=1, max_length=1_024)
     replacement: Literal["NONE", "ONE"]
-    disposition: Literal[
-        "NEVER_LAUNCHED",
-        "EXITED_BEFORE_SIGNAL",
-        "REAPED_AFTER_TERM",
-        "REAPED_AFTER_KILL",
-        "OWNER_LOST_AFTER_PARENT_DEATH",
-    ]
+    disposition: AgentCancellationDispositionV2
     replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 
@@ -901,7 +895,9 @@ def _run_resource_v2(
                     attempt.state,
                 ),
                 failure_code=(
-                    None if attempt.failure_code is None else attempt.failure_code.value
+                    None
+                    if attempt.failure_code is None
+                    else cast(AgentFailureCodeV2, attempt.failure_code.value)
                 ),
                 cancellation=(
                     None
@@ -913,7 +909,10 @@ def _run_resource_v2(
                         disposition=(
                             None
                             if attempt.cancellation.disposition is None
-                            else attempt.cancellation.disposition.value
+                            else cast(
+                                AgentCancellationDispositionV2,
+                                attempt.cancellation.disposition.value,
+                            )
                         ),
                     )
                 ),
@@ -1042,13 +1041,17 @@ def _run_event_resource_v2(projection: PersistedRunEvent) -> RunEventResourceV2:
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
         failure_code = event.payload.decode("ascii")
-        if failure_code != "PROCESS_EXITED_UNSUCCESSFULLY":
+        if failure_code not in {
+            "PROCESS_EXITED_UNSUCCESSFULLY",
+            "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+            "PROCESS_SUPERVISION_FAILED",
+        }:
             raise ValueError("durable agent failure payload is not canonical")
         if event.agent_attempt_id is None or event.attempt_ordinal is None:
             raise ValueError("V2 agent failure has no exact attempt binding")
         return AgentFailedEventResourceV2(
             event=event.event_kind.value,
-            failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+            failure_code=cast(AgentFailureCodeV2, failure_code),
             attempt_id=event.agent_attempt_id,
             attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
             **common,
@@ -1087,14 +1090,7 @@ def _run_event_resource_v2(projection: PersistedRunEvent) -> RunEventResourceV2:
             "command_id": event.cancellation_command_id,
             "replacement": cast(Literal["NONE", "ONE"], event.replacement),
             "disposition": cast(
-                Literal[
-                    "NEVER_LAUNCHED",
-                    "EXITED_BEFORE_SIGNAL",
-                    "REAPED_AFTER_TERM",
-                    "REAPED_AFTER_KILL",
-                    "OWNER_LOST_AFTER_PARENT_DEATH",
-                ],
-                event.cancellation_disposition,
+                AgentCancellationDispositionV2, event.cancellation_disposition
             ),
             "replacement_attempt_id": event.replacement_attempt_id,
         }

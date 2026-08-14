@@ -49,7 +49,7 @@ from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorKey,
-    AgentProcessCompletion,
+    AgentProcessExited,
     AgentProcessInvocation,
 )
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
@@ -76,7 +76,7 @@ class InertExecutor:
         )
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, completion: AgentProcessExited
     ) -> AgentExecutionResult | AgentExecutionFailure:
         del completion
         raise AssertionError(
@@ -122,7 +122,7 @@ class ControlledProcessExecutor:
         )
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, completion: AgentProcessExited
     ) -> AgentExecutionResult | AgentExecutionFailure:
         if completion.return_code != 0:
             return AgentExecutionFailure(
@@ -174,7 +174,9 @@ def request(lease: DbosRuntime) -> AgentExecutionRequestV2:
     binding_set = AgentBindingSet(
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
     )
-    run_id = RunId("agent-attempt/crash")
+    run_id = RunId(
+        f"agent-attempt/crash/{lease.settings.database_path.parent.name}"
+    )
     DbosDurableRunStarter(
         lease.engine, lease.settings, lease.agent_executor_registry
     ).start_published(
@@ -378,9 +380,6 @@ def launch_attempt(
     arguments: tuple[str, ...] | None = None,
 ) -> AgentAttemptExecution:
     execution = agent_attempt_execution(exact_request)
-    store.prepare(execution)
-    lease.agent_process_supervisor.prepare(execution)
-    store.claim(execution)
     invocation = AgentProcessInvocation(
         arguments
         or (
@@ -391,9 +390,12 @@ def launch_attempt(
         ),
         Path.cwd(),
     )
+    store.prepare(execution)
+    lease.agent_process_supervisor.prepare(execution, invocation)
+    store.claim(execution)
     threading.Thread(
         target=lease.agent_process_supervisor.launch_and_wait,
-        args=(execution, invocation),
+        args=(execution,),
         daemon=True,
     ).start()
     wait_for_file(ready)
@@ -449,12 +451,9 @@ def exact_cancellation_command(attempt: AgentAttempt) -> CancelAgentAttemptReque
 
 
 def attempt_cgroup(lease: DbosRuntime, attempt: AgentAttempt) -> Path:
-    generation = attempt.watchdog_generation_id
-    if generation is None:
+    if attempt.watchdog_generation_id is None:
         raise AssertionError("attempt has no watchdog generation")
-    return lease.settings.process_cgroup_root() / (
-        "atelier2-" + attempt.attempt_id.value[:16] + "-" + generation.value[:8]
-    )
+    return lease.settings.process_cgroup_root() / f"atelier2-{attempt.attempt_id.value}"
 
 
 def attempt_endpoint(lease: DbosRuntime, attempt: AgentAttempt) -> Path:

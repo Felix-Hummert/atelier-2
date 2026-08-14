@@ -55,6 +55,8 @@ class AgentAttemptState(StrEnum):
 
 class AgentAttemptFailureCode(StrEnum):
     PROCESS_EXITED_UNSUCCESSFULLY = "PROCESS_EXITED_UNSUCCESSFULLY"
+    PROCESS_OUTPUT_LIMIT_EXCEEDED = "PROCESS_OUTPUT_LIMIT_EXCEEDED"
+    PROCESS_SUPERVISION_FAILED = "PROCESS_SUPERVISION_FAILED"
 
 
 class AgentAttemptReplacement(StrEnum):
@@ -73,6 +75,7 @@ class AgentAttemptCancellationDisposition(StrEnum):
     EXITED_BEFORE_SIGNAL = "EXITED_BEFORE_SIGNAL"
     REAPED_AFTER_TERM = "REAPED_AFTER_TERM"
     REAPED_AFTER_KILL = "REAPED_AFTER_KILL"
+    REAPED_AFTER_PROCESS_BOUNDARY_FAILURE = "REAPED_AFTER_PROCESS_BOUNDARY_FAILURE"
     OWNER_LOST_AFTER_PARENT_DEATH = "OWNER_LOST_AFTER_PARENT_DEATH"
 
 
@@ -294,8 +297,7 @@ class AgentAttempt:
             )
         else:
             valid = (
-                self.failure_code
-                is AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+                self.failure_code in set(AgentAttemptFailureCode)
                 and self.receipt_hash is None
                 and self.cancellation is None
             )

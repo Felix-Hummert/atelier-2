@@ -126,6 +126,30 @@ def test_attempt_contract_accepts_only_the_four_exact_state_shapes() -> None:
 
 
 @pytest.mark.parametrize(
+    "failure_code",
+    tuple(AgentAttemptFailureCode),
+)
+def test_failed_attempt_accepts_each_closed_process_failure(
+    failure_code: AgentAttemptFailureCode,
+) -> None:
+    failed = replace(
+        _attempt(AgentAttemptState.LAUNCH_ARMED),
+        state=AgentAttemptState.FAILED,
+        state_version=2,
+        failure_code=failure_code,
+    )
+
+    assert failed.failure_code is failure_code
+
+
+def test_cancellation_disposition_names_process_boundary_failure() -> None:
+    assert (
+        AgentAttemptCancellationDisposition.REAPED_AFTER_PROCESS_BOUNDARY_FAILURE.value
+        == "REAPED_AFTER_PROCESS_BOUNDARY_FAILURE"
+    )
+
+
+@pytest.mark.parametrize(
     "mutation",
     (
         lambda value: replace(value, attempt_ordinal=2),

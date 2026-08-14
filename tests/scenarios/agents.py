@@ -27,7 +27,7 @@ from atelier2.contracts.workflows import AgentNode
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorKey,
-    AgentProcessCompletion,
+    AgentProcessExited,
     AgentProcessInvocation,
 )
 
@@ -101,7 +101,7 @@ class RecordingAgentExecutorV2:
         )
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, completion: AgentProcessExited
     ) -> AgentExecutionResult | AgentExecutionFailure:
         if completion.return_code != 0:
             return AgentExecutionFailure(

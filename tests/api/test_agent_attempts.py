@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.models import run_event_resource, run_resource
 from atelier2.contracts.agent_attempts import (
@@ -26,7 +28,9 @@ from atelier2.ports.run_queries import AgentAttemptProjection, RunProjection
 from tests.scenarios.api import api_limits
 
 
-def _projection(state: str, failure: bool = False) -> RunProjection:
+def _projection(
+    state: str, failure_code: AgentAttemptFailureCode | None = None
+) -> RunProjection:
     document = b"""format_version: 2
 start: build
 nodes:
@@ -66,11 +70,7 @@ nodes:
                 request_hash,
                 1,
                 state,
-                (
-                    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-                    if failure
-                    else None
-                ),
+                failure_code,
             ),
         ),
     )
@@ -109,8 +109,11 @@ def test_attempt_surfaces_are_canonical_bounded_and_secret_free() -> None:
     )
 
 
-def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
-    projection = _projection("FAILED", failure=True)
+@pytest.mark.parametrize("failure_code", tuple(AgentAttemptFailureCode))
+def test_v2_attempt_and_failed_event_have_exact_wire_shape(
+    failure_code: AgentAttemptFailureCode,
+) -> None:
+    projection = _projection("FAILED", failure_code)
     attempt_resource = run_resource(projection).model_dump(mode="json")[
         "agent_attempts"
     ][0]
@@ -124,7 +127,7 @@ def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
         "build",
         attempt.node_execution_id,
         RunEventKind.AGENT_FAILED,
-        b"PROCESS_EXITED_UNSUCCESSFULLY",
+        failure_code.value.encode("ascii"),
         agent_attempt_id=attempt.attempt_id.value,
         attempt_ordinal=1,
     )
@@ -133,7 +136,7 @@ def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
     api_limits().require_event_projection(persisted)
 
     assert attempt_resource["state"] == "FAILED"
-    assert attempt_resource["failure_code"] == "PROCESS_EXITED_UNSUCCESSFULLY"
+    assert attempt_resource["failure_code"] == failure_code.value
     assert event_resource.model_dump(mode="json") == {
         "workflow_format_version": 2,
         "cursor": "event1.YXR0ZW1wdC9hcGk.1",
@@ -144,7 +147,7 @@ def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
         "node_execution_id": event.node_execution_id.value,
         "event_hash": event.event_hash.value,
         "event": "AGENT_FAILED",
-        "failure_code": "PROCESS_EXITED_UNSUCCESSFULLY",
+        "failure_code": failure_code.value,
         "attempt_id": attempt.attempt_id.value,
         "attempt_ordinal": 1,
     }

@@ -20,6 +20,14 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.ports.agent_executions import (
+    MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
+    AgentProcessExited,
+    AgentProcessInvocation,
+    AgentProcessOutputLimitExceeded,
+    AgentProcessStopped,
+    AgentProcessSupervisionFailed,
+)
 
 
 def request() -> AgentExecutionRequest:
@@ -144,3 +152,28 @@ def test_receipt_hash_changes_with_executor_binding(
     )
 
     assert changed.receipt_hash != original.receipt_hash
+
+
+def test_process_invocation_accepts_exactly_the_live_input_bound() -> None:
+    accepted = AgentProcessInvocation(
+        ("provider",),
+        __import__("pathlib").Path("/workspace"),
+        standard_input=b"x" * MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
+    )
+
+    assert len(accepted.standard_input) == MAXIMUM_AGENT_PROCESS_INPUT_BYTES
+    with pytest.raises(ValueError, match="standard input exceeds"):
+        AgentProcessInvocation(
+            ("provider",),
+            __import__("pathlib").Path("/workspace"),
+            standard_input=b"x" * (MAXIMUM_AGENT_PROCESS_INPUT_BYTES + 1),
+        )
+
+
+def test_process_outcomes_keep_only_normal_exit_bytes() -> None:
+    assert AgentProcessExited(7, b"output", b"error") == AgentProcessExited(
+        7, b"output", b"error"
+    )
+    assert AgentProcessOutputLimitExceeded().__dict__ == {}
+    assert AgentProcessSupervisionFailed().__dict__ == {}
+    assert AgentProcessStopped().__dict__ == {}

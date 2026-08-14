@@ -55,7 +55,7 @@ from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRe
 from atelier2.ports.agent_executions import (
     AgentExecutorFactoryV2,
     AgentExecutorKey,
-    AgentProcessCompletion,
+    AgentProcessExited,
     AgentProcessInvocation,
 )
 from atelier2.ports.effects import EffectAdapter
@@ -598,7 +598,7 @@ class CloseFailingExecutor:
         return AgentProcessInvocation(("/bin/true",), Path.cwd())
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, completion: AgentProcessExited
     ) -> AgentExecutionResult:
         del completion
         return AgentExecutionResult(b"")
@@ -637,7 +637,7 @@ class ChangingKeyExecutor:
         return AgentProcessInvocation(("/bin/true",), Path.cwd())
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, completion: AgentProcessExited
     ) -> AgentExecutionResult:
         del completion
         return AgentExecutionResult(b"")
@@ -705,7 +705,7 @@ class BaseExceptionCloseExecutor:
         return AgentProcessInvocation(("/bin/true",), Path.cwd())
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, completion: AgentProcessExited
     ) -> AgentExecutionResult:
         del completion
         return AgentExecutionResult(b"")

@@ -4,7 +4,6 @@ import threading
 import time
 from pathlib import Path
 
-import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
@@ -14,6 +13,7 @@ from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptCancellationDisposition,
+    AgentAttemptFailureCode,
     AgentAttemptId,
     AgentAttemptProcessPhase,
     AgentAttemptReplacement,
@@ -25,6 +25,7 @@ from atelier2.contracts.executions import RunEventKind
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
+    AgentAttemptPossiblyRan,
     AgentAttemptReplacementNotAllowed,
 )
 from tests.integration.test_agent_attempts import (
@@ -83,6 +84,26 @@ def test_cancel_commits_before_signal_and_exact_retry_is_idempotent(
                 == 1
             )
 
+        cancellation_truth = store.load(execution.attempt_id)
+        late_success = store.complete_success(execution, AgentExecutionResult(b"late"))
+        assert isinstance(late_success, AgentAttemptPossiblyRan)
+        assert late_success.attempt == cancellation_truth
+        for failure_code in AgentAttemptFailureCode:
+            late_failure = store.complete_known_failure(execution, failure_code)
+            assert isinstance(late_failure, AgentAttemptPossiblyRan)
+            assert late_failure.attempt == cancellation_truth
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(sa.select(sa.func.count()).select_from(run_events))
+                == 1
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(agent_attempts)
+                )
+                == 1
+            )
+
         terminal = store.attest_cancellation_cleanup(
             command,
             AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
@@ -99,8 +120,13 @@ def test_cancel_commits_before_signal_and_exact_retry_is_idempotent(
             )
             == terminal
         )
-        with pytest.raises(RunTransitionConflict, match="armed current attempt"):
-            store.complete_success(execution, AgentExecutionResult(b"late"))
+        late = store.complete_success(execution, AgentExecutionResult(b"late"))
+        assert isinstance(late, AgentAttemptPossiblyRan)
+        assert late.attempt == terminal.attempt
+        for failure_code in AgentAttemptFailureCode:
+            late_failure = store.complete_known_failure(execution, failure_code)
+            assert isinstance(late_failure, AgentAttemptPossiblyRan)
+            assert late_failure.attempt == terminal.attempt
     finally:
         runtime.close()
 
@@ -184,14 +210,17 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
         )
         executor = _InspectingExecutor(runtime, delay_seconds=60)
         failures: list[RuntimeError] = []
+        outcomes: list[object] = []
 
         def run_attempt() -> None:
             try:
-                execute_agent_attempt(
-                    execution,
-                    executor,
-                    store,
-                    runtime.agent_process_supervisor,
+                outcomes.append(
+                    execute_agent_attempt(
+                        execution,
+                        executor,
+                        store,
+                        runtime.agent_process_supervisor,
+                    )
                 )
             except RuntimeError as error:
                 failures.append(error)
@@ -226,8 +255,9 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
             AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
             AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
         }
-        assert len(failures) == 1
-        assert isinstance(failures[0], RunTransitionConflict)
+        assert failures == []
+        assert len(outcomes) == 1
+        assert isinstance(outcomes[0], AgentAttemptPossiblyRan)
     finally:
         runtime.close()
 

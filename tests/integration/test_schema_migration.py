@@ -148,7 +148,7 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
-def test_empty_database_creates_exact_v7_and_reopens(tmp_path: Path) -> None:
+def test_empty_database_creates_exact_v8_and_reopens(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
 
@@ -157,7 +157,7 @@ def test_empty_database_creates_exact_v7_and_reopens(tmp_path: Path) -> None:
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
-            == 7
+            == 8
         )
         assert set(sa.inspect(connection).get_table_names()) >= {
             effect_intents.name,
@@ -218,7 +218,7 @@ def test_v6_requires_nonmutating_recreate(tmp_path: Path) -> None:
     assert hashlib.sha256(database_path.read_bytes()).hexdigest() == before_hash
 
 
-def test_v7_preserves_both_legacy_event_guards_and_scopes_attempt_events(
+def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
     ledger_engine: Engine,
 ) -> None:
     with ledger_engine.begin() as connection:
