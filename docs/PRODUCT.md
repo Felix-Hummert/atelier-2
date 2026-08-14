@@ -138,12 +138,19 @@ the node and the field it concerns, including each retired V1 or V2 key with its
 replacement. Unsafe YAML is refused by name too, before any vocabulary is read: an
 anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
 a document that is not UTF-8 without a byte order mark, and one nested past the
-bound that keeps the refusal a refusal instead of an exhausted stack. Nothing
-behind that surface exists: no reference resolution, no
-capability attestation, no durable record shape, so publication and every run path
-refuse a V3 document naming the format. V1 and V2 documents keep their exact meaning
-under their own models. [ADR 0006](decisions/0006-node-vocabulary.md) owns this
-vocabulary and the staging rule behind it.
+bound that keeps the refusal a refusal instead of an exhausted stack.
+
+One reference behind that surface now binds: a subworkflow node's
+declared inputs and outputs match the graph boundary of the published child revision
+it names one to one, by name and schema revision, read against that child's real
+content, and a chain nesting deeper than the depth its caller attests is refused
+naming the chain. Every deviation names the node and the chain of references it was
+reached through. Nothing else behind the surface exists: no registry for the
+remaining references, no capability attestation, no durable record shape, so
+publication and every run path still refuse a V3 document naming the format, and no
+runtime executes a child. V1 and V2 documents keep their exact meaning under their
+own models. [ADR 0006](decisions/0006-node-vocabulary.md) owns this vocabulary and
+the staging rule behind it.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically

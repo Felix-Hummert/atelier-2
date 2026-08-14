@@ -5,7 +5,7 @@ from typing import Protocol
 
 from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflows import AnyWorkflowGraph
-from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, VersionedReference
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
 PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."
@@ -43,6 +43,27 @@ class WorkflowRevisionPublisher(Protocol):
 
 class WorkflowDocumentParser(Protocol):
     def __call__(self, document: bytes) -> AnyWorkflowDocument: ...
+
+
+@dataclass(frozen=True)
+class PublishedWorkflowFound:
+    revision: WorkflowRevision
+
+
+@dataclass(frozen=True)
+class PublishedWorkflowMissing:
+    pass
+
+
+type ResolvePublishedWorkflowResult = PublishedWorkflowFound | PublishedWorkflowMissing
+
+
+class PublishedWorkflowResolver(Protocol):
+    """Read-only resolution of one versioned reference to a published revision."""
+
+    def resolve(
+        self, reference: VersionedReference
+    ) -> ResolvePublishedWorkflowResult: ...
 
 
 class WorkflowProjectionLimit(Protocol):
