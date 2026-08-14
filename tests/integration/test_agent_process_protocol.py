@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import select
@@ -7,17 +8,28 @@ import selectors
 import socket
 import subprocess
 import sys
+import threading
+import time
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
 
 from atelier2.adapters import agent_process_watchdog as watchdog_module
 from atelier2.adapters import agent_processes as process_module
-from atelier2.adapters.agent_process_watchdog import Watchdog, encode_control_frame
+from atelier2.adapters.agent_process_watchdog import (
+    MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES,
+    MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
+    Watchdog,
+    encode_control_frame,
+)
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
+    AgentAttemptProcessPhase,
     AgentAttemptReplacement,
+    AgentAttemptState,
     CancelAgentAttemptRequest,
 )
 from atelier2.contracts.agents import (
@@ -126,6 +138,83 @@ def test_recovery_handoff_publication_and_retries_reuse_cached_bytes(
         os.close(owner_writer)
 
 
+def test_running_watchdog_bounds_four_control_roles_independently(
+    running_wire_watchdog: tuple[Watchdog, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watchdog, endpoint = running_wire_watchdog
+    held = {operation: threading.Event() for operation in ("LAUNCH", "WAIT", "CANCEL")}
+    for handler, event in zip(
+        ("_handle_launch", "_handle_wait", "_handle_cancel"),
+        held.values(),
+        strict=True,
+    ):
+        monkeypatch.setattr(watchdog, handler, lambda *_args, event=event: event.set())
+
+    with ExitStack() as clients:
+        for operation, admitted in held.items():
+            clients.enter_context(
+                _send_without_reading(
+                    endpoint, encode_control_frame({"operation": operation})
+                )
+            )
+            assert admitted.wait(timeout=2)
+        unclassified = clients.enter_context(_connect_control(endpoint))
+        _wait_until(lambda: "UNCLASSIFIED" in watchdog._slots)
+        with _connect_control(endpoint) as competing:
+            assert _receive_control_bytes(competing) == encode_control_frame(
+                {"type": "BUSY"}
+            )
+        unclassified.close()
+        _wait_until(lambda: "UNCLASSIFIED" not in watchdog._slots)
+
+        for operation in ("LAUNCH", "WAIT", "FINALIZE"):
+            assert _request_control_bytes(
+                endpoint, encode_control_frame({"operation": operation})
+            ) == encode_control_frame({"type": "BUSY"})
+
+
+def test_running_watchdog_times_out_a_stalled_response_then_replays_it(
+    running_wire_watchdog: tuple[Watchdog, Path],
+) -> None:
+    watchdog, endpoint = running_wire_watchdog
+    with _send_without_reading(endpoint, encode_control_frame({"operation": "WAIT"})):
+        _wait_until(
+            lambda: any(
+                connection.operation == "WAIT"
+                for connection in watchdog._connections.values()
+            )
+        )
+        connection = next(iter(watchdog._connections.values()))
+        connection.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1_024)
+        watchdog._publish_wait(
+            {
+                "return_code": -(2**31),
+                "standard_error": base64.b64encode(
+                    b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
+                ).decode("ascii"),
+                "standard_output": base64.b64encode(
+                    b"o" * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+                ).decode("ascii"),
+                "type": "COMPLETED",
+            },
+            time.monotonic(),
+        )
+        cached = watchdog._wait_response
+        assert cached is not None
+        assert len(cached) == MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2
+        _wait_until(lambda: 0 < connection.output_offset < len(cached))
+        _wait_until(lambda: connection.socket.fileno() == -1)
+        assert connection.response_deadline is not None
+        assert time.monotonic() >= connection.response_deadline
+        assert (
+            _request_control_bytes(
+                endpoint, encode_control_frame({"operation": "WAIT"})
+            )
+            == cached
+        )
+
+
 def test_supervisor_drains_exactly_bounded_outputs_after_closed_input(
     tmp_path: Path,
 ) -> None:
@@ -211,12 +300,13 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
         store.claim(execution)
         owned = supervisor._owned[execution.attempt_id]
         assert owned is not None
-        lost_launch = _send_without_reading(
-            owned.endpoint,
-            encode_control_frame(process_module._launch_request(invocation)),
-        )
+        launch_frame = encode_control_frame(process_module._launch_request(invocation))
+        lost_launch = _send_without_reading(owned.endpoint, launch_frame)
         ready_launches, _writable, _failed = select.select((lost_launch,), (), (), 5)
         assert ready_launches == [lost_launch]
+        started = _request_control_bytes(owned.endpoint, launch_frame)
+        assert started == encode_control_frame({"type": "STARTED"})
+        assert _request_control_bytes(owned.endpoint, launch_frame) == started
         partial_wait = _send_without_reading(
             owned.endpoint, encode_control_frame({"operation": "WAIT"})
         )
@@ -233,6 +323,20 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
         assert isinstance(terminal, AgentAttemptSucceeded)
         lost_finalize = _send_without_reading(
             owned.endpoint, encode_control_frame({"operation": "FINALIZE"})
+        )
+        ready_finalizers, _writable, _failed = select.select(
+            (lost_finalize,), (), (), 5
+        )
+        assert ready_finalizers == [lost_finalize]
+        finalized = _request_control_bytes(
+            owned.endpoint, encode_control_frame({"operation": "FINALIZE"})
+        )
+        assert finalized == encode_control_frame({"type": "FINALIZE_ACCEPTED"})
+        assert (
+            _request_control_bytes(
+                owned.endpoint, encode_control_frame({"operation": "FINALIZE"})
+            )
+            == finalized
         )
         supervisor.finalize(execution)
         lost_launch.close()
@@ -267,6 +371,10 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
             owned.endpoint, b'{"operation": "WAIT"}'
         ) as noncanonical:
             assert _receive_control(noncanonical) == {"type": "MALFORMED"}
+        with _send_without_reading(
+            owned.endpoint, b"x" * (MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES + 1)
+        ) as oversized:
+            assert _receive_control(oversized) == {"type": "FRAME_TOO_LARGE"}
         waits = tuple(
             _send_without_reading(
                 owned.endpoint, encode_control_frame({"operation": "WAIT"})
@@ -286,19 +394,28 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
         )
         with waiting:
             assert _receive_control(waiting) == {"type": "STOPPED"}
+        invocation = AgentProcessInvocation(
+            (
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
+                str(counter),
+            ),
+            Path.cwd(),
+        )
+        terminal_frame = encode_control_frame(
+            process_module._launch_request(invocation)
+        )
+        terminal_before_start = _request_control_bytes(owned.endpoint, terminal_frame)
+        assert terminal_before_start == encode_control_frame(
+            {"outcome": "STOPPED", "type": "TERMINAL_BEFORE_START"}
+        )
+        assert (
+            _request_control_bytes(owned.endpoint, terminal_frame)
+            == terminal_before_start
+        )
         with pytest.raises(AgentProcessOwnerNotLocal):
-            supervisor.launch_and_wait(
-                execution,
-                AgentProcessInvocation(
-                    (
-                        sys.executable,
-                        "-c",
-                        "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
-                        str(counter),
-                    ),
-                    Path.cwd(),
-                ),
-            )
+            supervisor.launch_and_wait(execution, invocation)
         assert not counter.exists()
 
         attempt = store.load(execution.attempt_id)
@@ -346,18 +463,25 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
 
 
 @pytest.mark.parametrize(
-    "failure_type", (OSError, TimeoutError, RuntimeError, ValueError)
+    ("peer_phase", "peer_response"),
+    (
+        ("connect", None),
+        ("send", b""),
+        ("partial-read", b'{"type":'),
+        ("decode-noncanonical", b'{"type": "STARTED"}'),
+        ("decode-oversized", b"x" * 4_097),
+    ),
 )
-def test_transport_failures_return_typed_uncertainty_and_retain_cleanup_owner(
+def test_real_transport_failures_retain_exact_durable_launch_authority(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure_type: type[Exception],
+    peer_phase: str,
+    peer_response: bytes | None,
 ) -> None:
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
     try:
         execution = agent_attempt_execution(
-            attempt_request(runtime, f"process/transport/{failure_type.__name__}")
+            attempt_request(runtime, f"process/transport/{peer_phase}")
         )
         store = DbosAgentAttemptStore(
             runtime.engine, runtime.settings.application_version
@@ -368,33 +492,51 @@ def test_transport_failures_return_typed_uncertainty_and_retain_cleanup_owner(
         store.claim(execution)
         owned = supervisor._owned[execution.attempt_id]
         assert owned is not None
-        request_count = 0
-
-        def fail_request(*_arguments: object, **_keywords: object) -> None:
-            nonlocal request_count
-            request_count += 1
-            raise failure_type("transport failed")
-
-        monkeypatch.setattr(supervisor, "_request", fail_request)
-
-        with pytest.raises(AgentProcessOwnerNotLocal):
-            supervisor.launch_and_wait(
-                execution,
-                AgentProcessInvocation((sys.executable, "-c", "pass"), Path.cwd()),
+        real_endpoint = owned.endpoint
+        peer_endpoint = real_endpoint.with_name(f"peer-{peer_phase}.sock")
+        requests: list[bytes] = []
+        peer_errors: list[BaseException] = []
+        peer_thread = (
+            _serve_control_responses(
+                peer_endpoint, peer_response, requests, peer_errors
             )
+            if peer_response is not None
+            else None
+        )
+        invocation = AgentProcessInvocation((sys.executable, "-c", "pass"), Path.cwd())
+        owned.endpoint = peer_endpoint
+        try:
+            with pytest.raises(AgentProcessOwnerNotLocal):
+                supervisor.launch_and_wait(execution, invocation)
+        finally:
+            owned.endpoint = real_endpoint
+            if peer_thread is not None:
+                peer_thread.join(timeout=5)
+                peer_endpoint.unlink(missing_ok=True)
 
-        assert request_count == 2
+        if peer_thread is not None:
+            assert not peer_thread.is_alive()
+            assert peer_errors == []
+            assert (
+                requests
+                == [encode_control_frame(process_module._launch_request(invocation))]
+                * 2
+            )
         assert supervisor._owned[execution.attempt_id] is owned
         assert owned.process.poll() is None
-        assert owned.endpoint.is_socket()
-        monkeypatch.undo()
+        assert real_endpoint.is_socket()
+        assert owned.launched is False
+        durable = store.load(execution.attempt_id)
+        assert durable.state is AgentAttemptState.LAUNCH_ARMED
+        assert durable.process_phase is AgentAttemptProcessPhase.LAUNCH_AUTHORIZED
+        assert durable.process_owner_id == owned.owner
+        assert durable.watchdog_generation_id == owned.generation
 
-        attempt = store.load(execution.attempt_id)
         command = CancelAgentAttemptRequest(
-            attempt.run_id,
-            attempt.attempt_id,
+            durable.run_id,
+            durable.attempt_id,
             "cleanup-transport-uncertainty",
-            attempt.state_version,
+            durable.state_version,
             AgentAttemptReplacement.NONE,
         )
         store.request_cancellation(command)
@@ -409,11 +551,99 @@ def test_transport_failures_return_typed_uncertainty_and_retain_cleanup_owner(
         runtime.close()
 
 
+def _serve_control_responses(
+    endpoint: Path,
+    response: bytes,
+    requests: list[bytes],
+    errors: list[BaseException],
+) -> threading.Thread:
+    ready = threading.Event()
+
+    def serve() -> None:
+        control_directory = os.open(endpoint.parent, os.O_RDONLY | os.O_DIRECTORY)
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            short_endpoint = (
+                Path("/proc/self/fd") / str(control_directory) / endpoint.name
+            )
+            server.bind(str(short_endpoint))
+            server.listen()
+            server.settimeout(5)
+            ready.set()
+            for _retry in range(2):
+                with server.accept()[0] as connection:
+                    connection.settimeout(2)
+                    request = bytearray()
+                    while chunk := connection.recv(65_536):
+                        request.extend(chunk)
+                    requests.append(bytes(request))
+                    if response:
+                        connection.sendall(response)
+        except OSError as error:
+            errors.append(error)
+            ready.set()
+        finally:
+            server.close()
+            os.close(control_directory)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    assert ready.wait(timeout=2)
+    assert errors == []
+    return thread
+
+
+@pytest.fixture
+def running_wire_watchdog(tmp_path: Path) -> Iterator[tuple[Watchdog, Path]]:
+    endpoint = tmp_path / "control.sock"
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, tmp_path / "cgroup", owner_pipe, 0.1)
+    errors: list[Exception] = []
+
+    def serve() -> None:
+        try:
+            watchdog.serve()
+        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    _wait_until(endpoint.is_socket)
+    try:
+        yield watchdog, endpoint
+    finally:
+        os.close(owner_writer)
+        thread.join(timeout=5)
+        endpoint.unlink(missing_ok=True)
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def _wait_until(predicate: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 2
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise AssertionError("watchdog did not reach the expected wire state")
+        time.sleep(0.005)
+
+
 def _send_without_reading(endpoint: Path, frame: bytes) -> socket.socket:
     connection = _connect_control(endpoint)
     connection.sendall(frame)
     connection.shutdown(socket.SHUT_WR)
     return connection
+
+
+def _request_control_bytes(endpoint: Path, frame: bytes) -> bytes:
+    with _send_without_reading(endpoint, frame) as connection:
+        return _receive_control_bytes(connection)
+
+
+def _receive_control_bytes(connection: socket.socket) -> bytes:
+    response = bytearray()
+    while chunk := connection.recv(65_536):
+        response.extend(chunk)
+    return bytes(response)
 
 
 def _connect_control(endpoint: Path) -> socket.socket:
