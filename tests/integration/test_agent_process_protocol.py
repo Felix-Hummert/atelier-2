@@ -201,7 +201,7 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
             (
                 sys.executable,
                 "-c",
-                "from pathlib import Path; import os,sys; Path(sys.argv[1]).open('ab').write(b'x'); os.write(1,b'done')",
+                "from pathlib import Path; import os,sys,time; Path(sys.argv[1]).open('ab').write(b'x'); time.sleep(.2); os.write(1,b'done')",
                 str(counter),
             ),
             Path.cwd(),
@@ -215,9 +215,13 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
             owned.endpoint,
             encode_control_frame(process_module._launch_request(invocation)),
         )
-        lost_wait = _send_without_reading(
+        ready_launches, _writable, _failed = select.select((lost_launch,), (), (), 5)
+        assert ready_launches == [lost_launch]
+        partial_wait = _send_without_reading(
             owned.endpoint, encode_control_frame({"operation": "WAIT"})
         )
+        assert partial_wait.recv(8) == b'{"return'
+        partial_wait.close()
 
         completion = supervisor.launch_and_wait(execution, invocation)
 
@@ -232,7 +236,6 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
         )
         supervisor.finalize(execution)
         lost_launch.close()
-        lost_wait.close()
         lost_finalize.close()
     finally:
         runtime.close()
@@ -334,6 +337,70 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
             assert _receive_control(blocked) == {"type": "CONTROL_FRAME_TIMEOUT"}
         assert cancel_requests == 2
         assert disposition is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+        terminal = store.attest_cancellation_cleanup(
+            command, disposition, owner, generation
+        )
+        supervisor.release(terminal.attempt)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "failure_type", (OSError, TimeoutError, RuntimeError, ValueError)
+)
+def test_transport_failures_return_typed_uncertainty_and_retain_cleanup_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_type: type[Exception],
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, f"process/transport/{failure_type.__name__}")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        supervisor = runtime.agent_process_supervisor
+        store.prepare(execution)
+        supervisor.prepare(execution)
+        store.claim(execution)
+        owned = supervisor._owned[execution.attempt_id]
+        assert owned is not None
+        request_count = 0
+
+        def fail_request(*_arguments: object, **_keywords: object) -> None:
+            nonlocal request_count
+            request_count += 1
+            raise failure_type("transport failed")
+
+        monkeypatch.setattr(supervisor, "_request", fail_request)
+
+        with pytest.raises(AgentProcessOwnerNotLocal):
+            supervisor.launch_and_wait(
+                execution,
+                AgentProcessInvocation((sys.executable, "-c", "pass"), Path.cwd()),
+            )
+
+        assert request_count == 2
+        assert supervisor._owned[execution.attempt_id] is owned
+        assert owned.process.poll() is None
+        assert owned.endpoint.is_socket()
+        monkeypatch.undo()
+
+        attempt = store.load(execution.attempt_id)
+        command = CancelAgentAttemptRequest(
+            attempt.run_id,
+            attempt.attempt_id,
+            "cleanup-transport-uncertainty",
+            attempt.state_version,
+            AgentAttemptReplacement.NONE,
+        )
+        store.request_cancellation(command)
+        disposition, owner, generation = supervisor.cancel(
+            store.load(execution.attempt_id)
+        )
         terminal = store.attest_cancellation_cleanup(
             command, disposition, owner, generation
         )
