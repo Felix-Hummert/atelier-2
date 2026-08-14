@@ -54,7 +54,10 @@ from atelier2.ports.agent_executions import (
 )
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
 from atelier2.ports.run_queries import RunFound
-from tests.scenarios.agents import agent_attempt_execution
+from tests.scenarios.agents import (
+    SCENARIO_PROVIDER_FRAME_BYTES,
+    agent_attempt_execution,
+)
 
 CRASHED = 86
 DOCUMENT = b"""format_version: 2
@@ -119,6 +122,7 @@ class ControlledProcessExecutor:
                 str(self.counter),
             ),
             Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
         )
 
     def decode_process_completion(
@@ -390,6 +394,7 @@ def launch_attempt(
             str(ready),
         ),
         Path.cwd(),
+        standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
     )
     threading.Thread(
         target=lease.agent_process_supervisor.launch_and_wait,

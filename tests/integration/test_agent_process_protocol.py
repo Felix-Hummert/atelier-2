@@ -12,7 +12,9 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,12 +23,14 @@ from atelier2.adapters import agent_processes as process_module
 from atelier2.adapters.agent_process_watchdog import (
     CONTROL_FRAME_TIMEOUT_SECONDS,
     MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
+    MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES,
     MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES,
-    MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
     Watchdog,
     encode_control_frame,
+    maximum_agent_wait_response_bytes,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     AgentAttemptProcessPhase,
@@ -36,17 +40,75 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    AgentExecutionRequestV2,
     AgentExecutionResult,
 )
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    AgentProcessCompletion,
     AgentProcessInvocation,
     AgentProcessOwnerNotLocal,
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
-from tests.scenarios.agents import agent_attempt_execution
+from tests.scenarios.agents import (
+    SCENARIO_PROVIDER_FRAME_BYTES,
+    agent_attempt_execution,
+)
+
+_PROVIDER_WRITES_EXACT_BYTES = """
+import os, sys
+frame = b"o" * int(sys.argv[1])
+while frame:
+    frame = frame[os.write(1, frame):]
+"""
+
+_PROVIDER_EMITS_PADDED_ENVELOPE = """
+import json, os, sys
+frame = json.dumps({"padding": "x" * int(sys.argv[1]), "result": sys.argv[2]}).encode()
+while frame:
+    frame = frame[os.write(1, frame):]
+"""
+
+
+@dataclass
+class _PaddedEnvelopeExecutor:
+    """A provider carrying a small result inside a frame it declares itself."""
+
+    declared_frame_bytes: int
+    padding_bytes: int
+    result: str = "ok"
+    decoded: list[bytes] = field(default_factory=list)
+    observed_frame_bytes: int = 0
+
+    def prepare_process(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentProcessInvocation:
+        del request
+        return AgentProcessInvocation(
+            (
+                sys.executable,
+                "-c",
+                _PROVIDER_EMITS_PADDED_ENVELOPE,
+                str(self.padding_bytes),
+                self.result,
+            ),
+            Path.cwd(),
+            standard_output_frame_bytes=self.declared_frame_bytes,
+        )
+
+    def decode_process_completion(
+        self, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult:
+        self.observed_frame_bytes = len(completion.standard_output)
+        envelope = json.loads(completion.standard_output.decode("utf-8"))
+        decoded = str(envelope["result"]).encode("utf-8")
+        self.decoded.append(decoded)
+        return AgentExecutionResult(decoded)
+
+    def close(self) -> None:
+        return
 
 
 @pytest.mark.parametrize("termination_owner", (None, "CANCEL"))
@@ -63,6 +125,7 @@ def test_terminal_publication_is_one_shot_and_reuses_cached_bytes(
     process.wait(timeout=5)
     watchdog = Watchdog(tmp_path / "control.sock", cgroup, owner_pipe, 0.1)
     watchdog._process = process
+    watchdog._standard_output_frame_bytes = SCENARIO_PROVIDER_FRAME_BYTES
     watchdog._standard_output.extend(b"output")
     watchdog._standard_error.extend(b"error")
     watchdog._termination_owner = termination_owner
@@ -163,6 +226,7 @@ def test_running_watchdog_bounds_four_control_roles_independently(
     owner_pipe, owner_writer = os.pipe()
     watchdog = Watchdog(endpoint, cgroup, owner_pipe, 5.0)
     watchdog._process = provider
+    watchdog._standard_output_frame_bytes = SCENARIO_PROVIDER_FRAME_BYTES
     launch_admitted = threading.Event()
 
     def hold_launch_slot(
@@ -249,7 +313,8 @@ def test_running_watchdog_times_out_a_stalled_response_then_replays_it(
     watchdog = Watchdog(endpoint, cgroup, owner_pipe, 0.1)
     watchdog._process = process
     watchdog._standard_error.extend(b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES)
-    watchdog._standard_output.extend(b"o" * MAXIMUM_AGENT_OUTPUT_BYTES_V2)
+    watchdog._standard_output.extend(b"o" * SCENARIO_PROVIDER_FRAME_BYTES)
+    watchdog._standard_output_frame_bytes = SCENARIO_PROVIDER_FRAME_BYTES
     handle_wait = watchdog._handle_wait
 
     def constrain_response_buffer(
@@ -266,13 +331,15 @@ def test_running_watchdog_times_out_a_stalled_response_then_replays_it(
                 b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
             ).decode("ascii"),
             "standard_output": base64.b64encode(
-                b"o" * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+                b"o" * SCENARIO_PROVIDER_FRAME_BYTES
             ).decode("ascii"),
             "type": "COMPLETED",
         }
     )
     assert MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES < len(expected)
-    assert len(expected) <= MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2
+    assert len(expected) <= maximum_agent_wait_response_bytes(
+        SCENARIO_PROVIDER_FRAME_BYTES
+    )
     errors: list[Exception] = []
     thread = _start_wire_watchdog(watchdog, endpoint, errors)
     owner_open = True
@@ -310,7 +377,7 @@ def test_watchdog_fails_loud_if_wait_response_exceeds_protocol_bound(
     try:
         with pytest.raises(RuntimeError, match="wait response exceeds"):
             watchdog._publish_wait(
-                {"detail": "x" * MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2}, 1.0
+                {"detail": "x" * MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES}, 1.0
             )
 
         assert watchdog._wait_response is None
@@ -443,6 +510,7 @@ for thread in threads:
             (sys.executable, "-c", provider),
             Path.cwd(),
             standard_input=b"i" * MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
         )
         store.prepare(execution)
         supervisor.prepare(execution)
@@ -450,7 +518,7 @@ for thread in threads:
 
         completion = supervisor.launch_and_wait(execution, invocation)
 
-        assert completion.standard_output == b"o" * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+        assert completion.standard_output == b"o" * SCENARIO_PROVIDER_FRAME_BYTES
         assert (
             completion.standard_error
             == b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
@@ -460,6 +528,116 @@ for thread in threads:
         )
         assert isinstance(terminal, AgentAttemptSucceeded)
         supervisor.finalize(execution)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "declared_frame_bytes", (0, -1, 1.0), ids=("zero", "negative", "not-an-integer")
+)
+def test_an_invocation_without_a_positive_declared_frame_is_refused(
+    declared_frame_bytes: Any,
+) -> None:
+    with pytest.raises(ValueError, match="standard output frame"):
+        AgentProcessInvocation(
+            (sys.executable, "-c", "pass"),
+            Path.cwd(),
+            standard_output_frame_bytes=declared_frame_bytes,
+        )
+
+
+def test_the_wait_response_bound_is_exactly_the_declared_frame_at_its_worst() -> None:
+    declared_frame_bytes = 8_192
+    worst_case = encode_control_frame(
+        {
+            "return_code": -(2**31),
+            "standard_error": base64.b64encode(
+                b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
+            ).decode("ascii"),
+            "standard_output": base64.b64encode(b"o" * declared_frame_bytes).decode(
+                "ascii"
+            ),
+            "type": "COMPLETED",
+        }
+    )
+
+    assert maximum_agent_wait_response_bytes(declared_frame_bytes) == len(worst_case)
+
+
+@pytest.mark.parametrize("excess_bytes", (0, 1), ids=("at-the-bound", "one-byte-over"))
+def test_supervision_admits_the_declared_frame_and_refuses_one_byte_more(
+    tmp_path: Path, excess_bytes: int
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    declared_frame_bytes = 8_192
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, f"frame/edge/{excess_bytes}")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        supervisor = runtime.agent_process_supervisor
+        invocation = AgentProcessInvocation(
+            (
+                sys.executable,
+                "-c",
+                _PROVIDER_WRITES_EXACT_BYTES,
+                str(declared_frame_bytes + excess_bytes),
+            ),
+            Path.cwd(),
+            standard_output_frame_bytes=declared_frame_bytes,
+        )
+        store.prepare(execution)
+        supervisor.prepare(execution)
+        store.claim(execution)
+
+        if excess_bytes:
+            with pytest.raises(RuntimeError, match="did not return a process"):
+                supervisor.launch_and_wait(execution, invocation)
+        else:
+            completion = supervisor.launch_and_wait(execution, invocation)
+            assert completion.standard_output == b"o" * declared_frame_bytes
+    finally:
+        runtime.close()
+
+
+def test_supervision_holds_each_provider_to_its_own_declared_frame(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    padding_bytes = MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 16_384
+    try:
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        generous = _PaddedEnvelopeExecutor(2 * padding_bytes, padding_bytes)
+        frugal = _PaddedEnvelopeExecutor(4_096, padding_bytes)
+        generous_execution = agent_attempt_execution(
+            attempt_request(runtime, "frame/generous")
+        )
+        frugal_execution = agent_attempt_execution(
+            attempt_request(runtime, "frame/frugal")
+        )
+
+        accepted = execute_agent_attempt(
+            generous_execution, generous, store, runtime.agent_process_supervisor
+        )
+        with pytest.raises(RuntimeError, match="did not return a process"):
+            execute_agent_attempt(
+                frugal_execution, frugal, store, runtime.agent_process_supervisor
+            )
+
+        assert isinstance(accepted, AgentAttemptSucceeded)
+        assert generous.decoded == [b"ok"]
+        assert generous.observed_frame_bytes > MAXIMUM_AGENT_OUTPUT_BYTES_V2
+        assert frugal.decoded == []
+        assert (
+            store.load(frugal_execution.attempt_id).state
+            is not AgentAttemptState.SUCCEEDED
+        )
     finally:
         runtime.close()
 
@@ -485,6 +663,7 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
                 str(tmp_path / "provider-release"),
             ),
             Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
         )
         os.mkfifo(tmp_path / "provider-release")
         store.prepare(execution)
@@ -596,6 +775,7 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
                 str(counter),
             ),
             Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
         )
         terminal_frame = encode_control_frame(
             process_module._launch_request(invocation)
@@ -706,7 +886,11 @@ def test_real_transport_failures_retain_exact_durable_launch_authority(
             if peer_response is not None
             else None
         )
-        invocation = AgentProcessInvocation((sys.executable, "-c", "pass"), Path.cwd())
+        invocation = AgentProcessInvocation(
+            (sys.executable, "-c", "pass"),
+            Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+        )
         owned.endpoint = peer_endpoint
         try:
             with pytest.raises(AgentProcessOwnerNotLocal):

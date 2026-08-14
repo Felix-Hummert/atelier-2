@@ -31,6 +31,9 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
 )
 
+SCENARIO_PROVIDER_FRAME_BYTES = 49_152
+"""The raw stdout frame a scenario provider declares when it is not the subject."""
+
 
 def configured_agent_request(
     session: Any,
@@ -98,6 +101,7 @@ class RecordingAgentExecutorV2:
                 self.output.hex(),
             ),
             Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
         )
 
     def decode_process_completion(

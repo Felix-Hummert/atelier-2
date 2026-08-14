@@ -28,7 +28,10 @@ from atelier2.ports.agent_executions import (
     AgentProcessOwnerNotLocal,
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
-from tests.scenarios.agents import agent_attempt_execution
+from tests.scenarios.agents import (
+    SCENARIO_PROVIDER_FRAME_BYTES,
+    agent_attempt_execution,
+)
 
 
 def test_concurrent_local_waiters_share_one_process_completion(
@@ -53,6 +56,7 @@ def test_concurrent_local_waiters_share_one_process_completion(
                 str(counter),
             ),
             Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
         )
         store.prepare(execution)
         supervisor.prepare(execution)
@@ -63,10 +67,12 @@ def test_concurrent_local_waiters_share_one_process_completion(
         decode_completion = process_module._completion_from_response
         decode_count = 0
 
-        def count_decode(response: dict[str, object]) -> AgentProcessCompletion:
+        def count_decode(
+            response: dict[str, object], standard_output_frame_bytes: int
+        ) -> AgentProcessCompletion:
             nonlocal decode_count
             decode_count += 1
-            return decode_completion(response)
+            return decode_completion(response, standard_output_frame_bytes)
 
         monkeypatch.setattr(process_module, "_completion_from_response", count_decode)
 
@@ -125,6 +131,7 @@ def test_changed_launch_refuses_without_stopping_the_valid_process(
                 str(finish),
             ),
             Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
         )
         store.prepare(execution)
         supervisor.prepare(execution)
@@ -146,7 +153,11 @@ def test_changed_launch_refuses_without_stopping_the_valid_process(
         with pytest.raises(RuntimeError, match="invocation changed"):
             supervisor.launch_and_wait(
                 execution,
-                AgentProcessInvocation((sys.executable, "-c", "pass"), Path.cwd()),
+                AgentProcessInvocation(
+                    (sys.executable, "-c", "pass"),
+                    Path.cwd(),
+                    standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+                ),
             )
 
         assert waiter.is_alive()

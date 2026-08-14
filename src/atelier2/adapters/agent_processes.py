@@ -17,8 +17,8 @@ from atelier2.adapters.agent_process_watchdog import (
     CONTROL_FRAME_TIMEOUT_SECONDS,
     MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
     MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES,
-    MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
     encode_control_frame,
+    maximum_agent_wait_response_bytes,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
@@ -29,7 +29,6 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     WatchdogGenerationId,
 )
-from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.ports.agent_attempts import AgentAttemptStore
 from atelier2.ports.agent_executions import (
@@ -234,9 +233,13 @@ class AgentProcessSupervisor:
                 owned,
                 {"operation": "WAIT"},
                 timeout_seconds=None,
-                maximum_response_bytes=MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
+                maximum_response_bytes=maximum_agent_wait_response_bytes(
+                    invocation.standard_output_frame_bytes
+                ),
             )
-            completion = _completion_from_response(wait_response)
+            completion = _completion_from_response(
+                wait_response, invocation.standard_output_frame_bytes
+            )
         except Exception as error:
             with owned.condition:
                 owned.failure = str(error) or type(error).__name__
@@ -585,11 +588,14 @@ def _launch_request(invocation: AgentProcessInvocation) -> dict[str, object]:
         "environment": invocation.environment,
         "operation": "LAUNCH",
         "standard_input": base64.b64encode(invocation.standard_input).decode("ascii"),
+        "standard_output_frame_bytes": invocation.standard_output_frame_bytes,
         "working_directory": str(invocation.working_directory),
     }
 
 
-def _completion_from_response(response: dict[str, object]) -> AgentProcessCompletion:
+def _completion_from_response(
+    response: dict[str, object], standard_output_frame_bytes: int
+) -> AgentProcessCompletion:
     response_type = response.get("type")
     if response_type in {"RECOVERY_HANDOFF", "STOPPED"}:
         raise AgentProcessOwnerNotLocal
@@ -610,7 +616,7 @@ def _completion_from_response(response: dict[str, object]) -> AgentProcessComple
     except ValueError as error:
         raise RuntimeError("watchdog process completion is malformed") from error
     if (
-        len(standard_output) > MAXIMUM_AGENT_OUTPUT_BYTES_V2
+        len(standard_output) > standard_output_frame_bytes
         or len(standard_error) > MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
     ):
         raise RuntimeError("watchdog process completion exceeds its exact bound")
