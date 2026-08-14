@@ -49,6 +49,10 @@ duplicating the Action effect.
 Workflow format V2 adds provider-neutral Agent roles. Before a run starts, every
 role is resolved to one immutable, secret-free agent-configuration revision and
 authentication-profile revision; the complete matrix is frozen into that run.
+Each configuration also binds a typed requested execution capability. Migrated
+configuration revisions retain their original V1 hash and mean `headless`; new
+API publications use the capability-aware V2 hash format and currently request
+`headless`.
 Before invoking the exact configured provider/executor, the runtime persists one
 ordinal-1 attempt and binds an in-memory invocation to a separately supervised
 process generation. Only the live caller whose compare-and-set reaches
@@ -110,3 +114,10 @@ integration, authentication boundary, public deployment, or general-purpose
 workflow editing. The graph, API, and local cockpit are a proven durable
 vertical, not yet a general-purpose workflow engine or a deployed remote
 product.
+
+The canonical store is schema V8. A fresh store is created as exact V8; an exact
+V7 store is upgraded once in one SQLite transaction by adding the configuration
+format and requested-capability fields. Existing rows and hashes remain
+byte-identical and reopen as legacy V1/headless configurations. Malformed,
+partial, older, future, or fingerprint-mismatched stores are refused without a
+partial upgrade; there is no runtime downgrade.

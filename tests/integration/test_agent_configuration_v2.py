@@ -26,6 +26,11 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.workflow import (
+    EncodedAgentBindingV2,
+    RunBindingConflict,
+    _agent_request_v2,
+)
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
@@ -36,6 +41,8 @@ from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
@@ -141,7 +148,11 @@ def _publish_matrix(
             catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
         )
         configuration = AgentConfigurationRevision(
-            model, auth.revision_hash, AgentExecutorRevision(revision)
+            model,
+            auth.revision_hash,
+            AgentExecutorRevision(revision),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
         )
         assert isinstance(
             catalog.publish_agent_configuration_revision(configuration),
@@ -151,6 +162,148 @@ def _publish_matrix(
     workflow = WorkflowRevision(_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(tuple(bindings))
+
+
+def _encoded_binding(
+    configuration: AgentConfigurationRevision,
+    auth: AuthProfileRevision,
+    *,
+    include_contract: bool,
+) -> EncodedAgentBindingV2:
+    encoded: dict[str, object] = {
+        "type": "agent-v2",
+        "role": "builder",
+        "job": "build",
+        "configuration_hash": configuration.revision_hash.value,
+        "auth_hash": auth.revision_hash.value,
+        "profile_id": auth.profile_id,
+        "revision_number": auth.revision_number,
+        "provider_id": auth.provider_id.value,
+        "auth_mode": auth.auth_mode.value,
+        "model": configuration.model,
+        "executor_revision": configuration.executor_revision.value,
+    }
+    if include_contract:
+        encoded.update(
+            {
+                "revision_format_version": int(configuration.revision_format_version),
+                "requested_capability": configuration.requested_capability.value,
+            }
+        )
+    return cast(EncodedAgentBindingV2, encoded)
+
+
+def test_old_node_binding_payload_replays_and_new_payload_carries_contract() -> None:
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    legacy = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V1,
+    )
+    current = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    run_id = RunId("capability/replay")
+    revision_hash = WorkflowRevision(
+        b"format_version: 1\nstart: x\nnodes: []\n"
+    ).revision_hash
+    operational_identity = AgentExecutorOperationalIdentity("executor/test")
+
+    replayed = _agent_request_v2(
+        _encoded_binding(legacy, auth, include_contract=False),
+        run_id,
+        revision_hash,
+        "build",
+        operational_identity,
+    )
+    newly_encoded = _agent_request_v2(
+        _encoded_binding(current, auth, include_contract=True),
+        run_id,
+        revision_hash,
+        "build",
+        operational_identity,
+    )
+
+    assert replayed.resolved_binding.configuration == legacy
+    assert newly_encoded.resolved_binding.configuration == current
+
+
+@pytest.mark.parametrize(
+    ("revision_format_version", "requested_capability"),
+    (
+        (1, "interactive"),
+        (1, None),
+        (None, "headless"),
+        (3, "headless"),
+        (True, "headless"),
+        (2.0, "headless"),
+        (2, 1),
+    ),
+)
+def test_node_binding_payload_refuses_partial_or_invalid_capability_contract(
+    revision_format_version: object | None,
+    requested_capability: object | None,
+) -> None:
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    current = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    encoded = dict(_encoded_binding(current, auth, include_contract=False))
+    if revision_format_version is not None:
+        encoded["revision_format_version"] = revision_format_version
+    if requested_capability is not None:
+        encoded["requested_capability"] = requested_capability
+
+    with pytest.raises(RunBindingConflict):
+        _agent_request_v2(
+            cast(EncodedAgentBindingV2, encoded),
+            RunId("capability/invalid-replay"),
+            WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
+            "build",
+            AgentExecutorOperationalIdentity("executor/test"),
+        )
+
+
+@pytest.mark.parametrize(
+    "encoded_contract",
+    (
+        {"revision_format_version": None, "requested_capability": None},
+        {"revision_format_version": None, "requested_capability": "headless"},
+        {"revision_format_version": 2, "requested_capability": None},
+    ),
+)
+def test_node_binding_payload_refuses_explicit_null_contract_values(
+    encoded_contract: dict[str, object],
+) -> None:
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    encoded = dict(_encoded_binding(configuration, auth, include_contract=False))
+    encoded.update(encoded_contract)
+
+    with pytest.raises(RunBindingConflict, match="wrong type"):
+        _agent_request_v2(
+            cast(EncodedAgentBindingV2, encoded),
+            RunId("capability/null-replay"),
+            WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
+            "build",
+            AgentExecutorOperationalIdentity("executor/test"),
+        )
 
 
 def _wait_completed(runtime: DbosRuntime, run_id: RunId) -> RunV2:
@@ -254,7 +407,11 @@ def test_private_factory_canary_never_enters_any_public_or_durable_channel(
         catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
     )
     configuration = AgentConfigurationRevision(
-        "opus", auth.revision_hash, AgentExecutorRevision("claude-cli/v1")
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
     )
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),

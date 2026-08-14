@@ -33,6 +33,8 @@ from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
@@ -168,7 +170,11 @@ def request(lease: DbosRuntime) -> AgentExecutionRequestV2:
     lease.initialize_storage()
     auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
     configuration = AgentConfigurationRevision(
-        "opus", auth.revision_hash, AgentExecutorRevision("claude-cli/v1")
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
     )
     catalog = DbosAgentConfigurationCatalog(lease.engine, lease.agent_executor_registry)
     catalog.publish_auth_profile_revision(auth)
