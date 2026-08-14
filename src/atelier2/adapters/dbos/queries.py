@@ -33,6 +33,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
@@ -415,7 +416,7 @@ class DbosQueries:
                 revision = WorkflowRevision(document_bytes)
                 if revision.revision_hash != revision_hash:
                     return QueryDurableStateCorrupt()
-                graph = graph_from_document(revision_hash, revision.document)
+                graph = parse_workflow_document(revision.document)
                 if projection_limit is not None:
                     projection_limit.validate_graph(graph)
                 return WorkflowRevisionFound(

@@ -56,6 +56,7 @@ from atelier2.ports.durable_runs import (
     DurablePublishedRunResult,
     DurableRunCreated,
     DurableRunExisting,
+    DurableRunFormatNotExecutable,
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
     DurableStateCorrupt,
@@ -346,6 +347,14 @@ PROBLEM_CASES = (
         DurableRunIdentityConflict(),
         409,
         "run-identity-conflict",
+    ),
+    (
+        "start-format-not-executable",
+        "start",
+        "starter",
+        DurableRunFormatNotExecutable(),
+        409,
+        "workflow-format-not-executable",
     ),
     (
         "start-unavailable",

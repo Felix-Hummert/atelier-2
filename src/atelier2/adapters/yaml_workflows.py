@@ -26,6 +26,7 @@ from yaml.tokens import (
 )
 
 from atelier2.contracts.workflow_refusals import (
+    WorkflowDocumentInvalid,
     WorkflowDocumentRefused,
     WorkflowRefusal,
     WorkflowRefusalReason,
@@ -70,12 +71,12 @@ _NESTING_START_TOKENS = (
 _NESTING_END_TOKENS = (BlockEndToken, FlowMappingEndToken, FlowSequenceEndToken)
 
 
-class InvalidWorkflowDocument(ValueError):
+class InvalidWorkflowDocument(WorkflowDocumentInvalid):
     """The exact workflow bytes are not one safe, closed YAML graph."""
 
-    def __init__(self, detail: str, refusal: WorkflowRefusal | None = None) -> None:
-        super().__init__(detail)
-        self.refusal = refusal
+
+class WorkflowFormatNotExecutable(InvalidWorkflowDocument):
+    """The document is valid, and no runtime here executes its format version."""
 
 
 def _refused(
@@ -243,5 +244,5 @@ def parse_executable_workflow_document(document: bytes) -> AnyWorkflowGraph:
     """Parse one document the current runtime can execute, refusing later formats."""
     graph = parse_workflow_document(document)
     if isinstance(graph, WorkflowGraphV3):
-        raise InvalidWorkflowDocument(FORMAT_V3_NOT_EXECUTABLE)
+        raise WorkflowFormatNotExecutable(FORMAT_V3_NOT_EXECUTABLE)
     return graph

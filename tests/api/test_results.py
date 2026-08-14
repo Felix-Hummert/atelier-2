@@ -20,7 +20,6 @@ from atelier2.application.answer_wait import (
     answer_wait_result,
 )
 from atelier2.application.publish_workflow_revision import (
-    UNPROJECTABLE_FORMAT_DETAIL,
     PublicationCollision,
     PublicationCreated,
     PublicationExisting,
@@ -43,6 +42,7 @@ from atelier2.application.start_published_run import (
     RevisionMissing,
     RunCreated,
     RunExisting,
+    RunFormatNotExecutable,
     RunIdentityConflict,
     start_published_run,
 )
@@ -59,6 +59,12 @@ from atelier2.contracts.executions import (
     WaitAnswerState,
 )
 from atelier2.contracts.runs import Run, RunId, WorkflowRevision, WorkflowRevisionHash
+from atelier2.contracts.workflow_refusals import (
+    WorkflowRefusal,
+    WorkflowRefusalReason,
+)
+from atelier2.contracts.workflows import WorkflowGraph
+from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorCapabilityUnavailable,
     DurableAnswerBytesConflict,
@@ -71,6 +77,7 @@ from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     DurableRunCreated,
     DurableRunExisting,
+    DurableRunFormatNotExecutable,
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
     DurableWriteUnavailable,
@@ -94,6 +101,7 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionExisting,
     WorkflowRevisionPublisher,
 )
+from tests.scenarios.workflows import V3_CONTROL_EDGE_LINE, V3_DOCUMENT
 
 
 @dataclass
@@ -156,17 +164,40 @@ def test_publication_rejects_invalid_yaml_before_the_write_port() -> None:
     assert isinstance(result, PublicationInvalid)
 
 
-def test_publication_refuses_a_parsed_v3_document_before_the_write_port() -> None:
+def test_publication_projects_a_valid_v3_document_it_reached_the_write_port_with() -> (
+    None
+):
+    revision = WorkflowRevision(V3_DOCUMENT)
+
     result = publish_workflow_revision(
-        b"format_version: 3\n"
-        b"name: Land the comment\n"
-        b"nodes:\n"
-        b"  - {id: land, type: action, operation: {ref: comment, revision: r}}\n",
+        V3_DOCUMENT,
+        cast(WorkflowRevisionPublisher, FakePort(DurableRevisionCreated(revision))),
+        parse_workflow_document,
+    )
+
+    assert isinstance(result, PublicationCreated)
+    assert result.projection.revision == revision
+    assert isinstance(result.projection.graph, WorkflowGraphV3)
+
+
+def test_publication_refuses_an_invalid_v3_document_carrying_its_named_refusal() -> (
+    None
+):
+    result = publish_workflow_revision(
+        V3_DOCUMENT.replace(V3_CONTROL_EDGE_LINE, b""),
         cast(WorkflowRevisionPublisher, FakePort(None)),
         parse_workflow_document,
     )
 
-    assert result == PublicationInvalid(UNPROJECTABLE_FORMAT_DETAIL)
+    assert isinstance(result, PublicationInvalid)
+    assert result.refusal == WorkflowRefusal(
+        WorkflowRefusalReason.DATA_EDGE_OUTSIDE_CLOSURE,
+        "inputs",
+        "input 'candidate' reads node 'implement', which no depends_on edge "
+        "orders before this node",
+        "review",
+    )
+    assert result.detail == str(result.refusal)
 
 
 def test_publication_returns_the_graph_validated_before_the_write() -> None:
@@ -184,6 +215,7 @@ def test_publication_returns_the_graph_validated_before_the_write() -> None:
 
     assert isinstance(result, PublicationCreated)
     assert result.projection.revision == revision
+    assert isinstance(result.projection.graph, WorkflowGraph)
     assert result.projection.graph.start == "final"
 
 
@@ -198,6 +230,7 @@ def test_publication_returns_the_graph_validated_before_the_write() -> None:
             DurableAgentExecutorCapabilityUnavailable(),
             AgentExecutorBindingUnavailable,
         ),
+        (DurableRunFormatNotExecutable(), RunFormatNotExecutable),
         (DurableWriteUnavailable(), WriteUnavailable),
         (PortDurableStateCorrupt(), DurableStateCorrupt),
     ],

@@ -27,7 +27,10 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
-from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
+from atelier2.adapters.yaml_workflows import (
+    WorkflowFormatNotExecutable,
+    parse_executable_workflow_document,
+)
 from atelier2.contracts.agents import (
     AgentBindingSet,
     ResolvedAgentBinding,
@@ -54,6 +57,7 @@ from atelier2.ports.durable_runs import (
     DurablePublishedRunResult,
     DurableRunCreated,
     DurableRunExisting,
+    DurableRunFormatNotExecutable,
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
     DurableStateCorrupt,
@@ -164,6 +168,8 @@ class DbosDurableRunStarter:
             if revision.revision_hash != request.revision_hash:
                 return DurableStateCorrupt()
             graph = parse_executable_workflow_document(revision.document)
+        except WorkflowFormatNotExecutable:
+            return DurableRunFormatNotExecutable()
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):

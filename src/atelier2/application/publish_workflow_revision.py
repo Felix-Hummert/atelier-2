@@ -4,14 +4,12 @@ from dataclasses import dataclass
 from typing import assert_never
 
 from atelier2.contracts.runs import WorkflowRevision
-from atelier2.contracts.workflows import (
-    AgentNode,
-    AgentNodeV2,
-    AnyWorkflowGraph,
-    SubworkflowNode,
-    WorkflowGraph,
-    WorkflowGraphV2,
+from atelier2.contracts.workflow_refusals import (
+    WorkflowDocumentInvalid,
+    WorkflowRefusal,
 )
+from atelier2.contracts.workflows import AgentNode, AgentNodeV2, SubworkflowNode
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
@@ -28,10 +26,6 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionPublisher,
 )
 
-UNPROJECTABLE_FORMAT_DETAIL = (
-    "workflow format version 3 parses, but no durable revision projection carries it"
-)
-
 
 @dataclass(frozen=True)
 class WorkflowPublicationLimits:
@@ -45,7 +39,7 @@ class WorkflowPublicationLimits:
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
 
-    def validate(self, document: bytes, graph: AnyWorkflowGraph) -> None:
+    def validate(self, document: bytes, graph: AnyWorkflowDocument) -> None:
         self.validate_document(document)
         self.validate_graph(graph)
 
@@ -74,20 +68,30 @@ class WorkflowPublicationLimits:
                 "durable payload exceeds its encoded response limit"
             )
 
-    def validate_graph(self, graph: AnyWorkflowGraph) -> None:
+    def validate_graph(self, graph: AnyWorkflowDocument) -> None:
         if len(graph.nodes) > self.maximum_nodes:
             raise ProjectionLimitExceeded("workflow exceeds its node limit")
-        values = [graph.start]
-        for node in graph.nodes:
-            values.append(node.id)
-            if isinstance(node, AgentNode):
-                values.extend((node.job, node.output))
-            if isinstance(node, AgentNodeV2):
-                values.extend((node.role, node.job))
-            if not isinstance(node, SubworkflowNode):
-                values.append(node.next)
-        if any(len(value) > self.maximum_string_characters for value in values):
+        if any(
+            len(value) > self.maximum_string_characters
+            for value in _projected_strings(graph)
+        ):
             raise ProjectionLimitExceeded("workflow string exceeds its character limit")
+
+
+def _projected_strings(graph: AnyWorkflowDocument) -> tuple[str, ...]:
+    """Every string the revision projection renders; a V3 projection renders none."""
+    if isinstance(graph, WorkflowGraphV3):
+        return ()
+    values = [graph.start]
+    for node in graph.nodes:
+        values.append(node.id)
+        if isinstance(node, AgentNode):
+            values.extend((node.job, node.output))
+        if isinstance(node, AgentNodeV2):
+            values.extend((node.role, node.job))
+        if not isinstance(node, SubworkflowNode):
+            values.append(node.next)
+    return tuple(values)
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,7 @@ class PublicationExisting:
 @dataclass(frozen=True)
 class PublicationInvalid:
     detail: str
+    refusal: WorkflowRefusal | None = None
 
 
 @dataclass(frozen=True)
@@ -138,12 +143,11 @@ def publish_workflow_revision(
 ) -> PublishWorkflowRevisionResult:
     try:
         revision = WorkflowRevision(document)
-        parsed = parser(document)
-        if not isinstance(parsed, (WorkflowGraph, WorkflowGraphV2)):
-            return PublicationInvalid(UNPROJECTABLE_FORMAT_DETAIL)
-        graph = parsed
+        graph = parser(document)
         if limits is not None:
             limits.validate(document, graph)
+    except WorkflowDocumentInvalid as refused:
+        return PublicationInvalid(str(refused), refused.refusal)
     except (TypeError, ValueError) as error:
         return PublicationInvalid(str(error))
     result = publisher.publish(revision)

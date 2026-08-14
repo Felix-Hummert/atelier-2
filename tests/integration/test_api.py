@@ -109,6 +109,7 @@ from tests.scenarios.api import (
     event_poll_backoff,
 )
 from tests.scenarios.runtime import exact_output_runtime
+from tests.scenarios.workflows import V3_DOCUMENT
 
 DOCUMENT = b"""format_version: 1
 start: agent
@@ -130,19 +131,6 @@ nodes:
 # its first attempt. Zero is what makes the refusal a decision rather than an
 # elapsed measurement, so the test needs no clock to say which bound governed.
 NO_WAIT_FOR_A_CONTENDED_WRITE = 0.0
-
-V3_DOCUMENT = b"""format_version: 3
-name: Build a candidate for the bound story
-nodes:
-  - id: implement
-    type: agent
-    role: builder
-    mode: headless
-    instruction: Build every acceptance sentence of the bound story.
-    outputs:
-      - name: candidate
-        schema: {ref: workspace_candidate, revision: schema-candidate}
-"""
 
 
 @pytest.fixture
@@ -856,20 +844,29 @@ def test_http_publication_collision_changes_no_durable_state_or_workflow(
     assert _durable_snapshot(runtime) == before
 
 
-def test_a_v3_document_reaches_no_durable_revision_and_no_run(
+def test_a_published_v3_revision_still_reaches_no_run(
     runtime: DbosRuntime,
 ) -> None:
-    before = _durable_snapshot(runtime)
-
-    response = _client(runtime).post(
+    client = _client(runtime)
+    published = client.post(
         "/atelier/api/v1/workflow-revisions",
         content=V3_DOCUMENT,
         headers={"content-type": "application/yaml"},
     )
+    assert published.status_code == 201
+    after_publication = _durable_snapshot(runtime)
 
-    assert response.status_code == 422
-    assert response.json()["type"].endswith(":invalid-workflow-document")
-    assert _durable_snapshot(runtime) == before
+    refused = client.post(
+        "/atelier/api/v1/runs",
+        json={
+            "run_id": "v3-not-executable",
+            "workflow_revision_hash": published.json()["revision_hash"],
+        },
+    )
+
+    assert refused.status_code == 409
+    assert refused.json()["type"].endswith(":workflow-format-not-executable")
+    assert _durable_snapshot(runtime) == after_publication
 
 
 def test_http_start_identity_conflict_changes_no_durable_state_or_workflow(

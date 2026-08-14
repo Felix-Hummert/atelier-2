@@ -168,6 +168,11 @@ EXPECTED_PROBLEMS = {
         "Workflow revision collision",
         "Stop and inspect durable revision integrity.",
     ),
+    "workflow-format-not-executable": (
+        409,
+        "Workflow format is not executable",
+        "This revision is published and no runtime here runs its format version yet.",
+    ),
     "run-identity-conflict": (
         409,
         "Run identity conflict",

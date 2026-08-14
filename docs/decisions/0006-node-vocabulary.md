@@ -1026,6 +1026,12 @@ configuration revision this record names — the role matrix by its existing bin
 identity, every resolved reference, and every subworkflow's child revision — as one
 immutable framed snapshot, before any run exists.
 
+The publication half of the staging rule above holds too: a valid V3 document
+publishes as an immutable revision under the exact bytes identity V1 and V2 already
+use, needing no new durable shape, and the revision projection carries it marked
+unexecutable, while an invalid one is refused at publication naming the node and the
+field.
+
 Nothing else behind it exists. Those registries are ports, not store state: no
 durable registry shape and no publication command for one exists, so a caller
 supplies what resolves and nothing has yet been published to resolve against — the
@@ -1034,8 +1040,9 @@ admitted membership and name resolution are the catalog record's, not this one's
 run configuration is a computed value rather than a published, bound revision, and it
 carries no runtime capability revision, because none exists: no capability above is
 attested and the depth bound is still a caller argument rather than a proven
-`subworkflow_execution` entry. Every publication and execution path refuses a V3
-document naming the format. The stories that implement the rest attest the subset
+`subworkflow_execution` entry, and there is no V3 record shape in the store. Every
+execution path still refuses a V3 document naming the format, without writing a run.
+The stories that implement the rest attest the subset
 they prove, and every later capability is an attestation change rather than a format
 change.
 Falsifiably: if a later capability forces a format version anyway, this record was
