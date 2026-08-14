@@ -22,6 +22,9 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import AgentAttemptExecution
 
+MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
+MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = 49_152
+
 
 class AgentExecutor(Protocol):
     def execute(self, request: AgentExecutionRequest) -> AgentExecutionResult: ...
@@ -71,6 +74,11 @@ class AgentProcessInvocation:
         if len(set(names)) != len(names) or any(not name for name in names):
             raise ValueError(
                 "agent process environment names must be unique and nonempty"
+            )
+        if len(self.standard_input) > MAXIMUM_AGENT_PROCESS_INPUT_BYTES:
+            raise ValueError(
+                "agent process standard input exceeds "
+                f"{MAXIMUM_AGENT_PROCESS_INPUT_BYTES} bytes"
             )
 
 
