@@ -8,7 +8,7 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_FLOOR = 65
+EXPECTED_SOURCE_MODULE_FLOOR = 67
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",

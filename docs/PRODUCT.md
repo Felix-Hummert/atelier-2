@@ -129,6 +129,18 @@ billed provider is unauthenticated on this API. OS-enforced isolation remains
 the planned stronger boundary; until it lands, these refusals are what keep the
 tool-free premise true.
 
+Workflow format V3 is authored truth, not executable truth. The parser accepts a
+format-3 document into its own closed model — the five node kinds with the field
+matrix each requires, refuses, or accepts, `depends_on` as the only control edge,
+the join rule in its three arities, the four input sources, the two context-edge
+kinds, and graph-level inputs and outputs — and refuses every forbidden form naming
+the node and the field it concerns, including each retired V1 or V2 key with its
+replacement. Nothing behind that surface exists: no reference resolution, no
+capability attestation, no durable record shape, so publication and every run path
+refuse a V3 document naming the format. V1 and V2 documents keep their exact meaning
+under their own models. [ADR 0006](decisions/0006-node-vocabulary.md) owns this
+vocabulary and the staging rule behind it.
+
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically
 records a distinct success receipt with its existing event and successor. Action

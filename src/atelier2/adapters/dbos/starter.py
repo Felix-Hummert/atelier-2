@@ -27,7 +27,7 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
-from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.contracts.agents import (
     AgentBindingSet,
     ResolvedAgentBinding,
@@ -91,7 +91,7 @@ class DbosDurableRunStarter:
         )
 
     def start(self, request: StartRunRequest) -> Run:
-        graph = parse_workflow_document(request.revision.document)
+        graph = parse_executable_workflow_document(request.revision.document)
         if not isinstance(graph, WorkflowGraph):
             raise TypeError("the V1 direct-start contract requires a V1 workflow")
         client = DBOSClient(
@@ -163,7 +163,7 @@ class DbosDurableRunStarter:
             revision = WorkflowRevision(revision_document)
             if revision.revision_hash != request.revision_hash:
                 return DurableStateCorrupt()
-            graph = parse_workflow_document(revision.document)
+            graph = parse_executable_workflow_document(revision.document)
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):

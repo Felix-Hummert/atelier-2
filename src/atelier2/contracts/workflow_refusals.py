@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+
+class WorkflowRefusalReason(StrEnum):
+    """Why one closed workflow document was refused, as a stable token."""
+
+    UNKNOWN_FIELD = "unknown_field"
+    REFUSED_FIELD = "refused_field"
+    RETIRED_KEY = "retired_key"
+    MISSING_FIELD = "missing_field"
+    INVALID_VALUE = "invalid_value"
+    DUPLICATE_NODE_ID = "duplicate_node_id"
+    DUPLICATE_NAME = "duplicate_name"
+    UNKNOWN_NODE_REFERENCE = "unknown_node_reference"
+    CYCLE = "cycle"
+    JOIN_WITHOUT_DEPENDENCY = "join_without_dependency"
+    JOIN_REQUIRED = "join_required"
+    DATA_EDGE_OUTSIDE_CLOSURE = "data_edge_outside_closure"
+    UNDECLARED_OUTPUT = "undeclared_output"
+    UNDECLARED_CONTEXT = "undeclared_context"
+    GRAPH_OUTPUT_NOT_SINK = "graph_output_not_sink"
+    UNCONFIRMED_INTERACTIVE_OUTPUT = "unconfirmed_interactive_output"
+    CONFIRMATION_WITHOUT_INTERACTIVE_MODE = "confirmation_without_interactive_mode"
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRefusal:
+    """The named subject of one refusal: which node, which field, and why."""
+
+    reason: WorkflowRefusalReason
+    field: str
+    detail: str
+    node: str | None = None
+
+    def __str__(self) -> str:
+        subject = (
+            "the workflow document" if self.node is None else f"node {self.node!r}"
+        )
+        return f"{subject} field {self.field!r}: {self.detail} [{self.reason.value}]"
+
+
+class WorkflowDocumentRefused(Exception):
+    """A closed workflow document names a form its format refuses."""
+
+    def __init__(self, refusal: WorkflowRefusal) -> None:
+        super().__init__(str(refusal))
+        self.refusal = refusal

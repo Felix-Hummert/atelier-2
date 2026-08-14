@@ -16,15 +16,32 @@ from yaml.tokens import (
     TagToken,
 )
 
+from atelier2.contracts.workflow_refusals import (
+    WorkflowDocumentRefused,
+    WorkflowRefusal,
+)
 from atelier2.contracts.workflows import (
     AnyWorkflowGraph,
     WorkflowGraph,
     WorkflowGraphV2,
 )
+from atelier2.contracts.workflows_v3 import (
+    AnyWorkflowDocument,
+    WorkflowGraphV3,
+    validate_workflow_graph_v3,
+)
+
+FORMAT_V3_NOT_EXECUTABLE = (
+    "workflow format version 3 parses, but no runtime executes it yet"
+)
 
 
 class InvalidWorkflowDocument(ValueError):
-    """The exact workflow bytes are not one safe, closed YAML-v1 graph."""
+    """The exact workflow bytes are not one safe, closed YAML graph."""
+
+    def __init__(self, detail: str, refusal: WorkflowRefusal | None = None) -> None:
+        super().__init__(detail)
+        self.refusal = refusal
 
 
 class StrictWorkflowLoader(yaml.SafeLoader):
@@ -61,7 +78,7 @@ class StrictWorkflowLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
-def parse_workflow_document(document: bytes) -> AnyWorkflowGraph:
+def parse_workflow_document(document: bytes) -> AnyWorkflowDocument:
     if not document or document.startswith(b"\xef\xbb\xbf"):
         raise InvalidWorkflowDocument("workflow must be nonempty UTF-8 without BOM")
     try:
@@ -98,9 +115,13 @@ def parse_workflow_document(document: bytes) -> AnyWorkflowGraph:
             return WorkflowGraph.model_validate(loaded, strict=True)
         if version == 2:
             return WorkflowGraphV2.model_validate(loaded, strict=True)
+        if version == 3:
+            return validate_workflow_graph_v3(loaded)
         raise InvalidWorkflowDocument("workflow format version is unsupported")
     except InvalidWorkflowDocument:
         raise
+    except WorkflowDocumentRefused as refused:
+        raise InvalidWorkflowDocument(str(refused), refused.refusal) from refused
     except (
         UnicodeDecodeError,
         yaml.YAMLError,
@@ -111,3 +132,11 @@ def parse_workflow_document(document: bytes) -> AnyWorkflowGraph:
         raise InvalidWorkflowDocument(
             "workflow document violates safe YAML v1"
         ) from error
+
+
+def parse_executable_workflow_document(document: bytes) -> AnyWorkflowGraph:
+    """Parse one document the current runtime can execute, refusing later formats."""
+    graph = parse_workflow_document(document)
+    if isinstance(graph, WorkflowGraphV3):
+        raise InvalidWorkflowDocument(FORMAT_V3_NOT_EXECUTABLE)
+    return graph

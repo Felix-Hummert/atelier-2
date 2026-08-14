@@ -9,6 +9,8 @@ from atelier2.contracts.workflows import (
     AgentNodeV2,
     AnyWorkflowGraph,
     SubworkflowNode,
+    WorkflowGraph,
+    WorkflowGraphV2,
 )
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
@@ -24,6 +26,10 @@ from atelier2.ports.workflow_revisions import (
     WorkflowDocumentParser,
     WorkflowRevisionProjection,
     WorkflowRevisionPublisher,
+)
+
+UNPROJECTABLE_FORMAT_DETAIL = (
+    "workflow format version 3 parses, but no durable revision projection carries it"
 )
 
 
@@ -132,7 +138,10 @@ def publish_workflow_revision(
 ) -> PublishWorkflowRevisionResult:
     try:
         revision = WorkflowRevision(document)
-        graph = parser(document)
+        parsed = parser(document)
+        if not isinstance(parsed, (WorkflowGraph, WorkflowGraphV2)):
+            return PublicationInvalid(UNPROJECTABLE_FORMAT_DETAIL)
+        graph = parsed
         if limits is not None:
             limits.validate(document, graph)
     except (TypeError, ValueError) as error:

@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.models import RunEventResourceV2, run_event_resource
 from atelier2.api.openapi import API_PREFIX
@@ -116,7 +116,7 @@ def _client(catalog: RecordingCatalog) -> TestClient:
                 workflow_revision_queries=cast(WorkflowRevisionQueries, missing),
                 run_queries=cast(RunQueries, missing),
                 run_event_queries=cast(RunEventQueries, missing),
-                workflow_document_parser=parse_workflow_document,
+                workflow_document_parser=parse_executable_workflow_document,
                 agent_configuration_catalog=cast(AgentConfigurationCatalog, catalog),
             ),
             limits=api_limits(),
@@ -320,7 +320,7 @@ def test_openapi_names_both_publish_operations_and_exact_problem_sets() -> None:
 
 def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> None:
     workflow = WorkflowRevision(V2_DOCUMENT)
-    graph = parse_workflow_document(V2_DOCUMENT)
+    graph = parse_executable_workflow_document(V2_DOCUMENT)
     binding_set = AgentBindingSet(
         (AgentBinding(AgentRole("builder"), CONFIGURATION.revision_hash),)
     )
@@ -365,7 +365,7 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
                 workflow_revision_queries=cast(WorkflowRevisionQueries, missing),
                 run_queries=cast(RunQueries, queries),
                 run_event_queries=cast(RunEventQueries, missing),
-                workflow_document_parser=parse_workflow_document,
+                workflow_document_parser=parse_executable_workflow_document,
                 agent_configuration_catalog=cast(
                     AgentConfigurationCatalog,
                     RecordingCatalog(object(), object()),

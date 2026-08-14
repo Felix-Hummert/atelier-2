@@ -29,7 +29,7 @@ from atelier2.adapters.dbos.schema import (
     wait_answers,
     workflow_revisions,
 )
-from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
     AgentBindingSetHash,
@@ -123,7 +123,7 @@ def graph_from_document(
         raise RevisionHashCollision(
             "durable workflow revision bytes disagree with their hash"
         )
-    return parse_workflow_document(revision.document)
+    return parse_executable_workflow_document(revision.document)
 
 
 def run_from_record(record: Mapping[Any, Any]) -> Run:

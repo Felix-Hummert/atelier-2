@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 from fastapi.testclient import TestClient
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
@@ -111,7 +111,7 @@ nodes:
   - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
 """
 REVISION = WorkflowRevision(DOCUMENT)
-GRAPH = parse_workflow_document(DOCUMENT)
+GRAPH = parse_executable_workflow_document(DOCUMENT)
 REVISION_PROJECTION = WorkflowRevisionProjection(REVISION, GRAPH)
 RUN = Run(RunId("run"), REVISION.revision_hash, RunState.STARTED, "final", 0, 0)
 RUN_PROJECTION = RunProjection(RUN, GRAPH, None)
@@ -719,7 +719,7 @@ def _ports(case: RouteResultCase) -> ApiPorts:
         queries,
         queries,
         queries,
-        parse_workflow_document,
+        parse_executable_workflow_document,
         cast(AgentConfigurationCatalog, queries),
     )
 

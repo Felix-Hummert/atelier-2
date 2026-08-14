@@ -1448,10 +1448,10 @@ def test_start_parses_workflow_before_begin_immediate(
     revision = WorkflowRevision(DOCUMENT)
     publisher = DbosWorkflowRevisionPublisher(runtime.engine)
     assert isinstance(publisher.publish(revision), DurableRevisionCreated)
-    original_parser = starter_module.parse_workflow_document
+    original_parser = starter_module.parse_executable_workflow_document
     monkeypatch.setattr(
         starter_module,
-        "parse_workflow_document",
+        "parse_executable_workflow_document",
         lambda document: _assert_parser_has_no_serialized_write_lock(
             runtime, original_parser, document
         ),
@@ -1477,10 +1477,10 @@ def test_wait_answer_parses_workflow_before_begin_immediate(
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
-    original_parser = run_store_module.parse_workflow_document
+    original_parser = run_store_module.parse_executable_workflow_document
     monkeypatch.setattr(
         run_store_module,
-        "parse_workflow_document",
+        "parse_executable_workflow_document",
         lambda document: _assert_parser_has_no_serialized_write_lock(
             runtime, original_parser, document
         ),
@@ -1504,7 +1504,7 @@ def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
         DurableRevisionCreated,
     )
     changed_document = DOCUMENT.replace(b"output: payload", b"output: changed")
-    original_parser = starter_module.parse_workflow_document
+    original_parser = starter_module.parse_executable_workflow_document
 
     def drift_revision(document: bytes):
         graph = original_parser(document)
@@ -1519,7 +1519,9 @@ def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
             )
         return graph
 
-    monkeypatch.setattr(starter_module, "parse_workflow_document", drift_revision)
+    monkeypatch.setattr(
+        starter_module, "parse_executable_workflow_document", drift_revision
+    )
     with runtime.engine.connect() as connection:
         before_runs = int(
             connection.scalar(sa.select(sa.func.count()).select_from(runs)) or 0
@@ -1556,7 +1558,7 @@ def test_wait_answer_rechecks_revision_bytes_after_outside_parse_without_mutatio
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
     changed_document = DOCUMENT.replace(b"output: payload", b"output: changed")
-    original_parser = run_store_module.parse_workflow_document
+    original_parser = run_store_module.parse_executable_workflow_document
 
     def drift_revision(document: bytes):
         graph = original_parser(document)
@@ -1571,7 +1573,9 @@ def test_wait_answer_rechecks_revision_bytes_after_outside_parse_without_mutatio
             )
         return graph
 
-    monkeypatch.setattr(run_store_module, "parse_workflow_document", drift_revision)
+    monkeypatch.setattr(
+        run_store_module, "parse_executable_workflow_document", drift_revision
+    )
     with runtime.engine.connect() as connection:
         before_answers = int(
             connection.scalar(sa.select(sa.func.count()).select_from(wait_answers)) or 0
