@@ -30,7 +30,11 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
 from atelier2.host import HostSettings
-from atelier2.ports.agent_executions import AgentExecutorFactory, AgentProcessInvocation
+from atelier2.ports.agent_executions import (
+    AgentExecutorFactory,
+    AgentExecutorFactoryV2,
+    AgentProcessInvocation,
+)
 from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
 from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
@@ -133,8 +137,10 @@ def main() -> None:
         settings: DbosRuntimeSettings,
         effect_factory: EffectAdapterFactory,
         agent_factory: AgentExecutorFactory,
+        agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
     ) -> DbosRuntime:
-        return DbosRuntime(settings, effect_factory, agent_factory, (factory,))
+        factories = (*agent_factories_v2, factory)
+        return DbosRuntime(settings, effect_factory, agent_factory, factories)
 
     with patch.object(host, "DbosRuntime", side_effect=runtime):
         host.serve(

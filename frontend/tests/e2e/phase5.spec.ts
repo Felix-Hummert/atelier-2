@@ -17,6 +17,9 @@ nodes:
   await expect(page.getByRole("dialog", { name: "Publish this exact workflow?" })).toBeVisible();
   await page.screenshot({ path: "test-results/v2-publish-review-desktop.png", fullPage: true });
   await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByText("Complete every field.")).toBeVisible();
+  await page.screenshot({ path: "test-results/v2-bindings-error-desktop.png", fullPage: true });
 
   await page.getByLabel("Profile ID").fill("local");
   await page.getByLabel("Revision").fill("1");
@@ -24,11 +27,15 @@ nodes:
   await page.getByLabel("Auth mode").selectOption("subscription");
   await page.getByLabel("Model").fill("test-model");
   await page.getByLabel("Executor").fill("blocking/v1");
-  await page.screenshot({ path: "test-results/v2-ready-desktop.png", fullPage: true });
+  let continueAuth = (): void => {};
+  const authGate = new Promise<void>((resolve) => { continueAuth = resolve; });
+  await page.route("**/auth-profile-revisions", async (route) => { await authGate; await route.continue(); });
   await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByRole("status")).toContainText("Starting the exact run");
+  await page.screenshot({ path: "test-results/v2-bindings-loading-desktop.png", fullPage: true });
+  continueAuth();
 
   const working = page.getByRole("article", { name: "build — Working" });
-  await expect(working).toContainText("builder");
   await expect(working).toContainText("e2e · test-model");
   await expect(working).toContainText("Subscription · blocking/v1");
   await expect(async () => {

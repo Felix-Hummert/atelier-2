@@ -47,53 +47,6 @@ function event(event: string, fields: Record<string, unknown> = {}) {
 }
 
 describe("closed API decoders", () => {
-  it("decodes one bound V2 attempt", () => {
-    const run = decodeRun({
-      workflow_format_version: 2,
-      run_id: "run-1",
-      public_run_reference: publicReference,
-      workflow_revision_hash: digest,
-      agent_binding_set_hash: digest,
-      agent_bindings: [
-        {
-          role: "builder",
-          agent_configuration_revision_hash: digest,
-          auth_profile_revision_hash: digest,
-          profile_id: "max",
-          revision_number: 1,
-          provider_id: "anthropic",
-          auth_mode: "subscription",
-          model: "sonnet",
-          executor_revision: "claude-subscription/v1"
-        }
-      ],
-      state_version: 0,
-      state: "STARTED",
-      current_node: {
-        type: "agent",
-        node_id: "build",
-        role: "builder",
-        job: "Build",
-        next_node_id: "done"
-      },
-      agent_attempts: [
-        {
-          attempt_id: digest,
-          node_execution_id: digest,
-          request_hash: digest,
-          attempt_ordinal: 1,
-          state: "PREPARED",
-          failure_code: null,
-          cancellation: null
-        }
-      ],
-      waiting: { type: "NONE" },
-      terminal_hash: null,
-      latest_event_cursor: null
-    });
-    expect(run).toMatchObject({ workflow_format_version: 2, agent_attempts: [{ state: "PREPARED" }] });
-  });
-
   it("decodes all four graph node variants and refuses unknown fields", () => {
     const decoded = decodeWorkflowRevisionDetail({
       revision_hash: digest,

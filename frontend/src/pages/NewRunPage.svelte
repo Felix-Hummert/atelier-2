@@ -14,6 +14,7 @@
     MutationJournal,
     createRunId as makeRunId,
     publicationMutation,
+    requestedStartAgentBindings,
     startMutation,
     startMutationV2,
     type JournalEntry,
@@ -149,13 +150,12 @@
     if (draft === null) return;
     const selected = draft;
     let mutation: StartMutation | null = null;
-    let publishedBindings: RunV2["agent_bindings"] | null = null;
     if (selected.revision.graph.format_version === 2) {
       if (!validateBindings(selected.bindings)) return;
       busy = true;
       failureMessage = null;
       const bindings = selected.bindings.map((binding) => ({ ...binding }));
-      publishedBindings = await publishBindings(bindings);
+      const publishedBindings = await publishBindings(bindings);
       if (publishedBindings === null) {
         busy = false;
         return;
@@ -177,7 +177,7 @@
     try {
       await mutationJournal.prepare(mutation);
       prepared = true;
-      await deliverStart(mutation, publishedBindings);
+      await deliverStart(mutation);
     } catch (error) {
       if (prepared) await recordDeliveryFailure(mutation.mutation_id, error);
       showFailure(error, "The run start could not be confirmed.");
@@ -319,11 +319,9 @@
     };
   }
 
-  async function deliverStart(
-    mutation: StartMutation,
-    expectedBindings: RunV2["agent_bindings"] | null = null
-  ): Promise<void> {
+  async function deliverStart(mutation: StartMutation): Promise<void> {
     const result = await cockpitApi.start(mutation);
+    const expectedBindings = requestedStartAgentBindings(mutation);
     const returnedBindings = "workflow_format_version" in result.value
       ? result.value.agent_bindings
       : null;
@@ -332,8 +330,9 @@
       (returnedBindings === null ||
         returnedBindings.length !== expectedBindings.length ||
         expectedBindings.some((binding, index) =>
-          !sameFields(returnedBindings[index] ?? {}, binding) ||
-          !sameFields(binding, returnedBindings[index] ?? {})
+          returnedBindings[index]?.role !== binding.role ||
+          returnedBindings[index]?.agent_configuration_revision_hash !==
+            binding.agent_configuration_revision_hash
         ))
     ) throw new Error("The start response changed the exact role bindings.");
     const resolved = await mutationJournal.resolve(mutation.mutation_id, {
@@ -392,8 +391,8 @@
 
   <fieldset class="mode-picker">
     <legend>Workflow source</legend>
-    <label><input type="radio" name="source" value="saved" bind:group={mode} onchange={changeWorkflowSource} /> Saved workflow</label>
-    <label><input type="radio" name="source" value="publish" bind:group={mode} onchange={changeWorkflowSource} /> Publish YAML</label>
+    <label><input type="radio" name="source" value="saved" bind:group={mode} disabled={busy} onchange={changeWorkflowSource} /> Saved workflow</label>
+    <label><input type="radio" name="source" value="publish" bind:group={mode} disabled={busy} onchange={changeWorkflowSource} /> Publish YAML</label>
   </fieldset>
 
   {#if mode === "saved"}
@@ -401,7 +400,7 @@
       <legend>Saved workflow</legend>
       {#each revisions.confirmed?.items ?? [] as revision (revision.revision_hash)}
         <label>
-          <input type="radio" name="saved-revision" value={revision.revision_hash} disabled={selectionLoading} onchange={() => { void chooseSaved(revision.revision_hash); }} />
+          <input type="radio" name="saved-revision" value={revision.revision_hash} disabled={busy} onchange={() => { void chooseSaved(revision.revision_hash); }} />
           <code>{revision.revision_hash}</code>
         </label>
       {/each}
@@ -412,7 +411,7 @@
   {:else}
     <div class="field">
       <label for="workflow-yaml">Exact workflow YAML</label>
-      <textarea id="workflow-yaml" rows="12" bind:value={exactYaml} spellcheck="false"></textarea>
+      <textarea id="workflow-yaml" rows="12" bind:value={exactYaml} spellcheck="false" disabled={busy}></textarea>
       <button bind:this={publicationTrigger} type="button" disabled={busy} onclick={reviewPublication}>Review publication</button>
     </div>
   {/if}
@@ -423,7 +422,7 @@
         <p class="eyebrow">Agent setup</p>
         <h2 id="binding-list-title">Bindings</h2>
         {#each draft.bindings as binding (binding.role)}
-          <article class="node-card node-done binding-card" aria-label={`Binding ${binding.role}`}>
+          <article class="node-card binding-card" class:node-queued={!busy && binding.error === null} class:node-working={busy && binding.error === null} class:node-needs_you={binding.error !== null} aria-label={`Binding ${binding.role}`}>
             <header class="node-header">
               <span class="node-kind">Agent role</span><h3>{binding.role}</h3>
             </header>
@@ -444,6 +443,7 @@
       <div><p class="eyebrow">Ready</p><h2 id="start-title">Run ID</h2><code>{draft.runId}</code></div>
       <button class="primary" type="button" disabled={busy} onclick={startDraft}>Start</button>
     </section>
+    {#if busy}<p class="status" role="status">Starting the exact run…</p>{/if}
   {/if}
 </section>
 

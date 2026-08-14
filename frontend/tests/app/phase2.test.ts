@@ -103,6 +103,9 @@ describe("Phase 2 mobile run entry", () => {
     const authHash = "b".repeat(64);
     let publishedRevision: WorkflowRevisionDetail;
     let boundRun: RunV2;
+    let startResponses = 0;
+    let rejectConfiguration = (reason: unknown): void => void reason;
+    const configurationFailure = new Promise<never>((_, reject) => { rejectConfiguration = reject; });
     const cockpitApi = api({
       publish: vi.fn(async (mutation) => {
         publishedRevision = v2Revision(
@@ -123,10 +126,10 @@ describe("Phase 2 mobile run entry", () => {
           auth_mode: input.model === "sonnet" ? "subscription" as const : "api_key" as const,
           agent_configuration_revision_hash: input.model === "sonnet" ? "c".repeat(64) : "d".repeat(64)
         }
-      })).mockRejectedValueOnce(new Error("config offline")),
+      })).mockReturnValueOnce(configurationFailure),
       start: vi.fn(async (mutation) => ({
         status: 201,
-        value: vi.mocked(cockpitApi.start).mock.calls.length === 1
+        value: ++startResponses < 3
           ? v2Run(jsonBody(mutation), [])
           : (boundRun = v2Run(jsonBody(mutation), v2Bindings(authHash)))
       })),
@@ -152,19 +155,29 @@ describe("Phase 2 mobile run entry", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(screen.getAllByText("Complete every field.")).toHaveLength(2);
+    expect(screen.getByRole("article", { name: "Binding builder" }).classList).toContain("node-needs_you");
     expect(cockpitApi.publishAuthProfile).not.toHaveBeenCalled();
 
     await fillBinding(0, ["max", "1", "anthropic", "subscription", "sonnet", "claude-subscription/v1"]);
     await fillBinding(1, ["review-key", "2", "openai", "api_key", "gpt-5.6-sol", "codex/v1"]);
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(screen.getByRole("status").textContent).toContain("Starting the exact run");
+    expect(screen.getByLabelText("Saved workflow")).toHaveProperty("disabled", true);
+    expect(screen.getByRole("article", { name: "Binding builder" }).classList).toContain("node-working");
+    rejectConfiguration(new Error("config offline"));
     expect(await screen.findByText("config offline")).toBeTruthy();
+    expect(cockpitApi.publishAuthProfile).toHaveBeenLastCalledWith({ profile_id: "max", revision_number: 1, provider_id: "anthropic", auth_mode: "subscription" });
+    expect(cockpitApi.publishAgentConfiguration).toHaveBeenLastCalledWith({ model: "sonnet", auth_profile_revision_hash: authHash, executor_revision: "claude-subscription/v1" });
     expect((screen.getAllByLabelText("Profile ID")[0] as HTMLInputElement).value).toBe("max");
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByText("The start response changed the exact role bindings.")).toBeTruthy();
-    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
-
+    await fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(2));
-    expect(jsonBody(vi.mocked(cockpitApi.start).mock.calls[1]?.[0])).toEqual({
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toHaveProperty("disabled", false));
+    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(3));
+    expect(jsonBody(vi.mocked(cockpitApi.start).mock.calls[2]?.[0])).toEqual({
       workflow_format_version: 2,
       run_id: "run-v2",
       workflow_revision_hash: publishedRevision!.revision_hash,

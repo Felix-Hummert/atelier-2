@@ -13,6 +13,10 @@ from urllib.request import urlopen
 import pytest
 from fastapi.testclient import TestClient
 
+from atelier2.adapters.claude_subscription import (
+    CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
+    ClaudeSubscriptionSettings,
+)
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
@@ -26,10 +30,20 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.host import HostSettings, api_limits, event_poll_backoff
+from atelier2.host import (
+    DEFAULT_HOST,
+    HostSettings,
+    api_limits,
+    compose_application,
+    event_poll_backoff,
+    main,
+)
+from tests.scenarios.agents import claude_subscription_deployment
 from tests.scenarios.api import api_limits as scenario_api_limits
 from tests.scenarios.api import event_poll_backoff as scenario_event_poll_backoff
 from tests.scenarios.runtime import exact_output_runtime
+
+INERT_CLAUDE = "raise SystemExit(0)\n"
 
 
 @pytest.mark.parametrize(
@@ -175,6 +189,198 @@ def test_host_settings_own_named_production_defaults(tmp_path: Path) -> None:
     assert settings.port == 8422
     assert settings.limits == api_limits()
     assert settings.event_poll_backoff == event_poll_backoff()
+
+
+def served_settings(
+    tmp_path: Path,
+    claude_subscription: ClaudeSubscriptionSettings | None = None,
+    host: str = DEFAULT_HOST,
+) -> HostSettings:
+    frontend = tmp_path / "frontend"
+    if not frontend.is_dir():
+        (frontend / "assets").mkdir(parents=True)
+        (frontend / "index.html").write_text("index")
+    return HostSettings(
+        database_path=tmp_path / "durable.sqlite",
+        effect_store_path=tmp_path / "effects.sqlite",
+        effect_adapter_revision="loopback-v1",
+        effect_destination="local",
+        application_version="composition-test",
+        source_commit="commit",
+        source_tree="tree",
+        frontend_dist=frontend,
+        host=host,
+        claude_subscription=claude_subscription,
+    )
+
+
+def test_an_undeclared_claude_deployment_offers_no_provider_executor(
+    tmp_path: Path,
+) -> None:
+    _app, runtime = compose_application(served_settings(tmp_path))
+
+    try:
+        assert runtime.agent_executor_registry.keys == frozenset()
+    finally:
+        runtime.close()
+
+
+def test_a_declared_claude_deployment_offers_its_executor_to_every_run(
+    tmp_path: Path,
+) -> None:
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = served_settings(
+        tmp_path,
+        claude_subscription=claude_subscription_deployment(deployment, INERT_CLAUDE),
+    )
+
+    _app, runtime = compose_application(settings)
+
+    try:
+        assert runtime.agent_executor_registry.keys == frozenset(
+            {CLAUDE_SUBSCRIPTION_EXECUTOR_KEY}
+        )
+    finally:
+        runtime.close()
+
+
+def serve_arguments(tmp_path: Path, *extra: str) -> list[str]:
+    frontend = tmp_path / "frontend"
+    if not frontend.is_dir():
+        (frontend / "assets").mkdir(parents=True)
+        (frontend / "index.html").write_text("index")
+    return [
+        "serve",
+        "--database",
+        str(tmp_path / "durable.sqlite"),
+        "--effect-store",
+        str(tmp_path / "effects.sqlite"),
+        "--effect-adapter-revision",
+        "loopback-v1",
+        "--effect-destination",
+        "local",
+        "--application-version",
+        "refusal-test",
+        "--source-commit",
+        "commit",
+        "--source-tree",
+        "tree",
+        "--frontend-dist",
+        str(frontend),
+        *extra,
+    ]
+
+
+def test_a_partly_declared_claude_deployment_refuses_to_serve(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as refusal:
+        main(serve_arguments(tmp_path, "--claude-executable", str(tmp_path / "claude")))
+
+    assert refusal.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "bind",
+    ["0.0.0.0", "::", "192.168.1.10", "localhost", "cockpit.example"],
+)
+def test_a_claude_deployment_off_loopback_refuses_to_serve(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    bind: str,
+) -> None:
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = claude_subscription_deployment(deployment, INERT_CLAUDE)
+    monkeypatch.setenv("PATH", settings.search_path)
+
+    with pytest.raises(SystemExit) as refusal:
+        main(
+            serve_arguments(
+                tmp_path,
+                "--host",
+                bind,
+                "--claude-executable",
+                str(settings.executable),
+                "--claude-workspace",
+                str(settings.workspace),
+                "--claude-credential-directory",
+                str(settings.credential_directory),
+            )
+        )
+
+    assert refusal.value.code == 2
+    assert "loopback" in capsys.readouterr().err
+
+
+def test_a_claude_deployment_on_an_unconformant_executable_refuses_to_serve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unmeasured CLI stops the server, not the first billed run."""
+
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = claude_subscription_deployment(
+        deployment, INERT_CLAUDE, version="2.1.222"
+    )
+    monkeypatch.setenv("PATH", settings.search_path)
+
+    with pytest.raises(SystemExit) as refusal:
+        main(
+            serve_arguments(
+                tmp_path,
+                "--claude-executable",
+                str(settings.executable),
+                "--claude-workspace",
+                str(settings.workspace),
+                "--claude-credential-directory",
+                str(settings.credential_directory),
+            )
+        )
+
+    assert refusal.value.code == 2
+    assert "not 2.1.222" in capsys.readouterr().err
+
+
+def test_a_claude_deployment_without_bubblewrap_refuses_to_serve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server's own search path is what the launched provider receives."""
+
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = claude_subscription_deployment(deployment, INERT_CLAUDE)
+    monkeypatch.setenv("PATH", str(tmp_path / "no-tools-here"))
+
+    with pytest.raises(SystemExit) as refusal:
+        main(
+            serve_arguments(
+                tmp_path,
+                "--claude-executable",
+                str(settings.executable),
+                "--claude-workspace",
+                str(settings.workspace),
+                "--claude-credential-directory",
+                str(settings.credential_directory),
+            )
+        )
+
+    assert refusal.value.code == 2
+    assert "bwrap" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bind", ["127.0.0.1", "127.0.0.2", "::1"])
+def test_a_claude_deployment_on_loopback_is_accepted(tmp_path: Path, bind: str) -> None:
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+
+    settings = served_settings(
+        tmp_path,
+        claude_subscription=claude_subscription_deployment(deployment, INERT_CLAUDE),
+        host=bind,
+    )
+
+    assert settings.host == bind
 
 
 def test_real_console_launcher_starts_and_closes_one_runtime(tmp_path: Path) -> None:
