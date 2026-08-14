@@ -320,16 +320,89 @@ def test_watchdog_fails_loud_if_wait_response_exceeds_protocol_bound(
         os.close(owner_writer)
 
 
-def test_unclassified_busy_reply_survives_a_complete_contender_frame(
+@pytest.mark.parametrize(
+    ("contender_frame", "closes_input"),
+    (
+        pytest.param(
+            encode_control_frame({"operation": "WAIT"}), True, id="complete-eof"
+        ),
+        pytest.param(b"{", False, id="read-timeout"),
+        pytest.param(
+            b"x" * (MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES + 1),
+            False,
+            id="request-overflow",
+        ),
+    ),
+)
+def test_unclassified_busy_reply_survives_every_bounded_contender_exit(
     running_wire_watchdog: tuple[Watchdog, Path],
+    contender_frame: bytes,
+    closes_input: bool,
 ) -> None:
     watchdog, endpoint = running_wire_watchdog
     with _connect_control(endpoint):
         _wait_until(lambda: "UNCLASSIFIED" in watchdog._slots)
 
-        assert _request_control_bytes(
-            endpoint, encode_control_frame({"operation": "WAIT"})
-        ) == encode_control_frame({"type": "BUSY"})
+        with _connect_control(endpoint) as contender:
+            contender.settimeout(CONTROL_FRAME_TIMEOUT_SECONDS * 2)
+            contender.sendall(contender_frame)
+            if closes_input:
+                contender.shutdown(socket.SHUT_WR)
+
+            assert _receive_control_bytes(contender) == encode_control_frame(
+                {"type": "BUSY"}
+            )
+
+
+@pytest.mark.parametrize("_startup", range(5))
+def test_repeated_wire_watchdog_start_returns_only_after_listener_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _startup: int,
+) -> None:
+    endpoint = tmp_path / "control.sock"
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, tmp_path / "cgroup", owner_pipe, 0.1)
+    original_listen = socket.socket.listen
+    listen_entered = threading.Event()
+    allow_listener = threading.Event()
+    errors: list[Exception] = []
+    watchdog_threads: list[threading.Thread] = []
+
+    def pause_listener(server: socket.socket, *arguments: int) -> None:
+        listen_entered.set()
+        assert allow_listener.wait(timeout=2)
+        original_listen(server, *arguments)
+
+    monkeypatch.setattr(socket.socket, "listen", pause_listener)
+
+    def start() -> None:
+        watchdog_threads.append(_start_wire_watchdog(watchdog, endpoint, errors))
+
+    starter = threading.Thread(target=start)
+    starter.start()
+    try:
+        assert listen_entered.wait(timeout=2)
+        assert endpoint.is_socket()
+        assert starter.is_alive()
+        with pytest.raises(ConnectionRefusedError), _connect_control(endpoint):
+            pass
+
+        allow_listener.set()
+        starter.join(timeout=2)
+        assert not starter.is_alive()
+        assert len(watchdog_threads) == 1
+        with _connect_control(endpoint):
+            pass
+    finally:
+        allow_listener.set()
+        os.close(owner_writer)
+        starter.join(timeout=2)
+        for thread in watchdog_threads:
+            thread.join(timeout=5)
+        endpoint.unlink(missing_ok=True)
+    assert errors == []
+    assert all(not thread.is_alive() for thread in watchdog_threads)
 
 
 def test_supervisor_drains_exactly_bounded_outputs_after_closed_input(
@@ -726,15 +799,20 @@ def _serve_control_responses(
 def _start_wire_watchdog(
     watchdog: Watchdog, endpoint: Path, errors: list[Exception]
 ) -> threading.Thread:
+    ready = threading.Event()
+
     def serve() -> None:
         try:
-            watchdog.serve()
+            watchdog.serve(ready.set)
         except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
             errors.append(error)
+            ready.set()
 
     thread = threading.Thread(target=serve)
     thread.start()
-    _wait_until(endpoint.is_socket)
+    assert ready.wait(timeout=2)
+    assert errors == []
+    assert endpoint.is_socket()
     return thread
 
 

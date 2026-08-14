@@ -10,7 +10,7 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -31,6 +31,10 @@ def encode_control_frame(payload: dict[str, object]) -> bytes:
     return json.dumps(
         payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
     ).encode("ascii")
+
+
+def _announce_ready_on_standard_output() -> None:
+    print("READY", flush=True)
 
 
 def _maximum_completed_frame() -> bytes:
@@ -125,7 +129,7 @@ class Watchdog:
         self._termination_owner: str | None = None
         self._owner_dead = False
 
-    def serve(self) -> None:
+    def serve(self, announce_ready: Callable[[], None]) -> None:
         self._endpoint.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self._endpoint.exists():
             raise RuntimeError("watchdog endpoint already exists")
@@ -139,7 +143,7 @@ class Watchdog:
             server.setblocking(False)
             self._selector.register(server, selectors.EVENT_READ, "server")
             self._selector.register(self._owner_pipe, selectors.EVENT_READ, "owner")
-            print("READY", flush=True)
+            announce_ready()
             while self._state is not _CoordinatorState.FINALIZING:
                 try:
                     self._tick()
@@ -809,7 +813,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         parsed.cgroup,
         parsed.owner_pipe,
         parsed.grace,
-    ).serve()
+    ).serve(_announce_ready_on_standard_output)
 
 
 if __name__ == "__main__":
