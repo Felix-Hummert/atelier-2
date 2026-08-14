@@ -28,6 +28,7 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, register_durable_run_workflow
 from atelier2.contracts.agents import (
+    AgentExecutionCapability,
     AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
@@ -254,15 +255,19 @@ def _open_binding(
                     ).distinct()
                 )
             }
-            required_v2_keys = {
-                AgentExecutorKey(
-                    ProviderId(str(record.provider_id)),
-                    AgentExecutorRevision(str(record.executor_revision)),
+            required_v2_capabilities = {
+                (
+                    AgentExecutorKey(
+                        ProviderId(str(record.provider_id)),
+                        AgentExecutorRevision(str(record.executor_revision)),
+                    ),
+                    AgentExecutionCapability(str(record.requested_capability)),
                 )
                 for record in connection.execute(
                     sa.select(
                         auth_profile_revisions.c.provider_id,
                         agent_configuration_revisions.c.executor_revision,
+                        agent_configuration_revisions.c.requested_capability,
                     )
                     .select_from(runs)
                     .join(
@@ -294,9 +299,17 @@ def _open_binding(
             raise DbosRuntimeBindingConflict(
                 "runtime adapter binding differs from durable effect intents"
             )
+        required_v2_keys = {key for key, _capability in required_v2_capabilities}
         if not required_v2_keys.issubset(agent_registry.keys):
             raise DbosRuntimeBindingConflict(
                 "runtime V2 registry is missing a nonterminal durable executor binding"
+            )
+        if any(
+            capability not in agent_registry.declared_capabilities(key)
+            for key, capability in required_v2_capabilities
+        ):
+            raise DbosRuntimeBindingConflict(
+                "runtime V2 registry lacks a nonterminal durable capability"
             )
         agent_executor = agent_factory.open()
         for registry_entry in agent_registry.entries:
@@ -319,7 +332,11 @@ def _open_binding(
             agent_executor,
             agent_binding,
             {
-                entry.key: (executor, entry.operational_identity)
+                entry.key: (
+                    executor,
+                    entry.operational_identity,
+                    agent_registry.declared_capabilities(entry.key),
+                )
                 for entry, executor in agent_executors_v2
             },
             attempt_store,

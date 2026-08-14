@@ -115,7 +115,9 @@ from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
     AgentConfigurationRevisionHash,
+    AgentExecutionCapability,
     AgentExecutorRevision,
     AgentRole,
     AuthMode,
@@ -364,6 +366,8 @@ def create_app(
                 body.model,
                 AuthProfileRevisionHash(body.auth_profile_revision_hash),
                 AgentExecutorRevision(body.executor_revision),
+                AgentExecutionCapability.HEADLESS,
+                AgentConfigurationRevisionFormatVersion.V2,
             )
         except (TypeError, ValueError) as error:
             raise ApiProblem("invalid-request") from error

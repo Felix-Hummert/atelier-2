@@ -18,6 +18,8 @@ from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
     AgentExecutionRequestHash,
     AgentExecutorRevision,
     AgentRole,
@@ -61,6 +63,8 @@ CONFIGURATION = AgentConfigurationRevision(
     "claude-opus-4-1",
     AUTH.revision_hash,
     AgentExecutorRevision("claude-cli/v1"),
+    AgentExecutionCapability.HEADLESS,
+    AgentConfigurationRevisionFormatVersion.V2,
 )
 V2_DOCUMENT = b"""format_version: 2
 start: build

@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import hashlib
+import multiprocessing
+import os
 import sqlite3
 from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
 from pathlib import Path
+from threading import Barrier, Lock
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy import exc
+from sqlalchemy import event, exc
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256,
+    PRODUCT_TABLE_NAMES,
     MigrationRequired,
     UnsupportedSchemaVersion,
+    _product_schema_fingerprint,
+    _product_schema_fingerprint_sha256,
     effect_intents,
     effect_receipts,
     initialize_schema,
@@ -22,6 +31,289 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
+
+_V7_AGENT_CONFIGURATION_TABLE = """
+CREATE TABLE agent_configuration_revisions (
+    revision_hash TEXT NOT NULL,
+    model TEXT NOT NULL,
+    auth_profile_revision_hash TEXT NOT NULL,
+    executor_revision TEXT NOT NULL,
+    PRIMARY KEY (revision_hash),
+    UNIQUE (revision_hash, auth_profile_revision_hash, model, executor_revision),
+    CHECK (length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(model) BETWEEN 1 AND 1024),
+    CHECK (length(auth_profile_revision_hash) = 64
+           AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(executor_revision) BETWEEN 1 AND 1024),
+    FOREIGN KEY(auth_profile_revision_hash)
+        REFERENCES auth_profile_revisions (revision_hash)
+)
+"""
+
+_V7_AGENT_CONFIGURATION_TRIGGERS = """
+CREATE TRIGGER agent_configuration_revisions_no_update
+BEFORE UPDATE ON agent_configuration_revisions BEGIN
+  SELECT RAISE(ABORT, 'agent configuration revisions are immutable');
+END;
+CREATE TRIGGER agent_configuration_revisions_no_delete
+BEFORE DELETE ON agent_configuration_revisions BEGIN
+  SELECT RAISE(ABORT, 'agent configuration revisions are immutable');
+END;
+"""
+
+
+def _create_frozen_version_seven_database(database_path: Path) -> None:
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path, isolation_level=None) as connection:
+        version = int(
+            connection.execute(
+                "SELECT version FROM atelier_schema_versions"
+            ).fetchone()[0]
+        )
+        if version == 8:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("PRAGMA legacy_alter_table=ON")
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    "ALTER TABLE agent_configuration_revisions "
+                    "RENAME TO agent_configuration_revisions_v8"
+                )
+                connection.execute(_V7_AGENT_CONFIGURATION_TABLE)
+                connection.execute("DROP TABLE agent_configuration_revisions_v8")
+                connection.executescript(_V7_AGENT_CONFIGURATION_TRIGGERS)
+                connection.execute("UPDATE atelier_schema_versions SET version=7")
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
+            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[7]
+        )
+
+
+def _seed_every_version_seven_product_table(database_path: Path) -> None:
+    revision_hash = "c" * 64
+    auth_hash = "a" * 64
+    configuration_hash = "b" * 64
+    binding_hash = "d" * 64
+    v2_output = b"v2-output\x00\xff"
+    v2_output_hash = hashlib.sha256(v2_output).hexdigest()
+    legacy_output = b"legacy-output\x00\xff"
+    legacy_output_hash = hashlib.sha256(legacy_output).hexdigest()
+    effect_request = b"effect-request\x00\xff"
+    effect_request_hash = hashlib.sha256(effect_request).hexdigest()
+    effect_result = b"effect-result\x00\xff"
+    effect_result_hash = hashlib.sha256(effect_result).hexdigest()
+    answer = b"answer\x00\xff"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO workflow_revisions VALUES(?, ?)",
+            (revision_hash, b"populated-v7-workflow"),
+        )
+        connection.execute(
+            "INSERT INTO auth_profile_revisions VALUES(?, ?, ?, ?, ?)",
+            (auth_hash, "max-primary", 7, "anthropic", "subscription"),
+        )
+        connection.execute(
+            "INSERT INTO agent_configuration_revisions VALUES(?, ?, ?, ?)",
+            (configuration_hash, "claude-opus", auth_hash, "claude-cli/v1"),
+        )
+        connection.execute(
+            "INSERT INTO runs VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "run-v7",
+                "bootstrap-v7",
+                revision_hash,
+                2,
+                binding_hash,
+                "build",
+                "STARTED",
+                1,
+                1,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_agent_bindings VALUES(?, ?, ?, ?, ?)",
+            (
+                "run-v7",
+                revision_hash,
+                binding_hash,
+                "builder",
+                configuration_hash,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_receipts VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "1" * 64,
+                "2" * 64,
+                "run-v7",
+                revision_hash,
+                "legacy",
+                "exact-output/v1",
+                "legacy-operation",
+                legacy_output,
+                legacy_output_hash,
+                "3" * 64,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_receipts_v2 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "4" * 64,
+                "5" * 64,
+                "run-v7",
+                revision_hash,
+                "build",
+                "builder",
+                binding_hash,
+                configuration_hash,
+                auth_hash,
+                "max-primary",
+                7,
+                "anthropic",
+                "subscription",
+                "claude-opus",
+                "claude-cli/v1",
+                "operation-v7",
+                v2_output,
+                v2_output_hash,
+                "6" * 64,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "7" * 64,
+                "4" * 64,
+                "5" * 64,
+                "operation-v7",
+                "run-v7",
+                revision_hash,
+                "build",
+                1,
+                "SUCCEEDED",
+                2,
+                "NONE",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "6" * 64,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO effect_intents VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "effect-v7",
+                "run-v7",
+                effect_request,
+                effect_request_hash,
+                revision_hash,
+                "loopback/v1",
+                "destination-v7",
+                "operation-v7",
+                "CONFIRMED",
+                1,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO reconcile_commands VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                "command-v7",
+                "effect-v7",
+                1,
+                "AUTHORITATIVE_NOT_FOUND",
+                "operator",
+                "preserved evidence",
+                None,
+                None,
+                None,
+                "APPLIED",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO effect_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "effect-v7",
+                "run-v7",
+                effect_request,
+                effect_request_hash,
+                revision_hash,
+                "loopback/v1",
+                "destination-v7",
+                "operation-v7",
+                "external-effect-v7",
+                effect_result,
+                effect_result_hash,
+                "ADAPTER_EXECUTION",
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_events("
+            "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+            "event_kind,payload,payload_hash,receipt_logical_key,"
+            "receipt_result_hash,event_hash,agent_attempt_id,attempt_ordinal,"
+            "cancellation_command_id,replacement,cancellation_disposition,"
+            "replacement_attempt_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "run-v7",
+                revision_hash,
+                1,
+                "build",
+                "4" * 64,
+                "AGENT_COMPLETED",
+                v2_output,
+                v2_output_hash,
+                None,
+                None,
+                "8" * 64,
+                "7" * 64,
+                1,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO wait_answers VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                "run-v7",
+                revision_hash,
+                "wait",
+                "9" * 64,
+                answer,
+                hashlib.sha256(answer).hexdigest(),
+                "answer-workflow-v7",
+                "PENDING",
+                0,
+            ),
+        )
+
+
+def _product_rows_snapshot(
+    database_path: Path,
+) -> dict[str, tuple[tuple[object, ...], ...]]:
+    with sqlite3.connect(database_path) as connection:
+        return {
+            table_name: tuple(connection.execute(f'SELECT * FROM "{table_name}"'))
+            for table_name in sorted(PRODUCT_TABLE_NAMES)
+        }
 
 
 def _create_populated_version_one_database(database_path: Path) -> None:
@@ -148,16 +440,21 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
-def test_empty_database_creates_exact_v7_and_reopens(tmp_path: Path) -> None:
+def test_empty_database_creates_exact_v8_and_reopens(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
 
     initialize_schema(engine)
 
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
+            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[8]
+        )
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
-            == 7
+            == 8
         )
         assert set(sa.inspect(connection).get_table_names()) >= {
             effect_intents.name,
@@ -186,6 +483,231 @@ def test_empty_database_creates_exact_v7_and_reopens(tmp_path: Path) -> None:
     initialize_schema(engine)
 
     assert _logical_dump(database_path) == first_dump
+    engine.dispose()
+
+
+def test_populated_exact_v7_migrates_once_without_changing_existing_identity(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_frozen_version_seven_database(database_path)
+    _seed_every_version_seven_product_table(database_path)
+    before = _product_rows_snapshot(database_path)
+    assert all(before[table_name] for table_name in PRODUCT_TABLE_NAMES)
+    engine = create_canonical_engine(database_path)
+
+    initialize_schema(engine)
+
+    after = _product_rows_snapshot(database_path)
+    assert after["atelier_schema_versions"] == ((8,),)
+    assert (
+        tuple(row[:4] for row in after["agent_configuration_revisions"])
+        == (before["agent_configuration_revisions"])
+    )
+    assert all(
+        row[4:] == (1, "headless") for row in after["agent_configuration_revisions"]
+    )
+    assert {
+        table_name: rows
+        for table_name, rows in after.items()
+        if table_name
+        not in {"atelier_schema_versions", "agent_configuration_revisions"}
+    } == {
+        table_name: rows
+        for table_name, rows in before.items()
+        if table_name
+        not in {"atelier_schema_versions", "agent_configuration_revisions"}
+    }
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
+            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[8]
+        )
+    first_v8_dump = _logical_dump(database_path)
+
+    initialize_schema(engine)
+
+    assert _logical_dump(database_path) == first_v8_dump
+    engine.dispose()
+
+
+def _crash_v7_migration_process(database_path: str, boundary: str) -> None:
+    engine = create_canonical_engine(Path(database_path))
+
+    def exit_after_boundary(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: object,
+    ) -> None:
+        normalized = " ".join(statement.split())
+        reached = (
+            boundary == "complete-table-replacement"
+            and normalized.startswith(
+                "CREATE TRIGGER agent_configuration_revisions_no_delete"
+            )
+        ) or (
+            boundary == "schema-version-cas"
+            and normalized.startswith("UPDATE atelier_schema_versions")
+        )
+        if reached:
+            os._exit(86)
+
+    event.listen(engine, "after_cursor_execute", exit_after_boundary)
+    initialize_schema(engine)
+    os._exit(87)
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ("complete-table-replacement", "schema-version-cas"),
+)
+def test_process_death_during_v7_migration_restores_exact_v7_then_upgrades_once(
+    tmp_path: Path, boundary: str
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_frozen_version_seven_database(database_path)
+    before = _logical_dump(database_path)
+    process = multiprocessing.get_context("spawn").Process(
+        target=_crash_v7_migration_process,
+        args=(str(database_path), boundary),
+    )
+    process.start()
+    process.join(timeout=10)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=5)
+        pytest.fail(f"migration child did not reach {boundary}")
+    exit_code = process.exitcode
+    process.close()
+
+    assert exit_code == 86
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
+            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[7]
+        )
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
+            == 8
+        )
+    engine.dispose()
+
+
+def test_concurrent_v7_openers_run_one_migration_and_converge_on_exact_v8(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_frozen_version_seven_database(database_path)
+    participants = 4
+    barrier = Barrier(participants)
+    count_lock = Lock()
+    migration_count = 0
+
+    def migrate(path: Path, rendezvous: Barrier) -> int:
+        nonlocal migration_count
+        engine = create_canonical_engine(path)
+
+        def count_migration(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: object,
+        ) -> None:
+            nonlocal migration_count
+            if statement.strip().startswith(
+                "ALTER TABLE agent_configuration_revisions"
+            ):
+                with count_lock:
+                    migration_count += 1
+
+        event.listen(engine, "before_cursor_execute", count_migration)
+        try:
+            rendezvous.wait(timeout=5)
+            initialize_schema(engine)
+            with engine.connect() as connection:
+                return int(
+                    connection.scalar(
+                        sa.text("SELECT version FROM atelier_schema_versions")
+                    )
+                )
+        finally:
+            engine.dispose()
+
+    with ThreadPoolExecutor(max_workers=participants) as pool:
+        versions = list(
+            pool.map(
+                migrate,
+                repeat(database_path, participants),
+                repeat(barrier, participants),
+            )
+        )
+
+    assert versions == [8] * participants
+    assert migration_count == 1
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    (
+        "ALTER TABLE agent_configuration_revisions ADD COLUMN unexpected TEXT",
+        "DROP TRIGGER agent_configuration_revisions_no_update",
+    ),
+    ids=("partial-table", "missing-trigger"),
+)
+def test_malformed_v7_refuses_without_mutation(
+    tmp_path: Path, malformation: str
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_frozen_version_seven_database(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(malformation)
+    before = _logical_dump(database_path)
+    engine = create_canonical_engine(database_path)
+
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v7"):
+        initialize_schema(engine)
+
+    engine.dispose()
+    assert _logical_dump(database_path) == before
+
+
+@pytest.mark.parametrize(
+    ("revision_format_version", "requested_capability"),
+    ((3, "headless"), (2, "unknown"), (1, "interactive")),
+)
+def test_v8_sql_rejects_unknown_or_incompatible_capability_contract(
+    tmp_path: Path,
+    revision_format_version: int,
+    requested_capability: str,
+) -> None:
+    engine = create_canonical_engine(tmp_path / "atelier.sqlite")
+    initialize_schema(engine)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO auth_profile_revisions VALUES(?, ?, ?, ?, ?)",
+            ("a" * 64, "max", 1, "anthropic", "subscription"),
+        )
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO agent_configuration_revisions VALUES(?, ?, ?, ?, ?, ?)",
+            (
+                "b" * 64,
+                "opus",
+                "a" * 64,
+                "claude-cli/v1",
+                revision_format_version,
+                requested_capability,
+            ),
+        )
     engine.dispose()
 
 
@@ -218,7 +740,7 @@ def test_v6_requires_nonmutating_recreate(tmp_path: Path) -> None:
     assert hashlib.sha256(database_path.read_bytes()).hexdigest() == before_hash
 
 
-def test_v7_preserves_both_legacy_event_guards_and_scopes_attempt_events(
+def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
     ledger_engine: Engine,
 ) -> None:
     with ledger_engine.begin() as connection:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
@@ -42,7 +42,9 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
     AgentConfigurationRevisionHash,
+    AgentExecutionCapability,
     AgentExecutionRequest,
     AgentExecutionRequestV2,
     AgentExecutorBinding,
@@ -131,6 +133,8 @@ class EncodedAgentBindingV2(TypedDict):
     auth_mode: str
     model: str
     executor_revision: str
+    revision_format_version: NotRequired[int]
+    requested_capability: NotRequired[str]
 
 
 class EncodedActionBinding(TypedDict):
@@ -238,6 +242,8 @@ def _node_binding(
                 "auth_mode": auth.auth_mode.value,
                 "model": configuration.model,
                 "executor_revision": configuration.executor_revision.value,
+                "revision_format_version": int(configuration.revision_format_version),
+                "requested_capability": configuration.requested_capability.value,
             }
         if isinstance(node, ActionNode):
             return {"type": "action"}
@@ -263,6 +269,7 @@ def _agent_request_v2(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     operational_identity: AgentExecutorOperationalIdentity,
+    declared_capabilities: frozenset[AgentExecutionCapability],
 ) -> AgentExecutionRequestV2:
     auth = AuthProfileRevision(
         binding["profile_id"],
@@ -272,16 +279,50 @@ def _agent_request_v2(
     )
     if auth.revision_hash != AuthProfileRevisionHash(binding["auth_hash"]):
         raise RunBindingConflict("V2 auth fields differ from their durable hash")
-    configuration = AgentConfigurationRevision(
-        binding["model"],
-        auth.revision_hash,
-        AgentExecutorRevision(binding["executor_revision"]),
-    )
+    has_encoded_version = "revision_format_version" in binding
+    has_encoded_capability = "requested_capability" in binding
+    if not has_encoded_version and not has_encoded_capability:
+        revision_format_version = AgentConfigurationRevisionFormatVersion.V1
+        requested_capability = AgentExecutionCapability.HEADLESS
+    elif not has_encoded_version or not has_encoded_capability:
+        raise RunBindingConflict("V2 configuration contract is only partly encoded")
+    else:
+        encoded_version = binding["revision_format_version"]
+        encoded_capability = binding["requested_capability"]
+        if type(encoded_version) is not int or type(encoded_capability) is not str:
+            raise RunBindingConflict(
+                "V2 configuration contract carries a value of the wrong type"
+            )
+        try:
+            revision_format_version = AgentConfigurationRevisionFormatVersion(
+                encoded_version
+            )
+            requested_capability = AgentExecutionCapability(encoded_capability)
+        except ValueError as error:
+            raise RunBindingConflict(
+                "V2 configuration contract carries an unknown value"
+            ) from error
+    try:
+        configuration = AgentConfigurationRevision(
+            binding["model"],
+            auth.revision_hash,
+            AgentExecutorRevision(binding["executor_revision"]),
+            requested_capability,
+            revision_format_version,
+        )
+    except (TypeError, ValueError) as error:
+        raise RunBindingConflict(
+            "V2 configuration contract carries an invalid combination"
+        ) from error
     if configuration.revision_hash != AgentConfigurationRevisionHash(
         binding["configuration_hash"]
     ):
         raise RunBindingConflict(
             "V2 configuration fields differ from their durable hash"
+        )
+    if configuration.requested_capability not in declared_capabilities:
+        raise RunBindingConflict(
+            "runtime executor lacks the durably requested capability"
         )
     resolved = ResolvedAgentBinding(AgentRole(binding["role"]), configuration, auth)
     return AgentExecutionRequestV2(
@@ -300,7 +341,12 @@ def register_durable_run_workflow(
     agent_executor: AgentExecutor,
     agent_binding: AgentExecutorBinding,
     agent_executors_v2: Mapping[
-        AgentExecutorKey, tuple[AgentExecutorV2, AgentExecutorOperationalIdentity]
+        AgentExecutorKey,
+        tuple[
+            AgentExecutorV2,
+            AgentExecutorOperationalIdentity,
+            frozenset[AgentExecutionCapability],
+        ],
     ],
     agent_attempt_store: AgentAttemptStore,
     agent_process_supervisor: AgentProcessSupervisor,
@@ -371,7 +417,7 @@ def register_durable_run_workflow(
         )
         if binding["type"] != "agent-v2":
             raise RunTransitionConflict("replacement attempt is not a V2 agent node")
-        executor, operational_identity = agent_executors_v2[
+        executor, operational_identity, declared_capabilities = agent_executors_v2[
             AgentExecutorKey(
                 ProviderId(binding["provider_id"]),
                 AgentExecutorRevision(binding["executor_revision"]),
@@ -383,6 +429,7 @@ def register_durable_run_workflow(
             replacement.workflow_revision_hash,
             replacement.node_id,
             operational_identity,
+            declared_capabilities,
         )
         if (
             request.node_execution_id != replacement.node_execution_id
@@ -436,41 +483,19 @@ def register_durable_run_workflow(
             start_node(typed_run_id, typed_revision, str(successor))
             return RunState.STARTED.value
         if binding["type"] == "agent-v2":
-            auth = AuthProfileRevision(
-                binding["profile_id"],
-                binding["revision_number"],
-                ProviderId(binding["provider_id"]),
-                AuthMode(binding["auth_mode"]),
-            )
-            if auth.revision_hash != AuthProfileRevisionHash(binding["auth_hash"]):
-                raise RunBindingConflict(
-                    "V2 auth fields differ from their durable hash"
+            executor, operational_identity, declared_capabilities = agent_executors_v2[
+                AgentExecutorKey(
+                    ProviderId(binding["provider_id"]),
+                    AgentExecutorRevision(binding["executor_revision"]),
                 )
-            configuration = AgentConfigurationRevision(
-                binding["model"],
-                auth.revision_hash,
-                AgentExecutorRevision(binding["executor_revision"]),
-            )
-            if configuration.revision_hash != AgentConfigurationRevisionHash(
-                binding["configuration_hash"]
-            ):
-                raise RunBindingConflict(
-                    "V2 configuration fields differ from their durable hash"
-                )
-            resolved = ResolvedAgentBinding(
-                AgentRole(binding["role"]), configuration, auth
-            )
-            executor, operational_identity = agent_executors_v2[
-                AgentExecutorKey(auth.provider_id, configuration.executor_revision)
             ]
-            execution_request_v2 = AgentExecutionRequestV2(
-                NodeExecutionId.for_node(typed_run_id, typed_revision, node_id),
+            execution_request_v2 = _agent_request_v2(
+                binding,
                 typed_run_id,
                 typed_revision,
                 node_id,
-                resolved,
                 operational_identity,
-                binding["job"].encode("utf-8"),
+                declared_capabilities,
             )
             attempt_execution = AgentAttemptExecution(
                 execution_request_v2,

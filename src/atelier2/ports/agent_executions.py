@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -12,6 +12,7 @@ from atelier2.contracts.agent_attempts import (
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
+    AgentExecutionCapability,
     AgentExecutionRequest,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -21,6 +22,9 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
+
+MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
+MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = 49_152
 
 
 class AgentExecutor(Protocol):
@@ -46,6 +50,7 @@ class AgentExecutorKey:
 class AgentExecutorManifestEntry:
     key: AgentExecutorKey
     operational_identity: AgentExecutorOperationalIdentity
+    declared_capabilities: frozenset[AgentExecutionCapability]
 
 
 @dataclass(frozen=True)
@@ -55,12 +60,21 @@ class AgentExecutionFailure:
 
 @dataclass(frozen=True)
 class AgentProcessInvocation:
-    """One provider process invocation, kept exclusively in live memory."""
+    """One provider process invocation, kept exclusively in live memory.
+
+    The executor declares `standard_output_frame_bytes`: the raw stdout frame
+    this exact invocation may produce before supervision refuses it. The port
+    owns the field and its validity; the value belongs to the provider whose
+    wire format produces the frame, so no provider's number lives here. It is
+    a different bound from the durable result bound a decoded execution result
+    must satisfy.
+    """
 
     arguments: tuple[str, ...]
     working_directory: Path
     environment: tuple[tuple[str, str], ...] = ()
     standard_input: bytes = b""
+    standard_output_frame_bytes: int = field(kw_only=True)
 
     def __post_init__(self) -> None:
         if not self.arguments or any(not value for value in self.arguments):
@@ -71,6 +85,18 @@ class AgentProcessInvocation:
         if len(set(names)) != len(names) or any(not name for name in names):
             raise ValueError(
                 "agent process environment names must be unique and nonempty"
+            )
+        if len(self.standard_input) > MAXIMUM_AGENT_PROCESS_INPUT_BYTES:
+            raise ValueError(
+                "agent process standard input exceeds "
+                f"{MAXIMUM_AGENT_PROCESS_INPUT_BYTES} bytes"
+            )
+        if (
+            type(self.standard_output_frame_bytes) is not int
+            or self.standard_output_frame_bytes < 1
+        ):
+            raise ValueError(
+                "agent process standard output frame must be a positive byte count"
             )
 
 
@@ -138,6 +164,9 @@ class AgentExecutorFactoryV2(Protocol):
     @property
     def operational_identity(self) -> AgentExecutorOperationalIdentity: ...
 
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]: ...
+
     def open(self) -> AgentExecutorV2: ...
 
 
@@ -165,6 +194,7 @@ class AgentExecutorRegistry:
                 AgentExecutorManifestEntry(
                     factory.key,
                     factory.operational_identity,
+                    frozenset(factory.declared_capabilities),
                 ),
                 factory,
             )
@@ -172,6 +202,20 @@ class AgentExecutorRegistry:
                 object_identities, factories, strict=True
             )
         )
+        if any(
+            not all(
+                isinstance(capability, AgentExecutionCapability)
+                for capability in entry.manifest_entry.declared_capabilities
+            )
+            for entry in captured
+        ):
+            raise TypeError("agent executor capabilities must use their typed contract")
+        if any(
+            AgentExecutionCapability.HEADLESS
+            not in entry.manifest_entry.declared_capabilities
+            for entry in captured
+        ):
+            raise ValueError("every agent executor must declare headless capability")
         ordered = tuple(
             sorted(
                 captured,
@@ -204,3 +248,8 @@ class AgentExecutorRegistry:
 
     def contains(self, key: AgentExecutorKey) -> bool:
         return key in self._by_key
+
+    def declared_capabilities(
+        self, key: AgentExecutorKey
+    ) -> frozenset[AgentExecutionCapability]:
+        return self._by_key[key].manifest_entry.declared_capabilities

@@ -4,101 +4,348 @@ import argparse
 import base64
 import json
 import os
+import selectors
 import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from atelier2.ports.agent_executions import (
+    MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
+    MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+)
+
+MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES = 262_144
+MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES = 4_096
+CONTROL_FRAME_TIMEOUT_SECONDS = 1.0
+
+
+def encode_control_frame(payload: dict[str, object]) -> bytes:
+    return json.dumps(
+        payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("ascii")
+
+
+def _announce_ready_on_standard_output() -> None:
+    print("READY", flush=True)
+
+
+MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES = max(
+    len(encode_control_frame({"type": arm}))
+    for arm in (
+        "OUTPUT_LIMIT_EXCEEDED",
+        "SUPERVISION_FAILED",
+        "STOPPED",
+        "RECOVERY_HANDOFF",
+    )
+)
+
+
+def _base64_characters(byte_count: int) -> int:
+    return 4 * ((byte_count + 2) // 3)
+
+
+def maximum_agent_wait_response_bytes(standard_output_frame_bytes: int) -> int:
+    """The exact wait-response bound for one invocation's declared frame."""
+
+    empty_completion = encode_control_frame(
+        {
+            "return_code": -(2**31),
+            "standard_error": "",
+            "standard_output": "",
+            "type": "COMPLETED",
+        }
+    )
+    return max(
+        MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES,
+        len(empty_completion)
+        + _base64_characters(standard_output_frame_bytes)
+        + _base64_characters(MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES),
+    )
+
+
+class _CoordinatorState(StrEnum):
+    READY = "READY"
+    LAUNCHING = "LAUNCHING"
+    RUNNING = "RUNNING"
+    CANCEL_TERMINATING = "CANCEL_TERMINATING"
+    OVERFLOW_TERMINATING = "OVERFLOW_TERMINATING"
+    SUPERVISION_TERMINATING = "SUPERVISION_TERMINATING"
+    OWNER_DEATH_TERMINATING = "OWNER_DEATH_TERMINATING"
+    RECOVERY_HANDOFF = "RECOVERY_HANDOFF"
+    TERMINATED = "TERMINATED"
+    FINALIZING = "FINALIZING"
+
+
+@dataclass
+class _Connection:
+    socket: socket.socket
+    accepted_at: float
+    input_bytes: bytearray = field(default_factory=bytearray)
+    output_bytes: bytes | None = None
+    output_offset: int = 0
+    response_deadline: float | None = None
+    slot: str = "UNCLASSIFIED"
+    operation: str | None = None
+    refuse_as_busy: bool = False
+
 
 class Watchdog:
+    """One selector-driven authority for a single provider generation."""
+
     def __init__(
-        self, endpoint: Path, cgroup: Path, owner_pipe: int, grace: float
+        self,
+        endpoint: Path,
+        cgroup: Path,
+        owner_pipe: int,
+        grace: float,
     ) -> None:
         self._endpoint = endpoint
         self._cgroup = cgroup
         self._owner_pipe = owner_pipe
         self._grace = grace
-        self._lock = threading.Lock()
-        self._cancellation_complete = threading.Event()
-        self._completion_ready = threading.Event()
+        self._selector = selectors.DefaultSelector()
+        self._server: socket.socket | None = None
+        self._connections: dict[int, _Connection] = {}
+        self._slots: dict[str, int] = {}
+        self._state = _CoordinatorState.READY
         self._process: subprocess.Popen[bytes] | None = None
-        self._completion: dict[str, object] | None = None
-        self._disposition: str | None = None
-        self._cancellation_started = False
+        self._provider_streams: dict[int, str] = {}
+        self._standard_input = b""
+        self._standard_input_offset = 0
+        self._standard_output = bytearray()
+        self._standard_error = bytearray()
+        self._standard_output_frame_bytes: int | None = None
+        self._launch_replay: tuple[bytes, bytes] | None = None
+        self._wait_response: bytes | None = None
+        self._cancel_response: bytes | None = None
+        self._finalize_response: bytes | None = None
+        self._termination_deadline: float | None = None
+        self._termination_escalated = False
+        self._termination_disposition: str | None = None
+        self._termination_owner: str | None = None
+        self._owner_dead = False
 
-    def serve(self) -> None:
+    def serve(self, announce_ready: Callable[[], None]) -> None:
         self._endpoint.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._endpoint.unlink(missing_ok=True)
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        if self._endpoint.exists():
+            raise RuntimeError("watchdog endpoint already exists")
+        os.set_blocking(self._owner_pipe, False)
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._server = server
+        try:
             server.bind(str(self._endpoint))
             os.chmod(self._endpoint, 0o600)
             server.listen()
-            threading.Thread(target=self._watch_owner, daemon=True).start()
-            print("READY", flush=True)
-            while True:
-                connection, _address = server.accept()
-                threading.Thread(
-                    target=self._respond, args=(connection,), daemon=True
-                ).start()
-
-    def _watch_owner(self) -> None:
-        try:
-            while os.read(self._owner_pipe, 1):
-                pass
+            server.setblocking(False)
+            self._selector.register(server, selectors.EVENT_READ, "server")
+            self._selector.register(self._owner_pipe, selectors.EVENT_READ, "owner")
+            announce_ready()
+            while self._state is not _CoordinatorState.FINALIZING:
+                try:
+                    self._tick()
+                except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
+                    if self._termination_owner is None:
+                        self._begin_termination("SUPERVISION", time.monotonic())
+                    else:
+                        self._publish_recovery_handoff(time.monotonic())
         finally:
-            os.close(self._owner_pipe)
-        try:
-            self._cancel()
-        finally:
-            # The dead owner's durable cancellation may not yet be attested.
-            # Leave both witness paths for the recovering supervisor; release()
-            # removes them only after the terminal store commit.
-            os._exit(0)
-
-    def _respond(self, connection: socket.socket) -> None:
-        with connection:
+            self._close_provider_descriptors()
+            for connection in tuple(self._connections.values()):
+                self._close_connection(connection)
+            if self._server is not None:
+                try:
+                    self._selector.unregister(self._server)
+                except (KeyError, ValueError):
+                    pass
+                self._server.close()
             try:
-                request = json.loads(_read_all(connection).decode("utf-8"))
-                operation = request["operation"]
-                if operation == "LAUNCH":
-                    response = self._launch(request)
-                elif operation == "WAIT":
-                    self._completion_ready.wait()
-                    response = self._completion
-                elif operation == "CANCEL":
-                    response = {"disposition": self._cancel()}
-                elif operation == "CLOSE":
-                    response = {"disposition": self._close_without_launch()}
-                else:
-                    raise ValueError("unknown watchdog operation")
-            except (
-                KeyError,
-                OSError,
-                RuntimeError,
-                subprocess.SubprocessError,
-                TypeError,
-                ValueError,
-            ) as error:
-                response = {"error": type(error).__name__}
-            connection.sendall(json.dumps(response, separators=(",", ":")).encode())
+                self._selector.unregister(self._owner_pipe)
+            except (KeyError, ValueError):
+                pass
+            os.close(self._owner_pipe)
+            self._selector.close()
 
-    def _launch(self, request: dict[str, Any]) -> dict[str, object]:
-        with self._lock:
-            if (
-                self._process is not None
-                or self._disposition is not None
-                or self._cancellation_started
-            ):
-                raise RuntimeError("watchdog generation is already closed or launched")
-            arguments = tuple(str(value) for value in request["arguments"])
-            environment = {
-                str(name): str(value) for name, value in request["environment"]
-            }
+    def _tick(self) -> None:
+        now = time.monotonic()
+        self._expire_connections(now)
+        self._advance_process(now)
+        timeout = self._next_timeout(now)
+        try:
+            events = self._selector.select(timeout)
+        except OSError:
+            self._begin_termination("SUPERVISION", now)
+            return
+        for key, mask in events:
+            if key.data == "server":
+                self._accept_connection(now)
+            elif key.data == "owner":
+                self._read_owner(now)
+            elif isinstance(key.data, _Connection):
+                self._service_connection(key.data, mask, now)
+            else:
+                self._service_provider(int(key.fd), str(key.data), mask, now)
+
+    def _next_timeout(self, now: float) -> float:
+        deadlines = [
+            connection.response_deadline
+            if connection.output_bytes is not None
+            else (
+                connection.accepted_at + CONTROL_FRAME_TIMEOUT_SECONDS
+                if connection.operation is None
+                else None
+            )
+            for connection in self._connections.values()
+        ]
+        deadlines.append(self._termination_deadline)
+        finite = [deadline for deadline in deadlines if deadline is not None]
+        if not finite:
+            return 0.05
+        return max(0.0, min(0.05, min(finite) - now))
+
+    def _accept_connection(self, now: float) -> None:
+        if self._server is None:
+            return
+        try:
+            connection, _address = self._server.accept()
+        except BlockingIOError:
+            return
+        connection.setblocking(False)
+        state = _Connection(connection, now)
+        descriptor = connection.fileno()
+        if "UNCLASSIFIED" in self._slots:
+            state.refuse_as_busy = True
+            self._connections[descriptor] = state
+            self._selector.register(connection, selectors.EVENT_READ, state)
+            return
+        self._slots["UNCLASSIFIED"] = descriptor
+        self._connections[descriptor] = state
+        self._selector.register(connection, selectors.EVENT_READ, state)
+
+    def _read_owner(self, now: float) -> None:
+        try:
+            data = os.read(self._owner_pipe, 1)
+        except BlockingIOError:
+            return
+        except OSError:
+            data = b""
+        if data:
+            return
+        try:
+            self._selector.unregister(self._owner_pipe)
+        except (KeyError, ValueError):
+            pass
+        self._owner_dead = True
+        self._begin_termination("OWNER_DEATH", now)
+
+    def _service_connection(self, state: _Connection, mask: int, now: float) -> None:
+        if mask & selectors.EVENT_READ:
+            self._read_connection(state, now)
+        if state.socket.fileno() >= 0 and mask & selectors.EVENT_WRITE:
+            self._write_connection(state, now)
+
+    def _read_connection(self, state: _Connection, now: float) -> None:
+        try:
+            remaining = MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES + 1 - len(state.input_bytes)
+            chunk = state.socket.recv(max(1, min(65_536, remaining)))
+        except BlockingIOError:
+            return
+        except OSError:
+            self._close_connection(state)
+            return
+        if chunk:
+            state.input_bytes.extend(chunk)
+            if len(state.input_bytes) > MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES:
+                response = "BUSY" if state.refuse_as_busy else "FRAME_TOO_LARGE"
+                self._queue_response(state, {"type": response}, now)
+            return
+        if state.refuse_as_busy:
+            self._queue_response(state, {"type": "BUSY"}, now)
+            return
+        self._classify_request(state, bytes(state.input_bytes), now)
+
+    def _classify_request(self, state: _Connection, frame: bytes, now: float) -> None:
+        try:
+            request = json.loads(frame.decode("ascii"))
+            if not isinstance(request, dict) or encode_control_frame(request) != frame:
+                raise ValueError
+            operation = request.get("operation")
+            if not isinstance(operation, str):
+                raise TypeError
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            self._queue_response(state, {"type": "MALFORMED"}, now)
+            return
+        slot = {
+            "WAIT": "WAIT",
+            "CANCEL": "TERMINAL_CONTROL",
+            "FINALIZE": "TERMINAL_CONTROL",
+            "LAUNCH": "LAUNCH_RETRY",
+        }.get(operation)
+        if slot is None:
+            self._queue_response(state, {"type": "MALFORMED"}, now)
+            return
+        descriptor = state.socket.fileno()
+        self._release_slot(state)
+        if slot in self._slots:
+            self._queue_response(state, {"type": "BUSY"}, now)
+            return
+        self._slots[slot] = descriptor
+        state.slot = slot
+        state.operation = operation
+        if operation == "LAUNCH":
+            self._handle_launch(state, request, frame, now)
+        elif operation == "WAIT":
+            self._handle_wait(state, now)
+        elif operation == "CANCEL":
+            self._handle_cancel(state, now)
+        else:
+            self._handle_finalize(state, now)
+
+    def _handle_launch(
+        self,
+        connection: _Connection,
+        request: dict[str, Any],
+        frame: bytes,
+        now: float,
+    ) -> None:
+        launch_replay = self._launch_replay
+        if launch_replay is not None:
+            launch_frame, launch_response = launch_replay
+            response = (
+                launch_response
+                if frame == launch_frame
+                else encode_control_frame({"type": "LAUNCH_MISMATCH"})
+            )
+            self._queue_encoded_response(connection, response, now)
+            return
+        if self._state is not _CoordinatorState.READY:
+            launch_response = encode_control_frame(
+                {
+                    "outcome": "STOPPED",
+                    "type": "TERMINAL_BEFORE_START",
+                }
+            )
+            self._launch_replay = (frame, launch_response)
+            self._publish_wait({"type": "STOPPED"}, now)
+            self._termination_disposition = "NEVER_LAUNCHED"
+            self._queue_encoded_response(connection, launch_response, now)
+            return
+        self._state = _CoordinatorState.LAUNCHING
+        try:
+            (
+                arguments,
+                working_directory,
+                environment,
+                standard_input,
+                standard_output_frame_bytes,
+            ) = _decode_launch_request(request)
+            self._standard_output_frame_bytes = standard_output_frame_bytes
             guarded = (
                 sys.executable,
                 "-m",
@@ -112,7 +359,7 @@ class Watchdog:
             )
             process = subprocess.Popen(
                 guarded,
-                cwd=str(request["working_directory"]),
+                cwd=working_directory,
                 env={
                     **os.environ,
                     "ATELIER2_AGENT_ENVIRONMENT_B64": base64.b64encode(
@@ -127,116 +374,453 @@ class Watchdog:
                 start_new_session=True,
             )
             self._process = process
-            standard_input = base64.b64decode(request["standard_input"], validate=True)
-            threading.Thread(
-                target=self._collect, args=(process, standard_input), daemon=True
-            ).start()
-            return {"launched": True}
-
-    def _collect(self, process: subprocess.Popen[bytes], standard_input: bytes) -> None:
-        output, error = process.communicate(standard_input)
-        with self._lock:
-            self._completion = {
-                "return_code": int(process.returncode),
-                "standard_output": base64.b64encode(output).decode("ascii"),
-                "standard_error": base64.b64encode(error).decode("ascii"),
-            }
-            self._completion_ready.set()
-
-    def _close_without_launch(self) -> str:
-        with self._lock:
-            if self._process is not None:
-                raise RuntimeError(
-                    "launched watchdog cannot be closed as never launched"
-                )
-            self._disposition = self._disposition or "NEVER_LAUNCHED"
-            return self._disposition
-
-    def _cancel(self) -> str:
-        with self._lock:
-            if self._disposition is not None:
-                return self._disposition
-            if self._cancellation_started:
-                cancellation_owner = False
+            self._standard_input = standard_input
+            launch_response = encode_control_frame({"type": "STARTED"})
+            try:
+                self._configure_provider_descriptors(process)
+            except (OSError, RuntimeError, ValueError):
+                self._close_provider_descriptors()
+                self._begin_termination("SUPERVISION", now)
             else:
-                self._cancellation_started = True
-                cancellation_owner = True
-            process = self._process
-        if not cancellation_owner:
-            if not self._cancellation_complete.wait(
-                timeout=max(1.0, (self._grace * 2) + 1.0)
-            ):
-                raise RuntimeError("watchdog cancellation did not finish in bounds")
-            with self._lock:
-                if self._disposition is None:
-                    raise RuntimeError("watchdog cancellation finished without proof")
-                return self._disposition
+                self._state = _CoordinatorState.RUNNING
+        except (KeyError, OSError, subprocess.SubprocessError, TypeError, ValueError):
+            self._close_provider_descriptors()
+            launch_response = encode_control_frame(
+                {
+                    "outcome": "SUPERVISION_FAILED",
+                    "type": "TERMINAL_BEFORE_START",
+                }
+            )
+            self._termination_disposition = "REAPED_AFTER_PROCESS_BOUNDARY_FAILURE"
+            self._publish_wait({"type": "SUPERVISION_FAILED"}, now)
+        self._launch_replay = (frame, launch_response)
+        self._queue_encoded_response(connection, launch_response, now)
+
+    def _handle_wait(self, connection: _Connection, now: float) -> None:
+        if self._wait_response is not None:
+            self._queue_encoded_response(connection, self._wait_response, now)
+
+    def _handle_cancel(self, connection: _Connection, now: float) -> None:
+        if self._cancel_response is not None:
+            self._queue_encoded_response(connection, self._cancel_response, now)
+            return
+        if self._wait_response is not None:
+            disposition = self._termination_disposition or "EXITED_BEFORE_SIGNAL"
+            self._cancel_response = encode_control_frame(
+                {"disposition": disposition, "type": "CANCELLED"}
+            )
+            self._queue_encoded_response(connection, self._cancel_response, now)
+            return
+        self._begin_termination("CANCEL", now)
+
+    def _handle_finalize(self, connection: _Connection, now: float) -> None:
+        if self._finalize_response is not None:
+            self._queue_encoded_response(connection, self._finalize_response, now)
+            return
+        if self._wait_response is None:
+            self._queue_response(connection, {"type": "FINALIZE_REFUSED"}, now)
+            return
+        self._finalize_response = encode_control_frame({"type": "FINALIZE_ACCEPTED"})
+        self._queue_encoded_response(connection, self._finalize_response, now)
+
+    def _configure_provider_descriptors(self, process: subprocess.Popen[bytes]) -> None:
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            raise RuntimeError("provider pipes are absent")
+        for stream, role, events in (
+            (process.stdin, "stdin", selectors.EVENT_WRITE),
+            (process.stdout, "stdout", selectors.EVENT_READ),
+            (process.stderr, "stderr", selectors.EVENT_READ),
+        ):
+            descriptor = stream.fileno()
+            os.set_blocking(descriptor, False)
+            self._provider_streams[descriptor] = role
+            self._selector.register(descriptor, events, role)
+        if not self._standard_input:
+            self._close_provider_stream("stdin")
+
+    def _service_provider(
+        self, descriptor: int, role: str, _mask: int, now: float
+    ) -> None:
         try:
-            if process is None:
-                disposition = "NEVER_LAUNCHED"
-            elif (
-                process.poll() is not None
-                and self._completion_ready.is_set()
+            if role == "stdin":
+                self._write_standard_input(descriptor)
+            else:
+                self._read_provider_output(descriptor, role, now)
+        except BrokenPipeError:
+            if role == "stdin":
+                self._close_provider_stream(role)
+            else:
+                self._begin_termination("SUPERVISION", now)
+        except OSError:
+            self._begin_termination("SUPERVISION", now)
+
+    def _write_standard_input(self, descriptor: int) -> None:
+        try:
+            written = os.write(
+                descriptor, self._standard_input[self._standard_input_offset :]
+            )
+        except BlockingIOError:
+            return
+        self._standard_input_offset += written
+        if self._standard_input_offset == len(self._standard_input):
+            self._close_provider_stream("stdin")
+
+    def _read_provider_output(self, descriptor: int, role: str, now: float) -> None:
+        try:
+            chunk = os.read(descriptor, 65_536)
+        except BlockingIOError:
+            return
+        if not chunk:
+            self._close_provider_stream(role)
+            return
+        if self._termination_owner is not None:
+            return
+        target = self._standard_output if role == "stdout" else self._standard_error
+        target.extend(chunk)
+        declared_frame_bytes = self._standard_output_frame_bytes
+        if declared_frame_bytes is None:
+            raise RuntimeError("provider output arrived before its declared frame")
+        limit = (
+            declared_frame_bytes
+            if role == "stdout"
+            else MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
+        )
+        if len(target) > limit:
+            self._standard_output.clear()
+            self._standard_error.clear()
+            self._standard_input = b""
+            self._close_provider_stream("stdin")
+            self._begin_termination("OVERFLOW", now)
+
+    def _advance_process(self, now: float) -> None:
+        if self._state is _CoordinatorState.TERMINATED:
+            return
+        process = self._process
+        if process is None:
+            return
+        return_code = process.poll()
+        if self._termination_owner is None:
+            if (
+                return_code is not None
+                and not self._has_provider_stream("stdout")
+                and not self._has_provider_stream("stderr")
                 and not _cgroup_populated(self._cgroup)
             ):
-                disposition = "EXITED_BEFORE_SIGNAL"
+                process.wait()
+                self._publish_process_completion(now)
+            return
+        if self._state is _CoordinatorState.RECOVERY_HANDOFF:
+            return
+        if (
+            process.poll() is not None
+            and not _cgroup_populated(self._cgroup)
+            and not self._has_provider_stream("stdout")
+            and not self._has_provider_stream("stderr")
+        ):
+            process.wait()
+            self._finish_termination(now)
+            return
+        if self._termination_deadline is not None and now >= self._termination_deadline:
+            self._escalate_termination(now)
+
+    def _begin_termination(self, owner: str, now: float) -> None:
+        if self._termination_owner is not None:
+            if owner == "OWNER_DEATH" and self._wait_response is not None:
+                self._state = _CoordinatorState.FINALIZING
+            return
+        self._termination_owner = owner
+        self._termination_escalated = False
+        self._standard_input = b""
+        self._close_provider_stream("stdin")
+        if self._process is None:
+            self._termination_disposition = "NEVER_LAUNCHED"
+            if owner == "CANCEL":
+                self._publish_wait({"type": "STOPPED"}, now)
+                self._publish_cancel(now)
+            elif owner == "OWNER_DEATH":
+                self._state = _CoordinatorState.FINALIZING
             else:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                if _wait_for_cleanup_proof(
-                    self._cgroup, self._completion_ready, self._grace
+                arm = (
+                    "OUTPUT_LIMIT_EXCEEDED"
+                    if owner == "OVERFLOW"
+                    else "SUPERVISION_FAILED"
+                )
+                self._publish_wait({"type": arm}, now)
+            return
+        self._state = {
+            "CANCEL": _CoordinatorState.CANCEL_TERMINATING,
+            "OVERFLOW": _CoordinatorState.OVERFLOW_TERMINATING,
+            "SUPERVISION": _CoordinatorState.SUPERVISION_TERMINATING,
+            "OWNER_DEATH": _CoordinatorState.OWNER_DEATH_TERMINATING,
+        }[owner]
+        if self._process.poll() is not None and not _cgroup_populated(self._cgroup):
+            self._termination_disposition = "EXITED_BEFORE_SIGNAL"
+            if not self._has_provider_stream(
+                "stdout"
+            ) and not self._has_provider_stream("stderr"):
+                self._process.wait()
+                self._finish_termination(now)
+                return
+            self._termination_deadline = now + self._grace
+            return
+        signalled = False
+        if self._process.poll() is None:
+            try:
+                os.killpg(self._process.pid, signal.SIGTERM)
+                signalled = True
+            except ProcessLookupError:
+                pass
+        if signalled:
+            self._termination_disposition = "REAPED_AFTER_TERM"
+        self._termination_deadline = now + self._grace
+
+    def _escalate_termination(self, now: float) -> None:
+        if self._termination_escalated:
+            self._publish_recovery_handoff(now)
+            return
+        self._termination_escalated = True
+        self._termination_deadline = None
+        if _cgroup_populated(self._cgroup):
+            (self._cgroup / "cgroup.kill").write_text("1", encoding="ascii")
+            self._termination_disposition = "REAPED_AFTER_KILL"
+        if self._process is not None and self._process.poll() is None:
+            try:
+                os.killpg(self._process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        self._termination_deadline = now + max(1.0, self._grace)
+
+    def _finish_termination(self, now: float) -> None:
+        owner = self._termination_owner
+        if owner == "OWNER_DEATH" or self._owner_dead:
+            self._state = _CoordinatorState.FINALIZING
+            return
+        if owner == "CANCEL":
+            self._publish_process_completion(now)
+            self._publish_cancel(now)
+            return
+        if owner == "OVERFLOW":
+            self._termination_disposition = "REAPED_AFTER_PROCESS_BOUNDARY_FAILURE"
+            self._publish_wait({"type": "OUTPUT_LIMIT_EXCEEDED"}, now)
+            self._publish_cancel(now)
+            return
+        self._termination_disposition = "REAPED_AFTER_PROCESS_BOUNDARY_FAILURE"
+        self._publish_wait({"type": "SUPERVISION_FAILED"}, now)
+        self._publish_cancel(now)
+
+    def _publish_recovery_handoff(self, now: float) -> None:
+        if self._state is _CoordinatorState.RECOVERY_HANDOFF:
+            return
+        encoded = encode_control_frame({"type": "RECOVERY_HANDOFF"})
+        self._wait_response = encoded
+        self._cancel_response = encoded
+        self._termination_deadline = None
+        self._state = _CoordinatorState.RECOVERY_HANDOFF
+        self._close_provider_descriptors()
+        for connection in tuple(self._connections.values()):
+            if (
+                connection.operation in {"WAIT", "CANCEL"}
+                and connection.output_bytes is None
+            ):
+                self._queue_encoded_response(connection, encoded, now)
+
+    def _publish_process_completion(self, now: float) -> None:
+        process = self._process
+        if process is None or process.returncode is None:
+            raise RuntimeError("provider completion has no reaped return code")
+        self._publish_wait(
+            {
+                "return_code": int(process.returncode),
+                "standard_error": base64.b64encode(self._standard_error).decode(
+                    "ascii"
+                ),
+                "standard_output": base64.b64encode(self._standard_output).decode(
+                    "ascii"
+                ),
+                "type": "COMPLETED",
+            },
+            now,
+        )
+
+    def _publish_cancel(self, now: float) -> None:
+        disposition = self._termination_disposition or "EXITED_BEFORE_SIGNAL"
+        self._cancel_response = encode_control_frame(
+            {"disposition": disposition, "type": "CANCELLED"}
+        )
+        for connection in tuple(self._connections.values()):
+            if connection.operation == "CANCEL" and connection.output_bytes is None:
+                self._queue_encoded_response(connection, self._cancel_response, now)
+
+    def _publish_wait(self, response: dict[str, object], now: float) -> None:
+        if self._wait_response is not None:
+            return
+        encoded = encode_control_frame(response)
+        declared_frame_bytes = self._standard_output_frame_bytes
+        bound = (
+            MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES
+            if declared_frame_bytes is None
+            else maximum_agent_wait_response_bytes(declared_frame_bytes)
+        )
+        if len(encoded) > bound:
+            raise RuntimeError("watchdog wait response exceeds its exact bound")
+        self._wait_response = encoded
+        self._state = _CoordinatorState.TERMINATED
+        for connection in tuple(self._connections.values()):
+            if connection.operation == "WAIT" and connection.output_bytes is None:
+                self._queue_encoded_response(connection, encoded, now)
+
+    def _expire_connections(self, now: float) -> None:
+        for connection in tuple(self._connections.values()):
+            if connection.output_bytes is None:
+                if (
+                    connection.operation is None
+                    and now >= connection.accepted_at + CONTROL_FRAME_TIMEOUT_SECONDS
                 ):
-                    disposition = "REAPED_AFTER_TERM"
-                else:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    (self._cgroup / "cgroup.kill").write_text("1", encoding="ascii")
-                    if not _wait_for_cleanup_proof(
-                        self._cgroup,
-                        self._completion_ready,
-                        max(1.0, self._grace),
-                    ):
-                        raise RuntimeError(
-                            "watchdog could not prove bounded cgroup cleanup"
-                        )
-                    disposition = "REAPED_AFTER_KILL"
-        except (OSError, RuntimeError):
-            with self._lock:
-                self._cancellation_started = False
-            raise
-        with self._lock:
-            self._disposition = disposition
-            self._cancellation_complete.set()
-            return disposition
+                    response = (
+                        "BUSY" if connection.refuse_as_busy else "CONTROL_FRAME_TIMEOUT"
+                    )
+                    self._queue_response(connection, {"type": response}, now)
+            elif (
+                connection.response_deadline is not None
+                and now >= connection.response_deadline
+            ):
+                self._close_connection(connection)
+
+    def _queue_response(
+        self, connection: _Connection, response: dict[str, object], now: float
+    ) -> None:
+        self._queue_encoded_response(connection, encode_control_frame(response), now)
+
+    def _queue_encoded_response(
+        self, connection: _Connection, response: bytes, now: float
+    ) -> None:
+        connection.output_bytes = response
+        connection.output_offset = 0
+        connection.response_deadline = now + CONTROL_FRAME_TIMEOUT_SECONDS
+        try:
+            self._selector.modify(connection.socket, selectors.EVENT_WRITE, connection)
+        except (KeyError, ValueError):
+            self._close_connection(connection)
+
+    def _write_connection(self, connection: _Connection, _now: float) -> None:
+        response = connection.output_bytes
+        if response is None:
+            return
+        try:
+            sent = connection.socket.send(response[connection.output_offset :])
+        except BlockingIOError:
+            return
+        except OSError:
+            self._close_connection(connection)
+            return
+        connection.output_offset += sent
+        if connection.output_offset == len(response):
+            self._close_connection(connection)
+
+    def _release_slot(self, connection: _Connection) -> None:
+        descriptor = connection.socket.fileno()
+        if self._slots.get(connection.slot) == descriptor:
+            self._slots.pop(connection.slot, None)
+        connection.slot = ""
+
+    def _close_connection(self, connection: _Connection) -> None:
+        descriptor = connection.socket.fileno()
+        self._release_slot(connection)
+        self._connections.pop(descriptor, None)
+        try:
+            self._selector.unregister(connection.socket)
+        except (KeyError, ValueError):
+            pass
+        connection.socket.close()
+
+    def _has_provider_stream(self, role: str) -> bool:
+        return role in self._provider_streams.values()
+
+    def _close_provider_stream(self, role: str) -> None:
+        descriptor = next(
+            (fd for fd, current in self._provider_streams.items() if current == role),
+            None,
+        )
+        if descriptor is None:
+            return
+        self._provider_streams.pop(descriptor, None)
+        try:
+            self._selector.unregister(descriptor)
+        except (KeyError, ValueError):
+            pass
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+    def _close_provider_descriptors(self) -> None:
+        for role in tuple(self._provider_streams.values()):
+            self._close_provider_stream(role)
 
 
-def _wait_for_cleanup_proof(
-    cgroup: Path, completion_ready: threading.Event, timeout: float
-) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if completion_ready.is_set() and not _cgroup_populated(cgroup):
-            return True
-        time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
-    return completion_ready.is_set() and not _cgroup_populated(cgroup)
+def _decode_launch_request(
+    request: dict[str, Any],
+) -> tuple[tuple[str, ...], str, dict[str, str], bytes, int]:
+    if set(request) != {
+        "arguments",
+        "environment",
+        "operation",
+        "standard_input",
+        "standard_output_frame_bytes",
+        "working_directory",
+    }:
+        raise ValueError("launch request has unexpected fields")
+    arguments_value = request["arguments"]
+    if (
+        type(arguments_value) is not list
+        or not arguments_value
+        or any(type(value) is not str or not value for value in arguments_value)
+    ):
+        raise ValueError("launch arguments are malformed")
+    working_directory_value = request["working_directory"]
+    if (
+        type(working_directory_value) is not str
+        or not Path(working_directory_value).is_absolute()
+    ):
+        raise ValueError("launch working directory is malformed")
+    environment_value = request["environment"]
+    if type(environment_value) is not list:
+        raise ValueError("launch environment is malformed")
+    environment_pairs: list[tuple[str, str]] = []
+    for pair in environment_value:
+        if (
+            type(pair) is not list
+            or len(pair) != 2
+            or type(pair[0]) is not str
+            or not pair[0]
+            or type(pair[1]) is not str
+        ):
+            raise ValueError("launch environment is malformed")
+        environment_pairs.append((pair[0], pair[1]))
+    environment = dict(environment_pairs)
+    if len(environment) != len(environment_pairs):
+        raise ValueError("launch environment names are duplicated")
+    standard_input_value = request["standard_input"]
+    if type(standard_input_value) is not str:
+        raise ValueError("launch standard input is malformed")
+    standard_input = base64.b64decode(standard_input_value, validate=True)
+    if len(standard_input) > MAXIMUM_AGENT_PROCESS_INPUT_BYTES:
+        raise ValueError("launch standard input exceeds its exact bound")
+    standard_output_frame_bytes = request["standard_output_frame_bytes"]
+    if type(standard_output_frame_bytes) is not int or standard_output_frame_bytes < 1:
+        raise ValueError("launch standard output frame is malformed")
+    return (
+        tuple(arguments_value),
+        working_directory_value,
+        environment,
+        standard_input,
+        standard_output_frame_bytes,
+    )
 
 
 def _cgroup_populated(cgroup: Path) -> bool:
     events = (cgroup / "cgroup.events").read_text(encoding="ascii").splitlines()
     return "populated 1" in events
-
-
-def _read_all(connection: socket.socket) -> bytes:
-    chunks: list[bytes] = []
-    while True:
-        chunk = connection.recv(65_536)
-        if not chunk:
-            return b"".join(chunks)
-        chunks.append(chunk)
 
 
 def main(arguments: Sequence[str] | None = None) -> None:
@@ -246,7 +830,12 @@ def main(arguments: Sequence[str] | None = None) -> None:
     parser.add_argument("--owner-pipe", type=int, required=True)
     parser.add_argument("--grace", type=float, required=True)
     parsed = parser.parse_args(arguments)
-    Watchdog(parsed.endpoint, parsed.cgroup, parsed.owner_pipe, parsed.grace).serve()
+    Watchdog(
+        parsed.endpoint,
+        parsed.cgroup,
+        parsed.owner_pipe,
+        parsed.grace,
+    ).serve(_announce_ready_on_standard_output)
 
 
 if __name__ == "__main__":

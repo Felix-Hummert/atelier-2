@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
-from functools import lru_cache
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+_MIGRATABLE_SCHEMA_VERSION = 7
+_VERSION_SEVEN_CONFIGURATION_TABLE = "agent_configuration_revisions_v7"
+_PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
+    7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
+    8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
+}
 
 metadata = sa.MetaData()
 
@@ -105,11 +112,21 @@ agent_configuration_revisions = sa.Table(
         nullable=False,
     ),
     sa.Column("executor_revision", sa.Text, nullable=False),
+    sa.Column("revision_format_version", sa.Integer, nullable=False),
+    sa.Column("requested_capability", sa.Text, nullable=False),
     sa.UniqueConstraint(
         "revision_hash",
         "auth_profile_revision_hash",
         "model",
         "executor_revision",
+    ),
+    sa.UniqueConstraint(
+        "revision_hash",
+        "auth_profile_revision_hash",
+        "model",
+        "executor_revision",
+        "revision_format_version",
+        "requested_capability",
     ),
     sa.CheckConstraint(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
@@ -120,7 +137,13 @@ agent_configuration_revisions = sa.Table(
         "AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint("length(executor_revision) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint("revision_format_version IN (1, 2)"),
+    sa.CheckConstraint("requested_capability IN ('headless', 'interactive')"),
+    sa.CheckConstraint(
+        "revision_format_version = 2 OR requested_capability = 'headless'"
+    ),
 )
+
 run_agent_bindings = sa.Table(
     "run_agent_bindings",
     metadata,
@@ -992,12 +1015,13 @@ class MigrationRequired(UnsupportedSchemaVersion):
         )
 
 
-def _require_supported_versions(versions: Sequence[int]) -> None:
+def _require_supported_versions(versions: Sequence[int]) -> int:
     normalized = tuple(versions)
     if normalized in {(1,), (2,), (3,), (4,), (5,), (6,)}:
         raise MigrationRequired(normalized[0])
-    if normalized != (SCHEMA_VERSION,):
+    if normalized not in {(_MIGRATABLE_SCHEMA_VERSION,), (SCHEMA_VERSION,)}:
         raise UnsupportedSchemaVersion(normalized)
+    return normalized[0]
 
 
 @dataclass(frozen=True)
@@ -1133,37 +1157,43 @@ def _sqlite_connection(connection: sa.Connection) -> sqlite3.Connection:
     return raw_connection
 
 
-@lru_cache(maxsize=1)
-def _expected_product_schema_fingerprint() -> _ProductSchemaFingerprint:
-    engine = sa.create_engine("sqlite://")
+def _product_schema_fingerprint_sha256(
+    fingerprint: _ProductSchemaFingerprint,
+) -> str:
+    encoded = json.dumps(
+        asdict(fingerprint),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _require_product_shape(connection: sqlite3.Connection, version: int) -> None:
     try:
-        with engine.begin() as connection:
-            metadata.create_all(connection)
-            _create_triggers(connection, _PRODUCT_TRIGGERS.values())
-            return _product_schema_fingerprint(_sqlite_connection(connection))
-    finally:
-        engine.dispose()
-
-
-def _require_current_product_shape(connection: sqlite3.Connection) -> None:
+        observed = _product_schema_fingerprint(connection)
+    except UnsupportedSchemaVersion as error:
+        raise UnsupportedSchemaVersion(
+            f"malformed v{version} product schema fingerprint"
+        ) from error
     if (
-        _product_schema_fingerprint(connection)
-        != _expected_product_schema_fingerprint()
+        _product_schema_fingerprint_sha256(observed)
+        != (_PRODUCT_SCHEMA_FINGERPRINT_SHA256[version])
     ):
         raise UnsupportedSchemaVersion(
-            f"malformed v{SCHEMA_VERSION} product schema fingerprint"
+            f"malformed v{version} product schema fingerprint"
         )
 
 
-def _preflight_existing_schema(engine: Engine) -> None:
+def _preflight_existing_schema(engine: Engine) -> int | None:
     raw_database_path = engine.url.database
     if engine.url.get_backend_name() != "sqlite" or raw_database_path is None:
-        return
+        return None
     if raw_database_path in {"", ":memory:"}:
-        return
+        return None
     database_path = Path(raw_database_path).resolve()
     if not database_path.is_file() or database_path.stat().st_size == 0:
-        return
+        return None
     try:
         with sqlite3.connect(
             f"{database_path.as_uri()}?mode=ro", uri=True
@@ -1175,7 +1205,7 @@ def _preflight_existing_schema(engine: Engine) -> None:
                 )
             }
             if not table_names:
-                return
+                return None
             if atelier_schema_versions.name not in table_names:
                 raise UnsupportedSchemaVersion(
                     f"missing version owner beside tables {tuple(sorted(table_names))!r}"
@@ -1188,8 +1218,9 @@ def _preflight_existing_schema(engine: Engine) -> None:
                 if not isinstance(version, int):
                     raise TypeError("schema version must be stored as an integer")
                 versions.append(version)
-            _require_supported_versions(versions)
-            _require_current_product_shape(connection)
+            version = _require_supported_versions(versions)
+            _require_product_shape(connection, version)
+            return version
     except UnsupportedSchemaVersion:
         raise
     except (sqlite3.DatabaseError, TypeError, ValueError) as error:
@@ -1201,34 +1232,139 @@ def _create_triggers(connection: sa.Connection, statements: Iterable[str]) -> No
         connection.execute(sa.text(statement))
 
 
+def _schema_version_from_connection(connection: sa.Connection) -> int | None:
+    inspector = sa.inspect(connection)
+    if not inspector.has_table(atelier_schema_versions.name):
+        return None
+    versions = connection.execute(
+        sa.select(atelier_schema_versions.c.version)
+    ).scalars()
+    normalized: list[int] = []
+    for version in versions:
+        if not isinstance(version, int):
+            raise UnsupportedSchemaVersion("schema version must be an integer")
+        normalized.append(version)
+    return _require_supported_versions(normalized)
+
+
+def _migrate_version_seven_to_eight(connection: sa.Connection) -> None:
+    raw_connection = _sqlite_connection(connection)
+    _require_product_shape(raw_connection, _MIGRATABLE_SCHEMA_VERSION)
+    existing_tables = set(sa.inspect(connection).get_table_names())
+    if _VERSION_SEVEN_CONFIGURATION_TABLE in existing_tables:
+        raise UnsupportedSchemaVersion(
+            f"migration predecessor {_VERSION_SEVEN_CONFIGURATION_TABLE!r} exists"
+        )
+    connection.exec_driver_sql(
+        "ALTER TABLE agent_configuration_revisions "
+        f"RENAME TO {_VERSION_SEVEN_CONFIGURATION_TABLE}"
+    )
+    agent_configuration_revisions.create(connection)
+    connection.exec_driver_sql(
+        "INSERT INTO agent_configuration_revisions("
+        "revision_hash,model,auth_profile_revision_hash,executor_revision,"
+        "revision_format_version,requested_capability) "
+        "SELECT revision_hash,model,auth_profile_revision_hash,executor_revision,"
+        "1,'headless' FROM agent_configuration_revisions_v7"
+    )
+    old_count = int(
+        connection.scalar(
+            sa.text("SELECT COUNT(*) FROM agent_configuration_revisions_v7")
+        )
+        or 0
+    )
+    new_count = int(
+        connection.scalar(
+            sa.select(sa.func.count()).select_from(agent_configuration_revisions)
+        )
+        or 0
+    )
+    missing_rows = int(
+        connection.scalar(
+            sa.text(
+                "SELECT COUNT(*) FROM ("
+                "SELECT revision_hash,model,auth_profile_revision_hash,"
+                "executor_revision FROM agent_configuration_revisions_v7 "
+                "EXCEPT SELECT revision_hash,model,auth_profile_revision_hash,"
+                "executor_revision FROM agent_configuration_revisions)"
+            )
+        )
+        or 0
+    )
+    if old_count != new_count or missing_rows != 0:
+        raise RuntimeError("V7 agent configuration copy changed durable identity")
+    connection.exec_driver_sql(f"DROP TABLE {_VERSION_SEVEN_CONFIGURATION_TABLE}")
+    _create_triggers(
+        connection,
+        (
+            _PRODUCT_TRIGGERS["agent_configuration_revisions_no_update"],
+            _PRODUCT_TRIGGERS["agent_configuration_revisions_no_delete"],
+        ),
+    )
+    foreign_key_failures = tuple(connection.exec_driver_sql("PRAGMA foreign_key_check"))
+    if foreign_key_failures:
+        raise RuntimeError("V7 to V8 migration broke a durable foreign key")
+    _require_product_shape(raw_connection, SCHEMA_VERSION)
+    updated = connection.execute(
+        atelier_schema_versions.update()
+        .where(atelier_schema_versions.c.version == _MIGRATABLE_SCHEMA_VERSION)
+        .values(version=SCHEMA_VERSION)
+    )
+    if updated.rowcount != 1:
+        raise RuntimeError("V7 to V8 migration lost its schema-version CAS")
+
+
 def initialize_schema(engine: Engine) -> None:
     if engine.url.get_backend_name() != "sqlite":
         raise UnsupportedSchemaVersion(f"Atelier v{SCHEMA_VERSION} requires SQLite")
     _preflight_existing_schema(engine)
     with engine.connect() as connection:
-        connection.exec_driver_sql("BEGIN IMMEDIATE")
-        try:
-            inspector = sa.inspect(connection)
-            if not inspector.has_table(atelier_schema_versions.name):
-                existing_tables = set(inspector.get_table_names())
-                if existing_tables:
-                    raise UnsupportedSchemaVersion(
-                        f"missing version owner beside tables {tuple(sorted(existing_tables))!r}"
-                    )
-                metadata.create_all(connection)
-                connection.execute(
-                    atelier_schema_versions.insert().values(version=SCHEMA_VERSION)
-                )
-                _create_triggers(connection, _PRODUCT_TRIGGERS.values())
-
-            versions = (
-                connection.execute(sa.select(atelier_schema_versions.c.version))
-                .scalars()
-                .all()
-            )
-            _require_supported_versions(versions)
-            _require_current_product_shape(_sqlite_connection(connection))
+        version_before_lock = _schema_version_from_connection(connection)
+        connection.commit()
+        migration_candidate = version_before_lock == _MIGRATABLE_SCHEMA_VERSION
+        if migration_candidate:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.exec_driver_sql("PRAGMA legacy_alter_table=ON")
             connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
+        try:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                inspector = sa.inspect(connection)
+                if not inspector.has_table(atelier_schema_versions.name):
+                    existing_tables = set(inspector.get_table_names())
+                    if existing_tables:
+                        raise UnsupportedSchemaVersion(
+                            "missing version owner beside tables "
+                            f"{tuple(sorted(existing_tables))!r}"
+                        )
+                    metadata.create_all(connection)
+                    connection.execute(
+                        atelier_schema_versions.insert().values(version=SCHEMA_VERSION)
+                    )
+                    _create_triggers(connection, _PRODUCT_TRIGGERS.values())
+
+                locked_version = _schema_version_from_connection(connection)
+                if locked_version == _MIGRATABLE_SCHEMA_VERSION:
+                    if not migration_candidate:
+                        raise UnsupportedSchemaVersion(
+                            "V7 migration requires foreign keys disabled before lock"
+                        )
+                    _migrate_version_seven_to_eight(connection)
+                    locked_version = SCHEMA_VERSION
+                if locked_version != SCHEMA_VERSION:
+                    raise UnsupportedSchemaVersion(locked_version)
+                _require_product_shape(_sqlite_connection(connection), SCHEMA_VERSION)
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        finally:
+            if migration_candidate:
+                connection.exec_driver_sql("PRAGMA legacy_alter_table=OFF")
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                connection.commit()
+                if connection.exec_driver_sql("PRAGMA foreign_keys").scalar() != 1:
+                    connection.invalidate()
+                    raise RuntimeError(
+                        "SQLite foreign-key enforcement was not restored"
+                    )

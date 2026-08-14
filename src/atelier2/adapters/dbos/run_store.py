@@ -166,6 +166,8 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
                 agent_configuration_revisions.c.model,
                 agent_configuration_revisions.c.auth_profile_revision_hash,
                 agent_configuration_revisions.c.executor_revision,
+                agent_configuration_revisions.c.revision_format_version,
+                agent_configuration_revisions.c.requested_capability,
                 auth_profile_revisions.c.revision_hash.label("auth_revision_hash"),
                 auth_profile_revisions.c.profile_id,
                 auth_profile_revisions.c.revision_number,
@@ -199,6 +201,8 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
                 "model": row["model"],
                 "auth_profile_revision_hash": row["auth_profile_revision_hash"],
                 "executor_revision": row["executor_revision"],
+                "revision_format_version": row["revision_format_version"],
+                "requested_capability": row["requested_capability"],
             }
         )
         auth = auth_profile_from_record(

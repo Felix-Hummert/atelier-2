@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import struct
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
@@ -45,6 +45,16 @@ class ProviderId:
 class AuthMode(StrEnum):
     SUBSCRIPTION = "subscription"
     API_KEY = "api_key"
+
+
+class AgentExecutionCapability(StrEnum):
+    HEADLESS = "headless"
+    INTERACTIVE = "interactive"
+
+
+class AgentConfigurationRevisionFormatVersion(IntEnum):
+    V1 = 1
+    V2 = 2
 
 
 class AuthProfileRevisionHash(Sha256Hash):
@@ -102,6 +112,8 @@ class AgentConfigurationRevision:
     model: str
     auth_profile_revision_hash: AuthProfileRevisionHash
     executor_revision: AgentExecutorRevision
+    requested_capability: AgentExecutionCapability
+    revision_format_version: AgentConfigurationRevisionFormatVersion
     revision_hash: AgentConfigurationRevisionHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -111,17 +123,36 @@ class AgentConfigurationRevision:
         if not isinstance(self.executor_revision, AgentExecutorRevision):
             raise TypeError("agent configuration executor revision must be typed")
         _require_bounded_text(self.executor_revision.value, "agent executor revision")
+        if not isinstance(self.requested_capability, AgentExecutionCapability):
+            raise TypeError("agent configuration capability must be typed")
+        if not isinstance(
+            self.revision_format_version, AgentConfigurationRevisionFormatVersion
+        ):
+            raise TypeError("agent configuration format version must be typed")
+        if (
+            self.revision_format_version is AgentConfigurationRevisionFormatVersion.V1
+            and self.requested_capability is not AgentExecutionCapability.HEADLESS
+        ):
+            raise ValueError("legacy agent configurations require headless capability")
+        if self.revision_format_version is AgentConfigurationRevisionFormatVersion.V1:
+            framed = frame(
+                "agent-configuration-revision/v1",
+                self.model.encode("utf-8"),
+                self.auth_profile_revision_hash.value.encode("ascii"),
+                self.executor_revision.value.encode("utf-8"),
+            )
+        else:
+            framed = frame(
+                "agent-configuration-revision/v2",
+                self.model.encode("utf-8"),
+                self.auth_profile_revision_hash.value.encode("ascii"),
+                self.executor_revision.value.encode("utf-8"),
+                self.requested_capability.value.encode("ascii"),
+            )
         object.__setattr__(
             self,
             "revision_hash",
-            AgentConfigurationRevisionHash.of(
-                frame(
-                    "agent-configuration-revision/v1",
-                    self.model.encode("utf-8"),
-                    self.auth_profile_revision_hash.value.encode("ascii"),
-                    self.executor_revision.value.encode("utf-8"),
-                )
-            ),
+            AgentConfigurationRevisionHash.of(framed),
         )
 
 

@@ -30,10 +30,14 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V7 only in a truly empty canonical store and reopens
-only an exact V7 product schema. An older store, or any nonempty store without
-the V7 version owner, is rejected without mutation. V1 provides no runtime
-upgrade or downgrade migration.
+The runtime creates schema V8 only in a truly empty canonical store and reopens
+only an exact V8 product schema. An exact V7 store is the sole migratable
+predecessor: one `BEGIN IMMEDIATE` transaction rebuilds only the immutable agent
+configuration table, labels existing rows revision-format V1 with `headless`
+capability, preserves their stored hashes and references, and advances the
+schema version last. Failure before commit leaves exact V7; concurrent openers
+serialize and migrate once. Older, future, malformed, or nonempty unowned stores
+are rejected without mutation. There is no runtime downgrade.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -52,8 +56,14 @@ Format-version-2 Agent nodes name roles rather than providers. Start resolves
 every role to immutable, secret-free auth-profile and agent-configuration
 revisions, rejects an incomplete matrix or unavailable executor key before any
 run mutation, and persists the sorted complete matrix with the run. A host owns
-an immutable registry keyed by provider ID and executor revision. Each V2 Agent
-request and receipt binds the role, configuration and auth hashes and fields,
+an immutable registry keyed by provider ID and executor revision. Configuration
+revision format V1 retains the original hash frame and is restricted to
+`headless`; format V2 adds a typed requested capability to its hash frame. New
+API publications are V2/headless, while migrated rows remain V1/headless. Every
+registry entry must attest headless and may attest interactive. Start refuses an
+unattested requested capability before run/enqueue mutation or provider process;
+restart refuses a nonterminal durable capability mismatch before factory open.
+Each V2 Agent request and receipt binds the role, configuration and auth hashes and fields,
 executor operational identity, job, and exact result bytes. At most 49,152
 output bytes are accepted; an oversized result is rejected before receipt,
 event, or run mutation. The receipt, `AGENT_COMPLETED` event, and run CAS share
@@ -69,7 +79,7 @@ non-secret executor operational identity; that identity is an integrity input,
 not process authority. Success atomically commits attempt, receipt, event, and
 successor. A typed, authoritatively reaped unsuccessful child atomically commits
 `FAILED`, `AGENT_FAILED`, and the same current run node. Ambiguous exceptions
-stay `LAUNCH_ARMED` until an exact cancellation owns their cleanup. Schema V7
+stay `LAUNCH_ARMED` until an exact cancellation owns their cleanup. Schema V8
 makes cancellation durable before any signal. A live supervisor binds a Unix
 control endpoint, watchdog generation, and delegated cgroup; an exec guard joins
 the provider child to that cgroup and dies if the watchdog parent disappears.
@@ -106,7 +116,8 @@ document and graph semantics above this execution boundary.
 A process owns exactly one compatible DBOS binding of canonical database path,
 application version, the V1 `AgentExecutorBinding`, the sorted V2 executor
 manifest, and the effect-adapter binding. Restart refuses a registry missing a
-provider/executor key required by a nonterminal durable V2 run, configuration
+provider/executor key or requested capability required by a nonterminal durable
+V2 run, configuration
 contradicting durable V1 Agent receipts, or an effect binding contradicting
 durable intents. Identical callers share one opened V1 executor, every V2
 executor, effect adapter, and runtime under counted leases; an incompatible
@@ -132,6 +143,7 @@ provider contract.
 | Reconciliation | FOUND and authorized-absence commands preserve operator provenance; concurrent opposing commands commit one CAS winner and one rejected loser. |
 | Atomic product events | Reconciliation state and its required/resolved event, plus receipt, intent, run, and owning command, commit or roll back together under injected database failures. |
 | Runtime lifecycle | Equivalent leases share one engine, Agent executor, and effect adapter; conflicts, failed initialization, concurrent close, durable binding drift, and two-process recovery preserve one binding and result. |
+| V7→V8 migration | Populated V7 rows and legacy hashes survive one transactional table rebuild; fresh, reopened, concurrent, malformed, SQL-CHECK, and injected rollback cases establish exact V8 or unchanged V7. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 | V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |

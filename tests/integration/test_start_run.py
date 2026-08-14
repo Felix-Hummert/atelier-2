@@ -348,7 +348,7 @@ def test_pre_release_schema_versions_require_no_mutating_runtime_migration(
     assert database_path.read_bytes() == before
 
 
-def test_schema_version_five_opens_idempotently(tmp_path: Path) -> None:
+def test_current_schema_opens_idempotently(tmp_path: Path) -> None:
     runtime = exact_output_runtime(
         DbosRuntimeSettings(tmp_path / "atelier.sqlite", "executor-A"),
         LoopbackEffectAdapterFactory(
@@ -365,7 +365,7 @@ def test_schema_version_five_opens_idempotently(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_concurrent_first_schema_initializers_converge_on_version_seven(
+def test_concurrent_first_schema_initializers_converge_on_version_eight(
     tmp_path: Path,
 ) -> None:
     participants = 4
@@ -397,7 +397,7 @@ def test_concurrent_first_schema_initializers_converge_on_version_seven(
                 )
             )
 
-        assert results == [[7]] * participants
+        assert results == [[8]] * participants
 
 
 def test_initialized_runtime_can_execute_a_later_seeded_workflow(

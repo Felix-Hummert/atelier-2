@@ -49,6 +49,13 @@ duplicating the Action effect.
 Workflow format V2 adds provider-neutral Agent roles. Before a run starts, every
 role is resolved to one immutable, secret-free agent-configuration revision and
 authentication-profile revision; the complete matrix is frozen into that run.
+Each configuration also binds a typed requested execution capability. Migrated
+configuration revisions retain their original V1 hash and mean `headless`; new
+API publications use the capability-aware V2 hash format and currently request
+`headless`. An executor registry must attest `headless`, and a run requesting a
+capability absent from its exact provider/executor entry is refused before any
+provider process starts. A nonterminal run is refused on restart before its
+factory opens when that attestation has disappeared.
 Before invoking the exact configured provider/executor, the runtime persists one
 ordinal-1 attempt and binds an in-memory invocation to a separately supervised
 process generation. Only the live caller whose compare-and-set reaches
@@ -62,9 +69,65 @@ replaying the invocation. One explicit replacement creates a distinct ordinal-2
 attempt and workflow only after cleanup; ordinal 3 and automatic provider retry
 do not exist. A known reaped unsuccessful child becomes `FAILED`; a success
 records the non-secret operational identity and arbitrary output bytes in one
-atomic attempt/receipt/event/run transition. This is the durable multi-provider
-contract, not yet a real Claude or Codex integration: the production host still
-composes no V2 provider factories.
+atomic attempt/receipt/event/run transition.
+
+The first real provider now sits behind that durable contract. When the operator
+declares a Claude executable, an agent workspace, and a credential directory, the
+host composes one Claude subscription executor. It runs the bound model headless
+through the CLI's print-JSON envelope, hands the node's job to the process over
+standard input rather than its command line, and grants the launched process only
+the declared `CLAUDE_CONFIG_DIR` credential boundary and the serving host's
+executable search path; nothing else of the server's environment is inherited. A
+configuration binding a non-subscription profile to this executor is refused
+before any process is prepared, and V1 admits only a personal `max` or `pro`
+credential, refusing a Team, Enterprise, absent or unreadable one, because an
+account outside that set can be handed administrator-managed settings when the
+CLI starts. It attests exactly one execution capability,
+`headless`, because a print call is the only shape it can serve, so a node
+demanding an interactive one is refused before that run exists at all. An
+unsuccessful exit, an unreadable envelope, an envelope declaring a provider
+error, and an answer larger than the durable output bound all fail the attempt
+instead of recording invented output. Undeclared, the
+host composes no V2 provider factory and behaves exactly as before. Codex remains
+absent, and the isolated read, edit, and test tools an agent needs to change its
+own workspace are not part of this contract.
+
+The raw frame a provider writes has its own bound, distinct from the durable
+output bound, because the durable answer travels inside a JSON envelope. The
+executor declares that bound on the invocation it prepares, since the frame is a
+property of its own wire format, and supervision holds the process to exactly
+that declaration: a frame past it is terminated and refused before the executor
+ever decodes it, so no answer is recorded. It is sized so no answer the durable
+contract accepts can be refused as a frame.
+
+The call itself is deliberately the barest one its authentication allows: no
+tools, no hooks, no MCP servers, no plugins or skills, no project configuration
+discovery, no persisted session, no prompt history, no retries, and a bounded
+turn count, so the credentials it is handed answer text and do nothing else.
+It also asks the CLI to strip provider credentials from every subprocess
+environment, as defence in depth against a child this invocation does not
+expect to have; that hardening needs bubblewrap on the search path the launched
+process receives, so a deployment without it is refused at startup rather than
+at the first run.
+
+Every one of those switches was measured against one exact Claude release, so
+the deployment reads the declared executable's version before it composes
+anything and admits only a release that conformance run covers — not merely a
+new enough one, because a later CLI can change a control the containment
+depends on, and admitting it costs a rerun of that one-call matrix and a
+decision about this executor's operational identity. The same startup attests
+that this host carries no administrator-managed policy: policy is outside every
+switch above by design and can still start a child beside the credential
+directory, so a host carrying one is refused rather than served. Reading the
+declared executable's version is itself the first execution of an external
+binary, so it is run with no environment at all, in an empty private directory,
+under a byte bound on both streams and a deadline that kills the whole probe
+session. That is containment, not isolation — the process still runs as the
+serving user — so this executor may only be declared for a loopback bind.
+Serving it on a reachable address is refused at startup, because starting a
+billed provider is unauthenticated on this API. OS-enforced isolation remains
+the planned stronger boundary; until it lands, these refusals are what keep the
+tool-free premise true.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically
@@ -110,3 +173,10 @@ integration, authentication boundary, public deployment, or general-purpose
 workflow editing. The graph, API, and local cockpit are a proven durable
 vertical, not yet a general-purpose workflow engine or a deployed remote
 product.
+
+The canonical store is schema V8. A fresh store is created as exact V8; an exact
+V7 store is upgraded once in one SQLite transaction by adding the configuration
+format and requested-capability fields. Existing rows and hashes remain
+byte-identical and reopen as legacy V1/headless configurations. Malformed,
+partial, older, future, or fingerprint-mismatched stores are refused without a
+partial upgrade; there is no runtime downgrade.
