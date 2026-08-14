@@ -11,6 +11,7 @@ may point to that record but must not restate it as a separate truth.
 - [ADR 0003: The HTTP API projects durable workflow truth](0003-http-api.md)
 - [ADR 0004: The local cockpit is a projection and control adapter](0004-local-cockpit.md)
 - [ADR 0005: CI enforces package boundaries](0005-enforced-package-boundaries.md)
+- [ADR 0006: Format V3 is the whole authoring language; capabilities stage execution](0006-node-vocabulary.md) — DRAFT
 
 The product stack beyond recorded decisions remains undecided; an ADR is not a
 claim that its product slice already exists.
