@@ -136,21 +136,28 @@ reviews are never merged into a shared chat.
 
 ### Dispositions, joins, and how a failure reaches every node
 
-Every node ends in exactly one terminal receipt carrying one **disposition** from
-a closed set:
+Two closed sets, and they are not the same set. Every node ends in exactly one
+terminal receipt carrying one **persisted receipt disposition**, of which there
+are exactly four:
 
 | Disposition | Written when |
 | --- | --- |
 | `succeeded` | the node produced every declared output and each satisfied its bound schema revision |
 | `failed` | the node ran and did not — provider or operation failure, schema violation, exhausted budget |
 | `cancelled` | an attributed run cancel reached the node while it was running |
-| `stale` | an explicit supersede (#1) covers this node's receipt or a context revision it bound — projected from a marker, never written into the receipt |
 | `blocked` | the node never ran, because its join can no longer release |
+
+What every reader downstream consumes is the **projected delivery status**: those
+four values plus `stale`, five in all. `stale` exists only in the projection.
+It is not a persisted disposition, no receipt writer accepts it, and a write
+carrying it is refused as a fail-loud durable defect rather than stored — so
+persisted `stale` is impossible by contract, not by convention. "Supersede writes
+a marker" below owns the projection.
 
 `blocked` is what makes a run with a failure terminate instead of hanging. It is
 written, naming its reason and the exact dependency that caused it, when the
-node's join is `all_succeeded` and any dependency reaches a non-`succeeded`
-disposition (`dependency_failed`, `dependency_cancelled`, `dependency_stale`,
+node's join is `all_succeeded` and any dependency's projected delivery status is
+not `succeeded` (`dependency_failed`, `dependency_cancelled`, `dependency_stale`,
 `dependency_blocked`), or when a run cancel arrives while the node has not
 started (`run_cancelled`).
 
@@ -190,12 +197,13 @@ lost**. Every input is therefore delivered inside a discriminated envelope:
 
 - a referenced node that is `succeeded` and declared the output delivers
   `{status: succeeded, name, schema revision, hash, value}`;
-- a referenced node with any other disposition delivers
-  `{status: <disposition>, receipt: {node, disposition, reason, receipt hash}}` —
-  named, never a fabricated schema-bound value, never a silent absence;
-- `from: {node, receipt: terminal}` is always the second form, whatever the
-  disposition. That is how a node that needs to know *how* a branch ended names it
-  without also demanding an output.
+- a referenced node with any other delivery status delivers
+  `{status: <delivery status>, receipt: {node, persisted disposition, reason,
+  receipt hash}}` — named, never a fabricated schema-bound value, never a silent
+  absence, and the two fields differ exactly when the status is `stale`;
+- `from: {node, receipt: terminal}` is always the second form, whatever the status.
+  That is how a node that needs to know *how* a branch ended names it without also
+  demanding an output.
 
 The envelope is not conditional on the join. An input may name a transitive
 ancestor that failed while the direct dependency succeeded, so every input carries
@@ -208,21 +216,26 @@ branch.
 immutable, so `stale` is never written into one and never arrives as a second
 terminal receipt for the same node. #1's supersede command writes one immutable
 `supersede-marker/v3` record naming the attributed actor and reason, the superseding
-workflow or context revision, and the exact receipts and context revisions it
-covers. The marker joins the run's ordered event hashes, so the terminal run hash
-covers it.
+workflow or context revision, and — **enumerated in the marker itself** — the exact
+receipt hashes and Context-Package hashes it covers. The command resolves the
+covered revisions to those hashes once, at write time, because a hash does not
+expose package membership: a marker naming a requirement revision could otherwise
+be matched to receipts only by re-deriving what each package contained. Enumerating
+the affected hashes is the durable answer and costs one list; a separate persisted
+package-membership index would be a second durable structure to keep true. The
+marker joins the run's ordered event hashes, so the terminal run hash covers it.
 
-`stale` is therefore a **projected delivery disposition**, not a stored one. A node's
-delivery disposition is its receipt's recorded disposition unless a marker covers
-that receipt or a context revision the receipt bound; then it projects `stale` while
-the receipt keeps reading `succeeded` with its original hashes. Everything downstream
-reads the projection: an unstarted `all_succeeded` dependent writes its `blocked`
-receipt naming `dependency_stale`; an `all_terminal` dependent receives the second
-envelope form with `status: stale`, naming both the receipt's recorded disposition
-and the marker hash; a running sibling drains per #1; a node already holding a
-confirmed receipt is never re-run by a marker. Projection is a pure function of the
-durable receipts and markers, so a restart reconstructs the identical delivery, and
-the run stays terminal on exactly one terminal receipt per node.
+`stale` is therefore a **projected delivery status**, not a stored one. A node's
+delivery status is its receipt's persisted disposition unless the marker enumerates
+that receipt's hash or the Context-Package hash the receipt bound; then it projects
+`stale` while the receipt keeps reading `succeeded` with its original hashes.
+Everything downstream reads the projection: an unstarted `all_succeeded` dependent
+writes its `blocked` receipt naming `dependency_stale`; an `all_terminal` dependent
+receives the second envelope form with `status: stale`, naming both the receipt's
+persisted disposition and the marker hash; a running sibling drains per #1; a node
+already holding a confirmed receipt is never re-run by a marker. Projection is a
+pure function of the durable receipts and markers, so a restart reconstructs the
+identical delivery, and the run stays terminal on one terminal receipt per node.
 
 ### The five node kinds
 
@@ -476,7 +489,7 @@ accountable operator command resolves.
 | --- | --- | --- | --- |
 | `role` | a logical name for who performs the work | the run-start command, to exactly one immutable agent-configuration revision (provider, model, auth profile) | yes — a role without exactly one bound configuration refuses the start |
 | `profile` | reusable provider-neutral **instruction**: a role's standing method, house output conventions | the document, revision-pinned | at binding like every versioned reference — an unresolved profile revision refuses. Never at executability: resolved text needs no execution capability |
-| `skills` | published **capability bundles** an adapter installs into a provider session: a named procedure and the tool grants it needs | the document, revision-pinned, attested per adapter | at binding, and at executability too — a skill the bound adapter does not attest in `skill_installation` refuses the run naming it |
+| `skills` | published **capability bundles** an adapter installs into a provider session: a named procedure and the tool grants it needs | the document, revision-pinned, attested per adapter | at binding, and at executability too — a skill the bound adapter does not attest in `skill_installation`, or a tool grant it carries that is unattested in `tool_grants`, refuses the run naming it |
 
 `role` keeps its V2 meaning exactly: the portable document names the logical role
 and the run-start command binds every graph role to exactly one immutable
@@ -585,8 +598,9 @@ alone:
 - the agent-configuration revision a `role` binds contributes `agent_execution` for
   its executor identity and provider mode; `mode` itself stays that configuration's
   own declaration, compared against the node rather than attested twice;
-- each bound `skills` revision contributes its `skill_installation` entry, each bound
-  `tools` revision its `tool_grants` entry;
+- each bound `skills` revision contributes its `skill_installation` entry **and the
+  `tool_grants` entry of every tool grant revision it carries**; each bound `tools`
+  revision contributes its own `tool_grants` entry;
 - a bound output schema materialized from an isolated workspace contributes
   `isolated_workspace`;
 - a bound adapter operation contributes its `external_effects` entry, a bound
@@ -600,6 +614,16 @@ alone:
 
 A refusal names the node, the reference through which the requirement entered, and
 the missing capability, so a nested one stays diagnosable.
+
+**A skill's carried grants are requirements, not decoration.** A skill is a
+capability bundle carrying tool grants, so each grant it carries must be attested
+under `tool_grants` exactly as a node-level `tools` entry is — and the author never
+restates it in node YAML, because a duplicated grant list is a second copy of the
+skill's own contract and the two would drift. The two capabilities prove different
+things and neither implies the other: `skill_installation` proves the adapter
+installs the bundle, `tool_grants` proves each grant is enforced. So an **attested**
+skill carrying an unattested grant refuses the whole run, naming the node, the skill
+revision the grant entered through, that grant revision, and `tool_grants`.
 
 Capability names are part of this contract, because a refusal must name something
 stable:
@@ -739,7 +763,19 @@ instead of reading a generic closed-schema error.
 ### What binds a node call
 
 `node-execution-request/v3` is a hash over an exact preimage, and the preimage is
-this list — nothing omitted, nothing added, canonical UTF-8, SHA-256, in this order:
+this list — nothing omitted, nothing added, SHA-256, in this order.
+
+**The encoding is the repository's existing one, not a second framing.** Every hash
+here is taken over `atelier2.contracts.hashing.frame`: the `ATELIER2\0` prefix, the
+length-prefixed domain naming the record, and each field carried under its own exact
+byte length, exactly as `node-execution-id/v1` and `run-agent-bindings/v1` already
+frame theirs. So delimiters are the length prefixes rather than separators and no
+value can impersonate a boundary; an absent optional value is the zero-length field
+in its declared position, so absence never shifts the frame; and a nested sequence is
+one field holding its own frame under its own domain, which is how the ordered lists
+below carry their members (`run-agent-binding/v1` inside `run-agent-bindings/v1` is
+the shape). V3 adds domains — `node-execution-request/v3`, `node-receipt/v3`,
+`context-package/v3`, `supersede-marker/v3` — and no new encoding rule.
 
 1. the **workflow revision hash**, which already covers the instruction bytes, the
    node's own `budget`, `retry` and `cancellation` references and every other pinned
@@ -751,10 +787,21 @@ this list — nothing omitted, nothing added, canonical UTF-8, SHA-256, in this 
    revision**; it is immutable and never rebound, so its id binds all of them;
 3. the run id and the node id — the same pair under every attempt, so a retry is the
    same logical operation;
-4. the **Context-Package hash** #1 requires: the hash over the ordered materialized
-   `required_context` package, then each member's
-   `(name, source revision, selector, content hash)`, so neither a re-ordered
-   package nor a swapped member is invisible;
+4. the **Context-Package hash** #1 requires — and it is the hash of the whole
+   package, not of the `required_context` list alone. One versioned immutable
+   `context-package/v3` manifest carries exactly the package Issue #1 enumerates,
+   which this record references and never re-decides or extends: the selected
+   requirement, epic and story material, the decisions and the ADR and owner
+   contracts, the workflow and node revision, the skills, the capability and budget
+   bounds, the source and target SHAs, the prior receipts, the provenance, and the
+   stated reason for each inclusion and exclusion. The materialized
+   `required_context` entries are **members** of that manifest, each
+   `(name, source revision, selector, content hash)` in declared order and each
+   addressable as `from: {context: <name>}`; the manifest is the container and is
+   what the hash covers, so a re-ordered member, a swapped member and a changed
+   non-member part of the package are each visible alike. It is written once,
+   immutably, before START, and #1's STARTED event confirms this exact manifest
+   hash;
 5. the ordered `available_context` grants as `(name, source revision, read operation
    revisions)` — what the node *may* read is part of what it was asked to do;
 6. the kind, and the `mode` where the kind has one;
@@ -768,15 +815,16 @@ changed bound policy is then a different logical operation rather than a silent
 re-run of the same one, and a retry with identical inputs stays the same operation.
 
 The node's terminal receipt is one envelope, owned by the core for every kind
-(`node-receipt/v3`): the node execution id, the disposition and its reason, **the
-request hash and, separately and by name, the Context-Package hash that request
+(`node-receipt/v3`): the node execution id, the persisted disposition and its reason,
+**the request hash and, separately and by name, the Context-Package hash that request
 bound**, one ordered tuple of `(name, schema revision, hash)` for the declared
 outputs, the access receipts actually used, and — for an Action — the derived
 idempotency key, the intent hash and the adapter's typed readback evidence as an
 opaque hashed payload. The package hash is carried, never re-derived: a reader asks
 "which context did this receipt run against?" without reconstructing the request
-preimage, and a supersede marker covering a context revision is matchable against
-receipts by that hash alone. One receipt per node, not one per output: #1 gives
+preimage, and a supersede marker matches a receipt when it enumerates that receipt's
+hash or that package hash — the marker resolved membership at write time, so no
+reader ever infers it from a hash. One receipt per node, not one per output: #1 gives
 every node exactly one terminal receipt, and per-output receipts would make that
 count ambiguous. That receipt change is the largest implementation cost of this
 record and is named, not hidden.
@@ -913,10 +961,12 @@ a started run keeps executing under the version it bound. There is no runtime
 **document** migration and none is needed.
 
 The **store** is the other half, and a named predecessor rather than a detail.
-`node-execution-request/v3`, `node-receipt/v3`, the closed disposition set and the
-supersede marker replace today's durable V2 receipt and single-successor transition
-shape, while [ADR 0001](0001-durable-runtime.md) creates schema V7 only in a truly
-empty canonical store, reopens only an exact V7 product schema, rejects any other
+`node-execution-request/v3`, `node-receipt/v3`, `context-package/v3`, the closed
+**persisted receipt disposition** set — the four values, never `stale`, which is
+projected and stores nothing — and the supersede marker replace today's durable V2
+receipt and single-successor transition shape, while
+[ADR 0001](0001-durable-runtime.md) creates schema V7 only in a truly empty
+canonical store, reopens only an exact V7 product schema, rejects any other
 store without mutation, and provides no runtime upgrade or downgrade migration. So:
 
 - **A store schema revision carrying the V3 records is a required predecessor of V3
@@ -943,10 +993,10 @@ store without mutation, and provides no runtime upgrade or downgrade migration. 
   Publishable stays deliberately wider than executable, so an operator can be shown
   a graph the machine will refuse to start.
 - The node execution request and receipt grow a version to carry named typed
-  outputs, input envelopes with dispositions, the bound Context-Package hash and
-  resolved revision ids. With the disposition set and the supersede marker that is a
-  durable-contract change needing crash evidence and the store cutover above, not a
-  field addition.
+  outputs, input envelopes with their delivery status, the bound Context-Package
+  manifest hash and resolved revision ids. With the persisted-disposition set and
+  the supersede marker that is a durable-contract change needing crash evidence and
+  the store cutover above, not a field addition.
 - The runtime's terminal handling and single-successor advance both move: to the
   run-level terminal condition over dispositions, and to a ready set over
   `depends_on`. Terminal handling is bound to the Subworkflow node kind today, and
@@ -963,7 +1013,7 @@ This record is a draft; nothing below exists yet.
   above is proven by its own behavioral case, parametrized over the refusal list
   rather than copied per case — including each kind's refused fields.
 - A failed dependency terminates the whole graph: under `all_succeeded` the
-  dependent gets a `blocked` receipt naming the dependency and its disposition,
+  dependent gets a `blocked` receipt naming the dependency and its delivery status,
   that block propagates to its own dependents, running siblings still drain, and
   after restart every node holds exactly one terminal receipt.
 - Under `all_terminal` a failed, cancelled and stale branch each arrive as the
@@ -975,10 +1025,17 @@ This record is a draft; nothing below exists yet.
   produces; a single-dependency `all_terminal` node starts on a failed upstream and
   receives its receipt envelope.
 - A supersede marker over a confirmed receipt writes no second terminal receipt and
-  leaves that receipt's disposition, output hashes and bytes unchanged, while the
-  projection turns `stale`: an unstarted `all_succeeded` dependent blocks naming
-  `dependency_stale`, an `all_terminal` one receives `status: stale` with the
-  marker hash, a confirmed node is not re-run, and a restart re-projects identically.
+  leaves that receipt's persisted disposition, output hashes and bytes unchanged,
+  while the projection turns `stale`: an unstarted `all_succeeded` dependent blocks
+  naming `dependency_stale`, an `all_terminal` one receives `status: stale` with the
+  marker hash, and a confirmed node is not re-run.
+- Persisted `stale` is impossible: a receipt write carrying it is refused as a
+  durable defect, and no stored receipt in any of the cases above holds it.
+- A marker naming a context revision covers exactly the receipts whose enumerated
+  Context-Package hashes it lists — a receipt bound to a package the marker does not
+  enumerate keeps its `succeeded` projection — and the whole projection is
+  reconstructed identically after a process restart from the durable receipts and
+  markers alone, with no membership index consulted and no package re-derived.
 - Result mapping refuses instead of inventing: a deterministic or Action `outputs`
   entry the bound operation revision does not declare, and one declared under a
   different schema revision, are each refused at binding naming the output, while a
@@ -1001,15 +1058,22 @@ This record is a draft; nothing below exists yet.
   executor each refuse the run naming node, reference and capability; a document
   whose only context is `required_context` starts against a capability revision
   attesting `context_materialization` alone, without `context_resolution`.
+- The nested case is proven too: a skill revision attested in `skill_installation`
+  whose carried tool grant revision is unattested in `tool_grants` refuses the run,
+  naming the node, the skill, that grant and `tool_grants` — and the same document
+  starts unchanged once the carried grant is attested, with no `tools` entry added
+  to the node.
 - The worked example above parses, publishes, and round-trips byte-identically,
   and the V1/V2 example documents from the existing suites still parse unchanged.
-- The request and receipt hash vectors are literal and pinned, one per dimension of
-  the preimage: changing the workflow revision, the run configuration revision, the
-  runtime capability revision, a bound budget, retry or cancellation revision, the
-  Context-Package hash, an input envelope's status, or a declared output's schema
-  revision — each alone — yields a different request identity, while an identical
-  retry yields the identical one; and a receipt vector binds its request hash and
-  its Context-Package hash independently readable.
+- The request and receipt hash vectors are literal and pinned, computed over
+  `atelier2.contracts.hashing.frame` and reproduced by no other framing, one per
+  dimension of the preimage: changing the workflow revision, the run configuration
+  revision, the runtime capability revision, a bound budget, retry or cancellation
+  revision, a `required_context` member of the Context-Package manifest, a
+  non-member part of that manifest, an input envelope's status, or a declared
+  output's schema revision — each alone — yields a different request identity, while
+  an identical retry yields the identical one; and a receipt vector binds its request
+  hash and its Context-Package hash independently readable.
 - One revision rendered through publish preview, API projection and cockpit yields
   the same composed preview hash, and every author-configurable field is present
   and editable in each while the configuration is proposed. Editing a **bound**
