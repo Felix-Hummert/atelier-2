@@ -12,7 +12,7 @@ import {
   startLoading,
   streamProjection
 } from "../../src/lib/runProjection";
-import type { Run, WorkflowRevisionDetail } from "../../src/api/client";
+import type { RunV1, WorkflowRevisionDetail } from "../../src/api/client";
 
 const digest = "a".repeat(64);
 
@@ -150,10 +150,10 @@ describe("read-only node rail", () => {
 
   it("shows an accepted reconciliation as Working even while the snapshot still waits", () => {
     const value = waitingRun();
-    const pending: Run = {
+    const pending: RunV1 = {
       ...value,
       state: "WAITING_RECONCILIATION",
-      current_node: workflow().graph.nodes[1]!,
+      current_node: workflow().graph.nodes[1]! as RunV1["current_node"],
       waiting: {
         type: "WAITING_RECONCILIATION",
         node_id: "action",
@@ -247,26 +247,26 @@ function workflow(): WorkflowRevisionDetail {
   };
 }
 
-function waitingRun(): Run {
+function waitingRun(): RunV1 {
   return {
     run_id: "run",
     public_run_reference: "run1.cnVu",
     workflow_revision_hash: digest,
     state_version: 3,
     state: "WAITING_INPUT",
-    current_node: workflow().graph.nodes[2]!,
+    current_node: workflow().graph.nodes[2]! as RunV1["current_node"],
     waiting: { type: "WAITING_INPUT", node_id: "wait", answer_type: "integer" },
     terminal_hash: null,
     latest_event_cursor: "event1.cnVu.3"
   };
 }
 
-function startedRun(): Run {
+function startedRun(): RunV1 {
   return {
     ...waitingRun(),
     state_version: 1,
     state: "STARTED",
-    current_node: workflow().graph.nodes[1]!,
+    current_node: workflow().graph.nodes[1]! as RunV1["current_node"],
     waiting: { type: "NONE" },
     latest_event_cursor: "event1.cnVu.1"
   };

@@ -7,6 +7,7 @@ import {
   createCockpitApi,
   type CockpitApi,
   type Run,
+  type RunV1,
   type RunEventHandlers,
   type WorkflowRevisionDetail
 } from "../../src/api/client";
@@ -279,6 +280,8 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     listRuns: vi.fn(async () => ({ items: [], next_after: null })),
     listWorkflowRevisions: vi.fn(async () => ({ items: [], next_after_revision_hash: null })),
     publish: vi.fn(),
+    publishAuthProfile: vi.fn(),
+    publishAgentConfiguration: vi.fn(),
     start: vi.fn(),
     answer: vi.fn(),
     reconcile: vi.fn(),
@@ -306,14 +309,14 @@ function revision(): WorkflowRevisionDetail {
   };
 }
 
-function startedRun(): Run {
+function startedRun(): RunV1 {
   return {
     run_id: "run",
     public_run_reference: publicReference,
     workflow_revision_hash: digest,
     state_version: 1,
     state: "STARTED",
-    current_node: revision().graph.nodes[1]!,
+    current_node: revision().graph.nodes[1]! as RunV1["current_node"],
     waiting: { type: "NONE" },
     terminal_hash: null,
     latest_event_cursor: "event1.cnVu.1"
@@ -321,8 +324,8 @@ function startedRun(): Run {
 }
 
 function reconciliationRun(
-  pending_command: Extract<Run["waiting"], { type: "WAITING_RECONCILIATION" }>["pending_command"] = null
-): Run {
+  pending_command: Extract<RunV1["waiting"], { type: "WAITING_RECONCILIATION" }>["pending_command"] = null
+): RunV1 {
   return {
     ...startedRun(),
     state_version: pending_command === null ? 2 : 3,
@@ -340,7 +343,7 @@ function reconciliationRun(
   };
 }
 
-function afterReconciliationRun(): Run {
+function afterReconciliationRun(): RunV1 {
   return {
     ...startedRun(),
     state_version: 4,

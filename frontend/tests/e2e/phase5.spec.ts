@@ -4,6 +4,43 @@ import { expect, test, type Page } from "@playwright/test";
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
 
+test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
+  await page.goto("/atelier/new");
+  await page.getByLabel("Publish YAML").check();
+  await page.getByLabel("Exact workflow YAML").fill(`format_version: 2
+start: build
+nodes:
+  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: build, type: agent, role: builder, job: prove-heartbeat, next: done}
+`);
+  await page.getByRole("button", { name: "Review publication" }).click();
+  await expect(page.getByRole("dialog", { name: "Publish this exact workflow?" })).toBeVisible();
+  await page.screenshot({ path: "test-results/v2-publish-review-desktop.png", fullPage: true });
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+
+  await page.getByLabel("Profile ID").fill("local");
+  await page.getByLabel("Revision").fill("1");
+  await page.getByLabel("Provider").fill("e2e");
+  await page.getByLabel("Auth mode").selectOption("subscription");
+  await page.getByLabel("Model").fill("test-model");
+  await page.getByLabel("Executor").fill("blocking/v1");
+  await page.screenshot({ path: "test-results/v2-ready-desktop.png", fullPage: true });
+  await page.getByRole("button", { name: "Start" }).click();
+
+  const working = page.getByRole("article", { name: "build — Working" });
+  await expect(working).toContainText("builder");
+  await expect(working).toContainText("e2e · test-model");
+  await expect(working).toContainText("Subscription · blocking/v1");
+  await expect(async () => {
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(working).toContainText("Attempt 1");
+  }).toPass();
+  await page.screenshot({ path: "test-results/v2-working-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await page.screenshot({ path: "test-results/v2-working-390x844.png", fullPage: true });
+});
+
 test("mobile Found and Absent reconcile exact durable runs", async ({ browser }) => {
   const mobile = await browser.newContext({
     viewport: { width: 390, height: 844 },

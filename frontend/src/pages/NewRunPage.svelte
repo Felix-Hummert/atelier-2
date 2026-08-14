@@ -1,13 +1,21 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
-  import { CockpitRequestError, type CockpitApi, type WorkflowRevisionPage } from "../api/client";
+  import {
+    CockpitRequestError,
+    type AuthProfileInput,
+    type CockpitApi,
+    type RunV2,
+    type WorkflowRevisionDetail,
+    type WorkflowRevisionPage
+  } from "../api/client";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import {
     MutationJournal,
     createRunId as makeRunId,
     publicationMutation,
     startMutation,
+    startMutationV2,
     type JournalEntry,
     type PublishMutation,
     type StartMutation
@@ -19,26 +27,61 @@
   export let navigate: (path: string) => void;
   export let createRunId: () => string = makeRunId;
 
+  interface BindingDraft {
+    role: string;
+    profileId: string;
+    revisionNumber: string;
+    providerId: string;
+    authMode: "" | AuthProfileInput["auth_mode"];
+    model: string;
+    executorRevision: string;
+    error: string | null;
+  }
+
+  interface RunDraft {
+    revision: WorkflowRevisionDetail;
+    runId: string;
+    bindings: BindingDraft[];
+  }
+
   let revisions: RetainedResource<WorkflowRevisionPage> = {
     confirmed: null,
     request: { state: "idle" }
   };
   let mode: "saved" | "publish" = "saved";
   let exactYaml = "";
-  let draft: { revisionHash: string; runId: string } | null = null;
+  let draft: RunDraft | null = null;
   let failureMessage: string | null = null;
   let publicationOpen = false;
   let publicationTrigger: HTMLButtonElement;
   let publicationDialog: HTMLDivElement;
   let pending: JournalEntry[] = [];
   let busy = false;
+  let selectionGeneration = 0;
+  let selectionLoading = false;
 
-  function chooseSaved(revisionHash: string): void {
-    draft = { revisionHash, runId: createRunId() };
+  async function chooseSaved(revisionHash: string): Promise<void> {
+    const generation = ++selectionGeneration;
+    busy = true;
+    selectionLoading = true;
     failureMessage = null;
+    try {
+      const revision = await cockpitApi.getWorkflowRevision(revisionHash);
+      if (generation === selectionGeneration) prepareDraft(revision);
+    } catch (error) {
+      if (generation === selectionGeneration) showFailure(error, "The workflow could not be loaded.");
+    } finally {
+      if (generation === selectionGeneration) {
+        busy = false;
+        selectionLoading = false;
+      }
+    }
   }
 
   function changeWorkflowSource(): void {
+    selectionGeneration += 1;
+    selectionLoading = false;
+    busy = false;
     draft = null;
     failureMessage = null;
   }
@@ -104,14 +147,37 @@
 
   async function startDraft(): Promise<void> {
     if (draft === null) return;
+    const selected = draft;
+    let mutation: StartMutation | null = null;
+    let publishedBindings: RunV2["agent_bindings"] | null = null;
+    if (selected.revision.graph.format_version === 2) {
+      if (!validateBindings(selected.bindings)) return;
+      busy = true;
+      failureMessage = null;
+      const bindings = selected.bindings.map((binding) => ({ ...binding }));
+      publishedBindings = await publishBindings(bindings);
+      if (publishedBindings === null) {
+        busy = false;
+        return;
+      }
+      mutation = startMutationV2(
+        selected.runId,
+        selected.revision.revision_hash,
+        publishedBindings.map(({ role, agent_configuration_revision_hash }) => ({
+          role,
+          agent_configuration_revision_hash
+        }))
+      );
+    } else {
+      mutation = startMutation(selected.runId, selected.revision.revision_hash);
+    }
     busy = true;
     failureMessage = null;
-    const mutation = startMutation(draft.runId, draft.revisionHash);
     let prepared = false;
     try {
       await mutationJournal.prepare(mutation);
       prepared = true;
-      await deliverStart(mutation);
+      await deliverStart(mutation, publishedBindings);
     } catch (error) {
       if (prepared) await recordDeliveryFailure(mutation.mutation_id, error);
       showFailure(error, "The run start could not be confirmed.");
@@ -152,11 +218,124 @@
       document_base64: result.value.document_base64
     });
     if (!resolved) throw new Error("The publication response did not prove the exact request.");
-    draft = { revisionHash: result.value.revision_hash, runId: createRunId() };
+    prepareDraft(result.value);
   }
 
-  async function deliverStart(mutation: StartMutation): Promise<void> {
+  function prepareDraft(revision: WorkflowRevisionDetail): void {
+    const roles = revision.graph.format_version === 2
+      ? [...new Set(
+          revision.graph.nodes
+            .filter((node) => node.type === "agent")
+            .map((node) => node.role)
+        )]
+      : [];
+    draft = {
+      revision,
+      runId: createRunId(),
+      bindings: roles.map((role) => ({
+        role,
+        profileId: "",
+        revisionNumber: "",
+        providerId: "",
+        authMode: "",
+        model: "",
+        executorRevision: "",
+        error: null
+      }))
+    };
+  }
+
+  async function publishBindings(bindings: BindingDraft[]): Promise<RunV2["agent_bindings"] | null> {
+    const published: RunV2["agent_bindings"] = [];
+    for (const binding of bindings) {
+      try {
+        const authInput = {
+          profile_id: binding.profileId,
+          revision_number: Number(binding.revisionNumber),
+          provider_id: binding.providerId,
+          auth_mode: requireAuthMode(binding.authMode)
+        };
+        const auth = await cockpitApi.publishAuthProfile(authInput);
+        if (!sameFields(auth.value, authInput)) throw new Error("The auth response changed these fields.");
+        const configurationInput = {
+          model: binding.model,
+          auth_profile_revision_hash: auth.value.auth_profile_revision_hash,
+          executor_revision: binding.executorRevision
+        };
+        const configuration = await cockpitApi.publishAgentConfiguration(configurationInput);
+        if (!sameFields(configuration.value, {
+          ...configurationInput,
+          provider_id: binding.providerId,
+          auth_mode: binding.authMode
+        })) throw new Error("The configuration response changed these fields.");
+        published.push({
+          role: binding.role,
+          agent_configuration_revision_hash: configuration.value.agent_configuration_revision_hash,
+          ...auth.value,
+          model: binding.model,
+          executor_revision: binding.executorRevision
+        });
+      } catch (error) {
+        setBindingError(binding.role, error instanceof Error ? error.message : "Binding failed.");
+        return null;
+      }
+    }
+    return published;
+  }
+
+  function validateBindings(bindings: BindingDraft[]): boolean {
+    let valid = true;
+    for (const binding of bindings) {
+      const revisionNumber = Number(binding.revisionNumber);
+      const complete =
+        binding.profileId.length > 0 &&
+        /^(?:[1-9][0-9]*)$/.test(binding.revisionNumber) &&
+        Number.isSafeInteger(revisionNumber) &&
+        binding.providerId.length > 0 &&
+        binding.authMode !== "" &&
+        binding.model.length > 0 &&
+        binding.executorRevision.length > 0;
+      binding.error = complete ? null : "Complete every field.";
+      valid &&= complete;
+    }
+    draft = draft === null ? null : { ...draft, bindings: [...bindings] };
+    return valid;
+  }
+
+  function requireAuthMode(value: BindingDraft["authMode"]): AuthProfileInput["auth_mode"] {
+    if (value === "") throw new Error("Auth mode is required.");
+    return value;
+  }
+
+  function sameFields(actual: object, expected: object): boolean {
+    return Object.entries(expected).every(([key, value]) => actual[key as keyof typeof actual] === value);
+  }
+
+  function setBindingError(role: string, error: string): void {
+    if (draft === null) return;
+    draft = {
+      ...draft,
+      bindings: draft.bindings.map((binding) => binding.role === role ? { ...binding, error } : binding)
+    };
+  }
+
+  async function deliverStart(
+    mutation: StartMutation,
+    expectedBindings: RunV2["agent_bindings"] | null = null
+  ): Promise<void> {
     const result = await cockpitApi.start(mutation);
+    const returnedBindings = "workflow_format_version" in result.value
+      ? result.value.agent_bindings
+      : null;
+    if (
+      expectedBindings !== null &&
+      (returnedBindings === null ||
+        returnedBindings.length !== expectedBindings.length ||
+        expectedBindings.some((binding, index) =>
+          !sameFields(returnedBindings[index] ?? {}, binding) ||
+          !sameFields(binding, returnedBindings[index] ?? {})
+        ))
+    ) throw new Error("The start response changed the exact role bindings.");
     const resolved = await mutationJournal.resolve(mutation.mutation_id, {
       type: "start_response",
       status: result.status,
@@ -222,11 +401,12 @@
       <legend>Saved workflow</legend>
       {#each revisions.confirmed?.items ?? [] as revision (revision.revision_hash)}
         <label>
-          <input type="radio" name="saved-revision" value={revision.revision_hash} onchange={() => chooseSaved(revision.revision_hash)} />
+          <input type="radio" name="saved-revision" value={revision.revision_hash} disabled={selectionLoading} onchange={() => { void chooseSaved(revision.revision_hash); }} />
           <code>{revision.revision_hash}</code>
         </label>
       {/each}
       {#if revisions.request.state === "loading"}<p class="status" role="status">Loading saved workflows…</p>{/if}
+      {#if selectionLoading}<p class="status" role="status">Loading workflow…</p>{/if}
       {#if revisions.confirmed?.items.length === 0}<p class="muted">No saved workflows yet.</p>{/if}
     </fieldset>
   {:else}
@@ -238,6 +418,28 @@
   {/if}
 
   {#if draft !== null}
+    {#if draft.revision.graph.format_version === 2 && draft.bindings.length > 0}
+      <section class="binding-list" aria-labelledby="binding-list-title">
+        <p class="eyebrow">Agent setup</p>
+        <h2 id="binding-list-title">Bindings</h2>
+        {#each draft.bindings as binding (binding.role)}
+          <article class="node-card node-done binding-card" aria-label={`Binding ${binding.role}`}>
+            <header class="node-header">
+              <span class="node-kind">Agent role</span><h3>{binding.role}</h3>
+            </header>
+            <div class="binding-grid">
+              <label>Profile ID<input type="text" bind:value={binding.profileId} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              <label>Revision<input type="text" inputmode="numeric" bind:value={binding.revisionNumber} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              <label>Provider<input type="text" bind:value={binding.providerId} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              <label>Auth mode<select bind:value={binding.authMode} disabled={busy} aria-invalid={binding.error !== null}><option value="">Choose</option><option value="subscription">Subscription</option><option value="api_key">API key</option></select></label>
+              <label>Model<input type="text" bind:value={binding.model} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              <label>Executor<input type="text" bind:value={binding.executorRevision} disabled={busy} aria-invalid={binding.error !== null} /></label>
+            </div>
+            {#if binding.error !== null}<p class="binding-error" role="alert">{binding.error}</p>{/if}
+          </article>
+        {/each}
+      </section>
+    {/if}
     <section class="start-card" aria-labelledby="start-title">
       <div><p class="eyebrow">Ready</p><h2 id="start-title">Run ID</h2><code>{draft.runId}</code></div>
       <button class="primary" type="button" disabled={busy} onclick={startDraft}>Start</button>

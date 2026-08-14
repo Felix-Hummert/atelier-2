@@ -22,6 +22,11 @@ export interface StartMutation extends MutationBase {
   content_type: "application/json";
 }
 
+export interface StartAgentBinding {
+  role: string;
+  agent_configuration_revision_hash: string;
+}
+
 export async function publicationMutation(document: string): Promise<PublishMutation> {
   const bytes = new TextEncoder().encode(document);
   const revisionHash = await sha256Hex(bytes);
@@ -38,6 +43,28 @@ export async function publicationMutation(document: string): Promise<PublishMuta
 export function startMutation(runId: string, workflowRevisionHash: string): StartMutation {
   const body = new TextEncoder().encode(
     JSON.stringify({ run_id: runId, workflow_revision_hash: workflowRevisionHash })
+  );
+  return {
+    mutation_id: `start:${runId}`,
+    kind: "start",
+    target: "/atelier/api/v1/runs",
+    content_type: "application/json",
+    body_base64: encodeBase64(body)
+  };
+}
+
+export function startMutationV2(
+  runId: string,
+  workflowRevisionHash: string,
+  agentBindings: readonly StartAgentBinding[]
+): StartMutation {
+  const body = new TextEncoder().encode(
+    JSON.stringify({
+      workflow_format_version: 2,
+      run_id: runId,
+      workflow_revision_hash: workflowRevisionHash,
+      agent_bindings: agentBindings
+    })
   );
   return {
     mutation_id: `start:${runId}`,
@@ -405,7 +432,33 @@ async function requirePublish(envelope: PublishMutation): Promise<void> {
 function requireStart(envelope: StartMutation): void {
   requireExactKeys(envelope, envelopeKeys(envelope));
   const body = requireJsonBody(envelope.body_base64);
-  requireExactKeys(body, ["run_id", "workflow_revision_hash"]);
+  const isV2 = body.workflow_format_version === 2;
+  requireExactKeys(
+    body,
+    isV2
+      ? ["workflow_format_version", "run_id", "workflow_revision_hash", "agent_bindings"]
+      : ["run_id", "workflow_revision_hash"]
+  );
+  if (isV2) {
+    if (!Array.isArray(body.agent_bindings)) {
+      throw new Error("invalid V2 start mutation bindings");
+    }
+    const roles = new Set<string>();
+    for (const value of body.agent_bindings) {
+      if (!isRecord(value)) throw new Error("invalid V2 start mutation binding");
+      requireExactKeys(value, ["role", "agent_configuration_revision_hash"]);
+      if (
+        typeof value.role !== "string" ||
+        value.role.length === 0 ||
+        roles.has(value.role) ||
+        typeof value.agent_configuration_revision_hash !== "string" ||
+        !digestPattern.test(value.agent_configuration_revision_hash)
+      ) {
+        throw new Error("invalid V2 start mutation binding");
+      }
+      roles.add(value.role);
+    }
+  }
   if (
     envelope.target !== "/atelier/api/v1/runs" ||
     envelope.content_type !== "application/json" ||
