@@ -57,14 +57,13 @@
   let publicationTrigger: HTMLButtonElement;
   let publicationDialog: HTMLDivElement;
   let pending: JournalEntry[] = [];
-  let busy = false;
+  let operation: "load" | "publish" | "start" | "retry" | null = null;
+  $: busy = operation !== null;
   let selectionGeneration = 0;
-  let selectionLoading = false;
 
   async function chooseSaved(revisionHash: string): Promise<void> {
     const generation = ++selectionGeneration;
-    busy = true;
-    selectionLoading = true;
+    operation = "load";
     failureMessage = null;
     try {
       const revision = await cockpitApi.getWorkflowRevision(revisionHash);
@@ -72,17 +71,13 @@
     } catch (error) {
       if (generation === selectionGeneration) showFailure(error, "The workflow could not be loaded.");
     } finally {
-      if (generation === selectionGeneration) {
-        busy = false;
-        selectionLoading = false;
-      }
+      if (generation === selectionGeneration) operation = null;
     }
   }
 
   function changeWorkflowSource(): void {
     selectionGeneration += 1;
-    selectionLoading = false;
-    busy = false;
+    operation = null;
     draft = null;
     failureMessage = null;
   }
@@ -130,7 +125,7 @@
 
   async function confirmPublication(): Promise<void> {
     publicationOpen = false;
-    busy = true;
+    operation = "publish";
     failureMessage = null;
     let prepared: PublishMutation | null = null;
     try {
@@ -141,7 +136,7 @@
       if (prepared !== null) await recordDeliveryFailure(prepared.mutation_id, error);
       showFailure(error, "The workflow could not be published.");
     } finally {
-      busy = false;
+      operation = null;
       await loadPending();
     }
   }
@@ -152,12 +147,12 @@
     let mutation: StartMutation | null = null;
     if (selected.revision.graph.format_version === 2) {
       if (!validateBindings(selected.bindings)) return;
-      busy = true;
+      operation = "start";
       failureMessage = null;
       const bindings = selected.bindings.map((binding) => ({ ...binding }));
       const publishedBindings = await publishBindings(bindings);
       if (publishedBindings === null) {
-        busy = false;
+        operation = null;
         return;
       }
       mutation = startMutationV2(
@@ -171,7 +166,7 @@
     } else {
       mutation = startMutation(selected.runId, selected.revision.revision_hash);
     }
-    busy = true;
+    operation = "start";
     failureMessage = null;
     let prepared = false;
     try {
@@ -182,13 +177,13 @@
       if (prepared) await recordDeliveryFailure(mutation.mutation_id, error);
       showFailure(error, "The run start could not be confirmed.");
     } finally {
-      busy = false;
+      operation = null;
       await loadPending();
     }
   }
 
   async function retry(entry: JournalEntry): Promise<void> {
-    busy = true;
+    operation = "retry";
     failureMessage = null;
     try {
       if (entry.kind === "publish") await deliverPublication(entry);
@@ -197,7 +192,7 @@
       await recordDeliveryFailure(entry.mutation_id, error);
       showFailure(error, "The exact retry could not be confirmed.");
     } finally {
-      busy = false;
+      operation = null;
       await loadPending();
     }
   }
@@ -223,11 +218,7 @@
 
   function prepareDraft(revision: WorkflowRevisionDetail): void {
     const roles = revision.graph.format_version === 2
-      ? [...new Set(
-          revision.graph.nodes
-            .filter((node) => node.type === "agent")
-            .map((node) => node.role)
-        )]
+      ? [...new Set(revision.graph.nodes.filter((node) => node.type === "agent").map((node) => node.role))]
       : [];
     draft = {
       revision,
@@ -311,7 +302,7 @@
     return Object.entries(expected).every(([key, value]) => actual[key as keyof typeof actual] === value);
   }
 
-  function setBindingError(role: string, error: string): void {
+  function setBindingError(role: string, error: string | null): void {
     if (draft === null) return;
     draft = {
       ...draft,
@@ -405,7 +396,7 @@
         </label>
       {/each}
       {#if revisions.request.state === "loading"}<p class="status" role="status">Loading saved workflows…</p>{/if}
-      {#if selectionLoading}<p class="status" role="status">Loading workflow…</p>{/if}
+      {#if operation === "load"}<p class="status" role="status">Loading workflow…</p>{/if}
       {#if revisions.confirmed?.items.length === 0}<p class="muted">No saved workflows yet.</p>{/if}
     </fieldset>
   {:else}
@@ -416,23 +407,26 @@
     </div>
   {/if}
 
+  {#if operation === "publish"}<p class="status" role="status">Publishing workflow…</p>
+  {:else if operation === "retry"}<p class="status" role="status">Retrying exact request…</p>{/if}
+
   {#if draft !== null}
     {#if draft.revision.graph.format_version === 2 && draft.bindings.length > 0}
       <section class="binding-list" aria-labelledby="binding-list-title">
         <p class="eyebrow">Agent setup</p>
         <h2 id="binding-list-title">Bindings</h2>
         {#each draft.bindings as binding (binding.role)}
-          <article class="node-card binding-card" class:node-queued={!busy && binding.error === null} class:node-working={busy && binding.error === null} class:node-needs_you={binding.error !== null} aria-label={`Binding ${binding.role}`}>
+          <article class="node-card binding-card" class:node-queued={operation !== "start" && binding.error === null} class:node-working={operation === "start" && binding.error === null} class:node-needs_you={binding.error !== null} aria-label={`Binding ${binding.role}`}>
             <header class="node-header">
               <span class="node-kind">Agent role</span><h3>{binding.role}</h3>
             </header>
             <div class="binding-grid">
-              <label>Profile ID<input type="text" bind:value={binding.profileId} disabled={busy} aria-invalid={binding.error !== null} /></label>
-              <label>Revision<input type="text" inputmode="numeric" bind:value={binding.revisionNumber} disabled={busy} aria-invalid={binding.error !== null} /></label>
-              <label>Provider<input type="text" bind:value={binding.providerId} disabled={busy} aria-invalid={binding.error !== null} /></label>
-              <label>Auth mode<select bind:value={binding.authMode} disabled={busy} aria-invalid={binding.error !== null}><option value="">Choose</option><option value="subscription">Subscription</option><option value="api_key">API key</option></select></label>
-              <label>Model<input type="text" bind:value={binding.model} disabled={busy} aria-invalid={binding.error !== null} /></label>
-              <label>Executor<input type="text" bind:value={binding.executorRevision} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              <label>Profile ID<input type="text" bind:value={binding.profileId} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              <label>Revision<input type="text" inputmode="numeric" bind:value={binding.revisionNumber} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              <label>Provider<input type="text" bind:value={binding.providerId} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              <label>Auth mode<select bind:value={binding.authMode} onchange={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null}><option value="">Choose</option><option value="subscription">Subscription</option><option value="api_key">API key</option></select></label>
+              <label>Model<input type="text" bind:value={binding.model} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              <label>Executor<input type="text" bind:value={binding.executorRevision} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
             </div>
             {#if binding.error !== null}<p class="binding-error" role="alert">{binding.error}</p>{/if}
           </article>
@@ -440,10 +434,10 @@
       </section>
     {/if}
     <section class="start-card" aria-labelledby="start-title">
-      <div><p class="eyebrow">Ready</p><h2 id="start-title">Run ID</h2><code>{draft.runId}</code></div>
+      <div><p class="eyebrow">{operation === "start" ? "Starting" : "Ready"}</p><h2 id="start-title">Run ID</h2><code>{draft.runId}</code></div>
       <button class="primary" type="button" disabled={busy} onclick={startDraft}>Start</button>
     </section>
-    {#if busy}<p class="status" role="status">Starting the exact run…</p>{/if}
+    {#if operation === "start"}<p class="status" role="status">Starting the exact run…</p>{/if}
   {/if}
 </section>
 

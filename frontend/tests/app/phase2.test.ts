@@ -103,15 +103,13 @@ describe("Phase 2 mobile run entry", () => {
     const authHash = "b".repeat(64);
     let publishedRevision: WorkflowRevisionDetail;
     let boundRun: RunV2;
-    let startResponses = 0;
+    let startResponses = 0, continueRetry = (): void => {};
+    const retryGate = new Promise<void>((resolve) => { continueRetry = resolve; });
     let rejectConfiguration = (reason: unknown): void => void reason;
     const configurationFailure = new Promise<never>((_, reject) => { rejectConfiguration = reject; });
     const cockpitApi = api({
       publish: vi.fn(async (mutation) => {
-        publishedRevision = v2Revision(
-          mutation.mutation_id.slice("publish:".length),
-          mutation.body_base64
-        );
+        publishedRevision = v2Revision(mutation.mutation_id.slice("publish:".length), mutation.body_base64);
         return { status: 201, value: publishedRevision };
       }),
       publishAuthProfile: vi.fn(async (input) => ({
@@ -127,12 +125,11 @@ describe("Phase 2 mobile run entry", () => {
           agent_configuration_revision_hash: input.model === "sonnet" ? "c".repeat(64) : "d".repeat(64)
         }
       })).mockReturnValueOnce(configurationFailure),
-      start: vi.fn(async (mutation) => ({
-        status: 201,
-        value: ++startResponses < 3
-          ? v2Run(jsonBody(mutation), [])
-          : (boundRun = v2Run(jsonBody(mutation), v2Bindings(authHash)))
-      })),
+      start: vi.fn(async (mutation) => {
+        if (++startResponses === 2) await retryGate;
+        return { status: 201, value: startResponses < 3
+          ? v2Run(jsonBody(mutation), []) : (boundRun = v2Run(jsonBody(mutation), v2Bindings(authHash))) };
+      }),
       getRun: vi.fn(async () => boundRun),
       getWorkflowRevision: vi.fn(async () => publishedRevision)
     });
@@ -156,10 +153,10 @@ describe("Phase 2 mobile run entry", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(screen.getAllByText("Complete every field.")).toHaveLength(2);
     expect(screen.getByRole("article", { name: "Binding builder" }).classList).toContain("node-needs_you");
-    expect(cockpitApi.publishAuthProfile).not.toHaveBeenCalled();
-
     await fillBinding(0, ["max", "1", "anthropic", "subscription", "sonnet", "claude-subscription/v1"]);
     await fillBinding(1, ["review-key", "2", "openai", "api_key", "gpt-5.6-sol", "codex/v1"]);
+    expect(screen.queryByText("Complete every field.")).toBeNull();
+    expect(cockpitApi.publishAuthProfile).not.toHaveBeenCalled();
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(screen.getByRole("status").textContent).toContain("Starting the exact run");
     expect(screen.getByLabelText("Saved workflow")).toHaveProperty("disabled", true);
@@ -172,7 +169,9 @@ describe("Phase 2 mobile run entry", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByText("The start response changed the exact role bindings.")).toBeTruthy();
     await fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("status").textContent).toContain("Retrying exact request");
+    expect(screen.getByRole("article", { name: "Binding builder" }).classList).toContain("node-queued");
+    continueRetry();
     await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toHaveProperty("disabled", false));
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
@@ -448,11 +447,9 @@ function revision(): WorkflowRevisionDetail {
 
 function v2Revision(hash: string, documentBase64 = ""): WorkflowRevisionDetail {
   return {
-    revision_hash: hash,
-    document_base64: documentBase64,
+    revision_hash: hash, document_base64: documentBase64,
     graph: {
-      format_version: 2,
-      start_node_id: "build",
+      format_version: 2, start_node_id: "build",
       nodes: [
         { type: "agent", node_id: "build", role: "builder", job: "Build", next_node_id: "review" },
         { type: "agent", node_id: "review", role: "reviewer", job: "Review", next_node_id: "fix" },
@@ -475,13 +472,9 @@ function v2Run(start: unknown, agentBindings: RunV2["agent_bindings"]): RunV2 {
     state_version: 0,
     state: "STARTED",
     current_node: v2Revision(workflowRevisionHash).graph.nodes[0]! as RunV2["current_node"],
-    agent_attempts: [{
-      attempt_id: "1".repeat(64), node_execution_id: "2".repeat(64), request_hash: "3".repeat(64),
-      attempt_ordinal: 1, state: "PREPARED", failure_code: null, cancellation: null
-    }],
-    waiting: { type: "NONE" },
-    terminal_hash: null,
-    latest_event_cursor: null
+    agent_attempts: [{ attempt_id: "1".repeat(64), node_execution_id: "2".repeat(64), request_hash: "3".repeat(64),
+      attempt_ordinal: 1, state: "PREPARED", failure_code: null, cancellation: null }],
+    waiting: { type: "NONE" }, terminal_hash: null, latest_event_cursor: null
   };
 }
 
@@ -496,9 +489,7 @@ async function fillBinding(index: number, values: readonly string[]): Promise<vo
   const labels = ["Profile ID", "Revision", "Provider", "Auth mode", "Model", "Executor"];
   for (const [field, label] of labels.entries()) {
     const control = screen.getAllByLabelText(label)[index]!;
-    await (label === "Auth mode" ? fireEvent.change : fireEvent.input)(control, {
-      target: { value: values[field] }
-    });
+    await (label === "Auth mode" ? fireEvent.change : fireEvent.input)(control, { target: { value: values[field] } });
   }
 }
 

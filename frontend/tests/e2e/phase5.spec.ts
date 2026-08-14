@@ -7,16 +7,17 @@ const absentReference = "run1.YWJzZW50LXJ1bg";
 test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await page.goto("/atelier/new");
   await page.getByLabel("Publish YAML").check();
-  await page.getByLabel("Exact workflow YAML").fill(`format_version: 2
-start: build
-nodes:
-  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
-  - {id: build, type: agent, role: builder, job: prove-heartbeat, next: done}
-`);
+  await page.getByLabel("Exact workflow YAML").fill("format_version: 2\nstart: build\nnodes:\n  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}\n  - {id: build, type: agent, role: builder, job: prove-heartbeat, next: done}\n");
   await page.getByRole("button", { name: "Review publication" }).click();
   await expect(page.getByRole("dialog", { name: "Publish this exact workflow?" })).toBeVisible();
   await page.screenshot({ path: "test-results/v2-publish-review-desktop.png", fullPage: true });
+  let continuePublication = (): void => {};
+  const publicationGate = new Promise<void>((resolve) => { continuePublication = resolve; });
+  await page.route("**/workflow-revisions", async (route) => { await publicationGate; await route.continue(); });
   await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("Publishing workflow");
+  await page.screenshot({ path: "test-results/v2-publishing-desktop.png", fullPage: true });
+  continuePublication();
   await page.getByRole("button", { name: "Start" }).click();
   await expect(page.getByText("Complete every field.")).toBeVisible();
   await page.screenshot({ path: "test-results/v2-bindings-error-desktop.png", fullPage: true });
@@ -27,14 +28,17 @@ nodes:
   await page.getByLabel("Auth mode").selectOption("subscription");
   await page.getByLabel("Model").fill("test-model");
   await page.getByLabel("Executor").fill("blocking/v1");
+  const binding = page.getByRole("article", { name: "Binding builder" });
+  await expect(page.getByText("Complete every field.")).toHaveCount(0);
+  await page.screenshot({ path: "test-results/v2-bindings-corrected-desktop.png", fullPage: true });
   let continueAuth = (): void => {};
   const authGate = new Promise<void>((resolve) => { continueAuth = resolve; });
   await page.route("**/auth-profile-revisions", async (route) => { await authGate; await route.continue(); });
   await page.getByRole("button", { name: "Start" }).click();
   await expect(page.getByRole("status")).toContainText("Starting the exact run");
+  await expect(binding).toHaveClass(/node-working/);
   await page.screenshot({ path: "test-results/v2-bindings-loading-desktop.png", fullPage: true });
   continueAuth();
-
   const working = page.getByRole("article", { name: "build — Working" });
   await expect(working).toContainText("e2e · test-model");
   await expect(working).toContainText("Subscription · blocking/v1");
