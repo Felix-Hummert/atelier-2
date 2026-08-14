@@ -62,9 +62,22 @@ replaying the invocation. One explicit replacement creates a distinct ordinal-2
 attempt and workflow only after cleanup; ordinal 3 and automatic provider retry
 do not exist. A known reaped unsuccessful child becomes `FAILED`; a success
 records the non-secret operational identity and arbitrary output bytes in one
-atomic attempt/receipt/event/run transition. This is the durable multi-provider
-contract, not yet a real Claude or Codex integration: the production host still
-composes no V2 provider factories.
+atomic attempt/receipt/event/run transition.
+
+The first real provider now sits behind that durable contract. When the operator
+declares a Claude executable, an agent workspace, and a credential directory, the
+host composes one Claude subscription executor. It runs the bound model headless
+through the CLI's print-JSON envelope, hands the node's job to the process over
+standard input rather than its command line, and grants the launched process only
+the declared `CLAUDE_CONFIG_DIR` credential boundary and the serving host's
+executable search path; nothing else of the server's environment is inherited. A
+configuration binding a non-subscription profile to this executor is refused
+before any process is prepared. An unsuccessful exit, an unreadable envelope, an
+envelope declaring a provider error, and an answer larger than the durable output
+bound all fail the attempt instead of recording invented output. Undeclared, the
+host composes no V2 provider factory and behaves exactly as before. Codex remains
+absent, and the isolated read, edit, and test tools an agent needs to change its
+own workspace are not part of this contract.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically

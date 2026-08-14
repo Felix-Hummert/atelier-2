@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,6 +9,10 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 
+from atelier2.adapters.claude_subscription import (
+    ClaudeSubscriptionExecutorFactory,
+    ClaudeSubscriptionSettings,
+)
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
@@ -82,6 +87,7 @@ class HostSettings:
     port: int = DEFAULT_PORT
     limits: ApiLimits = field(default_factory=api_limits)
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
+    claude_subscription: ClaudeSubscriptionSettings | None = None
 
     def __post_init__(self) -> None:
         database_path = self.database_path.resolve()
@@ -112,6 +118,7 @@ class HostSettings:
 
 
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
+    claude_subscription = settings.claude_subscription
     runtime = DbosRuntime(
         DbosRuntimeSettings(settings.database_path, settings.application_version),
         LoopbackEffectAdapterFactory(
@@ -120,6 +127,9 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
             EffectDestination(settings.effect_destination),
         ),
         ExactOutputAgentExecutorFactory(),
+        ()
+        if claude_subscription is None
+        else (ClaudeSubscriptionExecutorFactory(claude_subscription),),
     )
     try:
         queries = DbosQueries(runtime.engine)
@@ -191,10 +201,42 @@ def main(arguments: Sequence[str] | None = None) -> None:
                 frontend_dist=parsed.frontend_dist,
                 host=parsed.host,
                 port=parsed.port,
+                claude_subscription=_claude_subscription_settings(parser, parsed),
             )
         )
     except KeyboardInterrupt:
         return
+
+
+def _claude_subscription_settings(
+    parser: argparse.ArgumentParser, parsed: argparse.Namespace
+) -> ClaudeSubscriptionSettings | None:
+    """Compose the Claude subscription executor only when fully declared."""
+
+    declared = (
+        parsed.claude_executable,
+        parsed.claude_workspace,
+        parsed.claude_credential_directory,
+    )
+    if all(value is None for value in declared):
+        return None
+    if any(value is None for value in declared):
+        parser.error(
+            "serving Claude subscription agents requires --claude-executable, "
+            "--claude-workspace and --claude-credential-directory together"
+        )
+    search_path = os.environ.get("PATH")
+    if search_path is None:
+        parser.error(
+            "serving Claude subscription agents requires PATH in the server "
+            "environment, because the launched provider inherits nothing else"
+        )
+    return ClaudeSubscriptionSettings(
+        parsed.claude_executable,
+        parsed.claude_workspace,
+        parsed.claude_credential_directory,
+        search_path,
+    )
 
 
 def _argument_parser() -> argparse.ArgumentParser:
@@ -211,4 +253,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--frontend-dist", type=Path, required=True)
     serve_parser.add_argument("--host", default=DEFAULT_HOST)
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve_parser.add_argument("--claude-executable", type=Path)
+    serve_parser.add_argument("--claude-workspace", type=Path)
+    serve_parser.add_argument("--claude-credential-directory", type=Path)
     return parser

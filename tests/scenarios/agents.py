@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from atelier2.adapters.claude_subscription import ClaudeSubscriptionSettings
 from atelier2.adapters.dbos.run_store import commit_agent_completed, load_graph
 from atelier2.adapters.exact_output_agent import EXACT_OUTPUT_EXECUTOR_BINDING
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptId
@@ -63,6 +65,21 @@ def commit_configured_agent(
         EXACT_OUTPUT_EXECUTOR_BINDING,
         AgentExecutionResult(request.exact_output.output_bytes),
     )
+
+
+def claude_subscription_deployment(
+    directory: Path, program: str
+) -> ClaudeSubscriptionSettings:
+    """Deploy one executable Python program in place of the Claude CLI."""
+
+    executable = directory / "claude"
+    executable.write_text(f"#!{sys.executable}\n{program}", encoding="utf-8")
+    executable.chmod(0o755)
+    workspace = directory / "workspace"
+    workspace.mkdir()
+    credentials = directory / "credentials"
+    credentials.mkdir()
+    return ClaudeSubscriptionSettings(executable, workspace, credentials, os.defpath)
 
 
 def agent_attempt_execution(
