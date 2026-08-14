@@ -39,6 +39,8 @@ from atelier2.ports.agent_executions import (
     AgentProcessOwnerNotLocal,
 )
 
+MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS = 2
+
 
 @dataclass
 class _OwnedWatchdog:
@@ -390,7 +392,7 @@ class AgentProcessSupervisor:
                 owned,
                 {"operation": "FINALIZE"},
                 timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS,
-                maximum_response_bytes=4_096,
+                maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
             )
             if response.get("type") != "FINALIZE_ACCEPTED":
                 raise RuntimeError("watchdog refused terminal finalization")
@@ -465,7 +467,7 @@ class AgentProcessSupervisor:
         maximum_response_bytes: int,
     ) -> dict[str, object]:
         last_error: BaseException | None = None
-        for retry in range(2):
+        for retry in range(MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS):
             if retry:
                 time.sleep(CONTROL_FRAME_TIMEOUT_SECONDS)
             try:

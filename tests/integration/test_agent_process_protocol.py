@@ -361,7 +361,7 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
         lost_cancel.close()
         with blocked:
             assert _receive_control(blocked) == {"type": "CONTROL_FRAME_TIMEOUT"}
-        assert cancel_requests == 2
+        assert cancel_requests == process_module.MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS
         assert disposition is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
         terminal = store.attest_cancellation_cleanup(
             command, disposition, owner, generation
