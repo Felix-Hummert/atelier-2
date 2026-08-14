@@ -11,8 +11,10 @@ import uvicorn
 from fastapi import FastAPI
 
 from atelier2.adapters.claude_subscription import (
+    ClaudeExecutableUnsupported,
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
+    verify_claude_capability,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
@@ -254,12 +256,20 @@ def _claude_subscription_settings(
             "serving Claude subscription agents requires PATH in the server "
             "environment, because the launched provider inherits nothing else"
         )
-    return ClaudeSubscriptionSettings(
+    settings = ClaudeSubscriptionSettings(
         parsed.claude_executable,
         parsed.claude_workspace,
         parsed.claude_credential_directory,
         search_path,
     )
+    # The containment this executor claims belongs to a measured release, so the
+    # deployment asks the named executable which one it is before the server
+    # exists at all -- never at invocation time, where a refusal costs a run.
+    try:
+        verify_claude_capability(settings.executable)
+    except ClaudeExecutableUnsupported as error:
+        parser.error(str(error))
+    return settings
 
 
 def _argument_parser() -> argparse.ArgumentParser:

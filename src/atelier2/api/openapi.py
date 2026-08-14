@@ -129,6 +129,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-agent-bindings",
         "agent-configuration-revision-not-found",
         "agent-executor-binding-unavailable",
+        "agent-executor-capability-unavailable",
         "run-identity-conflict",
         "temporarily-unavailable",
         "durable-state-corrupt",

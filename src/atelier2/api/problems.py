@@ -48,6 +48,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Agent executor binding unavailable",
         "Register the exact provider and executor revision before publishing or starting this configuration.",
     ),
+    "agent-executor-capability-unavailable": ProblemDefinition(
+        409,
+        "Agent executor capability unavailable",
+        "Bind an executor declaring the capability this node demands, or lower the demand.",
+    ),
     "agent-configuration-revision-collision": ProblemDefinition(
         409,
         "Agent configuration revision collision",

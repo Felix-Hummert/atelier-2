@@ -53,7 +53,7 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
 from atelier2.ports.agent_executions import (
-    AgentExecutionMode,
+    AgentExecutionCapability,
     AgentExecutorFactoryV2,
     AgentExecutorKey,
     AgentProcessCompletion,
@@ -625,8 +625,8 @@ class CloseFailingFactory:
         return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
 
     @property
-    def supported_modes(self) -> frozenset[AgentExecutionMode]:
-        return frozenset({AgentExecutionMode.HEADLESS})
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
 
     def open(self) -> CloseFailingExecutor:
         self.lifecycle.append(f"open:{self.provider}")
@@ -672,8 +672,8 @@ class ChangingKeyFactory:
         return AgentExecutorOperationalIdentity(f"operation-{self.identity_reads}")
 
     @property
-    def supported_modes(self) -> frozenset[AgentExecutionMode]:
-        return frozenset({AgentExecutionMode.HEADLESS})
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
 
     def open(self) -> ChangingKeyExecutor:
         self.opens += 1
@@ -697,8 +697,8 @@ class BaseExceptionOpenFactory:
         return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
 
     @property
-    def supported_modes(self) -> frozenset[AgentExecutionMode]:
-        return frozenset({AgentExecutionMode.HEADLESS})
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
 
     def open(self) -> Never:
         self.lifecycle.append(f"open:{self.provider}")
@@ -745,8 +745,8 @@ class BaseExceptionCloseFactory:
         return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
 
     @property
-    def supported_modes(self) -> frozenset[AgentExecutionMode]:
-        return frozenset({AgentExecutionMode.HEADLESS})
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
 
     def open(self) -> BaseExceptionCloseExecutor:
         self.lifecycle.append(f"open:{self.provider}")
@@ -893,8 +893,8 @@ def test_partial_v2_open_failure_closes_prior_executor_and_releases_owner(
             return AgentExecutorOperationalIdentity("codex-operation")
 
         @property
-        def supported_modes(self) -> frozenset[AgentExecutionMode]:
-            return frozenset({AgentExecutionMode.HEADLESS})
+        def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+            return frozenset({AgentExecutionCapability.HEADLESS})
 
         def open(self) -> Never:
             lifecycle.append("open:openai")
@@ -986,8 +986,8 @@ def test_v2_open_and_cleanup_failures_preserve_original_then_cleanup_order(
             return AgentExecutorOperationalIdentity("openai-operation")
 
         @property
-        def supported_modes(self) -> frozenset[AgentExecutionMode]:
-            return frozenset({AgentExecutionMode.HEADLESS})
+        def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+            return frozenset({AgentExecutionCapability.HEADLESS})
 
         def open(self) -> Never:
             lifecycle.append("open:openai")

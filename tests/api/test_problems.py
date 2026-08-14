@@ -78,6 +78,11 @@ EXPECTED_PROBLEMS = {
         "Auth profile revision not found",
         "Publish the exact auth profile revision before publishing an agent configuration.",
     ),
+    "agent-executor-capability-unavailable": (
+        409,
+        "Agent executor capability unavailable",
+        "Bind an executor declaring the capability this node demands, or lower the demand.",
+    ),
     "agent-executor-binding-unavailable": (
         409,
         "Agent executor binding unavailable",

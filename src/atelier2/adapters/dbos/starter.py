@@ -49,6 +49,7 @@ from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
+    DurableAgentExecutorCapabilityUnavailable,
     DurableInvalidAgentBindings,
     DurablePublishedRunResult,
     DurableRunCreated,
@@ -263,12 +264,20 @@ class DbosDurableRunStarter:
                                 "agent configuration auth profile is missing"
                             )
                         auth = auth_profile_from_record(auth_record)
-                        if not self._agent_executor_registry.contains(
-                            AgentExecutorKey(
-                                auth.provider_id, configuration.executor_revision
-                            )
-                        ):
+                        executor_key = AgentExecutorKey(
+                            auth.provider_id, configuration.executor_revision
+                        )
+                        if not self._agent_executor_registry.contains(executor_key):
                             return DurableAgentExecutorBindingUnavailable()
+                        # Issue #9: a node demanding a capability its executor
+                        # does not declare fails at validation, never silently
+                        # -- so the run is refused here, before the durable run
+                        # exists and long before any provider process starts.
+                        declared = self._agent_executor_registry.declared_capabilities(
+                            executor_key
+                        )
+                        if configuration.requested_capability not in declared:
+                            return DurableAgentExecutorCapabilityUnavailable()
                         resolved.append(
                             ResolvedAgentBinding(binding.role, configuration, auth)
                         )

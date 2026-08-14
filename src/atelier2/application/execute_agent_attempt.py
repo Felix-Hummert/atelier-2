@@ -14,6 +14,7 @@ from atelier2.ports.agent_attempts import (
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorV2,
+    AgentProcessOutputLimitExceeded,
     AgentProcessRunner,
 )
 
@@ -34,7 +35,14 @@ def execute_agent_attempt(
         if isinstance(claim, (AgentAttemptSucceeded, AgentAttemptFailed)):
             supervisor.finalize(execution)
         return claim
-    completion = supervisor.launch_and_wait(execution, invocation)
+    try:
+        completion = supervisor.launch_and_wait(execution, invocation)
+    except AgentProcessOutputLimitExceeded:
+        # The provider overran the raw frame, so no answer survived. That is a
+        # failed attempt, not a failed worker.
+        outcome = store.complete_known_failure(execution)
+        supervisor.finalize(execution)
+        return outcome
     result = executor.decode_process_completion(completion)
     if isinstance(result, AgentExecutionFailure):
         if result.code is not AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY:

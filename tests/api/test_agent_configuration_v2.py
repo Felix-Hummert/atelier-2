@@ -167,6 +167,7 @@ def test_publish_resources_have_the_exact_secret_free_wire_shape() -> None:
         "model": "claude-opus-4-1",
         "auth_profile_revision_hash": AUTH.revision_hash.value,
         "executor_revision": "claude-cli/v1",
+        "requested_capability": "headless",
         "provider_id": "anthropic",
         "auth_mode": "subscription",
         "agent_configuration_revision_hash": CONFIGURATION.revision_hash.value,

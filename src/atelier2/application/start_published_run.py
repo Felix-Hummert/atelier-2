@@ -12,6 +12,7 @@ from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
+    DurableAgentExecutorCapabilityUnavailable,
     DurableInvalidAgentBindings,
     DurablePublishedRunStarter,
     DurableRunCreated,
@@ -56,6 +57,11 @@ class AgentConfigurationRevisionMissing:
 
 
 @dataclass(frozen=True)
+class AgentExecutorCapabilityUnavailable:
+    """The run was refused because no process could honour the demanded capability."""
+
+
+@dataclass(frozen=True)
 class AgentExecutorBindingUnavailable:
     pass
 
@@ -68,6 +74,7 @@ type StartPublishedRunResult = (
     | InvalidAgentBindings
     | AgentConfigurationRevisionMissing
     | AgentExecutorBindingUnavailable
+    | AgentExecutorCapabilityUnavailable
     | WriteUnavailable
     | DurableStateCorrupt
 )
@@ -92,6 +99,8 @@ def start_published_run(
             return AgentConfigurationRevisionMissing()
         case DurableAgentExecutorBindingUnavailable():
             return AgentExecutorBindingUnavailable()
+        case DurableAgentExecutorCapabilityUnavailable():
+            return AgentExecutorCapabilityUnavailable()
         case DurableWriteUnavailable():
             return WriteUnavailable()
         case PortDurableStateCorrupt():

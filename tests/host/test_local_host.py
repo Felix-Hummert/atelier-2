@@ -309,6 +309,34 @@ def test_a_claude_deployment_off_loopback_refuses_to_serve(
     assert "loopback" in capsys.readouterr().err
 
 
+def test_a_claude_deployment_on_an_unmeasured_executable_refuses_to_serve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A stale CLI stops the server, not the first billed run."""
+
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = claude_subscription_deployment(
+        deployment, INERT_CLAUDE, version="2.1.220"
+    )
+
+    with pytest.raises(SystemExit) as refusal:
+        main(
+            serve_arguments(
+                tmp_path,
+                "--claude-executable",
+                str(settings.executable),
+                "--claude-workspace",
+                str(settings.workspace),
+                "--claude-credential-directory",
+                str(settings.credential_directory),
+            )
+        )
+
+    assert refusal.value.code == 2
+    assert "2.1.221 or newer, not 2.1.220" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("bind", ["127.0.0.1", "127.0.0.2", "::1"])
 def test_a_claude_deployment_on_loopback_is_accepted(tmp_path: Path, bind: str) -> None:
     deployment = tmp_path / "claude-deployment"

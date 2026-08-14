@@ -9,6 +9,7 @@ from typing import Any
 from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
+    MINIMUM_CLAUDE_VERSION,
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
 )
@@ -50,13 +51,17 @@ from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflows import AgentNode
 from atelier2.ports.agent_executions import (
+    AgentExecutionCapability,
     AgentExecutionFailure,
-    AgentExecutionMode,
     AgentExecutorKey,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
-from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
+from atelier2.ports.durable_runs import (
+    DurablePublishedRunResult,
+    DurableRunCreated,
+    StartPublishedRunRequestV2,
+)
 
 
 def configured_agent_request(
@@ -92,13 +97,38 @@ def commit_configured_agent(
     )
 
 
+MEASURED_CLAUDE_VERSION = ".".join(str(part) for part in MINIMUM_CLAUDE_VERSION)
+
+
+def _version_answering(program: str, version: str | None) -> str:
+    """Wrap a fake CLI so it answers `--version` the way the real one does.
+
+    The deployment reads the executable's version before it composes anything,
+    so a fake that cannot answer is not a fake of this CLI at all.
+    """
+
+    if version is None:
+        return program
+    return (
+        "import sys\n"
+        'if "--version" in sys.argv:\n'
+        f'    print("{version} (Claude Code)")\n'
+        "    raise SystemExit(0)\n"
+    ) + program
+
+
 def claude_subscription_deployment(
-    directory: Path, program: str
+    directory: Path,
+    program: str,
+    version: str | None = MEASURED_CLAUDE_VERSION,
 ) -> ClaudeSubscriptionSettings:
     """Deploy one executable Python program in place of the Claude CLI."""
 
     executable = directory / "claude"
-    executable.write_text(f"#!{sys.executable}\n{program}", encoding="utf-8")
+    executable.write_text(
+        f"#!{sys.executable}\n{_version_answering(program, version)}",
+        encoding="utf-8",
+    )
     executable.chmod(0o755)
     workspace = directory / "workspace"
     workspace.mkdir()
@@ -132,10 +162,13 @@ def claude_subscription_runtime(
     )
 
 
-def claude_subscription_attempt(
-    runtime: DbosRuntime, run_name: str, model: str = "claude-haiku-4-5"
-) -> AgentAttemptExecution:
-    """One durable run whose only agent node is bound to this executor."""
+def claude_subscription_start(
+    runtime: DbosRuntime,
+    run_name: str,
+    model: str = "claude-haiku-4-5",
+    requested_capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
+) -> tuple[DurablePublishedRunResult, WorkflowRevision]:
+    """Ask the production starter for one run bound to this executor."""
 
     catalog = DbosAgentConfigurationCatalog(
         runtime.engine, runtime.agent_executor_registry
@@ -143,23 +176,35 @@ def claude_subscription_attempt(
     auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
     catalog.publish_auth_profile_revision(auth)
     configuration = AgentConfigurationRevision(
-        model, auth.revision_hash, CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision
+        model,
+        auth.revision_hash,
+        CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
+        requested_capability,
     )
     catalog.publish_agent_configuration_revision(configuration)
     workflow = WorkflowRevision(CLAUDE_SUBSCRIPTION_WORKFLOW)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
-    run_id = RunId(run_name)
     started = DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
     ).start_published(
         StartPublishedRunRequestV2(
-            run_id,
+            RunId(run_name),
             workflow.revision_hash,
             AgentBindingSet(
                 (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
             ),
         )
     )
+    return started, workflow
+
+
+def claude_subscription_attempt(
+    runtime: DbosRuntime, run_name: str, model: str = "claude-haiku-4-5"
+) -> AgentAttemptExecution:
+    """One durable run whose only agent node is bound to this executor."""
+
+    run_id = RunId(run_name)
+    started, workflow = claude_subscription_start(runtime, run_name, model)
     assert isinstance(started, DurableRunCreated)
     assert isinstance(started.run, RunV2)
     return agent_attempt_execution(
@@ -249,8 +294,8 @@ class RecordingAgentExecutorFactoryV2:
         return AgentExecutorOperationalIdentity(self.operational_identity_value)
 
     @property
-    def supported_modes(self) -> frozenset[AgentExecutionMode]:
-        return frozenset({AgentExecutionMode.HEADLESS})
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
 
     def open(self) -> RecordingAgentExecutorV2:
         self.opens += 1

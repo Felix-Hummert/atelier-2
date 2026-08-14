@@ -15,6 +15,21 @@ MAXIMUM_SIGNED_INT64 = 2**63 - 1
 _PROVIDER_ID = re.compile(r"[a-z][a-z0-9._-]{0,63}")
 
 
+class AgentExecutionCapability(StrEnum):
+    """What one executor can honestly do, as issue #9's operator ruling binds it.
+
+    Issue #9 rules that the mode is a capability declaration: headless is every
+    provider's duty, interactive is declared, and "ein Node, der interaktiv
+    verlangt, scheitert auf einem Nicht-Deklarierer bei der VALIDIERUNG, nie
+    still". So an agent configuration carries the capability its node demands,
+    an executor declares the ones it provides, and starting a run compares the
+    two -- before any provider process exists.
+    """
+
+    HEADLESS = "headless"
+    INTERACTIVE = "interactive"
+
+
 def _require_bounded_text(value: str, owner: str) -> None:
     if (
         not isinstance(value, str)
@@ -102,6 +117,9 @@ class AgentConfigurationRevision:
     model: str
     auth_profile_revision_hash: AuthProfileRevisionHash
     executor_revision: AgentExecutorRevision
+    # Headless is every provider's duty per issue #9, so a configuration that
+    # names nothing demands the floor. Anything above it must be asked for.
+    requested_capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS
     revision_hash: AgentConfigurationRevisionHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -111,15 +129,18 @@ class AgentConfigurationRevision:
         if not isinstance(self.executor_revision, AgentExecutorRevision):
             raise TypeError("agent configuration executor revision must be typed")
         _require_bounded_text(self.executor_revision.value, "agent executor revision")
+        if not isinstance(self.requested_capability, AgentExecutionCapability):
+            raise TypeError("agent configuration requested capability must be typed")
         object.__setattr__(
             self,
             "revision_hash",
             AgentConfigurationRevisionHash.of(
                 frame(
-                    "agent-configuration-revision/v1",
+                    "agent-configuration-revision/v2",
                     self.model.encode("utf-8"),
                     self.auth_profile_revision_hash.value.encode("ascii"),
                     self.executor_revision.value.encode("utf-8"),
+                    self.requested_capability.value.encode("ascii"),
                 )
             ),
         )

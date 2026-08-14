@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -14,6 +13,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    AgentExecutionCapability,
     AgentExecutionRequest,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -27,26 +27,22 @@ from atelier2.contracts.executions import AgentAttemptExecution
 MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
 MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = 49_152
 
-# The largest raw provider frame one process may return through this seam.
+# The largest raw provider frame one process may return on standard output.
 # It is deliberately distinct from the durable output bound: the frame carries
-# the durable result *inside* a JSON envelope, so a bound equal to
-# MAXIMUM_AGENT_OUTPUT_BYTES_V2 would refuse a result the durable contract
-# accepts. Derivation, so no acceptable result can ever be refused as a frame:
+# the durable result *inside* a JSON envelope, so a raw bound equal to
+# MAXIMUM_AGENT_OUTPUT_BYTES_V2 would refuse answers the durable contract
+# accepts. Derivation, so no durably acceptable result is ever refused as a
+# frame:
 #   * JSON string escaping expands one source byte to at most six frame bytes
 #     (a C0 control byte becomes a six-character backslash-u escape), so a
 #     durable-legal result occupies at most 6 * 49,152 = 294,912 frame bytes.
-#   * Envelope metadata around it was measured at 1,313 bytes for one real
-#     `claude -p --output-format json` answer (claude 2.1.221, one model in
-#     modelUsage, no permission denials); 8,192 bytes allows roughly six times
-#     that for more models, denials and future fields.
-MAXIMUM_PROVIDER_FRAME_BYTES = (6 * MAXIMUM_AGENT_OUTPUT_BYTES_V2) + 8_192
-
-
-class AgentExecutionMode(StrEnum):
-    """How one executor drives its provider, as issue #9's ruling names it."""
-
-    HEADLESS = "headless"
-    INTERACTIVE = "interactive"
+#   * The remaining 98,304 bytes are the envelope metadata allowance. One real
+#     `claude -p --output-format json` answer (claude 2.1.221) was measured
+#     carrying 1,328 bytes of metadata around its result, so the allowance is
+#     about seventy times the observed envelope -- room for more models in
+#     `modelUsage`, permission denials and future fields without ever bounding
+#     an answer the durable contract would accept.
+MAXIMUM_PROVIDER_FRAME_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 
 
 class AgentExecutor(Protocol):
@@ -72,7 +68,7 @@ class AgentExecutorKey:
 class AgentExecutorManifestEntry:
     key: AgentExecutorKey
     operational_identity: AgentExecutorOperationalIdentity
-    supported_modes: frozenset[AgentExecutionMode]
+    declared_capabilities: frozenset[AgentExecutionCapability]
 
 
 @dataclass(frozen=True)
@@ -90,10 +86,8 @@ class AgentProcessInvocation:
     standard_input: bytes = b""
 
     def __post_init__(self) -> None:
-        # Only the program is required to be nonempty: an empty argument is how
-        # a provider CLI is told "no tools" or "no settings sources" at all.
-        if not self.arguments or not self.arguments[0]:
-            raise ValueError("agent process program must be nonempty")
+        if not self.arguments or any(not value for value in self.arguments):
+            raise ValueError("agent process arguments must be nonempty")
         if not self.working_directory.is_absolute():
             raise ValueError("agent process working directory must be absolute")
         names = tuple(name for name, _value in self.environment)
@@ -165,6 +159,14 @@ class AgentProcessOwnerNotLocal(Exception):
     pass
 
 
+class AgentProcessOutputLimitExceeded(Exception):
+    """A provider wrote past the raw frame this seam accepts.
+
+    This is a provider outcome, not a supervision defect: the attempt fails and
+    stays failed, because nothing usable was kept.
+    """
+
+
 class AgentExecutorFactoryV2(Protocol):
     @property
     def key(self) -> AgentExecutorKey: ...
@@ -173,8 +175,8 @@ class AgentExecutorFactoryV2(Protocol):
     def operational_identity(self) -> AgentExecutorOperationalIdentity: ...
 
     @property
-    def supported_modes(self) -> frozenset[AgentExecutionMode]:
-        """Every execution mode this executor can honestly drive."""
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        """Every capability this executor can honestly provide."""
         ...
 
     def open(self) -> AgentExecutorV2: ...
@@ -204,7 +206,7 @@ class AgentExecutorRegistry:
                 AgentExecutorManifestEntry(
                     factory.key,
                     factory.operational_identity,
-                    frozenset(factory.supported_modes),
+                    frozenset(factory.declared_capabilities),
                 ),
                 factory,
             )
@@ -212,9 +214,9 @@ class AgentExecutorRegistry:
                 object_identities, factories, strict=True
             )
         )
-        if any(not entry.manifest_entry.supported_modes for entry in captured):
+        if any(not entry.manifest_entry.declared_capabilities for entry in captured):
             raise ValueError(
-                "an agent executor declaring no execution mode can never be selected"
+                "an agent executor declaring no capability can never be selected"
             )
         ordered = tuple(
             sorted(
@@ -248,3 +250,10 @@ class AgentExecutorRegistry:
 
     def contains(self, key: AgentExecutorKey) -> bool:
         return key in self._by_key
+
+    def declared_capabilities(
+        self, key: AgentExecutorKey
+    ) -> frozenset[AgentExecutionCapability]:
+        """What the executor behind one registered key can honestly provide."""
+
+        return self._by_key[key].manifest_entry.declared_capabilities

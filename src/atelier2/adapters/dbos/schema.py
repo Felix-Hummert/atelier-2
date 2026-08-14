@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 metadata = sa.MetaData()
 
@@ -105,6 +105,7 @@ agent_configuration_revisions = sa.Table(
         nullable=False,
     ),
     sa.Column("executor_revision", sa.Text, nullable=False),
+    sa.Column("requested_capability", sa.Text, nullable=False),
     sa.UniqueConstraint(
         "revision_hash",
         "auth_profile_revision_hash",

@@ -54,6 +54,11 @@ class DurableAgentExecutorBindingUnavailable:
     pass
 
 
+@dataclass(frozen=True)
+class DurableAgentExecutorCapabilityUnavailable:
+    """A bound executor does not declare the capability its node demands."""
+
+
 type DurablePublishedRunResult = (
     DurableRunCreated
     | DurableRunExisting
@@ -62,6 +67,7 @@ type DurablePublishedRunResult = (
     | DurableInvalidAgentBindings
     | DurableAgentConfigurationRevisionMissing
     | DurableAgentExecutorBindingUnavailable
+    | DurableAgentExecutorCapabilityUnavailable
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )

@@ -87,11 +87,22 @@ larger fails the attempt.
 
 The call itself is deliberately the barest one its authentication allows: no
 tools, no hooks, no MCP servers, no plugins or skills, no project configuration
-discovery, no persisted session, and a bounded turn count, so the credentials it
-is handed answer text and do nothing else. That is containment, not isolation —
+discovery, no persisted session, no prompt history, no retries, and a bounded
+turn count, so the credentials it is handed answer text and do nothing else.
+Every one of those switches was measured against the Claude release this
+executor names, so the deployment reads the declared executable's version before
+it composes anything and refuses one older than that release rather than trusting
+an unmeasured CLI to mean the same thing. That is containment, not isolation —
 the process still runs as the serving user — so this executor may only be
 declared for a loopback bind. Serving it on a reachable address is refused at
 startup, because starting a billed provider is unauthenticated on this API.
+
+What an executor can honestly do is a declaration, not a hope. Each executor
+declares its capabilities, an agent configuration carries the capability its node
+demands, and starting a run compares the two: a node demanding a capability its
+bound executor does not declare is refused while the run is being started, before
+any attempt, watchdog or billed process exists. Headless is every provider's
+duty; anything above it has to be asked for by name.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically

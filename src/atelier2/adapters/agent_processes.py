@@ -29,13 +29,14 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     WatchdogGenerationId,
 )
-from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.ports.agent_attempts import AgentAttemptStore
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    MAXIMUM_PROVIDER_FRAME_BYTES,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    AgentProcessOutputLimitExceeded,
     AgentProcessOwnerNotLocal,
 )
 
@@ -593,6 +594,8 @@ def _completion_from_response(response: dict[str, object]) -> AgentProcessComple
     response_type = response.get("type")
     if response_type in {"RECOVERY_HANDOFF", "STOPPED"}:
         raise AgentProcessOwnerNotLocal
+    if response_type == "OUTPUT_LIMIT_EXCEEDED":
+        raise AgentProcessOutputLimitExceeded
     if response_type != "COMPLETED":
         raise RuntimeError("watchdog did not return a process completion")
     return_code = response.get("return_code")
@@ -610,7 +613,7 @@ def _completion_from_response(response: dict[str, object]) -> AgentProcessComple
     except ValueError as error:
         raise RuntimeError("watchdog process completion is malformed") from error
     if (
-        len(standard_output) > MAXIMUM_AGENT_OUTPUT_BYTES_V2
+        len(standard_output) > MAXIMUM_PROVIDER_FRAME_BYTES
         or len(standard_error) > MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
     ):
         raise RuntimeError("watchdog process completion exceeds its exact bound")

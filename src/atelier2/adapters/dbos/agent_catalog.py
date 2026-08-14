@@ -16,6 +16,7 @@ from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionHash,
+    AgentExecutionCapability,
     AgentExecutorRevision,
     AuthMode,
     AuthProfileRevision,
@@ -59,6 +60,7 @@ def agent_configuration_from_record(
         str(record["model"]),
         AuthProfileRevisionHash(str(record["auth_profile_revision_hash"])),
         AgentExecutorRevision(str(record["executor_revision"])),
+        AgentExecutionCapability(str(record["requested_capability"])),
     )
     if revision.revision_hash.value != record["revision_hash"]:
         raise ValueError("durable agent configuration hash disagrees with its fields")
@@ -166,6 +168,7 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                             revision.auth_profile_revision_hash.value
                         ),
                         executor_revision=revision.executor_revision.value,
+                        requested_capability=revision.requested_capability.value,
                     )
                 )
                 return AgentConfigurationRevisionCreated(revision, auth)

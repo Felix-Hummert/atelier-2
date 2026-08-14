@@ -12,6 +12,7 @@ from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
+    AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
@@ -78,16 +79,27 @@ def test_profile_configuration_and_binding_hashes_are_fixed_vectors() -> None:
     )
     assert (
         configuration.revision_hash.value
-        == "6ac1476eeafb0ca27e14ee34af18adc585a5d5cab6a714a4c143c8403e0d70ab"
+        == "2b12dec1d7a461dd08e7c913be274b1d4a22c2a632c12f53c15dc1538b25b8a4"
     )
     assert (
         bindings.binding_set_hash.value
-        == "460b2a01f7bdc6060a5b499f8558a929df17f802cde63c511ca47173a9dff745"
+        == "1806a60f3554ea5a492d139c786ad046ae876598e10602b81c585a2b195fb2c5"
     )
     assert tuple(binding.role.value for binding in bindings.bindings) == (
         "builder",
         "reviewer",
     )
+
+
+def test_the_demanded_capability_is_part_of_the_configuration_identity() -> None:
+    auth = _auth()
+    headless = _configuration(auth)
+    interactive = replace(
+        headless, requested_capability=AgentExecutionCapability.INTERACTIVE
+    )
+
+    assert headless.requested_capability is AgentExecutionCapability.HEADLESS
+    assert interactive.revision_hash != headless.revision_hash
 
 
 def test_public_auth_and_configuration_contracts_have_only_exact_safe_fields() -> None:
@@ -102,6 +114,7 @@ def test_public_auth_and_configuration_contracts_have_only_exact_safe_fields() -
         "model",
         "auth_profile_revision_hash",
         "executor_revision",
+        "requested_capability",
         "revision_hash",
     )
 
@@ -267,7 +280,7 @@ def test_v2_request_and_receipt_are_fixed_and_tamper_evident() -> None:
 
     assert (
         request.request_hash.value
-        == "1e39a4df0133a4b518eb0534232039e02f14fa422cc45602d1025c56b05ad869"
+        == "52b5804335c67689bdd9edc74a7a1404390893211c5d74e0582292eb238a86ef"
     )
     assert (
         receipt.output_hash.value
@@ -275,7 +288,7 @@ def test_v2_request_and_receipt_are_fixed_and_tamper_evident() -> None:
     )
     assert (
         receipt.receipt_hash.value
-        == "3f77b20c9f6b17522f495bda351b7d1c0af199941d506eda871bb955dede59d5"
+        == "a20f510d292e9a30af3414db23cc5168c5d539bba77847ce6161b00266dc2314"
     )
 
     with pytest.raises(ValueError, match="binding"):

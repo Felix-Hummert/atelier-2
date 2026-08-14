@@ -16,10 +16,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    MAXIMUM_PROVIDER_FRAME_BYTES,
 )
 
 MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES = 262_144
@@ -34,7 +34,7 @@ def encode_control_frame(payload: dict[str, object]) -> bytes:
 
 
 def _maximum_completed_frame() -> bytes:
-    standard_output = base64.b64encode(b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2).decode(
+    standard_output = base64.b64encode(b"x" * MAXIMUM_PROVIDER_FRAME_BYTES).decode(
         "ascii"
     )
     standard_error = base64.b64encode(
@@ -460,8 +460,11 @@ class Watchdog:
             return
         target = self._standard_output if role == "stdout" else self._standard_error
         target.extend(chunk)
+        # Standard output carries a whole provider frame -- the durable result
+        # inside its envelope -- so it is bounded by the frame, not by the
+        # durable result the adapter later extracts from it.
         limit = (
-            MAXIMUM_AGENT_OUTPUT_BYTES_V2
+            MAXIMUM_PROVIDER_FRAME_BYTES
             if role == "stdout"
             else MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
         )

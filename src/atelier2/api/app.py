@@ -96,6 +96,7 @@ from atelier2.application.reconcile_effect import (
 from atelier2.application.reconcile_run import ReconcileRunRequest, reconcile_run
 from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
+    AgentExecutorCapabilityUnavailable,
     InvalidAgentBindings,
     RevisionMissing,
     RunCreated,
@@ -116,6 +117,7 @@ from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentConfigurationRevision,
     AgentConfigurationRevisionHash,
+    AgentExecutionCapability,
     AgentExecutorRevision,
     AgentRole,
     AuthMode,
@@ -364,6 +366,7 @@ def create_app(
                 body.model,
                 AuthProfileRevisionHash(body.auth_profile_revision_hash),
                 AgentExecutorRevision(body.executor_revision),
+                AgentExecutionCapability(body.requested_capability),
             )
         except (TypeError, ValueError) as error:
             raise ApiProblem("invalid-request") from error
@@ -549,6 +552,8 @@ def create_app(
                 raise ApiProblem("agent-configuration-revision-not-found")
             case StartAgentExecutorBindingUnavailable():
                 raise ApiProblem("agent-executor-binding-unavailable")
+            case AgentExecutorCapabilityUnavailable():
+                raise ApiProblem("agent-executor-capability-unavailable")
             case WriteUnavailable(detail):
                 raise ApiProblem("temporarily-unavailable", detail)
             case DurableStateCorrupt():
