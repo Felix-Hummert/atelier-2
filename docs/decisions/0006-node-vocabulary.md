@@ -1,6 +1,6 @@
 # ADR 0006: Format V3 is the whole authoring language; capabilities stage execution
 
-- Status: DRAFT — proposed for review, not accepted, not implemented
+- Status: ACCEPTED 2026-08-14 (Codex fifth exact-head review PASS, PR #30) — not yet implemented
 - Date: 2026-08-14
 - Depends on: [ADR 0002](0002-exact-yaml-graph.md), [ADR 0001](0001-durable-runtime.md)
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
