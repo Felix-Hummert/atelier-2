@@ -181,8 +181,8 @@ describe("Phase 2 mobile run entry", () => {
       run_id: "run-v2",
       workflow_revision_hash: publishedRevision!.revision_hash,
       agent_bindings: [
-        { role: "builder", agent_configuration_revision_hash: "c".repeat(64) },
-        { role: "reviewer", agent_configuration_revision_hash: "d".repeat(64) }
+        { role: "reviewer", agent_configuration_revision_hash: "c".repeat(64) },
+        { role: "builder", agent_configuration_revision_hash: "d".repeat(64) }
       ]
     });
     const card = await screen.findByRole("article", { name: "build — Working" });
@@ -451,8 +451,8 @@ function v2Revision(hash: string, documentBase64 = ""): WorkflowRevisionDetail {
     graph: {
       format_version: 2, start_node_id: "build",
       nodes: [
-        { type: "agent", node_id: "build", role: "builder", job: "Build", next_node_id: "review" },
         { type: "agent", node_id: "review", role: "reviewer", job: "Review", next_node_id: "fix" },
+        { type: "agent", node_id: "build", role: "builder", job: "Build", next_node_id: "review" },
         { type: "agent", node_id: "fix", role: "builder", job: "Fix", next_node_id: "done" },
         { type: "subworkflow", node_id: "done", operation: "add", operands: [1, 1], next_node_id: null }
       ]
@@ -471,7 +471,7 @@ function v2Run(start: unknown, agentBindings: RunV2["agent_bindings"]): RunV2 {
     agent_bindings: agentBindings,
     state_version: 0,
     state: "STARTED",
-    current_node: v2Revision(workflowRevisionHash).graph.nodes[0]! as RunV2["current_node"],
+    current_node: v2Revision(workflowRevisionHash).graph.nodes.find((node) => node.node_id === "build")! as RunV2["current_node"],
     agent_attempts: [{ attempt_id: "1".repeat(64), node_execution_id: "2".repeat(64), request_hash: "3".repeat(64),
       attempt_ordinal: 1, state: "PREPARED", failure_code: null, cancellation: null }],
     waiting: { type: "NONE" }, terminal_hash: null, latest_event_cursor: null
@@ -480,8 +480,8 @@ function v2Run(start: unknown, agentBindings: RunV2["agent_bindings"]): RunV2 {
 
 function v2Bindings(authHash: string): RunV2["agent_bindings"] {
   return [
-    { role: "builder", profile_id: "max", revision_number: 1, provider_id: "anthropic", auth_mode: "subscription", model: "sonnet", executor_revision: "claude-subscription/v1", auth_profile_revision_hash: authHash, agent_configuration_revision_hash: "c".repeat(64) },
-    { role: "reviewer", profile_id: "review-key", revision_number: 2, provider_id: "openai", auth_mode: "api_key", model: "gpt-5.6-sol", executor_revision: "codex/v1", auth_profile_revision_hash: authHash, agent_configuration_revision_hash: "d".repeat(64) }
+    { role: "builder", profile_id: "review-key", revision_number: 2, provider_id: "openai", auth_mode: "api_key", model: "gpt-5.6-sol", executor_revision: "codex/v1", auth_profile_revision_hash: authHash, agent_configuration_revision_hash: "d".repeat(64) },
+    { role: "reviewer", profile_id: "max", revision_number: 1, provider_id: "anthropic", auth_mode: "subscription", model: "sonnet", executor_revision: "claude-subscription/v1", auth_profile_revision_hash: authHash, agent_configuration_revision_hash: "c".repeat(64) }
   ];
 }
 

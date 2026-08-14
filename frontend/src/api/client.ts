@@ -75,7 +75,7 @@ export const nodeSchema = z.discriminatedUnion("type", [
   subworkflowNodeSchema
 ]);
 
-export const nodeV2Schema = z.discriminatedUnion("type", [
+const nodeV2Schema = z.discriminatedUnion("type", [
   agentNodeV2Schema,
   actionNodeSchema,
   waitNodeSchema,
@@ -100,7 +100,7 @@ const workflowGraphV2Schema = z
   .strict()
   .superRefine(validateWorkflowGraph);
 
-export const workflowGraphSchema = z.discriminatedUnion("format_version", [
+const workflowGraphSchema = z.discriminatedUnion("format_version", [
   workflowGraphV1Schema,
   workflowGraphV2Schema
 ]);

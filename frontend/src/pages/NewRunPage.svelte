@@ -320,11 +320,11 @@
       expectedBindings !== null &&
       (returnedBindings === null ||
         returnedBindings.length !== expectedBindings.length ||
-        expectedBindings.some((binding, index) =>
-          returnedBindings[index]?.role !== binding.role ||
-          returnedBindings[index]?.agent_configuration_revision_hash !==
-            binding.agent_configuration_revision_hash
-        ))
+        expectedBindings.some((binding) => {
+          const returnedBinding = returnedBindings.find((candidate) => candidate.role === binding.role);
+          return returnedBinding?.agent_configuration_revision_hash !==
+            binding.agent_configuration_revision_hash;
+        }))
     ) throw new Error("The start response changed the exact role bindings.");
     const resolved = await mutationJournal.resolve(mutation.mutation_id, {
       type: "start_response",
