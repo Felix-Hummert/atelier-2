@@ -7,7 +7,8 @@
   whose "Deklaratives Kontext- und Artefaktrouting", "Parallele DAG-Ausführung"
   and "Operator besitzt den Workflow" sections this record expresses and never
   re-decides
-- Feeds: [#6](https://github.com/FlexOr2/atelier-2/issues/6) (catalog),
+- Feeds: [#6](https://github.com/FlexOr2/atelier-2/issues/6) (catalog, which owns
+  the seed chain this record used to carry),
   [#7](https://github.com/FlexOr2/atelier-2/issues/7) (Dirigent)
 - Names, never decides, the dependencies owned elsewhere:
   [#22](https://github.com/FlexOr2/atelier-2/issues/22) (catalog identity),
@@ -29,13 +30,11 @@ Agent carries an exact expected output. Nothing else about the work is
 expressible: no authored instruction, no statement of which earlier result a node
 may read, no typed result, no statement of where a finished result lands, no
 skills, no policy, no budget. The single Action node performs one hardcoded
-effect. Execution is one successor chain.
-
-That vocabulary cannot express any chain a real story needs. #6 names the missing
-substrate exactly — node prompts, typed context edges, and output/handoff
-adapters, present in no schema and no decision record — and #7's Dirigent can only
-author what the format can express. Until this vocabulary exists, every catalog
-entry is a renamed toy chain.
+effect, and execution is one successor chain — so no chain a real story needs is
+expressible. #6 names that missing substrate exactly (node prompts, typed context
+edges, output/handoff adapters, present in no schema and no decision record), #7's
+Dirigent can only author what the format can express, and until this vocabulary
+exists every catalog entry is a renamed toy chain.
 
 Issue #1 decided the semantics on 2026-08-11/12 and #9 Rev. 4 decided that
 execution mode is a capability declaration. This record re-decides none of it. It
@@ -73,11 +72,10 @@ depends on what exists today:
    unsupported node would produce receipts for a shape nobody accepted.
 
 Publishing a revision the current runtime cannot execute is permitted, and the
-preview marks every such node with the capability it waits for. This is the point
-of the record. Revisions are immutable, so staging the *format* instead of
-execution would force a new format version and a re-authoring of every catalog
-entry each time a capability lands — the churn V3 exists to prevent. Staging
-execution costs one loud refusal.
+preview marks every such node with the capability it waits for. That is the point
+of the record: revisions are immutable, so staging the *format* instead would force
+a new format version and a re-authoring of every catalog entry each time a
+capability lands. Staging execution costs one loud refusal instead.
 
 ### The node contract
 
@@ -99,23 +97,23 @@ shared fields decide what it may see, what it must produce, and what bounds it.
 ```
 
 `depends_on` replaces the `next` chain and is the only control edge. The initial
-ready set is every node with no dependency. A node with no dependents is a
-**sink**, and the sinks are the graph's exit set; "terminal" in this record always
-means a receipt, a disposition or the run state, never a node. There is no
-distinguished node kind at either end and no `start` key: entry and exit sets are
-derived from the edges, so a document cannot declare an order its edges
-contradict. The terminal run hash keeps covering the ordered event hashes.
+ready set is every node with no dependency; a node with no dependents is a **sink**,
+and the sinks are the graph's exit set. "Terminal" in this record always means a
+receipt, a disposition or the run state, never a node. There is no distinguished
+node kind at either end and no `start` key: entry and exit sets are derived from the
+edges, so a document cannot declare an order its edges contradict, and the terminal
+run hash keeps covering the ordered event hashes.
 
 `budget`, `retry` and `cancellation` are versioned references to published policy
-revisions. The document pins **which** policy applies; the policy owner defines
-what it means (budget units are #26). #1's invariants are not policy options: a
-run cancel drives every running node to exactly one terminal cancel receipt,
+revisions. The document pins **which** policy applies; the policy owner defines what
+it means (budget units are #26). #1's invariants are not policy options: a run
+cancel drives every running node to exactly one terminal cancel receipt,
 already-started siblings drain, exhausted budget is a terminal failure receipt
 rather than silent hanging, and a restart reconstructs the same ready set without
 re-running a confirmed node.
 
-`inputs` is the one construct by which any kind receives a value; there is no
-second `arguments` construct. Each entry names one of exactly four sources:
+`inputs` is the one construct by which any kind receives a value; there is no second
+`arguments` construct. Each entry names one of exactly four sources:
 
 ```yaml
 inputs:
@@ -146,7 +144,7 @@ a closed set:
 | `succeeded` | the node produced every declared output and each satisfied its bound schema revision |
 | `failed` | the node ran and did not — provider or operation failure, schema violation, exhausted budget |
 | `cancelled` | an attributed run cancel reached the node while it was running |
-| `stale` | an explicit supersede (#1) marked this node's receipt or a context revision it bound as stale |
+| `stale` | an explicit supersede (#1) covers this node's receipt or a context revision it bound — projected from a marker, never written into the receipt |
 | `blocked` | the node never ran, because its join can no longer release |
 
 `blocked` is what makes a run with a failure terminate instead of hanging. It is
@@ -164,9 +162,24 @@ drain. The run is terminal when no node is running and every node holds exactly
 one terminal receipt — a condition a restart reconstructs from the durable
 receipts alone.
 
-`join` is required on any node with more than one dependency and is closed at
-exactly the two conditions #1 decided, because the requirement authority closed
-them, not because today's scheduler is small.
+`join` is closed at exactly the two conditions #1 decided, because the requirement
+authority closed them, not because today's scheduler is small. **Which nodes may
+carry one is closed too**, so no scheduler infers a default:
+
+- **no dependency** — `join` is refused at parse. There is nothing to join.
+- **exactly one dependency** — `join` is optional, and its omission *is*
+  `all_succeeded`: one edge means the dependent starts on a succeeded upstream.
+  Writing `all_succeeded` out means the same and is accepted as the redundant
+  spelling of the default.
+- **more than one dependency** — `join` is required; a missing one is refused at
+  parse naming the node.
+
+One deliberate deviation from "author `join` only for fan-in": `all_terminal` stays
+authorable over a single dependency, because it is the only way to say "run whatever
+happened upstream" — the report node that must publish a failed gate, the
+`from: {node, receipt: terminal}` input that needs its node to start at all.
+Refusing it would make a one-edge failure path inexpressible while the two-edge one
+is not.
 
 **`all_succeeded`** starts the node only when every dependency is `succeeded`.
 Every other case is the `blocked` receipt above.
@@ -191,12 +204,32 @@ request binding and of the node's own receipt, so a restart reconstructs the
 identical delivery, and the authored instruction decides what to do with a failed
 branch.
 
+**Supersede writes a marker, never a second receipt.** A confirmed receipt is
+immutable, so `stale` is never written into one and never arrives as a second
+terminal receipt for the same node. #1's supersede command writes one immutable
+`supersede-marker/v3` record naming the attributed actor and reason, the superseding
+workflow or context revision, and the exact receipts and context revisions it
+covers. The marker joins the run's ordered event hashes, so the terminal run hash
+covers it.
+
+`stale` is therefore a **projected delivery disposition**, not a stored one. A node's
+delivery disposition is its receipt's recorded disposition unless a marker covers
+that receipt or a context revision the receipt bound; then it projects `stale` while
+the receipt keeps reading `succeeded` with its original hashes. Everything downstream
+reads the projection: an unstarted `all_succeeded` dependent writes its `blocked`
+receipt naming `dependency_stale`; an `all_terminal` dependent receives the second
+envelope form with `status: stale`, naming both the receipt's recorded disposition
+and the marker hash; a running sibling drains per #1; a node already holding a
+confirmed receipt is never re-run by a marker. Projection is a pure function of the
+durable receipts and markers, so a restart reconstructs the identical delivery, and
+the run stays terminal on exactly one terminal receipt per node.
+
 ### The five node kinds
 
 Which field each kind requires (**R**), accepts (**O**), or refuses (**—**). A
 refused field is a parse error, never an ignored one, and nothing here is left to
-an implementer's default. `join` is required exactly when a node has more than one
-dependency.
+an implementer's default. `join` follows the three-way rule above for every kind
+alike — refused with no dependency, optional with one, required with several.
 
 | Field | agent | deterministic | wait | subworkflow | action |
 | --- | --- | --- | --- | --- | --- |
@@ -218,9 +251,9 @@ dependency.
 The refusals in that table are decisions, not omissions. Only `agent` accepts
 `available_context`, because only an agent can choose a read. `deterministic`
 refuses `budget`: a pure computation buys no provider work, and a wall-clock bound
-belongs to the operation revision, which knows its own cost. `wait` refuses
-`retry` because it is answered once, `action` because a re-attempt of an effect is
-reconciliation under ADR 0001, and `subworkflow` because the child's own nodes
+belongs to the operation revision, which knows its own cost. `retry` is refused by
+`wait` because it is answered once, by `action` because a re-attempt of an effect is
+reconciliation under ADR 0001, and by `subworkflow` because the child's own nodes
 carry their retry policies — as the child declares its own context.
 
 #### `agent`
@@ -244,8 +277,8 @@ carry their retry policies — as the child declares its own context.
 this node must do in this chain. It is authored text inside the exact document
 bytes, so it is inside the revision hash, immutable for a started run, and visible
 in the composed preview. It is instruction, never context and never a secret; its
-bound is 16 KiB of UTF-8, and an empty or oversized instruction is refused.
-Context belongs in `required_context`, `available_context` and `inputs` so it is
+bound is 16 KiB of UTF-8, and an empty or oversized instruction is refused. Context
+belongs in `required_context`, `available_context` and `inputs`, where it is
 revision-bound, hashed and provenance-carrying; an instruction that pastes
 requirement text instead is legal YAML and a review finding, not a format error.
 
@@ -283,6 +316,13 @@ registry, separate from the adapter operation registry because it has no externa
 effect: it is a pure function of its bound inputs, computed by the core with no
 provider. Its declared parameter names must be matched exactly by the node's input
 names, or binding is refused naming the parameter.
+
+**Outputs bind exact-or-subset.** Every `outputs` entry must name an output the
+bound operation revision declares and pin its identical schema revision; an
+undeclared name, or a declared name under a different schema revision, is refused
+at binding naming it. The author may project fewer outputs than the operation
+produces, never more and never a renamed one — so nothing downstream of this record
+invents an output name or picks which schema an output really satisfies.
 
 **Restart:** the output hash is a pure function of the operation revision and the
 ordered input hashes, so a restart recomputes rather than resumes. The terminal
@@ -358,21 +398,30 @@ positional mapping and no implicit pass-through. A root run binds every
 `graph_input` through its start command, and a missing one refuses the start
 naming the input.
 
-**Cycles.** A document's bytes can only name an already published revision id, and
-no revision can contain its own hash, so direct and mutual recursion are
-structurally impossible rather than merely checked. What *is* checked is depth:
-binding refuses a reference chain deeper than the maximum the
-`subworkflow_execution` attestation proves, naming the chain, so nesting cannot
-exhaust the runtime. The child's own required capabilities join the parent's
-requirement set transitively.
+**A `graph_output` must source from a sink.** Its `from` may only name a node with
+no dependents, and a `from` naming a non-sink node is refused at parse naming both
+the output and the node. A result read out of the middle of a graph would let a
+child report a finished value while work behind it was still deciding, which is the
+one way a child could look succeeded before it was.
+
+**Cycles.** A document's bytes can only name an already published revision id and no
+revision can contain its own hash, so direct and mutual recursion are structurally
+impossible rather than merely checked. Depth *is* checked: binding refuses a chain
+deeper than the maximum `subworkflow_execution` proves, naming the chain, so nesting
+cannot exhaust the runtime.
 
 **Restart:** the child is a durable run of its own, bound one to one to the parent
 node execution id, so a restart re-attaches instead of starting a second child.
 The parent node's terminal receipt binds the child run's terminal hash. Its
-disposition is `succeeded` when every `graph_output` was produced by a `succeeded`
-sink, `cancelled` when the child run was cancelled, otherwise `failed` naming the
-child node whose receipt broke it. Cancelling the parent run cancels the child.
-ADR 0002's toy adder — `operation: add` with `operands` — is not part of V3.
+disposition is `succeeded` only when the child run is terminal, **every** sink holds
+a `succeeded` receipt, and every `graph_output` was produced; `cancelled` when the
+child run was cancelled; otherwise `failed`, naming the child sink whose receipt
+broke it. A sink sourcing no `graph_output` still performed the child's work — a
+handoff Action is exactly that shape — so its failure is the child's failure even
+when every output-sourcing sink succeeded, and the parent then delivers the receipt
+envelope downstream rather than any produced value. Cancelling the parent run
+cancels the child. ADR 0002's toy adder — `operation: add` with `operands` — is not
+part of V3.
 
 #### `action`
 
@@ -395,12 +444,14 @@ operation's parameters, addressing, authorization, readback and receipt shape; t
 core knows only that the reference must resolve, that the operation declares an
 effect class, and that the effect runs under #1's intent, readback and receipt
 discipline. Optional `outputs` are the typed readback projection that contract
-declares. No platform identifier appears in this record or in the core: which
-operations GitHub offers, how it is addressed and authorized, and what its
-readback proves are #24's, so a GitLab adapter is a new operation registry rather
-than a workflow-format migration. The format sets **no limit** on the number of
-Action nodes; how many effects per run execute is the `external_effects`
-attestation.
+declares, binding exact-or-subset exactly as a deterministic operation's do: a
+readback output the operation revision does not declare, or declares under another
+schema revision, is refused at binding, and an author may project fewer, never more.
+No platform identifier appears in this record or in the core — which operations a
+platform offers, how it is addressed and authorized, and what its readback proves
+are #24's, so a GitLab adapter is a new operation registry rather than a
+workflow-format migration. The format sets **no limit** on the number of Action
+nodes; how many effects per run execute is the `external_effects` attestation.
 
 **The core derives the idempotency key; an author never writes one.** The key is
 derived from the run id, the node id, the bound adapter operation revision and the
@@ -410,11 +461,10 @@ choosing a coarse one, and a crash re-attempt of the same node with the same
 materialized inputs is the same key and therefore the same effect. `logical_key`
 is refused as a retired key.
 
-**The adapter owns the proof; the core owns the envelope.** Typed readback
-evidence — what proves the effect happened — belongs to the operation contract,
-because only the adapter knows what its platform can prove. The core carries it in
-the receipt envelope as an opaque hashed payload it never interprets, and the
-adapter never writes the envelope.
+**The adapter owns the proof; the core owns the envelope.** Typed readback evidence
+belongs to the operation contract, because only the adapter knows what its platform
+can prove; the core carries it in the receipt as an opaque hashed payload it never
+interprets, and the adapter never writes the envelope.
 
 **Restart:** ADR 0001's discipline, unchanged — intent, authoritative absence
 check, effect, readback, receipt; an unknown outcome becomes a reconciliation an
@@ -425,8 +475,8 @@ accountable operator command resolves.
 | Reference | What it carries | Who binds it | Can it make a run unstartable? |
 | --- | --- | --- | --- |
 | `role` | a logical name for who performs the work | the run-start command, to exactly one immutable agent-configuration revision (provider, model, auth profile) | yes — a role without exactly one bound configuration refuses the start |
-| `profile` | reusable provider-neutral **instruction**: a role's standing method, house output conventions | the document, revision-pinned | no — text is always deliverable |
-| `skills` | published **capability bundles** an adapter installs into a provider session: a named procedure and the tool grants it needs | the document, revision-pinned, attested per adapter | yes — a skill the bound adapter does not attest refuses the run naming it |
+| `profile` | reusable provider-neutral **instruction**: a role's standing method, house output conventions | the document, revision-pinned | at binding like every versioned reference — an unresolved profile revision refuses. Never at executability: resolved text needs no execution capability |
+| `skills` | published **capability bundles** an adapter installs into a provider session: a named procedure and the tool grants it needs | the document, revision-pinned, attested per adapter | at binding, and at executability too — a skill the bound adapter does not attest in `skill_installation` refuses the run naming it |
 
 `role` keeps its V2 meaning exactly: the portable document names the logical role
 and the run-start command binds every graph role to exactly one immutable
@@ -435,22 +485,23 @@ revision, because the same published chain has to run on a different provider
 matrix without becoming a different document. Two nodes needing two configurations
 name two roles.
 
-**A profile is not a skill.** A profile is only text, so it can never be the
-reason a run cannot start; a skill carries tool grants, so it can. The agent
-execution request carries the profile's bytes first and the node's `instruction`
-second; where they conflict the node's sentence governs, and both are inside the
-request binding and shown in the composed preview. A profile carries no tools, no
-permissions, no provider and no model. A profile's own byte bound belongs to the
-catalog artifact contract (#22); the 16 KiB bound above is the node's inline
-instruction, which lives inside the workflow document bytes.
+**A profile is not a skill.** Both refuse at binding when their revision does not
+resolve; they differ at executability. A resolved profile is text, contributes no
+capability requirement, and can therefore never be the reason a run refuses to
+start; a skill carries tool grants an adapter must prove it installs and enforces,
+so it can. The agent execution request carries the profile's bytes first and the
+node's `instruction` second; where they conflict the node's sentence governs, and
+both are inside the request binding and shown in the composed preview. A profile
+carries no tools, no permissions, no provider and no model, and its own byte bound
+belongs to the catalog artifact contract (#22) — the 16 KiB bound above is the
+node's inline instruction inside the workflow document bytes.
 
-That is the ownership split behind the whole node: **what the work is** is
-authored and pinned in the document — instruction bytes, profile, skills, tools,
-policy, and the budget, retry and cancellation revisions — because those change
-the meaning of the work that is judged and published. **Who performs it** is
-deployment configuration bound at run start. Anything reusable is a versioned
-reference, never copied inline; naming, lineage and storage of profiles, skills
-and tool grants are #22's, while the reference form is this record's.
+That is the ownership split behind the whole node: **what the work is** is authored
+and pinned in the document — instruction bytes, profile, skills, tools, policy,
+budget, retry and cancellation — because those change the meaning of the work that
+is judged and published; **who performs it** is deployment configuration bound at
+run start. Anything reusable is a versioned reference, never copied inline; #22 owns
+their naming, lineage and storage, this record only the reference form.
 
 ### Context edges
 
@@ -476,22 +527,21 @@ materialized means the node does not START. A materialized entry is addressable 
 
 `available_context` is #1's on-demand grant, and per #1 it grants **both a source
 and the read operations allowed on it**. A read the grant does not name is refused
-by the resolver and produces a refusal access receipt — visible, never silent.
-Each granted read operation revision owns its request shape and result typing; the
-core owns the `ContextAccessReceipt`, which binds source, source revision, read
-operation revision, request hash and result hash. A grant naming no read operation
-is refused at parse: a source with no permitted read is not a grant, it is a
-decoration.
+by the resolver and produces a refusal access receipt — visible, never silent. Each
+granted read operation revision owns its request shape and result typing; the core
+owns the `ContextAccessReceipt`, binding source, source revision, read operation
+revision, request hash and result hash. A grant naming no read operation is refused
+at parse: a source with no permitted read is a decoration, not a grant.
 
 Neither set of kinds is closed by this format. A source names a published
-source-kind revision and a read names a published read-operation revision in the
-resolver's registry, so the resolver story adds kinds without a format version,
-and an unresolvable reference is refused at binding naming it.
+source-kind revision and a read a published read-operation revision in the
+resolver's registry, so the resolver story adds kinds without a format version, and
+an unresolvable reference is refused at binding naming it.
 
-There is no ambient context. A node sees its instruction and profile, its skills,
-its required context, its granted available context, its inputs and its declared
-capabilities. Conversation history and agent working memory are never passed to a
-successor, and a summary never replaces its sources.
+There is no ambient context: a node sees its instruction and profile, its skills,
+its required and granted context, its inputs and its declared capabilities.
+Conversation history and agent working memory are never passed to a successor, and
+a summary never replaces its sources.
 
 ### Outputs bind versioned schemas
 
@@ -513,28 +563,42 @@ exactly like #1's auth modes.
 
 ### Capabilities are attested, never claimed
 
-A runtime capability revision is **not authored and not editable**. It is produced
-by the build and adapter layer as an attestation manifest: each entry names the
-exact operations it proves executable, the build identity that proved them (source
+A runtime capability revision is **not authored and not editable**. The build and
+adapter layer produces it as an attestation manifest: each entry names the exact
+operations it proves executable, the build identity that proved them (source
 revision plus the gate run), and the evidence reference. No command publishes a
 hand-written capability revision and no workflow field grants one, so a deployment
-cannot widen its own execution surface by editing a document. That is the whole
-reason executability is a separate validation phase rather than a flag.
+cannot widen its own execution surface by editing a document — which is why
+executability is a separate validation phase rather than a flag.
 
-**A capability entry is a manifest, not a Boolean.** `external_effects` does not
-say "Actions work"; it enumerates the adapter operation revisions proven
-executable, each with its proven scope — the effect class, the reconciliation
-evidence covering it, and the number of effects per run that crash evidence
-covers. An operation absent from its manifest refuses the run naming it, exactly
-like a missing capability.
+**A capability entry is a manifest, not a Boolean.** `external_effects` does not say
+"Actions work"; it enumerates the adapter operation revisions proven executable,
+each with its proven scope — the effect class, the reconciliation evidence covering
+it, and the number of effects per run that crash evidence covers. An operation
+absent from its manifest refuses the run naming it, exactly like a missing
+capability.
 
 **Requirements are transitive.** The capability set a document requires is
 computed over the closure of everything it references, not over its own node kinds
-alone: a bound output schema materialized from an isolated workspace contributes
-`isolated_workspace`; a bound adapter operation contributes its `external_effects`
-entry; a bound context source contributes `context_resolution` and its named read
-operations; a bound subworkflow revision contributes its entire requirement set. A
-refusal names the node, the reference through which the requirement entered, and
+alone:
+
+- the agent-configuration revision a `role` binds contributes `agent_execution` for
+  its executor identity and provider mode; `mode` itself stays that configuration's
+  own declaration, compared against the node rather than attested twice;
+- each bound `skills` revision contributes its `skill_installation` entry, each bound
+  `tools` revision its `tool_grants` entry;
+- a bound output schema materialized from an isolated workspace contributes
+  `isolated_workspace`;
+- a bound adapter operation contributes its `external_effects` entry, a bound
+  deterministic operation its `deterministic_operations` entry;
+- a `required_context` source contributes `context_materialization` and nothing
+  else — never `context_resolution`, whose subject is the grant it does not carry;
+- an `available_context` source contributes `context_resolution` together with every
+  read operation revision it grants;
+- a bound subworkflow revision contributes its entire requirement set, plus
+  `subworkflow_execution` at the resulting depth.
+
+A refusal names the node, the reference through which the requirement entered, and
 the missing capability, so a nested one stays diagnosable.
 
 Capability names are part of this contract, because a refusal must name something
@@ -543,6 +607,9 @@ stable:
 | Capability | Attests |
 | --- | --- |
 | `dag_scheduling` | more than one dependency edge into or out of a node — fan-out, fan-in, joins, parallel ready sets (#1 story 3) |
+| `agent_execution` | the enumerated agent-configuration and executor revisions the runtime proves it can invoke, each with its executor identity, provider mode, build identity and gate run. It never attests `mode`: per #9 Rev. 4 the bound configuration declares that, and one capability has exactly one declarer |
+| `skill_installation` | the enumerated skill revisions the bound adapter proves it installs into a provider session, each with its proven scope — the procedure and the tool grants it carries — and its evidence reference |
+| `tool_grants` | the enumerated tool grant revisions proven enforceable, each with the operations the grant permits and the evidence that proved the enforcement, not merely the installation |
 | `context_materialization` | pre-START materialization of `required_context` with hash and provenance, by the materializer the run binds |
 | `context_resolution` | `available_context` grants: the enforced source kinds and read operations, with `ContextAccessReceipt`s |
 | `isolated_workspace` | an attempt's isolated hashed workspace, and any output schema derived from it |
@@ -550,19 +617,19 @@ stable:
 | `deterministic_operations` | the enumerated deterministic operation revisions the core can compute |
 | `subworkflow_execution` | child-run execution and the maximum proven nesting depth |
 
-`required_context` is deliberately **not** gated behind `context_resolution`. It
-is materialized by whichever materializer the run binds — today #1's external
-bootstrap harness, later story 5's privileged resolver — and both produce the same
-hashed, provenance-carrying package, so the gate is `context_materialization`,
-which the bootstrap attests. Only `available_context` needs the resolver, because
-only a resolver can enforce a grant and mint an access receipt. Gating both behind
-the future resolver would make every document unexecutable during exactly the
-bootstrap #1 planned for.
+Why `required_context` never contributes `context_resolution`: it is materialized by
+whichever materializer the run binds — today #1's external bootstrap harness, later
+story 5's privileged resolver — and both produce the same hashed,
+provenance-carrying package, so `context_materialization`, which the bootstrap
+attests, is the honest gate. Only `available_context` needs the resolver, because
+only a resolver can enforce a grant and mint an access receipt; gating both behind
+it would make every document unexecutable during exactly the bootstrap #1 planned
+for.
 
-`mode: interactive` is deliberately absent from the table, because #9 Rev. 4 gave
-it a declarer already: the bound agent-configuration revision. One capability must
-have exactly one declarer, so mode is compared against that binding at run start
-and refuses with the same loud, node-naming shape.
+`mode: interactive` is absent from the table for the opposite reason: #9 Rev. 4 gave
+it a declarer already, the bound agent-configuration revision. One capability has
+exactly one declarer, so mode is compared against that binding at run start and
+refuses with the same loud, node-naming shape.
 
 ### What the run binds
 
@@ -584,15 +651,15 @@ context, and never durable state.
 
 ### The conductor is a client, and one composed preview is the truth
 
-The Dirigent of #7 is an ordinary author and API client. It has no node kind, no
-privileged bypass, no hidden system node, no provider-dependent extra ceremony,
-and no command the operator does not also have. It publishes and starts through
-the same attributed commands, under the same publish gate (#6 Rev. 2: name the
-nearest existing catalog entry and why it does not suffice), and the runtime
-executes only the visible published revision.
+The Dirigent of #7 is an ordinary author and API client: no node kind, no privileged
+bypass, no hidden system node, no provider-dependent ceremony, no command the
+operator does not also have. It publishes and starts through the same attributed
+commands under the same publish gate (#6 Rev. 2: name the nearest existing catalog
+entry and why it does not suffice), and the runtime executes only the visible
+published revision.
 
-Because it is a client, the operator must see exactly what it authored. The object
-that shows it is named: the **composed preview** is
+Because it is a client, the operator must see exactly what it authored, and the
+object that shows it is named: the **composed preview** is
 `(workflow revision, run configuration, resolved registries)` —
 
 - the exact revision bytes and the graph derived from them;
@@ -607,10 +674,9 @@ that shows it is named: the **composed preview** is
 It is one typed API projection with its own hash, computed once and rendered alike
 by the publish preview, the typed API and the cockpit. Per #1 it carries at least
 nodes, edges and parallelism, roles with their bound provider and model, required
-and available context with its granted read operations, upstream inputs, skills,
-tools and capabilities, budgets, retry and cancel, approval points and external
-effects — plus, from this record, the capability each not-yet-executable node
-waits for.
+and available context with its granted reads, upstream inputs, skills, tools and
+capabilities, budgets, retry and cancel, approval points and external effects —
+plus, from this record, the capability each not-yet-executable node waits for.
 
 **A V1 surface may collapse, never hide.** Good defaults may fold detail behind a
 disclosure and a small screen may summarize first. Three things no surface may do:
@@ -621,6 +687,19 @@ is a defect in that surface, not a permitted state. Equal projection is testable
 not a style guideline: the same revision and configuration yield the same composed
 preview hash through all three surfaces.
 
+**Editable means authorable, and a bound run is never edited.** While a run
+configuration is marked *proposed*, an edit writes into that proposal, which no run
+has bound. Once a start command marked it *bound*, the snapshot is immutable and an
+edit cannot reach it: editing a bound preview **authors a proposed successor** — a
+new workflow revision, a new run configuration revision, or both — a publishable
+object of its own that reaches execution only through the visible
+supersede/successor path, under the same attributed commands and publish gate. The
+running run keeps executing exactly what it bound, its receipts stay immutable, and
+the marker above is what tells its readers a successor exists. The no-read-only rule
+loses nothing by this: the authoring surface stays fully editable, and what the
+operator edits on a bound preview is a successor they can see rather than a snapshot
+they silently rewrote.
+
 ### Refusals
 
 Refused at parse, capability-independent: unknown field or node kind; a field the
@@ -628,11 +707,12 @@ node's kind refuses; duplicate node id, input name or output name; a cycle; an
 unreachable node; a dependency on an unknown node; a data edge whose node is not
 in the dependency closure; a data edge to an undeclared output; an input naming a
 `context` entry the node does not declare; a missing `join` on a node with several
-dependencies; an empty or oversized instruction; an absent `mode`; an interactive
-node whose output is mapped downstream without operator confirmation; an
-`available_context` grant naming no read operation; a `wait` without exactly one
-output; a `graph_output` naming an undeclared node output; a malformed or unpinned
-versioned reference.
+dependencies and a `join` on a node with none; an empty or oversized instruction;
+an absent `mode`; an interactive node whose output is mapped downstream without
+operator confirmation; an `available_context` grant naming no read operation; a
+`wait` without exactly one output; a `graph_output` naming an undeclared node
+output or sourcing a node that is not a sink; a malformed or unpinned versioned
+reference.
 
 Refused at binding: any versioned reference — profile, skill, tool, policy,
 budget, retry, cancellation, schema, deterministic operation, adapter operation,
@@ -640,7 +720,9 @@ context source, read operation, subworkflow — that does not resolve to a publi
 revision; a subworkflow input or output that does not match the child's
 `graph_inputs` and `graph_outputs` one to one by name and schema revision; an
 operation whose declared parameters the node's inputs do not match exactly; a
-subworkflow chain deeper than the attested maximum.
+deterministic or Action output the bound operation revision does not declare, or
+declares under a different schema revision; a subworkflow chain deeper than the
+attested maximum.
 
 Refused at run start: an ungranted adapter operation; a role without exactly one
 bound agent-configuration revision; an unbound `graph_input`; an `interactive`
@@ -656,42 +738,69 @@ instead of reading a generic closed-schema error.
 
 ### What binds a node call
 
-The revision hash already covers the instruction bytes and every pinned reference.
-The node execution request must additionally bind, as `node-execution-request/v3`:
-the kind, the mode where the kind has one, the ordered materialized
-required-context hashes, the ordered input envelopes with their status, the
-resolved agent-configuration, profile, skill, tool and policy revision ids, and
-the declared output names and schema revisions. A changed context is then a
-different logical operation rather than a silent re-run of the same one, and a
-retry with identical inputs stays the same operation.
+`node-execution-request/v3` is a hash over an exact preimage, and the preimage is
+this list — nothing omitted, nothing added, canonical UTF-8, SHA-256, in this order:
+
+1. the **workflow revision hash**, which already covers the instruction bytes, the
+   node's own `budget`, `retry` and `cancellation` references and every other pinned
+   reference;
+2. the **run configuration revision id** — the one named bound snapshot, which is
+   why this list stays short. Per "What the run binds" it names the role matrix,
+   every profile, skill, tool and policy revision, the budget, retry and
+   cancellation revisions, every registry revision, and the **runtime capability
+   revision**; it is immutable and never rebound, so its id binds all of them;
+3. the run id and the node id — the same pair under every attempt, so a retry is the
+   same logical operation;
+4. the **Context-Package hash** #1 requires: the hash over the ordered materialized
+   `required_context` package, then each member's
+   `(name, source revision, selector, content hash)`, so neither a re-ordered
+   package nor a swapped member is invisible;
+5. the ordered `available_context` grants as `(name, source revision, read operation
+   revisions)` — what the node *may* read is part of what it was asked to do;
+6. the kind, and the `mode` where the kind has one;
+7. the ordered input envelopes with their status, name, schema revision and hash;
+8. the resolved agent-configuration, profile, skill, tool, policy, budget, retry and
+   cancellation revision ids;
+9. the declared output names with their schema revisions.
+
+A changed context, a changed run configuration, a changed capability revision or a
+changed bound policy is then a different logical operation rather than a silent
+re-run of the same one, and a retry with identical inputs stays the same operation.
 
 The node's terminal receipt is one envelope, owned by the core for every kind
-(`node-receipt/v3`): the node execution id, the disposition and its reason, the
-request hash, one ordered tuple of `(name, schema revision, hash)` for the
-declared outputs, the access receipts actually used, and — for an Action — the
-derived idempotency key, the intent hash and the adapter's typed readback evidence
-as an opaque hashed payload. One receipt per node, not one per output: #1 gives
+(`node-receipt/v3`): the node execution id, the disposition and its reason, **the
+request hash and, separately and by name, the Context-Package hash that request
+bound**, one ordered tuple of `(name, schema revision, hash)` for the declared
+outputs, the access receipts actually used, and — for an Action — the derived
+idempotency key, the intent hash and the adapter's typed readback evidence as an
+opaque hashed payload. The package hash is carried, never re-derived: a reader asks
+"which context did this receipt run against?" without reconstructing the request
+preimage, and a supersede marker covering a context revision is matchable against
+receipts by that hash alone. One receipt per node, not one per output: #1 gives
 every node exactly one terminal receipt, and per-output receipts would make that
 count ambiguous. That receipt change is the largest implementation cost of this
 record and is named, not hidden.
 
-## Worked example: a self-build chain for this repository
+## Worked example: the smallest cross-kind chain
 
-One real chain for one story of this repository, written to double as the first
-seed of the #6 catalog. Instructions are illustrative authored text and every
-`revision` value is a placeholder for a published revision id; the shape is the
-decision. It uses two of the five kinds; the exact YAML for the other three is in
-their sections above.
+One example, kept to what only a whole chain can show: declared fan-out, a fan-in
+join, both context kinds on one node, a deterministic merge of two review branches,
+and a landed effect. Every `revision` value is a placeholder for a published
+revision id, the instructions are illustrative authored text, and the shape is the
+decision. The per-kind YAML above owns `wait` and `subworkflow`.
+
+The full self-build chain this record used to carry is a **catalog seed, and #6
+owns the catalog**: it now lives at
+[issue #6, comment 5295735605](https://github.com/FlexOr2/atelier-2/issues/6#issuecomment-5295735605),
+where a catalog entry can grow without re-opening a decision record.
 
 ```mermaid
 flowchart LR
-    I[implement<br/>agent] --> RC[code review]
-    I --> RT[test review]
-    RC --> F[fix<br/>join: all_succeeded]
-    RT --> F
-    I --> F
-    F --> B[behaviour_test]
-    B --> P[publish_report<br/>action]
+    I[implement<br/>agent] --> RC[code_review]
+    I --> RT[test_review]
+    RC --> M[merge_findings<br/>deterministic<br/>join: all_terminal]
+    RT --> M
+    M --> P[publish_report<br/>action]
 ```
 
 ```yaml
@@ -703,12 +812,10 @@ nodes:
     mode: headless
     instruction: |
       Implement every literal acceptance sentence of the bound story inside your
-      workspace. Change nothing outside it. Return the candidate you produced and
-      a summary naming which sentence each change serves.
+      workspace, and return the candidate you produced.
     profile: {ref: builder_method, revision: "<profile revision id>"}
     skills:
       - {ref: workspace_discipline, revision: "<skill revision id>"}
-    policy: {ref: build_policy, revision: "<policy revision id>"}
     budget: {ref: build_budget, revision: "<budget revision id>"}
     required_context:
       - name: story
@@ -718,23 +825,16 @@ nodes:
         source: {ref: decision_record_index, revision: "<index revision id>"}
         read_operations:
           - {ref: search, revision: "<read operation revision id>"}
-          - {ref: fetch_document, revision: "<read operation revision id>"}
     outputs:
       - name: candidate
         schema: {ref: workspace_candidate, revision: "<schema revision id>"}
-      - name: summary
-        schema: {ref: text, revision: "<schema revision id>"}
 
   - id: code_review
     type: agent
     role: code_reviewer
     mode: headless
     instruction: |
-      Judge the candidate against the acceptance sentences. Read only what you
-      were given. Return pass only if every sentence has a proof; otherwise return
-      fail and name each defect with its file and the sentence it violates.
-    profile: {ref: reviewer_method, revision: "<profile revision id>"}
-    policy: {ref: read_only_policy, revision: "<policy revision id>"}
+      Name every defect in the candidate with its file and the sentence it violates.
     depends_on: [implement]
     required_context:
       - name: story
@@ -742,8 +842,6 @@ nodes:
     inputs:
       - name: candidate
         from: {node: implement, output: candidate}
-      - name: summary
-        from: {node: implement, output: summary}
     outputs:
       - name: findings
         schema: {ref: review_verdict, revision: "<schema revision id>"}
@@ -753,14 +851,8 @@ nodes:
     role: test_reviewer
     mode: headless
     instruction: |
-      Judge whether each acceptance sentence is pinned by a behavioral test at the
-      cheapest honest layer, and name every sentence no test proves.
-    profile: {ref: reviewer_method, revision: "<profile revision id>"}
-    policy: {ref: read_only_policy, revision: "<policy revision id>"}
+      Name every acceptance sentence no behavioral test pins.
     depends_on: [implement]
-    required_context:
-      - name: story
-        source: {ref: requirement, revision: "<requirement revision id>", selector: story_acceptance}
     inputs:
       - name: candidate
         from: {node: implement, output: candidate}
@@ -768,94 +860,76 @@ nodes:
       - name: findings
         schema: {ref: review_verdict, revision: "<schema revision id>"}
 
-  - id: fix
-    type: agent
-    role: builder
-    mode: headless
-    instruction: |
-      You receive the original candidate and each review's findings. Resolve every
-      named defect and return the new candidate. If no finding names a defect,
-      return the candidate unchanged.
-    profile: {ref: builder_method, revision: "<profile revision id>"}
-    skills:
-      - {ref: workspace_discipline, revision: "<skill revision id>"}
-    policy: {ref: build_policy, revision: "<policy revision id>"}
-    budget: {ref: build_budget, revision: "<budget revision id>"}
-    depends_on: [implement, code_review, test_review]
-    join: all_succeeded
-    required_context:
-      - name: story
-        source: {ref: requirement, revision: "<requirement revision id>", selector: story_acceptance}
+  - id: merge_findings
+    type: deterministic
+    depends_on: [code_review, test_review]
+    join: all_terminal
+    operation: {ref: merge_review_verdicts, revision: "<deterministic operation revision id>"}
     inputs:
-      - name: candidate
-        from: {node: implement, output: candidate}
       - name: code_findings
         from: {node: code_review, output: findings}
       - name: test_findings
         from: {node: test_review, output: findings}
     outputs:
-      - name: candidate
-        schema: {ref: workspace_candidate, revision: "<schema revision id>"}
-
-  - id: behaviour_test
-    type: agent
-    role: tester
-    mode: headless
-    instruction: |
-      Run the repository gate against the candidate you were given and report the
-      exact commands and their exact counts.
-    policy: {ref: read_only_policy, revision: "<policy revision id>"}
-    depends_on: [fix]
-    inputs:
-      - name: candidate
-        from: {node: fix, output: candidate}
-    outputs:
-      - name: report
-        schema: {ref: text, revision: "<schema revision id>"}
+      - name: merged
+        schema: {ref: review_verdict, revision: "<schema revision id>"}
 
   - id: publish_report
     type: action
-    depends_on: [behaviour_test]
+    depends_on: [merge_findings]
     operation: {ref: requirement_comment, revision: "<operation revision id>"}
     inputs:
       - name: body
-        from: {node: behaviour_test, output: report}
+        from: {node: merge_findings, output: merged}
 ```
 
-The fan-out is declared, not implied: two review nodes depend on `implement`
-alone, so they are one ready set, and `fix` names `join: all_succeeded` over three
-dependencies. That join is a decision with a stated consequence — a failed review
-gives `fix` a `blocked` receipt naming it, and `behaviour_test` and
-`publish_report` block behind it, so the run ends without an effect. An author who
-wants `fix` to run anyway writes `all_terminal` and reads the disposition in the
-envelope. The scheduler that runs any of this is #1 story 3.
-
-`fix` reads the *original* candidate and each finding separately hashed: the
-reviews are never merged into a shared chat, and a summary never replaces its
-sources. `requirement_comment` is a placeholder and `publish_report` declares no
-`logical_key`, because the core derives the idempotency key; what that operation
-is, how it is addressed and authorized, and what its readback proves are #24's.
-Publishing this or any successor revision into the catalog carries #6 Rev. 2's
-publish gate, and the operator sees that justification in the composed preview.
+The fan-out is declared, not implied: both reviews depend on `implement` alone, so
+they are one ready set, and each omits `join` because one dependency means
+`all_succeeded`. `merge_findings` has two, so its `join` is required, and
+`all_terminal` is a decision with a stated consequence — a failed review arrives as
+the receipt envelope rather than vanishing, and the merge still runs.
+`publish_report` omits `join` again and so lands its effect only behind a
+`succeeded` merge; had the author wanted the report published whatever happened,
+`all_terminal` over that single dependency is the authored form. It declares no
+`logical_key`, because the core derives the idempotency key, and the scheduler that
+runs any of this is #1 story 3.
 
 ## Implementation status
 
-[`docs/PRODUCT.md`](../PRODUCT.md) owns implementation status and is not restated
-here. What this record must say about it: nothing above is implemented. Today's
-parser accepts format versions 1 and 2 and refuses `format_version: 3`, and no
-runtime capability revision exists, so no capability above is attested. The first
-story that implements V3 attests the subset it proves, and every later capability
-is an attestation change rather than a format change. That claim is falsifiable:
-if a later capability forces a format version anyway, this record was wrong.
+[`docs/PRODUCT.md`](../PRODUCT.md) owns implementation status. What this record must
+say: nothing above is implemented — today's parser accepts format versions 1 and 2
+and refuses `format_version: 3`, and no runtime capability revision exists, so no
+capability above is attested. The first story that implements V3 attests the subset
+it proves, and every later capability is an attestation change rather than a format
+change. Falsifiably: if a later capability forces a format version anyway, this
+record was wrong.
 
-## Migration
+## Migration and the persistence cutover
 
 V1 and V2 documents stay valid and keep their meaning. The parser dispatches on
 `format_version` into a separate closed model, so V3 adds a version instead of
-widening a frozen one, and no stored revision is ever reparsed under a new
-meaning. A started run keeps executing under the version it bound. There is no
-runtime document migration and none is needed, which matters because
-[ADR 0001](0001-durable-runtime.md) knows no runtime migration path.
+widening a frozen one, no stored revision is ever reparsed under a new meaning, and
+a started run keeps executing under the version it bound. There is no runtime
+**document** migration and none is needed.
+
+The **store** is the other half, and a named predecessor rather than a detail.
+`node-execution-request/v3`, `node-receipt/v3`, the closed disposition set and the
+supersede marker replace today's durable V2 receipt and single-successor transition
+shape, while [ADR 0001](0001-durable-runtime.md) creates schema V7 only in a truly
+empty canonical store, reopens only an exact V7 product schema, rejects any other
+store without mutation, and provides no runtime upgrade or downgrade migration. So:
+
+- **A store schema revision carrying the V3 records is a required predecessor of V3
+  execution.** It lands under ADR 0001's rule, not around it: a new exact schema
+  version created in an empty store, older stores rejected unmutated. The cutover is
+  therefore a deliberate operator-owned store replacement, and this record invents no
+  in-place migration ADR 0001 forbids.
+- **Publishing V3 documents may precede that cutover**, and only because it needs no
+  new durable shape: a revision is stored as exact bytes with its hash, which V7
+  already holds, and an unexecutable revision is exactly what the capability phase
+  above expects. The moment a V3 run must write a receipt, the cutover is a hard
+  predecessor with no partial path — a V3 run against a V7 store is refused, never
+  written down in the old shape.
 
 ## Consequences
 
@@ -866,13 +940,13 @@ runtime document migration and none is needed, which matters because
 - A capability landing changes an attestation, not a format version. The cost is a
   second, published, build-produced artifact — the runtime capability revision —
   and the discipline that every refusal names a capability rather than a version.
-- Publishable is deliberately wider than executable. An operator can be shown a
-  graph the machine will refuse to start, and the composed preview must say which
-  node waits for what; a preview that omits that mark is a defect.
+  Publishable stays deliberately wider than executable, so an operator can be shown
+  a graph the machine will refuse to start.
 - The node execution request and receipt grow a version to carry named typed
-  outputs, input envelopes with dispositions, bound context and resolved revision
-  ids. That is a durable-contract change needing crash evidence, not a field
-  addition.
+  outputs, input envelopes with dispositions, the bound Context-Package hash and
+  resolved revision ids. With the disposition set and the supersede marker that is a
+  durable-contract change needing crash evidence and the store cutover above, not a
+  field addition.
 - The runtime's terminal handling and single-successor advance both move: to the
   run-level terminal condition over dispositions, and to a ready set over
   `depends_on`. Terminal handling is bound to the Subworkflow node kind today, and
@@ -880,8 +954,6 @@ runtime document migration and none is needed, which matters because
 - The format expresses no conditional branching and no loop; per #1 there is no
   automatic fix-review cycle. Bounded iteration is #25's, and this record decides
   nothing about its author surface.
-- An author who writes V2 habits into a V3 document gets a refusal naming the
-  retired key.
 
 ## Required proofs before acceptance
 
@@ -897,6 +969,23 @@ This record is a draft; nothing below exists yet.
 - Under `all_terminal` a failed, cancelled and stale branch each arrive as the
   documented receipt envelope while a succeeded input arrives as the value
   envelope, and a restart reconstructs the identical delivery.
+- The join rule is proven in all three positions: `join` on a node with no
+  dependency is refused at parse; a single-dependency node with no `join` produces
+  exactly the delivery and the `blocked` receipt an authored `all_succeeded`
+  produces; a single-dependency `all_terminal` node starts on a failed upstream and
+  receives its receipt envelope.
+- A supersede marker over a confirmed receipt writes no second terminal receipt and
+  leaves that receipt's disposition, output hashes and bytes unchanged, while the
+  projection turns `stale`: an unstarted `all_succeeded` dependent blocks naming
+  `dependency_stale`, an `all_terminal` one receives `status: stale` with the
+  marker hash, a confirmed node is not re-run, and a restart re-projects identically.
+- Result mapping refuses instead of inventing: a deterministic or Action `outputs`
+  entry the bound operation revision does not declare, and one declared under a
+  different schema revision, are each refused at binding naming the output, while a
+  declared subset binds; a `graph_output` sourcing a non-sink node is refused at
+  parse; and a child whose output-sourcing sinks all succeeded while another sink
+  failed gives the parent a `failed` receipt naming that sink and delivers no value
+  downstream.
 - Executability is proven separately from validity: the same valid document is
   accepted at publish, marked in the preview, and refused at run start naming the
   exact node and missing capability; it starts unchanged once the capability
@@ -908,22 +997,35 @@ This record is a draft; nothing below exists yet.
 - Two Action nodes with identical inputs in one run receive distinct derived
   idempotency keys, and a crash re-attempt of one node receives the same key and
   produces exactly one effect and one receipt.
+- An unattested skill revision, tool grant revision and agent-configuration
+  executor each refuse the run naming node, reference and capability; a document
+  whose only context is `required_context` starts against a capability revision
+  attesting `context_materialization` alone, without `context_resolution`.
 - The worked example above parses, publishes, and round-trips byte-identically,
   and the V1/V2 example documents from the existing suites still parse unchanged.
-- The request and receipt hash vectors are literal and pinned; a changed context
-  hash produces a different request identity while an identical retry does not.
+- The request and receipt hash vectors are literal and pinned, one per dimension of
+  the preimage: changing the workflow revision, the run configuration revision, the
+  runtime capability revision, a bound budget, retry or cancellation revision, the
+  Context-Package hash, an input envelope's status, or a declared output's schema
+  revision — each alone — yields a different request identity, while an identical
+  retry yields the identical one; and a receipt vector binds its request hash and
+  its Context-Package hash independently readable.
 - One revision rendered through publish preview, API projection and cockpit yields
   the same composed preview hash, and every author-configurable field is present
-  and editable in each.
+  and editable in each while the configuration is proposed. Editing a **bound**
+  preview yields a new proposed revision and leaves the run's snapshot, its
+  receipts and its composed preview hash unchanged.
+- A V3 run against a store without the V3 record schema is refused whole, with
+  nothing written in the old shape.
 
 ## Out of scope
 
-This record decides a document surface, its bindings and its refusals. It decides
-nothing about: the engine or executor implementation; the scheduler, ready set and
-parallelism (#1 story 3); catalog identity, naming, lineage and storage (#22); the
-bounded iteration construct and any surface it may need (#25); any platform
-adapter's operations, addressing and authorization (#24); budget units (#26);
-interactive attach, transcripts and remote runners (#9 parts 2 and 3); and the
+This record decides a document surface, its bindings and its refusals — and nothing
+about the engine or executor implementation; the scheduler, ready set and
+parallelism (#1 story 3); catalog entries, identity, naming, lineage and storage
+(#6, #22); the bounded iteration construct and any surface it may need (#25); any
+platform adapter's operations, addressing and authorization (#24); budget units
+(#26); interactive attach, transcripts and remote runners (#9 parts 2 and 3); or the
 privileged context resolver with its access receipts (#1 story 5).
 
 ## Supersedes
