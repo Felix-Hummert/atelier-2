@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,7 @@ from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
     CONFORMANT_CLAUDE_VERSIONS,
+    CREDENTIAL_RECORD_ENTRY,
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
 )
@@ -138,10 +140,20 @@ def claude_search_path(directory: Path) -> str:
     return str(tools)
 
 
+PERSONAL_SUBSCRIPTION_TYPE = "max"
+"""What a deployment fake's credential record says the account is.
+
+This executor is contracted for a personal subscription, so a fake credential
+directory carries the record a personal account leaves behind. Without one no
+fake deployment could be attested at all.
+"""
+
+
 def claude_subscription_deployment(
     directory: Path,
     program: str,
     version: str | None = MEASURED_CLAUDE_VERSION,
+    subscription_type: str | None = PERSONAL_SUBSCRIPTION_TYPE,
 ) -> ClaudeSubscriptionSettings:
     """Deploy one executable Python program in place of the Claude CLI."""
 
@@ -155,6 +167,11 @@ def claude_subscription_deployment(
     workspace.mkdir()
     credentials = directory / "credentials"
     credentials.mkdir()
+    # The credential record an authenticated CLI would have left behind.
+    (credentials / CREDENTIAL_RECORD_ENTRY).write_text(
+        json.dumps({"claudeAiOauth": {"subscriptionType": subscription_type}}),
+        encoding="utf-8",
+    )
     return ClaudeSubscriptionSettings(
         executable, workspace, credentials, claude_search_path(directory)
     )
@@ -185,13 +202,18 @@ def claude_subscription_runtime(
     )
 
 
-def claude_subscription_start(
+def claude_subscription_publication(
     runtime: DbosRuntime,
-    run_name: str,
     model: str = "claude-haiku-4-5",
     requested_capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
-) -> tuple[DurablePublishedRunResult, WorkflowRevision]:
-    """Ask the production starter for one run bound to this executor."""
+) -> tuple[AgentConfigurationRevision, WorkflowRevision]:
+    """Publish one configuration and workflow through the production catalog.
+
+    The catalog binds a configuration to an executor key, not to a capability,
+    so a configuration demanding what this executor cannot serve is published
+    here exactly as a real one would be -- and refused where the demand is
+    actually read.
+    """
 
     catalog = DbosAgentConfigurationCatalog(
         runtime.engine, runtime.agent_executor_registry
@@ -208,6 +230,20 @@ def claude_subscription_start(
     catalog.publish_agent_configuration_revision(configuration)
     workflow = WorkflowRevision(CLAUDE_SUBSCRIPTION_WORKFLOW)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    return configuration, workflow
+
+
+def claude_subscription_start(
+    runtime: DbosRuntime,
+    run_name: str,
+    model: str = "claude-haiku-4-5",
+    requested_capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
+) -> tuple[DurablePublishedRunResult, WorkflowRevision]:
+    """Ask the production starter for one run bound to this executor."""
+
+    configuration, workflow = claude_subscription_publication(
+        runtime, model, requested_capability
+    )
     started = DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
     ).start_published(
