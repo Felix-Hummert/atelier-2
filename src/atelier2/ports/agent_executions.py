@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -58,12 +58,21 @@ class AgentExecutionFailure:
 
 @dataclass(frozen=True)
 class AgentProcessInvocation:
-    """One provider process invocation, kept exclusively in live memory."""
+    """One provider process invocation, kept exclusively in live memory.
+
+    The executor declares `standard_output_frame_bytes`: the raw stdout frame
+    this exact invocation may produce before supervision refuses it. The port
+    owns the field and its validity; the value belongs to the provider whose
+    wire format produces the frame, so no provider's number lives here. It is
+    a different bound from the durable result bound a decoded execution result
+    must satisfy.
+    """
 
     arguments: tuple[str, ...]
     working_directory: Path
     environment: tuple[tuple[str, str], ...] = ()
     standard_input: bytes = b""
+    standard_output_frame_bytes: int = field(kw_only=True)
 
     def __post_init__(self) -> None:
         if not self.arguments or any(not value for value in self.arguments):
@@ -79,6 +88,13 @@ class AgentProcessInvocation:
             raise ValueError(
                 "agent process standard input exceeds "
                 f"{MAXIMUM_AGENT_PROCESS_INPUT_BYTES} bytes"
+            )
+        if (
+            type(self.standard_output_frame_bytes) is not int
+            or self.standard_output_frame_bytes < 1
+        ):
+            raise ValueError(
+                "agent process standard output frame must be a positive byte count"
             )
 
 

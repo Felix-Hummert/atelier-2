@@ -16,7 +16,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
@@ -37,35 +36,38 @@ def _announce_ready_on_standard_output() -> None:
     print("READY", flush=True)
 
 
-def _maximum_completed_frame() -> bytes:
-    standard_output = base64.b64encode(b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2).decode(
-        "ascii"
+MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES = max(
+    len(encode_control_frame({"type": arm}))
+    for arm in (
+        "OUTPUT_LIMIT_EXCEEDED",
+        "SUPERVISION_FAILED",
+        "STOPPED",
+        "RECOVERY_HANDOFF",
     )
-    standard_error = base64.b64encode(
-        b"x" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
-    ).decode("ascii")
-    return encode_control_frame(
+)
+
+
+def _base64_characters(byte_count: int) -> int:
+    return 4 * ((byte_count + 2) // 3)
+
+
+def maximum_agent_wait_response_bytes(standard_output_frame_bytes: int) -> int:
+    """The exact wait-response bound for one invocation's declared frame."""
+
+    empty_completion = encode_control_frame(
         {
             "return_code": -(2**31),
-            "standard_error": standard_error,
-            "standard_output": standard_output,
+            "standard_error": "",
+            "standard_output": "",
             "type": "COMPLETED",
         }
     )
-
-
-MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2 = max(
-    len(_maximum_completed_frame()),
-    *(
-        len(encode_control_frame({"type": arm}))
-        for arm in (
-            "OUTPUT_LIMIT_EXCEEDED",
-            "SUPERVISION_FAILED",
-            "STOPPED",
-            "RECOVERY_HANDOFF",
-        )
-    ),
-)
+    return max(
+        MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES,
+        len(empty_completion)
+        + _base64_characters(standard_output_frame_bytes)
+        + _base64_characters(MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES),
+    )
 
 
 class _CoordinatorState(StrEnum):
@@ -119,6 +121,7 @@ class Watchdog:
         self._standard_input_offset = 0
         self._standard_output = bytearray()
         self._standard_error = bytearray()
+        self._standard_output_frame_bytes: int | None = None
         self._launch_replay: tuple[bytes, bytes] | None = None
         self._wait_response: bytes | None = None
         self._cancel_response: bytes | None = None
@@ -335,9 +338,14 @@ class Watchdog:
             return
         self._state = _CoordinatorState.LAUNCHING
         try:
-            arguments, working_directory, environment, standard_input = (
-                _decode_launch_request(request)
-            )
+            (
+                arguments,
+                working_directory,
+                environment,
+                standard_input,
+                standard_output_frame_bytes,
+            ) = _decode_launch_request(request)
+            self._standard_output_frame_bytes = standard_output_frame_bytes
             guarded = (
                 sys.executable,
                 "-m",
@@ -469,8 +477,11 @@ class Watchdog:
             return
         target = self._standard_output if role == "stdout" else self._standard_error
         target.extend(chunk)
+        declared_frame_bytes = self._standard_output_frame_bytes
+        if declared_frame_bytes is None:
+            raise RuntimeError("provider output arrived before its declared frame")
         limit = (
-            MAXIMUM_AGENT_OUTPUT_BYTES_V2
+            declared_frame_bytes
             if role == "stdout"
             else MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
         )
@@ -644,7 +655,13 @@ class Watchdog:
         if self._wait_response is not None:
             return
         encoded = encode_control_frame(response)
-        if len(encoded) > MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2:
+        declared_frame_bytes = self._standard_output_frame_bytes
+        bound = (
+            MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES
+            if declared_frame_bytes is None
+            else maximum_agent_wait_response_bytes(declared_frame_bytes)
+        )
+        if len(encoded) > bound:
             raise RuntimeError("watchdog wait response exceeds its exact bound")
         self._wait_response = encoded
         self._state = _CoordinatorState.TERMINATED
@@ -743,12 +760,13 @@ class Watchdog:
 
 def _decode_launch_request(
     request: dict[str, Any],
-) -> tuple[tuple[str, ...], str, dict[str, str], bytes]:
+) -> tuple[tuple[str, ...], str, dict[str, str], bytes, int]:
     if set(request) != {
         "arguments",
         "environment",
         "operation",
         "standard_input",
+        "standard_output_frame_bytes",
         "working_directory",
     }:
         raise ValueError("launch request has unexpected fields")
@@ -788,11 +806,15 @@ def _decode_launch_request(
     standard_input = base64.b64decode(standard_input_value, validate=True)
     if len(standard_input) > MAXIMUM_AGENT_PROCESS_INPUT_BYTES:
         raise ValueError("launch standard input exceeds its exact bound")
+    standard_output_frame_bytes = request["standard_output_frame_bytes"]
+    if type(standard_output_frame_bytes) is not int or standard_output_frame_bytes < 1:
+        raise ValueError("launch standard output frame is malformed")
     return (
         tuple(arguments_value),
         working_directory_value,
         environment,
         standard_input,
+        standard_output_frame_bytes,
     )
 
 

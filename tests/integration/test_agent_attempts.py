@@ -66,6 +66,7 @@ from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequ
 from atelier2.ports.run_queries import RunFound
 from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
 from tests.scenarios.agents import (
+    SCENARIO_PROVIDER_FRAME_BYTES,
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,
 )
@@ -167,6 +168,7 @@ class _InspectingExecutor:
                 self.output.hex(),
             ),
             Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
         )
 
     def decode_process_completion(
@@ -331,7 +333,9 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
             ) -> AgentProcessInvocation:
                 del request
                 return AgentProcessInvocation(
-                    (sys.executable, "-c", "raise SystemExit(7)"), Path.cwd()
+                    (sys.executable, "-c", "raise SystemExit(7)"),
+                    Path.cwd(),
+                    standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
                 )
 
             def decode_process_completion(

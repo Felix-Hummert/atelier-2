@@ -16,7 +16,10 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.ports.agent_executions import AgentProcessInvocation, AgentProcessRunner
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
-from tests.scenarios.agents import agent_attempt_execution
+from tests.scenarios.agents import (
+    SCENARIO_PROVIDER_FRAME_BYTES,
+    agent_attempt_execution,
+)
 
 
 def _wait_for_observed_process(
@@ -57,6 +60,7 @@ def test_supervisor_reaps_a_process_that_exits_on_term(tmp_path: Path) -> None:
                             str(ready_file),
                         ),
                         Path.cwd(),
+                        standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
                     ),
                 )
             )
@@ -103,6 +107,7 @@ def test_supervisor_kills_and_reaps_a_process_that_ignores_term(
                             str(ready_file),
                         ),
                         Path.cwd(),
+                        standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
                     ),
                 )
             )
@@ -162,6 +167,7 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
                             str(ready_file),
                         ),
                         Path.cwd(),
+                        standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
                     ),
                 )
             )

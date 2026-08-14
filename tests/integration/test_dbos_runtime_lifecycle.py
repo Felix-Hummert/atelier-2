@@ -60,6 +60,7 @@ from atelier2.ports.agent_executions import (
 )
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import (
+    SCENARIO_PROVIDER_FRAME_BYTES,
     RecordingAgentExecutorFactoryV2,
     commit_configured_agent,
 )
@@ -595,7 +596,11 @@ class CloseFailingExecutor:
         self, request: AgentExecutionRequestV2
     ) -> AgentProcessInvocation:
         del request
-        return AgentProcessInvocation(("/bin/true",), Path.cwd())
+        return AgentProcessInvocation(
+            ("/bin/true",),
+            Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+        )
 
     def decode_process_completion(
         self, completion: AgentProcessCompletion
@@ -634,7 +639,11 @@ class ChangingKeyExecutor:
         self, request: AgentExecutionRequestV2
     ) -> AgentProcessInvocation:
         del request
-        return AgentProcessInvocation(("/bin/true",), Path.cwd())
+        return AgentProcessInvocation(
+            ("/bin/true",),
+            Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+        )
 
     def decode_process_completion(
         self, completion: AgentProcessCompletion
@@ -702,7 +711,11 @@ class BaseExceptionCloseExecutor:
         self, request: AgentExecutionRequestV2
     ) -> AgentProcessInvocation:
         del request
-        return AgentProcessInvocation(("/bin/true",), Path.cwd())
+        return AgentProcessInvocation(
+            ("/bin/true",),
+            Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+        )
 
     def decode_process_completion(
         self, completion: AgentProcessCompletion
