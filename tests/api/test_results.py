@@ -38,6 +38,7 @@ from atelier2.application.reconcile_effect import (
     reconcile_effect_result,
 )
 from atelier2.application.start_published_run import (
+    AgentExecutorBindingUnavailable,
     RevisionMissing,
     RunCreated,
     RunExisting,
@@ -58,6 +59,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.runs import Run, RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.ports.durable_runs import (
+    DurableAgentExecutorCapabilityUnavailable,
     DurableAnswerBytesConflict,
     DurableAnswerCreated,
     DurableAnswerExisting,
@@ -178,6 +180,10 @@ def test_publication_returns_the_graph_validated_before_the_write() -> None:
         (DurableRunExisting(RUN), RunExisting),
         (DurableRunRevisionMissing(), RevisionMissing),
         (DurableRunIdentityConflict(), RunIdentityConflict),
+        (
+            DurableAgentExecutorCapabilityUnavailable(),
+            AgentExecutorBindingUnavailable,
+        ),
         (DurableWriteUnavailable(), WriteUnavailable),
         (PortDurableStateCorrupt(), DurableStateCorrupt),
     ],

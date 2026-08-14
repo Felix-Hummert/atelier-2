@@ -49,6 +49,7 @@ from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
+    DurableAgentExecutorCapabilityUnavailable,
     DurableInvalidAgentBindings,
     DurablePublishedRunResult,
     DurableRunCreated,
@@ -263,12 +264,18 @@ class DbosDurableRunStarter:
                                 "agent configuration auth profile is missing"
                             )
                         auth = auth_profile_from_record(auth_record)
-                        if not self._agent_executor_registry.contains(
-                            AgentExecutorKey(
-                                auth.provider_id, configuration.executor_revision
+                        executor_key = AgentExecutorKey(
+                            auth.provider_id, configuration.executor_revision
+                        )
+                        if not self._agent_executor_registry.contains(executor_key):
+                            return DurableAgentExecutorBindingUnavailable()
+                        if (
+                            configuration.requested_capability
+                            not in self._agent_executor_registry.declared_capabilities(
+                                executor_key
                             )
                         ):
-                            return DurableAgentExecutorBindingUnavailable()
+                            return DurableAgentExecutorCapabilityUnavailable()
                         resolved.append(
                             ResolvedAgentBinding(binding.role, configuration, auth)
                         )

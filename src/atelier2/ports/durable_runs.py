@@ -54,6 +54,11 @@ class DurableAgentExecutorBindingUnavailable:
     pass
 
 
+@dataclass(frozen=True)
+class DurableAgentExecutorCapabilityUnavailable:
+    pass
+
+
 type DurablePublishedRunResult = (
     DurableRunCreated
     | DurableRunExisting
@@ -62,6 +67,7 @@ type DurablePublishedRunResult = (
     | DurableInvalidAgentBindings
     | DurableAgentConfigurationRevisionMissing
     | DurableAgentExecutorBindingUnavailable
+    | DurableAgentExecutorCapabilityUnavailable
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )

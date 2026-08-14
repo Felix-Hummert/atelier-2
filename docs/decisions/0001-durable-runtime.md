@@ -60,7 +60,10 @@ an immutable registry keyed by provider ID and executor revision. Configuration
 revision format V1 retains the original hash frame and is restricted to
 `headless`; format V2 adds a typed requested capability to its hash frame. New
 API publications are V2/headless, while migrated rows remain V1/headless. Every
-V2 Agent request and receipt binds the role, configuration and auth hashes and fields,
+registry entry must attest headless and may attest interactive. Start refuses an
+unattested requested capability before run/enqueue mutation or provider process;
+restart refuses a nonterminal durable capability mismatch before factory open.
+Each V2 Agent request and receipt binds the role, configuration and auth hashes and fields,
 executor operational identity, job, and exact result bytes. At most 49,152
 output bytes are accepted; an oversized result is rejected before receipt,
 event, or run mutation. The receipt, `AGENT_COMPLETED` event, and run CAS share
@@ -113,7 +116,8 @@ document and graph semantics above this execution boundary.
 A process owns exactly one compatible DBOS binding of canonical database path,
 application version, the V1 `AgentExecutorBinding`, the sorted V2 executor
 manifest, and the effect-adapter binding. Restart refuses a registry missing a
-provider/executor key required by a nonterminal durable V2 run, configuration
+provider/executor key or requested capability required by a nonterminal durable
+V2 run, configuration
 contradicting durable V1 Agent receipts, or an effect binding contradicting
 durable intents. Identical callers share one opened V1 executor, every V2
 executor, effect adapter, and runtime under counted leases; an incompatible

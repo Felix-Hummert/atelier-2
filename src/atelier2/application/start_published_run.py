@@ -12,6 +12,7 @@ from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
+    DurableAgentExecutorCapabilityUnavailable,
     DurableInvalidAgentBindings,
     DurablePublishedRunStarter,
     DurableRunCreated,
@@ -91,6 +92,8 @@ def start_published_run(
         case DurableAgentConfigurationRevisionMissing():
             return AgentConfigurationRevisionMissing()
         case DurableAgentExecutorBindingUnavailable():
+            return AgentExecutorBindingUnavailable()
+        case DurableAgentExecutorCapabilityUnavailable():
             return AgentExecutorBindingUnavailable()
         case DurableWriteUnavailable():
             return WriteUnavailable()
