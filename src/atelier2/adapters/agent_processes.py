@@ -13,6 +13,12 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from atelier2.adapters.agent_process_watchdog import (
+    CONTROL_FRAME_TIMEOUT_SECONDS,
+    MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES,
+    MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
+    encode_control_frame,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptCancellationDisposition,
@@ -22,9 +28,11 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.ports.agent_attempts import AgentAttemptStore
 from atelier2.ports.agent_executions import (
+    MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
     AgentProcessCompletion,
     AgentProcessInvocation,
     AgentProcessOwnerNotLocal,
@@ -140,6 +148,13 @@ class AgentProcessSupervisor:
     def launch_and_wait(
         self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
     ) -> AgentProcessCompletion:
+        launch_request = _launch_request(invocation)
+        launch_frame = encode_control_frame(launch_request)
+        if len(launch_frame) > MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES:
+            raise ValueError(
+                "encoded agent launch exceeds "
+                f"{MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES} bytes"
+            )
         lock = self._attempt_lock(execution.attempt_id)
         with lock:
             owned = self._owned.get(execution.attempt_id)
@@ -151,31 +166,27 @@ class AgentProcessSupervisor:
                 or durable.watchdog_generation_id != owned.generation
             ):
                 raise AgentProcessOwnerNotLocal
-            response = self._request(
+            response = self._request_with_retry(
                 owned.endpoint,
-                {
-                    "operation": "LAUNCH",
-                    "arguments": invocation.arguments,
-                    "working_directory": str(invocation.working_directory),
-                    "environment": invocation.environment,
-                    "standard_input": base64.b64encode(
-                        invocation.standard_input
-                    ).decode("ascii"),
-                },
+                launch_request,
+                timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS,
+                maximum_response_bytes=4_096,
             )
-            if response != {"launched": True}:
+            if response.get("type") == "STARTED":
+                owned.launched = True
+                self._store.observe_process(execution, owned.owner, owned.generation)
+            elif response.get("type") == "TERMINAL_BEFORE_START":
+                raise AgentProcessOwnerNotLocal
+            else:
                 raise RuntimeError("watchdog refused the exact launch")
-            owned.launched = True
-            self._store.observe_process(execution, owned.owner, owned.generation)
         try:
-            response = self._request(
-                owned.endpoint, {"operation": "WAIT"}, timeout_seconds=None
+            response = self._request_with_retry(
+                owned.endpoint,
+                {"operation": "WAIT"},
+                timeout_seconds=None,
+                maximum_response_bytes=MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
             )
-            return AgentProcessCompletion(
-                int(str(response["return_code"])),
-                base64.b64decode(str(response["standard_output"]), validate=True),
-                base64.b64decode(str(response["standard_error"]), validate=True),
-            )
+            return _completion_from_response(response)
         finally:
             owned.wait_completed.set()
 
@@ -195,13 +206,20 @@ class AgentProcessSupervisor:
                 or attempt.watchdog_generation_id != owned.generation
             ):
                 raise AgentProcessOwnerNotLocal
-            operation = "CANCEL" if owned.launched else "CLOSE"
-        response = self._request(
+        response = self._request_with_retry(
             owned.endpoint,
-            {"operation": operation},
+            {"operation": "CANCEL"},
             timeout_seconds=(self._grace_seconds * 2) + 2,
+            maximum_response_bytes=4_096,
         )
-        disposition = AgentAttemptCancellationDisposition(str(response["disposition"]))
+        if response.get("type") == "RECOVERY_HANDOFF":
+            raise AgentProcessOwnerNotLocal
+        if response.get("type") != "CANCELLED":
+            raise RuntimeError("watchdog did not acknowledge cancellation")
+        disposition_value = response.get("disposition")
+        if type(disposition_value) is not str:
+            raise RuntimeError("watchdog cancellation response is malformed")
+        disposition = AgentAttemptCancellationDisposition(disposition_value)
         if owned.launched and not owned.wait_completed.wait(
             timeout=max(1.0, self._grace_seconds + 1.0)
         ):
@@ -258,7 +276,7 @@ class AgentProcessSupervisor:
                     or owned.generation != attempt.watchdog_generation_id
                 ):
                     raise AgentProcessOwnerNotLocal
-                self._close_owned(owned)
+                self._finalize_owned(owned)
                 self._owned.pop(attempt.attempt_id, None)
                 return
             cgroup = self._cgroup_for(attempt)
@@ -283,18 +301,7 @@ class AgentProcessSupervisor:
                 raise RuntimeError("only a terminal attempt can release its watchdog")
             self._owned[execution.attempt_id] = None
         try:
-            self._request(
-                owned.endpoint,
-                {"operation": "CANCEL"},
-                timeout_seconds=(self._grace_seconds * 2) + 2,
-            )
-            if owned.launched and not owned.wait_completed.wait(
-                timeout=max(1.0, self._grace_seconds + 1.0)
-            ):
-                raise RuntimeError(
-                    "terminal watchdog did not return its process completion"
-                )
-            self._close_owned(owned)
+            self._finalize_owned(owned)
         except BaseException:
             with lock:
                 if (
@@ -332,7 +339,7 @@ class AgentProcessSupervisor:
         if not ready or owned.process.stdout.readline() != b"READY\n":
             detail = b""
             if owned.process.poll() is not None and owned.process.stderr is not None:
-                detail = owned.process.stderr.read()
+                detail = owned.process.stderr.read(2_001)
             raise RuntimeError(
                 "watchdog did not prove readiness: "
                 + detail.decode("utf-8", errors="replace")[:2_000]
@@ -344,6 +351,37 @@ class AgentProcessSupervisor:
         ):
             raise RuntimeError("watchdog readiness attestation disagrees")
 
+    def _request_with_retry(
+        self,
+        endpoint: Path,
+        request: dict[str, object],
+        *,
+        timeout_seconds: float | None,
+        maximum_response_bytes: int,
+    ) -> dict[str, object]:
+        last_error: BaseException | None = None
+        for retry in range(2):
+            if retry:
+                time.sleep(CONTROL_FRAME_TIMEOUT_SECONDS)
+            try:
+                response = self._request(
+                    endpoint, request, timeout_seconds=timeout_seconds
+                )
+                if len(encode_control_frame(response)) > maximum_response_bytes:
+                    raise RuntimeError("watchdog response exceeds its exact bound")
+                if response.get("type") in {
+                    "BUSY",
+                    "CONTROL_FRAME_TIMEOUT",
+                    "FRAME_TOO_LARGE",
+                    "MALFORMED",
+                    "LAUNCH_MISMATCH",
+                }:
+                    raise RuntimeError("watchdog refused the exact control frame")
+                return response
+            except (OSError, TimeoutError, RuntimeError, ValueError) as error:
+                last_error = error
+        raise AgentProcessOwnerNotLocal from last_error
+
     @staticmethod
     def _request(
         endpoint: Path,
@@ -351,37 +389,74 @@ class AgentProcessSupervisor:
         *,
         timeout_seconds: float | None = 30,
     ) -> dict[str, object]:
+        frame = encode_control_frame(request)
+        maximum_response_bytes = (
+            MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2
+            if request.get("operation") == "WAIT"
+            else 4_096
+        )
         control_directory = os.open(endpoint.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             short_endpoint = (
                 Path("/proc/self/fd") / str(control_directory) / endpoint.name
             )
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(timeout_seconds)
+                connection.settimeout(CONTROL_FRAME_TIMEOUT_SECONDS)
                 connection.connect(str(short_endpoint))
-                connection.sendall(json.dumps(request, separators=(",", ":")).encode())
+                connection.sendall(frame)
                 connection.shutdown(socket.SHUT_WR)
-                response = json.loads(_read_all(connection).decode("utf-8"))
+                connection.settimeout(timeout_seconds)
+                response_bytes = bytearray()
+                while True:
+                    chunk = connection.recv(
+                        min(65_536, maximum_response_bytes + 1 - len(response_bytes))
+                    )
+                    if not chunk:
+                        break
+                    response_bytes.extend(chunk)
+                    if len(response_bytes) > maximum_response_bytes:
+                        raise RuntimeError("watchdog response exceeds its exact bound")
         finally:
             os.close(control_directory)
-        if "error" in response:
-            raise RuntimeError("watchdog operation failed")
+        try:
+            response = json.loads(bytes(response_bytes).decode("ascii"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError("watchdog response is malformed") from error
+        if not isinstance(response, dict) or encode_control_frame(response) != bytes(
+            response_bytes
+        ):
+            raise RuntimeError("watchdog response is noncanonical")
         return response
 
-    @staticmethod
-    def _close_owned(owned: _OwnedWatchdog) -> None:
+    def _finalize_owned(self, owned: _OwnedWatchdog) -> None:
+        response = self._request_with_retry(
+            owned.endpoint,
+            {"operation": "FINALIZE"},
+            timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS,
+            maximum_response_bytes=4_096,
+        )
+        if response.get("type") != "FINALIZE_ACCEPTED":
+            raise RuntimeError("watchdog refused terminal finalization")
+        self._close_owned(owned)
+
+    def _close_owned(self, owned: _OwnedWatchdog) -> None:
         try:
             os.close(owned.owner_pipe)
         except OSError:
             pass
-        owned.process.terminate()
         try:
-            owned.process.wait(timeout=2)
+            owned.process.wait(timeout=self._ready_timeout_seconds)
         except subprocess.TimeoutExpired:
-            owned.process.kill()
-            owned.process.wait()
+            owned.process.terminate()
+            try:
+                owned.process.wait(timeout=self._ready_timeout_seconds)
+            except subprocess.TimeoutExpired:
+                owned.process.kill()
+                owned.process.wait()
+        _close_watchdog_pipes(owned.process)
         owned.endpoint.unlink(missing_ok=True)
-        owned.cgroup.rmdir()
+        if owned.cgroup.is_dir():
+            owned.cgroup.rmdir()
 
     def _detach_owned(self, owned: _OwnedWatchdog) -> None:
         """Stop this owner while retaining evidence for durable recovery."""
@@ -396,13 +471,52 @@ class AgentProcessSupervisor:
             _kill_cgroup_and_wait_empty(owned.cgroup, self._ready_timeout_seconds)
             owned.process.kill()
             owned.process.wait()
+        _close_watchdog_pipes(owned.process)
 
 
-def _read_all(connection: socket.socket) -> bytes:
-    chunks: list[bytes] = []
-    while chunk := connection.recv(65_536):
-        chunks.append(chunk)
-    return b"".join(chunks)
+def _close_watchdog_pipes(process: subprocess.Popen[bytes]) -> None:
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
+
+
+def _launch_request(invocation: AgentProcessInvocation) -> dict[str, object]:
+    return {
+        "arguments": invocation.arguments,
+        "environment": invocation.environment,
+        "operation": "LAUNCH",
+        "standard_input": base64.b64encode(invocation.standard_input).decode("ascii"),
+        "working_directory": str(invocation.working_directory),
+    }
+
+
+def _completion_from_response(response: dict[str, object]) -> AgentProcessCompletion:
+    response_type = response.get("type")
+    if response_type in {"RECOVERY_HANDOFF", "STOPPED"}:
+        raise AgentProcessOwnerNotLocal
+    if response_type != "COMPLETED":
+        raise RuntimeError("watchdog did not return a process completion")
+    return_code = response.get("return_code")
+    standard_output_value = response.get("standard_output")
+    standard_error_value = response.get("standard_error")
+    if (
+        type(return_code) is not int
+        or type(standard_output_value) is not str
+        or type(standard_error_value) is not str
+    ):
+        raise RuntimeError("watchdog process completion is malformed")
+    try:
+        standard_output = base64.b64decode(standard_output_value, validate=True)
+        standard_error = base64.b64decode(standard_error_value, validate=True)
+    except ValueError as error:
+        raise RuntimeError("watchdog process completion is malformed") from error
+    if (
+        len(standard_output) > MAXIMUM_AGENT_OUTPUT_BYTES_V2
+        or len(standard_error) > MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
+    ):
+        raise RuntimeError("watchdog process completion exceeds its exact bound")
+    return AgentProcessCompletion(return_code, standard_output, standard_error)
 
 
 def _cgroup_populated(cgroup: Path) -> bool:
