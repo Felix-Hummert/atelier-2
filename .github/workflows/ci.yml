@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - "integration/**"
+      - "fable/**"
+      - "agent/**"
   push:
     branches:
       - main
