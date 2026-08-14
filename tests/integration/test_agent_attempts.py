@@ -33,6 +33,8 @@ from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
@@ -114,7 +116,11 @@ def attempt_request(
         (AuthProfileRevisionCreated, AuthProfileRevisionExisting),
     )
     configuration = AgentConfigurationRevision(
-        "opus", auth.revision_hash, AgentExecutorRevision("claude-cli/v1")
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
     )
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),

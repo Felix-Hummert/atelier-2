@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from atelier2.contracts import agents as agent_contracts
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
@@ -48,12 +49,20 @@ def _configuration(
     *,
     model: str = "claude-opus-5",
     executor_revision: str = "claude-cli/v1",
+    requested_capability: agent_contracts.AgentExecutionCapability = (
+        agent_contracts.AgentExecutionCapability.HEADLESS
+    ),
+    revision_format_version: agent_contracts.AgentConfigurationRevisionFormatVersion = (
+        agent_contracts.AgentConfigurationRevisionFormatVersion.V1
+    ),
 ) -> AgentConfigurationRevision:
     selected = _auth() if auth is None else auth
     return AgentConfigurationRevision(
         model,
         selected.revision_hash,
         AgentExecutorRevision(executor_revision),
+        requested_capability,
+        revision_format_version,
     )
 
 
@@ -90,6 +99,96 @@ def test_profile_configuration_and_binding_hashes_are_fixed_vectors() -> None:
     )
 
 
+def test_legacy_and_capability_configuration_hashes_are_fixed_vectors() -> None:
+    auth = _auth()
+    capability = agent_contracts.AgentExecutionCapability
+    format_version = agent_contracts.AgentConfigurationRevisionFormatVersion
+
+    legacy = AgentConfigurationRevision(
+        "claude-opus-5",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        capability.HEADLESS,
+        format_version.V1,
+    )
+    headless = AgentConfigurationRevision(
+        "claude-opus-5",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        capability.HEADLESS,
+        format_version.V2,
+    )
+    interactive = AgentConfigurationRevision(
+        "claude-opus-5",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        capability.INTERACTIVE,
+        format_version.V2,
+    )
+
+    assert legacy.revision_hash.value == (
+        "6ac1476eeafb0ca27e14ee34af18adc585a5d5cab6a714a4c143c8403e0d70ab"
+    )
+    assert headless.revision_hash.value == (
+        "2b12dec1d7a461dd08e7c913be274b1d4a22c2a632c12f53c15dc1538b25b8a4"
+    )
+    assert interactive.revision_hash.value == (
+        "b4fa512a291b4239b4766e767b9ab0a69bace0231a9bf9d4da9da92d377e1ac2"
+    )
+    with pytest.raises(ValueError, match="legacy.*headless"):
+        AgentConfigurationRevision(
+            "claude-opus-5",
+            auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            capability.INTERACTIVE,
+            format_version.V1,
+        )
+
+
+def test_capability_v2_binding_request_and_receipt_hashes_are_fixed_vectors() -> None:
+    auth = _auth()
+    configuration = _configuration(
+        auth,
+        requested_capability=agent_contracts.AgentExecutionCapability.HEADLESS,
+        revision_format_version=(
+            agent_contracts.AgentConfigurationRevisionFormatVersion.V2
+        ),
+    )
+    resolved = ResolvedAgentBinding(AgentRole("builder"), configuration, auth)
+    bindings = AgentBindingSet(
+        (AgentBinding(resolved.role, configuration.revision_hash),)
+    )
+    run_id = RunId("run/v2")
+    revision_hash = WorkflowRevisionHash("1" * 64)
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run_id, revision_hash, "agent"),
+        run_id,
+        revision_hash,
+        "agent",
+        resolved,
+        AgentExecutorOperationalIdentity("claude-process-17"),
+        b"implement the story",
+    )
+    receipt = AgentReceiptV2.for_execution(
+        request,
+        bindings.binding_set_hash,
+        AgentExecutionResult(b"\xff\x00done"),
+    )
+
+    assert (
+        bindings.binding_set_hash.value
+        == "42f73effc55713c876c195f00d11c49ec36008134874b5fec50c7ddcf4bf29b0"
+    )
+    assert (
+        request.request_hash.value
+        == "52b5804335c67689bdd9edc74a7a1404390893211c5d74e0582292eb238a86ef"
+    )
+    assert (
+        receipt.receipt_hash.value
+        == "a20f510d292e9a30af3414db23cc5168c5d539bba77847ce6161b00266dc2314"
+    )
+
+
 def test_public_auth_and_configuration_contracts_have_only_exact_safe_fields() -> None:
     assert tuple(field.name for field in fields(AuthProfileRevision)) == (
         "profile_id",
@@ -102,6 +201,8 @@ def test_public_auth_and_configuration_contracts_have_only_exact_safe_fields() -
         "model",
         "auth_profile_revision_hash",
         "executor_revision",
+        "requested_capability",
+        "revision_format_version",
         "revision_hash",
     )
 
@@ -182,6 +283,34 @@ def test_every_configuration_field_changes_its_revision_hash(
     mutation: Callable[[AgentConfigurationRevision], AgentConfigurationRevision],
 ) -> None:
     original = _configuration()
+
+    assert mutation(original).revision_hash != original.revision_hash
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda value: replace(
+            value,
+            requested_capability=agent_contracts.AgentExecutionCapability.INTERACTIVE,
+        ),
+        lambda value: replace(
+            value,
+            revision_format_version=(
+                agent_contracts.AgentConfigurationRevisionFormatVersion.V1
+            ),
+        ),
+    ),
+)
+def test_capability_configuration_fields_change_the_v2_revision_hash(
+    mutation: Callable[[AgentConfigurationRevision], AgentConfigurationRevision],
+) -> None:
+    original = _configuration(
+        requested_capability=agent_contracts.AgentExecutionCapability.HEADLESS,
+        revision_format_version=(
+            agent_contracts.AgentConfigurationRevisionFormatVersion.V2
+        ),
+    )
 
     assert mutation(original).revision_hash != original.revision_hash
 

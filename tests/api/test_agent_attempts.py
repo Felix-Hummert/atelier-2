@@ -10,6 +10,8 @@ from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
     AgentExecutionRequestHash,
     AgentExecutorRevision,
     AgentRole,
@@ -37,7 +39,11 @@ nodes:
     graph = parse_workflow_document(document)
     auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
     configuration = AgentConfigurationRevision(
-        "opus", auth.revision_hash, AgentExecutorRevision("claude-cli/v1")
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
     )
     binding = ResolvedAgentBinding(AgentRole("builder"), configuration, auth)
     binding_set = AgentBindingSet(
