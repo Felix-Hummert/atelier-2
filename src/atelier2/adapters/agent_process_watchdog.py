@@ -466,6 +466,8 @@ class Watchdog:
             self._begin_termination("OVERFLOW", now)
 
     def _advance_process(self, now: float) -> None:
+        if self._state is _CoordinatorState.TERMINATED:
+            return
         process = self._process
         if process is None:
             return
@@ -580,6 +582,8 @@ class Watchdog:
         self._publish_cancel(now)
 
     def _publish_recovery_handoff(self, now: float) -> None:
+        if self._state is _CoordinatorState.RECOVERY_HANDOFF:
+            return
         encoded = encode_control_frame({"type": "RECOVERY_HANDOFF"})
         self._wait_response = encoded
         self._cancel_response = encoded

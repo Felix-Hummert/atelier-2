@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 import os
 import select
+import selectors
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from atelier2.adapters import agent_process_watchdog as watchdog_module
 from atelier2.adapters import agent_processes as process_module
-from atelier2.adapters.agent_process_watchdog import encode_control_frame
+from atelier2.adapters.agent_process_watchdog import Watchdog, encode_control_frame
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -30,6 +33,97 @@ from atelier2.ports.agent_executions import (
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import agent_attempt_execution
+
+
+@pytest.mark.parametrize("termination_owner", (None, "CANCEL"))
+def test_terminal_publication_is_one_shot_and_reuses_cached_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    termination_owner: str | None,
+) -> None:
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.events").write_text("populated 0\n", encoding="ascii")
+    owner_pipe, owner_writer = os.pipe()
+    process = subprocess.Popen((sys.executable, "-c", "pass"))
+    process.wait(timeout=5)
+    watchdog = Watchdog(tmp_path / "control.sock", cgroup, owner_pipe, 0.1)
+    watchdog._process = process
+    watchdog._standard_output.extend(b"output")
+    watchdog._standard_error.extend(b"error")
+    watchdog._termination_owner = termination_owner
+    watchdog._termination_disposition = "EXITED_BEFORE_SIGNAL"
+    try:
+        watchdog._advance_process(1.0)
+        cached_wait = watchdog._wait_response
+        cached_cancel = watchdog._cancel_response
+        assert cached_wait is not None
+        if termination_owner == "CANCEL":
+            assert cached_cancel is not None
+
+        def reject_reconstruction(_now: float) -> None:
+            raise AssertionError("terminal response was reconstructed")
+
+        monkeypatch.setattr(
+            watchdog, "_publish_process_completion", reject_reconstruction
+        )
+        monkeypatch.setattr(watchdog, "_publish_cancel", reject_reconstruction)
+
+        watchdog._advance_process(2.0)
+
+        assert watchdog._wait_response is cached_wait
+        assert watchdog._cancel_response is cached_cancel
+    finally:
+        watchdog._selector.close()
+        os.close(owner_pipe)
+        os.close(owner_writer)
+
+
+def test_recovery_handoff_publication_and_retries_reuse_cached_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(tmp_path / "control.sock", tmp_path / "cgroup", owner_pipe, 0.1)
+    peers: list[socket.socket] = []
+    try:
+        watchdog._publish_recovery_handoff(1.0)
+        cached_wait = watchdog._wait_response
+        cached_cancel = watchdog._cancel_response
+        assert cached_wait is not None
+        assert cached_cancel is cached_wait
+
+        def reject_reconstruction(_payload: dict[str, object]) -> bytes:
+            raise AssertionError("recovery handoff was reconstructed")
+
+        monkeypatch.setattr(
+            watchdog_module, "encode_control_frame", reject_reconstruction
+        )
+        watchdog._publish_recovery_handoff(2.0)
+
+        for operation, handler, cached in (
+            ("WAIT", watchdog._handle_wait, cached_wait),
+            ("CANCEL", watchdog._handle_cancel, cached_cancel),
+        ):
+            server, peer = socket.socketpair()
+            peers.append(peer)
+            server.setblocking(False)
+            connection = watchdog_module._Connection(
+                server, 2.0, slot=operation, operation=operation
+            )
+            watchdog._connections[server.fileno()] = connection
+            watchdog._slots[operation] = server.fileno()
+            watchdog._selector.register(server, selectors.EVENT_READ, connection)
+
+            handler(connection, 2.0)
+
+            assert connection.output_bytes is cached
+            watchdog._close_connection(connection)
+    finally:
+        for peer in peers:
+            peer.close()
+        watchdog._selector.close()
+        os.close(owner_pipe)
+        os.close(owner_writer)
 
 
 def test_supervisor_drains_exactly_bounded_outputs_after_closed_input(
