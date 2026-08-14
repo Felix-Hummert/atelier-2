@@ -9,6 +9,7 @@ from atelier2.adapters.dbos.run_store import commit_agent_completed, load_graph
 from atelier2.adapters.exact_output_agent import EXACT_OUTPUT_EXECUTOR_BINDING
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptId
 from atelier2.contracts.agents import (
+    AgentExecutionCapability,
     AgentExecutionRequest,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -125,6 +126,9 @@ class RecordingAgentExecutorFactoryV2:
     operational_identity_value: str
     output: bytes
     lifecycle: list[str] = field(default_factory=list)
+    capability_set: frozenset[AgentExecutionCapability] = field(
+        default_factory=lambda: frozenset({AgentExecutionCapability.HEADLESS})
+    )
     key_reads: int = 0
     identity_reads: int = 0
     opens: int = 0
@@ -141,6 +145,10 @@ class RecordingAgentExecutorFactoryV2:
     def operational_identity(self) -> AgentExecutorOperationalIdentity:
         self.identity_reads += 1
         return AgentExecutorOperationalIdentity(self.operational_identity_value)
+
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return self.capability_set
 
     def open(self) -> RecordingAgentExecutorV2:
         self.opens += 1

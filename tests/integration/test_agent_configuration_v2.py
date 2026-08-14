@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 import sqlalchemy as sa
+from dbos import DBOSClient
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
@@ -15,7 +16,11 @@ from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import (
+    DbosRuntime,
+    DbosRuntimeBindingConflict,
+    DbosRuntimeSettings,
+)
 from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
     run_agent_bindings,
@@ -61,7 +66,11 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
-from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
+from atelier2.ports.durable_runs import (
+    DurableAgentExecutorCapabilityUnavailable,
+    DurableRunCreated,
+    StartPublishedRunRequestV2,
+)
 from atelier2.ports.run_queries import RunFound, RunPage
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
@@ -164,6 +173,41 @@ def _publish_matrix(
     return workflow, AgentBindingSet(tuple(bindings))
 
 
+def _publish_single_capability(
+    runtime: DbosRuntime, capability: AgentExecutionCapability
+) -> tuple[WorkflowRevision, AgentBindingSet]:
+    catalog = DbosAgentConfigurationCatalog(
+        runtime.engine, runtime.agent_executor_registry
+    )
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    assert isinstance(
+        catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+    )
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        capability,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    assert isinstance(
+        catalog.publish_agent_configuration_revision(configuration),
+        AgentConfigurationRevisionCreated,
+    )
+    workflow = WorkflowRevision(
+        b"""format_version: 2
+start: build
+nodes:
+  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: build, type: agent, role: builder, job: build, next: done}
+"""
+    )
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    return workflow, AgentBindingSet(
+        (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+    )
+
+
 def _encoded_binding(
     configuration: AgentConfigurationRevision,
     auth: AuthProfileRevision,
@@ -221,6 +265,7 @@ def test_old_node_binding_payload_replays_and_new_payload_carries_contract() -> 
         revision_hash,
         "build",
         operational_identity,
+        frozenset({AgentExecutionCapability.HEADLESS}),
     )
     newly_encoded = _agent_request_v2(
         _encoded_binding(current, auth, include_contract=True),
@@ -228,6 +273,7 @@ def test_old_node_binding_payload_replays_and_new_payload_carries_contract() -> 
         revision_hash,
         "build",
         operational_identity,
+        frozenset({AgentExecutionCapability.HEADLESS}),
     )
 
     assert replayed.resolved_binding.configuration == legacy
@@ -271,6 +317,12 @@ def test_node_binding_payload_refuses_partial_or_invalid_capability_contract(
             WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
             "build",
             AgentExecutorOperationalIdentity("executor/test"),
+            frozenset(
+                {
+                    AgentExecutionCapability.HEADLESS,
+                    AgentExecutionCapability.INTERACTIVE,
+                }
+            ),
         )
 
 
@@ -303,7 +355,112 @@ def test_node_binding_payload_refuses_explicit_null_contract_values(
             WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
             "build",
             AgentExecutorOperationalIdentity("executor/test"),
+            frozenset(
+                {
+                    AgentExecutionCapability.HEADLESS,
+                    AgentExecutionCapability.INTERACTIVE,
+                }
+            ),
         )
+
+
+def test_live_request_refuses_capability_missing_from_the_consuming_host() -> None:
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.INTERACTIVE,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+
+    with pytest.raises(RunBindingConflict, match="runtime executor lacks"):
+        _agent_request_v2(
+            _encoded_binding(configuration, auth, include_contract=True),
+            RunId("capability/host-mismatch"),
+            WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
+            "build",
+            AgentExecutorOperationalIdentity("executor/headless-only"),
+            frozenset({AgentExecutionCapability.HEADLESS}),
+        )
+
+
+def test_start_refuses_unattested_capability_before_enqueue_or_provider_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "headless-only", b"unused"
+    )
+    runtime = _runtime(tmp_path, (factory,))
+    runtime.initialize_storage()
+    workflow, bindings = _publish_single_capability(
+        runtime, AgentExecutionCapability.INTERACTIVE
+    )
+
+    def unexpected_enqueue(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("unattested capability reached the durable queue")
+
+    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
+    result = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV2(
+            RunId("capability/refused"), workflow.revision_hash, bindings
+        )
+    )
+
+    assert isinstance(result, DurableAgentExecutorCapabilityUnavailable)
+    assert factory.opened is not None
+    assert factory.opened.requests == []
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(run_agent_bindings)
+            )
+            == 0
+        )
+    runtime.close()
+
+
+def test_restart_refuses_unattested_nonterminal_capability_before_factory_open(
+    tmp_path: Path,
+) -> None:
+    supported = RecordingAgentExecutorFactoryV2(
+        "anthropic",
+        "claude-cli/v1",
+        "interactive-seed",
+        b"unused",
+        capability_set=frozenset(
+            {
+                AgentExecutionCapability.HEADLESS,
+                AgentExecutionCapability.INTERACTIVE,
+            }
+        ),
+    )
+    seeded = _runtime(tmp_path, (supported,))
+    seeded.initialize_storage()
+    workflow, bindings = _publish_single_capability(
+        seeded, AgentExecutionCapability.INTERACTIVE
+    )
+    started = DbosDurableRunStarter(
+        seeded.engine, seeded.settings, seeded.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV2(
+            RunId("capability/restart"), workflow.revision_hash, bindings
+        )
+    )
+    assert isinstance(started, DurableRunCreated)
+    assert supported.opened is not None and supported.opened.requests == []
+    seeded.close()
+
+    headless_only = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "headless-restart", b"unused"
+    )
+    with pytest.raises(DbosRuntimeBindingConflict, match="durable capability"):
+        _runtime(tmp_path, (headless_only,))
+
+    assert headless_only.opens == 0
 
 
 def _wait_completed(runtime: DbosRuntime, run_id: RunId) -> RunV2:

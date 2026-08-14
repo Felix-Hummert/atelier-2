@@ -36,6 +36,7 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.advance_run import advance_run
 from atelier2.application.start_run import start_run
 from atelier2.contracts.agents import (
+    AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
@@ -628,6 +629,10 @@ class CloseFailingFactory:
     def operational_identity(self) -> AgentExecutorOperationalIdentity:
         return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
 
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
+
     def open(self) -> CloseFailingExecutor:
         self.lifecycle.append(f"open:{self.provider}")
         return CloseFailingExecutor(self.provider, self.lifecycle)
@@ -675,6 +680,10 @@ class ChangingKeyFactory:
         self.identity_reads += 1
         return AgentExecutorOperationalIdentity(f"operation-{self.identity_reads}")
 
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
+
     def open(self) -> ChangingKeyExecutor:
         self.opens += 1
         return ChangingKeyExecutor()
@@ -695,6 +704,10 @@ class BaseExceptionOpenFactory:
     @property
     def operational_identity(self) -> AgentExecutorOperationalIdentity:
         return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
+
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
 
     def open(self) -> Never:
         self.lifecycle.append(f"open:{self.provider}")
@@ -743,6 +756,10 @@ class BaseExceptionCloseFactory:
     @property
     def operational_identity(self) -> AgentExecutorOperationalIdentity:
         return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
+
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
 
     def open(self) -> BaseExceptionCloseExecutor:
         self.lifecycle.append(f"open:{self.provider}")
@@ -826,6 +843,25 @@ def test_duplicate_v2_registry_key_is_refused_before_any_factory_opens(
     assert not (tmp_path / "effects.sqlite").exists()
 
 
+def test_v2_registry_without_headless_capability_is_refused_before_open(
+    tmp_path: Path,
+) -> None:
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic",
+        "claude/v1",
+        "interactive-only",
+        b"",
+        capability_set=frozenset({AgentExecutionCapability.INTERACTIVE}),
+    )
+
+    with pytest.raises(ValueError, match="headless capability"):
+        _runtime_with_v2(tmp_path, (factory,))
+
+    assert factory.opens == 0
+    assert not (tmp_path / "atelier.sqlite").exists()
+    assert not (tmp_path / "effects.sqlite").exists()
+
+
 def test_v2_factory_identity_is_captured_once_before_open(tmp_path: Path) -> None:
     factory = ChangingKeyFactory()
     runtime = _runtime_with_v2(tmp_path, (factory,))
@@ -887,6 +923,10 @@ def test_partial_v2_open_failure_closes_prior_executor_and_releases_owner(
         @property
         def operational_identity(self) -> AgentExecutorOperationalIdentity:
             return AgentExecutorOperationalIdentity("codex-operation")
+
+        @property
+        def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+            return frozenset({AgentExecutionCapability.HEADLESS})
 
         def open(self) -> Never:
             lifecycle.append("open:openai")
@@ -976,6 +1016,10 @@ def test_v2_open_and_cleanup_failures_preserve_original_then_cleanup_order(
         @property
         def operational_identity(self) -> AgentExecutorOperationalIdentity:
             return AgentExecutorOperationalIdentity("openai-operation")
+
+        @property
+        def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+            return frozenset({AgentExecutionCapability.HEADLESS})
 
         def open(self) -> Never:
             lifecycle.append("open:openai")

@@ -269,6 +269,7 @@ def _agent_request_v2(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     operational_identity: AgentExecutorOperationalIdentity,
+    declared_capabilities: frozenset[AgentExecutionCapability],
 ) -> AgentExecutionRequestV2:
     auth = AuthProfileRevision(
         binding["profile_id"],
@@ -319,6 +320,10 @@ def _agent_request_v2(
         raise RunBindingConflict(
             "V2 configuration fields differ from their durable hash"
         )
+    if configuration.requested_capability not in declared_capabilities:
+        raise RunBindingConflict(
+            "runtime executor lacks the durably requested capability"
+        )
     resolved = ResolvedAgentBinding(AgentRole(binding["role"]), configuration, auth)
     return AgentExecutionRequestV2(
         NodeExecutionId.for_node(run_id, revision_hash, node_id),
@@ -336,7 +341,12 @@ def register_durable_run_workflow(
     agent_executor: AgentExecutor,
     agent_binding: AgentExecutorBinding,
     agent_executors_v2: Mapping[
-        AgentExecutorKey, tuple[AgentExecutorV2, AgentExecutorOperationalIdentity]
+        AgentExecutorKey,
+        tuple[
+            AgentExecutorV2,
+            AgentExecutorOperationalIdentity,
+            frozenset[AgentExecutionCapability],
+        ],
     ],
     agent_attempt_store: AgentAttemptStore,
     agent_process_supervisor: AgentProcessSupervisor,
@@ -407,7 +417,7 @@ def register_durable_run_workflow(
         )
         if binding["type"] != "agent-v2":
             raise RunTransitionConflict("replacement attempt is not a V2 agent node")
-        executor, operational_identity = agent_executors_v2[
+        executor, operational_identity, declared_capabilities = agent_executors_v2[
             AgentExecutorKey(
                 ProviderId(binding["provider_id"]),
                 AgentExecutorRevision(binding["executor_revision"]),
@@ -419,6 +429,7 @@ def register_durable_run_workflow(
             replacement.workflow_revision_hash,
             replacement.node_id,
             operational_identity,
+            declared_capabilities,
         )
         if (
             request.node_execution_id != replacement.node_execution_id
@@ -472,7 +483,7 @@ def register_durable_run_workflow(
             start_node(typed_run_id, typed_revision, str(successor))
             return RunState.STARTED.value
         if binding["type"] == "agent-v2":
-            executor, operational_identity = agent_executors_v2[
+            executor, operational_identity, declared_capabilities = agent_executors_v2[
                 AgentExecutorKey(
                     ProviderId(binding["provider_id"]),
                     AgentExecutorRevision(binding["executor_revision"]),
@@ -484,6 +495,7 @@ def register_durable_run_workflow(
                 typed_revision,
                 node_id,
                 operational_identity,
+                declared_capabilities,
             )
             attempt_execution = AgentAttemptExecution(
                 execution_request_v2,

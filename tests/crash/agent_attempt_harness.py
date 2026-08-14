@@ -25,6 +25,7 @@ from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptFailureCode,
+    AgentAttemptProcessPhase,
     AgentAttemptReplacement,
     AgentAttemptState,
     CancelAgentAttemptRequest,
@@ -48,6 +49,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.ports.agent_attempts import AgentAttemptCancellationAccepted
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorKey,
@@ -103,6 +105,10 @@ class InertFactory:
     @property
     def operational_identity(self) -> AgentExecutorOperationalIdentity:
         return AgentExecutorOperationalIdentity("controlled-process")
+
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        return frozenset({AgentExecutionCapability.HEADLESS})
 
     def open(self) -> InertExecutor:
         return InertExecutor()
@@ -263,9 +269,11 @@ def main(root: Path, mode: str) -> None:
                 attempt.state_version,
                 AgentAttemptReplacement.NONE,
             )
-            DbosAgentAttemptStore(
+            cancellation = DbosAgentAttemptStore(
                 lease.engine, lease.settings.application_version
             ).request_cancellation(command)
+            if not isinstance(cancellation, AgentAttemptCancellationAccepted):
+                raise AssertionError("controlled cancellation was not accepted")
             disposition, _owner, _generation = lease.agent_process_supervisor.cancel(
                 store.load(attempt.attempt_id)
             )
@@ -291,7 +299,9 @@ def main(root: Path, mode: str) -> None:
             submitting_store = DbosAgentAttemptStore(
                 lease.engine, lease.settings.application_version
             )
-            submitting_store.request_cancellation(command)
+            cancellation = submitting_store.request_cancellation(command)
+            if not isinstance(cancellation, AgentAttemptCancellationAccepted):
+                raise AssertionError("controlled cancellation was not accepted")
             attempt = store.load(attempt.attempt_id)
             disposition, owner, generation = lease.agent_process_supervisor.cancel(
                 attempt
@@ -408,6 +418,7 @@ def launch_attempt(
         daemon=True,
     ).start()
     wait_for_file(ready)
+    wait_for_process_observation(store, execution)
     return execution
 
 
@@ -418,6 +429,18 @@ def wait_for_file(path: Path) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("controlled process did not become ready")
+
+
+def wait_for_process_observation(
+    store: DbosAgentAttemptStore, execution: AgentAttemptExecution
+) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        attempt = store.load(execution.attempt_id)
+        if attempt.process_phase is AgentAttemptProcessPhase.PROCESS_OBSERVED:
+            return
+        time.sleep(0.01)
+    raise AssertionError("controlled process was not durably observed")
 
 
 def only_watchdog_child_pid() -> int:

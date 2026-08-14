@@ -12,6 +12,7 @@ from atelier2.contracts.agent_attempts import (
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
+    AgentExecutionCapability,
     AgentExecutionRequest,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -49,6 +50,7 @@ class AgentExecutorKey:
 class AgentExecutorManifestEntry:
     key: AgentExecutorKey
     operational_identity: AgentExecutorOperationalIdentity
+    declared_capabilities: frozenset[AgentExecutionCapability]
 
 
 @dataclass(frozen=True)
@@ -162,6 +164,9 @@ class AgentExecutorFactoryV2(Protocol):
     @property
     def operational_identity(self) -> AgentExecutorOperationalIdentity: ...
 
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]: ...
+
     def open(self) -> AgentExecutorV2: ...
 
 
@@ -189,6 +194,7 @@ class AgentExecutorRegistry:
                 AgentExecutorManifestEntry(
                     factory.key,
                     factory.operational_identity,
+                    frozenset(factory.declared_capabilities),
                 ),
                 factory,
             )
@@ -196,6 +202,20 @@ class AgentExecutorRegistry:
                 object_identities, factories, strict=True
             )
         )
+        if any(
+            not all(
+                isinstance(capability, AgentExecutionCapability)
+                for capability in entry.manifest_entry.declared_capabilities
+            )
+            for entry in captured
+        ):
+            raise TypeError("agent executor capabilities must use their typed contract")
+        if any(
+            AgentExecutionCapability.HEADLESS
+            not in entry.manifest_entry.declared_capabilities
+            for entry in captured
+        ):
+            raise ValueError("every agent executor must declare headless capability")
         ordered = tuple(
             sorted(
                 captured,
@@ -228,3 +248,8 @@ class AgentExecutorRegistry:
 
     def contains(self, key: AgentExecutorKey) -> bool:
         return key in self._by_key
+
+    def declared_capabilities(
+        self, key: AgentExecutorKey
+    ) -> frozenset[AgentExecutionCapability]:
+        return self._by_key[key].manifest_entry.declared_capabilities
