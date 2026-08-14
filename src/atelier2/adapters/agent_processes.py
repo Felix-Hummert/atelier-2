@@ -15,6 +15,7 @@ from pathlib import Path
 
 from atelier2.adapters.agent_process_watchdog import (
     CONTROL_FRAME_TIMEOUT_SECONDS,
+    MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
     MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES,
     MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2,
     encode_control_frame,
@@ -170,7 +171,7 @@ class AgentProcessSupervisor:
                 owned.endpoint,
                 launch_request,
                 timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS,
-                maximum_response_bytes=4_096,
+                maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
             )
             if response.get("type") == "STARTED":
                 owned.launched = True
@@ -210,7 +211,7 @@ class AgentProcessSupervisor:
             owned.endpoint,
             {"operation": "CANCEL"},
             timeout_seconds=(self._grace_seconds * 2) + 2,
-            maximum_response_bytes=4_096,
+            maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
         )
         if response.get("type") == "RECOVERY_HANDOFF":
             raise AgentProcessOwnerNotLocal
@@ -365,7 +366,10 @@ class AgentProcessSupervisor:
                 time.sleep(CONTROL_FRAME_TIMEOUT_SECONDS)
             try:
                 response = self._request(
-                    endpoint, request, timeout_seconds=timeout_seconds
+                    endpoint,
+                    request,
+                    timeout_seconds=timeout_seconds,
+                    maximum_response_bytes=maximum_response_bytes,
                 )
                 if len(encode_control_frame(response)) > maximum_response_bytes:
                     raise RuntimeError("watchdog response exceeds its exact bound")
@@ -388,13 +392,9 @@ class AgentProcessSupervisor:
         request: dict[str, object],
         *,
         timeout_seconds: float | None = 30,
+        maximum_response_bytes: int,
     ) -> dict[str, object]:
         frame = encode_control_frame(request)
-        maximum_response_bytes = (
-            MAXIMUM_AGENT_WAIT_RESPONSE_BYTES_V2
-            if request.get("operation") == "WAIT"
-            else 4_096
-        )
         control_directory = os.open(endpoint.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             short_endpoint = (
@@ -433,7 +433,7 @@ class AgentProcessSupervisor:
             owned.endpoint,
             {"operation": "FINALIZE"},
             timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS,
-            maximum_response_bytes=4_096,
+            maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
         )
         if response.get("type") != "FINALIZE_ACCEPTED":
             raise RuntimeError("watchdog refused terminal finalization")
