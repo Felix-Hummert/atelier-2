@@ -50,7 +50,7 @@ describe("Phase 3 read-only run cockpit", () => {
     feed.handlers?.disconnected();
 
     expect(await screen.findByText("Reconnecting")).toBeTruthy();
-    expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2));
     getRun.mockRejectedValueOnce(
       new CockpitRequestError("Read failed", {
         type: "urn:atelier2:problem:v1:temporarily-unavailable",

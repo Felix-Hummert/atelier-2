@@ -91,10 +91,10 @@ describe("contiguous durable SSE projection", () => {
     expect(reconnecting.protocol_problem).toBeNull();
   });
 
-  it("surfaces an inexact wire integer as a decoder protocol problem", () => {
+  it("surfaces an inexact wire integer as a decoder protocol problem", async () => {
     const unsafe = event(1) as Record<string, unknown>;
     unsafe.sequence = Number.MAX_SAFE_INTEGER + 1;
-    const rejected = decodeAndApplyDurableEvent(projection(), JSON.stringify(unsafe));
+    const rejected = await decodeAndApplyDurableEvent(projection(), JSON.stringify(unsafe));
     expect(rejected.protocol_problem).toEqual({ type: "decoder" });
     expect(rejected.events).toEqual([]);
   });
@@ -111,13 +111,13 @@ describe("contiguous durable SSE projection", () => {
     expect(rejected.last_sequence).toBe(1);
   });
 
-  it("refuses an event whose node identity or kind is absent from the bound graph", () => {
-    const wrongNode = decodeAndApplyDurableEvent(
+  it("refuses an event whose node identity or kind is absent from the bound graph", async () => {
+    const wrongNode = await decodeAndApplyDurableEvent(
       projection(),
       JSON.stringify(event(1, { node_id: "missing" })),
       workflow().graph
     );
-    const wrongKind = decodeAndApplyDurableEvent(
+    const wrongKind = await decodeAndApplyDurableEvent(
       projection(),
       JSON.stringify({ ...waitInputEvent(1), node_id: "agent" }),
       workflow().graph
@@ -130,14 +130,60 @@ describe("contiguous durable SSE projection", () => {
   it.each([
     ["V1 event with V2 graph", event(1), v2Scenario().graph],
     ["V2 event with V1 graph", v2AgentEvent("AGENT_COMPLETED"), workflow().graph]
-  ] as const)("refuses a workflow/event format mismatch: %s", (_case, mismatchedEvent, graph) => {
-    const rejected = decodeAndApplyDurableEvent(
+  ] as const)("refuses a workflow/event format mismatch: %s", async (_case, mismatchedEvent, graph) => {
+    const rejected = await decodeAndApplyDurableEvent(
       projection(),
       JSON.stringify(mismatchedEvent),
       graph
     );
 
     expect(rejected.protocol_problem).toEqual({ type: "decoder" });
+  });
+});
+
+describe("verified V2 Agent output projection", () => {
+  it.each([
+    ["utf8", "R3LDvMOfZSDmnbHkuqw=", "d9f1fa3818c49d96dce2661015bdad90989df9e67244a7e5f1519ab466286332", "Grüße 東京", 14],
+    ["binary", "/wA=", "ea5dbf9596d187e9500f23e9a680109475341cf4e81f7e043f7d97152c10772f", "/wA=", 2],
+    ["empty", "", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", 0]
+  ] as const)("keeps exact %s bytes after SHA-256 verification", async (kind, outputBase64, outputHash, value, byteCount) => {
+    const completed = v2AgentEvent("AGENT_COMPLETED", { output_base64: outputBase64, output_hash: outputHash });
+
+    const applied = await decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify(completed),
+      v2Scenario().graph
+    );
+
+    expect(applied.protocol_problem).toBeNull();
+    expect(applied.events).toEqual([completed]);
+    expect(applied.agent_outputs_by_cursor.get(completed.cursor)).toEqual({
+      kind,
+      value,
+      byte_count: byteCount
+    });
+  });
+
+  it("refuses contradictory output bytes before accepting either event or output", async () => {
+    const completed = v2AgentEvent("AGENT_COMPLETED", {
+      output_base64: "R3LDvMOfZSDmnbHkuqw=",
+      output_hash: digest
+    });
+
+    const rejected = await decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify(completed),
+      v2Scenario().graph
+    );
+
+    expect(rejected.protocol_problem).toEqual({
+      type: "output_integrity",
+      cursor: completed.cursor,
+      expected: digest,
+      received: "d9f1fa3818c49d96dce2661015bdad90989df9e67244a7e5f1519ab466286332"
+    });
+    expect(rejected.events).toEqual([]);
+    expect(rejected.agent_outputs_by_cursor.size).toBe(0);
   });
 });
 
@@ -396,7 +442,8 @@ function v2Scenario() {
 }
 
 function v2AgentEvent(
-  eventKind: "AGENT_COMPLETED" | "AGENT_FAILED" | "AGENT_CANCELLED" | "AGENT_INTERRUPTED"
+  eventKind: "AGENT_COMPLETED" | "AGENT_FAILED" | "AGENT_CANCELLED" | "AGENT_INTERRUPTED",
+  changes: Record<string, unknown> = {}
 ) {
   const common = {
     workflow_format_version: 2 as const,
@@ -411,7 +458,7 @@ function v2AgentEvent(
     attempt_ordinal: 1 as const
   };
   if (eventKind === "AGENT_COMPLETED") {
-    return { ...common, event: eventKind, output_base64: "", output_hash: digest };
+    return { ...common, event: eventKind, output_base64: "", output_hash: digest, ...changes };
   }
   if (eventKind === "AGENT_FAILED") {
     return { ...common, event: eventKind, failure_code: "PROCESS_EXITED_UNSUCCESSFULLY" as const };

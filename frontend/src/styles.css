@@ -218,6 +218,7 @@ small {
 .notice > span:nth-child(2) {
   display: grid;
   gap: 0.15rem;
+  overflow-wrap: anywhere;
 }
 
 .notice-mark {
@@ -439,8 +440,12 @@ textarea {
   color: var(--warning);
 }
 
-.connection-reconnecting span,
-.connection-connecting span {
+.connection-problem {
+  color: var(--danger);
+}
+
+.connection-reconnecting:not(.connection-problem) span,
+.connection-connecting:not(.connection-problem) span {
   animation: connection-spin 1.25s linear infinite;
 }
 
@@ -663,6 +668,15 @@ textarea {
 .context-row > code {
   flex: 1;
   font-size: 0.72rem;
+}
+
+.verified-output {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.verified-output .context-row > strong {
+  color: var(--accent);
 }
 
 .info-hint {
