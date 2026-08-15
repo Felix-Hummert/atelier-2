@@ -10,15 +10,17 @@ from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 class SubworkflowBindingRefusalReason(StrEnum):
     """Why one subworkflow node cannot bind its child revision, as a stable token."""
 
+    MALFORMED_WORKFLOW_REFERENCE = "malformed_workflow_reference"
     UNPUBLISHED_WORKFLOW_REFERENCE = "unpublished_workflow_reference"
+    RESOLVED_REVISION_MISMATCH = "resolved_revision_mismatch"
     CHILD_DOCUMENT_REFUSED = "child_document_refused"
     CHILD_FORMAT_UNSUPPORTED = "child_format_unsupported"
     MISSING_INPUT_BINDING = "missing_input_binding"
     EXTRA_INPUT_BINDING = "extra_input_binding"
     MISSING_OUTPUT_BINDING = "missing_output_binding"
     EXTRA_OUTPUT_BINDING = "extra_output_binding"
+    UNPROVEN_INPUT_SCHEMA = "unproven_input_schema"
     SCHEMA_REVISION_MISMATCH = "schema_revision_mismatch"
-    RECURSIVE_WORKFLOW_REFERENCE = "recursive_workflow_reference"
     NESTING_DEPTH_EXCEEDED = "nesting_depth_exceeded"
 
 

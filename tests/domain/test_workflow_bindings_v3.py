@@ -32,7 +32,9 @@ from atelier2.ports.workflow_revisions import (
     ResolvePublishedWorkflowResult,
 )
 
-PARENT = b"""format_version: 3
+PINNED_REVISION = b"<revision>"
+
+PARENT_TEMPLATE = b"""format_version: 3
 name: Build a candidate, then hand it to the review panel
 nodes:
   - id: implement
@@ -46,7 +48,7 @@ nodes:
   - id: review_panel
     type: subworkflow
     depends_on: [implement]
-    workflow: {ref: review_panel, revision: workflow-1}
+    workflow: {ref: review_panel, revision: <revision>}
     inputs:
       - name: candidate
         from: {node: implement, output: candidate}
@@ -78,26 +80,6 @@ nodes:
         schema: {ref: comment_receipt, revision: schema-receipt}
 """
 
-NESTING_CHILD = b"""format_version: 3
-name: Seed an inner panel and pass its verdict up
-graph_inputs:
-  - name: candidate
-    schema: {ref: workspace_candidate, revision: schema-candidate}
-graph_outputs:
-  - name: verdict
-    from: {node: inner_panel, output: verdict}
-nodes:
-  - id: inner_panel
-    type: subworkflow
-    workflow: {ref: inner_panel, revision: workflow-2}
-    inputs:
-      - name: seed
-        value: rehearse the panel
-    outputs:
-      - name: verdict
-        schema: {ref: review_verdict, revision: schema-verdict}
-"""
-
 LEAF_CHILD = b"""format_version: 3
 name: Decide a verdict alone, without a panel
 graph_inputs:
@@ -115,21 +97,28 @@ nodes:
         schema: {ref: review_verdict, revision: schema-verdict}
 """
 
-SELF_NAMING_CHILD = b"""format_version: 3
-name: Name the very panel this document is
+NESTING_CHILD_TEMPLATE = b"""format_version: 3
+name: Seed an inner panel and pass its verdict up
 graph_inputs:
   - name: candidate
     schema: {ref: workspace_candidate, revision: schema-candidate}
 graph_outputs:
   - name: verdict
-    from: {node: again, output: verdict}
+    from: {node: inner_panel, output: verdict}
 nodes:
-  - id: again
+  - id: seed_the_panel
+    type: deterministic
+    operation: {ref: seed_the_panel, revision: operation-4}
+    outputs:
+      - name: seed
+        schema: {ref: seed_note, revision: schema-seed}
+  - id: inner_panel
     type: subworkflow
-    workflow: {ref: review_panel, revision: workflow-1}
+    depends_on: [seed_the_panel]
+    workflow: {ref: inner_panel, revision: <revision>}
     inputs:
-      - name: candidate
-        value: the same panel once more
+      - name: seed
+        from: {node: seed_the_panel, output: seed}
     outputs:
       - name: verdict
         schema: {ref: review_verdict, revision: schema-verdict}
@@ -160,23 +149,49 @@ UNASKED_FOR_OUTPUT = b"""      - name: surprise
         schema: {ref: surprise_note, revision: schema-surprise}
 """
 
-REVIEW_PANEL = ("review_panel", "workflow-1")
-INNER_PANEL = ("inner_panel", "workflow-2")
 
-PUBLISHED: Mapping[tuple[str, str], bytes] = {REVIEW_PANEL: CHILD}
-PUBLISHED_NESTING: Mapping[tuple[str, str], bytes] = {
-    REVIEW_PANEL: NESTING_CHILD,
-    INNER_PANEL: LEAF_CHILD,
-}
+def revision_of(document: bytes) -> str:
+    """The exact revision hash a reference must name to bind these bytes."""
+    return WorkflowRevision(document).revision_hash.value
 
 
-@dataclass(frozen=True)
+def pinning(template: bytes, child: bytes) -> bytes:
+    """One document naming the child revision it reuses, by that child's hash."""
+    return template.replace(PINNED_REVISION, revision_of(child).encode("utf-8"))
+
+
+def carrying(**children: bytes) -> dict[tuple[str, str], bytes]:
+    return {(ref, revision_of(child)): child for ref, child in children.items()}
+
+
+PARENT = pinning(PARENT_TEMPLATE, CHILD)
+NESTING_CHILD = pinning(NESTING_CHILD_TEMPLATE, LEAF_CHILD)
+NESTING_PARENT = pinning(PARENT_TEMPLATE, NESTING_CHILD)
+
+REVIEW_PANEL = ("review_panel", revision_of(CHILD))
+NESTED_REVIEW_PANEL = ("review_panel", revision_of(NESTING_CHILD))
+INNER_PANEL = ("inner_panel", revision_of(LEAF_CHILD))
+
+PUBLISHED = carrying(review_panel=CHILD)
+PUBLISHED_NESTING = carrying(review_panel=NESTING_CHILD, inner_panel=LEAF_CHILD)
+
+
+@dataclass
 class PublishedWorkflows:
-    """The publication store as this binding reads it: references to exact bytes."""
+    """The publication store as this binding reads it: references to exact bytes.
+
+    It records what it was asked, so a test can prove a refusal happened before
+    any reference was resolved.
+    """
 
     documents: Mapping[tuple[str, str], bytes]
+    answers: bytes | None = None
+    resolutions: list[VersionedReference] = field(default_factory=list)
 
     def resolve(self, reference: VersionedReference) -> ResolvePublishedWorkflowResult:
+        self.resolutions.append(reference)
+        if self.answers is not None:
+            return PublishedWorkflowFound(WorkflowRevision(self.answers))
         document = self.documents.get((reference.ref, reference.revision))
         if document is None:
             return PublishedWorkflowMissing()
@@ -193,10 +208,11 @@ def bind(
     document: bytes = PARENT,
     published: Mapping[tuple[str, str], bytes] = PUBLISHED,
     maximum_nesting_depth: int = 2,
+    store: PublishedWorkflows | None = None,
 ) -> SubworkflowBinding:
     return bind_subworkflow_boundaries(
         parsed(document),
-        PublishedWorkflows(published),
+        store if store is not None else PublishedWorkflows(published),
         parse_workflow_document,
         maximum_nesting_depth,
     )
@@ -228,7 +244,7 @@ def test_a_document_naming_no_child_binds_to_an_empty_boundary() -> None:
 
 
 def test_a_nested_child_binds_through_the_chain_it_was_reached_by() -> None:
-    binding = bind(published=PUBLISHED_NESTING)
+    binding = bind(document=NESTING_PARENT, published=PUBLISHED_NESTING)
 
     bound = binding.subworkflows[0]
     nested = bound.children[0]
@@ -244,7 +260,10 @@ def test_a_child_graph_output_reading_no_sink_is_refused_at_binding() -> None:
     )
 
     with pytest.raises(SubworkflowBindingRefused) as raised:
-        bind(published={REVIEW_PANEL: depending_on_the_source})
+        bind(
+            document=pinning(PARENT_TEMPLATE, depending_on_the_source),
+            published=carrying(review_panel=depending_on_the_source),
+        )
 
     refusal = raised.value.refusal
     assert refusal.reason is SubworkflowBindingRefusalReason.CHILD_DOCUMENT_REFUSED
@@ -275,8 +294,15 @@ REFUSALS: Mapping[str, Refusal] = {
     "child-of-an-older-format": Refusal(
         SubworkflowBindingRefusalReason.CHILD_FORMAT_UNSUPPORTED,
         "review_panel",
-        (REVIEW_PANEL,),
-        published={REVIEW_PANEL: V2_CHILD},
+        (("review_panel", revision_of(V2_CHILD)),),
+        document=pinning(PARENT_TEMPLATE, V2_CHILD),
+        published=carrying(review_panel=V2_CHILD),
+    ),
+    "reference-naming-no-revision-hash": Refusal(
+        SubworkflowBindingRefusalReason.MALFORMED_WORKFLOW_REFERENCE,
+        "review_panel",
+        (("review_panel", "workflow-1"),),
+        document=PARENT_TEMPLATE.replace(PINNED_REVISION, b"workflow-1"),
     ),
     "graph-input-the-node-never-binds": Refusal(
         SubworkflowBindingRefusalReason.MISSING_INPUT_BINDING,
@@ -323,15 +349,28 @@ REFUSALS: Mapping[str, Refusal] = {
     "chain-deeper-than-the-attested-maximum": Refusal(
         SubworkflowBindingRefusalReason.NESTING_DEPTH_EXCEEDED,
         "inner_panel",
-        (REVIEW_PANEL, INNER_PANEL),
+        (NESTED_REVIEW_PANEL, INNER_PANEL),
+        document=NESTING_PARENT,
         published=PUBLISHED_NESTING,
         maximum_nesting_depth=1,
     ),
-    "revision-reached-twice-in-one-chain": Refusal(
-        SubworkflowBindingRefusalReason.RECURSIVE_WORKFLOW_REFERENCE,
-        "again",
-        (REVIEW_PANEL, REVIEW_PANEL),
-        published={REVIEW_PANEL: SELF_NAMING_CHILD},
+    "input-proving-no-schema-revision": Refusal(
+        SubworkflowBindingRefusalReason.UNPROVEN_INPUT_SCHEMA,
+        "review_panel",
+        (REVIEW_PANEL,),
+        document=PARENT.replace(
+            BOUND_INPUT,
+            b"    inputs:\n      - name: candidate\n        value: the panel reads this\n",
+        ),
+    ),
+    "input-sourced-from-a-terminal-receipt": Refusal(
+        SubworkflowBindingRefusalReason.UNPROVEN_INPUT_SCHEMA,
+        "review_panel",
+        (REVIEW_PANEL,),
+        document=PARENT.replace(
+            b"        from: {node: implement, output: candidate}\n",
+            b"        from: {node: implement, receipt: terminal}\n",
+        ),
     ),
 }
 
@@ -347,7 +386,67 @@ def test_every_refused_binding_names_its_node_and_the_chain(case: Refusal) -> No
 
 
 def test_the_attested_depth_admits_exactly_the_chain_it_proves() -> None:
-    assert bind(published=PUBLISHED_NESTING, maximum_nesting_depth=2).nesting_depth == 2
+    binding = bind(
+        document=NESTING_PARENT, published=PUBLISHED_NESTING, maximum_nesting_depth=2
+    )
+
+    assert binding.nesting_depth == 2
+
+
+def test_a_store_answering_with_another_revision_is_refused_before_it_binds() -> None:
+    store = PublishedWorkflows(PUBLISHED, answers=LEAF_CHILD)
+
+    with pytest.raises(SubworkflowBindingRefused) as raised:
+        bind(store=store)
+
+    refusal = raised.value.refusal
+    assert refusal.reason is SubworkflowBindingRefusalReason.RESOLVED_REVISION_MISMATCH
+    assert refusal.node == "review_panel"
+    assert revision_of(CHILD) in refusal.detail
+    assert revision_of(LEAF_CHILD) in refusal.detail
+
+
+def test_a_bound_child_carries_the_exact_revision_its_reference_named() -> None:
+    bound = bind().subworkflows[0]
+
+    assert bound.reference.revision == revision_of(CHILD)
+    assert bound.child_revision_hash.value == bound.reference.revision
+
+
+def test_the_depth_bound_is_spent_before_any_child_is_resolved_or_read() -> None:
+    store = PublishedWorkflows(PUBLISHED)
+
+    with pytest.raises(SubworkflowBindingRefused) as raised:
+        bind(maximum_nesting_depth=0, store=store)
+
+    assert (
+        raised.value.refusal.reason
+        is SubworkflowBindingRefusalReason.NESTING_DEPTH_EXCEEDED
+    )
+    assert store.resolutions == []
+
+
+def test_a_malformed_reference_is_refused_before_any_child_is_resolved() -> None:
+    store = PublishedWorkflows(PUBLISHED)
+
+    with pytest.raises(SubworkflowBindingRefused):
+        bind(
+            document=PARENT_TEMPLATE.replace(PINNED_REVISION, b"workflow-1"),
+            store=store,
+        )
+
+    assert store.resolutions == []
+
+
+def test_one_schema_revision_binds_under_whichever_entry_name_names_it() -> None:
+    under_another_entry_name = PARENT.replace(
+        b"schema: {ref: workspace_candidate, revision: schema-candidate}",
+        b"schema: {ref: reviewed_candidate, revision: schema-candidate}",
+    )
+
+    binding = bind(document=under_another_entry_name)
+
+    assert binding.subworkflows[0].child_revision_hash.value == revision_of(CHILD)
 
 
 def test_a_negative_depth_bound_is_refused_before_any_reference_resolves() -> None:

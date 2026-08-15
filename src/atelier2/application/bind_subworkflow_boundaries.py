@@ -52,18 +52,15 @@ def bind_subworkflow_boundaries(
 
 @dataclass(frozen=True)
 class _Chain:
-    """How one child revision was reached: the references, and what they resolved to."""
+    """How one child revision was reached: the references followed to get there."""
 
     references: ReachedBy = ()
-    revision_hashes: tuple[WorkflowRevisionHash, ...] = ()
 
     def reaching(self, reference: VersionedReference) -> ReachedBy:
         return self.references + (reference,)
 
-    def extended(
-        self, reference: VersionedReference, revision_hash: WorkflowRevisionHash
-    ) -> _Chain:
-        return _Chain(self.reaching(reference), self.revision_hashes + (revision_hash,))
+    def extended(self, reference: VersionedReference) -> _Chain:
+        return _Chain(self.reaching(reference))
 
 
 @dataclass(frozen=True)
@@ -85,27 +82,38 @@ class _Binder:
         self, node: SubworkflowNodeV3, graph: WorkflowGraphV3, chain: _Chain
     ) -> BoundSubworkflow:
         reached_by = chain.reaching(node.workflow)
+        self._refuse_excess_depth(node, reached_by)
         revision = self._resolve(node, reached_by)
         child = self._parse(node, reached_by, revision.document)
-        _refuse_recursion(node, reached_by, chain, revision.revision_hash)
-        self._refuse_excess_depth(node, reached_by)
         _refuse_broken_boundary(node, graph, child, reached_by)
         return BoundSubworkflow(
             node.id,
             node.workflow,
             revision.revision_hash,
             child,
-            self.bind_nodes(
-                child, chain.extended(node.workflow, revision.revision_hash)
-            ),
+            self.bind_nodes(child, chain.extended(node.workflow)),
         )
 
     def _resolve(
         self, node: SubworkflowNodeV3, reached_by: ReachedBy
     ) -> WorkflowRevision:
+        """Resolve the exact revision the node names, or refuse naming why not.
+
+        A reference names one immutable revision by its hash, so a store that
+        answers with another revision is refused rather than silently bound.
+        """
+        requested = _requested_revision_hash(node, reached_by)
         resolved = self.resolver.resolve(node.workflow)
         match resolved:
             case PublishedWorkflowFound(revision):
+                if revision.revision_hash != requested:
+                    raise _refuse(
+                        SubworkflowBindingRefusalReason.RESOLVED_REVISION_MISMATCH,
+                        node,
+                        reached_by,
+                        f"this reference names revision {requested.value}, and the "
+                        f"publication store answered with {revision.revision_hash.value}",
+                    )
                 return revision
             case PublishedWorkflowMissing():
                 raise _refuse(
@@ -162,20 +170,20 @@ def _refuse(
     )
 
 
-def _refuse_recursion(
-    node: SubworkflowNodeV3,
-    reached_by: ReachedBy,
-    chain: _Chain,
-    revision_hash: WorkflowRevisionHash,
-) -> None:
-    """No revision can carry its own hash, so a resolver contradicting that is loud."""
-    if revision_hash in chain.revision_hashes:
+def _requested_revision_hash(
+    node: SubworkflowNodeV3, reached_by: ReachedBy
+) -> WorkflowRevisionHash:
+    """The exact revision a workflow reference names, or a refusal that it names none."""
+    try:
+        return WorkflowRevisionHash(node.workflow.revision)
+    except ValueError as error:
         raise _refuse(
-            SubworkflowBindingRefusalReason.RECURSIVE_WORKFLOW_REFERENCE,
+            SubworkflowBindingRefusalReason.MALFORMED_WORKFLOW_REFERENCE,
             node,
             reached_by,
-            "this chain resolves to a revision it already entered through",
-        )
+            f"a workflow reference names one revision hash, and "
+            f"{node.workflow.revision!r} is not one",
+        ) from error
 
 
 def _refuse_broken_boundary(
@@ -208,7 +216,7 @@ def _refuse_broken_boundary(
             node,
             reached_by,
             f"graph input {graph_input.name!r}",
-            _upstream_schema(bound_input, graph),
+            _proven_schema(node, reached_by, bound_input, graph),
             graph_input.schema_reference,
         )
     for graph_output in child.graph_outputs:
@@ -253,10 +261,11 @@ def _refuse_differing_schema(
     node: SubworkflowNodeV3,
     reached_by: ReachedBy,
     subject: str,
-    bound: VersionedReference | None,
+    bound: VersionedReference,
     declared: VersionedReference,
 ) -> None:
-    if bound is None or bound == declared:
+    """One revision is one type, whichever entry name each side reaches it under."""
+    if bound.revision == declared.revision:
         return
     raise _refuse(
         SubworkflowBindingRefusalReason.SCHEMA_REVISION_MISMATCH,
@@ -273,14 +282,29 @@ def _named[Declared: (NodeInput, NodeOutput)](
     return next(entry for entry in declared if entry.name == name)
 
 
-def _upstream_schema(
-    bound: NodeInput, graph: WorkflowGraphV3
-) -> VersionedReference | None:
-    """The schema an input carries, where the document itself declares one."""
+def _proven_schema(
+    node: SubworkflowNodeV3,
+    reached_by: ReachedBy,
+    bound: NodeInput,
+    graph: WorkflowGraphV3,
+) -> VersionedReference:
+    """The schema revision one bound input proves, or a refusal that it proves none.
+
+    A child's graph input demands a typed value, and only an upstream node output
+    declares the schema revision of what it carries. An authored literal, a
+    terminal receipt and a context entry each declare none, so binding one to a
+    typed graph input would assert a type nothing in the document states.
+    """
     source = bound.source
-    if not isinstance(source, NodeOutputSource):
-        return None
-    return _named(graph.node(source.node).outputs, source.output).schema_reference
+    if isinstance(source, NodeOutputSource):
+        return _named(graph.node(source.node).outputs, source.output).schema_reference
+    raise _refuse(
+        SubworkflowBindingRefusalReason.UNPROVEN_INPUT_SCHEMA,
+        node,
+        reached_by,
+        f"input {bound.name!r} proves no schema revision, so it cannot bind a "
+        "typed graph input of the child",
+    )
 
 
 def _sourced_schema(

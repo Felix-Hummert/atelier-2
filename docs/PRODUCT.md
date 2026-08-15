@@ -144,8 +144,11 @@ One reference behind that surface now binds: a subworkflow node's
 declared inputs and outputs match the graph boundary of the published child revision
 it names one to one, by name and schema revision, read against that child's real
 content, and a chain nesting deeper than the depth its caller attests is refused
-naming the chain. Every deviation names the node and the chain of references it was
-reached through. Nothing else behind the surface exists: no registry for the
+before that depth resolves or reads anything. A workflow reference names its child
+by revision hash, so a store answering with any other revision is refused instead of
+bound, an input that proves no schema revision cannot bind a typed graph input, and
+recursion is impossible rather than checked: no revision can carry its own hash.
+Every deviation names the node and the chain of references it was reached through. Nothing else behind the surface exists: no registry for the
 remaining references, no capability attestation, no durable record shape, so
 publication and every run path still refuse a V3 document naming the format, and no
 runtime executes a child. V1 and V2 documents keep their exact meaning under their
