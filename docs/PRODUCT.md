@@ -253,9 +253,13 @@ one hash per output on standard error. Every publication is idempotent and the
 run identity is derived from the published hashes unless the operator names one,
 so the same command run twice reports the first run instead of paying for a
 second. The client owns nothing: it holds no durable state, adds no route, and
-hands the service's typed problems on unchanged. A run that stops on a decision
-the command cannot make — a waiting node, an unknown effect outcome, a failed
-agent attempt — ends it by name with a nonzero exit code instead of waiting. The
+hands the service's typed problems on unchanged, whether the service refused an
+answer or ended the event stream with its own failure frame. A run that stops on
+a decision the command cannot make — a waiting node, an unknown effect outcome, a
+failed agent attempt — ends it by name with a nonzero exit code instead of
+waiting. Exit 0 says the command read that run's history as far as the run's own
+latest event, so a history that broke off is refused by name and a truncated or
+empty output is never dressed as a receipt. The
 job still travels inside the published document, so one distinct input burns one
 revision, and neither a run-level input, a workflow name, nor an output contract
 that could decide an exit code exists yet.

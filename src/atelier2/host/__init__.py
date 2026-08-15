@@ -16,26 +16,23 @@ from atelier2.adapters.claude_subscription import (
     attest_no_managed_policy,
     verify_claude_capability,
 )
+from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
 from atelier2.host.run_command import (
-    DEFAULT_SERVICE_URL,
     AgentBindingSource,
     RunCommandRefusal,
     RunOrder,
     describe_receipt,
     execute_run,
 )
-from atelier2.host.serving import (
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    HostSettings,
-    serve,
-)
+from atelier2.host.serving import HostSettings, serve
 
 RUN_DESCRIPTION = """\
 Run one workflow document on a served Atelier API and wait for its end. Every
-agent output the run produced is written to standard output; the run, its
-revision, its terminal hash and one hash per output are written to standard
-error. The exit code is 0 only for a run that reached its terminal event.
+agent output the run produced is written to standard output, as the exact bytes
+its hash covers and with no separator added, so a piped output is the output;
+the run, its revision, its terminal hash and one hash per output are written to
+standard error. The exit code is 0 only for a run whose whole event history this
+command read and whose terminal event it saw.
 
 The command owns nothing. It publishes the workflow document and each binding
 file through the public API of the service named by --service, and starts the
@@ -107,7 +104,7 @@ def _run(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
         print(refusal, file=sys.stderr)
         return 1
     for output in report.outputs:
-        sys.stdout.buffer.write(output.output + b"\n")
+        sys.stdout.buffer.write(output.output)
     sys.stdout.buffer.flush()
     print(describe_receipt(report), file=sys.stderr)
     return 0

@@ -19,20 +19,25 @@ from typing import Any, Literal, Self
 import pytest
 
 from atelier2.api.models import (
+    AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
     AgentConfigurationRevisionResource,
     AgentFailedEventResourceV2,
     AgentNodeResourceV2,
     AuthProfileRevisionResource,
+    NoWaitingResource,
     NoWaitingResourceV2,
     ProblemResource,
+    RunResource,
     RunResourceV2,
+    StreamFailureResource,
     SubworkflowNodeResource,
     WaitingInputEventResourceV2,
     WorkflowGraphResourceV2,
     WorkflowRevisionDetailResource,
 )
 from atelier2.api.openapi import API_PREFIX
+from atelier2.api.problems import problem_resource
 from atelier2.api.references import encode_canonical_base64
 from atelier2.host import main
 from atelier2.host.run_command import (
@@ -60,6 +65,8 @@ BINDING_SET_HASH = "3" * 64
 
 PUBLIC_RUN_REFERENCE = "run1.dGVzdA"
 EVENT_CURSOR = f"event1.dGVzdA.{1}"
+LATER_EVENT_CURSOR = f"event1.dGVzdA.{2}"
+STREAM_FAILURE_CODE = "durable-state-corrupt"
 AGENT_ROLE = "writer"
 AGENT_NODE_ID = "draft"
 TERMINAL_NODE_ID = "total"
@@ -240,7 +247,9 @@ def terminal_node() -> SubworkflowNodeResource:
 
 
 def run_resource(
-    state: Literal["STARTED", "COMPLETED"], terminal_hash: str | None
+    state: Literal["STARTED", "COMPLETED"],
+    terminal_hash: str | None,
+    latest_event_cursor: str = EVENT_CURSOR,
 ) -> RunResourceV2:
     return RunResourceV2(
         workflow_format_version=2,
@@ -255,7 +264,7 @@ def run_resource(
         agent_attempts=(),
         waiting=NoWaitingResourceV2(type="NONE"),
         terminal_hash=terminal_hash,
-        latest_event_cursor=EVENT_CURSOR,
+        latest_event_cursor=latest_event_cursor,
     )
 
 
@@ -263,15 +272,49 @@ def started_run() -> Answer:
     return Answer(run_resource("STARTED", None).model_dump_json().encode())
 
 
-def completed_run() -> Answer:
-    return Answer(run_resource("COMPLETED", TERMINAL_HASH).model_dump_json().encode())
+def completed_run(latest_event_cursor: str = EVENT_CURSOR) -> Answer:
+    return Answer(
+        run_resource("COMPLETED", TERMINAL_HASH, latest_event_cursor)
+        .model_dump_json()
+        .encode()
+    )
 
 
-def event_stream(*events: str) -> Answer:
-    """The frames exactly as the served API writes them: data, then id."""
+def unbound_run_resource(
+    state: Literal["STARTED", "COMPLETED"], terminal_hash: str | None
+) -> RunResource:
+    """A run of a workflow that binds no agent: the version-1 shape of the same run."""
+
+    return RunResource(
+        run_id="unread-by-the-command",
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        state_version=2,
+        state=state,
+        current_node=terminal_node(),
+        waiting=NoWaitingResource(type="NONE"),
+        terminal_hash=terminal_hash,
+        latest_event_cursor=EVENT_CURSOR,
+    )
+
+
+def event_stream(*events: str, failure: str | None = None) -> Answer:
+    """The frames exactly as the served API writes them: data, then id.
+
+    A failure frame ends the stream and carries no id, because the route offers
+    no resume cursor into its own refusal.
+    """
 
     frames = "".join(f"data: {payload}\nid: {EVENT_CURSOR}\n\n" for payload in events)
+    if failure is not None:
+        frames += f"data: {failure}\n\n"
     return Answer(frames.encode(), media_type=EVENT_STREAM_MEDIA_TYPE)
+
+
+def stream_failure(code: str = STREAM_FAILURE_CODE) -> str:
+    """The frame the route writes when the stream itself fails, in its own words."""
+
+    return StreamFailureResource(problem=problem_resource(code)).model_dump_json()
 
 
 def agent_completed() -> str:
@@ -289,6 +332,23 @@ def agent_completed() -> str:
         output_hash=OUTPUT_HASH,
         attempt_id=ATTEMPT_ID,
         attempt_ordinal=1,
+    ).model_dump_json()
+
+
+def unbound_agent_completed() -> str:
+    """The version-1 event: the output travels as text, and no attempt names it."""
+
+    return AgentCompletedEventResource(
+        cursor=EVENT_CURSOR,
+        sequence=1,
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        node_id=AGENT_NODE_ID,
+        node_execution_id=NODE_EXECUTION_ID,
+        event_hash=EVENT_HASH,
+        event="AGENT_COMPLETED",
+        output=AGENT_OUTPUT.decode(),
+        payload_hash=OUTPUT_HASH,
     ).model_dump_json()
 
 
@@ -355,6 +415,18 @@ def serving_answers(
     }
 
 
+def unbound_serving_answers() -> dict[tuple[str, str], list[Answer]]:
+    """The same conversation for a workflow that binds no agent."""
+
+    return serving_answers(
+        start=Answer(unbound_run_resource("STARTED", None).model_dump_json().encode()),
+        events=event_stream(unbound_agent_completed()),
+        run=Answer(
+            unbound_run_resource("COMPLETED", TERMINAL_HASH).model_dump_json().encode()
+        ),
+    )
+
+
 @pytest.fixture
 def order(tmp_path: Path) -> Iterator[list[str]]:
     workflow = tmp_path / "workflow.yaml"
@@ -362,6 +434,13 @@ def order(tmp_path: Path) -> Iterator[list[str]]:
     binding = tmp_path / "writer.json"
     binding.write_bytes(BINDING_DOCUMENT)
     yield ["run", "--workflow", str(workflow), "--binding", f"{AGENT_ROLE}={binding}"]
+
+
+@pytest.fixture
+def unbound_order(tmp_path: Path) -> Iterator[list[str]]:
+    workflow = tmp_path / "workflow.yaml"
+    workflow.write_bytes(WORKFLOW_DOCUMENT)
+    yield ["run", "--workflow", str(workflow)]
 
 
 def run_command(order: list[str], service: ScriptedService, *extra: str) -> int:
@@ -375,7 +454,7 @@ def test_the_output_of_a_run_that_ended_is_printed_with_what_binds_it_to_that_ru
         exit_code = run_command(order, service)
 
     printed = capsysbinary.readouterr()
-    assert (exit_code, printed.out) == (0, AGENT_OUTPUT + b"\n")
+    assert (exit_code, printed.out) == (0, AGENT_OUTPUT)
     reported = printed.err.decode()
     assert PUBLIC_RUN_REFERENCE in reported
     assert TERMINAL_HASH in reported
@@ -395,7 +474,7 @@ def test_an_event_kind_this_command_knows_nothing_about_is_passed_over(
         exit_code = run_command(order, service)
 
     printed = capsysbinary.readouterr()
-    assert (exit_code, printed.out) == (0, AGENT_OUTPUT + b"\n")
+    assert (exit_code, printed.out) == (0, AGENT_OUTPUT)
 
 
 def test_the_started_run_binds_the_hashes_the_service_answered_with(
@@ -420,6 +499,34 @@ def test_the_started_run_binds_the_hashes_the_service_answered_with(
     }
 
 
+def test_a_workflow_that_binds_no_agent_starts_without_publishing_one(
+    unbound_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(unbound_serving_answers()) as service:
+        exit_code = run_command(unbound_order, service)
+        started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
+        published_agents = service.sent("POST", API_PREFIX + AUTH_PROFILE_PATH)
+
+    assert (exit_code, published_agents) == (0, [])
+    assert started == {
+        "run_id": derived_run_id(REVISION_HASH, ()),
+        "workflow_revision_hash": REVISION_HASH,
+    }
+
+
+def test_the_output_of_a_workflow_that_binds_no_agent_is_printed_as_it_was_written(
+    unbound_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(unbound_serving_answers()) as service:
+        exit_code = run_command(unbound_order, service)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (0, AGENT_OUTPUT)
+    reported = printed.err.decode()
+    assert OUTPUT_HASH in reported
+    assert "attempt" not in reported
+
+
 def test_the_same_command_twice_asks_for_the_same_run(
     order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
@@ -430,7 +537,7 @@ def test_the_same_command_twice_asks_for_the_same_run(
 
     printed = capsysbinary.readouterr()
     assert (first, second) == (0, 0)
-    assert printed.out == AGENT_OUTPUT + b"\n" + AGENT_OUTPUT + b"\n"
+    assert printed.out == AGENT_OUTPUT + AGENT_OUTPUT
     assert started[0] == started[1]
 
 
@@ -480,6 +587,54 @@ def test_an_event_history_that_ends_before_the_run_does_is_refused(
     printed = capsysbinary.readouterr()
     assert (exit_code, printed.out) == (1, b"")
     assert b"STARTED" in printed.err
+
+
+def test_a_stream_that_fails_hands_the_services_own_problem_to_the_operator(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """The stream's only problem channel is a frame, and it must not be dropped."""
+
+    with ScriptedService(
+        serving_answers(events=event_stream(failure=stream_failure()))
+    ) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (1, b"")
+    problem = problem_resource(STREAM_FAILURE_CODE)
+    reported = printed.err.decode()
+    assert problem.type in reported
+    assert problem.title in reported
+    assert problem.detail in reported
+    assert TERMINAL_HASH not in reported
+
+
+def test_a_stream_that_ends_without_an_event_is_refused_rather_than_reported_as_none(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """Backpressure ends the stream regularly; a completed run is no proof of it."""
+
+    with ScriptedService(serving_answers(events=event_stream())) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (1, b"")
+    assert EVENT_CURSOR.encode() in printed.err
+    assert TERMINAL_HASH.encode() not in printed.err
+
+
+def test_a_history_that_stops_before_the_runs_latest_event_prints_no_half_output(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(
+        serving_answers(run=completed_run(latest_event_cursor=LATER_EVENT_CURSOR))
+    ) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (1, b"")
+    assert LATER_EVENT_CURSOR.encode() in printed.err
+    assert TERMINAL_HASH.encode() not in printed.err
 
 
 def test_a_typed_problem_reaches_the_operator_as_the_service_wrote_it(

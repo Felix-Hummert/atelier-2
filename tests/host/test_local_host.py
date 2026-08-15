@@ -35,8 +35,8 @@ from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
 from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.host import main
+from atelier2.host.address import DEFAULT_HOST
 from atelier2.host.serving import (
-    DEFAULT_HOST,
     HostSettings,
     api_limits,
     compose_application,

@@ -30,9 +30,7 @@ from atelier2.api.limits import ApiLimits, base64_characters_for
 from atelier2.api.stream import EventPollBackoff
 from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8422
+from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 
 MAXIMUM_REQUEST_BODY_BYTES = 65_536
 MAXIMUM_FIELD_CHARACTERS = 1_024

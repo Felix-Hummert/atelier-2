@@ -19,12 +19,12 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import IO
+from typing import IO, Final
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from atelier2.api.models import (
     ActionReconciliationRequiredEventResource,
@@ -41,6 +41,7 @@ from atelier2.api.models import (
     StartRunAgentBindingResourceV2,
     StartRunRequestResource,
     StartRunRequestResourceV2,
+    StreamFailureResource,
     WaitingInputEventResource,
     WaitingInputEventResourceV2,
     WorkflowRevisionDetailResource,
@@ -50,8 +51,8 @@ from atelier2.api.references import decode_canonical_base64
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import RunState
+from atelier2.host.address import DEFAULT_SERVICE_URL
 
-DEFAULT_SERVICE_URL = "http://127.0.0.1:8422"
 REQUEST_TIMEOUT_SECONDS = 30.0
 
 AUTH_PROFILE_PATH = "/auth-profile-revisions"
@@ -84,11 +85,15 @@ ACTED_EVENT_NAMES = frozenset(
     }
 )
 
+STREAM_FAILURE_NAME: Final[str] = StreamFailureResource.model_fields["event"].default
+"""The name of the stream's own problem frame, read from the model that owns it."""
+
 _auth_profile_resource = TypeAdapter(AuthProfileRevisionResource)
 _agent_configuration_resource = TypeAdapter(AgentConfigurationRevisionResource)
 _workflow_revision_resource = TypeAdapter(WorkflowRevisionDetailResource)
 _run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
 _acted_event_resource = TypeAdapter[ActedEventResource](ActedEventResource)
+_stream_failure_resource = TypeAdapter(StreamFailureResource)
 
 
 class RunCommandRefusal(Exception):
@@ -123,14 +128,39 @@ class AgentBindingDocument(BaseModel):
     """One operator file naming the agent an unbound workflow role needs.
 
     It carries what the two publication routes ask for, because this command
-    publishes the pair rather than looking up hashes the API cannot serve.
+    publishes the pair rather than looking up hashes the API cannot serve. What
+    each field may hold is the publication request's own business, so this
+    document declares no bound of its own and hands the values to the resource
+    that owns them.
+
+    A refusal quotes the failing value, which is what makes it usable. This file
+    may therefore never carry a credential: the published request resources it
+    is made of carry none today, and a field that ever does belongs in a secret
+    channel rather than here.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     auth_profile: PublishAuthProfileRevisionRequestResource
-    model: str = Field(min_length=1, max_length=1_024)
-    executor_revision: str = Field(min_length=1, max_length=1_024)
+    model: str
+    executor_revision: str
+
+    def publication(
+        self, auth_profile_revision_hash: str
+    ) -> PublishAgentConfigurationRevisionRequestResource:
+        return PublishAgentConfigurationRevisionRequestResource(
+            model=self.model,
+            auth_profile_revision_hash=auth_profile_revision_hash,
+            executor_revision=self.executor_revision,
+        )
+
+
+@dataclass(frozen=True)
+class CarriedEvent:
+    """What one stream frame says it is, before it is read as its own resource."""
+
+    kind: str
+    cursor: str | None
 
 
 @dataclass(frozen=True)
@@ -162,6 +192,14 @@ class RunOrder:
 
 
 @dataclass(frozen=True)
+class RunHistory:
+    """What one reading of a run's event stream saw, and how far it got."""
+
+    outputs: tuple[AgentOutput, ...]
+    last_cursor: str | None
+
+
+@dataclass(frozen=True)
 class RunReport:
     run_id: str
     public_run_reference: str
@@ -183,19 +221,27 @@ def execute_run(order: RunOrder) -> RunReport:
         "a run",
     )
     reference = started.public_run_reference
-    outputs = _run_outputs(api, reference)
+    history = _read_history(api, reference)
     ended = _decoded(_run_resource, _get(f"{api}{RUN_PATH}/{reference}"), "a run")
     if ended.state != RunState.COMPLETED or ended.terminal_hash is None:
         raise RunUnfinished(
             f"the event history of run {reference} ended while the run was still "
             f"{ended.state}"
         )
+    if history.last_cursor != ended.latest_event_cursor:
+        raise RunUnfinished(
+            f"the event history of run {reference} broke off at "
+            f"{history.last_cursor or 'no event at all'} while the run's own "
+            f"latest event is {ended.latest_event_cursor}, so what this command "
+            "read is not the whole output; nothing was started twice, so running "
+            "this command again is safe"
+        )
     return RunReport(
         run_id=run_id,
         public_run_reference=reference,
         workflow_revision_hash=ended.workflow_revision_hash,
         terminal_hash=ended.terminal_hash,
-        outputs=outputs,
+        outputs=history.outputs,
     )
 
 
@@ -248,10 +294,7 @@ def _published_binding(api: str, source: AgentBindingSource) -> AgentRoleBinding
     try:
         document = AgentBindingDocument.model_validate_json(source.document)
     except ValidationError as error:
-        raise UnusableRunOrder(
-            f"the binding of role {source.role} is not an agent this API could "
-            f"publish: {error}"
-        ) from error
+        raise _unpublishable_binding(source.role, error) from error
     profile = _decoded(
         _auth_profile_resource,
         _post(
@@ -260,22 +303,23 @@ def _published_binding(api: str, source: AgentBindingSource) -> AgentRoleBinding
         ),
         "an auth profile revision",
     )
+    try:
+        publication = document.publication(profile.auth_profile_revision_hash)
+    except ValidationError as error:
+        raise _unpublishable_binding(source.role, error) from error
     configuration = _decoded(
         _agent_configuration_resource,
-        _post(
-            api + AGENT_CONFIGURATION_PATH,
-            PublishAgentConfigurationRevisionRequestResource(
-                model=document.model,
-                auth_profile_revision_hash=profile.auth_profile_revision_hash,
-                executor_revision=document.executor_revision,
-            )
-            .model_dump_json()
-            .encode(),
-        ),
+        _post(api + AGENT_CONFIGURATION_PATH, publication.model_dump_json().encode()),
         "an agent configuration revision",
     )
     return AgentRoleBinding(
         source.role, configuration.agent_configuration_revision_hash
+    )
+
+
+def _unpublishable_binding(role: str, error: ValidationError) -> UnusableRunOrder:
+    return UnusableRunOrder(
+        f"the binding of role {role} is not an agent this API could publish: {error}"
     )
 
 
@@ -313,24 +357,32 @@ def _start_request(
     return requested.model_dump_json().encode()
 
 
-def _run_outputs(api: str, public_run_reference: str) -> tuple[AgentOutput, ...]:
+def _read_history(api: str, public_run_reference: str) -> RunHistory:
     """Read the run's own event history, which is where its output lives.
 
     The stream ends itself when the run reaches its terminal event, so this
     waits exactly as long as the run takes. A run that stops on a decision this
     command cannot make would otherwise keep it waiting forever, so those
     events are refusals rather than silence.
+
+    The stream may also end early - it says so with a failure frame, or by
+    simply stopping when the service wants the client to reconnect. Neither is
+    an ended run, so this reports how far the reading got and lets the caller
+    weigh that against the run's own latest event.
     """
 
-    request = Request(
-        f"{api}{RUN_PATH}/{public_run_reference}/events",
-        method="GET",
-        headers={"accept": EVENT_STREAM_MEDIA_TYPE},
-    )
+    url = f"{api}{RUN_PATH}/{public_run_reference}/events"
+    request = Request(url, method="GET", headers={"accept": EVENT_STREAM_MEDIA_TYPE})
     outputs: list[AgentOutput] = []
+    last_cursor: str | None = None
     with _open(request, timeout=None) as stream:
         for data in _server_sent_data(stream):
-            if _event_kind(data) not in ACTED_EVENT_NAMES:
+            carried = _carried_event(data)
+            if carried.kind == STREAM_FAILURE_NAME:
+                raise ServiceRefused(_failed_stream(url, data))
+            if carried.cursor is not None:
+                last_cursor = carried.cursor
+            if carried.kind not in ACTED_EVENT_NAMES:
                 continue
             event = _decoded(_acted_event_resource, data.encode(), "a run event")
             match event:
@@ -370,7 +422,7 @@ def _run_outputs(api: str, public_run_reference: str) -> tuple[AgentOutput, ...]
                         "accountable operator determination resolves it, and this "
                         "command makes none"
                     )
-    return tuple(outputs)
+    return RunHistory(tuple(outputs), last_cursor)
 
 
 def _decoded_output(output_base64: str) -> bytes:
@@ -382,12 +434,14 @@ def _decoded_output(output_base64: str) -> bytes:
         ) from error
 
 
-def _event_kind(data: str) -> str:
-    """Read which event this is from the event itself.
+def _carried_event(data: str) -> CarriedEvent:
+    """Read which event this is, and where it sits, from the event itself.
 
-    Every run event resource carries its own kind, and that field is the
-    published contract; the stream frame's optional name field is not, and the
-    served API does not write one, so the payload is what this command reads.
+    Every run event resource carries its own kind and its own cursor, and those
+    fields are the published contract; the stream frame's optional name field is
+    not, and the served API writes none, so the payload is what this command
+    reads. The failure frame carries a kind but no cursor, which is why the
+    cursor is optional here and nowhere else.
     """
 
     try:
@@ -398,7 +452,16 @@ def _event_kind(data: str) -> str:
         ) from error
     if not isinstance(carried, dict):
         raise UnreadableServiceAnswer("the event stream carried no run event")
-    return str(carried.get("event", ""))
+    cursor = carried.get("cursor")
+    return CarriedEvent(
+        kind=str(carried.get("event", "")),
+        cursor=cursor if isinstance(cursor, str) else None,
+    )
+
+
+def _failed_stream(url: str, data: str) -> str:
+    failure = _decoded(_stream_failure_resource, data.encode(), "a stream failure")
+    return _refusal_sentence(url, failure.problem)
 
 
 def _server_sent_data(stream: IO[bytes]) -> Iterator[str]:
@@ -461,8 +524,14 @@ def _described_problem(refusal: HTTPError) -> str:
         problem = ProblemResource.model_validate_json(answered)
     except ValidationError:
         return f"{refusal.url} answered {refusal.status} {refusal.reason}"
+    return _refusal_sentence(refusal.url, problem)
+
+
+def _refusal_sentence(url: str, problem: ProblemResource) -> str:
+    """One shape for a typed problem, whichever channel the service wrote it on."""
+
     return (
-        f"{refusal.url} refused this: {problem.status} {problem.title} "
+        f"{url} refused this: {problem.status} {problem.title} "
         f"[{problem.type}] {problem.detail}"
     )
 
