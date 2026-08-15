@@ -6,7 +6,8 @@ from http import HTTPStatus
 import pytest
 from fastapi.testclient import TestClient
 
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
+from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import OPERATION_PROBLEMS
 from atelier2.api.problems import (
     PROBLEM_DEFINITIONS,

@@ -14,7 +14,8 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
+from atelier2.api.context import ApiPorts
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from tests.scenarios.api import api_limits, event_poll_backoff
 

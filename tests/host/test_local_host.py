@@ -29,7 +29,8 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
+from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
 from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
