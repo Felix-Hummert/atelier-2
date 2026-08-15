@@ -6,6 +6,32 @@ from enum import StrEnum
 from atelier2.contracts.agent_attempts import AgentAttemptState
 
 
+class NodeState(StrEnum):
+    """What a reader of a run is told about one node of that run.
+
+    Two axes flattened into one word, because a reader makes one display decision
+    per node: where the node stands in its lifecycle, and — once it stands still —
+    how it ended. Success has exactly one name here. Which fact proved it, a
+    durable event or the run having walked past the node, is provenance and is not
+    a state; carrying it as a second name is what left `done` and `completed`
+    side by side in the browser with no reader able to tell them apart.
+
+    The terminal names are the dispositions decision 0006 already settled, so a V3
+    execution inherits them rather than renaming them. `interrupted` is the one
+    name that decision does not carry: it is a durable, separately rendered ending
+    today, and naming it truthfully is worth more than a vocabulary that matches a
+    decision no execution has reached yet.
+    """
+
+    QUEUED = "queued"
+    WORKING = "working"
+    NEEDS_YOU = "needs_you"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+
+
 class PublicAgentAttemptState(StrEnum):
     """What a reader of a run is told about that run's current agent attempt."""
 
