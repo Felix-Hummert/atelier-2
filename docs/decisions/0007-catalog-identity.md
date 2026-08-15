@@ -1,28 +1,43 @@
 # ADR 0007: Named lineages own catalog identity above hash-true revisions
 
-- Status: PROPOSED — review closed, submitted for acceptance, not accepted, not
-  implemented
-- Date: 2026-08-14
+- Status: PROPOSED — round 4, reopened on the operator direction of 2026-08-15 and
+  resubmitted for review; not accepted, not implemented
+- Date: 2026-08-15
 - Depends on: [ADR 0001](0001-durable-runtime.md),
-  [ADR 0002](0002-exact-yaml-graph.md), [ADR 0006](0006-node-vocabulary.md), and
-  **ADR 0006 amendment A1** below, which acceptance of this record requires
+  [ADR 0002](0002-exact-yaml-graph.md), [ADR 0006](0006-node-vocabulary.md)
+  (ACCEPTED), and **ADR 0006 amendment A1** below, which acceptance of this record
+  requires and which amends an already accepted record
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   whose portable-declarative-file, live-and-versioned-configuration and
-  platform-ownership rules this record expresses and never re-decides
+  platform-ownership rules this record expresses and never re-decides, and the
+  **operator direction of 2026-08-15** on
+  [#22](https://github.com/FlexOr2/atelier-2/issues/22#issuecomment-5301973340):
+  the operator decides which agents and skills he has and where they come from,
+  files in git are the source of truth, atelier-2 imports rather than versioning in
+  parallel, and sharing is a future requirement
+- Consistent with: ADR 0009 (PROPOSED in PR #78, not yet on main), which owns the
+  product's one trust boundary; decision 2 states why a definition source adds no
+  second one
 - Answers: [#22](https://github.com/FlexOr2/atelier-2/issues/22)
 - Feeds: [#6](https://github.com/FlexOr2/atelier-2/issues/6) (the catalog, its
   publish gate and its precedence), [#8](https://github.com/FlexOr2/atelier-2/issues/8)
-  (the scorecard), and ADR 0006's reference binding, whose slice V3-4 builds
-  against the port in decision 7
+  (the scorecard and the consumption measurements folded into it),
+  [#66](https://github.com/FlexOr2/atelier-2/issues/66) (the authoring format, whose
+  reconstruction sentence decision 4 gives a durable home), and ADR 0006's reference
+  binding, whose slice V3-4 builds against the port in decision 9
 - Names, never decides: [#16](https://github.com/FlexOr2/atelier-2/issues/16) (sole
   schema-version owner), [#24](https://github.com/FlexOr2/atelier-2/issues/24) (platform
-  adapter), [#26](https://github.com/FlexOr2/atelier-2/issues/26) (budget)
-- Evidence: documentary. Read at `c972f70`: ADRs 0001–0006,
+  adapter), [#26](https://github.com/FlexOr2/atelier-2/issues/26) (budget),
+  [#79](https://github.com/FlexOr2/atelier-2/issues/79) (the queue, a consumer of
+  decision 8's precedence and never a second selector)
+- Evidence: documentary. Read at `b9c7796`: ADRs 0001–0006, 0008 and the 0009 draft,
   `src/atelier2/adapters/dbos/schema.py` (`SCHEMA_VERSION = 7`, `workflow_revisions`,
   `auth_profile_revisions`), `src/atelier2/contracts/agents.py`
   (`auth-profile-revision/v1`), `src/atelier2/contracts/hashing.py` (`frame`),
-  `src/atelier2/application/publish_workflow_revision.py`, and issues #1, #6, #8, #16,
-  #22, #24. No code changed, no gate run; nothing below is implemented.
+  `src/atelier2/application/publish_workflow_revision.py`, and at
+  `origin/fable/agent-markdown` `1ceaef73` the landed authoring format
+  `src/atelier2/contracts/agent_definitions.py` with its stated gap; issues #1, #6, #8,
+  #16, #22, #24, #66, #79. No code changed, no gate run; nothing below is implemented.
 
 ## Context
 
@@ -42,6 +57,18 @@ the catalog cannot copy it: `auth-profile-revision/v1` frames `profile_id` into 
 revision hash, so that series can never be renamed, while catalog entries must be.
 Identity is therefore **layered**, not embedded: a stable derived id below, a mutable
 display name above, joined by rows and not by bytes.
+
+Two further holes are open, and the operator named the first of them. **Nothing in the
+product says where a definition comes from.** A revision enters the store only by being
+typed into "Publish YAML", so the operator cannot answer which agents and skills he has,
+where they came from, or whether the file he edited is the one that runs — and sharing
+one has no mechanism at all. **And nothing in the store holds what a definition says.**
+The landed #66 authoring format parses an agent's name, description, model, tool
+declaration and system prompt out of one markdown file, but
+`agent_configuration_revision_for` can put only model, auth profile, executor and
+capability into a revision: two definitions differing solely in their prompt publish the
+same revision, pinned red by `test_todays_catalog_revision_cannot_tell_two_prompts_apart`
+and escalated to this record on #66. Decisions 2 and 4 close them.
 
 ## ADR 0006 amendment A1, required for acceptance
 
@@ -78,10 +105,13 @@ yield one lineage, which is the convergence import needs.
 `schema`, `deterministic_operation`, `adapter_operation`, `context_source`,
 `read_operation`, `profile`, `skill`, `tool`, `policy`, `budget_policy`, `retry_policy`,
 `cancellation_policy` — ADR 0006's registry list — plus this record's `scorecard_policy`,
-`selection_policy` and `admission_policy`; `auth_profile` is deliberately absent, and
-adding a token is an amendment. This closes the set of **registries**, not the kinds inside
-one: ADR 0006 leaves context-source, read-operation and schema kinds open and this record
-keeps them so.
+`selection_policy`, `admission_policy` and `agent_definition`; `auth_profile` is
+deliberately absent, and adding a token is an amendment. This closes the set of
+**registries**, not the kinds inside one: ADR 0006 leaves context-source, read-operation
+and schema kinds open and this record keeps them so. `agent_definition` is added for a
+named need and not for symmetry: #66's authored agent file must be admissible into a named
+lineage for the operator's library to exist at all, and ADR 0006's `profile`, `skill` and
+`tool` are three different things a definition is not.
 
 **What enters a hashed preimage is the stable lineage id; the mutable display name
 never does.** A persisted reference is `{ref: <lineage id>, revision: <revision hash>}`
@@ -99,6 +129,20 @@ learns the entry was renamed instead of getting a silent hit or a silent miss. T
 no `to` column to close, which is what makes the history append-only in fact rather than
 only in wording.
 
+**A name is authored wherever its content is authored**, so that one writer owns it. For a
+lineage whose members come from a definition source (decision 2), the name is the one the
+authored file declares: admitting a member appends the alias event carrying that name with
+the intake as actor, so an upstream rename becomes a real attributed catalog event rather
+than a silent one, and the catalog offers no second rename beside it. For a lineage
+authored directly in the catalog, renaming stays a cockpit act, as it is today. Either
+way the history is the same shape and the refusals below are the same, which is why an
+authored name outside this record's name syntax is refused **at admission**, naming the
+file — the authoring format accepts any non-empty text and is not narrowed here. The
+never-reassigned rule below therefore becomes reachable by an ordinary file operation:
+reusing a retired lineage's name in a new file is refused **naming both**, so the operator
+renames the file or admits into the existing lineage, and never discovers later that two
+histories answer to one name.
+
 **Retirement is the same shape**: one **retirement event** `(lineage, state token, actor,
 activated_at)` per change, the current state being the latest event's token. `retired` is
 today's only token, so a lineage is retired exactly when an event exists; a reinstatement
@@ -114,22 +158,131 @@ caller mislabel an input and receive a wrong hit where the syntactic rule can on
 Admitting identical bytes into a **second** lineage of one kind is refused, or #8's rule
 1 falls to copy-and-rename. A cosmetic edit still founds a new lineage and content
 identity cannot see the difference; the defense is visibility, not detection — that
-lineage starts at `n = 0`, below #8's minimum-n, and decision 6's gate makes its author
+lineage starts at `n = 0`, below #8's minimum-n, and decision 8's gate makes its author
 name the nearest existing entry.
 
-### 2. Content publication and catalog admission are two states, two commands
+### 2. Authoring lives in operator-owned sources; the catalog takes content in and never writes back
 
-Conflating them contradicted ADR 0006's publishable-before-executable staging.
+The operator's two questions — *which* agents and skills he has, and *where they come
+from* — have no owner today. This decision gives them one, and it does so by **not**
+building a second version control.
+
+A **definition source** is a configured origin of authored content the operator owns:
+`(source id, source kind token, location, ref, credential reference, selections)`, where a
+**selection** is `(path pattern, kind token)`. The source kind token is closed to **`git`**
+in V1; `marketplace` is named as the future token and adding one is an amendment, because
+nothing calls it today and a source type without a caller is architecture on speculation. A
+private source names its credential **by reference, never as material**, exactly as ADR
+0009 requires of every credential in the product.
+
+**A file's kind is configured, never inferred.** The operator says which paths hold agent
+definitions, which hold skills and which hold workflow documents; a file matching two
+selections is refused naming both rather than resolved by precedence. Guessing a kind from
+an extension or from a file's contents would let a repository decide which registry its
+content enters, which is exactly the authority a configured source is not given.
+
+**Authoring happens in the file, and atelier-2 never writes a source.** Git already owns
+versioning, diff, review and sharing; a parallel history inside the catalog would rebuild
+a solved problem without any of that tooling, and it would put a second writer on the one
+fact — what a definition says — that decision 6 already assigns to the bytes. The catalog
+takes content **in**; it does not edit it, and the cockpit offers no edit-and-commit path
+back. Editing a definition means editing its file.
+
+The operator's direction calls this importing. This record says **intake** for it, because
+*import* already names decision 6's store-to-store transport, and the two acts have
+different inputs and different refusals; they are never the same command.
+
+**Three acts, three recorded facts, and only the first may be automatic.**
+
+- **Scan** reads a configured source at its current position and computes the content hash
+  of each selected file. It writes no revision and admits nothing, so it may run on a
+  schedule or on demand — reading is the only part of this chain that risks nothing.
+- **Intake** publishes one scanned file as an immutable revision (decision 3) and records
+  `(revision hash, source id, path, exact source position, actor, taken_at)`. A git source
+  is configured with a branch or a ref, but the record pins the **exact commit** read, so
+  which upstream state produced a revision stays answerable after the branch has moved.
+- **Admission** binds that revision into a lineage under decision 8's gate, unchanged. One
+  operator action may perform intake and admission together; they remain two recorded
+  facts and two refusals.
+
+**Intake copies bytes.** The store holds a taken-in definition as an ordinary immutable
+revision, and a source is never a runtime dependency: nothing is read from a source at run
+time, and a deleted or unreachable upstream repository cannot invalidate a receipt, which
+is what ADR 0001/0002 reconstruction requires.
+
+**A path is the continuity of a source-owned lineage.** A lineage id derives from its
+founding revision (decision 1), so a second revision joins a lineage only by being admitted
+into it, and something must say which. For source-owned content that is the path: successive
+intakes from the same `(source id, path)` are admitted into the lineage the previous intake
+from that path joined. **The declared name establishes nothing**, because a name is a
+mutable label and reading identity out of it would reintroduce the rename-forks-identity
+failure this record exists to prevent. Consequence, accepted and visible: moving or renaming
+a file is a new path with no prior admission, and the catalog offers no lineage for it
+rather than guessing — the operator admits it into the existing lineage himself, an ordinary
+admission with an ordinary actor.
+
+**Sync semantics: publication is explicit, and drift is visible.** Drift is derived, never a
+state anyone sets, and it is two independent readings that mirror this record's own
+publication-versus-admission split:
+
+- **source against store** — `in_sync` when the source's current content hash at a selected
+  path equals the latest revision intaken from that path, `source_ahead` when it does not,
+  `source_absent` when the file is gone or no longer selected. There is no fourth reading and
+  no "store ahead", because the catalog never writes a source.
+- **store against catalog** — whether that latest intaken revision is `admitted` into its
+  lineage or `taken_not_admitted`, which is decision 3's two states read through one path.
+
+A scan's observation of the source may be cached so the library reads without touching the
+network, but it is an **observation, not a fact**: it can be dropped and rebuilt by
+rescanning, and nothing durable depends on it. `source_absent` removes no revision and
+retires no lineage — a revision already taken in is immutable, and retirement stays decision
+1's explicit attributed event.
+
+The rejected alternative is **auto-intake on change**, and it is rejected on a bound stated
+honestly rather than an exaggerated one. It would *not* rebind a running or an already
+published run configuration — those pin hashes, and #1 forbids anything else. What it
+would do is put content the operator has never seen one `resolve_name(…, head)` away from
+his next authored run, and write a durable revision no actor can be named for. An
+unattributed durable write is exactly what ADR 0009 forbids at the boundary it owns, and
+"the poller did it" is not an actor. Explicit publication costs one operator action per
+upstream change; the drift reading is what keeps that action from being forgotten.
+
+**A source is a content trust decision, and it creates no second trust boundary.** ADR
+0009's one boundary is service ↔ runner, and a source crosses nothing: it does not
+authenticate, does not execute, and writes no durable truth. Everything it offers is inert
+bytes until an attributed intake, and inert for execution until admission — so a foreign
+repository cannot make anything bindable by pushing, and a foreign definition passes the
+same gate, the same admission refusals and the same attribution as one the operator typed
+himself. Configuring the source is where the operator decides to trust its content, and it
+is his decision to record, not the catalog's to infer.
+
+**Sharing, in V1, is a shared repository.** Sharing an agent, a skill or a whole workflow
+means pushing its file to a repository the other operator configures as a source; git is
+already the mechanism and nothing is built for it. Decision 6's complete-store export is
+deliberately *not* that channel: it is the catalog's transport and carries measurements and
+lineage, and sharing a definition must not hand another operator a balance.
+
+**The library is a view, never a silo.** It holds no fact of its own — display name,
+description, kind, source and position, head revision and drift are owned here, the
+scorecard by #8 — and it is a view over sources *and* revisions together, so an entry the
+operator can see but has not taken in is visible as such rather than absent. Scanning and
+drift belong to the source adapter; they are not operations of decision 9's resolution
+port, which stays at three.
+
+### 3. Content publication and catalog admission are two states, two commands
+
+Conflating them contradicted ADR 0006's publishable-before-executable staging. Intake
+(decision 2) is a caller of publication, never a third state beside it.
 
 - **Content publication** writes immutable revision bytes keyed by their hash. It exists
   today (`publish_workflow_revision`), requires no lineage, and per ADR 0006 is permitted
   before the runtime can execute the revision and before the catalog exists at all. It is
   never refused for lack of a catalog.
 - **Catalog admission** binds an already-published revision into a lineage at a dense
-  position, under decision 6's gate. It is optional until the catalog exists; once it does,
+  position, under decision 8's gate. It is optional until the catalog exists; once it does,
   one published immutable revision of kind `admission_policy` names, per kind, whether an
   authored reference of that kind must bind an admitted member. It is made current exactly
-  as decision 6's selection revision is — one entry in the append-only, attributed
+  as decision 8's selection revision is — one entry in the append-only, attributed
   `catalog_policy_activations` — so the policy is live and versioned rather than a constant,
   and #6's "never a throwaway object" is that policy, not a hidden rule inside publication.
 
@@ -142,7 +295,44 @@ revision with no lineage is honestly **published, not admitted** — the state o
 historical V7 revision, which `resolve` returns forever and only `resolve_reference`
 refuses, because only there does a `ref` claim a membership.
 
-### 3. Measurements are an append-only ledger with cross-store-stable identity
+### 4. What a definition says lives in its bytes and in nothing beside them
+
+This is the durable home #66 has no owner for, and it is the same rule ADR 0002 already
+applies to a workflow document, extended to every kind the catalog names.
+
+**The authored file's exact bytes are the published revision.** An agent definition, a
+skill and a profile enter the store the way a workflow document enters it today: exact
+UTF-8 bytes, SHA-256 identity, immutable, never re-parsed for identity. Reconstruction is
+therefore reading the bytes by hash and parsing them with the authoring format's own
+parser — the definition comes back byte-identically, including its system prompt and its
+tool declaration, and #66's reconstruction sentence becomes provable here rather than
+narrowed there.
+
+**The contract shape, named; the columns are #16's.** One content shape keyed by revision
+hash, carrying the exact bytes and the **kind token** of the registry the revision belongs
+to. `workflow_revisions(revision_hash, document)` is that shape today for exactly one
+kind; carrying the kind is the schema consequence, and which store version takes it is
+#16's alone. Nothing here decides a column.
+
+**Per-attribute columns are refused.** A `name`, `description`, `prompt` or `tools` column
+beside the bytes would make the store a second authority over what a definition says, and
+the first disagreement between a column and its bytes would have no arbiter. Every field
+the library shows is parsed from the bytes; anything stored beside them is a projection
+that can be dropped and rebuilt, never a fact.
+
+**The deployment half stays separate, and that is what makes a file portable.** Which
+model, which auth profile and which executor a deployment runs an agent under is authored
+in no file and stays the agent-configuration revision's, which references the definition
+revision by hash. A definition carries no deployment fact, so it can be shared into another
+operator's atelier — decision 2's sharing — without carrying this one's credentials.
+
+**This adds no binding path.** An `agent_definition` revision is bound where ADR 0006
+already binds a role: by the run-start command, to one exact revision hash. It carries no
+`ref` in any document, so it binds through the lineage-free `resolve` of decision 9, and
+its lineage exists for the library, the scorecard and the operator's rename — not for
+reference resolution.
+
+### 5. Measurements are an append-only ledger with cross-store-stable identity
 
 Balance data persists as an append-only ledger, never a mutable aggregate. Each entry
 names the lineage and revision the run bound, the measurement kind, its value, and its
@@ -171,13 +361,19 @@ lineage, per #8 rule 1. Two exclusions are ledger facts rather than reader filte
 entry from a run with operator intervention (#9), and a run whose difficulty covariate is
 absent, marked `covariate_absent` rather than counted at an invented default.
 
+#8's consumption measurements — tokens, duration and cost per run — ride this ledger
+unchanged, one entry per kind per terminated run, sourced `run_terminal` from ADR 0008's
+recorded meter. **Which kinds exist, and how a subscription's consumption is labeled
+rather than priced, stay #8's and ADR 0008's**; this record decides only that they need no
+second store and no second identity.
+
 **Surviving a schema cutover: the declaration is `reset`.** ADR 0001 gives no in-place
 migration, so measurements survive only by explicit export and import, and what is not
 exported is reset visibly: the scorecard reports `n` from this store and names the
 cutover as why the count begins there. No gaming hole, because a cutover resets the whole
 catalog at once and cannot be aimed at one entry.
 
-### 4. The store is the catalog, and the only file form is a complete export
+### 6. The store is the catalog, and the only file form is a complete export
 
 **Content truth** — what a revision says — is the exact bytes: republished into any store
 they yield the same SHA-256, so a definition travels as a file, as #1 requires.
@@ -185,11 +381,16 @@ they yield the same SHA-256, so a definition travels as a file, as #1 requires.
 rows, because a git-file catalog would have to write #8's runtime measurements back on
 every run: a second durable writer with none of the store's transactions. **The revision
 hash is the join, and neither side may state the other's fact.** At run time nothing is
-read from a file; a file enters only through an explicit import command.
+read from a file; a file enters only through an explicit intake or import command.
+
+Decision 2 gives the file side its owner and sharpens this split rather than reopening it:
+**git owns authored content and its history, the store owns execution identity and every
+relational and runtime fact.** Each has exactly one writer, and the intake record is the
+only row that names both.
 
 **A transport therefore carries exactly one form: the complete catalog of one store
 root.** Selective bundles are removed — they were the hole in the anti-gaming claim, since
-a bundle chosen to omit one lineage's measurements is exactly the aimed reset decision 3
+a bundle chosen to omit one lineage's measurements is exactly the aimed reset decision 5
 refuses and no manifest check can tell it from an honest partial store.
 
 An export is one file per revision, holding its exact bytes and named by its hash — never
@@ -212,9 +413,10 @@ else: an id or hash as its 64 lowercase hexadecimal characters, a kind or state 
 literal token, a `revision_number` as its shortest unsigned decimal, a timestamp as RFC
 3339 in UTC at second precision. The field order is complete and normative:
 
-- `catalog-export-manifest/v1`: the lineage sequence, then the policy-activation sequence
-  — lineages ordered by ascending lineage id, activations by ascending
-  `(policy kind, activated_at, revision hash)`.
+- `catalog-export-manifest/v1`: the lineage sequence, then the policy-activation sequence,
+  then the source-intake sequence — lineages ordered by ascending lineage id, activations by
+  ascending `(policy kind, activated_at, revision hash)`, intakes by ascending
+  `(revision hash, source id, path, source position)`.
 - `catalog-lineage-entry/v1`: lineage id, kind, founding revision hash, then four sequences
   in this order — aliases and retirements in activation order, members by ascending
   `revision_number`, measurements by ascending measurement id.
@@ -223,6 +425,16 @@ literal token, a `revision_number` as its shortest unsigned decimal, a timestamp
   `catalog-policy-activation-entry/v1`: policy kind, revision hash, actor, activated_at.
 - `catalog-measurement-entry/v1`: measurement id, revision hash, measurement kind, value,
   source token, evidence reference — zero-length exactly when the source carries none.
+- `catalog-source-intake-entry/v1`: revision hash, source id, path, source position, actor,
+  taken_at. Intake entries are top-level because an intake is about a revision, not about a
+  lineage, and a published-not-admitted revision has no lineage to sit under.
+
+**The source configuration itself is never exported.** Its location and its credential
+reference are the receiving operator's business in neither direction, and an exported
+source id resolves to nothing there. The intake entry travels anyway, as **evidence of
+provenance and not as a resolvable pointer**: it answers where a revision came from, which
+is the operator's own question, and it makes drift recomputable in the store that has the
+source.
 
 **Import is explicit, byte-exact, all-or-nothing, refuses rather than merges, and validates
 entirely before it writes.** The sequence is fixed:
@@ -238,12 +450,14 @@ entirely before it writes.** The sequence is fixed:
    retirement history, policy activation or measurement is refused naming both sides and
    the first diverging position — the display name is the operator's handle, and silently
    aliasing it is the lie this record exists to prevent;
-5. **only then does the first write happen, in one write transaction.**
+5. every intake entry is checked to name a revision the manifest carries, refused naming
+   both, so provenance can never arrive for bytes the transport did not;
+6. **only then does the first write happen, in one write transaction.**
 
 A refusal at any step leaves the store byte-identical to its pre-import state. An import
 the store already holds, whole or as a prefix, converges without a write.
 
-### 5. Auth profiles are excluded from this generalization
+### 7. Auth profiles are excluded from this generalization
 
 `auth_profile_revisions` is not folded in and keeps its embedded
 `(profile_id, revision_number)` shape. Its revision hash is framed over
@@ -255,7 +469,7 @@ its own successor-identity contract — the old-to-new hash mapping, what happen
 referencing agent-configuration and run configuration revisions, and whether history is
 reconstructed or reset.
 
-### 6. The publish gate and the full precedence, both versioned
+### 8. The publish gate and the full precedence, both versioned
 
 **The gate is #6 Rev. 2 unchanged: every newly authored revision** — not only a founding
 one — **names the nearest existing catalog entry and justifies why it does not suffice.**
@@ -290,9 +504,12 @@ hash and it is taken as recorded; the taxonomy and default layers hold a lineage
 resolve it once through `resolve_name(kind, lineage_id, head)` at that moment, so the head a
 run binds is fixed before its run configuration revision is published and can never move
 under it. There is no second result shape and no layer that hands the caller a lineage to
-finish.
+finish. #79's queue assigns a workflow to a work item through exactly this precedence and
+adds no second selector: it may author the item binding the platform then owns, and its
+readiness and automation rules are its own, but which workflow a type gets is the
+selection revision's answer or it is two answers.
 
-### 7. The resolution port ADR 0006's reference binding builds against
+### 9. The resolution port ADR 0006's reference binding builds against
 
 Three operations, and which caller uses which is part of the contract.
 
@@ -317,11 +534,20 @@ how #1's and ADR 0006's no-silent-rebinding invariant survives a moving head.
 
 ### Refusals
 
+- **Source configuration:** a source kind token outside the closed set; a selection naming a
+  kind token outside decision 1's closed set; a source carrying credential material instead
+  of a credential reference (ADR 0009).
+- **Scan and intake:** a file matching two selections, naming both; a scanned position that
+  no longer resolves in the source, naming it; bytes that changed between the scan and the
+  intake, naming both content hashes, because an intake publishes exactly what was scanned
+  and never what has since appeared; a path outside every selection.
 - **Admission:** a revision not published; a name outside 1–128 characters of
-  `[a-z][a-z0-9._-]*`; a name of exactly 64 lowercase hexadecimal characters, which would
-  be indistinguishable from a lineage id; a name currently or previously held by another
-  lineage of the same kind, naming both; bytes owned by another lineage of the same kind,
-  naming it; a missing #6 Rev. 2 justification; a retired lineage.
+  `[a-z][a-z0-9._-]*`, and for a source-owned lineage that is the **authored** name,
+  refused naming the file; a name of exactly 64 lowercase hexadecimal characters, which
+  would be indistinguishable from a lineage id; a name currently or previously held by
+  another lineage of the same kind, naming both; bytes owned by another lineage of the same
+  kind, naming it; a missing #6 Rev. 2 justification; a retired lineage; a rename requested
+  in the catalog for a source-owned lineage, naming the source that owns the name.
 - **Binding:** a reference whose revision is not an admitted member of the lineage its
   `ref` names, naming both — under every admission policy, permissive or not.
 - **Selection and policy activation:** a selection revision naming a retired lineage, a
@@ -332,20 +558,31 @@ how #1's and ADR 0006's no-silent-rebinding invariant survives a moving head.
   hash claimed by two lineages of one kind within the manifest, or against the store; a
   lineage whose membership, alias history, retirement history, policy activation or
   measurement diverges, naming both sides and the first diverging position; a measurement
-  entry duplicating an existing derived id in **any** field, naming the first that differs.
+  entry duplicating an existing derived id in **any** field, naming the first that differs;
+  an intake entry naming a revision the manifest does not carry, naming both.
   A refused import writes nothing.
 
 ## Store dimensions and their migration cost
 
-Named honestly, per #16. **Six durable shapes, every one append-only, not one updated in
+Named honestly, per #16. **Seven durable shapes, every one append-only, not one updated in
 place:** `catalog_lineages` (id, kind, founding revision hash — no mutable column at all),
 `catalog_lineage_aliases` and `catalog_lineage_retirements` (decision 1's two attributed
 event histories), `catalog_lineage_members` (`(lineage, revision_number, revision_hash)`,
-both constraints), `catalog_measurements` (the ledger), and `catalog_policy_activations`,
-the single owner making the selection, scorecard and admission revisions current. The sixth
-shape is the price of removing the last in-place update, and it pays for itself by giving
-the scorecard policy the activation owner it otherwise lacked. Nothing retires
-`auth_profile_revisions` (decision 5).
+both constraints), `catalog_measurements` (the ledger), `catalog_policy_activations`,
+the single owner making the selection, scorecard and admission revisions current, and
+`catalog_source_intakes` (decision 2's provenance record, unique on
+`(revision hash, source id, path, source position)`). The sixth shape is the price of
+removing the last in-place update, and it pays for itself by giving the scorecard policy
+the activation owner it otherwise lacked. The seventh is the price of the operator's own
+question — without it "where does this come from" has no answer and drift cannot be
+computed at all. Nothing retires `auth_profile_revisions` (decision 7).
+
+Two further consequences are named here and decided nowhere else in this record. The
+revision-bytes shape gains the **kind token** decision 4 requires, so one content store
+serves every registry rather than one table per kind. And a **definition source is
+configuration, not catalog data** — it varies by operator and deployment, it carries a
+credential reference, and it is therefore #1's configuration surface, never a store shape
+and never exported.
 
 **The cost is one cutover, and it is a cutover ADR 0006 already requires.** None of these
 may enter #16's preserving V7→V8 or V8→V9 phases: a preserving migration cannot invent a
@@ -364,6 +601,16 @@ lineages of one kind; a re-readable ranking costs computing the scorecard on rea
 an event history rather than a column read; ADR 0006 pays amendment A1 and one added port
 operation; and a cosmetic fork can still start a fresh balance, made visible here rather
 than prevented.
+
+The source model has its own prices. **Keeping content up to date costs one operator action
+per upstream change** — the drift reading is what makes forgetting visible, not what
+removes the action. **Authoring moves out of the cockpit** for anything a source owns:
+"Publish YAML" stays the path for catalog-authored entries, and so does the catalog rename,
+so the product carries two authoring paths with one rule deciding which applies. **Sharing
+gains a mechanism and no automation**: a shared repository is the whole of V1, a marketplace
+is a source kind nobody has written, and neither is a channel for measurements. And a
+definition is only as trustworthy as the source the operator configured — this record makes
+the origin visible and attributable, it does not judge the content.
 
 ## Required proofs before acceptance
 
@@ -419,6 +666,43 @@ than prevented.
   name or revision uniqueness, or at divergence leaves the store byte-identical to its
   pre-import state — proven over the whole store root before and after, not only over the
   lineage the refusal names.
+- **Sources, scan and drift:** scanning a configured source publishes nothing and admits
+  nothing — proven over the whole store root before and after; the source reading is
+  `in_sync` after an intake, `source_ahead` once the file changes, and `source_absent` once
+  it is removed or deselected, while the catalog reading is `taken_not_admitted` until
+  admission and `admitted` after it, each proven independently of the other; a
+  `source_absent` file leaves its revision and its lineage untouched; and dropping the
+  cached observation and rescanning yields the identical readings.
+- **Path continuity:** a second intake from the same `(source id, path)` is admitted into
+  the lineage the first joined and becomes its head; the same content at a different path
+  founds no lineage by itself and is offered for explicit admission instead; and a file
+  whose declared name changed keeps its lineage, while a file that only moved does not
+  acquire one silently.
+- **Configured kind:** a file matching two selections is refused naming both, and a scanned
+  file enters exactly the registry its selection names — never one inferred from its
+  extension or its contents.
+- **The catalog never writes a source:** a configured source's working tree and its refs
+  are byte-identical after a scan, an intake, an admission, a rename attempt and an export.
+- **Intake:** an intake publishes exactly the scanned bytes and is refused naming both
+  content hashes when the file changed in between; the published revision carries the exact
+  source position it was read at, and still resolves after that branch has moved and after
+  the source is unreachable; the same file taken from two sources converges to one revision
+  carrying two intake records.
+- **Nothing a source says is executable by itself:** a revision taken in but not admitted is
+  refused by `resolve_reference` and never selected by decision 8's precedence; admission
+  requires a named actor and the #6 Rev. 2 justification whether the bytes were authored in
+  the cockpit or pushed by a stranger.
+- **A source-owned name is the authored name:** admitting a member appends one alias event
+  carrying the file's declared name with the intake as actor; a catalog rename of that
+  lineage is refused naming the source; and an authored name outside the name syntax, or of
+  exactly 64 hexadecimal characters, is refused at admission naming the file.
+- **Reconstruction (#66):** a published `agent_definition` revision parses back to the
+  identical definition including its system prompt and its tool declaration, and two
+  definitions differing only in their prompt publish two distinct revisions — the case
+  `test_todays_catalog_revision_cannot_tell_two_prompts_apart` pins as impossible today.
+- Export then import preserves every intake record; an intake entry for a revision the
+  manifest does not carry is refused naming both; and no source configuration leaves the
+  store.
 - A scorecard is identical after a restart, changes when the policy revision changes and
   not otherwise, names it, and excludes intervention and `covariate_absent` entries; a
   platform fact arriving after the run terminated folds in; the same fact observed twice,
@@ -431,10 +715,18 @@ than prevented.
 
 The document surface, its bindings and its refusals beyond amendment A1 (ADR 0006); the
 scheduler and executor; how a difficulty covariate is derived and which measurements #8
-finally names; any successor identity for auth profiles (decision 5); platform addressing,
+finally names; any successor identity for auth profiles (decision 7); platform addressing,
 authorization, event observation and the item-level binding's storage (#24); budget units
 (#26); which schema version carries the cutover (#16); project isolation (#23); and any
 conversational authoring surface above the catalog (#7).
+
+From decision 2, four things are deliberately not decided. **How a git source is read** —
+clone or fetch, protocol, scan cadence, rate limits — is implementation under this record,
+not a decision it makes. **The marketplace source type** is named as a future token and
+designed nowhere. **The library's layout and interaction** are the cockpit's; this record
+fixes only which facts it may show and who owns each. And **the queue's triage, readiness
+and automation rules** are #79's, which consumes decision 8's precedence rather than
+extending it.
 
 ## Supersedes
 
