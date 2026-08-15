@@ -29,7 +29,11 @@ arbitrary bytes never pass through UTF-8 decoding. The preexisting V1 raw JSON
 and named OpenAPI components are byte-frozen; adding V2 does not silently widen
 them. The SSE envelope carries only `id` and `data`: omitting the transport
 `event:` field makes every frame a default `message`, while `data.event` is the
-sole domain discriminant.
+sole domain discriminant. The stream has exactly two frame shapes under that
+one envelope: a durable event, which carries its cursor as `id`, and the
+terminal failure frame `STREAM_FAILED`, which carries a problem body and no
+`id`, because a resume cursor on a refusal would invite the browser to
+reconnect into the same refusal forever.
 
 Every mutation delegates to the runtime owner and decides created-versus-
 existing from the row written in that same transaction. Only a newly created
@@ -37,10 +41,10 @@ command schedules continuation. Starting a run verifies its published revision
 inside the start transaction. Reads use short-lived SQLite connections behind
 separate bounded admission for ordinary control work and event-page polling.
 Admission has its own injected wait deadline; refusal is a pre-header 503 for
-control work and closes an already-started stream. Database timing has three
-explicit owners rather than one misleading clock: the composed SQLAlchemy engine
-bounds pool checkout, the query adapter bounds SQLite lock waiting, and its
-progress deadline starts only after checkout. None is described as cancelling a
+control work and ends an already-started stream regularly. Database timing has
+three explicit owners rather than one misleading clock: the composed SQLAlchemy
+engine bounds pool checkout, the query adapter bounds SQLite lock waiting, and
+its progress deadline starts only after checkout. None is described as cancelling a
 running thread. An idle stream backs off deterministically to a configured
 ceiling and resets that delay after progress. Cancellation keeps the applicable
 bound occupied until the underlying blocking durable call has actually returned.
@@ -63,11 +67,19 @@ workflow graphs, response projections, and concurrent query work. Durable
 control-read projections outside those limits have their encoded workflow bytes
 refused before YAML parsing and are refused before serialization as temporarily
 unavailable; their durable rows are not changed.
-After an SSE response has started, an invalid or oversized durable event closes
-the stream without inventing an event. Errors are closed RFC 9457
-`application/problem+json` variants. The generated OpenAPI 3.1 document is
-built and validated eagerly during application construction and adds a
-documented extension for the closed SSE `id` and `data` contract.
+After an SSE response has started, the same failures the REST surface names are
+named in the stream: a corrupt or unprojectable durable row, a durable row
+outside the configured projection limits, and a port that breaks its page
+contract each end the stream with a terminal failure frame carrying the problem
+body that surface would have answered. Only backpressure and transient store
+unavailability end the stream regularly, because a client's own reconnect is
+the correct answer to both, and a client that reconnects into a permanent
+refusal would never be told. Errors are closed RFC 9457
+`application/problem+json` variants on both paths. The generated OpenAPI 3.1
+document is built and validated eagerly during application construction and adds
+a documented extension naming both SSE frame shapes. The published failure frame
+promises exactly the problems the stream can speak, not the open problem shape,
+so it never offers a consumer a body the closed vocabulary would refuse.
 Streaming uses FastAPI's public `EventSourceResponse` and `ServerSentEvent`
 mechanisms.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import cast
 
 from fastapi.testclient import TestClient
 
@@ -17,6 +18,18 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.limits import ApiLimits
 from atelier2.api.stream import EventPollBackoff
+from atelier2.ports.agent_configurations import AgentConfigurationCatalog
+from atelier2.ports.durable_runs import (
+    DurablePublishedRunStarter,
+    TransactionalWaitAnswerer,
+)
+from atelier2.ports.effects import TransactionalEffectReconcileCommander
+from atelier2.ports.run_events import RunEventQueries
+from atelier2.ports.run_queries import RunQueries
+from atelier2.ports.workflow_revisions import (
+    WorkflowRevisionPublisher,
+    WorkflowRevisionQueries,
+)
 
 RECONCILIATION_REVISION_HASH = (
     "c93767cc7790bdb39258bb6d9bdfb3168218705038932119e6628c6312c6e34e"
@@ -211,6 +224,36 @@ def api_limits(**changes: int) -> ApiLimits:
 
 def event_poll_backoff() -> EventPollBackoff:
     return EventPollBackoff(0.01, 0.25, 2)
+
+
+def event_stream_client(queries: RunEventQueries) -> TestClient:
+    """The composed HTTP boundary in front of one event store and nothing else.
+
+    What the event endpoint answers is a property of the composed server, so a
+    test that claims an HTTP status, a problem body, or stream bytes asks for
+    it here instead of calling the generator by hand.
+    """
+
+    unused = object()
+    return TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=ApiPorts(
+                workflow_revision_publisher=cast(WorkflowRevisionPublisher, unused),
+                published_run_starter=cast(DurablePublishedRunStarter, unused),
+                wait_answerer=cast(TransactionalWaitAnswerer, unused),
+                reconcile_commander=cast(TransactionalEffectReconcileCommander, unused),
+                workflow_revision_queries=cast(WorkflowRevisionQueries, unused),
+                run_queries=cast(RunQueries, unused),
+                run_event_queries=queries,
+                workflow_document_parser=parse_workflow_document,
+                agent_configuration_catalog=cast(AgentConfigurationCatalog, unused),
+            ),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
 
 
 def durable_api_client(runtime: DbosRuntime) -> TestClient:

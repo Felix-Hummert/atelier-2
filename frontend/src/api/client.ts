@@ -577,7 +577,15 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant("internal-error", problemDefinitions["internal-error"])
 ]);
 
+const streamFailureSchema = z
+  .object({ event: z.literal("STREAM_FAILED"), problem: problemSchema })
+  .strict();
+
+const streamFrameSchema = z.union([streamFailureSchema, runEventSchema]);
+
 export type Problem = z.infer<typeof problemSchema>;
+export type StreamFailure = z.infer<typeof streamFailureSchema>;
+export type StreamFrame = z.infer<typeof streamFrameSchema>;
 export type Run = z.infer<typeof runSchema>;
 export type RunV1 = z.infer<typeof runV1Schema>;
 export type RunV2 = z.infer<typeof runV2Schema>;
@@ -794,6 +802,14 @@ export function decodeRun(value: unknown): Run {
 
 export function decodeRunEvent(value: unknown): RunEvent {
   return runEventSchema.parse(value);
+}
+
+export function decodeStreamFrame(value: unknown): StreamFrame {
+  return streamFrameSchema.parse(value);
+}
+
+export function isStreamFailure(frame: StreamFrame): frame is StreamFailure {
+  return frame.event === "STREAM_FAILED";
 }
 
 export function decodeWorkflowRevisionDetail(value: unknown): WorkflowRevisionDetail {

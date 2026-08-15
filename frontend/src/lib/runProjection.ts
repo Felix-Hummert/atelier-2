@@ -1,10 +1,12 @@
 import {
   decodeCanonicalBase64,
-  decodeRunEvent,
+  decodeStreamFrame,
+  isStreamFailure,
   type Problem,
   type Run,
   type RunEvent,
   type RunV2,
+  type StreamFrame,
   type WorkflowGraph,
   type WorkflowNode
 } from "../api/client";
@@ -20,7 +22,12 @@ export interface RetainedResource<T> {
   request: RequestState;
 }
 
-export type ConnectionState = "connecting" | "live" | "reconnecting" | "complete";
+export type ConnectionState =
+  | "connecting"
+  | "live"
+  | "reconnecting"
+  | "complete"
+  | "failed";
 export type ProtocolProblem =
   | { type: "decoder" }
   | { type: "sequence_gap"; expected: number; received: number }
@@ -39,6 +46,7 @@ export interface StreamProjection {
   last_sequence: number;
   connection: ConnectionState;
   protocol_problem: ProtocolProblem | null;
+  stream_failure: Problem | null;
   payload_bytes_by_cursor: ReadonlyMap<string, Uint8Array>;
   agent_outputs_by_cursor: ReadonlyMap<string, AgentOutputProjection>;
 }
@@ -94,6 +102,7 @@ export function streamProjection(
     last_sequence: 0,
     connection: "connecting",
     protocol_problem: null,
+    stream_failure: null,
     payload_bytes_by_cursor: new Map(),
     agent_outputs_by_cursor: new Map()
   };
@@ -113,7 +122,8 @@ export function restartStreamProjection(
   return {
     ...projection,
     connection: "connecting",
-    protocol_problem: null
+    protocol_problem: null,
+    stream_failure: null
   };
 }
 
@@ -135,18 +145,27 @@ export function markComplete(projection: StreamProjection): StreamProjection {
   return { ...projection, connection: "complete" };
 }
 
+export function markFailed(
+  projection: StreamProjection,
+  problem: Problem | null
+): StreamProjection {
+  return { ...projection, connection: "failed", stream_failure: problem };
+}
+
 export async function decodeAndApplyDurableEvent(
   projection: StreamProjection,
   rawData: string,
   graph?: WorkflowGraph
 ): Promise<StreamProjection> {
   if (projection.protocol_problem !== null) return projection;
-  let decoded: RunEvent;
+  let frame: StreamFrame;
   try {
-    decoded = decodeRunEvent(JSON.parse(rawData));
+    frame = decodeStreamFrame(JSON.parse(rawData));
   } catch {
     return { ...projection, protocol_problem: { type: "decoder" } };
   }
+  if (isStreamFailure(frame)) return markFailed(projection, frame.problem);
+  const decoded: RunEvent = frame;
   if (graph !== undefined && !eventMatchesGraph(decoded, graph)) {
     return { ...projection, protocol_problem: { type: "decoder" } };
   }

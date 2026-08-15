@@ -21,6 +21,7 @@ from atelier2.api.models import (
     AgentCompletedEventResourceV2,
     AgentFailedEventResourceV2,
     AgentInterruptedEventResourceV2,
+    StreamFailureResource,
     SubworkflowCompletedEventResource,
     SubworkflowCompletedEventResourceV2,
     WaitAnsweredEventResource,
@@ -35,6 +36,7 @@ from atelier2.api.references import (
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
+from atelier2.api.stream import STREAM_FAILURE_CODES
 from atelier2.contracts.executions import RunEventKind
 
 API_PREFIX = "/atelier/api/v1"
@@ -302,6 +304,26 @@ def _install_problem_responses(schema: dict[str, Any]) -> None:
             }
 
 
+def _stream_failure_component() -> dict[str, Any]:
+    """The failure frame, with its problem narrowed to the codes the stream emits.
+
+    The generated model would carry the open problem shape, which promises a
+    consumer bodies neither the stream nor the closed REST vocabulary can send.
+    """
+
+    generated = StreamFailureResource.model_json_schema(
+        mode="serialization", ref_template="#/components/schemas/{model}"
+    )
+    generated.pop("$defs", None)
+    generated["properties"]["problem"] = {
+        "oneOf": [
+            {"$ref": "#/components/schemas/" + _problem_component_name(code)}
+            for code in STREAM_FAILURE_CODES
+        ]
+    }
+    return generated
+
+
 def _install_event_components(schema: dict[str, Any]) -> None:
     components = schema.setdefault("components", {}).setdefault("schemas", {})
     for model in EVENT_MODELS:
@@ -349,6 +371,7 @@ def _install_event_components(schema: dict[str, Any]) -> None:
             {"$ref": "#/components/schemas/RunEventResourceV2"},
         ]
     }
+    components[StreamFailureResource.__name__] = _stream_failure_component()
     components["EventCursor"] = {
         "type": "string",
         "pattern": EVENT_CURSOR_PATTERN,
@@ -495,8 +518,13 @@ def _install_sse_contract(schema: dict[str, Any]) -> None:
         "text/event-stream": {
             "schema": {"type": "string"},
             "x-atelier2-sse-v1": {
-                "id": {"$ref": "#/components/schemas/EventCursor"},
-                "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
+                "durable_event": {
+                    "id": {"$ref": "#/components/schemas/EventCursor"},
+                    "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
+                },
+                "terminal_failure": {
+                    "data": {"$ref": "#/components/schemas/StreamFailureResource"}
+                },
             },
         }
     }

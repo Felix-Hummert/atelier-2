@@ -4,12 +4,10 @@ import asyncio
 import threading
 from typing import cast
 
-import pytest
 from httpx import ASGITransport, AsyncClient
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
-from atelier2.api.references import MAX_SIGNED_INT64
 from atelier2.api.stream import (
     BoundedQueryRunner,
     EventPollBackoff,
@@ -27,7 +25,6 @@ from atelier2.ports.durable_runs import (
 )
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.run_events import (
-    EventHistoryCorrupt,
     PersistedRunEvent,
     PrepareRunEventStreamResult,
     RunEventPage,
@@ -593,178 +590,5 @@ def test_cancelled_stream_starts_no_next_query_and_blocked_query_closes_once() -
         assert queries.closes == 1
         await asyncio.sleep(0.03)
         assert queries.calls == 1
-
-    asyncio.run(scenario())
-
-
-def test_post_header_event_history_corruption_closes_without_synthetic_event() -> None:
-    class CorruptQueries:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def read_run_event_page(
-            self,
-            run_id: RunId,
-            after_sequence: int,
-            limit: int,
-            projection_limit: object | None = None,
-        ) -> EventHistoryCorrupt:
-            del run_id, after_sequence, limit
-            self.calls += 1
-            return EventHistoryCorrupt()
-
-        def prepare_run_event_stream(
-            self, run_id: RunId, after_sequence: int
-        ) -> StreamReady:
-            del run_id, after_sequence
-            return StreamReady(1, False, 0)
-
-    async def scenario() -> None:
-        queries = CorruptQueries()
-        received = [
-            item
-            async for item in stream_server_events(
-                PreparedEventStream(RUN_ID, 0, 1, False),
-                queries,
-                BoundedQueryRunner(1, admission_timeout_seconds=1),
-                page_size=1,
-                limits=api_limits(),
-                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
-            )
-        ]
-        assert received == []
-        assert queries.calls == 1
-
-    asyncio.run(scenario())
-
-
-def test_over_page_query_output_closes_before_any_event_is_serialized() -> None:
-    class OverPageQueries:
-        def read_run_event_page(
-            self,
-            run_id: RunId,
-            after_sequence: int,
-            limit: int,
-            projection_limit: object | None = None,
-        ) -> RunEventPage:
-            del run_id, after_sequence
-            assert limit == 1
-            return RunEventPage(
-                (
-                    persisted_event(1, RunEventKind.AGENT_COMPLETED, b"one"),
-                    persisted_event(2, RunEventKind.AGENT_COMPLETED, b"two"),
-                ),
-                False,
-            )
-
-    async def scenario() -> None:
-        received = [
-            item
-            async for item in stream_server_events(
-                PreparedEventStream(RUN_ID, 0, 2, False),
-                cast(RunEventQueries, OverPageQueries()),
-                BoundedQueryRunner(1, admission_timeout_seconds=1),
-                page_size=1,
-                limits=api_limits(),
-                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
-            )
-        ]
-        assert received == []
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    ("sequence", "payload", "limit_changes"),
-    [
-        (1, b"oversized", {"maximum_decoded_payload_bytes": 4}),
-        (1, b"\xff", {}),
-        (MAX_SIGNED_INT64 + 1, b"valid", {}),
-    ],
-    ids=("payload-limit", "invalid-utf8", "cursor-range"),
-)
-def test_invalid_event_projection_closes_without_serialization(
-    sequence: int, payload: bytes, limit_changes: dict[str, int]
-) -> None:
-    class OversizedEventQueries:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def read_run_event_page(
-            self,
-            run_id: RunId,
-            after_sequence: int,
-            limit: int,
-            projection_limit: object | None = None,
-        ) -> RunEventPage:
-            del run_id, after_sequence, limit
-            self.calls += 1
-            return RunEventPage(
-                (persisted_event(sequence, RunEventKind.AGENT_COMPLETED, payload),),
-                False,
-            )
-
-        def prepare_run_event_stream(
-            self, run_id: RunId, after_sequence: int
-        ) -> StreamReady:
-            del run_id, after_sequence
-            return StreamReady(1, False, 0)
-
-    async def scenario() -> None:
-        queries = OversizedEventQueries()
-        received = [
-            item
-            async for item in stream_server_events(
-                PreparedEventStream(RUN_ID, 0, 1, False),
-                queries,
-                BoundedQueryRunner(1, admission_timeout_seconds=1),
-                page_size=1,
-                limits=api_limits(**limit_changes),
-                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
-            )
-        ]
-
-        assert received == []
-        assert queries.calls == 1
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    ("kind", "payload"),
-    [
-        (RunEventKind.WAIT_ANSWERED, b"01"),
-        (RunEventKind.SUBWORKFLOW_COMPLETED, b"+1"),
-        (RunEventKind.ACTION_RECONCILIATION_RESOLVED, b"result"),
-    ],
-    ids=("wait-integer", "subworkflow-integer", "missing-receipt"),
-)
-def test_invalid_typed_event_conversion_closes_the_stream(
-    kind: RunEventKind, payload: bytes
-) -> None:
-    class InvalidTypedQueries:
-        def read_run_event_page(
-            self,
-            run_id: RunId,
-            after_sequence: int,
-            limit: int,
-            projection_limit: object | None = None,
-        ) -> RunEventPage:
-            del run_id, after_sequence, limit
-            return RunEventPage((persisted_event(1, kind, payload),), False)
-
-    async def scenario() -> None:
-        received = [
-            item
-            async for item in stream_server_events(
-                PreparedEventStream(RUN_ID, 0, 1, False),
-                cast(RunEventQueries, InvalidTypedQueries()),
-                BoundedQueryRunner(1, admission_timeout_seconds=1),
-                page_size=1,
-                limits=api_limits(),
-                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
-            )
-        ]
-        assert received == []
 
     asyncio.run(scenario())

@@ -491,7 +491,9 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_one_of() -> None:
 
     data = schema["paths"][API_PREFIX + "/runs/{public_ref}/events"]["get"][
         "responses"
-    ]["200"]["content"]["text/event-stream"]["x-atelier2-sse-v1"]["data"]
+    ]["200"]["content"]["text/event-stream"]["x-atelier2-sse-v1"]["durable_event"][
+        "data"
+    ]
     assert data == {"$ref": "#/components/schemas/VersionedRunEventResource"}
     union = schema["components"]["schemas"]["VersionedRunEventResource"]
     assert union == {

@@ -141,6 +141,57 @@ describe("contiguous durable SSE projection", () => {
   });
 });
 
+describe("a stream that ends because it failed", () => {
+  it("reports the server problem and separates a failed stream from a finished one", async () => {
+    const confirmed = await decodeAndApplyDurableEvent(
+      markLive(projection()),
+      JSON.stringify(event(1))
+    );
+
+    const failed = await decodeAndApplyDurableEvent(
+      confirmed,
+      JSON.stringify(streamFailure())
+    );
+
+    expect(failed.connection).toBe("failed");
+    expect(failed.stream_failure).toEqual(streamFailure().problem);
+    expect(failed.protocol_problem).toBeNull();
+    expect(failed.events).toEqual([event(1)]);
+    expect(failed.last_sequence).toBe(1);
+  });
+
+  it("carries no problem before the stream fails", () => {
+    expect(projection().connection).toBe("connecting");
+    expect(projection().stream_failure).toBeNull();
+  });
+
+  it.each([
+    ["an unknown problem type", { type: "urn:atelier2:problem:v1:invented", title: "Invented", status: 500, detail: "" }],
+    ["a missing problem body", undefined]
+  ])("refuses a failure frame that is not the closed contract: %s", async (_case, problemBody) => {
+    const rejected = await decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify({ event: "STREAM_FAILED", problem: problemBody })
+    );
+
+    expect(rejected.protocol_problem).toEqual({ type: "decoder" });
+    expect(rejected.connection).toBe("connecting");
+    expect(rejected.stream_failure).toBeNull();
+  });
+
+  it("forgets the failure when the operator restarts the stream", async () => {
+    const failed = await decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify(streamFailure())
+    );
+
+    const restarted = restartStreamProjection(failed, "run1.cnVu", digest);
+
+    expect(restarted.connection).toBe("connecting");
+    expect(restarted.stream_failure).toBeNull();
+  });
+});
+
 describe("verified V2 Agent output projection", () => {
   it.each([
     ["utf8", "R3LDvMOfZSDmnbHkuqw=", "d9f1fa3818c49d96dce2661015bdad90989df9e67244a7e5f1519ab466286332", "Grüße 東京", 14],
@@ -315,6 +366,18 @@ function problem() {
     title: "Temporarily unavailable" as const,
     status: 503 as const,
     detail: "Retry later."
+  };
+}
+
+function streamFailure() {
+  return {
+    event: "STREAM_FAILED" as const,
+    problem: {
+      type: "urn:atelier2:problem:v1:durable-state-corrupt" as const,
+      title: "Durable state is corrupt" as const,
+      status: 500 as const,
+      detail: "Stop mutation and inspect the durable store."
+    }
   };
 }
 
