@@ -209,10 +209,95 @@ The only editable HumanRequirement authority is
 requirement there; do not copy or independently reinterpret its content here.
 
 This directory will own immutable published requirement revisions and their
-provenance once that capability exists. A future trace will bind each literal
-acceptance sentence to its immutable requirement revision and its proof without
-becoming another requirement source. The publication format and trace format
-remain undecided until their owning story and decision record define them.
+provenance once that capability exists. The publication format remains undecided
+until its owning story and decision record define it, and no published
+requirement revision exists yet.
 
-No published requirement revision or requirement trace exists in this
-foundation.
+Half of the intended trace does exist, and that half was reserved for a story
+*and* a decision record together: Issue #94 is the story, and
+[ADR 0012](../decisions/0012-acceptance-trace-format.md) is the record. Each
+literal acceptance sentence is bound to its proof, and
+`.github/workflows/ci.yml` refuses a pipeline where that binding is missing. The
+other half — binding the same sentence to an immutable requirement revision —
+waits on the publication format above, so a declared sentence names its story,
+not a revision.
+
+## Acceptance trace
+
+Where a sentence is stored, how a test claims it, and what counts as evidence
+that the claim was honoured are decided in
+[ADR 0012](../decisions/0012-acceptance-trace-format.md). This section is how a
+story uses those decisions; where the two disagree, the record wins.
+
+A story declares its acceptance sentences in `acceptance/<issue-number>-<slug>.toml`
+— `acceptance/94-acceptance-trace-in-ci.toml` is the first one. The file is the
+sentence's only versioned home; pull-request prose quotes it and never replaces
+it.
+
+An identifier is lowercase words joined by single hyphens and is unique across
+every declaration. Unknown keys, a schema version the gate does not read, a
+sentence without text, and a repeated identifier are refused rather than ignored.
+
+A test names the sentence it proves where the test run itself reports it:
+
+- Python: `@pytest.mark.proves("<sentence id>")` on a test function. The marker is
+  registered in `pyproject.toml`, so `--strict-markers` refuses a typo, and
+  `tests/conftest.py` carries it into the run report pytest writes.
+- TypeScript: `proves(<sentence id>)` inside the vitest title, as in
+  `it("proves(<sentence id>): shows the failed stream", ...)`. The title is what
+  the run prints, so the claim cannot drift out of the reported test the way a
+  comment can.
+
+`scripts/check_acceptance.py` runs in the `Acceptance trace` job, after the three
+verification jobs, over the run reports they uploaded: the two pytest
+`--junitxml` files and the cockpit's vitest JSON. A sentence counts as proven
+only where one of those reports carries a test claiming it with the outcome
+passed, so a test that was collected without being executed, skipped, filtered
+away, or failed proves nothing, and nothing is read out of the workflow's own
+text. It fails when a declared sentence has no such proof and when a report
+carries a claim no story declares. It refuses outright when the declarations are
+empty and when a required report is absent or unreadable, because a report that
+cannot be read is a run that cannot be trusted, never a smaller proof surface.
+
+Claims themselves are found by reading every `.py` and `.ts` file in the
+repository, bound to no runner and no invocation. A claim in a file nothing
+collects is therefore named — it is either a missing test or a line to delete —
+rather than staying invisible because the gate only looked where a runner looks.
+
+<!-- acceptance-gate-bound:start -->
+```text
+proves: every declared sentence was proven by a test that ran and passed here
+proves: every claim in this repository names a sentence some story declared
+proves: every claim was honoured by a passing test in this pipeline's reports
+does not prove: that a test carries its sentence in meaning - review judges that
+does not measure: any ratio, case count, or coverage target
+```
+<!-- acceptance-gate-bound:end -->
+
+Whether the claiming test really carries its sentence stays a review judgment,
+the same division of labour the architecture gate keeps: the machine names what
+is missing, the reviewer names what is hollow.
+
+### The open sentence, graded DESK
+
+`acceptance/94-acceptance-trace-in-ci.toml` declares five sentences; Issue #94
+carries a sixth — *"a story that declares no acceptance sentence is named by
+verification"* — that nothing here proves, because this gate can only check
+sentences a story did declare.
+
+**DESK.** A step that builds the mechanism of acceptance verification may land
+with one sentence of the capability it serves unproven, provided that sentence
+is named on the open item and the item does not close. The alternative — binding
+every landing to a declaration — needs to know which issue a pull request closes
+and whether that issue is a story or cleanup. That is pull-request metadata, not
+repository content, and a gate whose whole claim is that it does not guess must
+not begin by guessing it. As precedent and not as authority: atelier-1's
+`work.unproven_acceptance` names only sentences on items that declared any, so
+docs and cleanup are exempt by carrying none.
+
+A `DESK` rule binds nothing until an operator rules it, so the question is open
+on Issue #94 with two options. **(A), recommended** — ratify this reading, after
+which it is written down as an `OPERATOR` rule and the sixth sentence closes in
+the change that proves it. **(B)** — rule that no story may land with an unproven
+sentence, after which this mechanism waits on a check over pull-request metadata
+that must invent the docs-and-cleanup exemption first.

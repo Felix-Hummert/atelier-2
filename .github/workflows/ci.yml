@@ -55,7 +55,16 @@ jobs:
         run: npm run lint
 
       - name: Test frontend behavior
-        run: npm test
+        run: npm test -- --reporter=default --reporter=json --outputFile=../reports/frontend.vitest.json
+
+      - name: Upload the cockpit run report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: acceptance-report-frontend-${{ github.run_attempt }}
+          path: reports/frontend.vitest.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Build the production cockpit
         run: npm run build
@@ -134,7 +143,7 @@ jobs:
         run: uv run --locked ruff format --check .
 
       - name: Check types
-        run: uv run --locked pyright src tests
+        run: uv run --locked pyright src tests scripts
 
       - name: Test non-crash behavior
         run: |
@@ -169,7 +178,17 @@ jobs:
             --setenv=UV_PYTHON="${UV_PYTHON}" \
             --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
             --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
-            "${uv_path}" run --locked pytest -n auto --ignore=tests/crash tests -q
+            "${uv_path}" run --locked pytest -n auto --ignore=tests/crash tests -q \
+              --junitxml="${GITHUB_WORKSPACE}/reports/quality.junit.xml"
+
+      - name: Upload the quality run report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: acceptance-report-quality-${{ github.run_attempt }}
+          path: reports/quality.junit.xml
+          if-no-files-found: error
+          retention-days: 7
 
   crash-recovery:
     name: Crash recovery
@@ -224,4 +243,45 @@ jobs:
             --setenv=UV_PYTHON="${UV_PYTHON}" \
             --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
             --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
-            "${uv_path}" run --locked pytest -n auto tests/crash -q
+            "${uv_path}" run --locked pytest -n auto tests/crash -q \
+              --junitxml="${GITHUB_WORKSPACE}/reports/crash.junit.xml"
+
+      - name: Upload the crash-recovery run report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: acceptance-report-crash-${{ github.run_attempt }}
+          path: reports/crash.junit.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  acceptance:
+    name: Acceptance trace
+    needs: [frontend, quality, crash-recovery]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv and select Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12.3"
+          version: "0.10.9"
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Download the run reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: acceptance-report-*-${{ github.run_attempt }}
+          path: reports
+          merge-multiple: true
+
+      - name: Check the acceptance trace
+        run: uv run --locked python scripts/check_acceptance.py --reports reports
