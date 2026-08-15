@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import sys
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -340,11 +341,13 @@ def test_the_v2_node_reaches_its_launch_boundary_by_one_application_call() -> No
     above and once against a real crashed incarnation in tests/crash. None of
     those proofs notice if the durable workflow stops asking
     ``execute_agent_attempt`` and re-decides claim and launch inside its own
-    transaction step: every one of them calls the application boundary itself.
-    This is a narrow source gate on that one wiring decision -- it proves the
-    call site, not the invariant behind it -- and it stands until the node
-    binding moves into the core (#86), which is exactly the change that could
-    lose the boundary while the suite stays green.
+    transaction step, or asks it a second time: every one of them calls the
+    application boundary itself, and a second launch inside one node execution
+    is exactly the duplicate this branch must not contain. This is a narrow
+    source gate on that one wiring decision -- it proves the call site is
+    written exactly once, not the invariant behind it -- and it stands until
+    the node binding moves into the core (#86), which is exactly the change
+    that could lose the boundary while the suite stays green.
     """
 
     workflow_module = (
@@ -361,11 +364,11 @@ def test_the_v2_node_reaches_its_launch_boundary_by_one_application_call() -> No
         for node in ast.walk(durable_node)
         if isinstance(node, ast.If) and _branch_binding_type(node) == "agent-v2"
     )
-    called = _called_names(v2_branch)
+    calls = _calls_by_name(v2_branch)
 
-    assert "execute_agent_attempt" in called
-    assert not called & {"run_tx_step", "claim", "launch_and_wait"}
-    assert not {name for name in called if name.startswith("commit_")}
+    assert calls["execute_agent_attempt"] == 1
+    assert not calls.keys() & {"run_tx_step", "claim", "launch_and_wait"}
+    assert not {name for name in calls if name.startswith("commit_")}
 
 
 def _branch_binding_type(branch: ast.If) -> str | None:
@@ -378,15 +381,15 @@ def _branch_binding_type(branch: ast.If) -> str | None:
     return compared.value
 
 
-def _called_names(branch: ast.If) -> set[str]:
-    names: set[str] = set()
+def _calls_by_name(branch: ast.If) -> Counter[str]:
+    names: Counter[str] = Counter()
     for node in ast.walk(branch):
         if not isinstance(node, ast.Call):
             continue
         if isinstance(node.func, ast.Name):
-            names.add(node.func.id)
+            names[node.func.id] += 1
         elif isinstance(node.func, ast.Attribute):
-            names.add(node.func.attr)
+            names[node.func.attr] += 1
     return names
 
 
