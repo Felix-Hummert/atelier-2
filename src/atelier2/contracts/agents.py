@@ -11,6 +11,9 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 MAXIMUM_AGENT_FIELD_CHARACTERS = 1_024
 MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
+# Current process-frame ceiling, earned by Claude 2.1.221's measured JSON frame;
+# each invocation still declares its exact lower limit at the process port.
+MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 MAXIMUM_SIGNED_INT64 = 2**63 - 1
 _PROVIDER_ID = re.compile(r"[a-z][a-z0-9._-]{0,63}")
 

@@ -40,6 +40,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    MAXIMUM_SIGNED_INT64,
     AgentExecutionRequestV2,
     AgentExecutionResult,
 )
@@ -47,6 +48,7 @@ from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     AgentProcessCompletion,
     AgentProcessInvocation,
     AgentProcessOwnerNotLocal,
@@ -533,7 +535,9 @@ for thread in threads:
 
 
 @pytest.mark.parametrize(
-    "declared_frame_bytes", (0, -1, 1.0), ids=("zero", "negative", "not-an-integer")
+    "declared_frame_bytes",
+    (0, -1, 1.0, MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES + 1),
+    ids=("zero", "negative", "not-an-integer", "above-port-bound"),
 )
 def test_an_invocation_without_a_positive_declared_frame_is_refused(
     declared_frame_bytes: Any,
@@ -544,6 +548,16 @@ def test_an_invocation_without_a_positive_declared_frame_is_refused(
             Path.cwd(),
             standard_output_frame_bytes=declared_frame_bytes,
         )
+
+
+@pytest.mark.parametrize(
+    "return_code", (-MAXIMUM_SIGNED_INT64 - 2, MAXIMUM_SIGNED_INT64 + 1)
+)
+def test_process_completion_refuses_a_return_code_outside_signed_int64(
+    return_code: int,
+) -> None:
+    with pytest.raises(ValueError, match="return code"):
+        AgentProcessCompletion(return_code, b"", b"")
 
 
 def test_the_wait_response_bound_is_exactly_the_declared_frame_at_its_worst() -> None:

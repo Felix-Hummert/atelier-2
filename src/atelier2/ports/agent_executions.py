@@ -12,6 +12,8 @@ from atelier2.contracts.agent_attempts import (
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+    MAXIMUM_SIGNED_INT64,
     AgentExecutionCapability,
     AgentExecutionRequest,
     AgentExecutionRequestV2,
@@ -60,7 +62,7 @@ class AgentExecutionFailure:
 
 @dataclass(frozen=True)
 class AgentProcessInvocation:
-    """One provider process invocation, kept exclusively in live memory.
+    """One provider process invocation whose secrets remain reference-only.
 
     The executor declares `standard_output_frame_bytes`: the raw stdout frame
     this exact invocation may produce before supervision refuses it. The port
@@ -68,6 +70,12 @@ class AgentProcessInvocation:
     wire format produces the frame, so no provider's number lives here. It is
     a different bound from the durable result bound a decoded execution result
     must satisfy.
+
+    Direct process adapters may durably retain this invocation while proving
+    at-most-once launch. Its ordered environment may therefore contain only
+    non-secret paths, references and toggles. Credential material is handed off
+    through a provider-owned path or OS credential channel, never as a value in
+    this record.
     """
 
     arguments: tuple[str, ...]
@@ -94,9 +102,11 @@ class AgentProcessInvocation:
         if (
             type(self.standard_output_frame_bytes) is not int
             or self.standard_output_frame_bytes < 1
+            or self.standard_output_frame_bytes
+            > MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
         ):
             raise ValueError(
-                "agent process standard output frame must be a positive byte count"
+                "agent process standard output frame must fit the portable bound"
             )
 
 
@@ -109,6 +119,8 @@ class AgentProcessCompletion:
     def __post_init__(self) -> None:
         if type(self.return_code) is not int:
             raise TypeError("agent process return code must be an integer")
+        if not -MAXIMUM_SIGNED_INT64 - 1 <= self.return_code <= MAXIMUM_SIGNED_INT64:
+            raise ValueError("agent process return code must fit signed int64")
 
 
 class AgentExecutorV2(Protocol):
