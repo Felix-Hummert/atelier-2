@@ -29,12 +29,18 @@ what follows is the desk's answer to his questions, and its binding force is
 negative — make no decision now that blocks it. Not one sentence below binds him
 until he rules it.
 
-The second is that the decision record this thread commissioned **has not
-landed**. ADR 0009 exists only as PR #78 on branch `fable/runner-trust-adr`,
-Status PROPOSED, decision-only (5300894378). Every `§` reference below is to
-that in-flight draft and is named as such at the point of use. A requirement
-document never outranks a landed decision record; here there is no landed record
-at all, so nothing below may be read as settled by an ADR either.
+The second is that the decision record this thread commissioned **landed while
+this document was being reviewed**. [ADR
+0009](../decisions/0009-runner-trust.md) reached `main` as PR #78's merge
+`1a88dbdd`, at head `0f6d3aca`. Every `§` reference below now names a record in
+the tree rather than a draft on a branch, and the convention's precedence rule —
+a requirement document never outranks a landed decision record — applies for
+real: where a rule below and that record disagree, the record wins and this
+document is corrected.
+
+Its own `Status` is still `PROPOSED`, decision-only, nothing implemented
+(5300894378), and that is a statement about code and not about authority. What
+it does mean is that no rule below may be read as built.
 
 `Source-Threads` names `#1` for one object only: the house rule 5302447161,
 which the #21 thread invokes by id at rule 4. This document does not distil #1
@@ -52,7 +58,7 @@ currently prescribes, `--jq '.body' | sha256sum`, digests the body plus the
 newline `gh`'s raw-string output adds and yields
 `81cf4b1f4703ad6f7000836037beccf848fea9617c633ccd0b8a32b17dca47cf` for the same
 787 bytes — an identity over a byte the object does not contain. The exact form
-is used here for one reason that is not a preference: the in-flight ADR 0009
+is used here for one reason that is not a preference: the now-landed ADR 0009
 binds #21 as its decision authority by `5c03ceb1…`, and one object cited under
 two digests in two documents is exactly the ambiguity a digest exists to remove.
 The rule making that form canonical is itself in flight — ADR 0010 decision 5,
@@ -125,7 +131,7 @@ and these rules do not restate it:
    coordinating service owns the durable record; a runner owns provider
    invocation and reports what it observed. This is the sentence every other
    rule here is an instance of. (5302584358 §3, naming it as invariant 1 of the
-   in-flight ADR 0009; corroborated by 5302602114 §2, where it is what killed
+   record that became ADR 0009; corroborated by 5302602114 §2, where it is what killed
    the cheaper alternative.)
 
 2. `DESK` — **Store-sharing was examined and refused, and it stays refused.**
@@ -207,7 +213,7 @@ and these rules do not restate it:
 9. `DESK` — **Placement is per attempt, never per run, and a running attempt
    never migrates.** At-most-once and the evidence chain both die the moment a
    live attempt moves. A lost runner yields `POSSIBLY_RAN`, loudly, and never a
-   re-placement. (5302961156 §2; consistent with the in-flight ADR 0009 §10.)
+   re-placement. (5302961156 §2; consistent with ADR 0009 §10.)
 
 10. `DESK` — **Change of machine happens at honest boundaries, and a replacement
     attempt is first class.** Retry, resume, and a deliberately replaced attempt
@@ -222,9 +228,11 @@ and these rules do not restate it:
     a runner that nearly fits, and no mode is silently downgraded. Until the
     open core at the end of this document is decided, **remote bindings stay
     refused** altogether. (5302587068, "fail-closed-Platzierung (Arbeit wartet
-    sichtbar statt unsicher zu laufen)"; 5302584358 §4.) Whether "waits visibly"
-    and the in-flight ADR's "refused at run start, never queued" are the same
-    answer is an open question below, not something this document settles.
+    sichtbar statt unsicher zu laufen)"; 5302584358 §4.) What "waits visibly"
+    means in the machine is no longer this document's to guess: ADR 0009 §7,
+    landed, rules that an unplaceable run is refused at run start and never
+    queued, and the open question below records that ruling rather than the
+    disagreement it replaced.
 
 ### Credentials
 
@@ -246,9 +254,9 @@ and these rules do not restate it:
     the bound reference does not resolve on that host, with no fallback to
     another auth mode. Each layer refuses; none substitutes a weaker credential
     or a different mode. (Layers b and c are 5302961156 §1 and 5302584358 §2/§3,
-    and the in-flight ADR 0009 §6/§7 gives them the refusal names
-    `auth-profile-unresolvable` and `no-runner-attests-binding` — names that
-    bind only once that record lands.)
+    and ADR 0009 §6/§7 gives them the refusal names
+    `auth-profile-unresolvable` and `no-runner-attests-binding`, which bind now
+    that the record has landed.)
 
 14. `DESK` — **Remote subscription runners are first class in practice, not only
     in principle.** 0002 rule 11 states the principle, itself as `DESK`: a
@@ -386,8 +394,8 @@ and these rules do not restate it:
   Docker" without merely claiming it (a version probe, not an assertion). The
   thinking model is to be consumed rather than invented: Kubernetes selectors
   and taints, GitHub Actions `runs-on`. The extension seam exists — ADR 0006's
-  capability vocabulary is versioned and extensible and the in-flight ADR 0009
-  §7 attestation takes new entries — so what is undecided is the content, not
+  capability vocabulary is versioned and extensible and ADR 0009 §7's
+  attestation takes new entries — so what is undecided is the content, not
   the structure. This is an open building block, deliberately not written as a
   rule, because a document that resolved it would be inventing the requirement
   it is supposed to be reading. Owner: this epic, before remote is released.
@@ -397,29 +405,17 @@ and these rules do not restate it:
   update channel. Until these are decided, rule 11 keeps remote bindings
   refused. Owner: the remote ADR, #9 part 3.
 
-- **Does an unplaceable binding wait or refuse?** Rule 11 carries both of the
-  thread's formulations — „Arbeit wartet sichtbar statt unsicher zu laufen"
-  (5302587068) and the in-flight ADR 0009 §7's refusal at run start, "never
-  queued in the hope a runner appears". They agree that nothing runs unsafely
-  and disagree about what the operator sees afterwards: a visibly waiting item,
-  or a refused start. Owner: the ADR review; this document does not choose.
-
-  **The ADR review has now answered it, and the answer is not yet landed.** ADR
-  0009 §7 at PR #78 head `0f6d3aca` rules the refusal: an unplaceable run is
-  refused before any durable run, binding, attempt, or provider process, and
-  never queued, "because queueing it turns fail-closed into a hang" — with the
-  refusal name `no-runner-attests-binding` naming the node, the binding and the
-  missing attestation, so the visibility „wartet sichtbar" wants is carried by
-  the refusal rather than by a waiting item. That is a proposed record on an open
-  PR, so it settles nothing here yet: this question closes by citation the moment
-  #78 lands, and until then rule 11 keeps both formulations.
-
-- **ADR 0009 has not landed.** PR #78 (branch `fable/runner-trust-adr`, Status
-  PROPOSED, decision-only) is open, and every `§` citation above is to that
-  draft (5300894378). The convention's precedence rule puts a landed decision
-  record above a requirement document; there is no landed record here, so no
-  rule above may be defended by an ADR section either. Owner: that PR's review
-  and merge.
+- **Does an unplaceable binding wait or refuse? — closed by citation.** The
+  question was whether the thread's „Arbeit wartet sichtbar statt unsicher zu
+  laufen" (5302587068) and the ADR's refusal at run start were the same answer.
+  [ADR 0009](../decisions/0009-runner-trust.md) §7, landed, rules it: an
+  unplaceable run is **refused** — before any durable run, binding, attempt, or
+  provider process — and "never queued in the hope a runner appears, because
+  queueing it turns fail-closed into a hang". The refusal
+  `no-runner-attests-binding` names the node, the binding and the missing
+  attestation, so what „wartet sichtbar" wanted — the operator seeing it rather
+  than a silent stall — is carried by the refusal and not by a waiting item.
+  Nothing is left for this document to choose.
 
 - **What the ADR mandate deliberately did not decide** (5300858953, 5300894378):
   transport and protocol details; the remote epic's scope and its
