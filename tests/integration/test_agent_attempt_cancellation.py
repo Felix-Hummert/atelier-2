@@ -40,9 +40,9 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptReplacementNotAllowed,
 )
 from tests.integration.test_agent_attempts import (
-    _InspectingExecutor,
     attempt_request,
     attempt_runtime,
+    inspecting_executor,
 )
 from tests.scenarios.agents import agent_attempt_execution
 
@@ -194,7 +194,7 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
         store = DbosAgentAttemptStore(
             runtime.engine, runtime.settings.application_version
         )
-        executor = _InspectingExecutor(runtime, delay_seconds=60)
+        executor = inspecting_executor(runtime, delay_seconds=60)
         failures: list[RuntimeError] = []
 
         def run_attempt() -> None:

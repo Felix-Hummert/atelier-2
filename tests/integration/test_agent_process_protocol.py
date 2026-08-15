@@ -12,7 +12,6 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +40,6 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     MAXIMUM_SIGNED_INT64,
-    AgentExecutionRequestV2,
     AgentExecutionResult,
 )
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
@@ -56,7 +54,9 @@ from atelier2.ports.agent_executions import (
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
+    RecordingAgentExecutorV2,
     agent_attempt_execution,
+    launching,
 )
 
 _PROVIDER_WRITES_EXACT_BYTES = """
@@ -74,43 +74,29 @@ while frame:
 """
 
 
-@dataclass
-class _PaddedEnvelopeExecutor:
+def _decode_padded_envelope(
+    completion: AgentProcessCompletion,
+) -> AgentExecutionResult:
+    envelope = json.loads(completion.standard_output.decode("utf-8"))
+    return AgentExecutionResult(str(envelope["result"]).encode("utf-8"))
+
+
+def _padded_envelope_executor(
+    declared_frame_bytes: int, padding_bytes: int, result: str = "ok"
+) -> RecordingAgentExecutorV2:
     """A provider carrying a small result inside a frame it declares itself."""
 
-    declared_frame_bytes: int
-    padding_bytes: int
-    result: str = "ok"
-    decoded: list[bytes] = field(default_factory=list)
-    observed_frame_bytes: int = 0
-
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        del request
-        return AgentProcessInvocation(
-            (
-                sys.executable,
-                "-c",
-                _PROVIDER_EMITS_PADDED_ENVELOPE,
-                str(self.padding_bytes),
-                self.result,
-            ),
-            Path.cwd(),
-            standard_output_frame_bytes=self.declared_frame_bytes,
-        )
-
-    def decode_process_completion(
-        self, completion: AgentProcessCompletion
-    ) -> AgentExecutionResult:
-        self.observed_frame_bytes = len(completion.standard_output)
-        envelope = json.loads(completion.standard_output.decode("utf-8"))
-        decoded = str(envelope["result"]).encode("utf-8")
-        self.decoded.append(decoded)
-        return AgentExecutionResult(decoded)
-
-    def close(self) -> None:
-        return
+    return RecordingAgentExecutorV2(
+        command=launching(
+            sys.executable,
+            "-c",
+            _PROVIDER_EMITS_PADDED_ENVELOPE,
+            str(padding_bytes),
+            result,
+            frame_bytes=declared_frame_bytes,
+        ),
+        decoder=_decode_padded_envelope,
+    )
 
 
 @pytest.mark.parametrize("termination_owner", (None, "CANCEL"))
@@ -627,8 +613,8 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
         store = DbosAgentAttemptStore(
             runtime.engine, runtime.settings.application_version
         )
-        generous = _PaddedEnvelopeExecutor(2 * padding_bytes, padding_bytes)
-        frugal = _PaddedEnvelopeExecutor(4_096, padding_bytes)
+        generous = _padded_envelope_executor(2 * padding_bytes, padding_bytes)
+        frugal = _padded_envelope_executor(4_096, padding_bytes)
         generous_execution = agent_attempt_execution(
             attempt_request(runtime, "frame/generous")
         )
@@ -645,9 +631,10 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
             )
 
         assert isinstance(accepted, AgentAttemptSucceeded)
-        assert generous.decoded == [b"ok"]
-        assert generous.observed_frame_bytes > MAXIMUM_AGENT_OUTPUT_BYTES_V2
-        assert frugal.decoded == []
+        observed_frame = generous.completions[0].standard_output
+        assert generous.results == [AgentExecutionResult(b"ok")]
+        assert len(observed_frame) > MAXIMUM_AGENT_OUTPUT_BYTES_V2
+        assert frugal.results == []
         assert (
             store.load(frugal_execution.attempt_id).state
             is not AgentAttemptState.SUCCEEDED

@@ -37,8 +37,6 @@ from atelier2.application.advance_run import advance_run
 from atelier2.application.start_run import start_run
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
-    AgentExecutionRequestV2,
-    AgentExecutionResult,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     ProviderId,
@@ -56,14 +54,12 @@ from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRe
 from atelier2.ports.agent_executions import (
     AgentExecutorFactoryV2,
     AgentExecutorKey,
-    AgentProcessCompletion,
-    AgentProcessInvocation,
 )
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import (
-    SCENARIO_PROVIDER_FRAME_BYTES,
     RecordingAgentExecutorFactoryV2,
     commit_configured_agent,
+    failing_agent_executor_factory,
 )
 from tests.scenarios.runtime import exact_output_runtime
 
@@ -588,91 +584,15 @@ def _runtime_with_v2(
     )
 
 
-@dataclass
-class CloseFailingExecutor:
-    name: str
-    lifecycle: list[str]
-
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        del request
-        return AgentProcessInvocation(
-            ("/bin/true",),
-            Path.cwd(),
-            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
-        )
-
-    def decode_process_completion(
-        self, completion: AgentProcessCompletion
-    ) -> AgentExecutionResult:
-        del completion
-        return AgentExecutionResult(b"")
-
-    def close(self) -> None:
-        self.lifecycle.append(f"close:{self.name}")
-        raise RuntimeError(f"cleanup:{self.name}")
-
-
-@dataclass
-class CloseFailingFactory:
-    provider: str
-    lifecycle: list[str]
-
-    @property
-    def key(self) -> AgentExecutorKey:
-        return AgentExecutorKey(
-            ProviderId(self.provider), AgentExecutorRevision(f"{self.provider}/v1")
-        )
-
-    @property
-    def operational_identity(self) -> AgentExecutorOperationalIdentity:
-        return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
-
-    @property
-    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
-        return frozenset({AgentExecutionCapability.HEADLESS})
-
-    def open(self) -> CloseFailingExecutor:
-        self.lifecycle.append(f"open:{self.provider}")
-        return CloseFailingExecutor(self.provider, self.lifecycle)
-
-
-@dataclass
-class ChangingKeyExecutor:
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        del request
-        return AgentProcessInvocation(
-            ("/bin/true",),
-            Path.cwd(),
-            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
-        )
-
-    def decode_process_completion(
-        self, completion: AgentProcessCompletion
-    ) -> AgentExecutionResult:
-        del completion
-        return AgentExecutionResult(b"")
-
-    def close(self) -> None:
-        return None
-
-
-@dataclass
-class ChangingKeyFactory:
-    key_reads: int = 0
-    identity_reads: int = 0
-    opens: int = 0
+class ChangingKeyFactory(RecordingAgentExecutorFactoryV2):
+    """A factory answering a different key and identity on every single read."""
 
     @property
     def key(self) -> AgentExecutorKey:
         self.key_reads += 1
-        suffix = str(self.key_reads)
         return AgentExecutorKey(
-            ProviderId(f"provider-{suffix}"),
-            AgentExecutorRevision(f"executor/{suffix}"),
+            ProviderId(f"provider-{self.key_reads}"),
+            AgentExecutorRevision(f"executor/{self.key_reads}"),
         )
 
     @property
@@ -680,90 +600,9 @@ class ChangingKeyFactory:
         self.identity_reads += 1
         return AgentExecutorOperationalIdentity(f"operation-{self.identity_reads}")
 
-    @property
-    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
-        return frozenset({AgentExecutionCapability.HEADLESS})
 
-    def open(self) -> ChangingKeyExecutor:
-        self.opens += 1
-        return ChangingKeyExecutor()
-
-
-@dataclass
-class BaseExceptionOpenFactory:
-    provider: str
-    failure: BaseException
-    lifecycle: list[str]
-
-    @property
-    def key(self) -> AgentExecutorKey:
-        return AgentExecutorKey(
-            ProviderId(self.provider), AgentExecutorRevision(f"{self.provider}/v1")
-        )
-
-    @property
-    def operational_identity(self) -> AgentExecutorOperationalIdentity:
-        return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
-
-    @property
-    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
-        return frozenset({AgentExecutionCapability.HEADLESS})
-
-    def open(self) -> Never:
-        self.lifecycle.append(f"open:{self.provider}")
-        raise self.failure
-
-
-@dataclass
-class BaseExceptionCloseExecutor:
-    provider: str
-    failure: BaseException
-    lifecycle: list[str]
-
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        del request
-        return AgentProcessInvocation(
-            ("/bin/true",),
-            Path.cwd(),
-            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
-        )
-
-    def decode_process_completion(
-        self, completion: AgentProcessCompletion
-    ) -> AgentExecutionResult:
-        del completion
-        return AgentExecutionResult(b"")
-
-    def close(self) -> Never:
-        self.lifecycle.append(f"close:{self.provider}")
-        raise self.failure
-
-
-@dataclass
-class BaseExceptionCloseFactory:
-    provider: str
-    failure: BaseException
-    lifecycle: list[str]
-
-    @property
-    def key(self) -> AgentExecutorKey:
-        return AgentExecutorKey(
-            ProviderId(self.provider), AgentExecutorRevision(f"{self.provider}/v1")
-        )
-
-    @property
-    def operational_identity(self) -> AgentExecutorOperationalIdentity:
-        return AgentExecutorOperationalIdentity(f"{self.provider}-operation")
-
-    @property
-    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
-        return frozenset({AgentExecutionCapability.HEADLESS})
-
-    def open(self) -> BaseExceptionCloseExecutor:
-        self.lifecycle.append(f"open:{self.provider}")
-        return BaseExceptionCloseExecutor(self.provider, self.failure, self.lifecycle)
+def unstable_key_factory() -> ChangingKeyFactory:
+    return ChangingKeyFactory("unstable", "unstable/v1", "unstable-operation", b"")
 
 
 @dataclass
@@ -863,7 +702,7 @@ def test_v2_registry_without_headless_capability_is_refused_before_open(
 
 
 def test_v2_factory_identity_is_captured_once_before_open(tmp_path: Path) -> None:
-    factory = ChangingKeyFactory()
+    factory = unstable_key_factory()
     runtime = _runtime_with_v2(tmp_path, (factory,))
     try:
         assert factory.key_reads == 1
@@ -889,7 +728,7 @@ def test_factory_open_never_enters_agent_invocation(tmp_path: Path) -> None:
 def test_same_v2_factory_object_is_refused_without_durable_mutation(
     tmp_path: Path,
 ) -> None:
-    factory = ChangingKeyFactory()
+    factory = unstable_key_factory()
     runtime: DbosRuntime | None = None
     try:
         with pytest.raises(ValueError, match="factory objects must be unique"):
@@ -913,27 +752,12 @@ def test_partial_v2_open_failure_closes_prior_executor_and_releases_owner(
         "anthropic", "claude/v1", "claude-operation", b"", lifecycle
     )
 
-    class FailingFactory:
-        @property
-        def key(self) -> AgentExecutorKey:
-            return AgentExecutorKey(
-                ProviderId("openai"), AgentExecutorRevision("codex/v1")
-            )
-
-        @property
-        def operational_identity(self) -> AgentExecutorOperationalIdentity:
-            return AgentExecutorOperationalIdentity("codex-operation")
-
-        @property
-        def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
-            return frozenset({AgentExecutionCapability.HEADLESS})
-
-        def open(self) -> Never:
-            lifecycle.append("open:openai")
-            raise RuntimeError("injected V2 open failure")
+    failing = failing_agent_executor_factory(
+        "openai", lifecycle, open_failure=RuntimeError("injected V2 open failure")
+    )
 
     with pytest.raises(RuntimeError, match="injected V2 open failure"):
-        _runtime_with_v2(tmp_path, (FailingFactory(), opened))
+        _runtime_with_v2(tmp_path, (failing, opened))
 
     assert lifecycle == ["open:anthropic", "open:openai", "close:anthropic"]
     assert opened.opened is not None and opened.opened.closes == 1
@@ -953,7 +777,10 @@ def test_v2_base_exception_open_closes_prior_executor_and_releases_owner(
     with pytest.raises(KeyboardInterrupt) as captured:
         _runtime_with_v2(
             tmp_path,
-            (opened, BaseExceptionOpenFactory("beta", failure, lifecycle)),
+            (
+                opened,
+                failing_agent_executor_factory("beta", lifecycle, open_failure=failure),
+            ),
         )
 
     assert captured.value is failure
@@ -1006,29 +833,19 @@ def test_v2_open_and_cleanup_failures_preserve_original_then_cleanup_order(
 ) -> None:
     lifecycle: list[str] = []
 
-    class OpenFailingFactory:
-        @property
-        def key(self) -> AgentExecutorKey:
-            return AgentExecutorKey(
-                ProviderId("openai"), AgentExecutorRevision("openai/v1")
-            )
-
-        @property
-        def operational_identity(self) -> AgentExecutorOperationalIdentity:
-            return AgentExecutorOperationalIdentity("openai-operation")
-
-        @property
-        def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
-            return frozenset({AgentExecutionCapability.HEADLESS})
-
-        def open(self) -> Never:
-            lifecycle.append("open:openai")
-            raise RuntimeError("open:openai failed")
-
     with pytest.raises(ExceptionGroup) as captured:
         _runtime_with_v2(
             tmp_path,
-            (OpenFailingFactory(), CloseFailingFactory("anthropic", lifecycle)),
+            (
+                failing_agent_executor_factory(
+                    "openai", lifecycle, open_failure=RuntimeError("open:openai failed")
+                ),
+                failing_agent_executor_factory(
+                    "anthropic",
+                    lifecycle,
+                    close_failure=RuntimeError("cleanup:anthropic"),
+                ),
+            ),
         )
 
     assert lifecycle == ["open:anthropic", "open:openai", "close:anthropic"]
@@ -1052,9 +869,15 @@ def test_base_exception_open_and_multiple_cleanup_failures_preserve_order(
         _runtime_with_v2(
             tmp_path,
             (
-                BaseExceptionCloseFactory("alpha", alpha_cleanup, lifecycle),
-                BaseExceptionCloseFactory("beta", beta_cleanup, lifecycle),
-                BaseExceptionOpenFactory("gamma", original, lifecycle),
+                failing_agent_executor_factory(
+                    "alpha", lifecycle, close_failure=alpha_cleanup
+                ),
+                failing_agent_executor_factory(
+                    "beta", lifecycle, close_failure=beta_cleanup
+                ),
+                failing_agent_executor_factory(
+                    "gamma", lifecycle, open_failure=original
+                ),
             ),
         )
 
@@ -1136,8 +959,12 @@ def test_last_close_runs_every_v2_cleanup_and_releases_owner_despite_failures(
     runtime = _runtime_with_v2(
         tmp_path,
         (
-            CloseFailingFactory("openai", lifecycle),
-            CloseFailingFactory("anthropic", lifecycle),
+            failing_agent_executor_factory(
+                "openai", lifecycle, close_failure=RuntimeError("cleanup:openai")
+            ),
+            failing_agent_executor_factory(
+                "anthropic", lifecycle, close_failure=RuntimeError("cleanup:anthropic")
+            ),
         ),
     )
 
@@ -1216,8 +1043,12 @@ def test_last_close_aggregates_destroy_close_and_dispose_base_exceptions(
     runtime = _runtime_with_v2(
         tmp_path,
         (
-            BaseExceptionCloseFactory("alpha", alpha_cleanup, lifecycle),
-            BaseExceptionCloseFactory("beta", beta_cleanup, lifecycle),
+            failing_agent_executor_factory(
+                "alpha", lifecycle, close_failure=alpha_cleanup
+            ),
+            failing_agent_executor_factory(
+                "beta", lifecycle, close_failure=beta_cleanup
+            ),
         ),
     )
     destroy_failure = KeyboardInterrupt("destroy")

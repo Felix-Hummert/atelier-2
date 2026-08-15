@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
@@ -292,42 +293,138 @@ def agent_attempt_execution(
     )
 
 
+AgentProcessCommand = Callable[[AgentExecutionRequestV2], AgentProcessInvocation]
+"""How a scenario executor turns a request into the process it launches."""
+
+AgentCompletionDecoder = Callable[
+    [AgentProcessCompletion], AgentExecutionResult | AgentExecutionFailure
+]
+"""How a scenario executor reads a finished process back."""
+
+_PROVIDER_WRITES_HEX_AFTER_DELAY = (
+    "import os, sys, time; time.sleep(float(sys.argv[1])); "
+    "os.write(1, bytes.fromhex(sys.argv[2]))"
+)
+
+
+def launching(
+    *arguments: str, frame_bytes: int = SCENARIO_PROVIDER_FRAME_BYTES
+) -> AgentProcessCommand:
+    """A command launching exactly these arguments, whatever the request says."""
+
+    def command(request: AgentExecutionRequestV2) -> AgentProcessInvocation:
+        del request
+        return AgentProcessInvocation(
+            arguments, Path.cwd(), standard_output_frame_bytes=frame_bytes
+        )
+
+    return command
+
+
+def emitting(
+    output: bytes,
+    *,
+    delay_seconds: float = 0,
+    frame_bytes: int = SCENARIO_PROVIDER_FRAME_BYTES,
+) -> AgentProcessCommand:
+    """A command whose process writes exactly these bytes to standard output."""
+
+    return launching(
+        sys.executable,
+        "-c",
+        _PROVIDER_WRITES_HEX_AFTER_DELAY,
+        str(delay_seconds),
+        output.hex(),
+        frame_bytes=frame_bytes,
+    )
+
+
+def refusing(reason: str) -> Callable[[Any], Never]:
+    """A command or decoder for an executor this scenario must never reach."""
+
+    def refuse(_unreached: Any) -> Never:
+        raise AssertionError(reason)
+
+    return refuse
+
+
+def decode_process_exit(
+    completion: AgentProcessCompletion,
+) -> AgentExecutionResult | AgentExecutionFailure:
+    """Read standard output back, or name the exit that was not successful."""
+
+    if completion.return_code != 0:
+        return AgentExecutionFailure(
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+        )
+    return AgentExecutionResult(completion.standard_output)
+
+
+def decoding_to(output: bytes) -> AgentCompletionDecoder:
+    """A decoder reading every successful process back as exactly these bytes."""
+
+    def decode(
+        completion: AgentProcessCompletion,
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        decoded = decode_process_exit(completion)
+        if isinstance(decoded, AgentExecutionFailure):
+            return decoded
+        return AgentExecutionResult(output)
+
+    return decode
+
+
+def answering(
+    outcome: AgentExecutionResult | AgentExecutionFailure,
+) -> AgentCompletionDecoder:
+    """A decoder answering this outcome for any process, however it exited."""
+
+    def decode(
+        completion: AgentProcessCompletion,
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        del completion
+        return outcome
+
+    return decode
+
+
 @dataclass
 class RecordingAgentExecutorV2:
-    output: bytes
-    requests: list[AgentExecutionRequestV2]
-    lifecycle: list[str]
-    name: str
+    output: bytes = b""
+    requests: list[AgentExecutionRequestV2] = field(default_factory=list)
+    lifecycle: list[str] = field(default_factory=list)
+    name: str = "recording"
     closes: int = 0
+    command: AgentProcessCommand | None = None
+    """How the process is launched; by default it writes `output` and exits."""
+    decoder: AgentCompletionDecoder = decode_process_exit
+    close_failure: BaseException | None = None
+    """Raised once the close has been recorded, for cleanup-failure scenarios."""
+    completions: list[AgentProcessCompletion] = field(default_factory=list)
+    results: list[AgentExecutionResult | AgentExecutionFailure] = field(
+        default_factory=list
+    )
 
     def prepare_process(
         self, request: AgentExecutionRequestV2
     ) -> AgentProcessInvocation:
         self.requests.append(request)
         self.lifecycle.append(f"execute:{self.name}")
-        return AgentProcessInvocation(
-            (
-                sys.executable,
-                "-c",
-                "import os; os.write(1, bytes.fromhex(__import__('sys').argv[1]))",
-                self.output.hex(),
-            ),
-            Path.cwd(),
-            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
-        )
+        return (self.command or emitting(self.output))(request)
 
     def decode_process_completion(
         self, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
-        if completion.return_code != 0:
-            return AgentExecutionFailure(
-                AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-            )
-        return AgentExecutionResult(completion.standard_output)
+        self.completions.append(completion)
+        result = self.decoder(completion)
+        self.results.append(result)
+        return result
 
     def close(self) -> None:
         self.closes += 1
         self.lifecycle.append(f"close:{self.name}")
+        if self.close_failure is not None:
+            raise self.close_failure
 
 
 @dataclass
@@ -344,6 +441,11 @@ class RecordingAgentExecutorFactoryV2:
     identity_reads: int = 0
     opens: int = 0
     opened: RecordingAgentExecutorV2 | None = None
+    command: AgentProcessCommand | None = None
+    decoder: AgentCompletionDecoder = decode_process_exit
+    open_failure: BaseException | None = None
+    """Raised once the open has been recorded, for open-failure scenarios."""
+    close_failure: BaseException | None = None
 
     @property
     def key(self) -> AgentExecutorKey:
@@ -364,7 +466,35 @@ class RecordingAgentExecutorFactoryV2:
     def open(self) -> RecordingAgentExecutorV2:
         self.opens += 1
         self.lifecycle.append(f"open:{self.provider}")
+        if self.open_failure is not None:
+            raise self.open_failure
         self.opened = RecordingAgentExecutorV2(
-            self.output, [], self.lifecycle, self.provider
+            self.output,
+            [],
+            self.lifecycle,
+            self.provider,
+            command=self.command,
+            decoder=self.decoder,
+            close_failure=self.close_failure,
         )
         return self.opened
+
+
+def failing_agent_executor_factory(
+    provider: str,
+    lifecycle: list[str],
+    *,
+    open_failure: BaseException | None = None,
+    close_failure: BaseException | None = None,
+) -> RecordingAgentExecutorFactoryV2:
+    """A factory named after its provider whose open or close fails as told."""
+
+    return RecordingAgentExecutorFactoryV2(
+        provider,
+        f"{provider}/v1",
+        f"{provider}-operation",
+        b"",
+        lifecycle,
+        open_failure=open_failure,
+        close_failure=close_failure,
+    )
