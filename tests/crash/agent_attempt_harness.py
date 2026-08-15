@@ -5,7 +5,6 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
@@ -24,7 +23,6 @@ from atelier2.application.cancel_agent_attempt import (
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
-    AgentAttemptFailureCode,
     AgentAttemptProcessPhase,
     AgentAttemptReplacement,
     AgentAttemptState,
@@ -37,7 +35,6 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
-    AgentExecutionResult,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AgentRole,
@@ -51,16 +48,18 @@ from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.agent_attempts import AgentAttemptCancellationAccepted
 from atelier2.ports.agent_executions import (
-    AgentExecutionFailure,
-    AgentExecutorKey,
-    AgentProcessCompletion,
     AgentProcessInvocation,
 )
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
 from atelier2.ports.run_queries import RunFound
 from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
+    RecordingAgentExecutorFactoryV2,
+    RecordingAgentExecutorV2,
     agent_attempt_execution,
+    decoding_to,
+    launching,
+    refusing,
 )
 
 CRASHED = 86
@@ -72,88 +71,37 @@ nodes:
 """
 
 
-@dataclass
-class InertExecutor:
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        del request
-        raise AssertionError(
-            "runtime-owned executor is not the controlled test process"
-        )
-
-    def decode_process_completion(
-        self, completion: AgentProcessCompletion
-    ) -> AgentExecutionResult | AgentExecutionFailure:
-        del completion
-        raise AssertionError(
-            "runtime-owned executor is not the controlled test process"
-        )
-
-    def close(self) -> None:
-        pass
+_APPENDS_TO_COUNTER = (
+    "from pathlib import Path; Path(__import__('sys').argv[1]).open('ab').write(b'x')"
+)
 
 
-@dataclass(frozen=True)
-class InertFactory:
-    @property
-    def key(self) -> AgentExecutorKey:
-        return AgentExecutorKey(
-            ProviderId("anthropic"), AgentExecutorRevision("claude-cli/v1")
-        )
+def inert_factory() -> RecordingAgentExecutorFactoryV2:
+    """The registered executor, which this harness must never be served by."""
 
-    @property
-    def operational_identity(self) -> AgentExecutorOperationalIdentity:
-        return AgentExecutorOperationalIdentity("controlled-process")
-
-    @property
-    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
-        return frozenset({AgentExecutionCapability.HEADLESS})
-
-    def open(self) -> InertExecutor:
-        return InertExecutor()
+    refuse = refusing("runtime-owned executor is not the controlled test process")
+    return RecordingAgentExecutorFactoryV2(
+        "anthropic",
+        "claude-cli/v1",
+        "controlled-process",
+        b"unused",
+        command=refuse,
+        decoder=refuse,
+    )
 
 
-@dataclass
-class ControlledProcessExecutor:
-    counter: Path
+def controlled_process_executor(counter: Path) -> RecordingAgentExecutorV2:
+    """The executor this harness drives itself, counting every launch on disk."""
 
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        del request
-        return AgentProcessInvocation(
-            (
-                sys.executable,
-                "-c",
-                "from pathlib import Path; Path(__import__('sys').argv[1]).open('ab').write(b'x')",
-                str(self.counter),
-            ),
-            Path.cwd(),
-            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
-        )
-
-    def decode_process_completion(
-        self, completion: AgentProcessCompletion
-    ) -> AgentExecutionResult | AgentExecutionFailure:
-        if completion.return_code != 0:
-            return AgentExecutionFailure(
-                AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-            )
-        return AgentExecutionResult(b"done")
-
-    def close(self) -> None:
-        pass
+    return RecordingAgentExecutorV2(
+        command=launching(sys.executable, "-c", _APPENDS_TO_COUNTER, str(counter)),
+        decoder=decoding_to(b"done"),
+    )
 
 
 def run_controlled_process(counter: Path) -> None:
     subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from pathlib import Path; Path(__import__('sys').argv[1]).open('ab').write(b'x')",
-            str(counter),
-        ],
+        [sys.executable, "-c", _APPENDS_TO_COUNTER, str(counter)],
         check=True,
         timeout=10,
     )
@@ -168,7 +116,7 @@ def runtime(root: Path) -> DbosRuntime:
             EffectDestination("agent-attempt-crash"),
         ),
         ExactOutputAgentExecutorFactory(),
-        (InertFactory(),),
+        (inert_factory(),),
     )
 
 
@@ -373,7 +321,7 @@ def main(root: Path, mode: str) -> None:
         if mode == "recover":
             execute_agent_attempt(
                 agent_attempt_execution(exact_request),
-                ControlledProcessExecutor(root / "counter"),
+                controlled_process_executor(root / "counter"),
                 store,
                 lease.agent_process_supervisor,
             )

@@ -4,7 +4,6 @@ import ast
 import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -65,15 +64,19 @@ from atelier2.ports.agent_configurations import (
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentProcessCompletion,
-    AgentProcessInvocation,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.run_queries import RunFound
 from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
 from tests.scenarios.agents import (
-    SCENARIO_PROVIDER_FRAME_BYTES,
+    AgentCompletionDecoder,
     RecordingAgentExecutorFactoryV2,
+    RecordingAgentExecutorV2,
     agent_attempt_execution,
+    answering,
+    decode_process_exit,
+    emitting,
+    launching,
 )
 
 _DOCUMENT = b"""format_version: 2
@@ -157,70 +160,42 @@ def attempt_request(
     )
 
 
-@dataclass
-class _InspectingExecutor:
-    runtime: DbosRuntime
-    output: bytes = b"done"
-    delay_seconds: float = 0
-    calls: int = 0
+def _observing_durable_process_phase(runtime: DbosRuntime) -> AgentCompletionDecoder:
+    """A decoder reading back what the durable attempt says while it decodes."""
 
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        del request
-        return AgentProcessInvocation(
-            (
-                sys.executable,
-                "-c",
-                "import os,time,sys; time.sleep(float(sys.argv[1])); os.write(1,bytes.fromhex(sys.argv[2]))",
-                str(self.delay_seconds),
-                self.output.hex(),
-            ),
-            Path.cwd(),
-            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
-        )
-
-    def decode_process_completion(
-        self, completion: AgentProcessCompletion
-    ) -> AgentExecutionResult:
-        with self.runtime.engine.connect() as connection:
+    def decode(
+        completion: AgentProcessCompletion,
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        with runtime.engine.connect() as connection:
             state = connection.scalar(sa.select(agent_attempts.c.process_phase))
         assert state == "PROCESS_OBSERVED"
-        self.calls += 1
-        return AgentExecutionResult(completion.standard_output)
+        return decode_process_exit(completion)
 
-    def close(self) -> None:
-        pass
+    return decode
 
 
-@dataclass
-class _CountingProcessExecutor:
-    """Prepares a process whose only effect is one byte per real invocation."""
+def inspecting_executor(
+    runtime: DbosRuntime, output: bytes = b"done", delay_seconds: float = 0
+) -> RecordingAgentExecutorV2:
+    return RecordingAgentExecutorV2(
+        command=emitting(output, delay_seconds=delay_seconds),
+        decoder=_observing_durable_process_phase(runtime),
+    )
 
-    counter: Path
 
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        del request
-        return AgentProcessInvocation(
-            (
-                sys.executable,
-                "-c",
-                "from pathlib import Path; Path(__import__('sys').argv[1]).open('ab').write(b'x')",
-                str(self.counter),
-            ),
-            Path.cwd(),
-            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+_PROVIDER_APPENDS_ONE_BYTE = (
+    "from pathlib import Path; Path(__import__('sys').argv[1]).open('ab').write(b'x')"
+)
+
+
+def counting_executor(counter: Path) -> RecordingAgentExecutorV2:
+    """An executor whose process leaves one byte per real invocation behind."""
+
+    return RecordingAgentExecutorV2(
+        command=launching(
+            sys.executable, "-c", _PROVIDER_APPENDS_ONE_BYTE, str(counter)
         )
-
-    def decode_process_completion(
-        self, completion: AgentProcessCompletion
-    ) -> AgentExecutionResult:
-        return AgentExecutionResult(completion.standard_output)
-
-    def close(self) -> None:
-        pass
+    )
 
 
 def test_attempt_is_prepared_before_controlled_executor_invocation(
@@ -230,7 +205,7 @@ def test_attempt_is_prepared_before_controlled_executor_invocation(
     runtime.initialize_storage()
     try:
         request = attempt_request(runtime)
-        executor = _InspectingExecutor(runtime)
+        executor = inspecting_executor(runtime)
 
         outcome = execute_agent_attempt(
             agent_attempt_execution(request),
@@ -240,7 +215,7 @@ def test_attempt_is_prepared_before_controlled_executor_invocation(
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
-        assert executor.calls == 1
+        assert len(executor.results) == 1
     finally:
         runtime.close()
 
@@ -250,7 +225,7 @@ def test_thirty_two_claims_invoke_one_controlled_executor(tmp_path: Path) -> Non
     runtime.initialize_storage()
     try:
         request = attempt_request(runtime, "attempt/concurrent")
-        executor = _InspectingExecutor(runtime, b"once", 0.25)
+        executor = inspecting_executor(runtime, b"once", 0.25)
         store = DbosAgentAttemptStore(runtime.engine)
         execution = agent_attempt_execution(request)
         with ThreadPoolExecutor(max_workers=32) as pool:
@@ -266,7 +241,7 @@ def test_thirty_two_claims_invoke_one_controlled_executor(tmp_path: Path) -> Non
             ]
             outcomes = tuple(future.result(timeout=5) for future in futures)
 
-        assert executor.calls == 1
+        assert len(executor.results) == 1
         assert sum(isinstance(value, AgentAttemptSucceeded) for value in outcomes) >= 1
         assert all(
             isinstance(value, (AgentAttemptSucceeded, AgentAttemptPossiblyRan))
@@ -284,7 +259,7 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
     try:
         request = attempt_request(runtime, "attempt/replayed-claim")
         store = DbosAgentAttemptStore(runtime.engine)
-        executor = _InspectingExecutor(runtime)
+        executor = inspecting_executor(runtime)
 
         first = execute_agent_attempt(
             agent_attempt_execution(request),
@@ -301,7 +276,7 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
 
         assert isinstance(first, AgentAttemptSucceeded)
         assert recovered == first
-        assert executor.calls == 1
+        assert len(executor.results) == 1
     finally:
         runtime.close()
 
@@ -323,7 +298,7 @@ def test_a_claim_replayed_from_a_lost_incarnation_never_authorizes_invocation(
         counter = tmp_path / "invocations"
         outcome = execute_agent_attempt(
             execution,
-            _CountingProcessExecutor(counter),
+            counting_executor(counter),
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
         )
@@ -434,32 +409,20 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
         request = attempt_request(runtime, f"attempt/terminal/{known_failure}")
         store = DbosAgentAttemptStore(runtime.engine)
 
-        class _TerminalExecutor:
-            def prepare_process(
-                self, request: AgentExecutionRequestV2
-            ) -> AgentProcessInvocation:
-                del request
-                return AgentProcessInvocation(
-                    (sys.executable, "-c", "raise SystemExit(7)"),
-                    Path.cwd(),
-                    standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+        terminal = RecordingAgentExecutorV2(
+            command=launching(sys.executable, "-c", "raise SystemExit(7)"),
+            decoder=answering(
+                AgentExecutionFailure(
+                    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
                 )
-
-            def decode_process_completion(
-                self, completion: AgentProcessCompletion
-            ) -> AgentExecutionResult | AgentExecutionFailure:
-                if known_failure:
-                    return AgentExecutionFailure(
-                        AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-                    )
-                return AgentExecutionResult(b"done")
-
-            def close(self) -> None:
-                pass
+                if known_failure
+                else AgentExecutionResult(b"done")
+            ),
+        )
 
         outcome = execute_agent_attempt(
             agent_attempt_execution(request),
-            _TerminalExecutor(),
+            terminal,
             store,
             runtime.agent_process_supervisor,
         )
