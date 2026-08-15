@@ -6,8 +6,9 @@ Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/21
 Source-Threads: #21, #1
 Distilled-From: 5300858953, 5300894378, 5302132060, 5302584358, 5302587068,
                 5302590978, 5302602114, 5302961156, 5302967786, 5302447161
-                #21 body, sha256
-                81cf4b1f4703ad6f7000836037beccf848fea9617c633ccd0b8a32b17dca47cf
+                #21 body, sha256 over the exact served bytes — 787 bytes, last
+                byte `.`, nothing appended —
+                5c03ceb1d5f1b85f81ec3acc1f6dea1c72d89817929a772432b9b02fbb74a56b
 Approved-By:    none
 ```
 
@@ -16,15 +17,17 @@ reasons.
 
 The first is the thread's voice. #21 is an **ADR mandate**, not a wish: its body
 lists what a decision record must own, and almost every comment under it is the
-desk writing engineering direction. **Exactly one rule below quotes an operator
-sentence** — rule 15, and only for the demand those words carry. Everything the
-thread frames as operator input is a *question* („es gibt doch GitLab-Runner —
-entwickeln wir ein Konzept, das wir nicht brauchen?", „ist das der richtige Weg?
-sei absolut ehrlich"), a *rejection* („das reicht ja nicht — ich kenne die
-Umgebung nicht"), or a rendering the thread itself marks *wörtlich sinngemäß*.
-The convention grades all three `DESK`, and so does this document: what follows
-is the desk's answer to his questions, and its binding force is negative — make
-no decision now that blocks it.
+desk writing engineering direction. **No rule below is graded `OPERATOR`.** Every
+object in this thread that looks like operator authority is one of the four
+things the convention names as `DESK`: a *question* („es gibt doch GitLab-Runner
+— entwickeln wir ein Konzept, das wir nicht brauchen?", „ist das der richtige
+Weg? sei absolut ehrlich", and the *Operator-Nachfrage* whose standard rule 15
+answers), a *rejection* („das reicht ja nicht — ich kenne die Umgebung nicht"), a
+rendering the thread itself marks *wörtlich sinngemäß*, or an attribution the
+desk wrote around its own prose (`ERGÄNZUNG (Operator…)`). So
+what follows is the desk's answer to his questions, and its binding force is
+negative — make no decision now that blocks it. Not one sentence below binds him
+until he rules it.
 
 The second is that the decision record this thread commissioned **has not
 landed**. ADR 0009 exists only as PR #78 on branch `fable/runner-trust-adr`,
@@ -38,6 +41,26 @@ which the #21 thread invokes by id at rule 4. This document does not distil #1
 and takes no position on its content beyond quoting the sentence the thread
 leans on.
 
+**The #21 body digest is over the exact served bytes**, reproduced with
+
+```console
+$ gh api repos/FlexOr2/atelier-2/issues/21 --template '{{.body}}' | sha256sum
+```
+
+which writes the field and appends nothing. The recipe this directory's README
+currently prescribes, `--jq '.body' | sha256sum`, digests the body plus the
+newline `gh`'s raw-string output adds and yields
+`81cf4b1f4703ad6f7000836037beccf848fea9617c633ccd0b8a32b17dca47cf` for the same
+787 bytes — an identity over a byte the object does not contain. The exact form
+is used here for one reason that is not a preference: the in-flight ADR 0009
+binds #21 as its decision authority by `5c03ceb1…`, and one object cited under
+two digests in two documents is exactly the ambiguity a digest exists to remove.
+The rule making that form canonical is itself in flight — ADR 0010 decision 5,
+PR #81 at head `2ced1ec4`, not landed — and the README's own correction is owed
+and routed to [#93](https://github.com/FlexOr2/atelier-2/issues/93). Named here
+so a reader who reproduces the README recipe and gets the other value knows
+which byte differs, and neither digest is presented as settled convention.
+
 ## Intent
 
 What the operator wants of remote execution, as 5302584358 records it — and that
@@ -50,12 +73,16 @@ a transcript, so it is repeated with that qualifier and never promoted:
 > Provider-Credentials (API-Key im Env o. ä.) liegen auf der jeweiligen
 > Maschine.
 
-Under that sit three sentences the thread does attribute to him directly. Only
-the first states a requirement; the other two are a challenge and a rejection,
-recorded here because they are what forced the rules below into existence:
+Under that sit three fragments the thread attributes to him directly. **None of
+them states a rule.** Two are questions and one is a rejection; they are recorded
+here because they are what forced the rules below into existence, and the answers
+are the desk's:
 
 - „professionell und zugleich absolut sicher und funktionsfähig" (5302587068) —
-  the standard the end state must meet. Rule 15.
+  the standard the desk was challenged to meet. The thread frames it as an
+  *Operator-Nachfrage*, and the words are not a sentence: no subject, no verb,
+  nothing that can independently state a `must`. The rule holding this standard
+  is the desk's reading of it; rule 15.
 - „es gibt doch GitLab-Runner — entwickeln wir ein Konzept, das wir nicht
   brauchen?" (5302590978) — the question that produced the build-versus-consume
   boundary. The boundary is the desk's; rule 4.
@@ -68,7 +95,7 @@ recorded here because they are what forced the rules below into existence:
 The subject itself is stated by the mandate: **one boundary separates the
 coordinating service from every runner, and it is the same boundary whether the
 runner is this machine, a CI job, or a server across the world** (#21 body @
-81cf4b1f).
+5c03ceb1).
 
 ## Rules
 
@@ -238,23 +265,34 @@ and these rules do not restate it:
 
 ### The standard to reach
 
-15. `OPERATOR` — **The end state is professional and absolutely secure and
-    functional at the same time; security is not bought with unusability.** His
-    words, quoted at 5302587068:
+15. `DESK` — **The end state is professional and absolutely secure and
+    functional at the same time; security is not bought with unusability.** The
+    standard the desk is answering, as 5302587068 frames it:
 
     > „professionell und zugleich absolut sicher und funktionsfähig"
 
-    That is the entire operator content of the comment, and the grade covers
-    exactly it: a demand on the end state, with the three terms held together by
-    *zugleich*. Two honest qualifications. The comment frames the quotation as
-    an *Operator-Nachfrage*, and the convention grades an operator question
-    `DESK`; the grade stands here because the quoted words are not interrogative
-    — they state what the result must be. And everything the comment builds
-    around them is desk elaboration binding nothing until he rules it: the
-    four-stage maturity ladder, the choice of SPIFFE/SPIRE as the end form, and
-    the one-command onboarding of rule 16. The framing „Long-term, nicht Prio 1"
-    sits outside his quotation marks and is the desk's, which is why rule 23
-    carries it as the desk's sequencing rather than as his instruction.
+    An earlier revision graded this rule `OPERATOR`. That was wrong, and the
+    reason it was wrong is worth keeping at the rule. The convention's grade
+    requires the cited object to reproduce the operator's own **sentence**, and
+    that sentence to say what the rule says. This fails both halves. The comment
+    frames the words as an *Operator-Nachfrage* — a question, which the
+    convention grades `DESK` outright — and it does so inside an `ERGÄNZUNG
+    (Operator…)` attribution the desk wrote, which the convention also grades
+    `DESK`. The words themselves are a fragment: no subject and no verb, so they
+    cannot independently state the `must` this rule states. Reading them as
+    authoritative because they contain no question mark would make the voice test
+    turn on punctuation inside a desk-authored framing, which is the
+    self-certification the convention exists to refuse. None of the ten objects
+    this document distils contains a complete operator sentence stating this
+    requirement; if one is later posted, this rule is regraded against it.
+
+    The fragment is kept because it is the standard that motivated the rule —
+    three terms held together by *zugleich* — and the rest of the comment is desk
+    elaboration binding nothing either: the four-stage maturity ladder, the choice
+    of SPIFFE/SPIRE as the end form, and the one-command onboarding of rule 16.
+    The framing „Long-term, nicht Prio 1" likewise sits outside the quotation
+    marks and is the desk's, which is why rule 23 carries it as the desk's
+    sequencing rather than as his instruction.
 
 16. `DESK` — **Onboarding is one command, and everything after it is invisibly
     correct.** `atelier runner join <token>` and nothing else, because security
@@ -283,16 +321,16 @@ and these rules do not restate it:
 
 19. `DESK` — **Every command carries a typed, authenticated actor**, and until
     it does, nothing may be called attribution. The mandate names the actor and
-    attribution model for commands as an ADR obligation (#21 body @ 81cf4b1f,
+    attribution model for commands as an ADR obligation (#21 body @ 5c03ceb1,
     feeding #7); the honest half is that today's reconcile actor is a
     self-asserted label, so no surface may present it as attribution. (#21 body
-    @ 81cf4b1f; 5300894378 for the self-asserted-label finding.)
+    @ 5c03ceb1; 5300894378 for the self-asserted-label finding.)
 
 20. `DESK` — **The terminal channel is a separately gated, default-off
     capability**, with a per-attach step-up, short-lived tokens, and an attach
     audit. It is the one channel that carries a human's keystrokes into a
     credential-bearing process, so execution capability never implies it. (#21
-    body @ 81cf4b1f; 5300894378. The audit trail's general shape is 0002 rule
+    body @ 5c03ceb1; 5300894378. The audit trail's general shape is 0002 rule
     3.)
 
 ### The durable half, in code
@@ -365,6 +403,16 @@ and these rules do not restate it:
   queued in the hope a runner appears". They agree that nothing runs unsafely
   and disagree about what the operator sees afterwards: a visibly waiting item,
   or a refused start. Owner: the ADR review; this document does not choose.
+
+  **The ADR review has now answered it, and the answer is not yet landed.** ADR
+  0009 §7 at PR #78 head `0f6d3aca` rules the refusal: an unplaceable run is
+  refused before any durable run, binding, attempt, or provider process, and
+  never queued, "because queueing it turns fail-closed into a hang" — with the
+  refusal name `no-runner-attests-binding` naming the node, the binding and the
+  missing attestation, so the visibility „wartet sichtbar" wants is carried by
+  the refusal rather than by a waiting item. That is a proposed record on an open
+  PR, so it settles nothing here yet: this question closes by citation the moment
+  #78 lands, and until then rule 11 keeps both formulations.
 
 - **ADR 0009 has not landed.** PR #78 (branch `fable/runner-trust-adr`, Status
   PROPOSED, decision-only) is open, and every `§` citation above is to that
