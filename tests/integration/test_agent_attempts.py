@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import sys
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +51,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.agent_attempts import (
+    AgentAttemptClaimedByThisCall,
     AgentAttemptFailed,
     AgentAttemptPossiblyRan,
     AgentAttemptSucceeded,
@@ -190,6 +193,36 @@ class _InspectingExecutor:
         pass
 
 
+@dataclass
+class _CountingProcessExecutor:
+    """Prepares a process whose only effect is one byte per real invocation."""
+
+    counter: Path
+
+    def prepare_process(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentProcessInvocation:
+        del request
+        return AgentProcessInvocation(
+            (
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path(__import__('sys').argv[1]).open('ab').write(b'x')",
+                str(self.counter),
+            ),
+            Path.cwd(),
+            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+        )
+
+    def decode_process_completion(
+        self, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult:
+        return AgentExecutionResult(completion.standard_output)
+
+    def close(self) -> None:
+        pass
+
+
 def test_attempt_is_prepared_before_controlled_executor_invocation(
     tmp_path: Path,
 ) -> None:
@@ -273,23 +306,91 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
         runtime.close()
 
 
-def test_dbos_replayed_claim_result_can_never_authorize_invocation() -> None:
-    source = Path(__file__).parents[2] / "src/atelier2/adapters/dbos/workflow.py"
-    workflow_source = source.read_text(encoding="utf-8")
-    durable_node_source = workflow_source[
-        workflow_source.index("    def durable_node(") :
-    ]
+def test_a_claim_replayed_from_a_lost_incarnation_never_authorizes_invocation(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/lost-incarnation")
+        execution = agent_attempt_execution(request)
+        lost_incarnation = DbosAgentAttemptStore(runtime.engine)
+        lost_incarnation.prepare(execution)
+        assert isinstance(
+            lost_incarnation.claim(execution), AgentAttemptClaimedByThisCall
+        )
 
-    assert "execute_agent_attempt(" in durable_node_source
-    assert (
-        "run_tx_step"
-        not in durable_node_source[
-            durable_node_source.index(
-                "outcome = execute_agent_attempt("
-            ) : durable_node_source.index('if binding["type"] == "action"')
-        ]
+        counter = tmp_path / "invocations"
+        outcome = execute_agent_attempt(
+            execution,
+            _CountingProcessExecutor(counter),
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+        )
+
+        assert isinstance(outcome, AgentAttemptPossiblyRan)
+        assert not counter.exists()
+    finally:
+        runtime.close()
+
+
+def test_the_v2_node_reaches_its_launch_boundary_by_one_application_call() -> None:
+    """Gate the wiring no running test can show, and claim nothing more.
+
+    That a replayed claim launches nothing is behavior, and it is proven twice
+    above and once against a real crashed incarnation in tests/crash. None of
+    those proofs notice if the durable workflow stops asking
+    ``execute_agent_attempt`` and re-decides claim and launch inside its own
+    transaction step, or asks it a second time: every one of them calls the
+    application boundary itself, and a second launch inside one node execution
+    is exactly the duplicate this branch must not contain. This is a narrow
+    source gate on that one wiring decision -- it proves the call site is
+    written exactly once, not the invariant behind it -- and it stands until
+    the node binding moves into the core (#86), which is exactly the change
+    that could lose the boundary while the suite stays green.
+    """
+
+    workflow_module = (
+        Path(__file__).parents[2] / "src/atelier2/adapters/dbos/workflow.py"
     )
-    assert "commit_agent_completed_v2" not in workflow_source
+    tree = ast.parse(workflow_module.read_text(encoding="utf-8"), workflow_module.name)
+    durable_node = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "durable_node"
+    )
+    v2_branch = next(
+        node
+        for node in ast.walk(durable_node)
+        if isinstance(node, ast.If) and _branch_binding_type(node) == "agent-v2"
+    )
+    calls = _calls_by_name(v2_branch)
+
+    assert calls["execute_agent_attempt"] == 1
+    assert not calls.keys() & {"run_tx_step", "claim", "launch_and_wait"}
+    assert not {name for name in calls if name.startswith("commit_")}
+
+
+def _branch_binding_type(branch: ast.If) -> str | None:
+    test = branch.test
+    if not isinstance(test, ast.Compare) or len(test.comparators) != 1:
+        return None
+    compared = test.comparators[0]
+    if not isinstance(compared, ast.Constant) or not isinstance(compared.value, str):
+        return None
+    return compared.value
+
+
+def _calls_by_name(branch: ast.If) -> Counter[str]:
+    names: Counter[str] = Counter()
+    for node in ast.walk(branch):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            names[node.func.id] += 1
+        elif isinstance(node.func, ast.Attribute):
+            names[node.func.attr] += 1
+    return names
 
 
 def test_current_attempt_projection_maps_armed_and_rejects_broken_id(

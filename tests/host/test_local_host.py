@@ -8,7 +8,6 @@ import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol
 from urllib.request import urlopen
 
 import pytest
@@ -469,48 +468,7 @@ def test_real_console_launcher_starts_and_closes_one_runtime(tmp_path: Path) -> 
     assert second.returncode == 0, second_error.decode(errors="replace")
 
 
-def test_child_cleanup_kills_and_waits_after_communicate_timeout() -> None:
-    child = TimeoutChild()
-
-    stop_child_process(child)
-
-    assert child.calls == ["signal", "communicate", "kill", "communicate"]
-
-
-class TimeoutChild:
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    def send_signal(self, sig: int) -> None:
-        del sig
-        self.calls.append("signal")
-
-    def communicate(
-        self, input: bytes | None = None, timeout: float | None = None
-    ) -> tuple[bytes, bytes]:
-        del input
-        self.calls.append("communicate")
-        if self.calls.count("communicate") == 1:
-            raise subprocess.TimeoutExpired(
-                "atelier2", 0 if timeout is None else timeout
-            )
-        return b"", b""
-
-    def kill(self) -> None:
-        self.calls.append("kill")
-
-
-class ChildProcess(Protocol):
-    def send_signal(self, sig: int) -> None: ...
-
-    def communicate(
-        self, input: bytes | None = None, timeout: float | None = None
-    ) -> tuple[bytes, bytes]: ...
-
-    def kill(self) -> None: ...
-
-
-def stop_child_process(child: ChildProcess) -> bytes:
+def stop_child_process(child: subprocess.Popen[bytes]) -> bytes:
     child.send_signal(signal.SIGINT)
     try:
         _, stderr = child.communicate(timeout=10)

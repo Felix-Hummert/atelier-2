@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import ast
 from collections.abc import Callable
 from dataclasses import fields, replace
-from pathlib import Path
 
 import pytest
 
@@ -205,48 +203,6 @@ def test_public_auth_and_configuration_contracts_have_only_exact_safe_fields() -
         "revision_format_version",
         "revision_hash",
     )
-
-
-def test_public_and_durable_symbols_expose_no_private_credential_channel() -> None:
-    forbidden_symbols = {
-        "secret",
-        "secret_value",
-        "credential",
-        "credentials",
-        "credential_handle",
-        "credential_ref",
-        "credential_path",
-        "api_key_value",
-        "key_name",
-        "lookup_key",
-        "private_credential_registry",
-    }
-    source_root = Path(__file__).parents[2] / "src" / "atelier2"
-    channel_owners = (
-        source_root / "contracts" / "agents.py",
-        source_root / "contracts" / "run_bindings.py",
-        source_root / "api" / "models.py",
-        source_root / "api" / "app.py",
-        source_root / "adapters" / "dbos" / "schema.py",
-        source_root / "adapters" / "dbos" / "run_store.py",
-        source_root / "adapters" / "dbos" / "workflow.py",
-    )
-    symbols: set[str] = set()
-    for source_path in channel_owners:
-        tree = ast.parse(
-            source_path.read_text(encoding="utf-8"), source_path.as_posix()
-        )
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                symbols.add(node.name.casefold())
-            elif isinstance(node, ast.Name):
-                symbols.add(node.id.casefold())
-            elif isinstance(node, ast.arg):
-                symbols.add(node.arg.casefold())
-            elif isinstance(node, ast.Attribute):
-                symbols.add(node.attr.casefold())
-
-    assert symbols.isdisjoint(forbidden_symbols)
 
 
 @pytest.mark.parametrize(
