@@ -341,15 +341,7 @@ def test_first_request_reuses_schema_built_during_app_construction(
 
 
 def test_served_agent_attempt_state_is_exactly_the_public_vocabulary() -> None:
-    app = create_app(
-        source_commit="commit",
-        source_tree="tree",
-        ports=empty_ports(),
-        limits=api_limits(),
-        event_poll_backoff=event_poll_backoff(),
-    )
-
-    schema = app.openapi()
+    schema = served_app().openapi()
     served = schema["components"]["schemas"]["AgentAttemptResourceV2"]["properties"]
 
     assert served["state"] == {
