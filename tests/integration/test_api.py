@@ -131,6 +131,19 @@ nodes:
 # elapsed measurement, so the test needs no clock to say which bound governed.
 NO_WAIT_FOR_A_CONTENDED_WRITE = 0.0
 
+V3_DOCUMENT = b"""format_version: 3
+name: Build a candidate for the bound story
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Build every acceptance sentence of the bound story.
+    outputs:
+      - name: candidate
+        schema: {ref: workspace_candidate, revision: schema-candidate}
+"""
+
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
@@ -840,6 +853,22 @@ def test_http_publication_collision_changes_no_durable_state_or_workflow(
 
     assert response.status_code == 409
     assert response.json()["type"].endswith(":revision-collision")
+    assert _durable_snapshot(runtime) == before
+
+
+def test_a_v3_document_reaches_no_durable_revision_and_no_run(
+    runtime: DbosRuntime,
+) -> None:
+    before = _durable_snapshot(runtime)
+
+    response = _client(runtime).post(
+        "/atelier/api/v1/workflow-revisions",
+        content=V3_DOCUMENT,
+        headers={"content-type": "application/yaml"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"].endswith(":invalid-workflow-document")
     assert _durable_snapshot(runtime) == before
 
 

@@ -147,20 +147,35 @@ anchor, an alias, an explicit tag, a merge key, a duplicate key, a second docume
 a document that is not UTF-8 without a byte order mark, and one nested past the
 bound that keeps the refusal a refusal instead of an exhausted stack.
 
-One reference behind that surface now binds: a subworkflow node's
-declared inputs and outputs match the graph boundary of the published child revision
-it names one to one, by name and schema revision, read against that child's real
-content, and a chain nesting deeper than the depth its caller attests is refused
-before that depth resolves or reads anything. A workflow reference names its child
-by revision hash, so a store answering with any other revision is refused instead of
-bound, an input that proves no schema revision cannot bind a typed graph input, and
-recursion is impossible rather than checked: no revision can carry its own hash.
-Every deviation names the node and the chain of references it was reached through. Nothing else behind the surface exists: no registry for the
-remaining references, no capability attestation, no durable record shape, so
-publication and every run path still refuse a V3 document naming the format, and no
-runtime executes a child. V1 and V2 documents keep their exact meaning under their
-own models. [ADR 0006](decisions/0006-node-vocabulary.md) owns this vocabulary and
-the staging rule behind it.
+Every reference behind that surface now binds. A subworkflow node's declared inputs
+and outputs match the graph boundary of the published child revision it names one to
+one, by name and schema revision, read against that child's real content, and a chain
+nesting deeper than the depth its caller attests is refused before that depth resolves
+or reads anything. An input that proves no schema revision cannot bind a typed graph
+input, and recursion is impossible rather than checked: no revision can carry its own
+hash. Every other versioned reference — schema, deterministic and adapter
+operation, context source, read operation, profile, skill, tool, and the policy,
+budget, retry and cancellation policies — resolves against the registry of the kind
+its authored position puts it in, by the exact revision hash it pins, and so does
+every reference of every child the document reuses. A reference whose revision is no
+pinned hash, that no publication of that kind carries, or that a registry answers
+with a revision of another kind or another hash is refused naming the node, the
+field, the declared entry, the chain it was reached through, and the reference
+itself. A subworkflow's own `workflow` reference is one of them and resolves
+through the binder that already read that child, so one question keeps one answer.
+What resolves is
+frozen into one run-configuration revision — the role matrix by its existing binding
+identity and every resolved reference, the child revisions among them —
+hash-framed as one immutable snapshot whose identity does not depend on the order it
+was assembled in. Behind that, nothing: the registries are ports a caller supplies,
+because no durable registry shape and no publication command for one exists yet;
+resolution is lineage-free and a reference's `ref` is carried into that snapshot
+without proving membership, because named lineages, admitted membership and name
+resolution belong to the proposed catalog-identity record, which is not accepted and
+whose `resolve_reference` this port gains when it is; there is no capability attestation
+and no V3 record shape in the store, so publication and every run path still refuse a
+V3 document naming the format, and no runtime executes a child. V1 and V2 documents
+keep their exact meaning under their own models.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically

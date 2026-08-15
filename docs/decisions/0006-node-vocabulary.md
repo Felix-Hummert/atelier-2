@@ -1010,13 +1010,27 @@ say: only the document surface above is implemented — the parser accepts
 here, naming the node and the field, and the subworkflow half of binding holds — a
 node's inputs and outputs bind one to one against the published child revision's own
 `graph_inputs` and `graph_outputs`, and a chain deeper than the depth its caller
-attests is refused naming the chain. Nothing else behind it exists: no registry
-resolving the remaining references, no runtime capability revision, and no V3 record
-shape in the store, so no capability above is attested, the depth bound is a caller
-argument rather than a proven `subworkflow_execution` entry, and every publication
-and execution path refuses a V3 document naming the format. The stories that
-implement the rest attest the subset they prove, and every later capability is an
-attestation change rather than a format change.
+attests is refused naming the chain. Binding at large holds too: every other
+versioned reference this record lists, in the document and in every child it reuses,
+resolves by the exact revision hash it pins against the registry of its authored
+kind, and a malformed reference or an answer that is unpublished, of another kind or
+of another hash refuses naming node, field, declared entry, chain and reference. What resolves is frozen into the run
+configuration revision this record names — the role matrix by its existing binding
+identity, every resolved reference, and every subworkflow's child revision — as one
+immutable framed snapshot, before any run exists.
+
+Nothing else behind it exists. Those registries are ports, not store state: no
+durable registry shape and no publication command for one exists, so a caller
+supplies what resolves and nothing has yet been published to resolve against — the
+store cutover this record makes a hard predecessor is unbuilt, and lineage identity,
+admitted membership and name resolution are the catalog record's, not this one's. The
+run configuration is a computed value rather than a published, bound revision, and it
+carries no runtime capability revision, because none exists: no capability above is
+attested and the depth bound is still a caller argument rather than a proven
+`subworkflow_execution` entry. Every publication and execution path refuses a V3
+document naming the format. The stories that implement the rest attest the subset
+they prove, and every later capability is an attestation change rather than a format
+change.
 Falsifiably: if a later capability forces a format version anyway, this record was
 wrong.
 
