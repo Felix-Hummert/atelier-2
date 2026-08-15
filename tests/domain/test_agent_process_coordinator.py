@@ -535,6 +535,26 @@ def test_a_response_nobody_reads_is_dropped_and_replayed_to_the_next_peer() -> N
     assert _answer(coordinator, 3, _WAIT, 0.4) is stalled
 
 
+def test_a_response_delivered_in_parts_closes_its_channel_only_when_it_is_whole() -> (
+    None
+):
+    provider = _FakeProviderGeneration()
+    coordinator = _launched(provider)
+    _provider_exits(coordinator, provider)
+    coordinator.advance(0.1)
+    response = _request(coordinator, 2, _WAIT, 0.2)
+
+    assert response is not None
+
+    coordinator.record_response_sent(2, 1)
+
+    assert coordinator.channel(2) is not None
+
+    coordinator.record_response_sent(2, len(response) - 1)
+
+    assert coordinator.channel(2) is None
+
+
 def test_finalization_is_refused_before_a_terminal_and_accepted_after_it() -> None:
     provider = _FakeProviderGeneration()
     coordinator = _launched(provider)
