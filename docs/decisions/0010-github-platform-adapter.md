@@ -7,12 +7,18 @@
   record expresses and never re-decides
 - Decision authority: [Issue #24](https://github.com/FlexOr2/atelier-2/issues/24),
   exact body SHA-256 of the served UTF-8 bytes including their trailing newline
-  `67c2e99b04cc00d241430cd636f644016b1c08d4aa3b7b7acb2b9c144f6cea98`
+  `67c2e99b04cc00d241430cd636f644016b1c08d4aa3b7b7acb2b9c144f6cea98`, which poses
+  the open decisions; the auth-method question is ruled by the operator in
+  [comment 5302051551](https://github.com/FlexOr2/atelier-2/pull/81#issuecomment-5302051551),
+  and the three token-method consequences of decisions 5 and 6 by the panel ruling
+  in [#1 comment 5302114585](https://github.com/FlexOr2/atelier-2/issues/1#issuecomment-5302114585)
 - Depends on: [ADR 0006](0006-node-vocabulary.md) (the adapter-operation contract,
   the core-derived idempotency key and the `external_effects` attestation this
   record fills in, and which routed every platform specific here),
   [ADR 0009](0009-runner-trust.md) (secrets by reference, the typed actor, the
-  loopback rule this record's observation choice follows),
+  loopback rule this record's observation choice follows) — **PROPOSED in
+  [PR #78](https://github.com/FlexOr2/atelier-2/pull/78) and not yet on `main`, so
+  this record cannot be accepted before it is**,
   [ADR 0005](0005-enforced-package-boundaries.md) (the boundary gate that keeps
   the client inside the adapter)
 - Feeds: [#79](https://github.com/FlexOr2/atelier-2/issues/79) (the queue, whose
@@ -116,32 +122,52 @@ them as a published configuration revision under #1's live-configuration rule.
 | Credential held | the token itself, long-lived until the operator rotates it | a private key, from which short-lived installation tokens are minted |
 | Scope | the granting user's reach, narrowable per repository and permission | per installation, per repository, per permission |
 | Actor the platform records | the granting user — the operator | the App's own actor, distinct from every human |
-| How an Atelier action is recognizable | by the marker Atelier writes into the object's content | by the account that acted, and by the same marker |
+| How an Atelier action is recognizable | on the platform, only where the operation has a content slot for a marker (decision 5); everywhere else, only from Atelier's own receipts | by the account that acted, on every operation, plus the same marker |
 | Multi-user successor | none: the connection is one human's reach | user-to-server tokens per operator under the same App |
-| Revocation blast radius | rotating the token affects everything that token drives | one installation, revocable alone |
+| Revoking one connection | rotate the token: everything else that token drives breaks with it | uninstall or suspend that installation alone; other installations are untouched |
+| If the held credential leaks | the granting user's reach, until the operator rotates it | **wider, not narrower**: the private key authenticates the App itself, so it can mint an installation token for *every* installation that trusts that App. Recovery is a key rotation across the App, not a local revocation |
 
-**Whichever method is bound, Atelier marks its own actions.** Every object it
-creates or updates carries a machine-readable marker naming Atelier, the run and
-the node that produced it — the same marker decision 5 already requires for
-idempotency, carrying its attribution alongside — and Atelier's own receipts carry
-the typed actor of ADR 0009 §9 regardless of method. So an Atelier action is always
-recognizable in content and always attributed in Atelier's own record.
+**Atelier's own receipts are where actor truth lives, in both methods.** The
+authoritative answer to "did Atelier do this, under which run and node" is
+Atelier's receipt ledger, which carries the typed actor of ADR 0009 §9 whatever the
+platform recorded. Where an operation has a content slot, Atelier additionally
+writes a marker so a human reading the platform sees the same thing (decision 5
+enumerates the slots, because not every operation has one). The platform's actor
+field is therefore corroboration in the App method and, in the token method, no
+evidence about agency at all.
 
 **The honest weakening this record names rather than forbids:** in the token method
-the platform itself records the operator as the actor, so the difference between an
-agent's action and the operator's own hand lives in the object's content, which any
-holder of that account can also write. It is honest labeling, not proof. Two named
-consequences follow, and neither blocks the method: the account-level separation
-#8's fourth anti-gaming rule and #79's automation filter would like exists only in
-the App method, and in the token method those owners read the content marker as a
-*claim* with its provenance rather than as platform-proven attribution
-(decision 6). That is the tradeoff the operator is choosing, stated where they can
-see it.
+the platform records the operator for every operation, so on the platform side an
+agent's action and the operator's own hand differ only by a marker that any holder
+of the account could also write — honest labeling, not proof — and for contentless
+operations not even by that. Three consequences follow, and none blocks the method:
+
+- the account-level separation #8's fourth anti-gaming rule and #79's automation
+  filter would like exists only in the App method; in the token method those owners
+  read Atelier's receipts for what Atelier did, and the content marker as a *claim*
+  with its provenance rather than as platform-proven attribution (decision 6);
+- **a label is never a write operation Atelier performs for authorization
+  purposes.** Labels are an observed input to #79's filter, never an authorization
+  Atelier grants itself; no adapter operation writes a label that any authorization
+  or automation filter reads. Without this rule the token method has an obvious
+  loop — Atelier labels an item as permitted and the platform records the operator
+  as having permitted it — and closing that loop is cheaper than detecting it;
+- **merge and close are bounded in the operation registry, never as adapter-wide
+  powers.** Which state-changing operations exist, what each may transition and
+  what its readback proves are declared per adapter-operation revision under ADR
+  0006, so "Atelier can merge" is never a general truth about the connection: it is
+  true of exactly the published operation revisions the run binds and its
+  `external_effects` attestation covers.
+
+That is the tradeoff the operator is choosing, stated where they can see it.
 
 - **Connecting a project is an explicit operator act**, with a durable record
   binding the project, the chosen method, the reference to its credential, the
-  repository scope and the connecting actor — the same shape as ADR 0009 §4's
-  runner enrolment, and deliberately not a second ceremony. An unconnected project
+  repository scope, the connecting actor, and — in the App method — the App
+  identity and the installation identity the credential is used against, so a leak
+  or a rotation has a named blast radius instead of a discovered one. The record
+  holds those identities and never the credential. It is the same shape as ADR
+  0009 §4's runner enrolment, and deliberately not a second ceremony. An unconnected project
   performs no operation and yields no observation
   (`platform-connection-unknown`); a revoked connection likewise
   (`platform-connection-revoked`).
@@ -181,6 +207,13 @@ only names what the references are.
   Atelier can bound it: the credential channel holds it, rotation and expiry stay
   the operator's, and revoking it is one operator act on the platform. Atelier
   neither copies it nor extends its life.
+- **The App method's long-lived secret is the private key, and its blast radius is
+  the App, not the installation.** Disconnecting or suspending one installation
+  stops that connection; it does nothing about a leaked key, which can still mint
+  an installation token wherever that App is installed. Recovery is therefore a key
+  rotation at the App, and the connection record's App and installation identities
+  are what make the affected set nameable. Neither method's credential is stored,
+  logged or projected, so this is a recovery contract, not a second secret rule.
 - A bound credential reference that does not resolve refuses at run start
   (`platform-credential-unresolvable`), with no fallback to another auth mode.
 - **Raw platform responses do not land durably.** ADR 0006 already has the rule:
@@ -229,22 +262,58 @@ choosing an architecture the deployment cannot run.
   controls.
 - **The core derives the idempotency key** (ADR 0006: run, node, operation revision
   and intent hash); an author never writes one. GitHub's API offers no idempotency
-  key of its own, so the adapter **carries the effect's request hash as a
-  machine-readable marker in the object it creates**, and `execute` is always
-  readback-then-create. The marker is what lets a re-attempt after a crash find the
-  first effect instead of creating its twin. It is the same marker that carries
-  decision 2's attribution, so an Atelier-created object is recognizable as
-  Atelier's under either auth method, and an object created without it is a defect
-  rather than an untracked effect.
-- **Absence is only authoritative from a strongly consistent read** — a direct read
-  of the object, or a listing scoped to the bound repository. The platform's search
-  index is eventually consistent, so an empty search is `UNKNOWN`, never
-  `AUTHORITATIVE_NOT_FOUND`; an operation offering a search-derived absence is
-  refused (`platform-absence-unprovable`). This is where the existing third outcome
-  earns its keep: `UNKNOWN` routes to the operator reconciliation command that
-  `contracts.effects` already owns.
+  key of its own, so where an operation creates a content-bearing object the adapter
+  **carries the effect's request hash in that object's own content**, and `execute`
+  is always readback-then-create. The marker is what lets a re-attempt after a crash
+  find the first effect instead of creating its twin, and it is the same marker that
+  carries decision 2's attribution.
+
+**Where the marker lives, per operation — enumerated, never assumed.** Attribution
+and deduplication are properties of an operation, not of the adapter, so each
+published operation revision declares which row it is:
+
+| Operation kind | Marker slot | Deduplication | Attribution on the platform |
+| --- | --- | --- | --- |
+| Create an issue, a pull request, or a comment | the object's own body, which Atelier authors in full | readback by marker | the marker, plus the account in the App method |
+| Push a commit Atelier authors | a commit trailer, alongside the identity rules AGENTS.md already binds | readback by trailer | the trailer and the commit identity |
+| Edit an object Atelier itself created | the same body slot, rewritten whole | the target's content hash | unchanged from its creation |
+| Write into a body a human owns — a requirement issue above all | **none: Atelier does not write it** | not applicable | not applicable |
+| A contentless change: close, reopen, merge, apply a label, request a review | **none exists** | the target's own state, read back by id | **only Atelier's receipts.** In the token method the platform attributes it to the operator, and this record says so rather than implying otherwise |
+
+Three rules fall out and are binding. **A human-owned body is never mutated to
+carry a marker**, because a requirement issue is #1's editable source of truth and
+a marker written into it corrupts exactly the bytes the revision hashes. **A
+companion comment is never used to mark a contentless change**, because it is a
+second effect with its own failure window and would have to be reconciled against
+the first. And **an operation whose declared row is "none exists" is honest about
+it**: its receipt carries the attribution, no marker is claimed, and no consumer is
+told the platform proved something it did not.
+
+- **What counts as an authoritative negative is declared per operation, and for a
+  create there is none.** The three outcomes of `contracts.effects` are only as
+  honest as the read behind them, so:
+
+| Operation kind | Can readback prove `FOUND`? | Can it prove `AUTHORITATIVE_NOT_FOUND`? |
+| --- | --- | --- |
+| Create a content-bearing object | yes — the marker identifies it | **no.** The platform assigns the identity, so the request has no address to read; a listing is bounded and a search index is eventually consistent. An unmatched scan is `UNKNOWN` |
+| Change the state of an object addressed by id — close, reopen, merge, label, edit | yes — the target's state read by id | yes, for the same reason: the desired state is observable on an object that already exists |
+
+  An operation revision that offers a negative its read cannot support is refused
+  (`platform-absence-unprovable`), and an empty search never becomes an absence.
+  This is where the third outcome earns its keep: `UNKNOWN` routes to the operator
+  reconciliation command `contracts.effects` already owns.
+- **The ambiguous retry needs no new state, because a durable one already precedes
+  the send.** `EffectIntentState.PREPARED` is written durably before any request
+  leaves the adapter, so a crash between send and receipt always leaves a prepared
+  intent with its exact request bytes; readback then resolves it to a receipt, an
+  authoritative absence, or `UNKNOWN` — and `UNKNOWN` advances to
+  `WAITING_RECONCILIATION` rather than being retried blind. **A create is never
+  re-sent on an unresolved outcome**, precisely because its negative is unprovable;
+  that is the case the operator resolves, and it is the honest price of a platform
+  with no idempotency key.
 - **An update is idempotent by content.** A target that already carries the intended
-  content hash is `FOUND`, not a second write.
+  content hash, or already stands in the intended state, is `FOUND`, not a second
+  write.
 - **Scope is bound.** An operation addressing an object outside the connected
   project's repository scope refuses (`platform-object-out-of-scope`), whichever
   method holds the credential; multi-project isolation stays #23's.
@@ -252,9 +321,11 @@ choosing an architecture the deployment cannot run.
   the requirement issue and publishes an immutable revision from the exact served
   UTF-8 body bytes and their SHA-256 — the same canonical rule the fleet applies by
   hand, computed once by the adapter instead of pasted into prose, and carrying the
-  object identity and the read's change marker as provenance. This record decides
-  what is observed, what is hashed and what identity it carries; the durable
-  revision store and the trace format stay with `docs/requirements/README.md`.
+  object identity and the read's change marker as provenance. The issue stays the
+  human's: publication is a read, Atelier never writes that body, and the bytes it
+  hashes are the bytes a human last wrote. This record decides what is observed,
+  what is hashed and what identity it carries; the durable revision store and the
+  trace format stay with `docs/requirements/README.md`.
 
 ### 6. Readback semantics: what merged, closed and labeled mean
 
@@ -265,7 +336,9 @@ marker. Only the core writes a verdict.
 
 - **`merged` is not `closed`.** Merged is the pull request's merged flag together
   with its merge commit. A closed-unmerged pull request is a distinct terminal fact
-  and is never read as success.
+  and is never read as success. Reading these states is unconditional; *performing*
+  a merge or a close is not, and stays bounded to the published operation revisions
+  decision 2 names.
 - **A landing receipt binds both objects.** Native squash merge is authoritative
   (#1), so the reviewed head and tree are not the landed commit. The receipt names
   the reviewed head and tree *and* the resulting merge commit, because #1 requires
@@ -276,7 +349,11 @@ marker. Only the core writes a verdict.
 - **`labeled` is an observed set at a read, and this record mints no label name.**
   The repository carries only the platform's default labels today; the automation
   filter's vocabulary belongs to #79, and inventing one here would be a constant
-  with no named need.
+  with no named need. Labels are read in one direction only: per decision 2 no
+  Atelier operation writes one that an authorization or filter reads, so a label
+  the filter trusts was always set by someone other than Atelier — and in the token
+  method, where the account cannot show that, Atelier's own receipts are what say
+  so.
 - **A check or a review is evidence about exactly one commit.** A check result or an
   approval observed against a different head is not evidence about this candidate,
   because an approval goes stale the moment a new commit is pushed.
@@ -323,7 +400,8 @@ decision 1.
 | `platform-connection-revoked` | the connection record was removed | adapter composition |
 | `platform-credential-unresolvable` | the bound credential reference does not resolve on the adapter's host | run start |
 | `platform-object-out-of-scope` | an operation addresses an object outside the connected repository scope | operation binding |
-| `platform-absence-unprovable` | an operation offers an absence derived from an eventually consistent search | readback |
+| `platform-marker-slot-unavailable` | an operation revision declares a marker slot the object kind it writes does not have | operation binding |
+| `platform-absence-unprovable` | an operation declares an authoritative negative its read cannot support — a create, or an absence derived from an eventually consistent search | operation binding, and again at readback |
 | `platform-actor-unattributable` | an observed action maps to no known actor and carries no Atelier marker | observation |
 | `platform-observation-rate-limited` | the platform's limit stops a poll; visible, cursor preserved | observation |
 
@@ -335,15 +413,20 @@ this record borrows that owner rather than opening a second vocabulary.
 - The operator connects a project in the way they choose, and the low-friction path
   is a first-class one rather than a concession. Neither method is a different
   product: the same operations, receipts, refusals and secret rules hold on both.
-- An Atelier action stops being recognizable only by a prose signature. In both
-  methods it carries a machine-readable marker and a typed actor in Atelier's own
-  receipts; in the App method the account proves it too. The difference between the
-  methods is how strong that attribution is, and the record says which one a
-  consumer is looking at instead of flattening the two.
+- An Atelier action stops being recognizable only by a prose signature. Its typed
+  actor is in Atelier's receipts under both methods, a content marker adds a
+  platform-visible copy wherever an operation has a slot for one, and in the App
+  method the account proves it outright. The record says which of the three a
+  consumer is looking at instead of flattening them.
 - The disowned-verdict failure is therefore mitigated in both methods and closed
-  only in the App one. Naming that honestly is the point: a consumer that needs
-  account-level proof — #8's fourth rule, a future multi-user path — knows it must
-  ask for the App method rather than discovering the gap later.
+  only in the App one — and for a contentless change in the token method it is
+  mitigated only in Atelier's own ledger. Naming that honestly is the point: a
+  consumer that needs account-level proof — #8's fourth rule, a future multi-user
+  path — knows it must ask for the App method rather than discovering the gap later.
+- A create whose outcome no read can settle waits for the operator instead of being
+  retried into a duplicate. That is a real cost of a platform without idempotency
+  keys, paid on the reconciliation path the effect contract already has, rather than
+  hidden behind a listing that cannot prove what it is asked to prove.
 - V1 gains a poll loop and one new port. It gains no inbound surface, no new
   process and no new trust boundary; ADR 0009's remains the only one.
 - The fleet's hand-rolled patterns become machine truth: a claim or verdict comment
@@ -364,12 +447,24 @@ this record borrows that owner rather than opening a second vocabulary.
   raise the same refusals; no operation is available in one method only.
 - The same Action node re-executed after a crash between send and receipt leaves
   exactly one platform object, found by readback, never a twin.
+- A crash before the request leaves the adapter still finds the intent durably
+  `PREPARED` with its exact request bytes, and a create whose readback cannot settle
+  reaches `WAITING_RECONCILIATION` without a second send.
 - A readback that can only search returns `UNKNOWN` and routes to reconciliation;
-  no path returns `AUTHORITATIVE_NOT_FOUND` from a search.
+  no path returns `AUTHORITATIVE_NOT_FOUND` from a search, and no create operation
+  declares an authoritative negative at all.
+- An addressed state change — close, merge, label, edit — proves both outcomes from
+  the target's own state, including the negative.
 - An unconnected or revoked project performs no operation and yields no
   observation, and no durable row is written on the refusal path.
-- Every object Atelier creates carries its marker, in both methods; an object
-  created without one fails the proof.
+- Every operation revision declares its marker slot and its authoritative-negative
+  row, and one declaring a slot its object does not have is refused at binding.
+- A contentless change writes no companion object, and its attribution is readable
+  from Atelier's receipts alone.
+- No operation writes a body Atelier does not own; a requirement issue's bytes are
+  byte-identical before and after a run that observed it.
+- No published operation writes a label that any authorization or automation filter
+  reads.
 - A restart mid-observation resumes from the durable cursor, producing the same
   fact set once, with no gap and no replay.
 - A closed-unmerged pull request never reads as merged, and a landing receipt names
@@ -395,13 +490,17 @@ a webhook needs (ADR 0009 and #9 part 3).
 
 Stop implementation on: an auth method hardcoded instead of chosen per project
 connection, or either method built as a second-class path with fewer operations; a
-marker-derived actor presented as platform-proven attribution; an object Atelier
-creates without its marker; a stored token or installation token; a secret value in
-a workflow, prompt, context package, event, receipt, log or API resource; a create
-without a prior readback; an absence derived from search; a GitHub identifier
-outside the adapter; an agent shell publishing through `gh` instead of an Action
-node; a webhook accepted as truth without a readback; a poll interval hardcoded
-instead of configured; or a label name minted here.
+marker-derived actor presented as platform-proven attribution; a content-bearing
+object created without its marker, or a marker slot assumed for an operation that
+has none; a marker written into a body a human owns; a companion object created to
+mark a contentless change; a label written for an authorization or filter to read;
+an authoritative negative claimed for a create, or any absence derived from search;
+a create re-sent on an unresolved outcome; a stored token or installation token; a
+secret value in a workflow, prompt, context package, event, receipt, log or API
+resource; a create without a prior readback; a GitHub identifier outside the
+adapter; an agent shell publishing through `gh` instead of an Action node; a
+webhook accepted as truth without a readback; a poll interval hardcoded instead of
+configured; or a label name minted here.
 
 ## Supersedes
 
