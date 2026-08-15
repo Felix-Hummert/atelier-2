@@ -33,6 +33,7 @@ from atelier2.contracts.capabilities_v3 import (
     RoleBindingRefused,
     RuntimeCapability,
     SkillContents,
+    SubjectIdentity,
     required_capabilities,
 )
 from atelier2.contracts.composed_preview_v3 import (
@@ -106,6 +107,7 @@ REGISTRY_CONTENTS = (
 )
 
 PARENT_TEMPLATE = """format_version: 3
+name: Build, review in a panel, confirm with the operator and hand off
 nodes:
   - id: implement
     type: agent
@@ -172,6 +174,7 @@ nodes:
 """
 
 CHILD_TEMPLATE = """format_version: 3
+name: Read the candidate and merge the panel's opinions
 graph_inputs:
   - name: candidate
     schema: {{ref: workspace_candidate, revision: {candidate}}}
@@ -200,16 +203,14 @@ nodes:
         schema: {{ref: review_verdict, revision: {verdict}}}
 """
 
-CHILD_REFERENCE = VersionedReference(
-    ref="review_panel",
-    revision=PublishedRevisionHash.of(b"the panel that reviews a candidate").value,
-)
-CHILD_CHAIN = (CHILD_REFERENCE,)
 SKILL_REFERENCE = VersionedReference(
     ref="workspace_discipline", revision=SKILL.revision_hash.value
 )
 CARRIED_GRANT = VersionedReference(
     ref="workspace_write", revision=CARRIED_TOOL.revision_hash.value
+)
+TOOL_REFERENCE = VersionedReference(
+    ref="repository_write", revision=TOOL.revision_hash.value
 )
 SKILL_CONTENTS = PublishedSkills(
     (SkillContents(SKILL.revision_hash.value, (CARRIED_GRANT,)),)
@@ -221,6 +222,11 @@ CHILD = CHILD_TEMPLATE.format(
     deterministic=CHILD_DETERMINISTIC.revision_hash.value,
     verdict=SCHEMA_VERDICT.revision_hash.value,
 ).encode("utf-8")
+
+CHILD_REFERENCE = VersionedReference(
+    ref="review_panel", revision=WorkflowRevision(CHILD).revision_hash.value
+)
+CHILD_CHAIN = (CHILD_REFERENCE,)
 
 PARENT = PARENT_TEMPLATE.format(
     profile=PROFILE.revision_hash.value,
@@ -251,6 +257,7 @@ REUSED_PANEL = """  - id: {node}
 
 TWICE_BOUND_TEMPLATE = (
     """format_version: 3
+name: Build one candidate and send it to two review panels
 nodes:
   - id: implement
     type: agent
@@ -272,6 +279,7 @@ TWICE_BOUND = TWICE_BOUND_TEMPLATE.format(
 ).encode("utf-8")
 
 UNPINNED_PARENT = b"""format_version: 3
+name: Build the story against a profile nobody pinned properly
 nodes:
   - id: implement
     type: agent
@@ -329,20 +337,24 @@ def _auth() -> AuthProfileRevision:
     )
 
 
-def _binding(role: str, model: str) -> ResolvedAgentBinding:
+def _binding(
+    role: str,
+    model: str,
+    capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
+) -> ResolvedAgentBinding:
     auth = _auth()
     configuration = AgentConfigurationRevision(
         model,
         auth.revision_hash,
         AgentExecutorRevision("claude-cli/v1"),
-        AgentExecutionCapability.HEADLESS,
+        capability,
         AgentConfigurationRevisionFormatVersion.V2,
     )
     return ResolvedAgentBinding(AgentRole(role), configuration, auth)
 
 
 BUILDER = _binding("builder", "claude-opus-5")
-REVIEWER = _binding("reviewer", "claude-sonnet-5")
+REVIEWER = _binding("reviewer", "claude-sonnet-5", AgentExecutionCapability.INTERACTIVE)
 ROLE_MATRIX = (BUILDER, REVIEWER)
 
 
@@ -374,11 +386,11 @@ def attesting(
     requirements: Sequence[CapabilityRequirement],
 ) -> AttestedCapabilities:
     """The exact manifest that proves one requirement set, and nothing more."""
-    proven: dict[RuntimeCapability, set[str]] = {}
+    proven: dict[RuntimeCapability, set[SubjectIdentity]] = {}
     for requirement in requirements:
         subjects = proven.setdefault(requirement.capability, set())
         if requirement.subject is not None:
-            subjects.add(requirement.subject.revision)
+            subjects.add(requirement.subject.identity)
     return AttestedCapabilities(
         tuple(
             CapabilityAttestation(capability, frozenset(subjects))
@@ -434,7 +446,7 @@ def node_of(graph: ComposedPreviewGraph, node_id: str) -> PreviewNode:
 def child_of(preview_graph: ComposedPreviewGraph, node_id: str) -> ComposedPreviewGraph:
     child = node_of(preview_graph, node_id).child
     assert child is not None
-    return child
+    return child.graph
 
 
 def demands_of(node: PreviewNode) -> set[RuntimeCapability]:
@@ -446,7 +458,7 @@ def every_node(graph: ComposedPreviewGraph) -> tuple[PreviewNode, ...]:
     for node in graph.nodes:
         nodes.append(node)
         if node.child is not None:
-            nodes.extend(every_node(node.child))
+            nodes.extend(every_node(node.child.graph))
     return tuple(nodes)
 
 
@@ -543,6 +555,7 @@ def test_every_node_previews_the_join_a_scheduler_really_applies() -> None:
             "implement",
             {
                 RuntimeCapability.AGENT_EXECUTION,
+                RuntimeCapability.OUTPUT_VALIDATION,
                 RuntimeCapability.CONTEXT_MATERIALIZATION,
                 RuntimeCapability.CONTEXT_RESOLUTION,
                 RuntimeCapability.SKILL_INSTALLATION,
@@ -578,7 +591,12 @@ def test_a_grant_a_skill_carries_lands_on_the_node_that_installs_the_skill() -> 
         for requirement in implement.demands
         if requirement.capability is RuntimeCapability.TOOL_GRANTS
         and requirement.site.chain
-    ] == [((SKILL_REFERENCE,), CapabilitySubject.of(CARRIED_GRANT))]
+    ] == [
+        (
+            (SKILL_REFERENCE,),
+            CapabilitySubject.of(RevisionKind.TOOL, CARRIED_GRANT),
+        )
+    ]
 
 
 def test_every_demand_of_the_closure_lands_on_exactly_one_node() -> None:
@@ -613,7 +631,13 @@ def test_a_child_bound_by_two_nodes_is_previewed_once_under_each_of_them() -> No
         (node.id, tuple(requirement.capability for requirement in node.demands))
         for node in first.nodes
     ] == [
-        ("read_it", (RuntimeCapability.AGENT_EXECUTION,)),
+        (
+            "read_it",
+            (
+                RuntimeCapability.AGENT_EXECUTION,
+                RuntimeCapability.OUTPUT_VALIDATION,
+            ),
+        ),
         ("merge", (RuntimeCapability.DETERMINISTIC_OPERATIONS,)),
     ]
 
@@ -665,6 +689,12 @@ def test_every_reference_previews_the_published_revision_it_lands_in() -> None:
             "outputs.schema",
             RevisionKind.SCHEMA,
             SCHEMA_VERDICT.revision_hash.value,
+        ),
+        (
+            "panel",
+            "workflow",
+            RevisionKind.WORKFLOW,
+            CHILD_REFERENCE.revision,
         ),
         (
             "decide",
@@ -741,6 +771,60 @@ def test_an_unresolved_reference_is_named_instead_of_stopping_the_preview() -> N
         "confirm",
         "hand_off",
     ]
+
+
+def test_a_withdrawn_skill_is_named_unresolved_instead_of_ending_the_preview() -> None:
+    composed = preview(answers=without_publication(SKILL, PROFILE))
+
+    assert [
+        (entry.reason, entry.site.node, entry.site.field, entry.reference.ref)
+        for entry in composed.graph.unresolved_references
+    ] == [
+        (
+            ReferenceRefusalReason.UNPUBLISHED_REVISION,
+            "implement",
+            "profile",
+            "builder_method",
+        ),
+        (
+            ReferenceRefusalReason.UNPUBLISHED_REVISION,
+            "implement",
+            "skills",
+            "workspace_discipline",
+        ),
+    ]
+    implement = node_of(composed.graph, "implement")
+    assert RuntimeCapability.SKILL_INSTALLATION in demands_of(implement)
+    assert [
+        requirement.subject
+        for requirement in implement.demands
+        if requirement.capability is RuntimeCapability.TOOL_GRANTS
+    ] == [CapabilitySubject.of(RevisionKind.TOOL, TOOL_REFERENCE)]
+
+
+def test_a_skill_nobody_read_and_no_registry_withdrew_is_still_loud() -> None:
+    with pytest.raises(ValueError, match="never read"):
+        compose_preview(
+            WorkflowRevision(PARENT).revision_hash,
+            parsed(),
+            bound_children(),
+            ROLE_MATRIX,
+            PublishedSkills(),
+            FULL_ATTESTATION,
+            PublishedRegistry(FULL_REGISTRY),
+            ConfigurationBinding.PROPOSED,
+        )
+
+
+def test_a_subworkflow_node_previews_the_child_it_named_and_what_that_resolved_to() -> (
+    None
+):
+    child = node_of(preview().graph, "panel").child
+
+    assert child is not None
+    assert child.reference == CHILD_REFERENCE
+    assert child.revision_hash == WorkflowRevision(CHILD).revision_hash.value
+    assert [node.id for node in child.graph.nodes] == ["read_it", "merge"]
 
 
 def test_a_reference_that_pins_no_revision_hash_is_named_as_malformed() -> None:

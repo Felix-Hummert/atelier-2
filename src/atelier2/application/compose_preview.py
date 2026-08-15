@@ -18,7 +18,12 @@ from __future__ import annotations
 from collections.abc import Hashable, Iterable, Mapping
 from dataclasses import dataclass
 
-from atelier2.application.resolve_references import resolve_declared_reference
+from atelier2.application.resolve_references import (
+    ReferenceResolution,
+    bound_children,
+    declared_through,
+    resolve_declared_reference,
+)
 from atelier2.contracts.agents import ResolvedAgentBinding
 from atelier2.contracts.capabilities_v3 import (
     AttestedCapabilities,
@@ -33,12 +38,15 @@ from atelier2.contracts.composed_preview_v3 import (
     ComposedPreview,
     ComposedPreviewGraph,
     ConfigurationBinding,
+    PreviewChild,
     PreviewEdge,
     PreviewNode,
     PreviewNodeKind,
     PreviewRole,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_configuration_v3 import (
+    DeclaredReference,
     ReferenceChain,
     ReferenceRefusal,
     ResolvedReference,
@@ -71,7 +79,15 @@ def compose_preview(
     demanded them, so a surface reads per-node demands without a second traversal
     and the verdict stays one decision about the whole run.
     """
-    requirements = required_capabilities(document, subworkflows, agent_bindings, skills)
+    children = bound_children(subworkflows)
+    resolutions = {
+        declared: resolve_declared_reference(declared, registry, children)
+        for declared in declared_through(document, subworkflows)
+    }
+    readable = skills.with_unresolved(_unresolved_skills(resolutions))
+    requirements = required_capabilities(
+        document, subworkflows, agent_bindings, readable
+    )
     executability = decide_executability(requirements, attested)
     unproven = (
         executability.refusals if isinstance(executability, NotExecutable) else ()
@@ -80,10 +96,27 @@ def compose_preview(
         requirements,
         unproven,
         {binding.role.value: binding for binding in agent_bindings},
-        registry,
+        resolutions,
     )
     graph = _preview_graph(document, subworkflows.subworkflows, (), derivation)
     return ComposedPreview(workflow_revision_hash, configuration, graph, executability)
+
+
+def _unresolved_skills(
+    resolutions: Mapping[DeclaredReference, ReferenceResolution],
+) -> tuple[str, ...]:
+    """Every pinned skill revision that resolves to nothing, so nothing was read.
+
+    A withdrawn skill would otherwise end the drawing where it is read for the
+    grants it carries, and a preview exists to name what is missing rather than to
+    stop at the first thing that is.
+    """
+    return tuple(
+        declared.reference.revision
+        for declared, resolution in resolutions.items()
+        if declared.kind is RevisionKind.SKILL
+        and isinstance(resolution, ReferenceRefusal)
+    )
 
 
 @dataclass(frozen=True)
@@ -93,7 +126,7 @@ class _Derivation:
     requirements: tuple[CapabilityRequirement, ...]
     unproven: tuple[ExecutabilityRefusal, ...]
     roles: Mapping[str, ResolvedAgentBinding]
-    registry: PublishedRevisionRegistry
+    resolutions: Mapping[DeclaredReference, ReferenceResolution]
 
 
 def _preview_graph(
@@ -106,7 +139,7 @@ def _preview_graph(
     resolved: list[ResolvedReference] = []
     unresolved: list[ReferenceRefusal] = []
     for declared in declared_references(graph, chain):
-        resolution = resolve_declared_reference(declared, derivation.registry)
+        resolution = derivation.resolutions[declared]
         if isinstance(resolution, ResolvedReference):
             resolved.append(resolution)
         else:
@@ -172,12 +205,16 @@ def _preview_child(
     children: dict[str, BoundSubworkflow],
     chain: ReferenceChain,
     derivation: _Derivation,
-) -> ComposedPreviewGraph | None:
+) -> PreviewChild | None:
     if not isinstance(node, SubworkflowNodeV3):
         return None
     child = children[node.id]
-    return _preview_graph(
-        child.child, child.children, chain + (child.reference,), derivation
+    return PreviewChild(
+        child.reference,
+        child.child_revision_hash.value,
+        _preview_graph(
+            child.child, child.children, chain + (child.reference,), derivation
+        ),
     )
 
 

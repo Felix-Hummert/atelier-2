@@ -19,7 +19,7 @@ without pinning a reference: `depends_on`, whose extra edges demand scheduling, 
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -303,16 +303,47 @@ class SkillContents:
             raise ValueError("skill contents name the revision they were read from")
 
 
+@dataclass(frozen=True, slots=True)
+class UnresolvedSkill:
+    """A pinned skill revision no publication carries, so nothing was read from it.
+
+    A skill that resolves to nothing installs nothing, so it brings no grants. That
+    is not the silent "none" the loud lookup below exists to prevent: the reference
+    itself is refused where it was declared, so the reader is told.
+    """
+
+    revision: str
+
+    def __post_init__(self) -> None:
+        if not self.revision:
+            raise ValueError("an unresolved skill names the revision that resolved")
+
+
+type SkillReading = SkillContents | UnresolvedSkill
+
+
 @dataclass(frozen=True)
 class PublishedSkills:
     """The read contents of the skill revisions a document pins, keyed by revision."""
 
-    contents: tuple[SkillContents, ...] = ()
+    contents: tuple[SkillReading, ...] = ()
 
     def __post_init__(self) -> None:
         revisions = tuple(entry.revision for entry in self.contents)
         if len(set(revisions)) != len(revisions):
             raise ValueError("one skill revision has exactly one set of contents")
+
+    def with_unresolved(self, revisions: Iterable[str]) -> PublishedSkills:
+        """The same reading, with these revisions known to resolve to nothing.
+
+        The registry decides: a revision it does not carry was not read, whatever a
+        caller believed it had read for that hash.
+        """
+        unresolved = frozenset(revisions)
+        return PublishedSkills(
+            tuple(entry for entry in self.contents if entry.revision not in unresolved)
+            + tuple(UnresolvedSkill(revision) for revision in sorted(unresolved))
+        )
 
     def carried_tool_grants(
         self, skill: VersionedReference
@@ -324,7 +355,11 @@ class PublishedSkills:
         """
         for entry in self.contents:
             if entry.revision == skill.revision:
-                return entry.carried_tool_grants
+                match entry:
+                    case SkillContents():
+                        return entry.carried_tool_grants
+                    case UnresolvedSkill():
+                        return ()
         raise ValueError(
             f"skill revision {skill.revision!r} is pinned, but its carried tool "
             "grants were never read"

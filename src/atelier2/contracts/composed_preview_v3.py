@@ -33,6 +33,7 @@ from atelier2.contracts.workflows_v3 import (
     DeterministicNodeV3,
     JoinRule,
     SubworkflowNodeV3,
+    VersionedReference,
     WaitNodeV3,
     WorkflowNodeV3,
 )
@@ -106,6 +107,25 @@ class PreviewEdge:
 
 
 @dataclass(frozen=True)
+class PreviewChild:
+    """The child one subworkflow node binds: what it named, and what that resolved to.
+
+    Both halves are drawn, because they answer different questions. The authored
+    reference is what the document says and what an author edits; the revision hash
+    is which exact bytes will run, and two children whose parsed graphs look alike
+    are the same picture under different bytes without it.
+    """
+
+    reference: VersionedReference
+    revision_hash: str
+    graph: ComposedPreviewGraph
+
+    def __post_init__(self) -> None:
+        if not self.revision_hash:
+            raise ValueError("a previewed child names the revision it resolved to")
+
+
+@dataclass(frozen=True)
 class PreviewNode:
     """One node as a surface draws it, with what it demands and what it waits for.
 
@@ -122,7 +142,7 @@ class PreviewNode:
     mode: AgentMode | None
     demands: tuple[CapabilityRequirement, ...]
     unproven: tuple[ExecutabilityRefusal, ...]
-    child: ComposedPreviewGraph | None
+    child: PreviewChild | None
 
 
 @dataclass(frozen=True)

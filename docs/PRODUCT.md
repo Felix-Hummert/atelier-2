@@ -166,7 +166,9 @@ the document wrote it in, an agent node with the role, provider, model, configur
 revision and mode it is bound to, the dependency edges and the join a scheduler
 really applies, the capabilities each node demands including the grants its skills
 carry in transitively, the published revision every reference lands in or the named
-reason it lands nowhere, the preview of the child every subworkflow node binds, and
+reason it lands nowhere — a withdrawn skill among them, named rather than ending the
+drawing — the child every subworkflow node binds, by the reference it authored and
+the exact revision that resolved to, with that child's own preview under it, and
 the executability verdict with the capability each still-waiting node needs — marked
 proposed or bound, so an author's intent is never read as a binding. That preview is
 a derivation and nothing else: no route, no rendering and no stored shape carries it.
