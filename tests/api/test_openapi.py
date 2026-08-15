@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from openapi_spec_validator import OpenAPIV31SpecValidator, validate
 
 from atelier2.api import openapi as openapi_module
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
+from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import (
     API_PREFIX,
     CANCELLATION_PATH,

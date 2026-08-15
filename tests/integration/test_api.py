@@ -49,7 +49,8 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
+from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimits
 from atelier2.api.references import encode_canonical_base64, encode_public_run_reference
 from atelier2.contracts.effects import (
