@@ -4,15 +4,25 @@ import asyncio
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import TypeVar, assert_never
 
 from fastapi.sse import ServerSentEvent
 
-from atelier2.api.limits import ApiLimits
-from atelier2.api.models import run_event_resource
+from atelier2.api.limits import ApiLimitExceeded, ApiLimits
+from atelier2.api.models import StreamFailureResource, run_event_resource
+from atelier2.api.problems import problem_resource
 from atelier2.contracts.runs import RunId
-from atelier2.ports.run_events import RunEventPage, RunEventQueries
-from atelier2.ports.workflow_revisions import DurableProjectionLimit
+from atelier2.ports.run_events import (
+    EventHistoryCorrupt,
+    RunEventPage,
+    RunEventQueries,
+)
+from atelier2.ports.workflow_revisions import (
+    PROJECTION_LIMIT_DETAIL,
+    DurableProjectionLimit,
+    QueryDurableStateCorrupt,
+    ReadUnavailable,
+)
 
 Result = TypeVar("Result")
 
@@ -110,6 +120,18 @@ class BoundedQueryRunner:
             raise
 
 
+def _stream_failure(code: str, detail: str | None = None) -> ServerSentEvent:
+    """The last frame of a failed stream.
+
+    It carries no id: a resume cursor on a refusal would invite the browser to
+    reconnect into the same refusal forever.
+    """
+
+    return ServerSentEvent(
+        data=StreamFailureResource(problem=problem_resource(code, detail))
+    )
+
+
 async def stream_server_events(
     prepared: PreparedEventStream,
     queries: RunEventQueries,
@@ -138,31 +160,50 @@ async def stream_server_events(
                 )
             )
         except QueryAdmissionTimeout:
+            # Backpressure is not a failure: end regularly and let the client reconnect.
             return
-        if not isinstance(result, RunEventPage):
-            return
-        if len(result.events) > page_size:
+        match result:
+            case RunEventPage() as page:
+                pass
+            case ReadUnavailable():
+                # Transient unavailability is answered by the client's own reconnect.
+                return
+            case EventHistoryCorrupt() | QueryDurableStateCorrupt():
+                yield _stream_failure("durable-state-corrupt")
+                return
+            case _ as unreachable:
+                assert_never(unreachable)
+        if len(page.events) > page_size:
+            yield _stream_failure("internal-error")
             return
         try:
-            for persisted in result.events:
+            for persisted in page.events:
                 limits.require_event_projection(persisted)
-        except ValueError:
+        except ApiLimitExceeded:
+            yield _stream_failure("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
             return
-        if result.events:
+        except ValueError:
+            yield _stream_failure("durable-state-corrupt")
+            return
+        if page.events:
             next_poll_delay = poll_backoff.initial_delay_seconds
-        for persisted in result.events:
+        for persisted in page.events:
             try:
                 resource = run_event_resource(persisted)
             except ValueError:
+                yield _stream_failure("durable-state-corrupt")
+                return
+            except AssertionError:
+                yield _stream_failure("internal-error")
                 return
             yield ServerSentEvent(
                 id=resource.cursor,
                 data=resource,
             )
             after_sequence = resource.sequence
-        if result.terminal_seen:
+        if page.terminal_seen:
             return
-        if not result.events:
+        if not page.events:
             await sleep(next_poll_delay)
             next_poll_delay = min(
                 poll_backoff.maximum_delay_seconds,

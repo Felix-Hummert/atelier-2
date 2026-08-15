@@ -117,9 +117,16 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     assert content["text/event-stream"]["schema"] == {"type": "string"}
     extension = content["text/event-stream"]["x-atelier2-sse-v1"]
     assert extension == {
-        "id": {"$ref": "#/components/schemas/EventCursor"},
-        "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
+        "durable_event": {
+            "id": {"$ref": "#/components/schemas/EventCursor"},
+            "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
+        },
+        "terminal_failure": {
+            "data": {"$ref": "#/components/schemas/StreamFailureResource"}
+        },
     }
+    failure_frame = schema["components"]["schemas"]["StreamFailureResource"]
+    assert failure_frame["properties"]["event"]["const"] == "STREAM_FAILED"
     event_union = schema["components"]["schemas"]["RunEventResource"]
     assert len(event_union["oneOf"]) == 7
     assert set(event_union["discriminator"]["mapping"]) == set(EVENT_NAMES)

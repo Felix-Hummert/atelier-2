@@ -657,6 +657,18 @@ class ProblemResource(ApiModel):
     detail: str
 
 
+class StreamFailureResource(ApiModel):
+    """The terminal event-stream frame: this stream ended because it failed.
+
+    It carries the same problem body the REST surface would answer, so an
+    operator and a machine consumer read one problem vocabulary whether the
+    failure was decided before the response headers or after them.
+    """
+
+    event: Literal["STREAM_FAILED"] = "STREAM_FAILED"
+    problem: ProblemResource
+
+
 def auth_profile_revision_resource(
     revision: AuthProfileRevision,
 ) -> AuthProfileRevisionResource:

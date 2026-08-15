@@ -319,6 +319,42 @@ describe("Phase 2 mobile run entry", () => {
     expect(feed.close).toHaveBeenCalledTimes(1);
   });
 
+  it("reports the durable corruption the stream named instead of a finished run", async () => {
+    window.history.replaceState(null, "", `/atelier/runs/${v2PublicReference}`);
+    const feed = runEventFeed();
+    render(App, {
+      props: {
+        cockpitApi: api({
+          getRun: vi.fn(async () => v2Run({ workflow_revision_hash: revisionHash }, v2Bindings("b".repeat(64)))),
+          getWorkflowRevision: vi.fn(async () => v2Revision(revisionHash)),
+          openRunEvents: feed.open
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    expect(await screen.findByRole("article", { name: "build — Working" })).toBeTruthy();
+    feed.handlers?.opened();
+    feed.handlers?.event(JSON.stringify({
+      event: "STREAM_FAILED",
+      problem: {
+        type: "urn:atelier2:problem:v1:durable-state-corrupt",
+        title: "Durable state is corrupt",
+        status: 500,
+        detail: "Stop mutation and inspect the durable store."
+      }
+    }));
+
+    const notice = await screen.findByRole("alert");
+    expect(notice.textContent).toContain("Durable state is corrupt");
+    expect(notice.textContent).toContain("Stop mutation and inspect the durable store.");
+    const badge = screen.getByRole("status").textContent;
+    expect(badge).toContain("Stopped");
+    expect(badge).not.toContain("Live");
+    expect(badge).not.toContain("Complete");
+    expect(feed.close).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels publication with Escape, restores focus, and sends no bytes", async () => {
     window.history.replaceState(null, "", "/atelier/new");
     const cockpitApi = api();

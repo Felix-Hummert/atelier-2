@@ -32,10 +32,12 @@
     failResource,
     markComplete,
     markConnecting,
+    markFailed,
     markLive,
     restartStreamProjection,
     startLoading,
     streamProjection,
+    type ConnectionState,
     type RetainedResource,
     type StreamProjection
   } from "../lib/runProjection";
@@ -144,7 +146,7 @@
   }
 
   function ensureEventStream(run: Run): void {
-    if (stream !== null || projection?.connection === "complete") return;
+    if (stream !== null || projection?.connection === "complete" || projection?.connection === "failed") return;
     projection = projection === null
       ? streamProjection(run.public_run_reference, run.workflow_revision_hash)
       : restartStreamProjection(
@@ -155,11 +157,13 @@
     try {
       stream = cockpitApi.openRunEvents(run.public_run_reference, {
         opened: () => {
-          if (projection?.protocol_problem === null) projection = markLive(projection);
+          if (projection?.protocol_problem === null && projection.connection !== "failed") {
+            projection = markLive(projection);
+          }
         },
         event: applyEvent,
         disconnected: () => {
-          if (projection !== null && projection.protocol_problem === null && projection.connection !== "complete") {
+          if (projection !== null && projection.protocol_problem === null && projection.connection !== "complete" && projection.connection !== "failed") {
             projection = markConnecting(projection, true);
           }
         }
@@ -174,6 +178,7 @@
     eventQueue = eventQueue.then(() => applyEventInOrder(rawData)).catch((error: unknown) => {
       stream?.close();
       stream = null;
+      if (projection !== null) projection = markFailed(projection, null);
       failureMessage = error instanceof Error
         ? error.message
         : "The durable event could not be verified.";
@@ -186,7 +191,7 @@
     const graph = snapshot.confirmed?.revision.graph;
     const next = await decodeAndApplyDurableEvent(projection, rawData, graph);
     projection = next;
-    if (next.protocol_problem !== null) {
+    if (next.protocol_problem !== null || next.connection === "failed") {
       stream?.close();
       stream = null;
       return;
@@ -724,14 +729,20 @@
     }
   }
 
+  function streamStopped(value: StreamProjection): boolean {
+    return value.protocol_problem !== null || value.connection === "failed";
+  }
+
+  const connectionLabels = {
+    connecting: "Connecting",
+    live: "Live",
+    reconnecting: "Reconnecting",
+    complete: "Complete",
+    failed: "Stopped"
+  } as const satisfies Record<ConnectionState, string>;
+
   function connectionLabel(value: StreamProjection): string {
-    if (value.protocol_problem !== null) return "Stopped";
-    return {
-      connecting: "Connecting",
-      live: "Live",
-      reconnecting: "Reconnecting",
-      complete: "Complete"
-    }[value.connection];
+    return value.protocol_problem === null ? connectionLabels[value.connection] : "Stopped";
   }
 
   function protocolTitle(value: StreamProjection): string | null {
@@ -786,11 +797,13 @@
     {#if snapshot.request.state === "loading"}<p class="status compact-status" role="status">Refreshing</p>{/if}
 
     {#if projection !== null}
-      <p class="connection connection-{projection.connection}" class:connection-problem={projection.protocol_problem !== null} role="status">
-        <span aria-hidden="true">{projection.protocol_problem !== null ? "◇" : projection.connection === "complete" ? "✓" : projection.connection === "live" ? "●" : "↻"}</span>
+      <p class="connection connection-{projection.connection}" class:connection-problem={streamStopped(projection)} role="status">
+        <span aria-hidden="true">{streamStopped(projection) ? "◇" : projection.connection === "complete" ? "✓" : projection.connection === "live" ? "●" : "↻"}</span>
         {connectionLabel(projection)}
       </p>
-      {#if protocolTitle(projection) !== null}
+      {#if projection.stream_failure !== null}
+        <ProblemNotice problem={projection.stream_failure} />
+      {:else if protocolTitle(projection) !== null}
         <ProblemNotice title={protocolTitle(projection) ?? "Event invalid"} message={protocolDetail(projection) ?? ""} />
       {/if}
     {/if}

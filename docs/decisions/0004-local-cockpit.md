@@ -17,7 +17,10 @@ and EventSource behind one typed client. Closed Zod decoders refuse resources or
 events that do not match the API contract. The run page retains the last
 confirmed snapshot while refreshing and projects only the immutable workflow
 revision, current durable run resource, and contiguous durable event history.
-It owns no run state machine or domain event log.
+It owns no run state machine or domain event log. A stream that ended because it
+failed is never shown as one that finished: the server's terminal failure frame
+stops the stream, marks the connection stopped, and prints the API's own problem
+title and detail instead of a locally invented message.
 
 Browser mutation state is limited to one session-scoped delivery journal. Before
 sending publish, start, Wait-answer, or reconciliation requests, the cockpit

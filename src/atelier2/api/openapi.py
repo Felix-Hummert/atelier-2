@@ -21,6 +21,7 @@ from atelier2.api.models import (
     AgentCompletedEventResourceV2,
     AgentFailedEventResourceV2,
     AgentInterruptedEventResourceV2,
+    StreamFailureResource,
     SubworkflowCompletedEventResource,
     SubworkflowCompletedEventResourceV2,
     WaitAnsweredEventResource,
@@ -349,6 +350,11 @@ def _install_event_components(schema: dict[str, Any]) -> None:
             {"$ref": "#/components/schemas/RunEventResourceV2"},
         ]
     }
+    failure_schema = StreamFailureResource.model_json_schema(
+        mode="serialization", ref_template="#/components/schemas/{model}"
+    )
+    components.update(failure_schema.pop("$defs", {}))
+    components[StreamFailureResource.__name__] = failure_schema
     components["EventCursor"] = {
         "type": "string",
         "pattern": EVENT_CURSOR_PATTERN,
@@ -495,8 +501,13 @@ def _install_sse_contract(schema: dict[str, Any]) -> None:
         "text/event-stream": {
             "schema": {"type": "string"},
             "x-atelier2-sse-v1": {
-                "id": {"$ref": "#/components/schemas/EventCursor"},
-                "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
+                "durable_event": {
+                    "id": {"$ref": "#/components/schemas/EventCursor"},
+                    "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
+                },
+                "terminal_failure": {
+                    "data": {"$ref": "#/components/schemas/StreamFailureResource"}
+                },
             },
         }
     }
