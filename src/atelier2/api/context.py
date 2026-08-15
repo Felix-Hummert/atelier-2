@@ -60,7 +60,15 @@ def install_api_context(app: FastAPI, context: ApiContext) -> None:
     app.state.api_context = context
 
 
-def api_context(request: Request) -> ApiContext:
+async def api_context(request: Request) -> ApiContext:
+    """Hand the routes the context the composition installed.
+
+    Declared async on purpose: FastAPI runs a non-coroutine dependency through
+    `run_in_threadpool`, which would put a worker-thread hop and a slot of the
+    process-wide thread limiter on the request path of every endpoint — for an
+    attribute read the routes used to get for free from a closure.
+    """
+
     context: ApiContext = request.app.state.api_context
     return context
 

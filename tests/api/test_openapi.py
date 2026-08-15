@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator
+from inspect import isasyncgenfunction, iscoroutinefunction
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
-from fastapi.routing import iter_route_contexts
+from fastapi.dependencies.models import Dependant
+from fastapi.routing import APIRoute, RouteContext, iter_route_contexts
 from fastapi.testclient import TestClient
 from openapi_spec_validator import OpenAPIV31SpecValidator, validate
 
@@ -37,6 +40,20 @@ def served_app() -> FastAPI:
         limits=api_limits(),
         event_poll_backoff=event_poll_backoff(),
     )
+
+
+def api_routes(app: FastAPI) -> Iterator[RouteContext]:
+    """Every endpoint the application answers, however it was registered.
+
+    This is the enumeration the schema generator itself walks, so it is blind
+    to whether a route was declared on the application or on an included
+    router. The application's own `openapi.json` route and any static mount
+    are not endpoints and drop out here.
+    """
+
+    for route in iter_route_contexts(app.routes):
+        if isinstance(route.original_route, APIRoute):
+            yield route
 
 
 def rendered_document(document: dict[str, Any]) -> str:
@@ -120,12 +137,40 @@ def test_schema_routes_keep_their_endpoint_names_in_registration_order() -> None
 
     registered = tuple(
         (method, route.path, route.name)
-        for route in iter_route_contexts(served_app().routes)
-        if route.include_in_schema and route.path is not None
+        for route in api_routes(served_app())
+        if route.include_in_schema
         for method in sorted(route.methods or ())
     )
 
     assert registered == EXPECTED_ROUTE_SEQUENCE
+
+
+def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> None:
+    """The request path stays on the event loop.
+
+    FastAPI runs any non-coroutine endpoint or dependency through
+    `run_in_threadpool`, which costs a worker-thread hop and a slot of the
+    process-wide thread limiter on every request. The only blocking work this
+    API does is a durable query, and that already goes through
+    `BoundedQueryRunner` under its own bound.
+    """
+
+    def nested_dependencies(dependant: Dependant) -> Iterator[Dependant]:
+        yield dependant
+        for nested in dependant.dependencies:
+            yield from nested_dependencies(nested)
+
+    def runs_on_the_event_loop(called: Callable[..., Any]) -> bool:
+        return iscoroutinefunction(called) or isasyncgenfunction(called)
+
+    threaded = sorted(
+        dependency.call.__name__
+        for route in api_routes(served_app())
+        for dependency in nested_dependencies(route.dependant)
+        if dependency.call is not None and not runs_on_the_event_loop(dependency.call)
+    )
+
+    assert threaded == []
 
 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
