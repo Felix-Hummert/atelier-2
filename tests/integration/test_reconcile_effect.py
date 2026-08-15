@@ -13,14 +13,9 @@ from dbos import DBOSClient
 from sqlalchemy import exc
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos.advancer import (
-    DbosDurableRunAdvancer,
-    graph_action_intent,
-)
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.reconciler import (
     DbosEffectReconcileCommander,
-    ReconcileCommandIdentityConflict,
     reconcile_workflow_id_for,
 )
 from atelier2.adapters.dbos.run_store import (
@@ -37,12 +32,16 @@ from atelier2.adapters.dbos.schema import (
     run_events,
     runs,
 )
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.application.advance_run import advance_run
-from atelier2.application.reconcile_effect import reconcile_effect
-from atelier2.application.start_run import start_run
+from atelier2.application.reconcile_effect import (
+    ReconcileRunResult,
+    ReconciliationAcceptedPending,
+    ReconciliationCommandConflict,
+    ReconciliationExistingApplied,
+    ReconciliationStale,
+    reconcile_effect_result,
+)
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -61,8 +60,13 @@ from atelier2.contracts.effects import (
     ReconcileCommandSnapshot,
     ReconcileCommandState,
 )
-from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.runs import (
+    prepare_and_launch_graph_action,
+    start_published_v1_run,
+    submit_reconcile_command,
+)
 from tests.scenarios.runtime import exact_output_runtime
 
 WORKFLOW_DOCUMENT = b"""format_version: 1
@@ -89,25 +93,17 @@ def waiting(
     )
     runtime.initialize_storage()
     revision = WorkflowRevision(WORKFLOW_DOCUMENT)
-    start_run(
-        StartRunRequest(RunId("run-1"), revision),
-        DbosDurableRunStarter(runtime.engine, runtime.settings),
-    )
+    start_published_v1_run(runtime.engine, runtime.settings, RunId("run-1"), revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(
             connection, RunId("run-1"), revision.revision_hash, "agent"
         )
-        intent = graph_action_intent(
-            connection,
-            RunId("run-1"),
-            revision.revision_hash,
-            runtime.effect_adapter_binding,
-        )
-    advance_run(
-        intent,
-        DbosDurableRunAdvancer(
-            runtime.engine, runtime.settings, runtime.effect_adapter_binding
-        ),
+    intent = prepare_and_launch_graph_action(
+        runtime.engine,
+        runtime.settings,
+        RunId("run-1"),
+        revision.revision_hash,
+        runtime.effect_adapter_binding,
     )
     with canonical_write_transaction(runtime.engine) as connection:
         updated = connection.execute(
@@ -167,8 +163,10 @@ def test_command_atomically_owns_the_waiting_intent_and_enqueues_reconciliation(
     runtime, commander, intent = waiting
     submitted = command(intent)
 
-    assert reconcile_effect(submitted, commander) == ReconcileCommandSnapshot(
-        submitted, ReconcileCommandState.PENDING
+    assert reconcile_effect_result(submitted, commander) == (
+        ReconciliationAcceptedPending(
+            ReconcileCommandSnapshot(submitted, ReconcileCommandState.PENDING)
+        )
     )
     with runtime.engine.connect() as connection:
         assert connection.execute(
@@ -196,7 +194,7 @@ def test_exact_command_retry_returns_its_current_state_without_enqueuing_again(
 ) -> None:
     runtime, commander, intent = waiting
     submitted = command(intent)
-    reconcile_effect(submitted, commander)
+    submit_reconcile_command(runtime.engine, runtime.settings, submitted)
     with runtime.engine.begin() as connection:
         connection.execute(
             reconcile_commands.update().values(
@@ -209,8 +207,10 @@ def test_exact_command_retry_returns_its_current_state_without_enqueuing_again(
         lambda *args, **kwargs: pytest.fail("retry enqueued another workflow"),
     )
 
-    assert reconcile_effect(submitted, commander) == ReconcileCommandSnapshot(
-        submitted, ReconcileCommandState.APPLIED
+    assert reconcile_effect_result(submitted, commander) == (
+        ReconciliationExistingApplied(
+            ReconcileCommandSnapshot(submitted, ReconcileCommandState.APPLIED)
+        )
     )
 
 
@@ -219,10 +219,14 @@ def test_command_id_reuse_with_changed_payload_refuses_without_mutation(
 ) -> None:
     runtime, commander, intent = waiting
     submitted = command(intent)
-    reconcile_effect(submitted, commander)
+    submit_reconcile_command(runtime.engine, runtime.settings, submitted)
 
-    with pytest.raises(ReconcileCommandIdentityConflict):
-        reconcile_effect(replace(submitted, evidence="different evidence"), commander)
+    assert (
+        reconcile_effect_result(
+            replace(submitted, evidence="different evidence"), commander
+        )
+        == ReconciliationCommandConflict()
+    )
 
     with runtime.engine.connect() as connection:
         assert (
@@ -249,23 +253,25 @@ def test_concurrent_opposing_commands_commit_one_pending_and_one_rejected(
     commands = (command(intent, "found", True), command(intent, "absent", False))
     barrier = Barrier(2)
 
-    def submit(value: ReconcileCommand) -> ReconcileCommandSnapshot:
+    def submit(value: ReconcileCommand) -> ReconcileRunResult:
         barrier.wait(timeout=5)
-        return reconcile_effect(value, commander)
+        return reconcile_effect_result(value, commander)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        snapshots = list(pool.map(submit, commands))
+        results = list(pool.map(submit, commands))
 
-    assert {snapshot.state for snapshot in snapshots} == {
-        ReconcileCommandState.PENDING,
-        ReconcileCommandState.REJECTED_CONFLICT,
+    assert {type(result) for result in results} == {
+        ReconciliationAcceptedPending,
+        ReconciliationStale,
     }
     with runtime.engine.connect() as connection:
-        winner = next(
-            snapshot
-            for snapshot in snapshots
-            if snapshot.state is ReconcileCommandState.PENDING
-        )
+        (accepted,) = [
+            result
+            for result in results
+            if isinstance(result, ReconciliationAcceptedPending)
+        ]
+        winner = accepted.snapshot
+        assert winner.state is ReconcileCommandState.PENDING
         assert (
             connection.scalar(
                 sa.select(sa.func.count())
@@ -307,9 +313,9 @@ def test_concurrent_opposing_commands_commit_one_pending_and_one_rejected(
 def test_reconcile_commits_exact_receipt_run_cursor_and_resolved_event_together(
     waiting: tuple[DbosRuntime, DbosEffectReconcileCommander, EffectIntent],
 ) -> None:
-    runtime, commander, intent = waiting
+    runtime, _commander, intent = waiting
     submitted = command(intent)
-    reconcile_effect(submitted, commander)
+    submit_reconcile_command(runtime.engine, runtime.settings, submitted)
     determination = submitted.determination
     assert isinstance(determination, OperatorFoundEffect)
     resolved = encode_found(

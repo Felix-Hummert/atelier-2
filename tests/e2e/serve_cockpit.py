@@ -18,11 +18,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from atelier2 import host
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import agent_attempts, runs
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.references import encode_public_run_reference
-from atelier2.application.start_run import start_run
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
 from atelier2.contracts.effects import (
     AdapterRevision,
@@ -33,7 +31,7 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     PerformedEffect,
 )
-from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.host import HostSettings
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
@@ -46,6 +44,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
 )
+from tests.scenarios.runs import start_published_v1_run
 
 WORKFLOW = b"""format_version: 1
 start: agent
@@ -196,9 +195,10 @@ def main() -> None:
     try:
         prepare.initialize_storage()
         revision = WorkflowRevision(WORKFLOW)
-        starter = DbosDurableRunStarter(prepare.engine, prepare.settings)
         for run_id in RUN_IDS:
-            start_run(StartRunRequest(RunId(run_id), revision), starter)
+            start_published_v1_run(
+                prepare.engine, prepare.settings, RunId(run_id), revision
+            )
         prepare.launch()
         wait_for_reconciliation(prepare)
     finally:

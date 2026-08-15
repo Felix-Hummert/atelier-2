@@ -60,7 +60,15 @@ def child(
         capture_output=True,
         text=True,
         timeout=timeout,
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2] / "src")},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                (
+                    str(Path(__file__).parents[2]),
+                    str(Path(__file__).parents[2] / "src"),
+                )
+            ),
+        },
     )
     assert result.returncode == expected, result.stderr
 

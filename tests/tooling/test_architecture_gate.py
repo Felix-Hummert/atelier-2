@@ -52,12 +52,14 @@ def add_contract_to_host_import(project: Path) -> None:
 
 def add_root_to_application_package_import(project: Path) -> None:
     with (project / "src/atelier2/__init__.py").open("a", encoding="utf-8") as package:
-        package.write("from atelier2.application import start_run\n")
+        package.write("import atelier2.application\n")
 
 
 def add_root_to_application_leaf_import(project: Path) -> None:
     with (project / "src/atelier2/__init__.py").open("a", encoding="utf-8") as package:
-        package.write("from atelier2.application.start_run import start_run\n")
+        package.write(
+            "from atelier2.application.answer_wait import answer_wait_result\n"
+        )
 
 
 def add_api_to_dbos_import(project: Path) -> None:

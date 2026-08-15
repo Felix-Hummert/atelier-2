@@ -38,12 +38,8 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import (
-    RevisionHashCollision,
-    Run,
     RunId,
-    RunIdentityConflict,
     RunState,
-    StartRunRequest,
     WorkflowRevision,
 )
 from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraph, WorkflowGraphV2
@@ -93,62 +89,6 @@ class DbosDurableRunStarter:
             if agent_executor_registry is None
             else agent_executor_registry
         )
-
-    def start(self, request: StartRunRequest) -> Run:
-        graph = parse_executable_workflow_document(request.revision.document)
-        if not isinstance(graph, WorkflowGraph):
-            raise TypeError("the V1 direct-start contract requires a V1 workflow")
-        client = DBOSClient(
-            system_database_engine=self._engine, use_listen_notify=False
-        )
-        try:
-            with self._engine.begin() as connection:
-                self._insert_or_verify_revision(connection, request)
-                existing = self._existing_run(connection, request.run_id)
-                if existing is not None:
-                    if existing.revision_hash != request.revision.revision_hash:
-                        raise RunIdentityConflict(
-                            "RunId already belongs to another workflow revision"
-                        )
-                    return existing
-
-                workflow_id = bootstrap_workflow_id_for(request.run_id)
-                connection.execute(
-                    runs.insert().values(
-                        run_id=request.run_id.value,
-                        bootstrap_workflow_id=workflow_id,
-                        revision_hash=request.revision.revision_hash.value,
-                        workflow_format_version=1,
-                        agent_binding_set_hash=None,
-                        current_node_id=graph.start,
-                        state=RunState.STARTED.value,
-                        state_version=0,
-                        last_event_sequence=0,
-                        terminal_hash=None,
-                    )
-                )
-                options: EnqueueOptions = {
-                    "workflow_name": WORKFLOW_NAME,
-                    "queue_name": QUEUE_NAME,
-                    "workflow_id": workflow_id,
-                    "app_version": self._settings.application_version,
-                }
-                client.enqueue_in_transaction(
-                    connection,
-                    options,
-                    request.run_id.value,
-                    request.revision.revision_hash.value,
-                )
-                return Run(
-                    request.run_id,
-                    request.revision.revision_hash,
-                    RunState.STARTED,
-                    graph.start,
-                    0,
-                    0,
-                )
-        finally:
-            client.destroy()
 
     def start_published(
         self, request: AnyStartPublishedRunRequest
@@ -390,40 +330,6 @@ class DbosDurableRunStarter:
         finally:
             if client is not None:
                 client.destroy()
-
-    @staticmethod
-    def _insert_or_verify_revision(
-        connection: sa.Connection, request: StartRunRequest
-    ) -> None:
-        connection.execute(
-            workflow_revisions.insert()
-            .prefix_with("OR IGNORE")
-            .values(
-                revision_hash=request.revision.revision_hash.value,
-                document=request.revision.document,
-            )
-        )
-        stored = connection.scalar(
-            sa.select(workflow_revisions.c.document).where(
-                workflow_revisions.c.revision_hash
-                == request.revision.revision_hash.value
-            )
-        )
-        if stored != request.revision.document:
-            raise RevisionHashCollision(
-                "stored workflow revision bytes disagree with their hash"
-            )
-
-    @staticmethod
-    def _existing_run(connection: sa.Connection, run_id: RunId) -> Run | None:
-        record = (
-            connection.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
-            .mappings()
-            .one_or_none()
-        )
-        if record is None:
-            return None
-        return run_from_record(record)
 
 
 class DbosWorkflowRevisionPublisher:

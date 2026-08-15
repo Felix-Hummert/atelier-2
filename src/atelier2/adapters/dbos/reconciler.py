@@ -21,7 +21,6 @@ from atelier2.contracts.effects import (
     OperatorFoundEffect,
     ReconcileCommand,
     ReconcileCommandId,
-    ReconcileCommandSnapshot,
     ReconcileCommandState,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
@@ -37,10 +36,6 @@ from atelier2.ports.effects import (
 RECONCILE_WORKFLOW_ID_PREFIX = "atelier2-reconcile-"
 
 
-class ReconcileCommandIdentityConflict(RuntimeError):
-    """A command identifier was retried with different immutable input."""
-
-
 def reconcile_workflow_id_for(command_id: ReconcileCommandId) -> str:
     return (
         RECONCILE_WORKFLOW_ID_PREFIX
@@ -52,23 +47,6 @@ class DbosEffectReconcileCommander:
     def __init__(self, engine: Engine, settings: DbosRuntimeSettings) -> None:
         self._engine = engine
         self._settings = settings
-
-    def submit(self, command: ReconcileCommand) -> ReconcileCommandSnapshot:
-        result = self.submit_result(command)
-        if isinstance(
-            result, (DurableReconciliationCreated, DurableReconciliationExisting)
-        ):
-            return result.snapshot
-        if isinstance(
-            result,
-            (
-                DurableReconciliationCommandConflict,
-                DurableReconciliationDeterminationConflict,
-                DurableReconciliationTargetMissing,
-            ),
-        ):
-            raise ReconcileCommandIdentityConflict(type(result).__name__)
-        raise RuntimeError(f"reconcile command refused: {type(result).__name__}")
 
     def submit_result(self, command: ReconcileCommand) -> DurableReconciliationResult:
         client: DBOSClient | None = None

@@ -15,9 +15,7 @@ from typing import TypedDict, cast
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer, graph_action_intent
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
-from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
     commit_action_completed,
@@ -32,12 +30,10 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeSettings,
 )
 from atelier2.adapters.dbos.schema import effect_intents, runs
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.references import encode_event_cursor, encode_public_run_reference
-from atelier2.application.advance_run import advance_run
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -55,8 +51,13 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
-from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, WorkflowRevision
 from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.runs import (
+    prepare_and_launch_graph_action,
+    start_published_v1_run,
+    submit_reconcile_command,
+)
 
 DOCUMENT = b"""format_version: 1
 start: agent
@@ -99,22 +100,15 @@ def _seed_first_three_events(
     try:
         run_id = RunId("crash/sse")
         revision = WorkflowRevision(DOCUMENT)
-        DbosDurableRunStarter(runtime.engine, runtime.settings).start(
-            StartRunRequest(run_id, revision)
-        )
+        start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
         with canonical_write_transaction(runtime.engine) as connection:
             commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
-            intent = graph_action_intent(
-                connection,
-                run_id,
-                revision.revision_hash,
-                runtime.effect_adapter_binding,
-            )
-        advance_run(
-            intent,
-            DbosDurableRunAdvancer(
-                runtime.engine, runtime.settings, runtime.effect_adapter_binding
-            ),
+        intent = prepare_and_launch_graph_action(
+            runtime.engine,
+            runtime.settings,
+            run_id,
+            revision.revision_hash,
+            runtime.effect_adapter_binding,
         )
         with canonical_write_transaction(runtime.engine) as connection:
             connection.execute(
@@ -131,7 +125,7 @@ def _seed_first_three_events(
                 intent.request.payload,
             )
         command = _reconcile_command(intent)
-        DbosEffectReconcileCommander(runtime.engine, runtime.settings).submit(command)
+        submit_reconcile_command(runtime.engine, runtime.settings, command)
         determination = command.determination
         assert isinstance(determination, OperatorFoundEffect)
         with Session(runtime.engine) as session, session.begin():

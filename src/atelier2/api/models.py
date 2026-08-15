@@ -411,17 +411,9 @@ class RunResourceV2(ApiModel):
 AnyRunResource = RunResource | RunResourceV2
 
 
-class RunPageResource(ApiModel):
-    items: tuple[RunResource, ...]
-    next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
-
-
 class VersionedRunPageResource(ApiModel):
     items: tuple[AnyRunResource, ...]
     next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
-
-
-AnyRunPageResource = RunPageResource | VersionedRunPageResource
 
 
 class EffectReceiptResource(ApiModel):

@@ -7,35 +7,22 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from threading import Thread
-from typing import cast
 
 import pytest
 import uvicorn
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
 from atelier2.api.references import encode_event_cursor, encode_public_run_reference
 from atelier2.contracts.runs import RunId
-from atelier2.ports.agent_configurations import AgentConfigurationCatalog
-from atelier2.ports.durable_runs import (
-    DurablePublishedRunStarter,
-    TransactionalWaitAnswerer,
-)
-from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.run_events import (
     CursorAhead,
     EventHistoryCorrupt,
     PrepareRunEventStreamResult,
     ReadRunEventPageResult,
-    RunEventQueries,
     StreamReady,
 )
-from atelier2.ports.run_queries import RunQueries, RunQueryMissing
-from atelier2.ports.workflow_revisions import (
-    WorkflowRevisionPublisher,
-    WorkflowRevisionQueries,
-)
-from tests.scenarios.api import api_limits, event_poll_backoff
+from atelier2.ports.run_queries import RunQueryMissing
+from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 
 class FakeEventQueries:
@@ -64,21 +51,10 @@ class FakeEventQueries:
 
 
 def app_for(queries: FakeEventQueries):
-    unused = object()
     return create_app(
         source_commit="commit",
         source_tree="tree",
-        ports=ApiPorts(
-            cast(WorkflowRevisionPublisher, unused),
-            cast(DurablePublishedRunStarter, unused),
-            cast(TransactionalWaitAnswerer, unused),
-            cast(TransactionalEffectReconcileCommander, unused),
-            cast(WorkflowRevisionQueries, unused),
-            cast(RunQueries, unused),
-            cast(RunEventQueries, queries),
-            parse_workflow_document,
-            cast(AgentConfigurationCatalog, unused),
-        ),
+        ports=api_ports(run_event_queries=queries),
         limits=api_limits(),
         event_poll_backoff=event_poll_backoff(),
     )

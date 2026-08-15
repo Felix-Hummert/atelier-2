@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import cast
+from typing import Any, Never, cast
 
 from fastapi.testclient import TestClient
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
@@ -207,6 +208,32 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
 ]
 
 
+class UnusedPort:
+    """A port the route under test must not reach."""
+
+    def __getattr__(self, name: str) -> Never:
+        raise AssertionError(f"the route under test reached the {name} port")
+
+
+def api_ports(**overrides: object) -> ApiPorts:
+    """The full port set with only the ports a test names actually wired."""
+    unused = UnusedPort()
+    ports: dict[str, Any] = {
+        "workflow_revision_publisher": unused,
+        "published_run_starter": unused,
+        "wait_answerer": unused,
+        "reconcile_commander": unused,
+        "workflow_revision_queries": unused,
+        "run_queries": unused,
+        "run_event_queries": unused,
+        "workflow_document_parser": parse_workflow_document,
+        "agent_configuration_catalog": unused,
+        "agent_attempt_canceller": unused,
+    }
+    ports.update(overrides)
+    return ApiPorts(**ports)
+
+
 def api_limits(**changes: int) -> ApiLimits:
     configured = ApiLimits(
         maximum_request_body_bytes=65_536,
@@ -288,6 +315,9 @@ def durable_api_client(runtime: DbosRuntime) -> TestClient:
                 workflow_document_parser=parse_workflow_document,
                 agent_configuration_catalog=DbosAgentConfigurationCatalog(
                     runtime.engine, runtime.agent_executor_registry
+                ),
+                agent_attempt_canceller=DbosAgentAttemptStore(
+                    runtime.engine, runtime.settings.application_version
                 ),
             ),
             limits=api_limits(),

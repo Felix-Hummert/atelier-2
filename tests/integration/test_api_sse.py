@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer, graph_action_intent
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
@@ -50,7 +49,6 @@ from atelier2.api.stream import (
     PreparedEventStream,
     stream_server_events,
 )
-from atelier2.application.advance_run import advance_run
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.effects import (
     AdapterRevision,
@@ -67,7 +65,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
-from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.run_events import RunEventPage
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
@@ -80,6 +78,11 @@ from tests.scenarios.api import (
     SSE_PUBLIC_RUN_REFERENCE,
     api_limits,
     event_poll_backoff,
+)
+from tests.scenarios.runs import (
+    prepare_and_launch_graph_action,
+    start_published_v1_run,
+    submit_reconcile_command,
 )
 from tests.scenarios.runtime import exact_output_runtime
 
@@ -112,22 +115,15 @@ def _runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
 def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
     run_id = RunId("sse/run")
     revision = WorkflowRevision(DOCUMENT)
-    DbosDurableRunStarter(runtime.engine, runtime.settings).start(
-        StartRunRequest(run_id, revision)
-    )
+    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
-        intent = graph_action_intent(
-            connection,
-            run_id,
-            revision.revision_hash,
-            runtime.effect_adapter_binding,
-        )
-    advance_run(
-        intent,
-        DbosDurableRunAdvancer(
-            runtime.engine, runtime.settings, runtime.effect_adapter_binding
-        ),
+    intent = prepare_and_launch_graph_action(
+        runtime.engine,
+        runtime.settings,
+        run_id,
+        revision.revision_hash,
+        runtime.effect_adapter_binding,
     )
     with canonical_write_transaction(runtime.engine) as connection:
         connection.execute(
@@ -153,7 +149,7 @@ def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
         "inspected exact request",
         OperatorFoundEffect(EffectId("effect"), EffectResult(b"result")),
     )
-    DbosEffectReconcileCommander(runtime.engine, runtime.settings).submit(command)
+    submit_reconcile_command(runtime.engine, runtime.settings, command)
     determination = command.determination
     assert isinstance(determination, OperatorFoundEffect)
     with Session(runtime.engine) as session, session.begin():
@@ -205,6 +201,7 @@ def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
             DbosAgentConfigurationCatalog(
                 runtime.engine, runtime.agent_executor_registry
             ),
+            DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version),
         ),
         limits=api_limits(event_page_size=page_size),
         event_poll_backoff=event_poll_backoff(),

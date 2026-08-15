@@ -11,18 +11,19 @@ import sqlalchemy as sa
 
 from atelier2.adapters.dbos.continuation import action_continuation_workflow_id_for
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
-from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
-from atelier2.adapters.dbos.run_store import (
-    DbosWaitAnswerer,
-    RunTransitionConflict,
-)
+from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.application.answer_wait import answer_wait
-from atelier2.application.reconcile_effect import reconcile_effect
-from atelier2.application.start_run import start_run
+from atelier2.application.answer_wait import (
+    AnswerAcceptedPending,
+    AnswerBytesConflict,
+    AnswerExistingApplied,
+    AnswerExistingPending,
+    AnswerStateConflict,
+    AnswerWaitResult,
+    answer_wait_result,
+)
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectAdapterBinding,
@@ -39,7 +40,6 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import (
     NodeExecutionId,
     SubmitWaitAnswerRequest,
-    WaitAnswerSnapshot,
     answer_workflow_id_for,
     logical_effect_key_for,
     node_workflow_id_for,
@@ -47,8 +47,13 @@ from atelier2.contracts.executions import (
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.effects import EffectAdapter
+from tests.scenarios.runs import (
+    start_published_v1_run,
+    submit_reconcile_command,
+    submit_wait_answer,
+)
 from tests.scenarios.runtime import exact_output_runtime
 
 UNORDERED_WORKFLOW = b"""format_version: 1
@@ -113,10 +118,7 @@ def runtime(root: Path, *, unknown_marker: Path | None = None) -> DbosRuntime:
 def start_and_launch(lease: DbosRuntime, run_id: str = "run-1") -> WorkflowRevision:
     revision = WorkflowRevision(UNORDERED_WORKFLOW)
     lease.initialize_storage()
-    start_run(
-        StartRunRequest(RunId(run_id), revision),
-        DbosDurableRunStarter(lease.engine, lease.settings),
-    )
+    start_published_v1_run(lease.engine, lease.settings, RunId(run_id), revision)
     lease.launch()
     return revision
 
@@ -201,11 +203,12 @@ def workflow_identity_rows(root: Path, workflow_id: str) -> tuple[tuple[str, str
 
 
 def submit_answer(lease: DbosRuntime, revision: WorkflowRevision) -> None:
-    answer_wait(
+    submit_wait_answer(
+        lease.engine,
+        lease.settings.application_version,
         SubmitWaitAnswerRequest(
             RunId("run-1"), revision.revision_hash, "waiting", b"5"
         ),
-        DbosWaitAnswerer(lease.engine, lease.settings.application_version),
     )
 
 
@@ -332,10 +335,7 @@ def test_initial_and_reconciled_action_share_one_continuation(tmp_path: Path) ->
             "destination inspected",
             OperatorAuthoritativeAbsence(),
         )
-        reconcile_effect(
-            command,
-            DbosEffectReconcileCommander(reconciled.engine, reconciled.settings),
-        )
+        submit_reconcile_command(reconciled.engine, reconciled.settings, command)
         wait_for_state(reconciled, RunState.WAITING_INPUT)
         reconciled_identity = action_path_identity(reconciled, reconciled_revision)
         assert events(reconciled) == [
@@ -419,31 +419,31 @@ def test_answer_submission_is_exact_and_concurrent(
         wait_for_state(lease, RunState.WAITING_INPUT)
         barrier = Barrier(2)
 
-        def submit(
-            answer_bytes: bytes,
-        ) -> WaitAnswerSnapshot | RunTransitionConflict:
+        def submit(answer_bytes: bytes) -> AnswerWaitResult:
             barrier.wait(timeout=5)
-            try:
-                return answer_wait(
-                    SubmitWaitAnswerRequest(
-                        RunId("run-1"),
-                        revision.revision_hash,
-                        "waiting",
-                        answer_bytes,
-                    ),
-                    DbosWaitAnswerer(lease.engine, lease.settings.application_version),
-                )
-            except RunTransitionConflict as error:
-                return error
+            return answer_wait_result(
+                SubmitWaitAnswerRequest(
+                    RunId("run-1"),
+                    revision.revision_hash,
+                    "waiting",
+                    answer_bytes,
+                ),
+                DbosWaitAnswerer(lease.engine, lease.settings.application_version),
+            )
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(submit, answers))
 
         snapshots = [
-            result for result in results if isinstance(result, WaitAnswerSnapshot)
+            result.snapshot
+            for result in results
+            if isinstance(
+                result,
+                (AnswerAcceptedPending, AnswerExistingPending, AnswerExistingApplied),
+            )
         ]
         conflicts = [
-            result for result in results if isinstance(result, RunTransitionConflict)
+            result for result in results if isinstance(result, AnswerBytesConflict)
         ]
         if answers[0] == answers[1]:
             assert len(snapshots) == 2
@@ -492,13 +492,15 @@ def test_invalid_integer_answer_writes_no_product_or_dbos_state(
     idle = runtime(tmp_path)
     try:
         before = all_durable_rows(tmp_path)
-        with pytest.raises(ValueError, match="canonical base-10"):
-            answer_wait(
+        assert (
+            answer_wait_result(
                 SubmitWaitAnswerRequest(
                     RunId("run-1"), revision.revision_hash, "waiting", answer_bytes
                 ),
                 DbosWaitAnswerer(idle.engine, idle.settings.application_version),
             )
+            == AnswerStateConflict()
+        )
         assert all_durable_rows(tmp_path) == before
     finally:
         idle.close()
@@ -531,8 +533,9 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
         request = SubmitWaitAnswerRequest(
             RunId("run-1"), revision.revision_hash, "waiting", b"5"
         )
-        first = answer_wait(request, answerer)
-        assert first.state.value == "PENDING"
+        first = answer_wait_result(request, answerer)
+        assert isinstance(first, AnswerAcceptedPending)
+        assert first.snapshot.state.value == "PENDING"
         assert answer_counts(tmp_path) == (1, 1, 0)
         assert workflow_identity_rows(tmp_path, answer_workflow_id) == (
             (answer_workflow_id, "atelier2_wait_answer"),
@@ -541,14 +544,18 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
         assert workflow_identity_rows(tmp_path, subworkflow_id) == ()
         pending_rows = all_durable_rows(tmp_path)
 
-        assert answer_wait(request, answerer) == first
-        with pytest.raises(RunTransitionConflict):
-            answer_wait(
+        assert answer_wait_result(request, answerer) == AnswerExistingPending(
+            first.snapshot
+        )
+        assert (
+            answer_wait_result(
                 SubmitWaitAnswerRequest(
                     RunId("run-1"), revision.revision_hash, "waiting", b"6"
                 ),
                 answerer,
             )
+            == AnswerBytesConflict()
+        )
         assert all_durable_rows(tmp_path) == pending_rows
         assert answer_counts(tmp_path) == (1, 1, 0)
     finally:
@@ -567,15 +574,18 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
             applied.engine, applied.settings.application_version
         )
         applied_rows = all_durable_rows(tmp_path)
-        retried = answer_wait(request, answerer)
-        assert retried.state.value == "APPLIED"
-        with pytest.raises(RunTransitionConflict):
-            answer_wait(
+        retried = answer_wait_result(request, answerer)
+        assert isinstance(retried, AnswerExistingApplied)
+        assert retried.snapshot.state.value == "APPLIED"
+        assert (
+            answer_wait_result(
                 SubmitWaitAnswerRequest(
                     RunId("run-1"), revision.revision_hash, "waiting", b"6"
                 ),
                 answerer,
             )
+            == AnswerBytesConflict()
+        )
         assert all_durable_rows(tmp_path) == applied_rows
         assert answer_counts(tmp_path) == (1, 1, 1)
         assert workflow_identity_rows(tmp_path, answer_workflow_id) == (

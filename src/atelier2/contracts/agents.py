@@ -199,12 +199,6 @@ class AgentBindingSet:
             ),
         )
 
-    def configuration_hash_for(self, role: AgentRole) -> AgentConfigurationRevisionHash:
-        for binding in self.bindings:
-            if binding.role == role:
-                return binding.agent_configuration_revision_hash
-        raise KeyError(role.value)
-
 
 @dataclass(frozen=True)
 class ResolvedAgentBinding:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
@@ -35,6 +36,7 @@ app = create_app(
         queries,
         parse_workflow_document,
         DbosAgentConfigurationCatalog(engine, AgentExecutorRegistry()),
+        DbosAgentAttemptStore(engine, settings.application_version),
     ),
     limits=api_limits(event_page_size=2),
     event_poll_backoff=event_poll_backoff(),

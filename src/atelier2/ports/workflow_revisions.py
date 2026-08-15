@@ -65,13 +65,11 @@ class PublishedWorkflowResolver(Protocol):
     ) -> ResolvePublishedWorkflowResult: ...
 
 
-class WorkflowProjectionLimit(Protocol):
+class DurableProjectionLimit(Protocol):
     def validate_document(self, document: bytes) -> None: ...
 
     def validate_graph(self, graph: AnyWorkflowDocument) -> None: ...
 
-
-class DurableProjectionLimit(WorkflowProjectionLimit, Protocol):
     @property
     def maximum_document_bytes(self) -> int: ...
 

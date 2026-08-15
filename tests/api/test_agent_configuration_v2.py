@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
 from atelier2.api.models import RunEventResourceV2, run_event_resource
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agent_attempts import AgentAttemptId
@@ -32,7 +32,6 @@ from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKin
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_configurations import (
-    AgentConfigurationCatalog,
     AgentConfigurationRevisionCollision,
     AgentConfigurationRevisionCreated,
     AgentExecutorBindingUnavailable,
@@ -42,21 +41,19 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionMissing,
 )
 from atelier2.ports.durable_runs import (
-    DurablePublishedRunStarter,
     DurableRunCreated,
     DurableStateCorrupt,
     DurableWriteUnavailable,
     StartPublishedRunRequestV2,
-    TransactionalWaitAnswerer,
 )
-from atelier2.ports.effects import TransactionalEffectReconcileCommander
-from atelier2.ports.run_events import PersistedRunEvent, RunEventQueries
-from atelier2.ports.run_queries import RunFound, RunProjection, RunQueries
-from atelier2.ports.workflow_revisions import (
-    WorkflowRevisionPublisher,
-    WorkflowRevisionQueries,
+from atelier2.ports.run_events import PersistedRunEvent
+from atelier2.ports.run_queries import RunFound, RunProjection
+from tests.scenarios.api import (
+    SSE_COMPLETE_HISTORY,
+    api_limits,
+    api_ports,
+    event_poll_backoff,
 )
-from tests.scenarios.api import SSE_COMPLETE_HISTORY, api_limits, event_poll_backoff
 
 AUTH = AuthProfileRevision("max", 7, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
 CONFIGURATION = AgentConfigurationRevision(
@@ -101,23 +98,13 @@ class RecordingCatalog:
 
 
 def _client(catalog: RecordingCatalog) -> TestClient:
-    missing = object()
     return TestClient(
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=ApiPorts(
-                workflow_revision_publisher=cast(WorkflowRevisionPublisher, missing),
-                published_run_starter=cast(DurablePublishedRunStarter, missing),
-                wait_answerer=cast(TransactionalWaitAnswerer, missing),
-                reconcile_commander=cast(
-                    TransactionalEffectReconcileCommander, missing
-                ),
-                workflow_revision_queries=cast(WorkflowRevisionQueries, missing),
-                run_queries=cast(RunQueries, missing),
-                run_event_queries=cast(RunEventQueries, missing),
+            ports=api_ports(
                 workflow_document_parser=parse_executable_workflow_document,
-                agent_configuration_catalog=cast(AgentConfigurationCatalog, catalog),
+                agent_configuration_catalog=catalog,
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
@@ -348,28 +335,17 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
         def get_run(self, _run_id: RunId, _projection_limit: object) -> RunFound:
             return RunFound(RunProjection(run, graph, None))
 
-    missing = object()
     starter = Starter()
     queries = Queries()
     client = TestClient(
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=ApiPorts(
-                workflow_revision_publisher=cast(WorkflowRevisionPublisher, missing),
-                published_run_starter=cast(DurablePublishedRunStarter, starter),
-                wait_answerer=cast(TransactionalWaitAnswerer, missing),
-                reconcile_commander=cast(
-                    TransactionalEffectReconcileCommander, missing
-                ),
-                workflow_revision_queries=cast(WorkflowRevisionQueries, missing),
-                run_queries=cast(RunQueries, queries),
-                run_event_queries=cast(RunEventQueries, missing),
+            ports=api_ports(
+                published_run_starter=starter,
+                run_queries=queries,
                 workflow_document_parser=parse_executable_workflow_document,
-                agent_configuration_catalog=cast(
-                    AgentConfigurationCatalog,
-                    RecordingCatalog(object(), object()),
-                ),
+                agent_configuration_catalog=RecordingCatalog(object(), object()),
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),

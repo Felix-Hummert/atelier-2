@@ -6,7 +6,6 @@ from typing import Protocol
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
     EffectIntent,
-    EffectIntentSnapshot,
     EffectReadback,
     PerformedEffect,
     ReconcileCommand,
@@ -64,14 +63,6 @@ class EffectAdapterFactory(Protocol):
     def binding(self) -> EffectAdapterBinding: ...
 
     def open(self) -> EffectAdapter: ...
-
-
-class DurableRunAdvancer(Protocol):
-    def advance(self, intent: EffectIntent) -> EffectIntentSnapshot: ...
-
-
-class EffectReconcileCommander(Protocol):
-    def submit(self, command: ReconcileCommand) -> ReconcileCommandSnapshot: ...
 
 
 class TransactionalEffectReconcileCommander(Protocol):

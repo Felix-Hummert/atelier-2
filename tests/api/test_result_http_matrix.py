@@ -42,7 +42,6 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
-from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurableAnswerBytesConflict,
@@ -98,13 +97,12 @@ from atelier2.ports.workflow_revisions import (
     ListWorkflowRevisionsResult,
     QueryDurableStateCorrupt,
     ReadUnavailable,
-    WorkflowProjectionLimit,
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
-from tests.scenarios.api import api_limits, event_poll_backoff
+from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 DOCUMENT = b"""format_version: 1
 start: final
@@ -655,7 +653,7 @@ class MatrixQueries:
     def get_workflow_revision(
         self,
         revision_hash: WorkflowRevisionHash,
-        projection_limit: WorkflowProjectionLimit | None = None,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetWorkflowRevisionResult:
         del revision_hash, projection_limit
         assert self.case.source == "revision-get"
@@ -665,7 +663,7 @@ class MatrixQueries:
         self,
         after: RunId | None,
         limit: int,
-        projection_limit: WorkflowProjectionLimit | None = None,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> ListRunsResult:
         del after, limit, projection_limit
         assert self.case.source == "run-list"
@@ -674,7 +672,7 @@ class MatrixQueries:
     def get_run(
         self,
         run_id: RunId,
-        projection_limit: WorkflowProjectionLimit | None = None,
+        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetRunResult:
         del run_id, projection_limit
         self.run_reads += 1
@@ -720,16 +718,16 @@ class MatrixQueries:
 
 def _ports(case: RouteResultCase) -> ApiPorts:
     queries = MatrixQueries(case)
-    return ApiPorts(
-        MatrixPublisher(case),
-        MatrixStarter(case),
-        MatrixAnswerer(case),
-        MatrixCommander(case),
-        queries,
-        queries,
-        queries,
-        parse_executable_workflow_document,
-        cast(AgentConfigurationCatalog, queries),
+    return api_ports(
+        workflow_revision_publisher=MatrixPublisher(case),
+        published_run_starter=MatrixStarter(case),
+        wait_answerer=MatrixAnswerer(case),
+        reconcile_commander=MatrixCommander(case),
+        workflow_revision_queries=queries,
+        run_queries=queries,
+        run_event_queries=queries,
+        workflow_document_parser=parse_executable_workflow_document,
+        agent_configuration_catalog=queries,
     )
 
 
