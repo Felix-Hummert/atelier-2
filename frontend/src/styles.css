@@ -506,8 +506,18 @@ textarea {
   border-left-color: var(--danger);
 }
 
-.node-done {
+.node-done,
+.node-completed {
   border-left-color: var(--accent);
+}
+
+.node-failed,
+.node-interrupted {
+  border-left-color: var(--warning);
+}
+
+.node-cancelled {
+  border-left-color: var(--queued);
 }
 
 .node-header,
@@ -583,12 +593,23 @@ textarea {
   clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
 }
 
-.state-done {
+.state-done,
+.state-completed {
   color: var(--accent);
 }
 
-.state-done .state-shape {
+.state-done .state-shape,
+.state-completed .state-shape {
   border-radius: 50%;
+}
+
+.state-failed,
+.state-interrupted {
+  color: var(--warning);
+}
+
+.state-cancelled {
+  color: var(--queued);
 }
 
 @keyframes working-pulse {

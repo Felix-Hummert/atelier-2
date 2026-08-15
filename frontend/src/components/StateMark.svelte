@@ -8,13 +8,21 @@
     queued: "Queued",
     working: "Working",
     needs_you: "Needs you",
-    done: "Done"
+    done: "Done",
+    completed: "Completed",
+    failed: "Failed",
+    cancelled: "Cancelled",
+    interrupted: "Interrupted"
   };
   const shapes: Record<NodeState, string> = {
     queued: "",
     working: "▲",
     needs_you: "!",
-    done: "✓"
+    done: "✓",
+    completed: "✓",
+    failed: "×",
+    cancelled: "—",
+    interrupted: "◇"
   };
 </script>
 

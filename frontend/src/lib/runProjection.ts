@@ -33,7 +33,15 @@ export interface StreamProjection {
   payload_bytes_by_cursor: ReadonlyMap<string, Uint8Array>;
 }
 
-export type NodeState = "queued" | "working" | "needs_you" | "done";
+export type NodeState =
+  | "queued"
+  | "working"
+  | "needs_you"
+  | "done"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
 
 export interface NodeProjection {
   node: WorkflowNode;
@@ -237,8 +245,9 @@ function snapshotNodeState(
   currentIndex: number,
   lastEvent: RunEvent | null
 ): NodeState {
-  if (lastEvent !== null && isTerminalNodeEvent(lastEvent)) {
-    return "done";
+  if (lastEvent !== null) {
+    const terminal = terminalNodeState(lastEvent);
+    if (terminal !== null) return terminal;
   }
   if (index < currentIndex) {
     return "done";
@@ -258,6 +267,12 @@ function snapshotNodeState(
       ? "working"
       : "needs_you";
   }
+  if ("workflow_format_version" in run && node.type === "agent") {
+    const attemptState = run.agent_attempts.at(-1)?.state;
+    if (attemptState === "FAILED") return "failed";
+    if (attemptState === "CANCELLED") return "cancelled";
+    if (attemptState === "INTERRUPTED") return "interrupted";
+  }
   return node.node_id === run.current_node.node_id ? "working" : "queued";
 }
 
@@ -267,8 +282,9 @@ function eventDrivenNodeState(
   latestEvent: RunEvent,
   nodes: readonly WorkflowNode[]
 ): NodeState {
-  if (lastNodeEventValue !== null && isTerminalNodeEvent(lastNodeEventValue)) {
-    return "done";
+  if (lastNodeEventValue !== null) {
+    const terminal = terminalNodeState(lastNodeEventValue);
+    if (terminal !== null) return terminal;
   }
   if (latestEvent.node_id === node.node_id) {
     if (
@@ -310,10 +326,28 @@ function isTerminalNodeEvent(event: RunEvent): boolean {
   );
 }
 
+function terminalNodeState(event: RunEvent): NodeState | null {
+  if (event.event === "AGENT_FAILED") return "failed";
+  if (event.event === "AGENT_CANCELLED") return "cancelled";
+  if (event.event === "AGENT_INTERRUPTED") return "interrupted";
+  if (event.event === "AGENT_COMPLETED" && "workflow_format_version" in event) {
+    return "completed";
+  }
+  return isTerminalNodeEvent(event) ? "done" : null;
+}
+
 function eventMatchesGraph(event: RunEvent, graph: WorkflowGraph): boolean {
   const node = graph.nodes.find((candidate) => candidate.node_id === event.node_id);
   if (node === undefined) return false;
-  if (node.type === "agent") return event.event === "AGENT_COMPLETED";
+  if (node.type === "agent") {
+    return [
+      "AGENT_COMPLETED",
+      "AGENT_FAILED",
+      "AGENT_CANCEL_REQUESTED",
+      "AGENT_CANCELLED",
+      "AGENT_INTERRUPTED"
+    ].includes(event.event);
+  }
   if (node.type === "action") {
     return (
       event.event === "ACTION_RECONCILIATION_REQUIRED" ||

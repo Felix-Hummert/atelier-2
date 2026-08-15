@@ -46,6 +46,13 @@ function event(event: string, fields: Record<string, unknown> = {}) {
   };
 }
 
+function v2Event(eventName: string, fields: Record<string, unknown> = {}) {
+  return { ...event(eventName, fields), workflow_format_version: 2 };
+}
+
+const v2Attempt = { attempt_id: digest, attempt_ordinal: 1 };
+const v2Cancellation = { ...v2Attempt, command_id: "cancel-1", replacement: "ONE" };
+
 describe("closed API decoders", () => {
   it("decodes all four graph node variants and refuses unknown fields", () => {
     const decoded = decodeWorkflowRevisionDetail({
@@ -187,6 +194,35 @@ describe("closed API decoders", () => {
     event("SUBWORKFLOW_COMPLETED", { result: 5, result_hash: digest })
   ])("decodes the closed durable event union: $event", (value) => {
     expect(decodeRunEvent(value).event).toBe(value.event);
+  });
+
+  it.each([
+    v2Event("AGENT_COMPLETED", { ...v2Attempt, output_base64: "YW5zd2Vy", output_hash: digest }),
+    v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: "PROCESS_EXITED_UNSUCCESSFULLY" }),
+    v2Event("AGENT_CANCEL_REQUESTED", v2Cancellation),
+    v2Event("AGENT_CANCELLED", {
+      ...v2Cancellation,
+      disposition: "REAPED_AFTER_TERM",
+      replacement_attempt_id: "b".repeat(64)
+    }),
+    v2Event("AGENT_INTERRUPTED", {
+      ...v2Cancellation,
+      replacement: "NONE",
+      disposition: "OWNER_LOST_AFTER_PARENT_DEATH",
+      replacement_attempt_id: null
+    }),
+    v2Event("ACTION_RECONCILIATION_REQUIRED", { request_base64: "eA==", request_hash: digest }),
+    v2Event("ACTION_RECONCILIATION_RESOLVED", { receipt: receipt() }),
+    v2Event("ACTION_COMPLETED", { receipt: receipt() }),
+    v2Event("WAITING_INPUT", { answer_type: "integer" }),
+    v2Event("WAIT_ANSWERED", { answer: "17", answer_hash: digest }),
+    v2Event("SUBWORKFLOW_COMPLETED", { result: 5, result_hash: digest })
+  ])("decodes every public V2 event member: $event", (value) => {
+    expect(decodeRunEvent(value).event).toBe(value.event);
+  });
+
+  it("refuses an unknown V2 event member instead of dropping it", () => {
+    expect(() => decodeRunEvent(v2Event("NODE_PROGRESS", { percent: 50 }))).toThrow();
   });
 
   it("refuses an unknown durable event kind", () => {
