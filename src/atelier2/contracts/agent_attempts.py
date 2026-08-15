@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
     AgentExecutionRequestHash,
     AgentExecutorOperationalIdentity,
     AgentReceiptHash,
@@ -89,8 +90,11 @@ class AgentProcessOwnerId:
     value: str
 
     def __post_init__(self) -> None:
-        if not 1 <= len(self.value) <= 1024:
-            raise ValueError("agent process owner id must contain 1..1024 characters")
+        if not 1 <= len(self.value) <= MAXIMUM_AGENT_FIELD_CHARACTERS:
+            raise ValueError(
+                "agent process owner id must contain "
+                f"1..{MAXIMUM_AGENT_FIELD_CHARACTERS} characters"
+            )
 
 
 @dataclass(frozen=True)
@@ -98,8 +102,11 @@ class WatchdogGenerationId:
     value: str
 
     def __post_init__(self) -> None:
-        if not 1 <= len(self.value) <= 1024:
-            raise ValueError("watchdog generation id must contain 1..1024 characters")
+        if not 1 <= len(self.value) <= MAXIMUM_AGENT_FIELD_CHARACTERS:
+            raise ValueError(
+                "watchdog generation id must contain "
+                f"1..{MAXIMUM_AGENT_FIELD_CHARACTERS} characters"
+            )
 
 
 @dataclass(frozen=True)
@@ -111,8 +118,11 @@ class AgentAttemptCancellation:
     disposition: AgentAttemptCancellationDisposition | None = None
 
     def __post_init__(self) -> None:
-        if not 1 <= len(self.command_id) <= 1024:
-            raise ValueError("cancellation command id must contain 1..1024 characters")
+        if not 1 <= len(self.command_id) <= MAXIMUM_AGENT_FIELD_CHARACTERS:
+            raise ValueError(
+                "cancellation command id must contain "
+                f"1..{MAXIMUM_AGENT_FIELD_CHARACTERS} characters"
+            )
         if (
             type(self.expected_attempt_state_version) is not int
             or self.expected_attempt_state_version < 0

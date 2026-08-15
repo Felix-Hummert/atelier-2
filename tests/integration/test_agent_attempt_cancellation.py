@@ -2,14 +2,26 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
 
-from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
-from atelier2.adapters.dbos.run_store import RunTransitionConflict
+from atelier2.adapters.dbos.agent_attempt_store import (
+    CANCELLATION_WORKFLOW_NAME,
+    REPLACEMENT_WORKFLOW_NAME,
+    DbosAgentAttemptStore,
+)
+from atelier2.adapters.dbos.run_store import (
+    RunTransitionConflict,
+    _insert_event,
+    load_run,
+)
+from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import agent_attempts, run_events
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
@@ -21,7 +33,7 @@ from atelier2.contracts.agent_attempts import (
     CancelAgentAttemptRequest,
 )
 from atelier2.contracts.agents import AgentExecutionResult
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import RunEvent, RunEventKind
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
@@ -270,6 +282,139 @@ def test_durable_cancellation_before_watchdog_attests_never_launched(
         assert terminal.watchdog_generation_id is None
     finally:
         runtime.close()
+
+
+def test_the_attempt_path_writes_the_event_row_the_run_store_writer_writes(
+    tmp_path: Path,
+) -> None:
+    through_the_attempt_path = _event_row_from_the_attempt_path(tmp_path / "attempt")
+    through_the_run_store_writer = _event_row_from_the_run_store_writer(
+        tmp_path / "run-store"
+    )
+
+    assert through_the_attempt_path == through_the_run_store_writer
+
+
+def test_cancellation_and_replacement_enqueue_into_a_registered_queue(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(attempt_request(runtime, "queue/named"))
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        prepared = store.prepare(execution)
+        command = CancelAgentAttemptRequest(
+            execution.request.run_id,
+            execution.attempt_id,
+            "queue-1",
+            prepared.state_version,
+            AgentAttemptReplacement.ONE,
+        )
+        assert isinstance(
+            store.request_cancellation(command), AgentAttemptCancellationAccepted
+        )
+        store.attest_cancellation_cleanup(
+            command, AgentAttemptCancellationDisposition.NEVER_LAUNCHED, None, None
+        )
+
+        with runtime.engine.connect() as connection:
+            enqueued = {
+                str(workflow_name): str(queue_name)
+                for workflow_name, queue_name in connection.execute(
+                    sa.text("SELECT name, queue_name FROM workflow_status")
+                ).all()
+            }
+            registered = {
+                str(queue_name)
+                for queue_name in connection.execute(
+                    sa.text("SELECT name FROM queues")
+                ).scalars()
+            }
+
+        assert enqueued.keys() >= {
+            CANCELLATION_WORKFLOW_NAME,
+            REPLACEMENT_WORKFLOW_NAME,
+        }
+        assert {
+            enqueued[CANCELLATION_WORKFLOW_NAME],
+            enqueued[REPLACEMENT_WORKFLOW_NAME],
+        } <= registered
+    finally:
+        runtime.close()
+
+
+_PARITY_RUN_NAME = "event/row-parity"
+_PARITY_COMMAND_ID = "parity-1"
+
+
+def _event_row_from_the_attempt_path(root: Path) -> Mapping[str, Any]:
+    root.mkdir()
+    runtime = attempt_runtime(root)
+    runtime.initialize_storage()
+    try:
+        store, prepared = _prepared_parity_attempt(runtime)
+        assert isinstance(
+            store.request_cancellation(
+                CancelAgentAttemptRequest(
+                    prepared.run_id,
+                    prepared.attempt_id,
+                    _PARITY_COMMAND_ID,
+                    prepared.state_version,
+                    AgentAttemptReplacement.NONE,
+                )
+            ),
+            AgentAttemptCancellationAccepted,
+        )
+        return _only_event_row(runtime)
+    finally:
+        runtime.close()
+
+
+def _event_row_from_the_run_store_writer(root: Path) -> Mapping[str, Any]:
+    root.mkdir()
+    runtime = attempt_runtime(root)
+    runtime.initialize_storage()
+    try:
+        _, prepared = _prepared_parity_attempt(runtime)
+        with canonical_write_transaction(runtime.engine) as connection:
+            run = load_run(connection, prepared.run_id)
+            _insert_event(
+                connection,
+                RunEvent(
+                    prepared.run_id,
+                    prepared.workflow_revision_hash,
+                    run.last_event_sequence + 1,
+                    prepared.node_id,
+                    prepared.node_execution_id,
+                    RunEventKind.AGENT_CANCEL_REQUESTED,
+                    _PARITY_COMMAND_ID.encode("utf-8"),
+                    agent_attempt_id=prepared.attempt_id.value,
+                    attempt_ordinal=prepared.attempt_ordinal,
+                    cancellation_command_id=_PARITY_COMMAND_ID,
+                    replacement=AgentAttemptReplacement.NONE.value,
+                ),
+            )
+        return _only_event_row(runtime)
+    finally:
+        runtime.close()
+
+
+def _prepared_parity_attempt(
+    runtime: DbosRuntime,
+) -> tuple[DbosAgentAttemptStore, AgentAttempt]:
+    execution = agent_attempt_execution(attempt_request(runtime, _PARITY_RUN_NAME))
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    return store, store.prepare(execution)
+
+
+def _only_event_row(runtime: DbosRuntime) -> Mapping[str, Any]:
+    with runtime.engine.connect() as connection:
+        rows = connection.execute(sa.select(run_events)).mappings().all()
+    assert len(rows) == 1
+    return dict(rows[0])
 
 
 def _wait_for_state(
