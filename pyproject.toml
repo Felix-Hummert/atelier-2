@@ -32,6 +32,9 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 pythonpath = ["src"]
+markers = [
+    "proves(sentence_id): name the acceptance sentence this test proves; scripts/check_acceptance.py enforces the link",
+]
 
 [tool.pyright]
 extraPaths = ["src"]

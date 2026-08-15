@@ -127,6 +127,9 @@ jobs:
       - name: Check architecture contracts
         run: uv run --locked python scripts/check_architecture.py
 
+      - name: Check the acceptance trace
+        run: uv run --locked python scripts/check_acceptance.py
+
       - name: Check source
         run: uv run --locked ruff check .
 
@@ -134,7 +137,7 @@ jobs:
         run: uv run --locked ruff format --check .
 
       - name: Check types
-        run: uv run --locked pyright src tests
+        run: uv run --locked pyright src tests scripts
 
       - name: Test non-crash behavior
         run: |

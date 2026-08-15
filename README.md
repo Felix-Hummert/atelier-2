@@ -13,6 +13,7 @@ configurable workflows. What it should become is stated in
 | Implementation status, and product intent as a derived view | [docs/PRODUCT.md](docs/PRODUCT.md) |
 | The settled reading of a requirement thread (derived; the thread wins) | Documents indexed by [docs/requirements/README.md](docs/requirements/README.md) |
 | Editable human requirement | [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1), with revision rules in [docs/requirements/README.md](docs/requirements/README.md) |
+| Story acceptance sentences and their proofs | `acceptance/`, with schema and trace rules in [docs/requirements/README.md](docs/requirements/README.md) |
 | Technical decisions | Records indexed by [docs/decisions/README.md](docs/decisions/README.md) |
 | Reusable agent policy | [AGENTS.md](AGENTS.md); [CLAUDE.md](CLAUDE.md) only loads it for Claude |
 | Foundation verification | [.github/workflows/foundation.yml](.github/workflows/foundation.yml) |

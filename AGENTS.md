@@ -5,7 +5,7 @@ Entry points (pointers only; the facts live there): `docs/PRODUCT.md` owns
 implementation status and carries product intent only as a derived view;
 `docs/requirements/README.md` points to the editable human requirement, owns the
 numbered documents that read the requirement threads as derived views, and owns
-future revision and trace rules;
+revision and acceptance-trace rules;
 `docs/decisions/README.md` owns technical decision records;
 `.github/workflows/foundation.yml` owns parentless foundation-object proof;
 `.github/workflows/ci.yml` owns current code verification; `README.md` is the
