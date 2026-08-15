@@ -1,24 +1,34 @@
 from __future__ import annotations
 
+import codecs
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import yaml
 from pydantic import ValidationError
-from yaml.composer import ComposerError
-from yaml.constructor import ConstructorError
 from yaml.events import AliasEvent
 from yaml.nodes import MappingNode
 from yaml.tokens import (
     AliasToken,
     AnchorToken,
+    BlockEndToken,
+    BlockMappingStartToken,
+    BlockSequenceStartToken,
+    DirectiveToken,
     DocumentStartToken,
+    FlowMappingEndToken,
+    FlowMappingStartToken,
+    FlowSequenceEndToken,
+    FlowSequenceStartToken,
     StreamStartToken,
     TagToken,
+    Token,
 )
 
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentRefused,
     WorkflowRefusal,
+    WorkflowRefusalReason,
 )
 from atelier2.contracts.workflows import (
     AnyWorkflowGraph,
@@ -35,6 +45,30 @@ FORMAT_V3_NOT_EXECUTABLE = (
     "workflow format version 3 parses, but no runtime executes it yet"
 )
 
+MAXIMUM_DOCUMENT_DEPTH = 32
+"""How deep a workflow document may nest, well above the deepest authored form.
+
+The composer recurses per nesting level, so an unbounded document exhausts the
+interpreter stack instead of being refused; this bound is what keeps the refusal
+a named one.
+"""
+
+MERGE_KEY = "<<"
+DOCUMENT_START = "---"
+
+_FORBIDDEN_YAML_TOKENS: Mapping[type[Token], str] = {
+    AliasToken: "alias",
+    AnchorToken: "anchor",
+    TagToken: "tag",
+}
+_NESTING_START_TOKENS = (
+    BlockMappingStartToken,
+    BlockSequenceStartToken,
+    FlowMappingStartToken,
+    FlowSequenceStartToken,
+)
+_NESTING_END_TOKENS = (BlockEndToken, FlowMappingEndToken, FlowSequenceEndToken)
+
 
 class InvalidWorkflowDocument(ValueError):
     """The exact workflow bytes are not one safe, closed YAML graph."""
@@ -44,11 +78,21 @@ class InvalidWorkflowDocument(ValueError):
         self.refusal = refusal
 
 
+def _refused(
+    reason: WorkflowRefusalReason, field: str, detail: str
+) -> InvalidWorkflowDocument:
+    """One document-level refusal that keeps its reason and subject."""
+    refusal = WorkflowRefusal(reason, field, detail)
+    return InvalidWorkflowDocument(str(refusal), refusal)
+
+
 class StrictWorkflowLoader(yaml.SafeLoader):
     def compose_node(self, parent: Any, index: Any) -> Any:
         if self.check_event(AliasEvent):
-            raise ComposerError(
-                None, None, "aliases are forbidden", self.peek_event().start_mark
+            raise _refused(
+                WorkflowRefusalReason.FORBIDDEN_YAML_FEATURE,
+                "alias",
+                "aliases are forbidden",
             )
         return super().compose_node(parent, index)
 
@@ -56,47 +100,49 @@ class StrictWorkflowLoader(yaml.SafeLoader):
         self, node: MappingNode, deep: bool = False
     ) -> dict[Any, Any]:
         if not isinstance(node, MappingNode):
-            raise ConstructorError(None, None, "expected a mapping", node.start_mark)
+            raise _refused(
+                WorkflowRefusalReason.MALFORMED_DOCUMENT,
+                "syntax",
+                "expected a mapping",
+            )
         seen: set[Any] = set()
         for key_node, _ in node.value:
-            if key_node.tag == "tag:yaml.org,2002:merge" or key_node.value == "<<":
-                raise ConstructorError(
-                    None, None, "merge keys are forbidden", key_node.start_mark
+            if key_node.tag == "tag:yaml.org,2002:merge" or key_node.value == MERGE_KEY:
+                raise _refused(
+                    WorkflowRefusalReason.FORBIDDEN_YAML_FEATURE,
+                    MERGE_KEY,
+                    "merge keys are forbidden",
                 )
             key = self.construct_object(key_node, deep=False)
             try:
                 duplicate = key in seen
             except TypeError as error:
-                raise ConstructorError(
-                    None, None, "mapping keys must be scalar", key_node.start_mark
+                raise _refused(
+                    WorkflowRefusalReason.FORBIDDEN_YAML_FEATURE,
+                    "key",
+                    "mapping keys must be scalar",
                 ) from error
             if duplicate:
-                raise ConstructorError(
-                    None, None, "duplicate mapping key", key_node.start_mark
+                raise _refused(
+                    WorkflowRefusalReason.DUPLICATE_KEY,
+                    str(key),
+                    f"the key {key!r} is declared twice",
                 )
             seen.add(key)
         return super().construct_mapping(node, deep=deep)
 
 
 def parse_workflow_document(document: bytes) -> AnyWorkflowDocument:
-    if not document or document.startswith(b"\xef\xbb\xbf"):
-        raise InvalidWorkflowDocument("workflow must be nonempty UTF-8 without BOM")
     try:
-        decoded = document.decode("utf-8", errors="strict")
-        tokens = tuple(yaml.scan(decoded))
-        if any(
-            isinstance(token, (AliasToken, AnchorToken, TagToken)) for token in tokens
-        ):
-            raise InvalidWorkflowDocument(
-                "anchors, aliases, and explicit tags are forbidden"
-            )
-        if sum(isinstance(token, DocumentStartToken) for token in tokens) > 1:
-            raise InvalidWorkflowDocument("multiple YAML documents are forbidden")
-        if not tokens or not isinstance(tokens[0], StreamStartToken):
-            raise InvalidWorkflowDocument("workflow is not a YAML stream")
+        decoded = _decoded_text(document)
+        _refuse_unsafe_yaml_form(yaml.scan(decoded))
         loaded = yaml.load(decoded, Loader=StrictWorkflowLoader)
         if loaded is None:
-            raise InvalidWorkflowDocument("workflow document is empty")
+            raise _refused(
+                WorkflowRefusalReason.MALFORMED_DOCUMENT,
+                "document",
+                "workflow document is empty",
+            )
         if isinstance(loaded, dict) and isinstance(loaded.get("nodes"), list):
             nodes = loaded["nodes"]
             for node in nodes:
@@ -107,8 +153,10 @@ def parse_workflow_document(document: bytes) -> AnyWorkflowDocument:
             not isinstance(loaded, dict)
             or type(loaded.get("format_version")) is not int
         ):
-            raise InvalidWorkflowDocument(
-                "workflow format version must be a strict integer"
+            raise _refused(
+                WorkflowRefusalReason.INVALID_VALUE,
+                "format_version",
+                "workflow format version must be a strict integer",
             )
         version = loaded["format_version"]
         if version == 1:
@@ -117,21 +165,78 @@ def parse_workflow_document(document: bytes) -> AnyWorkflowDocument:
             return WorkflowGraphV2.model_validate(loaded, strict=True)
         if version == 3:
             return validate_workflow_graph_v3(loaded)
-        raise InvalidWorkflowDocument("workflow format version is unsupported")
+        raise _refused(
+            WorkflowRefusalReason.INVALID_VALUE,
+            "format_version",
+            f"workflow format version {version} is unsupported",
+        )
     except InvalidWorkflowDocument:
         raise
     except WorkflowDocumentRefused as refused:
         raise InvalidWorkflowDocument(str(refused), refused.refusal) from refused
-    except (
-        UnicodeDecodeError,
-        yaml.YAMLError,
-        ValidationError,
-        TypeError,
-        ValueError,
-    ) as error:
-        raise InvalidWorkflowDocument(
-            "workflow document violates safe YAML v1"
+    except (yaml.YAMLError, ValidationError, TypeError, ValueError) as error:
+        raise _refused(
+            WorkflowRefusalReason.MALFORMED_DOCUMENT,
+            "syntax",
+            "workflow document violates safe YAML v1",
         ) from error
+
+
+def _decoded_text(document: bytes) -> str:
+    if not document:
+        raise _refused(
+            WorkflowRefusalReason.MALFORMED_DOCUMENT,
+            "document",
+            "workflow document is empty",
+        )
+    if document.startswith(codecs.BOM_UTF8):
+        raise _refused(
+            WorkflowRefusalReason.MALFORMED_DOCUMENT,
+            "encoding",
+            "workflow document must not carry a byte order mark",
+        )
+    try:
+        return document.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise _refused(
+            WorkflowRefusalReason.MALFORMED_DOCUMENT,
+            "encoding",
+            "workflow document must be UTF-8",
+        ) from error
+
+
+def _refuse_unsafe_yaml_form(tokens: Iterable[Token]) -> None:
+    """Refuse every unsafe YAML form by name, before anything is composed."""
+    depth = 0
+    content_scanned = False
+    for token in tokens:
+        feature = _FORBIDDEN_YAML_TOKENS.get(type(token))
+        if feature is not None:
+            raise _refused(
+                WorkflowRefusalReason.FORBIDDEN_YAML_FEATURE,
+                feature,
+                "anchors, aliases, and explicit tags are forbidden",
+            )
+        if isinstance(token, DocumentStartToken):
+            if content_scanned:
+                raise _refused(
+                    WorkflowRefusalReason.MULTIPLE_DOCUMENTS,
+                    DOCUMENT_START,
+                    "a workflow revision is one YAML document",
+                )
+        elif not isinstance(token, (StreamStartToken, DirectiveToken)):
+            content_scanned = True
+        if isinstance(token, _NESTING_START_TOKENS):
+            depth += 1
+            if depth > MAXIMUM_DOCUMENT_DEPTH:
+                raise _refused(
+                    WorkflowRefusalReason.DOCUMENT_TOO_DEEP,
+                    "nesting",
+                    f"workflow document nests deeper than {MAXIMUM_DOCUMENT_DEPTH} "
+                    "levels",
+                )
+        elif isinstance(token, _NESTING_END_TOKENS):
+            depth -= 1
 
 
 def parse_executable_workflow_document(document: bytes) -> AnyWorkflowGraph:

@@ -8,6 +8,7 @@ import pytest
 
 from atelier2.adapters.yaml_workflows import (
     FORMAT_V3_NOT_EXECUTABLE,
+    MAXIMUM_DOCUMENT_DEPTH,
     InvalidWorkflowDocument,
     parse_executable_workflow_document,
     parse_workflow_document,
@@ -373,7 +374,21 @@ REFUSALS: dict[str, tuple[bytes, WorkflowRefusalReason, str | None, str]] = {
         DOCUMENT.replace(b"    type: wait\n", b"    type: mystery\n"),
         WorkflowRefusalReason.INVALID_VALUE,
         "approve",
-        "nodes",
+        "type",
+    ),
+    "missing-node-kind": (
+        without_line("    type: wait"),
+        WorkflowRefusalReason.MISSING_FIELD,
+        "approve",
+        "type",
+    ),
+    "unknown-input-source-form": (
+        DOCUMENT.replace(
+            b"        from: {context: story}\n", b"        from: {elsewhere: story}\n"
+        ),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "from",
     ),
     "no-nodes": (
         b"format_version: 3\nnodes: []\n",
@@ -607,26 +622,107 @@ def test_a_retired_key_is_named_at_the_document_level_too() -> None:
     )
 
 
-UNSAFE_V3_DOCUMENTS = {
-    "alias": b"format_version: 3\nnodes: &nodes []\ncopy: *nodes\n",
-    "merge": b"format_version: 3\nnodes: [{<<: {id: a}, type: agent}]\n",
-    "explicit-tag": b"format_version: !!int 3\nnodes: []\n",
-    "bom": b"\xef\xbb\xbfformat_version: 3\nnodes: []\n",
-    "duplicate-key": DOCUMENT + b"format_version: 3\n",
-    "multiple-documents": DOCUMENT + b"---\n{}\n",
+UNSAFE_V3_DOCUMENTS: dict[str, tuple[bytes, WorkflowRefusalReason, str]] = {
+    "anchor": (
+        b"format_version: 3\nnodes: &nodes []\ncopy: *nodes\n",
+        WorkflowRefusalReason.FORBIDDEN_YAML_FEATURE,
+        "anchor",
+    ),
+    "alias": (
+        b"format_version: 3\nnodes: *nodes\n",
+        WorkflowRefusalReason.FORBIDDEN_YAML_FEATURE,
+        "alias",
+    ),
+    "merge": (
+        b"format_version: 3\nnodes: [{<<: {id: a}, type: agent}]\n",
+        WorkflowRefusalReason.FORBIDDEN_YAML_FEATURE,
+        "<<",
+    ),
+    "explicit-tag": (
+        b"format_version: !!int 3\nnodes: []\n",
+        WorkflowRefusalReason.FORBIDDEN_YAML_FEATURE,
+        "tag",
+    ),
+    "unhashable-key": (
+        b"format_version: 3\nnodes:\n  ? [a, b]\n  : c\n",
+        WorkflowRefusalReason.FORBIDDEN_YAML_FEATURE,
+        "key",
+    ),
+    "bom": (
+        b"\xef\xbb\xbfformat_version: 3\nnodes: []\n",
+        WorkflowRefusalReason.MALFORMED_DOCUMENT,
+        "encoding",
+    ),
+    "invalid-utf8": (
+        b"format_version: 3\nnodes: \xff\n",
+        WorkflowRefusalReason.MALFORMED_DOCUMENT,
+        "encoding",
+    ),
+    "empty": (b"", WorkflowRefusalReason.MALFORMED_DOCUMENT, "document"),
+    "blank": (b"\n", WorkflowRefusalReason.MALFORMED_DOCUMENT, "document"),
+    "unparsable": (
+        b"format_version: 3\nnodes: [\n",
+        WorkflowRefusalReason.MALFORMED_DOCUMENT,
+        "syntax",
+    ),
+    "duplicate-key": (
+        DOCUMENT + b"format_version: 3\n",
+        WorkflowRefusalReason.DUPLICATE_KEY,
+        "format_version",
+    ),
+    "multiple-documents": (
+        DOCUMENT + b"---\n{}\n",
+        WorkflowRefusalReason.MULTIPLE_DOCUMENTS,
+        "---",
+    ),
+    "deeper-than-the-nesting-bound": (
+        b"format_version: 3\nnodes: "
+        + b"[" * (MAXIMUM_DOCUMENT_DEPTH + 1)
+        + b"]" * (MAXIMUM_DOCUMENT_DEPTH + 1)
+        + b"\n",
+        WorkflowRefusalReason.DOCUMENT_TOO_DEEP,
+        "nesting",
+    ),
+    "unsupported-format-version": (
+        b"format_version: 9\nnodes: []\n",
+        WorkflowRefusalReason.INVALID_VALUE,
+        "format_version",
+    ),
+    "non-integer-format-version": (
+        b"format_version: three\nnodes: []\n",
+        WorkflowRefusalReason.INVALID_VALUE,
+        "format_version",
+    ),
 }
 
 
 @pytest.mark.parametrize(
-    "document", UNSAFE_V3_DOCUMENTS.values(), ids=UNSAFE_V3_DOCUMENTS
+    ("document", "reason", "field"),
+    UNSAFE_V3_DOCUMENTS.values(),
+    ids=UNSAFE_V3_DOCUMENTS,
 )
-def test_unsafe_yaml_is_refused_before_any_v3_vocabulary_is_read(
-    document: bytes,
+def test_unsafe_yaml_is_refused_by_name_before_any_v3_vocabulary_is_read(
+    document: bytes, reason: WorkflowRefusalReason, field: str
 ) -> None:
     with pytest.raises(InvalidWorkflowDocument) as raised:
         parse_workflow_document(document)
 
-    assert raised.value.refusal is None
+    refusal = raised.value.refusal
+    assert refusal is not None
+    assert (refusal.reason, refusal.node, refusal.field) == (reason, None, field)
+
+
+def test_a_document_nested_past_the_bound_is_refused_instead_of_exhausting_the_stack() -> (
+    None
+):
+    document = b"format_version: 3\nnodes: " + b"[" * 20_000 + b"]" * 20_000 + b"\n"
+
+    with pytest.raises(InvalidWorkflowDocument) as raised:
+        parse_workflow_document(document)
+
+    refusal = raised.value.refusal
+    assert refusal is not None
+    assert refusal.reason is WorkflowRefusalReason.DOCUMENT_TOO_DEEP
 
 
 def test_a_v3_document_parses_but_no_runtime_executes_it() -> None:

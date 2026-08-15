@@ -588,16 +588,43 @@ def _refusal_from(
 ) -> WorkflowDocumentRefused:
     first = error.errors()[0]
     location = first["loc"]
-    field = _field_name(location)
-    context = first.get("ctx", {})
-    cause = context.get("error") if isinstance(context, Mapping) else None
-    detail = str(cause) if cause is not None else str(first["msg"])
-    return _refuse(
-        _reason_for(str(first["type"]), field),
-        field,
-        detail,
-        _node_id_at(location, document),
+    error_type = str(first["type"])
+    raw_context = first.get("ctx")
+    context: Mapping[str, object] = (
+        raw_context if isinstance(raw_context, Mapping) else {}
     )
+    cause = context.get("error")
+    detail = str(cause) if cause is not None else str(first["msg"])
+    tag_field = _tag_carrying_field(error_type, context)
+    if tag_field is None:
+        field = _field_name(location)
+        reason = _reason_for(error_type, field)
+    else:
+        field = tag_field
+        reason = (
+            WorkflowRefusalReason.MISSING_FIELD
+            if error_type == "union_tag_not_found"
+            else WorkflowRefusalReason.INVALID_VALUE
+        )
+    return _refuse(reason, field, detail, _node_id_at(location, document))
+
+
+def _tag_carrying_field(error_type: str, context: Mapping[str, object]) -> str | None:
+    """The field whose value chooses the member of a closed union, when one does.
+
+    A node kind is chosen by its own `type` field, so an unknown or absent kind
+    is refused there rather than at the collection that holds the node. A
+    discriminator that reads the shape of a value instead of one field names no
+    field, and its refusal stays where the location points.
+    """
+    if error_type not in ("union_tag_invalid", "union_tag_not_found"):
+        return None
+    discriminator = str(context.get("discriminator", ""))
+    if len(discriminator) < 3 or not discriminator.startswith("'"):
+        return None
+    if not discriminator.endswith("'"):
+        return None
+    return discriminator[1:-1]
 
 
 def _field_name(location: Sequence[str | int]) -> str:

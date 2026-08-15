@@ -135,7 +135,11 @@ matrix each requires, refuses, or accepts, `depends_on` as the only control edge
 the join rule in its three arities, the four input sources, the two context-edge
 kinds, and graph-level inputs and outputs — and refuses every forbidden form naming
 the node and the field it concerns, including each retired V1 or V2 key with its
-replacement. Nothing behind that surface exists: no reference resolution, no
+replacement. Unsafe YAML is refused by name too, before any vocabulary is read: an
+anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
+a document that is not UTF-8 without a byte order mark, and one nested past the
+bound that keeps the refusal a refusal instead of an exhausted stack. Nothing
+behind that surface exists: no reference resolution, no
 capability attestation, no durable record shape, so publication and every run path
 refuse a V3 document naming the format. V1 and V2 documents keep their exact meaning
 under their own models. [ADR 0006](decisions/0006-node-vocabulary.md) owns this
