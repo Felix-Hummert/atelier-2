@@ -4,7 +4,9 @@
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   story 4, whose "GitHub landet einen nativen Flow" and provider/secret rules this
-  record expresses and never re-decides
+  record expresses and never re-decides — body read under decision 5's canonical
+  rule, 25337 bytes, no trailing newline,
+  `db17a54944498ec4e5f8c456b44771b8e1b9301b9b622d47ca11b1a830cf2b66`
 - Decision authority: [Issue #24](https://github.com/FlexOr2/atelier-2/issues/24),
   SHA-256 over the exact served UTF-8 body bytes with nothing appended — 519 bytes,
   no trailing newline —
@@ -354,15 +356,50 @@ later acquire an owner, this record defers to it rather than keeping a second co
   hand, computed once by the adapter instead of pasted into prose, and carrying the
   object identity and the read's change marker as provenance. **The canonical rule
   is exact: the bytes the API serves as the body, hashed as they are, with nothing
-  appended** — no trailing newline, no re-encoding, no normalization. That precision
-  is not pedantry, it is the reason to mechanize: this very record's first two
-  revisions carried a digest a shell pipeline had silently appended a newline to,
-  and the two hand-computed digests already standing in this repository's decision
-  records were produced under two different rules. A hash a human types is a hash
-  nobody re-derives. The issue stays the human's: publication is a read, Atelier
-  never writes that body, and the bytes it hashes are the bytes a human last wrote. This record decides what is observed,
+  appended** — no trailing newline, no re-encoding, no normalization. The issue stays
+  the human's: publication is a read, Atelier never writes that body, and the bytes
+  it hashes are the bytes a human last wrote. This record decides what is observed,
   what is hashed and what identity it carries; the durable revision store and the
   trace format stay with `docs/requirements/README.md`.
+
+**One recipe, one owner, and the divergence named.** That precision is not pedantry,
+it is the reason to mechanize: two operative recipes stand in the landed tree today,
+and a hash a human types is a hash nobody re-derives. Ruled here so that no builder
+and no distiller has to choose between them:
+
+- **The owner stays `docs/requirements/README.md`.** It owns the issue-body citation
+  convention, and this record does not take that ownership. What this record settles
+  is the one rule the adapter will mechanize, which is therefore the rule a human
+  should already be writing.
+- **The canonical form is the exact served bytes**, reproduced with
+
+  ```console
+  $ gh api repos/FlexOr2/atelier-2/issues/82 --template '{{.body}}' | sha256sum
+  ```
+
+  A Go template writes the field and appends nothing. The recipe
+  `docs/requirements/README.md` currently prescribes, `--jq '.body' | sha256sum`,
+  digests the body plus the newline `gh`'s raw-string output adds — an identity over
+  bytes the object does not contain, and one no reader can re-derive from the object
+  alone. The newline cannot be suppressed inside `--jq`, which takes the filter as
+  its only argument and rejects a `jq` flag; `gh api … | jq -j '.body'` is the
+  equivalent two-tool form.
+- **The divergence, exactly.** All three landed requirement citations were computed
+  under the README's recipe and carry the appended newline: `#79 body @ 9d781a3c`,
+  `#82 body @ fe6fd31f`, `#9 body @ 36800d6e`. Every decision-authority digest was
+  computed under the exact rule: ADR 0008's `#26` (`69a3f021…`), this record's `#24`
+  (`0104406e…`), and ADR 0009's `#21` (`5c03ceb1…`). The split runs between the two
+  directories, not inside either.
+- **Landed citations are provenance and are not rewritten.** Each records what its
+  author read under the recipe its document named at the time, and each stays valid
+  under that recipe. Restating a provenance record to match a later convention
+  destroys the only thing it was for.
+- **The correction is owed, and it is not made here.**
+  `docs/requirements/README.md` corrects its recipe line to the exact form and notes
+  that citations predating the correction carry the appended-newline form. That step
+  belongs to the requirements-document owner and is routed to
+  [#93](https://github.com/FlexOr2/atelier-2/issues/93); this record must not edit
+  another owner's convention from inside a decision.
 
 ### 6. Readback semantics: what merged, closed and labeled mean
 
