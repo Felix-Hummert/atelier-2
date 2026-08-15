@@ -58,11 +58,15 @@ role is resolved to one immutable, secret-free agent-configuration revision and
 authentication-profile revision; the complete matrix is frozen into that run.
 Each configuration also binds a typed requested execution capability. Migrated
 configuration revisions retain their original V1 hash and mean `headless`; new
-API publications use the capability-aware V2 hash format and currently request
-`headless`. An executor registry must attest `headless`, and a run requesting a
-capability absent from its exact provider/executor entry is refused before any
-provider process starts. A nonterminal run is refused on restart before its
-factory opens when that attestation has disappeared.
+API publications use the capability-aware V2 hash format and name the capability
+they request, `headless` or `interactive`. A caller that omits it publishes
+`headless`, byte-identically to a publication made before the field could be
+sent. Publication binds an executor key, not a capability, so a configuration
+may request more than today's executors serve. An executor registry must attest
+`headless`, and a run requesting a capability absent from its exact
+provider/executor entry is refused before any provider process starts. A
+nonterminal run is refused on restart before its factory opens when that
+attestation has disappeared.
 Before invoking the exact configured provider/executor, the runtime persists one
 ordinal-1 attempt and binds an in-memory invocation to a separately supervised
 process generation. Only the live caller whose compare-and-set reaches

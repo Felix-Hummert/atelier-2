@@ -176,9 +176,9 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was generated before the API layer was split into route
-    groups. Regenerating it is a wire change and needs its own decision, not a
-    refresh alongside a refactor.
+    The artefact was last regenerated when the publication request gained its
+    `requested_capability` field. Regenerating it is a wire change and needs its
+    own decision, not a refresh alongside a refactor.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
@@ -297,6 +297,43 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
             "maximum": 100,
             "default": 50,
         }
+
+
+def _referenced_schema(schema: dict[str, Any], content: dict[str, Any]) -> Any:
+    reference = content["application/json"]["schema"]["$ref"]
+    return schema["components"]["schemas"][reference.rsplit("/", 1)[1]]
+
+
+def test_openapi_offers_the_capability_and_demands_it_back() -> None:
+    """A caller may leave the capability out; a reader may not.
+
+    The generated document is what a client is built against, so the request
+    default and the mandatory echo are the contract, not an implementation
+    detail of the models behind it.
+    """
+
+    schema = served_app().openapi()
+
+    operation = schema["paths"][API_PREFIX + "/agent-configuration-revisions"]["post"]
+    request = _referenced_schema(schema, operation["requestBody"]["content"])
+    capability = {
+        "type": "string",
+        "enum": ["headless", "interactive"],
+        "title": "Requested Capability",
+    }
+
+    assert request["properties"]["requested_capability"] == capability | {
+        "default": "headless"
+    }
+    assert "requested_capability" not in request["required"]
+    assert request["additionalProperties"] is False
+    for status, response in operation["responses"].items():
+        if int(status) >= 400:
+            continue
+        echoed = _referenced_schema(schema, response["content"])
+        assert echoed["properties"]["requested_capability"] == capability
+        assert "requested_capability" in echoed["required"]
+        assert echoed["additionalProperties"] is False
 
 
 def test_invalid_openapi_fails_during_app_construction(

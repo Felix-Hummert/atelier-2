@@ -63,6 +63,9 @@ CONFIGURATION = AgentConfigurationRevision(
     AgentExecutionCapability.HEADLESS,
     AgentConfigurationRevisionFormatVersion.V2,
 )
+INTERACTIVE_CONFIGURATION_HASH = (
+    "d881bf2700c0d88b37704959cfb3c44a6bb575e9c1ec93c09650f95aa8ac9279"
+)
 V2_DOCUMENT = b"""format_version: 2
 start: build
 nodes:
@@ -73,8 +76,15 @@ nodes:
 
 @dataclass
 class RecordingCatalog:
+    """A catalog that publishes exactly the revision the route hands it.
+
+    A configured `configuration_result` answers instead, which is how a refusal
+    is asked for; without one the response echoes the route's own construction,
+    so what the caller reads back is the configuration that would be stored.
+    """
+
     auth_result: object
-    configuration_result: object
+    configuration_result: object | None = None
     auth_calls: int = 0
     configuration_calls: int = 0
 
@@ -87,7 +97,8 @@ class RecordingCatalog:
         self, revision: AgentConfigurationRevision
     ) -> object:
         self.configuration_calls += 1
-        assert revision == CONFIGURATION
+        if self.configuration_result is None:
+            return AgentConfigurationRevisionCreated(revision, AUTH)
         return self.configuration_result
 
     def auth_profile_revision(self, _revision_hash: object) -> None:
@@ -124,22 +135,20 @@ def _publish_auth(client: TestClient):
     )
 
 
-def _publish_configuration(client: TestClient):
+def _publish_configuration(client: TestClient, **capability: object):
     return client.post(
         API_PREFIX + "/agent-configuration-revisions",
         json={
             "model": "claude-opus-4-1",
             "auth_profile_revision_hash": AUTH.revision_hash.value,
             "executor_revision": "claude-cli/v1",
+            **capability,
         },
     )
 
 
 def test_publish_resources_have_the_exact_secret_free_wire_shape() -> None:
-    catalog = RecordingCatalog(
-        AuthProfileRevisionCreated(AUTH),
-        AgentConfigurationRevisionCreated(CONFIGURATION, AUTH),
-    )
+    catalog = RecordingCatalog(AuthProfileRevisionCreated(AUTH))
     client = _client(catalog)
 
     auth = _publish_auth(client)
@@ -160,12 +169,67 @@ def test_publish_resources_have_the_exact_secret_free_wire_shape() -> None:
         "executor_revision": "claude-cli/v1",
         "provider_id": "anthropic",
         "auth_mode": "subscription",
+        "requested_capability": "headless",
         "agent_configuration_revision_hash": CONFIGURATION.revision_hash.value,
     }
     assert all(
         forbidden not in (auth.text + configuration.text).lower()
         for forbidden in ("secret", "credential", "handle", "api_key_value")
     )
+
+
+@pytest.mark.parametrize(
+    ("published", "echoed", "configuration_hash"),
+    [
+        ({}, "headless", CONFIGURATION.revision_hash.value),
+        (
+            {"requested_capability": "headless"},
+            "headless",
+            CONFIGURATION.revision_hash.value,
+        ),
+        (
+            {"requested_capability": "interactive"},
+            "interactive",
+            INTERACTIVE_CONFIGURATION_HASH,
+        ),
+    ],
+)
+def test_the_requested_capability_decides_the_published_configuration(
+    published: dict[str, object], echoed: str, configuration_hash: str
+) -> None:
+    """What a caller asks for is what is published, and what identifies it.
+
+    Omitting the field and asking for `headless` are the same publication as
+    the one this API made before the field existed, down to the hash; asking
+    for `interactive` publishes a different configuration, which is why the
+    interactive identity is authored here rather than derived.
+    """
+
+    client = _client(RecordingCatalog(AuthProfileRevisionCreated(AUTH)))
+
+    response = _publish_configuration(client, **published)
+
+    assert response.status_code == 201
+    assert response.json()["requested_capability"] == echoed
+    assert response.json()["agent_configuration_revision_hash"] == configuration_hash
+
+
+@pytest.mark.parametrize(
+    "requested_capability",
+    [None, "Headless", "INTERACTIVE", "supervised", "", 1],
+)
+def test_an_uncontracted_capability_is_refused_before_any_catalog_effect(
+    requested_capability: object,
+) -> None:
+    catalog = RecordingCatalog(AuthProfileRevisionCreated(AUTH))
+
+    response = _publish_configuration(
+        _client(catalog), requested_capability=requested_capability
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"].endswith(":invalid-request")
+    assert catalog.configuration_calls == 0
 
 
 @pytest.mark.parametrize(

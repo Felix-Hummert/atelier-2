@@ -155,6 +155,7 @@ describe("mobile run entry", () => {
           ...input,
           provider_id: input.model === "sonnet" ? "anthropic" : "openai",
           auth_mode: input.model === "sonnet" ? "subscription" as const : "api_key" as const,
+          requested_capability: input.requested_capability ?? ("headless" as const),
           agent_configuration_revision_hash: input.model === "sonnet" ? "c".repeat(64) : "d".repeat(64)
         }
       })).mockReturnValueOnce(configurationFailure),
