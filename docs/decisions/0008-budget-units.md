@@ -7,8 +7,10 @@
   exact body SHA-256
   `69a3f021453bf3b7ae70ca37abce8fe7aa3b47a7133a0bd61bcc9d3b021ed9ba`
 - Depends on: [ADR 0001](0001-durable-runtime.md),
-  [ADR 0002](0002-exact-yaml-graph.md), and
-  [ADR 0006](0006-node-vocabulary.md)
+  [ADR 0002](0002-exact-yaml-graph.md),
+  [ADR 0006](0006-node-vocabulary.md), and
+  [#16](https://github.com/FlexOr2/atelier-2/issues/16) as the owner of the
+  durable failure vocabulary this record borrows
 - Feeds: [#60](https://github.com/FlexOr2/atelier-2/issues/60),
   [#63](https://github.com/FlexOr2/atelier-2/issues/63), and the future V3
   Join/Ready/Scheduler owner
@@ -35,7 +37,7 @@ names and failure behavior must make that difference impossible to hide.
 | Field | Presence | Meaning |
 | --- | --- | --- |
 | `attempt_deadline_seconds` | required | hard elapsed deadline for each attempt |
-| `maximum_assistant_turns` | optional | hard assistant-turn limit, when the executor attests its native enforcement and meter |
+| `maximum_assistant_turns` | optional in revision content, requirable per executor revision | hard assistant-turn limit, when the executor attests its native enforcement and meter |
 | `reported_input_token_threshold` | optional | threshold evaluated from the completed attempt's provider report |
 | `reported_output_token_threshold` | optional | threshold evaluated from the completed attempt's provider report |
 
@@ -58,9 +60,11 @@ duplicate that decision. The product may show the resulting worst-case hard Node
 bound as the per-attempt bound multiplied by the Retry policy's permitted
 attempts.
 
-A Subworkflow budget may be published, but remains `UNAVAILABLE` until the V3
-Join/Ready/Scheduler owner implements the composition rules below. There is no
-separate run budget in this decision.
+A Subworkflow budget may be published under ADR 0006's staging rule, and the
+preview marks every node waiting on the composition rules below; until the V3
+Join/Ready/Scheduler owner implements them, binding one refuses the whole run at
+that ADR's Executability gate. This adds no new state and no new owner. There is
+no separate run budget in this decision.
 
 ### Hard limits and reported thresholds
 
@@ -77,6 +81,25 @@ If a selected executor cannot enforce an authored hard dimension, run start
 refuses before process creation. It never silently downgrades the dimension to a
 post-hoc check or clamps it to an executor default.
 
+Two further bounds are declared by the executor revision itself, as a second
+typed declaration alongside the manifest entry's declared capabilities, leaving
+the `AgentExecutionCapability` enum untouched:
+
+- **An absolute per-attempt ceiling for each hard dimension it enforces.** The
+  attested value is `<executor-declared>`; it is decided with #26 for the first
+  tool-bearing revision and carried in that revision, not in a central cap and
+  not in server start. A budget binding a value above it is refused at run
+  start, never clamped, and the refusal names both the bound value and the
+  attested ceiling. Raising a ceiling is a new published executor revision,
+  visible in a diff. This rule outlives the temporary #60 frame below and is
+  what keeps a published `budget-revision/v1` from binding an arbitrarily large
+  turn or deadline value once that frame is deleted.
+- **Which dimensions it requires.** A budget omitting a required dimension is
+  refused at run start, naming the missing dimension, the Budget revision, and
+  the executor revision. A tool-bearing executor revision declares
+  `maximum_assistant_turns` required, so no tool executor starts on a deadline
+  alone with an unbounded paid turn loop (#60).
+
 A **reported threshold** is evaluated only after an attempt supplies its usage
 report. The attempt may exceed it. The receipt stores the actual larger value,
 the Node ends as `failed`, and no retry follows. UI, APIs, receipts, and logs call
@@ -87,7 +110,10 @@ required by a bound threshold, the Node ends in exactly one typed
 provider-contract failure. If a failed attempt has unknown required usage, the
 runtime invents no value and does not retry. Reaching a hard limit or exhausting
 a Node budget likewise produces exactly one terminal failure receipt, never a
-hang.
+hang. This record mints neither token:
+[#16](https://github.com/FlexOr2/atelier-2/issues/16) owns the durable name of
+the typed provider-contract failure and of the budget-exhaustion disposition,
+and this decision borrows both.
 
 Publishing a Budget revision validates its own content. Provider, executor,
 model, and meter compatibility are known only when the workflow binding is
@@ -140,6 +166,12 @@ under immutable executor revision `claude-subscription-tools-foundation/v1` with
 - `--max-turns 8`;
 - an authoritative process deadline of 300 seconds.
 
+The need these two values protect is containment of billed spend on a personal
+subscription during the first tool-bearing canary, on a runner whose sandbox
+probe is not yet green (#60). They are the executor revision's attested choice
+for that need, not a measured workload figure; a different attested pair is a
+new executor revision under the ceiling rule above.
+
 This is a visible, non-configurable executor safety frame, not a
 `budget-revision/v1`, and proves no V3 Budget acceptance. A workflow cannot raise
 either value; changing one requires a new executor revision. Reaching either
@@ -155,10 +187,11 @@ must never retain two selectable Budget paths.
 1. **This ADR:** decision and #60 bridge authorization only; no runtime or API
    change.
 2. **First budgeted V3 Agent:** after full #15 cutover, the V3 binding owners,
-   and an explicitly amended and reviewed #63. It resolves one Budget revision,
-   binds executor meter attestations in the immutable request, persists ordered
-   per-attempt usage plus aggregate atomically in `node-receipt/v3`, and enforces
-   hard limits and reported thresholds. V1/V2 wire and hash contracts remain
+   #16's durable failure vocabulary for the two tokens above, and an explicitly
+   amended and reviewed #63. It resolves one Budget revision, binds executor
+   meter attestations in the immutable request, persists ordered per-attempt
+   usage plus aggregate atomically in `node-receipt/v3`, and enforces hard
+   limits and reported thresholds. V1/V2 wire and hash contracts remain
    unchanged.
 3. **Retry, Subworkflow, and parallel composition:** the future V3
    Join/Ready/Scheduler owner consumes ordered per-attempt usage, composes only
