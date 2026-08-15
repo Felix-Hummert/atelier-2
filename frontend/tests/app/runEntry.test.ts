@@ -29,7 +29,7 @@ afterEach(() => {
   cleanup();
 });
 
-describe("Phase 2 mobile run entry", () => {
+describe("mobile run entry", () => {
   it("lists a bounded durable run page and keeps confirmed rows visible when refresh fails", async () => {
     const listRuns = vi.fn().mockResolvedValue({ items: [run()], next_after: null });
     const cockpitApi = api({ listRuns });

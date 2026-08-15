@@ -29,7 +29,7 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe("Phase 4 Wait control", () => {
+describe("Wait control", () => {
   it("wait_ambiguous_retry_is_exact_and_disappears_after_durable_event", async () => {
     const journal = new MutationJournal(sessionStorage);
     const feed = new FakeFeed();

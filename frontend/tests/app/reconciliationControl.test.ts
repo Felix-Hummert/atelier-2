@@ -43,7 +43,7 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe("Phase 5 reconciliation control", () => {
+describe("reconciliation control", () => {
   it("reconcile_found_keeps_exact_identity_and_result", async () => {
     const journal = new MutationJournal(sessionStorage);
     const feed = new FakeFeed();

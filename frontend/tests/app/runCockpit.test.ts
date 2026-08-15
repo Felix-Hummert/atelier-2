@@ -22,7 +22,7 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe("Phase 3 read-only run cockpit", () => {
+describe("read-only run cockpit", () => {
   it("loads one authoritative run plus bound graph before opening the durable event history", async () => {
     const feed = new FakeFeed();
     const cockpitApi = api({ openRunEvents: feed.open, getRun: vi.fn(async () => waitingRun()) });
