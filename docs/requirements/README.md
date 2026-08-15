@@ -240,23 +240,24 @@ sentence without text, and a repeated identifier are refused rather than ignored
 
 A test names the sentence it proves where the test run itself reports it:
 
-- Python: `@pytest.mark.proves("<sentence id>")` on a test function or test class
-  pytest collects. The marker is registered in `pyproject.toml`, so
-  `--strict-markers` refuses a typo.
+- Python: `@pytest.mark.proves("<sentence id>")` on a test function. The marker is
+  registered in `pyproject.toml`, so `--strict-markers` refuses a typo, and
+  `tests/conftest.py` carries it into the run report pytest writes.
 - TypeScript: `proves(<sentence id>)` inside the vitest title, as in
   `it("proves(<sentence id>): shows the failed stream", ...)`. The title is what
   the run prints, so the claim cannot drift out of the reported test the way a
   comment can.
 
-`scripts/check_acceptance.py` reads the declarations, the claims, and the pytest
-and vitest invocations `.github/workflows/ci.yml` actually runs. It fails when a
-declared sentence has no claim, when a claim names no declared sentence, and when
-a claiming test sits where no invocation of this pipeline runs it — a proof in
-`tests/crash` counts through the crash job, a proof outside every include or
-behind an `--ignore` counts as none. It refuses outright when the declarations
-are empty, when the pipeline runs no pytest invocation at all, and when an
-invocation narrows its selection with `-k`, `-m`, or `--deselect`, because then
-nothing in the file says which claimed test still ran.
+`scripts/check_acceptance.py` runs in the `Acceptance trace` job, after the three
+verification jobs, over the run reports they uploaded: the two pytest
+`--junitxml` files and the cockpit's vitest JSON. A sentence counts as proven
+only where one of those reports carries a test claiming it with the outcome
+passed, so a test that was collected without being executed, skipped, filtered
+away, or failed proves nothing, and nothing is read out of the workflow's own
+text. It fails when a declared sentence has no such proof and when a report
+carries a claim no story declares. It refuses outright when the declarations are
+empty and when a required report is absent or unreadable, because a report that
+cannot be read is a run that cannot be trusted, never a smaller proof surface.
 
 <!-- acceptance-gate-bound:start -->
 ```text
