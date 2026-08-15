@@ -60,11 +60,22 @@ Approved-By:    the comment id of the operator approval, or none
 document as having settled anything. Rules graded `OPERATOR` still bind — but
 through their source, never through this file.
 
-`AGREED` means the operator approved **this exact document**, and `Approved-By`
-names the comment in which that happened. It is not a status the engineering
-desk can grant: a reviewed pull request judges whether a distillation is
-faithful, and faithfulness is not approval. A document whose `Approved-By` is
-`none` is never `AGREED`.
+`AGREED` means the operator approved **this exact document as a reading of its
+thread**, and `Approved-By` names the comment in which that happened. It never
+means a requirement was settled here.
+
+Approval of *intent* has one destination, and it is not this directory. Issue #5
+rules it (comment 5294316639): *„akzeptierte Visionen werden EIGENE
+Requirement-Issues; #1 bleibt V1-Vertrag + Index."* A vision the operator accepts
+is therefore published as its own requirement issue; a document then reads that
+issue and names it as its `Owner-Issue`. Nothing in this directory creates,
+accepts, or amends a requirement at any status: an `AGREED` document is a derived
+reading whose source still wins where the two disagree, exactly as a `DRAFT` one
+is. There is no second route, and an approval that graduates a vision takes #5's.
+
+`AGREED` is not a status the engineering desk can grant: a reviewed pull request
+also judges whether a distillation is faithful, and faithfulness is not approval.
+A document whose `Approved-By` is `none` is never `AGREED`.
 
 `SUPERSEDED` names the document that replaced it and is otherwise left
 untouched.
@@ -77,15 +88,39 @@ Four sections, in this order, each of which may be empty but not absent:
   attributed.
 - `## Rules` — numbered rules a builder is expected to satisfy. Every rule
   carries its **authority grade** and its source:
-  - **`OPERATOR`** — the thread records this sentence in the operator's voice: a
-    quoted wish, or a decision the thread marks as the operator's own. This is
-    the only grade that carries human intent.
-  - **`DESK`** — an engineering reading: a sharpening, a consequence of a
-    decision record, an observation of the current code, a machine-review
-    finding. It records what the desk currently believes is right; it binds
-    nothing until an operator rules it. A `DESK` rule that narrows or replaces
-    an `OPERATOR` sentence says so at the rule, because that is a proposal to
-    the operator and not a settled correction.
+  - **`OPERATOR`** — the cited object reproduces the operator's **own sentence**,
+    verbatim and in the language he wrote it, and that sentence says what the
+    rule says. The document repeats the quote at the rule, so the human intent
+    is readable without leaving the page. This is the only grade that carries
+    human intent.
+  - **`DESK`** — everything else: an engineering reading, a sharpening, a
+    consequence of a decision record, an observation of the current code, a
+    machine-review finding. It records what the desk currently believes is
+    right; it binds nothing until an operator rules it.
+
+  The grade is decided by the operator's voice in the object, never by a label
+  on it. Every comment in these threads is posted from the operator's account
+  and most of them are written by the desk, so the account settles nothing; his
+  own sentences are recognisable as his — German, lower case, spoken — and they
+  appear as quotations. Four things that look like operator authority and are
+  not, all of them `DESK`:
+
+  - an **attribution** the desk wrote — `ERGÄNZUNG (Operator)`,
+    `OPERATOR-ENTSCHEIDUNG (bindend)`, `(Operator ausdrücklich)`. It is a claim
+    about the object, not a voice inside it, and a desk that could certify its
+    own prose as the operator's would be the second authority this convention
+    exists to refuse;
+  - a **rendering** the thread marks *wörtlich sinngemäß*, which the Provenance
+    section already forbids promoting to a transcript;
+  - an operator **question**. Quoting „gut oder Push-back?" records what he
+    asked; the answer written under it is the desk's;
+  - an operator **rejection** that says what he does not want without saying
+    what to build. The sentence is quoted; the design answering it is `DESK`.
+
+  Where a quoted operator sentence carries only the core of a rule, the rule is
+  graded by that core and names the elaboration around it as desk detail. A
+  `DESK` rule that narrows or replaces an `OPERATOR` sentence says so at the
+  rule, because that is a proposal to the operator and not a settled correction.
 
   A rule that replaced an earlier one names the one it replaced, so that a dead
   sentence cannot be revived by someone who read only the older comment.

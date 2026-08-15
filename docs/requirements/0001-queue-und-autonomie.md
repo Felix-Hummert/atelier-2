@@ -12,10 +12,18 @@ Approved-By:    none
 ```
 
 `DRAFT`: the operator has approved no reading of this thread, and #79 itself
-heads its acceptance direction "zu verfeinern vor Bau". What binds today is what
-the source binds — the rules graded `OPERATOR` below, through their comments,
-not through this file. Rules graded `DESK` are the engineering reading of the
-thread and bind nothing until an operator rules them.
+heads its acceptance direction "zu verfeinern vor Bau". **No rule below is
+graded `OPERATOR`**, because no comment in this thread quotes an operator
+sentence that states a rule. The two passages carrying his words at length — the
+north star and the canonical acceptance scenario — are both marked *wörtlich
+sinngemäß* by the thread itself, so they are carried under `Intent` and
+`Acceptance` with that qualifier rather than promoted to a graded rule; the one
+sentence quoted from him verbatim is a question, „gut oder Push-back?", and the
+answer to it under rule 1 is the desk's. Several
+comments are headed "ERGÄNZUNG (Operator)"; under the grade rule of the
+convention that header is the desk's attribution and not the operator's voice.
+Everything below is therefore the engineering reading of the thread and binds
+nothing until an operator rules it.
 
 ## Intent
 
@@ -24,8 +32,10 @@ Work items arise there, written by humans or by workflows. From then on it runs
 by itself: items are prioritised, get the workflow that fits them, land in a
 queue, and start as soon as their preconditions are met — visibly, live. Not
 everything is worked automatically; a filter decides what agents may take and
-what belongs to a human. (#79 body @ 9d781a3c, which records this as the
-operator's vision.)
+what belongs to a human. (#79 body @ 9d781a3c, which heads this as the
+operator's vision and marks it *wörtlich sinngemäß* — a rendering close to his
+words, not a transcript; this document repeats that qualifier rather than
+promoting the passage to a quotation.)
 
 This is the mechanisation of the way the fleet already works by hand: issue →
 triage → queue → precondition-driven start → observable processing. The
@@ -91,13 +101,15 @@ star, not a sentence of it.)
    > „Die Queue automatisiert das ANSTOSSEN, nie das FREIGEBEN — Verdict-Tore in
    > den Workflows bleiben, Durchsatz schlägt nie Review."
 
-6. `OPERATOR` — **Deep links in both directions, tracker-neutral.** Every
+6. `DESK` — **Deep links in both directions, tracker-neutral.** Every
    run and workflow in the atelier UI links its work item; the queue start
    writes the back link at the item — to the live graph, finally to the
    receipted result. Owner cut: the link semantics (what is written when,
    idempotent, readback-verified) belong to the #24 adapter contract, the UI
-   side (item chip on the run row and on the graph) to #9. (5302022156, posted
-   as "ERGÄNZUNG (Operator)"; the owner cut in its last bullet is desk detail.)
+   side (item chip on the run row and on the graph) to #9. (5302022156. The
+   comment is headed "ERGÄNZUNG (Operator)", but its body is desk prose with no
+   operator sentence quoted anywhere in it, so the attribution does not raise
+   this rule above `DESK`.)
 
 7. `DESK` — **Pause means drain; resume means releasing the ready set.**
    Pause starts no new node and lets running attempts drain to their terminal
@@ -111,12 +123,15 @@ star, not a sentence of it.)
    receipt — a paused attempt would be a cancelled attempt whose restart is a
    new paid call without the half-done work.)
 
-   **This narrows an operator sentence.** 5302048197 is posted as "ERGÄNZUNG
-   (Operator)" and promises "Pause/Park mit sauberer Zustands-Sicherung …
-   jederzeit, verlustfrei". The desk's reading is that the promise is
-   unbuildable for a running provider attempt and true only for the queue. That
-   reading is a proposal to the operator, not a settled correction, and until
-   he rules it his sentence stands.
+   **This narrows a promise the thread attributes to the operator.** 5302048197
+   is headed "ERGÄNZUNG (Operator)" and promises "Pause/Park mit sauberer
+   Zustands-Sicherung … jederzeit, verlustfrei", but quotes no operator
+   sentence, so under the grade rule that promise is desk prose too and this
+   rule corrects one desk reading with another. It is still flagged, because
+   the promise may render something the operator said off the record: the
+   desk's reading is that it is unbuildable for a running provider attempt and
+   true only for the queue, and that reading is a proposal to him, not a
+   settled correction.
 
 8. `DESK` — **A label authorises work only when the actor that set it is not
    the atelier itself.** In PAT mode labels are an *observed* set: the #24

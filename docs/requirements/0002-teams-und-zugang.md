@@ -11,12 +11,15 @@ Approved-By:    none
 ```
 
 `DRAFT`, and this subject is the clearest case for why the status exists. The
-operator's wish is on the record and quoted below; almost everything under it is
-the desk's answer to his questions, and #82 itself heads that answer
-"Engineering-Richtung (zu prüfen im späteren ADR, nicht vorentschieden)". Only
-two rules below carry an operator ruling. The rest is a direction: nothing in it
-may be built as settled, and its real binding force is negative — make no
-decision now that blocks it.
+operator's wish is on the record and quoted verbatim below; almost everything
+under it is the desk's answer to his questions, and #82 itself heads that answer
+"Engineering-Richtung (zu prüfen im späteren ADR, nicht vorentschieden)".
+**Exactly one rule below quotes an operator sentence** — rule 15, and only for
+the part that sentence carries. Rule 11 was graded `OPERATOR` in an earlier
+revision on the strength of its comment's header "ZWEI PRÄZISIERUNGEN
+(Operator)"; the section under that header quotes him nowhere, so it is `DESK`.
+The rest is a direction: nothing in it may be built as settled, and its real
+binding force is negative — make no decision now that blocks it.
 
 ## Intent
 
@@ -98,16 +101,17 @@ ruling:
     `allowed-projects`, so no colleague spends someone else's quota. API-key
     runners may be team-wide. (5302806812 §4.)
 
-11. `OPERATOR` — **Placement follows attestation, not preference.** A
+11. `DESK` — **Placement follows attestation, not preference.** A
     subscription needs a long-lived machine with one interactive login —
     **including remote machines, which are first class**: a long-lived remote
     machine with a single interactive login carries a subscription executor
     fully, and the credential directory stays local, so the reference principle
     is untouched. Only *ephemeral* environments (throwaway CI) structurally
     cannot hold a subscription and therefore use API keys. (5302806812 §5,
-    sharpened by 5302820772 §1, posted as "ZWEI PRÄZISIERUNGEN (Operator)"; the
-    operator ruled that remote subscription runners are first class, and the
-    desk's attestation framing around it is rule 10's.)
+    sharpened by 5302820772 §1. That comment is headed "ZWEI PRÄZISIERUNGEN
+    (Operator)", but §1 quotes no operator sentence, so first-class remote
+    subscription runners are the desk's reading of his position and not a
+    ruling on the record.)
 
 12. `DESK` — **Consumption is tracked per mode, and modes are never mixed.**
     Both modes measure attempts, duration, and tokens. Money is exact **only**
@@ -128,14 +132,19 @@ ruling:
     the atelier** (ADR 0009 §6). Central distribution would be a secret
     manager's job, not this product's. (5302806812 §6.)
 
-15. `OPERATOR` — **Estimates may be displayed and may never be proof.**
-    Subscription consumption may carry a clearly labelled "≈ estimated" money
-    line in the UI, provider-neutral, computed from **configurable** price
-    tables — never hardcoded. Receipts carry only measured values and no gate
-    ever computes with an estimate (ADR 0008 claim 3 untouched). The dividing
-    line: the display layer may guess, the proof layer never. (5302820772 §2,
-    posted as "ZWEI PRÄZISIERUNGEN (Operator)" and quoting him: „der Rest
-    könnte eine Schätzung sein — provider-neutral".)
+15. `OPERATOR` — **A subscription's money line may be an estimate, and it is
+    provider-neutral.** His sentence, quoted at 5302820772 §2:
+
+    > „der Rest könnte eine Schätzung sein — provider-neutral"
+
+    That is the entire operator content of the comment, and the grade covers
+    exactly it. The rest of this rule is desk elaboration and a proposal until
+    he rules it: the estimate is displayed as a clearly labelled "≈ estimated"
+    line and computed from **configurable** price tables, never hardcoded;
+    receipts carry only measured values and no gate ever computes with an
+    estimate (ADR 0008 claim 3 untouched); the dividing line is that the
+    display layer may guess and the proof layer never.
+
 ## Open questions
 
 - **The protocol mechanics are not pre-decided.** The OIDC direction above is

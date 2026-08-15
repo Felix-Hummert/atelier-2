@@ -13,11 +13,21 @@ Approved-By:    none
 
 `DRAFT`: #9 is a vision, and it says so itself — its body closes "Status:
 VISION/PROPOSAL — verbindlich erst als eigenes Requirement-Issue nach
-Operator-Abnahme". That approval has not happened, so this document settles
-nothing. What it does carry is a thread unusually rich in operator sentences —
-two mockup feedback rounds and one decision the body marks binding — and those
-rules are graded `OPERATOR` and bind through their source. The rest is the
-desk's reading of the same thread.
+Operator-Abnahme (Konvention siehe #5)". That approval has not happened, so this
+document settles nothing, and the route it names is #5's: the operator's approval
+publishes a requirement issue, never this file.
+
+The thread quotes the operator in several places, and exactly one of those
+quotations states a rule. **Exactly one rule below is graded `OPERATOR`** —
+rule 1, on the sentence 5302769095 quotes from him. The other quotations are his
+standard, reproduced under `Intent`; his nine words of dissatisfaction with the
+mockup's Settings screen, reproduced at rule 15; and the questions he asked,
+whose answers are the desk's. An earlier revision graded eleven rules
+`OPERATOR` on the strength of
+comment headers — "OPERATOR-VISION VERSCHÄRFT", "Operator-Feedback-Runde 2",
+"OPERATOR-ENTSCHEIDUNG (bindend)" — which the convention now names for what they
+are: the desk attributing its own prose. Everything not graded `OPERATOR` is the
+desk's reading of the same thread and binds nothing until he rules it.
 
 ## Intent
 
@@ -63,7 +73,7 @@ not add features. (5302788411.)
    (5302788411, the desk's curation in answer to the operator's question „was
    noch einbauen, ohne zu überladen?".)
 
-3. `OPERATOR` — **Two doors lead to the same canvas.** Either the chat with the
+3. `DESK` — **Two doors lead to the same canvas.** Either the chat with the
    conductor (#7) composes a graph and shows it *before* the start, or the
    construction kit lets agents, skills, and subworkflows be dragged from the
    library onto the canvas, connected, and configured by click — model, tools,
@@ -71,26 +81,37 @@ not add features. (5302788411.)
    produce the same object, the V3 graph. The conductor pre-fills; the human
    adjusts. (5301898411 §2.)
 
-4. `OPERATOR` — **Project choice comes first**; what the fleet is working on is
+4. `DESK` — **Project choice comes first**; what the fleet is working on is
    first class. (5301898411 §1.)
 
-5. `OPERATOR` — **The library shows names, never hashes.** Named, described,
+5. `DESK` — **The library shows names, never hashes.** Named, described,
    versioned agents in the markdown format of #66, skills, and workflows with
    their scorecard (#8). A hash is never again a selection option; #22 owns the
    names. (5301898411 §3.)
 
-6. `OPERATOR` — **The same graph is the live view.** Nodes light up working /
+6. `DESK` — **The same graph is the live view.** Nodes light up working /
    completed / failed; a click on a running agent opens its ephemeral tile with
    live output and native intervention. A live run in the runs list opens that
    same graph in its live state. (5301898411 §4, 5302066517 §2.)
 
-7. `OPERATOR` — **Mode is a capability declaration.** Headless is mandatory for
+   Rules 3 to 6 read the numbered sections of 5301898411, a comment headed
+   "OPERATOR-VISION VERSCHÄRFT (Felix …)". The one sentence it quotes from him
+   is the standard reproduced under `Intent`; §1 to §5 are the desk's prose, so
+   these four rules are `DESK` however faithfully they render the vision.
+
+7. `DESK` — **Mode is a capability declaration.** Headless is mandatory for
    every provider; interactive is declared. A node that demands interactive
    fails at *validation* on a provider that does not declare it — never
    silently. The enum field belongs in the B0.1 binding, before the executor
    contract freezes. (#9 body @ 36800d6e, which marks this paragraph
-   "OPERATOR-ENTSCHEIDUNG (bindend)" — a decision the body labels binding,
-   inside a body whose overall status is a proposal.)
+   "OPERATOR-ENTSCHEIDUNG (bindend)", and comment 5294316639 on #5, which
+   records the same decision in the same words.)
+
+   The grade is `DESK` because both objects are desk prose *labelling* the
+   decision as the operator's; neither quotes him. That is a statement about
+   what this thread evidences, not a licence to reopen the decision: it stands
+   where it was made, the B0.1 binding follows it, and whoever needs it settled
+   asks the operator rather than reading a certification out of this file.
 
 8. `DESK` — **Interactive attach is V1 local-only, and it marks the run.** The
    operator chooses the mode per node or run. Interactive attempts run in the
@@ -131,10 +152,13 @@ not add features. (5302788411.)
     stderr, and any timeline at all. (5302132001 §1, replacing the "byte-genau
     aus den Receipts nachspielbar" wording of 5302066517 §2.)
 
-    **This narrows an operator sentence.** 5302066517 is an operator feedback
-    round, and byte-exact replay is what it promises. The desk's reading is
-    that nothing durable today could produce it. That reading is a proposal to
-    the operator, not a settled correction.
+    **This narrows a promise made in a comment headed as the operator's.**
+    5302066517 is headed "Operator-Feedback-Runde 2" and its §2 promises
+    byte-exact replay, but quotes no operator sentence, so the promise is desk
+    prose and this rule corrects one desk reading with another. It is flagged
+    all the same, because the promise may render something he said at the
+    mockup: the desk's reading is that nothing durable today could produce it,
+    and that reading is a proposal to him, not a settled correction.
 
 11. `DESK` — **V1 builds project memory; per-user memory is gated on #82.** Own
     agents, favourites, and defaults hang on the project, which #23 and #79
@@ -145,25 +169,37 @@ not add features. (5302788411.)
     not "later". (5302132001 §3, replacing "Per-User/Projekt-Gedächtnis
     (später)" of 5301898411 §5.)
 
-12. `OPERATOR` — **Language and naming:** English by default, German optional;
+12. `DESK` — **Language and naming:** English by default, German optional;
     short names — "Studio", not "Leinwand & Chat". (5302066517 §1.)
 
-13. `OPERATOR` — **The runs list shows purpose and result, never only status.**
+13. `DESK` — **The runs list shows purpose and result, never only status.**
     A project chip on every row plus a project filter, and consumption or cost
     per row (#8). (5302066517 §4.)
 
-14. `OPERATOR` — **One exchangeable design-token system**, light / dark / auto
+14. `DESK` — **One exchangeable design-token system**, light / dark / auto
     everywhere, and notifications as an inbox — cards, when a run needs a
     human. (5302066517 §5; the ⌘K command palette from the same comment is
     deferred until there is enough to command, per 5302132001.)
 
-15. `OPERATOR` — **Settings are a professional surface with no hardcoded
-    provider rows.** "Providers" is a list of connected providers ("+ Add
-    provider" → provider → login *or* token, the method being the operator's
-    choice); then Projects (repository + tracker + credential reference +
-    rules, pause ↔ resume), Agent defaults (model per role class — gates and
-    judgments opus, samples haiku; budget frames that are never in the way and
-    never off), Runners, Notifications, Appearance / Language. (5302066517 §6.)
+15. `DESK` — **Settings are a professional surface with no hardcoded provider
+    rows.** The operator content behind this rule is one sentence, quoted at
+    5302066517 §6:
+
+    > „wie sie aufgebaut ist mag ich noch nicht"
+
+    Nine words about the Settings screen of the mockup, and they say only what
+    he does not want. Everything the rule proposes in their place is the desk's
+    answer and binds nothing until he rules it: "Providers" as a list of
+    connected providers ("+ Add provider" → provider → login *or* token, the
+    method being the operator's choice); then Projects (repository + tracker +
+    credential reference + rules, pause ↔ resume), Agent defaults (model per
+    role class — gates and judgments opus, samples haiku; budget frames that are
+    never in the way and never off), Runners, Notifications, Appearance /
+    Language.
+
+    Rules 12 to 15 all come from 5302066517, whose header names an operator
+    feedback round; §1, §4 and §5 quote him nowhere, and §6 quotes only the
+    rejection above.
 
 16. `DESK` — **Four ingredients that remove work** (5302788411, the desk's
     curation; the admission criterion "removes work" is the desk's too):
@@ -188,17 +224,21 @@ not add features. (5302788411.)
     authentication (requirement 0002, #82) may arrive later without contorting
     the design. (5302788411.)
 
-18. `OPERATOR` — **Mockups are design templates, explicitly.** The built UI may
-    look better or different; what binds is the information hierarchy of rule 1
-    and that every display shows receipted truth. (5302769095. The referenced
-    artefact is mockup v3, held by the operator, clickable, at the same URL as
-    v1 and v2 — it is not in this repository. 5302066517 closing.)
+18. `DESK` — **Mockups are design templates.** The built UI may look better or
+    different; what binds is the information hierarchy of rule 1 and that every
+    display shows receipted truth. (5302769095 writes this as "Mockups sind
+    Design-VORLAGEN (Operator ausdrücklich)" — a parenthetical attribution, not
+    a quoted sentence, so the rule is `DESK` even though the same comment quotes
+    him for rule 1. The referenced artefact is mockup v3, held by the operator,
+    clickable, at the same URL as v1 and v2 — it is not in this repository.
+    5302066517 closing.)
 
 19. `DESK` — **Atelier 1 is reused as concepts and lessons, never as ported
     code.** The concrete lessons are kept as a prior-art note — ttyd version
     and sha pinning, Codex per-directory trust, tmux ≥ 3.4 in containers
     because of the argv0 output, capture-pane diagnosis — so that "reuse" never
     smuggles the permanent-seat machinery back in. (#9 body @ 36800d6e.)
+
 ## Open questions
 
 - **Remote attach is its own epic**, gated on a runner-trust ADR: runner
