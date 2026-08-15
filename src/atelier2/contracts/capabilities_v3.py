@@ -23,7 +23,8 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from atelier2.contracts.agents import ResolvedAgentBinding
+from atelier2.contracts.agents import AgentExecutionCapability, ResolvedAgentBinding
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_configuration_v3 import ReferenceChain, ReferenceSite
 from atelier2.contracts.workflow_bindings_v3 import BoundSubworkflow, SubworkflowBinding
 from atelier2.contracts.workflows_v3 import (
@@ -48,6 +49,7 @@ class RuntimeCapability(StrEnum):
 
     DAG_SCHEDULING = "dag_scheduling"
     AGENT_EXECUTION = "agent_execution"
+    OUTPUT_VALIDATION = "output_validation"
     SKILL_INSTALLATION = "skill_installation"
     TOOL_GRANTS = "tool_grants"
     CONTEXT_MATERIALIZATION = "context_materialization"
@@ -58,31 +60,100 @@ class RuntimeCapability(StrEnum):
     SUBWORKFLOW_EXECUTION = "subworkflow_execution"
 
 
-@dataclass(frozen=True, slots=True)
-class CapabilitySubject:
-    """The exact revision one capability entry must enumerate, and its authored name.
+class OutputProfile(StrEnum):
+    """The output shape the provider-neutral core enforces for one agent node.
 
-    A manifest is matched on `revision` alone. `name` is the author's word for the
-    thing and travels only so a refusal reads like the document; matching it would
-    let a rename widen what a build proved, and this is the trust boundary that
-    decides what a run may spend and touch.
+    The document alone declares `outputs[*].schema`; a profile says which shape the
+    core can enforce at all, so the arity a node authored names its own profile
+    instead of a builder default. Only `single-json-output/v1` (#57) exists today,
+    which is why the other two shapes name a form no build attests yet.
     """
 
-    name: str
-    revision: str
+    NO_OUTPUT = "no-output/v1"
+    SINGLE_JSON_OUTPUT = "single-json-output/v1"
+    MULTIPLE_JSON_OUTPUTS = "multiple-json-outputs/v1"
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryRevisionSubject:
+    """One published revision, in the registry the reference is read under.
+
+    The kind travels with the hash because identical bytes published under two
+    kinds are two different things: without it one `context_source` attestation
+    would prove a `read_operation` of the same content.
+    """
+
+    kind: RevisionKind
+    revision_hash: str
 
     def __post_init__(self) -> None:
-        if not self.name or not self.revision:
-            raise ValueError(
-                "a capability subject names a revision and how it is named"
-            )
-
-    @classmethod
-    def of(cls, reference: VersionedReference) -> CapabilitySubject:
-        return cls(reference.ref, reference.revision)
+        if not isinstance(self.kind, RevisionKind):
+            raise TypeError("a registry subject names its registry through the kind")
+        if not self.revision_hash:
+            raise ValueError("a registry subject names the revision it demands")
 
     def __str__(self) -> str:
-        return f"{self.name}@{self.revision}"
+        return f"{self.kind.value}:{self.revision_hash}"
+
+
+@dataclass(frozen=True, slots=True)
+class AgentConfigurationSubject:
+    """The agent-configuration revision one role binds to, which is no registry."""
+
+    revision_hash: str
+
+    def __post_init__(self) -> None:
+        if not self.revision_hash:
+            raise ValueError("an agent configuration subject names its revision")
+
+    def __str__(self) -> str:
+        return f"agent_configuration:{self.revision_hash}"
+
+
+@dataclass(frozen=True, slots=True)
+class OutputProfileSubject:
+    """The output shape a build proves it can enforce."""
+
+    profile: OutputProfile
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.profile, OutputProfile):
+            raise TypeError("an output profile subject uses the closed vocabulary")
+
+    def __str__(self) -> str:
+        return self.profile.value
+
+
+type SubjectIdentity = (
+    RegistryRevisionSubject | AgentConfigurationSubject | OutputProfileSubject
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilitySubject:
+    """The exact identity one capability entry must enumerate, and its authored name.
+
+    A manifest is matched on `identity` alone. `name` is the author's word for the
+    thing and travels only so a refusal reads like the document; matching it would
+    let a rename widen what a build proved, and this is the trust boundary that
+    decides what a run may spend and touch. A subject nothing in the document names
+    — an output profile — carries no name.
+    """
+
+    identity: SubjectIdentity
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("a capability subject named at all is named nonempty")
+
+    @classmethod
+    def of(cls, kind: RevisionKind, reference: VersionedReference) -> CapabilitySubject:
+        return cls(RegistryRevisionSubject(kind, reference.revision), reference.ref)
+
+    def __str__(self) -> str:
+        named = "" if self.name is None else f"{self.name}@"
+        return f"{named}{self.identity}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,16 +179,14 @@ class CapabilityAttestation:
     """
 
     capability: RuntimeCapability
-    subjects: frozenset[str] = frozenset()
+    subjects: frozenset[SubjectIdentity] = frozenset()
 
     def __post_init__(self) -> None:
         if not isinstance(self.capability, RuntimeCapability):
             raise TypeError("an attested capability uses the closed vocabulary")
-        if any(not subject for subject in self.subjects):
-            raise ValueError("an attested subject names a revision")
 
     def proves(self, subject: CapabilitySubject | None) -> bool:
-        return subject is None or subject.revision in self.subjects
+        return subject is None or subject.identity in self.subjects
 
 
 @dataclass(frozen=True)
@@ -193,6 +262,7 @@ class RoleBindingRefusalReason(StrEnum):
     """Why one agent node's role cannot yield an agent-execution requirement."""
 
     UNBOUND_ROLE = "unbound_role"
+    INCOMPATIBLE_EXECUTION_MODE = "incompatible_execution_mode"
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,7 +438,12 @@ def _required_of_node(
             yield CapabilityRequirement(
                 RuntimeCapability.CONTEXT_MATERIALIZATION,
                 ReferenceSite("required_context.source", node.id, entry.name, chain),
-                CapabilitySubject(entry.source.ref, entry.source.revision),
+                CapabilitySubject.of(
+                    RevisionKind.CONTEXT_SOURCE,
+                    VersionedReference(
+                        ref=entry.source.ref, revision=entry.source.revision
+                    ),
+                ),
             )
     if isinstance(node, AgentNodeV3):
         yield from _required_of_agent(node, agent_bindings, skills, chain)
@@ -376,13 +451,13 @@ def _required_of_node(
         yield CapabilityRequirement(
             RuntimeCapability.DETERMINISTIC_OPERATIONS,
             ReferenceSite("operation", node.id, None, chain),
-            CapabilitySubject.of(node.operation),
+            CapabilitySubject.of(RevisionKind.DETERMINISTIC_OPERATION, node.operation),
         )
     if isinstance(node, ActionNodeV3):
         yield CapabilityRequirement(
             RuntimeCapability.EXTERNAL_EFFECTS,
             ReferenceSite("operation", node.id, None, chain),
-            CapabilitySubject.of(node.operation),
+            CapabilitySubject.of(RevisionKind.ADAPTER_OPERATION, node.operation),
         )
     if isinstance(node, SubworkflowNodeV3):
         yield CapabilityRequirement(
@@ -401,13 +476,21 @@ def _required_of_agent(
     yield CapabilityRequirement(
         RuntimeCapability.AGENT_EXECUTION,
         site,
-        CapabilitySubject(node.role, _bound_configuration(node, agent_bindings, site)),
+        CapabilitySubject(
+            AgentConfigurationSubject(_bound_configuration(node, agent_bindings, site)),
+            node.role,
+        ),
+    )
+    yield CapabilityRequirement(
+        RuntimeCapability.OUTPUT_VALIDATION,
+        ReferenceSite("outputs", node.id, None, chain),
+        CapabilitySubject(OutputProfileSubject(_output_profile(node))),
     )
     for available in node.available_context:
         yield CapabilityRequirement(
             RuntimeCapability.CONTEXT_RESOLUTION,
             ReferenceSite("available_context.source", node.id, available.name, chain),
-            CapabilitySubject.of(available.source),
+            CapabilitySubject.of(RevisionKind.CONTEXT_SOURCE, available.source),
         )
         for read_operation in available.read_operations:
             yield CapabilityRequirement(
@@ -415,26 +498,35 @@ def _required_of_agent(
                 ReferenceSite(
                     "available_context.read_operations", node.id, available.name, chain
                 ),
-                CapabilitySubject.of(read_operation),
+                CapabilitySubject.of(RevisionKind.READ_OPERATION, read_operation),
             )
     for skill in node.skills:
         yield CapabilityRequirement(
             RuntimeCapability.SKILL_INSTALLATION,
             ReferenceSite("skills", node.id, None, chain),
-            CapabilitySubject.of(skill),
+            CapabilitySubject.of(RevisionKind.SKILL, skill),
         )
         for grant in skills.carried_tool_grants(skill):
             yield CapabilityRequirement(
                 RuntimeCapability.TOOL_GRANTS,
                 ReferenceSite("skills", node.id, None, chain + (skill,)),
-                CapabilitySubject.of(grant),
+                CapabilitySubject.of(RevisionKind.TOOL, grant),
             )
     for tool in node.tools:
         yield CapabilityRequirement(
             RuntimeCapability.TOOL_GRANTS,
             ReferenceSite("tools", node.id, None, chain),
-            CapabilitySubject.of(tool),
+            CapabilitySubject.of(RevisionKind.TOOL, tool),
         )
+
+
+def _output_profile(node: AgentNodeV3) -> OutputProfile:
+    """The output shape this node's declared arity asks the core to enforce."""
+    if not node.outputs:
+        return OutputProfile.NO_OUTPUT
+    if len(node.outputs) == 1:
+        return OutputProfile.SINGLE_JSON_OUTPUT
+    return OutputProfile.MULTIPLE_JSON_OUTPUTS
 
 
 def _bound_configuration(
@@ -444,6 +536,7 @@ def _bound_configuration(
 ) -> str:
     for binding in agent_bindings:
         if binding.role.value == node.role:
+            _refuse_incompatible_mode(node, binding, site)
             return binding.configuration.revision_hash.value
     raise RoleBindingRefused(
         RoleBindingRefusal(
@@ -451,5 +544,29 @@ def _bound_configuration(
             site,
             node.role,
             f"no bound agent-configuration revision carries role {node.role!r}",
+        )
+    )
+
+
+def _refuse_incompatible_mode(
+    node: AgentNodeV3, binding: ResolvedAgentBinding, site: ReferenceSite
+) -> None:
+    """The node declares the mode it requires; its binding declares the capability.
+
+    Mode is never attested twice: the manifest carries no `mode` field, so this
+    comparison is where a node authored for an operator meets a configuration that
+    can only run headless, or the reverse — which would make a headless node's
+    outputs operator-influenced without the document ever saying so.
+    """
+    requested = binding.configuration.requested_capability
+    if requested is AgentExecutionCapability(node.mode):
+        return
+    raise RoleBindingRefused(
+        RoleBindingRefusal(
+            RoleBindingRefusalReason.INCOMPATIBLE_EXECUTION_MODE,
+            site,
+            node.role,
+            f"this node requires a {node.mode} agent, and role {node.role!r} binds "
+            f"a configuration declaring {requested.value}",
         )
     )

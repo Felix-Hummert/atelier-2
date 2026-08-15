@@ -21,20 +21,26 @@ from atelier2.contracts.agents import (
     ResolvedAgentBinding,
 )
 from atelier2.contracts.capabilities_v3 import (
+    AgentConfigurationSubject,
     AttestedCapabilities,
     CapabilityAttestation,
     CapabilityRequirement,
     CapabilitySubject,
     Executable,
     NotExecutable,
+    OutputProfile,
+    OutputProfileSubject,
     PublishedSkills,
+    RegistryRevisionSubject,
     RoleBindingRefusalReason,
     RoleBindingRefused,
     RuntimeCapability,
     SkillContents,
+    SubjectIdentity,
     decide_executability,
     required_capabilities,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_configuration_v3 import ReferenceSite
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
@@ -49,7 +55,8 @@ from atelier2.ports.workflow_revisions import (
     ResolvePublishedWorkflowResult,
 )
 
-PARENT = b"""format_version: 3
+PARENT_TEMPLATE = b"""format_version: 3
+name: Build a candidate, review it in a panel and hand off the verdict
 nodes:
   - id: implement
     type: agent
@@ -75,7 +82,7 @@ nodes:
   - id: panel
     type: subworkflow
     depends_on: [implement]
-    workflow: {ref: review_panel, revision: child-1}
+    workflow: {ref: review_panel, revision: <child>}
     inputs:
       - name: candidate
         from: {node: implement, output: candidate}
@@ -105,6 +112,7 @@ nodes:
 """
 
 CHILD = b"""format_version: 3
+name: Merge the panel's review verdicts into one
 graph_inputs:
   - name: candidate
     schema: {ref: workspace_candidate, revision: schema-1}
@@ -144,6 +152,7 @@ nodes:
 """
 
 UNRESTRICTED_AGENT = """format_version: 3
+name: Build with whatever the bound definition grants
 nodes:
   - id: implement
     type: agent
@@ -157,8 +166,10 @@ nodes:
         schema: {{ref: workspace_candidate, revision: schema-1}}
 """
 
-CHILD_REFERENCE = VersionedReference(ref="review_panel", revision="child-1")
+CHILD_REVISION = WorkflowRevision(CHILD).revision_hash.value
+CHILD_REFERENCE = VersionedReference(ref="review_panel", revision=CHILD_REVISION)
 CHILD_CHAIN = (CHILD_REFERENCE,)
+PARENT = PARENT_TEMPLATE.replace(b"<child>", CHILD_REVISION.encode("ascii"))
 SKILL_REFERENCE = VersionedReference(ref="workspace_discipline", revision="skill-1")
 CARRIED_GRANT = VersionedReference(ref="workspace_write", revision="tool-2")
 SKILL_CONTENTS = PublishedSkills((SkillContents("skill-1", (CARRIED_GRANT,)),))
@@ -174,13 +185,17 @@ def _configuration(model: str) -> AgentConfigurationRevision:
     return _binding("builder", model).configuration
 
 
-def _binding(role: str, model: str) -> ResolvedAgentBinding:
+def _binding(
+    role: str,
+    model: str,
+    capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
+) -> ResolvedAgentBinding:
     auth = _auth()
     configuration = AgentConfigurationRevision(
         model,
         auth.revision_hash,
         AgentExecutorRevision("claude-cli/v1"),
-        AgentExecutionCapability.HEADLESS,
+        capability,
         AgentConfigurationRevisionFormatVersion.V2,
     )
     return ResolvedAgentBinding(AgentRole(role), configuration, auth)
@@ -191,11 +206,20 @@ ROLE_MATRIX = (
     _binding("reviewer", "claude-sonnet-5"),
 )
 BUILDER_SUBJECT = CapabilitySubject(
-    "builder", _configuration("claude-opus-5").revision_hash.value
+    AgentConfigurationSubject(_configuration("claude-opus-5").revision_hash.value),
+    "builder",
 )
 REVIEWER_SUBJECT = CapabilitySubject(
-    "reviewer", _configuration("claude-sonnet-5").revision_hash.value
+    AgentConfigurationSubject(_configuration("claude-sonnet-5").revision_hash.value),
+    "reviewer",
 )
+SINGLE_OUTPUT = CapabilitySubject(
+    OutputProfileSubject(OutputProfile.SINGLE_JSON_OUTPUT)
+)
+
+
+def registry_subject(kind: RevisionKind, name: str, revision: str) -> CapabilitySubject:
+    return CapabilitySubject(RegistryRevisionSubject(kind, revision), name)
 
 
 @dataclass(frozen=True)
@@ -218,7 +242,7 @@ def parsed(document: bytes) -> WorkflowGraphV3:
 def bound_children(document: bytes) -> SubworkflowBinding:
     return bind_subworkflow_boundaries(
         parsed(document),
-        PublishedWorkflows({("review_panel", "child-1"): CHILD}),
+        PublishedWorkflows({("review_panel", CHILD_REVISION): CHILD}),
         parse_workflow_document,
         2,
     )
@@ -238,11 +262,11 @@ def attesting(
     requirements: Sequence[CapabilityRequirement],
 ) -> AttestedCapabilities:
     """The exact manifest that proves one requirement set, and nothing more."""
-    proven: dict[RuntimeCapability, set[str]] = {}
+    proven: dict[RuntimeCapability, set[SubjectIdentity]] = {}
     for requirement in requirements:
         subjects = proven.setdefault(requirement.capability, set())
         if requirement.subject is not None:
-            subjects.add(requirement.subject.revision)
+            subjects.add(requirement.subject.identity)
     return AttestedCapabilities(
         tuple(
             CapabilityAttestation(capability, frozenset(subjects))
@@ -260,11 +284,13 @@ def without(
 
 
 def without_subject(
-    attested: AttestedCapabilities, capability: RuntimeCapability, revision: str
+    attested: AttestedCapabilities,
+    capability: RuntimeCapability,
+    identity: SubjectIdentity,
 ) -> AttestedCapabilities:
     return AttestedCapabilities(
         tuple(
-            CapabilityAttestation(entry.capability, entry.subjects - {revision})
+            CapabilityAttestation(entry.capability, entry.subjects - {identity})
             if entry.capability is capability
             else entry
             for entry in attested.entries
@@ -290,35 +316,40 @@ EXPECTED_PARENT_REQUIREMENTS = (
     CapabilityRequirement(
         RuntimeCapability.CONTEXT_MATERIALIZATION,
         site("required_context.source", "implement", "story"),
-        CapabilitySubject("requirement", "source-1"),
+        registry_subject(RevisionKind.CONTEXT_SOURCE, "requirement", "source-1"),
     ),
     CapabilityRequirement(
         RuntimeCapability.AGENT_EXECUTION, site("role", "implement"), BUILDER_SUBJECT
     ),
     CapabilityRequirement(
+        RuntimeCapability.OUTPUT_VALIDATION, site("outputs", "implement"), SINGLE_OUTPUT
+    ),
+    CapabilityRequirement(
         RuntimeCapability.CONTEXT_RESOLUTION,
         site("available_context.source", "implement", "decisions"),
-        CapabilitySubject("decision_record_index", "source-2"),
+        registry_subject(
+            RevisionKind.CONTEXT_SOURCE, "decision_record_index", "source-2"
+        ),
     ),
     CapabilityRequirement(
         RuntimeCapability.CONTEXT_RESOLUTION,
         site("available_context.read_operations", "implement", "decisions"),
-        CapabilitySubject("search", "read-1"),
+        registry_subject(RevisionKind.READ_OPERATION, "search", "read-1"),
     ),
     CapabilityRequirement(
         RuntimeCapability.SKILL_INSTALLATION,
         site("skills", "implement"),
-        CapabilitySubject("workspace_discipline", "skill-1"),
+        registry_subject(RevisionKind.SKILL, "workspace_discipline", "skill-1"),
     ),
     CapabilityRequirement(
         RuntimeCapability.TOOL_GRANTS,
         site("skills", "implement", chain=(SKILL_REFERENCE,)),
-        CapabilitySubject("workspace_write", "tool-2"),
+        registry_subject(RevisionKind.TOOL, "workspace_write", "tool-2"),
     ),
     CapabilityRequirement(
         RuntimeCapability.TOOL_GRANTS,
         site("tools", "implement"),
-        CapabilitySubject("repository_write", "tool-1"),
+        registry_subject(RevisionKind.TOOL, "repository_write", "tool-1"),
     ),
     CapabilityRequirement(
         RuntimeCapability.DAG_SCHEDULING, site("depends_on", "panel")
@@ -332,9 +363,19 @@ EXPECTED_PARENT_REQUIREMENTS = (
         REVIEWER_SUBJECT,
     ),
     CapabilityRequirement(
+        RuntimeCapability.OUTPUT_VALIDATION,
+        site("outputs", "read_it", chain=CHILD_CHAIN),
+        SINGLE_OUTPUT,
+    ),
+    CapabilityRequirement(
         RuntimeCapability.AGENT_EXECUTION,
         site("role", "run_it", chain=CHILD_CHAIN),
         REVIEWER_SUBJECT,
+    ),
+    CapabilityRequirement(
+        RuntimeCapability.OUTPUT_VALIDATION,
+        site("outputs", "run_it", chain=CHILD_CHAIN),
+        SINGLE_OUTPUT,
     ),
     CapabilityRequirement(
         RuntimeCapability.DAG_SCHEDULING, site("depends_on", "merge", chain=CHILD_CHAIN)
@@ -342,17 +383,25 @@ EXPECTED_PARENT_REQUIREMENTS = (
     CapabilityRequirement(
         RuntimeCapability.DETERMINISTIC_OPERATIONS,
         site("operation", "merge", chain=CHILD_CHAIN),
-        CapabilitySubject("merge_review_verdicts", "deterministic-2"),
+        registry_subject(
+            RevisionKind.DETERMINISTIC_OPERATION,
+            "merge_review_verdicts",
+            "deterministic-2",
+        ),
     ),
     CapabilityRequirement(
         RuntimeCapability.DETERMINISTIC_OPERATIONS,
         site("operation", "decide"),
-        CapabilitySubject("settle_the_panel", "deterministic-1"),
+        registry_subject(
+            RevisionKind.DETERMINISTIC_OPERATION, "settle_the_panel", "deterministic-1"
+        ),
     ),
     CapabilityRequirement(
         RuntimeCapability.EXTERNAL_EFFECTS,
         site("operation", "hand_off"),
-        CapabilitySubject("requirement_comment", "adapter-1"),
+        registry_subject(
+            RevisionKind.ADAPTER_OPERATION, "requirement_comment", "adapter-1"
+        ),
     ),
 )
 
@@ -361,6 +410,7 @@ def test_the_capability_vocabulary_is_the_closed_set_the_record_names() -> None:
     assert tuple(capability.value for capability in RuntimeCapability) == (
         "dag_scheduling",
         "agent_execution",
+        "output_validation",
         "skill_installation",
         "tool_grants",
         "context_materialization",
@@ -380,6 +430,7 @@ def test_a_definition_without_restrictions_demands_only_what_its_node_performs()
     None
 ):
     document = b"""format_version: 3
+name: Build the story under an unrestricted definition
 nodes:
   - id: implement
     type: agent
@@ -396,11 +447,17 @@ nodes:
             site("role", "implement"),
             BUILDER_SUBJECT,
         ),
+        CapabilityRequirement(
+            RuntimeCapability.OUTPUT_VALIDATION,
+            site("outputs", "implement"),
+            SINGLE_OUTPUT,
+        ),
     )
 
 
 def test_a_wait_node_demands_only_the_context_it_requires() -> None:
     document = b"""format_version: 3
+name: Ask the operator whether the candidate is accepted
 nodes:
   - id: confirm
     type: wait
@@ -416,7 +473,7 @@ nodes:
         CapabilityRequirement(
             RuntimeCapability.CONTEXT_MATERIALIZATION,
             site("required_context.source", "confirm", "story"),
-            CapabilitySubject("requirement", "source-1"),
+            registry_subject(RevisionKind.CONTEXT_SOURCE, "requirement", "source-1"),
         ),
     )
 
@@ -436,7 +493,8 @@ def test_the_same_document_is_refused_naming_the_node_and_the_missing_capability
     assert refused(decide_executability(requirements, attested)) == (
         (
             "node 'hand_off' field 'operation' demands external_effects for "
-            "requirement_comment@adapter-1: the bound capability revision attests no "
+            "requirement_comment@adapter_operation:adapter-1: the bound capability "
+            "revision attests no "
             "external_effects [unattested_capability]"
         ),
     )
@@ -447,14 +505,17 @@ def test_an_attested_capability_proves_only_the_revisions_it_enumerates() -> Non
     attested = without_subject(
         attesting(requirements),
         RuntimeCapability.DETERMINISTIC_OPERATIONS,
-        "deterministic-2",
+        RegistryRevisionSubject(
+            RevisionKind.DETERMINISTIC_OPERATION, "deterministic-2"
+        ),
     )
 
     assert refused(decide_executability(requirements, attested)) == (
         (
-            "review_panel@child-1 > node 'merge' field 'operation' demands "
-            "deterministic_operations for merge_review_verdicts@deterministic-2: "
-            "deterministic_operations enumerates no such revision [unattested_subject]"
+            f"review_panel@{CHILD_REVISION} > node 'merge' field 'operation' demands "
+            "deterministic_operations for merge_review_verdicts@"
+            "deterministic_operation:deterministic-2: deterministic_operations "
+            "enumerates no such revision [unattested_subject]"
         ),
     )
 
@@ -484,14 +545,16 @@ def test_a_refusal_names_every_unproven_requirement_not_only_the_first() -> None
 def test_an_attested_skill_carrying_an_unattested_grant_refuses_the_whole_run() -> None:
     requirements = required()
     attested = without_subject(
-        attesting(requirements), RuntimeCapability.TOOL_GRANTS, "tool-2"
+        attesting(requirements),
+        RuntimeCapability.TOOL_GRANTS,
+        RegistryRevisionSubject(RevisionKind.TOOL, "tool-2"),
     )
 
     assert refused(decide_executability(requirements, attested)) == (
         (
             "workspace_discipline@skill-1 > node 'implement' field 'skills' demands "
-            "tool_grants for workspace_write@tool-2: tool_grants enumerates no such "
-            "revision [unattested_subject]"
+            "tool_grants for workspace_write@tool:tool-2: tool_grants enumerates no "
+            "such revision [unattested_subject]"
         ),
     )
 
@@ -508,6 +571,7 @@ def test_the_same_document_starts_once_the_carried_grant_is_attested() -> None:
 
 def test_required_context_alone_never_demands_context_resolution() -> None:
     document = b"""format_version: 3
+name: Build the story from context the run materialized
 nodes:
   - id: implement
     type: agent
@@ -524,16 +588,172 @@ nodes:
     materialization_only = AttestedCapabilities(
         (
             CapabilityAttestation(
-                RuntimeCapability.CONTEXT_MATERIALIZATION, frozenset({"source-1"})
+                RuntimeCapability.CONTEXT_MATERIALIZATION,
+                frozenset(
+                    {RegistryRevisionSubject(RevisionKind.CONTEXT_SOURCE, "source-1")}
+                ),
             ),
             CapabilityAttestation(
-                RuntimeCapability.AGENT_EXECUTION, frozenset({BUILDER_SUBJECT.revision})
+                RuntimeCapability.AGENT_EXECUTION,
+                frozenset({BUILDER_SUBJECT.identity}),
+            ),
+            CapabilityAttestation(
+                RuntimeCapability.OUTPUT_VALIDATION,
+                frozenset({SINGLE_OUTPUT.identity}),
             ),
         )
     )
 
     assert (
         decide_executability(required(document), materialization_only) == Executable()
+    )
+
+
+def test_a_context_source_attestation_never_proves_a_read_operation_of_one_hash() -> (
+    None
+):
+    document = b"""format_version: 3
+name: Read the decision record index the way the run allows
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Read the record index the way the run allows.
+    available_context:
+      - name: decisions
+        source: {ref: decision_record_index, revision: one-revision}
+        read_operations:
+          - {ref: search, revision: one-revision}
+    outputs:
+      - name: candidate
+        schema: {ref: workspace_candidate, revision: schema-1}
+"""
+    requirements = required(document)
+    context_source_only = AttestedCapabilities(
+        (
+            CapabilityAttestation(
+                RuntimeCapability.CONTEXT_RESOLUTION,
+                frozenset(
+                    {
+                        RegistryRevisionSubject(
+                            RevisionKind.CONTEXT_SOURCE, "one-revision"
+                        )
+                    }
+                ),
+            ),
+            CapabilityAttestation(
+                RuntimeCapability.AGENT_EXECUTION,
+                frozenset({BUILDER_SUBJECT.identity}),
+            ),
+            CapabilityAttestation(
+                RuntimeCapability.OUTPUT_VALIDATION,
+                frozenset({SINGLE_OUTPUT.identity}),
+            ),
+        )
+    )
+
+    assert refused(decide_executability(requirements, context_source_only)) == (
+        (
+            "node 'implement' field 'available_context.read_operations' 'decisions' "
+            "demands context_resolution for search@read_operation:one-revision: "
+            "context_resolution enumerates no such revision [unattested_subject]"
+        ),
+    )
+
+
+def test_an_agent_node_demands_the_output_profile_its_declared_arity_asks_for() -> None:
+    def profiles(document: bytes) -> tuple[CapabilitySubject | None, ...]:
+        return tuple(
+            requirement.subject
+            for requirement in required(document)
+            if requirement.capability is RuntimeCapability.OUTPUT_VALIDATION
+        )
+
+    silent = b"""format_version: 3
+name: Leave the workspace behind and declare no output
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Leave the workspace behind and declare nothing.
+"""
+    plural = b"""format_version: 3
+name: Return the candidate and the note beside it
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Return the candidate and the note beside it.
+    outputs:
+      - name: candidate
+        schema: {ref: workspace_candidate, revision: schema-1}
+      - name: note
+        schema: {ref: review_opinion, revision: schema-4}
+"""
+
+    assert profiles(silent) == (
+        CapabilitySubject(OutputProfileSubject(OutputProfile.NO_OUTPUT)),
+    )
+    assert profiles(plural) == (
+        CapabilitySubject(OutputProfileSubject(OutputProfile.MULTIPLE_JSON_OUTPUTS)),
+    )
+
+
+def test_a_node_requiring_an_operator_is_refused_against_a_headless_binding() -> None:
+    document = b"""format_version: 3
+name: Decide the candidate with the operator watching
+nodes:
+  - id: decide_together
+    type: agent
+    role: builder
+    mode: interactive
+    instruction: Decide this with the operator watching.
+    outputs:
+      - name: candidate
+        schema: {ref: workspace_candidate, revision: schema-1}
+        confirmed_by: operator
+"""
+
+    with pytest.raises(RoleBindingRefused) as refusal:
+        required(document)
+
+    assert (
+        refusal.value.refusal.reason
+        is RoleBindingRefusalReason.INCOMPATIBLE_EXECUTION_MODE
+    )
+    assert "interactive" in str(refusal.value) and "headless" in str(refusal.value)
+
+
+def test_the_same_node_binds_against_a_configuration_declaring_that_mode() -> None:
+    document = b"""format_version: 3
+name: Decide the candidate with the operator watching
+nodes:
+  - id: decide_together
+    type: agent
+    role: builder
+    mode: interactive
+    instruction: Decide this with the operator watching.
+    outputs:
+      - name: candidate
+        schema: {ref: workspace_candidate, revision: schema-1}
+        confirmed_by: operator
+"""
+    interactive = _binding(
+        "builder", "claude-opus-5", AgentExecutionCapability.INTERACTIVE
+    )
+
+    requirements = required(document, role_matrix=(interactive,))
+
+    assert [requirement.capability for requirement in requirements] == [
+        RuntimeCapability.AGENT_EXECUTION,
+        RuntimeCapability.OUTPUT_VALIDATION,
+    ]
+    assert requirements[0].subject == CapabilitySubject(
+        AgentConfigurationSubject(interactive.configuration.revision_hash.value),
+        "builder",
     )
 
 
@@ -552,7 +772,7 @@ def test_an_unbound_role_refuses_the_document_naming_the_node_and_the_role() -> 
 
     assert refusal.value.refusal.reason is RoleBindingRefusalReason.UNBOUND_ROLE
     assert str(refusal.value) == (
-        "review_panel@child-1 > node 'read_it' field 'role': no bound "
+        f"review_panel@{CHILD_REVISION} > node 'read_it' field 'role': no bound "
         "agent-configuration revision carries role 'reviewer' [unbound_role]"
     )
 
@@ -566,8 +786,14 @@ def test_a_capability_revision_attests_each_capability_at_most_once() -> None:
     with pytest.raises(ValueError, match="once"):
         AttestedCapabilities(
             (
-                CapabilityAttestation(RuntimeCapability.TOOL_GRANTS, frozenset({"a"})),
-                CapabilityAttestation(RuntimeCapability.TOOL_GRANTS, frozenset({"b"})),
+                CapabilityAttestation(
+                    RuntimeCapability.TOOL_GRANTS,
+                    frozenset({RegistryRevisionSubject(RevisionKind.TOOL, "a")}),
+                ),
+                CapabilityAttestation(
+                    RuntimeCapability.TOOL_GRANTS,
+                    frozenset({RegistryRevisionSubject(RevisionKind.TOOL, "b")}),
+                ),
             )
         )
 
