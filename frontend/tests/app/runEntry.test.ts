@@ -8,6 +8,7 @@ import {
   createCockpitApi,
   type CockpitApi,
   type RunEventHandlers,
+  type RunPage,
   type RunEvent,
   type RunV1,
   type RunV2,
@@ -45,6 +46,29 @@ describe("mobile run entry", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("offline");
     expect(screen.getByRole("link", { name: /run-draft/i }).isConnected).toBe(true);
+  });
+
+  it("says the durable run list is still loading instead of showing an empty one", async () => {
+    const listRuns = vi.fn(() => new Promise<RunPage>(() => undefined));
+    render(App, {
+      props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    expect((await screen.findByRole("status")).textContent).toBe("Loading durable runs…");
+    expect(screen.queryByText("No runs yet")).toBeNull();
+    expect(screen.queryByRole("listitem")).toBeNull();
+  });
+
+  it("names an empty durable run list and points at where a run comes from", async () => {
+    const listRuns = vi.fn(async () => ({ items: [], next_after: null }));
+    render(App, {
+      props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    expect((await screen.findByRole("heading", { name: "No runs yet" })).isConnected).toBe(true);
+    expect(screen.getByText("Start one from a saved or newly published workflow.").isConnected).toBe(true);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("link", { name: "New" }).getAttribute("href")).toBe("/atelier/new");
   });
 
   it("new_saved_mobile starts a saved revision with one visible Run ID and stable bytes", async () => {

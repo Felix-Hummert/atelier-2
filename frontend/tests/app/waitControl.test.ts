@@ -169,6 +169,31 @@ describe("Wait control", () => {
     expect(screen.getByRole("article", { name: "wait — Done" })).toBeTruthy();
   });
 
+  it("names a definitively refused answer as failed and hands the form back with nothing pending", async () => {
+    const journal = new MutationJournal(sessionStorage);
+    const answer = vi.fn().mockRejectedValue(
+      new CockpitRequestError("The answer state conflicts with the durable run.", {
+        type: "urn:atelier2:problem:v1:answer-state-conflict",
+        title: "Answer state conflict",
+        status: 409,
+        detail: "The durable run is no longer waiting for this answer."
+      }, true)
+    );
+    render(App, { props: { cockpitApi: api({ answer }), mutationJournal: journal } });
+
+    await fireEvent.input(await screen.findByLabelText("Integer answer"), {
+      target: { value: "17" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+
+    const alert = await screen.findByRole("alert", { name: "Send failed" });
+    expect(alert.textContent).toContain("The answer state conflicts with the durable run.");
+    expect(screen.getByRole("heading", { name: "Answer needed" }).isConnected).toBe(true);
+    expect(screen.getByLabelText("Integer answer").isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(await journal.entries()).toEqual([]);
+  });
+
   it("shows no Wait action unless the authoritative run is WAITING_INPUT", async () => {
     render(App, { props: { cockpitApi: api({ getRun: vi.fn(async () => startedRun()) }) } });
 
