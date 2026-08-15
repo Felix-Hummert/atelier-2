@@ -7,14 +7,17 @@ import {
 } from "../../src/lib/runProjection";
 
 describe("native durable event transport", () => {
-  it("opens the exact same-origin event route and forwards known and unknown message frames", () => {
+  it("opens the exact same-origin event route and forwards known and unknown message frames", async () => {
     const source = new FakeEventSource();
     const factory = vi.fn(() => source);
     let projection = streamProjection("run1.cnVu", "a".repeat(64));
+    let eventQueue = Promise.resolve();
     const handlers: RunEventHandlers = {
       opened: vi.fn(),
       event: vi.fn((rawData) => {
-        projection = decodeAndApplyDurableEvent(projection, rawData);
+        eventQueue = eventQueue.then(async () => {
+          projection = await decodeAndApplyDurableEvent(projection, rawData);
+        });
       }),
       disconnected: vi.fn()
     };
@@ -25,6 +28,7 @@ describe("native durable event transport", () => {
     source.dispatch("message", message(agentCompleted()));
     source.dispatch("message", message({ ...agentCompleted(), event: "NODE_PROGRESS" }));
     source.dispatch("error", new Event("error"));
+    await eventQueue;
 
     expect(factory).toHaveBeenCalledWith("/atelier/api/v1/runs/run1.cnVu/events");
     expect(handlers.opened).toHaveBeenCalledTimes(1);

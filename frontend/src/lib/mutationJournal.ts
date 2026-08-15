@@ -2,6 +2,7 @@ import {
   decodeCanonicalBase64,
   decodePublicRunReference
 } from "../api/client";
+import { sha256Hex } from "./exactBytes";
 
 export type MutationDelivery = "prepared" | "uncertain";
 
@@ -781,15 +782,6 @@ function sameEnvelope(left: MutationEnvelope, right: MutationEnvelope): boolean 
     (key) =>
       (left as unknown as Record<string, unknown>)[key] ===
       (right as unknown as Record<string, unknown>)[key]
-  );
-}
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const copied = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(copied).set(bytes);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", copied);
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(
-    ""
   );
 }
 

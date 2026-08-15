@@ -24,7 +24,10 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/atelier/runs");
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  vi.restoreAllMocks();
+  cleanup();
+});
 
 describe("Phase 2 mobile run entry", () => {
   it("lists a bounded durable run page and keeps confirmed rows visible when refresh fails", async () => {
@@ -241,6 +244,79 @@ describe("Phase 2 mobile run entry", () => {
     const card = screen.getByRole("article", { name: "build — Working" });
     expect(card.textContent).toContain("Attempt 2 prepared");
     expect(card.textContent).toContain("AGENT INTERRUPTED");
+  });
+
+  it("shows byte-verified V2 output and preserves synchronous event arrival order", async () => {
+    window.history.replaceState(null, "", `/atelier/runs/${v2PublicReference}`);
+    const feed = runEventFeed();
+    const digestImplementation = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+    let releaseFirstDigest = (): void => {};
+    const firstDigestGate = new Promise<void>((resolve) => { releaseFirstDigest = resolve; });
+    let digestCalls = 0;
+    const digestSpy = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(async (...arguments_) => {
+      if (++digestCalls === 1) await firstDigestGate;
+      return digestImplementation(...arguments_);
+    });
+    render(App, {
+      props: {
+        cockpitApi: api({
+          getRun: vi.fn(async () => v2Run({ workflow_revision_hash: revisionHash }, v2Bindings("b".repeat(64)))),
+          getWorkflowRevision: vi.fn(async () => v2Revision(revisionHash)),
+          openRunEvents: feed.open
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    expect(await screen.findByRole("article", { name: "build — Working" })).toBeTruthy();
+    feed.handlers?.event(JSON.stringify(v2CompletedEvent({
+      output_base64: "R3LDvMOfZSDmnbHkuqw=",
+      output_hash: "d9f1fa3818c49d96dce2661015bdad90989df9e67244a7e5f1519ab466286332"
+    })));
+    feed.handlers?.event(JSON.stringify(v2CompletedEvent({
+      cursor: "event1.cnVuLXYy.2",
+      sequence: 2,
+      node_id: "review",
+      output_base64: "/wA=",
+      output_hash: "ea5dbf9596d187e9500f23e9a680109475341cf4e81f7e043f7d97152c10772f"
+    })));
+
+    await waitFor(() => expect(digestCalls).toBe(1));
+    releaseFirstDigest();
+    const output = await screen.findByRole("region", { name: "Verified output" });
+    expect(output.textContent).toContain("UTF-8");
+    expect(output.textContent).toContain("14 bytes");
+    expect(output.textContent).toContain("Verified");
+    expect(output.textContent).toContain("Grüße 東京");
+    expect(await screen.findByText("#2 · review")).toBeTruthy();
+    digestSpy.mockRestore();
+  });
+
+  it("closes the stream and keeps contradictory V2 output out of the cockpit", async () => {
+    window.history.replaceState(null, "", `/atelier/runs/${v2PublicReference}`);
+    const feed = runEventFeed();
+    render(App, {
+      props: {
+        cockpitApi: api({
+          getRun: vi.fn(async () => v2Run({ workflow_revision_hash: revisionHash }, v2Bindings("b".repeat(64)))),
+          getWorkflowRevision: vi.fn(async () => v2Revision(revisionHash)),
+          openRunEvents: feed.open
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    expect(await screen.findByRole("article", { name: "build — Working" })).toBeTruthy();
+    feed.handlers?.event(JSON.stringify(v2CompletedEvent({
+      output_base64: "R3LDvMOfZSDmnbHkuqw=",
+      output_hash: revisionHash
+    })));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Output mismatch");
+    expect(screen.getByRole("status").textContent).toContain("Stopped");
+    expect(screen.queryByText("Grüße 東京")).toBeNull();
+    expect(screen.getByRole("article", { name: "build — Working" })).toBeTruthy();
+    expect(feed.close).toHaveBeenCalledTimes(1);
   });
 
   it("cancels publication with Escape, restores focus, and sends no bytes", async () => {
@@ -543,9 +619,33 @@ function v2TerminalEvent(workflowRevisionHash: string) {
     workflow_format_version: 2, cursor: "event1.cnVuLXYy.1", sequence: 1,
     public_run_reference: v2PublicReference, workflow_revision_hash: workflowRevisionHash,
     node_id: "build", node_execution_id: "2".repeat(64), event_hash: "4".repeat(64),
-    event: "AGENT_COMPLETED", output_base64: "", output_hash: revisionHash,
+    event: "AGENT_COMPLETED", output_base64: "", output_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     attempt_id: "1".repeat(64), attempt_ordinal: 1
   };
+}
+
+function v2CompletedEvent(changes: Record<string, unknown> = {}) {
+  return {
+    ...v2TerminalEvent(revisionHash),
+    ...changes
+  };
+}
+
+function runEventFeed() {
+  const feed: {
+    handlers: RunEventHandlers | null;
+    close: ReturnType<typeof vi.fn>;
+    open: CockpitApi["openRunEvents"];
+  } = {
+    handlers: null,
+    close: vi.fn(),
+    open: vi.fn()
+  };
+  feed.open = vi.fn((_publicReference, handlers) => {
+    feed.handlers = handlers;
+    return { close: feed.close };
+  });
+  return feed;
 }
 
 function v2InterruptedEvent(

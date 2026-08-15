@@ -1,4 +1,5 @@
 import {
+  decodeCanonicalBase64,
   decodeRunEvent,
   type Problem,
   type Run,
@@ -7,6 +8,7 @@ import {
   type WorkflowGraph,
   type WorkflowNode
 } from "../api/client";
+import { sha256Hex } from "./exactBytes";
 
 export type RequestState =
   | { state: "idle" }
@@ -22,7 +24,13 @@ export type ConnectionState = "connecting" | "live" | "reconnecting" | "complete
 export type ProtocolProblem =
   | { type: "decoder" }
   | { type: "sequence_gap"; expected: number; received: number }
-  | { type: "conflicting_duplicate"; cursor: string };
+  | { type: "conflicting_duplicate"; cursor: string }
+  | { type: "output_integrity"; cursor: string; expected: string; received: string };
+
+export type AgentOutputProjection =
+  | { kind: "utf8"; value: string; byte_count: number }
+  | { kind: "binary"; value: string; byte_count: number }
+  | { kind: "empty"; value: ""; byte_count: 0 };
 
 export interface StreamProjection {
   public_run_reference: string;
@@ -32,6 +40,7 @@ export interface StreamProjection {
   connection: ConnectionState;
   protocol_problem: ProtocolProblem | null;
   payload_bytes_by_cursor: ReadonlyMap<string, Uint8Array>;
+  agent_outputs_by_cursor: ReadonlyMap<string, AgentOutputProjection>;
 }
 
 export type NodeState =
@@ -85,7 +94,8 @@ export function streamProjection(
     last_sequence: 0,
     connection: "connecting",
     protocol_problem: null,
-    payload_bytes_by_cursor: new Map()
+    payload_bytes_by_cursor: new Map(),
+    agent_outputs_by_cursor: new Map()
   };
 }
 
@@ -125,11 +135,12 @@ export function markComplete(projection: StreamProjection): StreamProjection {
   return { ...projection, connection: "complete" };
 }
 
-export function decodeAndApplyDurableEvent(
+export async function decodeAndApplyDurableEvent(
   projection: StreamProjection,
   rawData: string,
   graph?: WorkflowGraph
-): StreamProjection {
+): Promise<StreamProjection> {
+  if (projection.protocol_problem !== null) return projection;
   let decoded: RunEvent;
   try {
     decoded = decodeRunEvent(JSON.parse(rawData));
@@ -139,7 +150,49 @@ export function decodeAndApplyDurableEvent(
   if (graph !== undefined && !eventMatchesGraph(decoded, graph)) {
     return { ...projection, protocol_problem: { type: "decoder" } };
   }
-  return applyDurableEvent(projection, rawData, decoded);
+  let output: AgentOutputProjection | null = null;
+  if (decoded.event === "AGENT_COMPLETED" && "workflow_format_version" in decoded) {
+    const bytes = decodeCanonicalBase64(decoded.output_base64);
+    if (bytes === null) {
+      return { ...projection, protocol_problem: { type: "decoder" } };
+    }
+    const received = await sha256Hex(bytes);
+    if (received !== decoded.output_hash) {
+      return {
+        ...projection,
+        protocol_problem: {
+          type: "output_integrity",
+          cursor: decoded.cursor,
+          expected: decoded.output_hash,
+          received
+        }
+      };
+    }
+    output = classifyAgentOutput(bytes, decoded.output_base64);
+  }
+  const applied = applyDurableEvent(projection, rawData, decoded);
+  if (output === null || applied === projection || applied.protocol_problem !== null) {
+    return applied;
+  }
+  const outputs = new Map(applied.agent_outputs_by_cursor);
+  outputs.set(decoded.cursor, output);
+  return { ...applied, agent_outputs_by_cursor: outputs };
+}
+
+function classifyAgentOutput(
+  bytes: Uint8Array,
+  canonicalBase64: string
+): AgentOutputProjection {
+  if (bytes.byteLength === 0) return { kind: "empty", value: "", byte_count: 0 };
+  try {
+    return {
+      kind: "utf8",
+      value: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      byte_count: bytes.byteLength
+    };
+  } catch {
+    return { kind: "binary", value: canonicalBase64, byte_count: bytes.byteLength };
+  }
 }
 
 export function applyDurableEvent(
