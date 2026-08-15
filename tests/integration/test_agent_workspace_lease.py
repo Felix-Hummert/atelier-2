@@ -105,6 +105,9 @@ OBSERVED_PROVIDER_DIRECTORIES = (
 PROVIDER_LINK_NAME = "escape"
 """The symbolic link a provider leaves pointing at something it does not own."""
 
+PROVIDER_TREE_DEPTH_BEYOND_RECURSION = 1_100
+"""A nesting depth past the interpreter's own recursion limit: legal for a provider."""
+
 _PROVIDER_MATERIALIZES_ITS_WORKSPACE = """
 import os, sys
 from pathlib import Path
@@ -260,7 +263,17 @@ def snapshot(directory: Path) -> dict[str, tuple[bytes, int]]:
 
 
 def workspace_names(root: Path) -> set[str]:
+    """Every name the scratch root holds, so nothing left behind stays invisible."""
+
     return {entry.name for entry in root.iterdir()}
+
+
+def leased_directories(root: Path) -> set[str]:
+    return {entry.name for entry in root.iterdir() if entry.is_dir()}
+
+
+def open_descriptors() -> set[str]:
+    return set(os.listdir("/proc/self/fd"))
 
 
 def test_a_workspace_is_created_only_once_this_call_holds_the_durable_claim(
@@ -361,7 +374,7 @@ def test_an_attempt_and_its_replacement_lease_directories_of_their_own(
         owner.scratch_root / attempt_id.value for attempt_id in attempt_ids
     ]
     assert all(lease.working_directory.is_dir() for lease in leases)
-    assert workspace_names(owner.scratch_root) == {
+    assert leased_directories(owner.scratch_root) == {
         attempt_id.value for attempt_id in attempt_ids
     }
     with pytest.raises(AgentAttemptWorkspaceRefused, match="already exists"):
@@ -399,7 +412,7 @@ def test_two_callers_acquiring_one_attempt_leave_exactly_one_directory(
 
     assert len(leases) == 1
     assert len(refusals) == 1
-    assert workspace_names(owner.scratch_root) == {attempt_id.value}
+    assert leased_directories(owner.scratch_root) == {attempt_id.value}
 
 
 def symlinked_root(root: Path) -> Path:
@@ -506,6 +519,20 @@ def test_a_scratch_root_owned_by_another_user_is_refused(
         LocalAgentAttemptWorkspaceOwner(scratch_root)
 
 
+def test_a_refused_scratch_root_leaves_no_descriptor_behind(tmp_path: Path) -> None:
+    """A server that keeps serving after a refusal keeps no handle on that root."""
+
+    scratch_root = agent_scratch_root(tmp_path)
+    (scratch_root / "left-behind").mkdir()
+    before = open_descriptors()
+
+    for _refusal in range(3):
+        with pytest.raises(AgentScratchRootRefused, match="no attempt workspace"):
+            LocalAgentAttemptWorkspaceOwner(scratch_root)
+
+    assert open_descriptors() == before
+
+
 def test_a_root_path_replaced_after_binding_refuses_instead_of_leasing(
     tmp_path: Path,
 ) -> None:
@@ -561,6 +588,54 @@ def test_a_preexisting_attempt_path_refuses_the_attempt_and_starts_no_provider(
         assert snapshot(occupied) == before
         assert executor.decodes == 0
         assert store.load(execution.attempt_id).state is AgentAttemptState.LAUNCH_ARMED
+    finally:
+        runtime.close()
+
+
+def test_a_refused_attempt_path_survives_the_cancellation_of_its_attempt(
+    tmp_path: Path,
+) -> None:
+    """Ending an attempt removes the directory it leased, never one it was refused."""
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "lease/occupied-cancel")
+        )
+        owner = runtime_workspace_owner(runtime)
+        occupied = owner.scratch_root / execution.attempt_id.value
+        occupied.mkdir(mode=SCRATCH_ROOT_MODE)
+        (occupied / ".env").write_text("the operator's own secret", encoding="utf-8")
+        before = snapshot(occupied)
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        with pytest.raises(AgentAttemptWorkspaceRefused):
+            execute_agent_attempt(
+                execution,
+                MaterializingExecutor(sentinel_directory(tmp_path)),
+                store,
+                runtime.agent_process_supervisor,
+                owner,
+            )
+        armed = store.load(execution.attempt_id)
+        request = CancelAgentAttemptRequest(
+            armed.run_id,
+            armed.attempt_id,
+            "cancel-occupied",
+            armed.state_version,
+            AgentAttemptReplacement.NONE,
+        )
+        store.request_cancellation(request)
+
+        accepted = continue_agent_attempt_cancellation(
+            request, store, runtime.agent_process_supervisor, owner
+        )
+
+        assert accepted is not None
+        assert accepted.attempt.state is AgentAttemptState.CANCELLED
+        assert snapshot(occupied) == before
     finally:
         runtime.close()
 
@@ -635,6 +710,34 @@ def test_a_provider_really_materializes_the_observed_write_set(
     owner.release(attempt_id)
 
     assert not workspace.exists()
+    assert sentinel_survived(sentinel)
+
+
+def test_a_workspace_nested_deeper_than_recursion_allows_is_still_removed(
+    tmp_path: Path,
+) -> None:
+    """No tree a provider may legally build can leave a workspace nobody removes."""
+
+    owner = agent_workspace_owner(tmp_path)
+    attempt_id = AgentAttemptId.for_execution(
+        NodeExecutionId.for_node(
+            RunId("lease/deep"), WorkflowRevisionHash("4" * 64), "build"
+        ),
+        AgentExecutionRequestHash("5" * 64),
+    )
+    sentinel = sentinel_directory(tmp_path)
+    workspace = owner.acquire(attempt_id).working_directory
+    deepest = workspace
+    for _level in range(PROVIDER_TREE_DEPTH_BEYOND_RECURSION):
+        deepest = deepest / "d"
+        deepest.mkdir()
+    (deepest / ".env").write_bytes(b"")
+    (workspace / PROVIDER_LINK_NAME).symlink_to(sentinel)
+
+    owner.release(attempt_id)
+
+    assert not workspace.exists()
+    assert workspace_names(owner.scratch_root) == set()
     assert sentinel_survived(sentinel)
 
 
@@ -823,6 +926,24 @@ def test_restart_preserves_the_workspace_of_every_nonterminal_attempt(
     owner.reconcile(RecordedAttempts((attempt,)))
 
     assert snapshot(workspace) == before
+
+
+def test_a_refused_attempt_path_survives_the_restart_that_follows(
+    tmp_path: Path,
+) -> None:
+    """Reconciliation removes what this root leased, not what merely bears a name."""
+
+    owner = agent_workspace_owner(tmp_path)
+    attempt = durable_attempt(AgentAttemptState.CANCELLED)
+    occupied = owner.scratch_root / attempt.attempt_id.value
+    occupied.mkdir(mode=SCRATCH_ROOT_MODE)
+    (occupied / ".env").write_text("the operator's own secret", encoding="utf-8")
+    before = snapshot(occupied)
+
+    owner.reconcile(RecordedAttempts((attempt,)))
+    owner.reconcile(RecordedAttempts((attempt,)))
+
+    assert snapshot(occupied) == before
 
 
 def test_restart_refuses_a_workspace_no_durable_attempt_owns(tmp_path: Path) -> None:
@@ -1048,10 +1169,12 @@ def test_binding_the_durable_database_again_reconciles_what_a_crash_left(
     finally:
         runtime.close()
     # What a process killed between its provider's exit and its own cleanup
-    # would have left behind: a terminal attempt with a workspace still there.
-    abandoned = scratch_root / execution.attempt_id.value
-    abandoned.mkdir(mode=SCRATCH_ROOT_MODE)
+    # would have left behind: a terminal attempt with the workspace it leased,
+    # so the lease is taken through the same owner a serving process uses.
+    killed = LocalAgentAttemptWorkspaceOwner(scratch_root)
+    abandoned = killed.acquire(execution.attempt_id).working_directory
     (abandoned / ".env").write_bytes(b"")
+    killed.close()
 
     restarted = attempt_runtime(tmp_path)
 

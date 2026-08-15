@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
+from collections import deque
 from pathlib import Path
 
 from atelier2.contracts.agent_attempts import (
@@ -15,7 +16,11 @@ SCRATCH_ROOT_MODE = 0o700
 """The only mode a scratch root may carry: no group, no world, no sharing."""
 
 _GIT_ENTRY = ".git"
-_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_LEASE_MARKER_SUFFIX = ".lease"
+_LEASE_MARKER_MODE = 0o600
+_MAXIMUM_HELD_WORKSPACE_LEVELS = 64
+"""How many nested directories one removal pass keeps open at the same time."""
 
 
 class AgentScratchRootRefused(ValueError):
@@ -68,11 +73,20 @@ def _open_scratch_root(scratch_root: Path) -> int:
         ) from error
 
 
-def _attempt_name(entry_name: str) -> AgentAttemptId | None:
+def _lease_marker_name(attempt_id: AgentAttemptId) -> str:
+    return f"{attempt_id.value}{_LEASE_MARKER_SUFFIX}"
+
+
+def _is_attempt_entry(entry: os.DirEntry[str]) -> bool:
+    """A scratch root holds attempt workspaces and their lease markers, nothing else."""
+
     try:
-        return AgentAttemptId(entry_name)
+        AgentAttemptId(entry.name.removesuffix(_LEASE_MARKER_SUFFIX))
     except ValueError:
-        return None
+        return False
+    if entry.name.endswith(_LEASE_MARKER_SUFFIX):
+        return entry.is_file(follow_symlinks=False)
+    return entry.is_dir(follow_symlinks=False)
 
 
 def _remove_workspace_tree(parent_fd: int, name: str) -> None:
@@ -82,21 +96,65 @@ def _remove_workspace_tree(parent_fd: int, name: str) -> None:
     symbolic link is ever followed, so nothing outside this directory can be
     reached by replacing an entry inside it. A link the provider left behind is
     unlinked; whatever it points at is not touched.
+
+    A provider may nest as deeply as the filesystem allows, so neither the
+    interpreter's recursion limit nor this process's descriptor limit may decide
+    whether a workspace can still be cleaned: one pass holds a bounded window of
+    descriptors, and the passes repeat until the directory is gone.
+    """
+
+    while not _remove_reachable_levels(parent_fd, name):
+        pass
+
+
+def _remove_reachable_levels(parent_fd: int, name: str) -> bool:
+    """Remove what one window of descriptors reaches; True once nothing is left.
+
+    The window slides: once it is full the shallowest descriptor is dropped to
+    keep descending, and the levels above the drop are removed by a later pass.
     """
 
     try:
-        directory_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+        opened = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
     except FileNotFoundError:
-        return
+        return True
+    held: deque[tuple[str, int]] = deque([(name, opened)])
+    complete = True
     try:
-        for entry in os.scandir(directory_fd):
-            if entry.is_dir(follow_symlinks=False):
-                _remove_workspace_tree(directory_fd, entry.name)
-            else:
-                os.unlink(entry.name, dir_fd=directory_fd)
+        while held:
+            current_name, current_fd = held[-1]
+            subdirectory = _unlink_files_and_name_one_subdirectory(current_fd)
+            if subdirectory is not None:
+                try:
+                    descended = os.open(
+                        subdirectory, _DIRECTORY_FLAGS, dir_fd=current_fd
+                    )
+                except FileNotFoundError:
+                    continue
+                if len(held) == _MAXIMUM_HELD_WORKSPACE_LEVELS:
+                    complete = False
+                    os.close(held.popleft()[1])
+                held.append((subdirectory, descended))
+                continue
+            os.close(held.pop()[1])
+            if held:
+                os.rmdir(current_name, dir_fd=held[-1][1])
+            elif complete:
+                os.rmdir(current_name, dir_fd=parent_fd)
+        return complete
     finally:
-        os.close(directory_fd)
-    os.rmdir(name, dir_fd=parent_fd)
+        for _name, descriptor in held:
+            os.close(descriptor)
+
+
+def _unlink_files_and_name_one_subdirectory(directory_fd: int) -> str | None:
+    subdirectory: str | None = None
+    for entry in os.scandir(directory_fd):
+        if entry.is_dir(follow_symlinks=False):
+            subdirectory = subdirectory or entry.name
+        else:
+            os.unlink(entry.name, dir_fd=directory_fd)
+    return subdirectory
 
 
 class LocalAgentAttemptWorkspaceOwner:
@@ -118,7 +176,11 @@ class LocalAgentAttemptWorkspaceOwner:
         # both what is attested and what is opened.
         self._scratch_root = Path(os.path.abspath(scratch_root))
         self._root_fd = _open_scratch_root(self._scratch_root)
-        self.preflight()
+        try:
+            self.preflight()
+        except BaseException:
+            self.close()
+            raise
 
     @property
     def scratch_root(self) -> Path:
@@ -138,9 +200,7 @@ class LocalAgentAttemptWorkspaceOwner:
                 "group or world access would share every provider's scratch files"
             )
         for entry in os.scandir(self._root_fd):
-            if _attempt_name(entry.name) is None or not entry.is_dir(
-                follow_symlinks=False
-            ):
+            if not _is_attempt_entry(entry):
                 raise AgentScratchRootRefused(
                     f"the agent scratch root {self._scratch_root} holds {entry.name}, "
                     "which is no attempt workspace: this root is owned entirely by "
@@ -175,10 +235,36 @@ class LocalAgentAttemptWorkspaceOwner:
                 "directory this server bound, so the path handed to a provider "
                 "would not be the workspace that was created"
             )
+        self._mark_leased(attempt_id)
         return AgentAttemptWorkspaceLease(attempt_id, working_directory)
 
     def release(self, attempt_id: AgentAttemptId) -> None:
+        """Remove the directory this owner leased to that attempt, and only that.
+
+        The mark written when the directory was created is what says the
+        directory is this owner's to remove. A path that merely bears an
+        attempt's name -- one an attempt was refused because the operator's own
+        files already stood there -- carries no mark, so neither the
+        cancellation nor the restart that follows the refusal removes it.
+        """
+
+        marker = _lease_marker_name(attempt_id)
+        try:
+            os.stat(marker, dir_fd=self._root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
         _remove_workspace_tree(self._root_fd, attempt_id.value)
+        os.unlink(marker, dir_fd=self._root_fd)
+
+    def _mark_leased(self, attempt_id: AgentAttemptId) -> None:
+        os.close(
+            os.open(
+                _lease_marker_name(attempt_id),
+                os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                _LEASE_MARKER_MODE,
+                dir_fd=self._root_fd,
+            )
+        )
 
     def reconcile(self, attempts: AgentAttemptReader) -> None:
         """Remove what terminal attempts left behind, and nothing else.
@@ -188,13 +274,15 @@ class LocalAgentAttemptWorkspaceOwner:
         is left exactly as it stands for the recovery that owns it, and a name
         with no durable attempt behind it refuses the whole reconciliation
         rather than being deleted on the assumption that it is rubbish.
+        Removal goes through the same lease mark every caller obeys, so a
+        directory this root never leased survives the restart untouched.
         """
 
         self.preflight()
         for name in sorted(os.listdir(self._root_fd)):
-            attempt_id = AgentAttemptId(name)
+            attempt_id = AgentAttemptId(name.removesuffix(_LEASE_MARKER_SUFFIX))
             if attempts.load(attempt_id).state in TERMINAL_AGENT_ATTEMPT_STATES:
-                _remove_workspace_tree(self._root_fd, name)
+                self.release(attempt_id)
 
     def close(self) -> None:
         os.close(self._root_fd)
