@@ -1,12 +1,6 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/94"
 
-# One further sentence is declared on issue #94 — "a story that declares no
-# acceptance sentence is named by verification" — and is deliberately absent
-# here: it is unbuilt, and declaring it would red this gate on main for a
-# capability nobody has built. It joins this file in the change that proves it.
-# This file therefore does not list every sentence of #94.
-
 [[sentence]]
 id = "acceptance-sentences-are-declared-in-the-repository"
 text = "Every acceptance sentence a story defines is readable from a versioned file in this repository, with its identifier and its wording, instead of living only in pull-request prose."
@@ -30,3 +24,7 @@ text = "A repository in which a second story declares its own acceptance sentenc
 [[sentence]]
 id = "the-gate-states-the-bound-of-what-it-proves"
 text = "The gate states the same bound of its own judgment that the documentation states: it proves linkage and existence, never that a test carries its sentence in meaning."
+
+[[sentence]]
+id = "a-story-that-declares-no-sentence-is-named-by-verification"
+text = "A landing that states no acceptance sentence and claims no exemption fails verification, and the failure names it; a change that legitimately carries none writes one line saying so, instead of the absence being inferred."

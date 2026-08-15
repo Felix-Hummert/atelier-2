@@ -36,6 +36,13 @@ UNPROVEN_REFUSAL = "with no test that ran and passed in this pipeline"
 UNCOLLECTED_PYTHON_CLAIM = Path("scripts/proof_helper.py")
 UNCOLLECTED_TYPESCRIPT_CLAIM = Path("frontend/tools/proof.ts")
 SECOND_STORY_SENTENCE = "a-sentence-a-second-story-declares"
+PULL_REQUEST_BODY = Path("pull-request-body.md")
+LANDING_FIELD_LINE = (
+    "- Literal acceptance sentence(s), by their identifier in `acceptance/`, "
+    "or `none` and why this change declares none:"
+)
+STATES_NEITHER = "states no acceptance sentence and claims no exemption"
+SECOND_DECLARED_SENTENCE = "an-orphaned-proof-fails-the-gate"
 TRACE_COUNTS = re.compile(
     r"Acceptance trace: (\d+) sentences, (\d+) claims, (\d+) passing proofs, "
     r"(\d+) run reports"
@@ -160,14 +167,35 @@ def copied_project(
     return project
 
 
-def run_gate(project: Path) -> subprocess.CompletedProcess[str]:
+def run_gate(
+    project: Path, proposed_by: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run the gate over a project, optionally as the landing a pull request proposes."""
+
+    landing: list[str] = []
+    if proposed_by is not None:
+        (project / PULL_REQUEST_BODY).write_text(proposed_by, encoding="utf-8")
+        landing = ["--pull-request-body", str(PULL_REQUEST_BODY)]
     return subprocess.run(
-        [sys.executable, str(GATE), "--reports", str(REPORTS_DIRECTORY)],
+        [sys.executable, str(GATE), "--reports", str(REPORTS_DIRECTORY), *landing],
         cwd=project,
         check=False,
         capture_output=True,
         text=True,
     )
+
+
+def a_pull_request_stating(binding: str) -> str:
+    return (
+        "## Story binding\n\n"
+        "- HumanRequirement Issue URL: https://github.com/FlexOr2/atelier-2/issues/94\n"
+        f"{LANDING_FIELD_LINE} {binding}\n"
+        "- Context sources consulted: the gate\n"
+    )
+
+
+def a_pull_request_without_the_field() -> str:
+    return "## What this is\n\nProse a template field never reached.\n"
 
 
 def rewrite(project: Path, relative: Path, before: str, after: str) -> None:
@@ -331,6 +359,85 @@ def test_a_second_story_declaration_verifies_like_the_first(tmp_path: Path) -> N
         traced_counts(two_stories.stdout).sentences
         == traced_counts(one_story.stdout).sentences + 1
     )
+
+
+@pytest.mark.proves("a-story-that-declares-no-sentence-is-named-by-verification")
+def test_a_landing_that_declares_no_acceptance_sentence_is_named(
+    tmp_path: Path,
+) -> None:
+    result = run_gate(copied_project(tmp_path), a_pull_request_stating(""))
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Acceptance gate failed:" in result.stderr
+    assert STATES_NEITHER in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("proposed_by", "problem"),
+    [
+        (a_pull_request_without_the_field(), STATES_NEITHER),
+        (a_pull_request_stating("none"), STATES_NEITHER),
+        (a_pull_request_stating("none:"), STATES_NEITHER),
+        (
+            a_pull_request_stating(UNDECLARED_SENTENCE),
+            (
+                f"names {UNDECLARED_SENTENCE!r} as an acceptance sentence of "
+                "this landing, which no story declares"
+            ),
+        ),
+        (
+            a_pull_request_stating(f"`{MOVABLE_SENTENCE}`, `{UNDECLARED_SENTENCE}`"),
+            (
+                f"names {UNDECLARED_SENTENCE!r} as an acceptance sentence of "
+                "this landing, which no story declares"
+            ),
+        ),
+    ],
+    ids=[
+        "no-acceptance-field-at-all",
+        "the-word-none-without-a-reason",
+        "an-exemption-with-an-empty-reason",
+        "an-identifier-no-story-declares",
+        "one-declared-identifier-beside-an-undeclared-one",
+    ],
+)
+def test_a_landing_whose_binding_does_not_hold_is_named(
+    tmp_path: Path, proposed_by: str, problem: str
+) -> None:
+    result = run_gate(copied_project(tmp_path), proposed_by)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert problem in result.stderr
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        MOVABLE_SENTENCE,
+        f"`{MOVABLE_SENTENCE}`, `{SECOND_DECLARED_SENTENCE}`",
+        "none: documentation only",
+        "None - this head moves modules and proves no new sentence",
+    ],
+    ids=[
+        "one-declared-identifier",
+        "several-declared-identifiers-in-backticks",
+        "a-reasoned-exemption",
+        "a-reasoned-exemption-written-in-prose",
+    ],
+)
+def test_a_landing_that_states_its_binding_passes(tmp_path: Path, binding: str) -> None:
+    result = run_gate(copied_project(tmp_path), a_pull_request_stating(binding))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_run_no_pull_request_proposes_says_the_binding_was_not_checked(
+    tmp_path: Path,
+) -> None:
+    result = run_gate(copied_project(tmp_path))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "no proposed pull request" in result.stdout
 
 
 def write_claim(project: Path, relative: Path, text: str) -> None:

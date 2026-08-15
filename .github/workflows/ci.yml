@@ -283,5 +283,21 @@ jobs:
           path: reports
           merge-multiple: true
 
-      - name: Check the acceptance trace
+      # The body is authored by whoever opened the pull request, so it reaches the
+      # gate as a file through the environment and never as text substituted into
+      # a shell script.
+      - name: Record the acceptance binding the pull request states
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PULL_REQUEST_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PULL_REQUEST_BODY" > pull-request-body.md
+
+      - name: Check the acceptance trace of the proposed landing
+        if: ${{ github.event_name == 'pull_request' }}
+        run: >-
+          uv run --locked python scripts/check_acceptance.py --reports reports
+          --pull-request-body pull-request-body.md
+
+      - name: Check the acceptance trace of a landed commit
+        if: ${{ github.event_name != 'pull_request' }}
         run: uv run --locked python scripts/check_acceptance.py --reports reports
