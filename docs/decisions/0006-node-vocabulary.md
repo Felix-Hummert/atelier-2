@@ -1013,8 +1013,8 @@ node's inputs and outputs bind one to one against the published child revision's
 attests is refused naming the chain. Binding at large holds too: every other
 versioned reference this record lists, in the document and in every child it reuses,
 resolves by the exact revision hash it pins against the registry of its authored
-kind, and a malformed, unpublished or wrong-kind answer refuses naming node, field,
-declared entry, chain and reference. What resolves is frozen into the run
+kind, and a malformed reference or an answer that is unpublished, of another kind or
+of another hash refuses naming node, field, declared entry, chain and reference. What resolves is frozen into the run
 configuration revision this record names — the role matrix by its existing binding
 identity, every resolved reference, and every subworkflow's child revision — as one
 immutable framed snapshot, before any run exists.

@@ -132,6 +132,7 @@ nodes:
 NO_WAIT_FOR_A_CONTENDED_WRITE = 0.0
 
 V3_DOCUMENT = b"""format_version: 3
+name: Build a candidate for the bound story
 nodes:
   - id: implement
     type: agent

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 import pytest
@@ -89,6 +89,7 @@ REGISTRY_CONTENTS = (
 )
 
 PARENT_TEMPLATE = """format_version: 3
+name: Build, review in a panel, settle the verdict and hand it off
 nodes:
   - id: implement
     type: agent
@@ -153,6 +154,7 @@ nodes:
 """
 
 CHILD_TEMPLATE = """format_version: 3
+name: Merge the panel's review verdicts into one
 graph_inputs:
   - name: candidate
     schema: {{ref: workspace_candidate, revision: {candidate}}}
@@ -168,14 +170,15 @@ nodes:
         schema: {{ref: review_verdict, revision: {verdict}}}
 """
 
-CHILD_REFERENCE = ("review_panel", "child-1")
-CHILD_CHAIN = (VersionedReference(ref="review_panel", revision="child-1"),)
-
 CHILD = CHILD_TEMPLATE.format(
     candidate=SCHEMA_CANDIDATE.revision_hash.value,
     deterministic=CHILD_DETERMINISTIC.revision_hash.value,
     verdict=SCHEMA_VERDICT.revision_hash.value,
 ).encode("utf-8")
+
+CHILD_REVISION = WorkflowRevision(CHILD).revision_hash.value
+CHILD_REFERENCE = ("review_panel", CHILD_REVISION)
+CHILD_CHAIN = (VersionedReference(ref="review_panel", revision=CHILD_REVISION),)
 
 PARENT = PARENT_TEMPLATE.format(
     profile=PROFILE.revision_hash.value,
@@ -188,7 +191,7 @@ PARENT = PARENT_TEMPLATE.format(
     source=CONTEXT_SOURCE.revision_hash.value,
     read=READ_OPERATION.revision_hash.value,
     candidate=SCHEMA_CANDIDATE.revision_hash.value,
-    child=CHILD_REFERENCE[1],
+    child=CHILD_REVISION,
     verdict=SCHEMA_VERDICT.revision_hash.value,
     deterministic=DETERMINISTIC.revision_hash.value,
     adapter=ADAPTER.revision_hash.value,
@@ -214,15 +217,20 @@ FULL_REGISTRY: RegistryAnswers = MappingProxyType(
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class PublishedRegistry:
-    """The registries as this binding reads them: what is asked, and what answers."""
+    """The registries as this binding reads them: what is asked, and what answers.
+
+    It records every lookup, so a test can prove which kinds a binding asks about.
+    """
 
     answers: RegistryAnswers
+    asked: list[tuple[RevisionKind, str]] = field(default_factory=list)
 
     def resolve(
         self, kind: RevisionKind, revision_hash: PublishedRevisionHash
     ) -> ResolvePublishedRevisionResult:
+        self.asked.append((kind, revision_hash.value))
         revision = self.answers.get((kind, revision_hash.value))
         if revision is None:
             return PublishedRevisionMissing()
@@ -262,13 +270,15 @@ def bind(
     document: bytes = PARENT,
     answers: RegistryAnswers = FULL_REGISTRY,
     role_matrix: AgentBindingSet = ROLE_MATRIX,
+    registry: PublishedRegistry | None = None,
+    binding: SubworkflowBinding | None = None,
 ) -> RunConfigurationRevision:
     return bind_run_configuration(
         WorkflowRevision(document).revision_hash,
         parsed(document),
-        bound_children(document),
+        binding if binding is not None else bound_children(document),
         role_matrix.binding_set_hash,
-        PublishedRegistry(answers),
+        registry if registry is not None else PublishedRegistry(answers),
     )
 
 
@@ -313,6 +323,12 @@ DECLARED_PARENT_REFERENCES = (
     (RevisionKind.SCHEMA, "decide", "outputs.schema", SCHEMA_VERDICT),
     (RevisionKind.ADAPTER_OPERATION, "hand_off", "operation", ADAPTER),
     (RevisionKind.SCHEMA, "hand_off", "outputs.schema", SCHEMA_RECEIPT),
+    (
+        RevisionKind.WORKFLOW,
+        "panel",
+        "workflow",
+        PublishedRevision(RevisionKind.WORKFLOW, CHILD),
+    ),
 )
 
 
@@ -345,13 +361,32 @@ def test_a_document_declares_the_reference_its_vocabulary_puts_at_each_site() ->
     }
 
 
-def test_a_subworkflow_reference_is_left_to_the_binder_that_already_resolved_it() -> (
+def test_a_workflow_reference_binds_the_child_its_binder_resolved_without_a_registry() -> (
     None
 ):
-    assert not any(
-        entry.kind is RevisionKind.WORKFLOW for entry in declared_references(parsed())
-    )
-    assert bind(answers=FULL_REGISTRY).subworkflow_resolutions != ()
+    registry = PublishedRegistry(FULL_REGISTRY)
+
+    configuration = bind(registry=registry)
+
+    bound = [
+        entry
+        for entry in configuration.resolutions
+        if entry.kind is RevisionKind.WORKFLOW
+    ]
+    assert [
+        (entry.site.node, entry.site.field, entry.revision_hash.value)
+        for entry in bound
+    ] == [("panel", "workflow", CHILD_REVISION)]
+    assert not any(kind is RevisionKind.WORKFLOW for kind, _ in registry.asked)
+
+
+def test_a_workflow_reference_no_bound_child_carries_is_refused() -> None:
+    with pytest.raises(ReferenceResolutionRefused) as raised:
+        bind(binding=SubworkflowBinding())
+
+    refusal = raised.value.refusal
+    assert refusal.reason is ReferenceRefusalReason.UNBOUND_WORKFLOW_REFERENCE
+    assert (refusal.site.node, refusal.site.field) == ("panel", "workflow")
 
 
 def test_the_snapshot_binds_every_reference_to_the_revision_it_resolved_to() -> None:
@@ -367,19 +402,20 @@ def test_the_snapshot_binds_every_reference_to_the_revision_it_resolved_to() -> 
     }
 
 
-def test_a_reference_binds_the_hash_it_pins_not_what_a_registry_hands_back() -> None:
+def test_a_registry_answering_with_another_revision_refuses_the_whole_snapshot() -> (
+    None
+):
     other_bytes = published(RevisionKind.SCHEMA, "a verdict shaped differently")
     contradicting = dict(FULL_REGISTRY) | {
         (RevisionKind.SCHEMA, SCHEMA_VERDICT.revision_hash.value): other_bytes
     }
 
-    bound = {
-        entry.revision_hash
-        for entry in bind(answers=contradicting).resolutions
-        if entry.reference.ref == "review_verdict"
-    }
+    with pytest.raises(ReferenceResolutionRefused) as raised:
+        bind(answers=contradicting)
 
-    assert bound == {SCHEMA_VERDICT.revision_hash}
+    refusal = raised.value.refusal
+    assert refusal.reason is ReferenceRefusalReason.RESOLVED_REVISION_MISMATCH
+    assert other_bytes.revision_hash.value in str(refusal)
 
 
 def test_the_snapshot_binds_the_role_matrix_and_the_workflow_it_configures() -> None:
@@ -395,9 +431,10 @@ def test_the_snapshot_binds_every_subworkflow_to_its_exact_child_revision() -> N
     configuration = bind()
 
     assert [
-        (entry.node_id, entry.chain, entry.child_revision_hash)
-        for entry in configuration.subworkflow_resolutions
-    ] == [("panel", CHILD_CHAIN, WorkflowRevision(CHILD).revision_hash)]
+        (entry.site.node, entry.reference.revision, entry.revision_hash.value)
+        for entry in configuration.resolutions
+        if entry.kind is RevisionKind.WORKFLOW
+    ] == [("panel", CHILD_REVISION, CHILD_REVISION)]
 
 
 def test_a_child_reference_enters_the_snapshot_through_the_chain_it_was_reached_by() -> (
@@ -421,7 +458,6 @@ def test_one_matrix_reached_in_any_order_is_one_immutable_revision() -> None:
         configuration.workflow_revision_hash,
         configuration.binding_set_hash,
         tuple(reversed(configuration.resolutions)),
-        tuple(reversed(configuration.subworkflow_resolutions)),
     )
     assert reversed_entries.revision_hash == configuration.revision_hash
     assert reversed_entries.resolutions == configuration.resolutions
@@ -441,7 +477,6 @@ def test_a_matrix_binding_one_other_revision_is_another_run_configuration() -> N
                 PublishedRevisionHash.of(b"a revision nobody else bound"),
             ),
         ),
-        configuration.subworkflow_resolutions,
     )
 
     assert rebound.revision_hash != configuration.revision_hash
@@ -449,11 +484,15 @@ def test_a_matrix_binding_one_other_revision_is_another_run_configuration() -> N
 
 def test_a_matrix_binding_one_other_child_is_another_run_configuration() -> None:
     configuration = bind()
+    without_the_child = tuple(
+        entry
+        for entry in configuration.resolutions
+        if entry.kind is not RevisionKind.WORKFLOW
+    )
     rebound = RunConfigurationRevision(
         configuration.workflow_revision_hash,
         configuration.binding_set_hash,
-        configuration.resolutions,
-        (),
+        without_the_child,
     )
 
     assert rebound.revision_hash != configuration.revision_hash
@@ -582,7 +621,7 @@ def test_a_refused_child_reference_names_the_chain_it_was_reached_through() -> N
 
     refusal = raised.value.refusal
     assert refusal.site.chain == CHILD_CHAIN
-    assert "review_panel@child-1" in str(refusal)
+    assert f"review_panel@{CHILD_REVISION}" in str(refusal)
 
 
 def test_a_refused_reference_names_the_declared_entry_that_carries_it() -> None:

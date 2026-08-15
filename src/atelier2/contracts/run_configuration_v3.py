@@ -67,6 +67,8 @@ class ReferenceRefusalReason(StrEnum):
     MALFORMED_REVISION = "malformed_revision"
     UNPUBLISHED_REVISION = "unpublished_revision"
     REVISION_KIND_MISMATCH = "revision_kind_mismatch"
+    RESOLVED_REVISION_MISMATCH = "resolved_revision_mismatch"
+    UNBOUND_WORKFLOW_REFERENCE = "unbound_workflow_reference"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,23 +106,6 @@ class ResolvedReference:
     revision_hash: PublishedRevisionHash
 
 
-@dataclass(frozen=True, slots=True)
-class SubworkflowResolution:
-    """One subworkflow node, bound to the exact published child revision it reuses."""
-
-    node_id: str
-    chain: ReferenceChain
-    child_revision_hash: WorkflowRevisionHash
-
-    def __post_init__(self) -> None:
-        if self.node_id == "":
-            raise ValueError("a subworkflow resolution names the node it binds")
-        if not self.chain:
-            raise ValueError(
-                "a subworkflow resolution names the chain it was reached by"
-            )
-
-
 class RunConfigurationRevisionHash(Sha256Hash):
     """The immutable identity of one complete run-configuration snapshot."""
 
@@ -138,14 +123,11 @@ class RunConfigurationRevision:
     workflow_revision_hash: WorkflowRevisionHash
     binding_set_hash: AgentBindingSetHash
     resolutions: tuple[ResolvedReference, ...] = ()
-    subworkflow_resolutions: tuple[SubworkflowResolution, ...] = ()
     revision_hash: RunConfigurationRevisionHash = field(init=False)
 
     def __post_init__(self) -> None:
         references = tuple(sorted(self.resolutions, key=_framed_reference))
-        subworkflows = tuple(sorted(self.subworkflow_resolutions, key=_framed_child))
         object.__setattr__(self, "resolutions", references)
-        object.__setattr__(self, "subworkflow_resolutions", subworkflows)
         object.__setattr__(
             self,
             "revision_hash",
@@ -157,10 +139,6 @@ class RunConfigurationRevision:
                     frame(
                         "run-configuration-references/v1",
                         *(_framed_reference(entry) for entry in references),
-                    ),
-                    frame(
-                        "run-configuration-subworkflows/v1",
-                        *(_framed_child(entry) for entry in subworkflows),
                     ),
                 )
             ),
@@ -196,23 +174,15 @@ def _framed_reference(entry: ResolvedReference) -> bytes:
     )
 
 
-def _framed_child(entry: SubworkflowResolution) -> bytes:
-    return frame(
-        "run-configuration-subworkflow/v1",
-        entry.node_id.encode("utf-8"),
-        _framed_chain(entry.chain),
-        entry.child_revision_hash.value.encode("ascii"),
-    )
-
-
 def declared_references(
     graph: WorkflowGraphV3, chain: ReferenceChain = ()
 ) -> tuple[DeclaredReference, ...]:
     """Every versioned reference one document declares, with the registry it names.
 
-    A subworkflow node's `workflow` reference is deliberately absent: the subworkflow
-    binder already resolves it against the published child it must also parse, and a
-    second resolution here would be a second answer to one question.
+    A subworkflow node's `workflow` reference is one of them. Which resolver answers
+    it is a separate question: the subworkflow binder already reads that child to
+    bind its boundary, so a second registry answer would be a second answer to one
+    question, and the run configuration binds what that binder resolved.
     """
     return tuple(_walk(graph, chain))
 
@@ -296,5 +266,7 @@ def _walk_node(
             yield declared("retry", RevisionKind.RETRY_POLICY, node.retry)
     if isinstance(node, ActionNodeV3):
         yield declared("operation", RevisionKind.ADAPTER_OPERATION, node.operation)
-    if isinstance(node, SubworkflowNodeV3) and node.budget is not None:
-        yield declared("budget", RevisionKind.BUDGET_POLICY, node.budget)
+    if isinstance(node, SubworkflowNodeV3):
+        yield declared("workflow", RevisionKind.WORKFLOW, node.workflow)
+        if node.budget is not None:
+            yield declared("budget", RevisionKind.BUDGET_POLICY, node.budget)

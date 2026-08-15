@@ -154,14 +154,18 @@ every reference of every child the document reuses. A reference whose revision i
 pinned hash, that no publication of that kind carries, or that a registry answers
 with a revision of another kind or another hash is refused naming the node, the
 field, the declared entry, the chain it was reached through, and the reference
-itself. What resolves is
+itself. A subworkflow's own `workflow` reference is one of them and resolves
+through the binder that already read that child, so one question keeps one answer.
+What resolves is
 frozen into one run-configuration revision — the role matrix by its existing binding
-identity, every resolved reference, and every subworkflow's exact child revision —
+identity and every resolved reference, the child revisions among them —
 hash-framed as one immutable snapshot whose identity does not depend on the order it
 was assembled in. Behind that, nothing: the registries are ports a caller supplies,
 because no durable registry shape and no publication command for one exists yet;
-named lineages, admitted membership and name resolution belong to the proposed
-catalog-identity record and are not decided here; there is no capability attestation
+resolution is lineage-free and a reference's `ref` is carried into that snapshot
+without proving membership, because named lineages, admitted membership and name
+resolution belong to the proposed catalog-identity record, which is not accepted and
+whose `resolve_reference` this port gains when it is; there is no capability attestation
 and no V3 record shape in the store, so publication and every run path still refuse a
 V3 document naming the format, and no runtime executes a child. V1 and V2 documents
 keep their exact meaning under their own models.

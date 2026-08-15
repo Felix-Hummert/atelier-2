@@ -51,9 +51,19 @@ type ResolvePublishedRevisionResult = PublishedRevisionFound | PublishedRevision
 class PublishedRevisionRegistry(Protocol):
     """The registries a versioned reference of a V3 document resolves against.
 
-    Resolution is lineage-free on purpose: decision 0007's `resolve_reference` proves
-    membership of a named lineage, and until lineages exist a reference binds by the
-    kind it is read under and the exact revision hash it pins.
+    Resolution is lineage-free, and that is a named decision rather than an
+    oversight. ADR 0007 is PROPOSED, not accepted: under it a reference reads
+    `{ref: <lineage id>, revision: <revision hash>}` and binding calls
+    `resolve_reference(kind, lineage_id, revision_hash)`, which proves the revision
+    is an admitted member of that lineage. No lineage, membership or admission
+    exists in this repository yet, so building against that operation would be
+    building against a record nobody has accepted.
+
+    Until it exists, a reference binds by the kind it is read under and the exact
+    revision hash it pins, and the authored `ref` travels into the run
+    configuration's hashed identity without proving membership. That is a visible
+    debt with one successor: when lineages land, this port gains
+    `resolve_reference` and this is the single call site that moves.
     """
 
     def publish_revision(
