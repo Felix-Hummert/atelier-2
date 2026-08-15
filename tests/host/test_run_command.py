@@ -1,0 +1,534 @@
+"""What `atelier2 run` does against a service that answers the published API.
+
+The service here is a real HTTP server speaking the product's own resources, so
+these tests pin the command's conversation and its operator-visible answer, not
+the shape of an internal call.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from threading import Thread
+from typing import Any, Literal, Self
+
+import pytest
+
+from atelier2.api.models import (
+    AgentCompletedEventResourceV2,
+    AgentConfigurationRevisionResource,
+    AgentFailedEventResourceV2,
+    AgentNodeResourceV2,
+    AuthProfileRevisionResource,
+    NoWaitingResourceV2,
+    ProblemResource,
+    RunResourceV2,
+    SubworkflowNodeResource,
+    WaitingInputEventResourceV2,
+    WorkflowGraphResourceV2,
+    WorkflowRevisionDetailResource,
+)
+from atelier2.api.openapi import API_PREFIX
+from atelier2.api.references import encode_canonical_base64
+from atelier2.contracts.executions import RunEventKind
+from atelier2.host import main
+from atelier2.host.run_command import (
+    AGENT_CONFIGURATION_PATH,
+    AUTH_PROFILE_PATH,
+    JSON_MEDIA_TYPE,
+    RUN_PATH,
+    WORKFLOW_REVISION_PATH,
+    AgentRoleBinding,
+    derived_run_id,
+)
+
+PROBLEM_MEDIA_TYPE = "application/problem+json"
+EVENT_STREAM_MEDIA_TYPE = "text/event-stream"
+
+AUTH_PROFILE_HASH = "a" * 64
+AGENT_CONFIGURATION_HASH = "b" * 64
+REVISION_HASH = "c" * 64
+TERMINAL_HASH = "d" * 64
+OUTPUT_HASH = "e" * 64
+NODE_EXECUTION_ID = "f" * 64
+EVENT_HASH = "1" * 64
+ATTEMPT_ID = "2" * 64
+BINDING_SET_HASH = "3" * 64
+
+PUBLIC_RUN_REFERENCE = "run1.dGVzdA"
+EVENT_CURSOR = f"event1.dGVzdA.{1}"
+AGENT_ROLE = "writer"
+AGENT_NODE_ID = "draft"
+TERMINAL_NODE_ID = "total"
+AGENT_OUTPUT = b"the answer the run produced"
+
+WORKFLOW_DOCUMENT = b"""format_version: 2
+start: draft
+nodes:
+  - {id: total, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: draft, type: agent, role: writer, job: say-something, next: total}
+"""
+BINDING_DOCUMENT = json.dumps(
+    {
+        "auth_profile": {
+            "profile_id": "personal",
+            "revision_number": 1,
+            "provider_id": "claude",
+            "auth_mode": "subscription",
+        },
+        "model": "claude-opus-4",
+        "executor_revision": "claude-subscription-v1",
+    }
+).encode()
+
+RUNS_URL_PATH = API_PREFIX + RUN_PATH
+RUN_URL_PATH = f"{RUNS_URL_PATH}/{PUBLIC_RUN_REFERENCE}"
+EVENTS_URL_PATH = f"{RUN_URL_PATH}/events"
+
+
+@dataclass(frozen=True)
+class Answer:
+    body: bytes
+    status: HTTPStatus = HTTPStatus.OK
+    media_type: str = JSON_MEDIA_TYPE
+
+
+@dataclass(frozen=True)
+class Call:
+    method: str
+    path: str
+    body: bytes
+
+
+@dataclass
+class ScriptedService:
+    """One real HTTP server answering the routes this command uses."""
+
+    answers: dict[tuple[str, str], list[Answer]]
+    calls: list[Call] = field(default_factory=list)
+    _server: ThreadingHTTPServer | None = None
+
+    def __enter__(self) -> Self:
+        service = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                self._answer("GET")
+
+            def do_POST(self) -> None:
+                self._answer("POST")
+
+            def _answer(self, method: str) -> None:
+                length = int(self.headers.get("content-length", "0"))
+                service.calls.append(Call(method, self.path, self.rfile.read(length)))
+                scripted = service.answers.get((method, self.path))
+                answer = (
+                    unrouted_answer()
+                    if not scripted
+                    else (scripted.pop(0) if len(scripted) > 1 else scripted[0])
+                )
+                self.send_response(answer.status)
+                self.send_header("content-type", answer.media_type)
+                self.send_header("content-length", str(len(answer.body)))
+                self.end_headers()
+                self.wfile.write(answer.body)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                return
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        Thread(target=self._server.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *_exception: object) -> None:
+        assert self._server is not None
+        self._server.shutdown()
+        self._server.server_close()
+
+    @property
+    def url(self) -> str:
+        assert self._server is not None
+        host, port = self._server.server_address[:2]
+        return f"http://{host!s}:{port}"
+
+    def sent(self, method: str, path: str) -> list[bytes]:
+        return [
+            call.body
+            for call in self.calls
+            if (call.method, call.path) == (method, path)
+        ]
+
+
+def unrouted_answer() -> Answer:
+    return problem_answer(
+        HTTPStatus.NOT_FOUND, "not-found", "Not Found", "no such resource"
+    )
+
+
+def problem_answer(status: HTTPStatus, kind: str, title: str, detail: str) -> Answer:
+    problem = ProblemResource(type=kind, title=title, status=int(status), detail=detail)
+    return Answer(
+        problem.model_dump_json().encode(), status=status, media_type=PROBLEM_MEDIA_TYPE
+    )
+
+
+def published_auth_profile() -> Answer:
+    return Answer(
+        AuthProfileRevisionResource(
+            profile_id="personal",
+            revision_number=1,
+            provider_id="claude",
+            auth_mode="subscription",
+            auth_profile_revision_hash=AUTH_PROFILE_HASH,
+        )
+        .model_dump_json()
+        .encode()
+    )
+
+
+def published_agent_configuration() -> Answer:
+    return Answer(
+        AgentConfigurationRevisionResource(
+            model="claude-opus-4",
+            auth_profile_revision_hash=AUTH_PROFILE_HASH,
+            executor_revision="claude-subscription-v1",
+            provider_id="claude",
+            auth_mode="subscription",
+            agent_configuration_revision_hash=AGENT_CONFIGURATION_HASH,
+        )
+        .model_dump_json()
+        .encode()
+    )
+
+
+def published_workflow_revision() -> Answer:
+    return Answer(
+        WorkflowRevisionDetailResource(
+            revision_hash=REVISION_HASH,
+            document_base64=encode_canonical_base64(WORKFLOW_DOCUMENT),
+            graph=WorkflowGraphResourceV2(
+                format_version=2,
+                start_node_id=AGENT_NODE_ID,
+                nodes=(
+                    AgentNodeResourceV2(
+                        type="agent",
+                        node_id=AGENT_NODE_ID,
+                        role=AGENT_ROLE,
+                        job="say-something",
+                        next_node_id=TERMINAL_NODE_ID,
+                    ),
+                    terminal_node(),
+                ),
+            ),
+        )
+        .model_dump_json()
+        .encode()
+    )
+
+
+def terminal_node() -> SubworkflowNodeResource:
+    return SubworkflowNodeResource(
+        type="subworkflow",
+        node_id=TERMINAL_NODE_ID,
+        operation="add",
+        operands=(2, 3),
+        next_node_id=None,
+    )
+
+
+def run_resource(
+    state: Literal["STARTED", "COMPLETED"], terminal_hash: str | None
+) -> RunResourceV2:
+    return RunResourceV2(
+        workflow_format_version=2,
+        run_id="unread-by-the-command",
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        agent_binding_set_hash=BINDING_SET_HASH,
+        agent_bindings=(),
+        state_version=2,
+        state=state,
+        current_node=terminal_node(),
+        agent_attempts=(),
+        waiting=NoWaitingResourceV2(type="NONE"),
+        terminal_hash=terminal_hash,
+        latest_event_cursor=EVENT_CURSOR,
+    )
+
+
+def started_run() -> Answer:
+    return Answer(run_resource("STARTED", None).model_dump_json().encode())
+
+
+def completed_run() -> Answer:
+    return Answer(run_resource("COMPLETED", TERMINAL_HASH).model_dump_json().encode())
+
+
+def event_stream(*events: tuple[RunEventKind, str]) -> Answer:
+    frames = "".join(
+        f"id: {EVENT_CURSOR}\nevent: {name}\ndata: {payload}\n\n"
+        for name, payload in events
+    )
+    return Answer(frames.encode(), media_type=EVENT_STREAM_MEDIA_TYPE)
+
+
+def agent_completed() -> tuple[RunEventKind, str]:
+    return RunEventKind.AGENT_COMPLETED, AgentCompletedEventResourceV2(
+        workflow_format_version=2,
+        cursor=EVENT_CURSOR,
+        sequence=1,
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        node_id=AGENT_NODE_ID,
+        node_execution_id=NODE_EXECUTION_ID,
+        event_hash=EVENT_HASH,
+        event="AGENT_COMPLETED",
+        output_base64=encode_canonical_base64(AGENT_OUTPUT),
+        output_hash=OUTPUT_HASH,
+        attempt_id=ATTEMPT_ID,
+        attempt_ordinal=1,
+    ).model_dump_json()
+
+
+def agent_failed() -> tuple[RunEventKind, str]:
+    return RunEventKind.AGENT_FAILED, AgentFailedEventResourceV2(
+        workflow_format_version=2,
+        cursor=EVENT_CURSOR,
+        sequence=1,
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        node_id=AGENT_NODE_ID,
+        node_execution_id=NODE_EXECUTION_ID,
+        event_hash=EVENT_HASH,
+        event="AGENT_FAILED",
+        failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+        attempt_id=ATTEMPT_ID,
+        attempt_ordinal=1,
+    ).model_dump_json()
+
+
+def waiting_for_input() -> tuple[RunEventKind, str]:
+    return RunEventKind.WAITING_INPUT, WaitingInputEventResourceV2(
+        workflow_format_version=2,
+        cursor=EVENT_CURSOR,
+        sequence=1,
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        node_id="approval",
+        node_execution_id=NODE_EXECUTION_ID,
+        event_hash=EVENT_HASH,
+        event="WAITING_INPUT",
+        answer_type="integer",
+    ).model_dump_json()
+
+
+def serving_answers(
+    **replacements: Answer,
+) -> dict[tuple[str, str], list[Answer]]:
+    """The whole conversation of one run that ends, with named replacements."""
+
+    scripted = {
+        "auth_profile": (
+            "POST",
+            API_PREFIX + AUTH_PROFILE_PATH,
+            published_auth_profile(),
+        ),
+        "agent_configuration": (
+            "POST",
+            API_PREFIX + AGENT_CONFIGURATION_PATH,
+            published_agent_configuration(),
+        ),
+        "workflow_revision": (
+            "POST",
+            API_PREFIX + WORKFLOW_REVISION_PATH,
+            published_workflow_revision(),
+        ),
+        "start": ("POST", RUNS_URL_PATH, started_run()),
+        "events": ("GET", EVENTS_URL_PATH, event_stream(agent_completed())),
+        "run": ("GET", RUN_URL_PATH, completed_run()),
+    }
+    return {
+        (method, path): [replacements.get(name, answer)]
+        for name, (method, path, answer) in scripted.items()
+    }
+
+
+@pytest.fixture
+def order(tmp_path: Path) -> Iterator[list[str]]:
+    workflow = tmp_path / "workflow.yaml"
+    workflow.write_bytes(WORKFLOW_DOCUMENT)
+    binding = tmp_path / "writer.json"
+    binding.write_bytes(BINDING_DOCUMENT)
+    yield ["run", "--workflow", str(workflow), "--binding", f"{AGENT_ROLE}={binding}"]
+
+
+def run_command(order: list[str], service: ScriptedService, *extra: str) -> int:
+    return main([*order, "--service", service.url, *extra])
+
+
+def test_the_output_of_a_run_that_ended_is_printed_with_what_binds_it_to_that_run(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(serving_answers()) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (0, AGENT_OUTPUT + b"\n")
+    reported = printed.err.decode()
+    assert PUBLIC_RUN_REFERENCE in reported
+    assert TERMINAL_HASH in reported
+    assert OUTPUT_HASH in reported
+    assert ATTEMPT_ID in reported
+
+
+def test_the_started_run_binds_the_hashes_the_service_answered_with(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(serving_answers()) as service:
+        run_command(order, service)
+        started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
+
+    assert started == {
+        "workflow_format_version": 2,
+        "run_id": derived_run_id(
+            REVISION_HASH, (AgentRoleBinding(AGENT_ROLE, AGENT_CONFIGURATION_HASH),)
+        ),
+        "workflow_revision_hash": REVISION_HASH,
+        "agent_bindings": [
+            {
+                "role": AGENT_ROLE,
+                "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
+            }
+        ],
+    }
+
+
+def test_the_same_command_twice_asks_for_the_same_run(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(serving_answers()) as service:
+        first = run_command(order, service)
+        second = run_command(order, service)
+        started = service.sent("POST", RUNS_URL_PATH)
+
+    printed = capsysbinary.readouterr()
+    assert (first, second) == (0, 0)
+    assert printed.out == AGENT_OUTPUT + b"\n" + AGENT_OUTPUT + b"\n"
+    assert started[0] == started[1]
+
+
+def test_a_named_run_identity_is_the_one_asked_for(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(serving_answers()) as service:
+        run_command(order, service, "--run-id", "the-operators-own-identity")
+        started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
+
+    assert started["run_id"] == "the-operators-own-identity"
+
+
+def test_a_failed_agent_attempt_ends_the_command_unsuccessfully(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(
+        serving_answers(events=event_stream(agent_failed()))
+    ) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (1, b"")
+    assert b"PROCESS_EXITED_UNSUCCESSFULLY" in printed.err
+    assert ATTEMPT_ID.encode() in printed.err
+
+
+def test_a_run_waiting_for_input_says_which_capability_is_missing(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(
+        serving_answers(events=event_stream(waiting_for_input()))
+    ) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert exit_code == 1
+    assert b"#38" in printed.err
+
+
+def test_an_event_history_that_ends_before_the_run_does_is_refused(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(serving_answers(run=started_run())) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (1, b"")
+    assert b"STARTED" in printed.err
+
+
+def test_a_typed_problem_reaches_the_operator_as_the_service_wrote_it(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    refusal = problem_answer(
+        HTTPStatus.UNPROCESSABLE_ENTITY,
+        "https://atelier/problems/invalid-workflow-document",
+        "Invalid workflow document",
+        "node draft names an unreachable successor",
+    )
+    with ScriptedService(serving_answers(workflow_revision=refusal)) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert exit_code == 1
+    assert b"https://atelier/problems/invalid-workflow-document" in printed.err
+    assert b"node draft names an unreachable successor" in printed.err
+
+
+def test_an_answer_that_is_not_the_published_contract_is_refused_by_name(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(serving_answers(start=Answer(b'{"run_id": 17}'))) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert exit_code == 1
+    assert b"cannot read" in printed.err
+
+
+def test_a_binding_file_that_describes_no_agent_is_refused_before_anything_runs(
+    tmp_path: Path, order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    (tmp_path / "writer.json").write_bytes(b'{"model": "claude-opus-4"}')
+
+    with ScriptedService(serving_answers()) as service:
+        exit_code = run_command(order, service)
+        started = service.sent("POST", RUNS_URL_PATH)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, started) == (1, [])
+    assert b"writer" in printed.err
+
+
+def test_no_service_at_the_named_address_is_named_instead_of_traced(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(serving_answers()) as service:
+        unserved = service.url
+    exit_code = main([*order, "--service", unserved])
+
+    printed = capsysbinary.readouterr()
+    assert exit_code == 1
+    assert unserved.encode() in printed.err
+
+
+def test_an_address_that_is_not_a_served_api_is_refused(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    exit_code = main([*order, "--service", "file:///etc/passwd"])
+
+    printed = capsysbinary.readouterr()
+    assert exit_code == 1
+    assert b"file:///etc/passwd" in printed.err

@@ -15,7 +15,6 @@ import sqlalchemy as sa
 import uvicorn
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from atelier2 import host
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import agent_attempts, runs
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
@@ -32,7 +31,8 @@ from atelier2.contracts.effects import (
     PerformedEffect,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from atelier2.host import HostSettings
+from atelier2.host import serving
+from atelier2.host.serving import HostSettings
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorFactory,
@@ -228,8 +228,8 @@ def main() -> None:
         frontend_dist=Path(os.environ["ATELIER2_E2E_FRONTEND_DIST"]),
         port=port,
     )
-    with patch.object(host, "DbosRuntime", side_effect=runtime):
-        app, live_runtime = host.compose_application(settings)
+    with patch.object(serving, "DbosRuntime", side_effect=runtime):
+        app, live_runtime = serving.compose_application(settings)
     try:
         uvicorn.Server(
             uvicorn.Config(
