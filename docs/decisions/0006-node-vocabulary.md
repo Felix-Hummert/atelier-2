@@ -690,6 +690,7 @@ stable:
 | --- | --- |
 | `dag_scheduling` | more than one dependency edge into or out of a node — fan-out, fan-in, joins, parallel ready sets (#1 story 3) |
 | `agent_execution` | the enumerated agent-configuration and executor revisions the runtime proves it can invoke, each with its executor identity, provider mode, build identity and gate run. It never attests `mode`: per #9 Rev. 4 the bound configuration declares that, and one capability has exactly one declarer |
+| `output_validation` | the enumerated output shapes the provider-neutral core proves it enforces, named as profiles rather than schemas — `single-json-output/v1` (#57) is the one such shape today. The document stays the sole declarer of `outputs[*].schema`; a node's declared output arity names the profile it needs, so a node declaring none or several names a shape no build attests yet instead of inheriting a builder default |
 | `skill_installation` | the enumerated skill revisions the bound adapter proves it installs into a provider session, each with its proven scope — the procedure and the tool grants it carries — and its evidence reference |
 | `tool_grants` | the enumerated tool grant revisions proven enforceable, each with the operations the grant permits and the evidence that proved the enforcement, not merely the installation |
 | `context_materialization` | pre-START materialization of `required_context` with hash and provenance, by the materializer the run binds |
@@ -710,8 +711,14 @@ for.
 
 `mode: interactive` is absent from the table for the opposite reason: #9 Rev. 4 gave
 it a declarer already, the bound agent-configuration revision. One capability has
-exactly one declarer, so mode is compared against that binding at run start and
-refuses with the same loud, node-naming shape.
+exactly one declarer, so mode is compared against that binding where the node's role
+resolves to its configuration, and a node whose declared mode is not the capability
+that configuration declares refuses with the same loud, node-naming shape.
+
+Every subject a capability enumerates carries the identity space it lives in — the
+registry kind beside the revision hash, the agent-configuration revision, or the
+output profile — because identical bytes published as two kinds are two things, and
+one `context_source` entry must never prove a `read_operation` of the same hash.
 
 ### What the run binds
 
