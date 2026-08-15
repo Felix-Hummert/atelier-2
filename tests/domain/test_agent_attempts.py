@@ -21,6 +21,7 @@ from atelier2.contracts.agent_attempts import (
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
     AgentExecutionRequestHash,
     AgentExecutorOperationalIdentity,
     AgentReceiptHash,
@@ -70,6 +71,24 @@ def test_attempt_identity_accepts_exactly_two_ordinals() -> None:
     for invalid in (0, 3, True):
         with pytest.raises(ValueError, match="ordinal"):
             AgentAttemptId.for_execution(execution_id, request_hash, invalid)
+
+
+@pytest.mark.parametrize(
+    "build",
+    (
+        AgentProcessOwnerId,
+        WatchdogGenerationId,
+        lambda value: AgentAttemptCancellation(value, 1, AgentAttemptReplacement.NONE),
+    ),
+    ids=("process owner id", "watchdog generation id", "cancellation command id"),
+)
+def test_attempt_text_fields_end_at_the_agent_field_bound(
+    build: Callable[[str], object],
+) -> None:
+    build("x" * MAXIMUM_AGENT_FIELD_CHARACTERS)
+
+    with pytest.raises(ValueError, match=str(MAXIMUM_AGENT_FIELD_CHARACTERS)):
+        build("x" * (MAXIMUM_AGENT_FIELD_CHARACTERS + 1))
 
 
 def test_cancellation_contract_has_one_closed_canonical_terminal_shape() -> None:

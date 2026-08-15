@@ -13,13 +13,13 @@ from atelier2.adapters.dbos.run_store import (
     _agent_receipt_v2_from_record,
     _agent_receipt_v2_values,
     _commit_event,
+    _insert_event,
     load_graph,
     load_run,
 )
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
-    run_events,
     runs,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
@@ -73,7 +73,6 @@ from atelier2.ports.agent_attempts import (
 
 CANCELLATION_WORKFLOW_NAME = "atelier2_agent_attempt_cancellation"
 REPLACEMENT_WORKFLOW_NAME = "atelier2_agent_attempt_replacement"
-QUEUE_NAME = "atelier2-durable-runs"
 
 
 def _attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
@@ -308,27 +307,7 @@ def _insert_attempt_event(
     )
     if updated.rowcount != 1:
         raise RunTransitionConflict("agent attempt event lost the run-head CAS")
-    connection.execute(
-        run_events.insert().values(
-            run_id=event.run_id.value,
-            revision_hash=event.revision_hash.value,
-            event_sequence=event.event_sequence,
-            node_id=event.node_id,
-            node_execution_id=event.node_execution_id.value,
-            event_kind=event.event_kind.value,
-            payload=event.payload,
-            payload_hash=event.payload_hash.value,
-            receipt_logical_key=None,
-            receipt_result_hash=None,
-            event_hash=event.event_hash.value,
-            agent_attempt_id=event.agent_attempt_id,
-            attempt_ordinal=event.attempt_ordinal,
-            cancellation_command_id=event.cancellation_command_id,
-            replacement=event.replacement,
-            cancellation_disposition=event.cancellation_disposition,
-            replacement_attempt_id=event.replacement_attempt_id,
-        )
-    )
+    _insert_event(connection, event)
 
 
 class DbosAgentAttemptStore:
@@ -627,6 +606,8 @@ class DbosAgentAttemptStore:
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttemptCancellationResult:
+        from atelier2.adapters.dbos.workflow import QUEUE_NAME
+
         client: DBOSClient | None = None
         try:
             with canonical_write_transaction(self._engine) as connection:
@@ -757,6 +738,8 @@ class DbosAgentAttemptStore:
         process_owner_id: AgentProcessOwnerId | None,
         watchdog_generation_id: WatchdogGenerationId | None,
     ) -> AgentAttemptCancellationAccepted:
+        from atelier2.adapters.dbos.workflow import QUEUE_NAME
+
         with canonical_write_transaction(self._engine) as connection:
             attempt = _load_attempt(connection, request.attempt_id)
             cancellation = attempt.cancellation
