@@ -201,6 +201,42 @@ def test_a_v1_revision_published_beside_a_v3_one_still_starts_its_run(
             ("'review'", "'speed'", "unknown_field"),
             id="unknown field",
         ),
+        pytest.param(
+            V3_DOCUMENT.replace(
+                b"    type: agent\n    role: reviewer",
+                b"    type: mystery\n    role: reviewer",
+            ),
+            ("'review'", "'type'", "invalid_value"),
+            id="unknown node kind",
+        ),
+        pytest.param(
+            V3_DOCUMENT.replace(
+                b"    type: agent\n    role: reviewer", b"    role: reviewer"
+            ),
+            ("'review'", "'type'", "missing_field"),
+            id="missing node kind",
+        ),
+        pytest.param(
+            V3_DOCUMENT + b"format_version: 3\n",
+            ("'format_version'", "duplicate_key"),
+            id="unsafe YAML duplicate key",
+        ),
+        pytest.param(
+            V3_DOCUMENT.replace(b"format_version: 3", b"format_version: !!int 3", 1),
+            ("'tag'", "forbidden_yaml_feature"),
+            id="unsafe YAML explicit tag",
+        ),
+        pytest.param(
+            V3_DOCUMENT.replace(
+                b"    outputs:\n      - name: candidate\n",
+                b"    outputs: "
+                + b"[" * 40
+                + b"]" * 40
+                + b"\n      - name: candidate\n",
+            ),
+            ("'nesting'", "document_too_deep"),
+            id="unsafe YAML nested past the bound",
+        ),
     ],
 )
 def test_an_invalid_v3_document_is_refused_naming_its_node_and_field(
