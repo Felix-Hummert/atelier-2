@@ -104,7 +104,7 @@ ESCAPES_THE_CLOSED_UNION = pytest.mark.xfail(
 def test_every_kind_the_v1_wire_publishes_renders_under_its_own_name(
     kind: RunEventKind,
 ) -> None:
-    resource = run_event_resource(v1_projection(kind))
+    resource = run_event_resource(v1_projection(kind), ())
 
     assert resource.model_dump()["event"] == kind.value
 
@@ -124,7 +124,7 @@ def test_every_kind_the_v1_wire_does_not_publish_is_refused_as_durable_drift(
     kind: RunEventKind,
 ) -> None:
     with pytest.raises(ValueError):
-        run_event_resource(v1_projection(kind))
+        run_event_resource(v1_projection(kind), ())
 
 
 @pytest.mark.parametrize(
@@ -141,4 +141,4 @@ def test_a_v1_cancellation_kind_escapes_the_closed_union_instead_of_being_refuse
     """
 
     with pytest.raises(AssertionError, match="closed event union"):
-        run_event_resource(v1_projection(kind))
+        run_event_resource(v1_projection(kind), ())

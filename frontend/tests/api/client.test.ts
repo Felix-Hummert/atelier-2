@@ -49,7 +49,11 @@ function event(event: string, fields: Record<string, unknown> = {}) {
 }
 
 function v2Event(eventName: string, fields: Record<string, unknown> = {}) {
-  return { ...event(eventName, fields), workflow_format_version: 2 };
+  return {
+    ...event(eventName, fields),
+    workflow_format_version: 2,
+    node_rail: [{ node_id: "agent", state: "working", attempt: null }]
+  };
 }
 
 const v2Attempt = { attempt_id: digest, attempt_ordinal: 1 };

@@ -11,13 +11,20 @@ from fastapi.sse import ServerSentEvent
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
 from atelier2.api.problems import problem_resource
 from atelier2.api.projection.events import run_event_resource
+from atelier2.api.projection.runs import node_rail_resources
 from atelier2.api.wire.resources import StreamFailureResource
+from atelier2.application.project_node_rail import (
+    NodeRailUnprojectable,
+    project_node_rail,
+)
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
+    PersistedRunEvent,
     RunEventPage,
     RunEventQueries,
 )
+from atelier2.ports.run_queries import RunProjection
 from atelier2.ports.workflow_revisions import (
     PROJECTION_LIMIT_DETAIL,
     DurableProjectionLimit,
@@ -48,6 +55,14 @@ class PreparedEventStream:
     after_sequence: int
     head_sequence: int
     terminal: bool
+    projection: RunProjection
+    """The run this stream reads, read once, so every frame can say where it stands.
+
+    A reader given only events has to rebuild the state machine to learn what one
+    event means for the rest of the run. Reading the run here is the edge that
+    spares every reader that rebuild: one durable read per stream, onto which the
+    events streamed afterwards are folded.
+    """
 
 
 @dataclass(frozen=True)
@@ -158,6 +173,7 @@ async def stream_server_events(
 ) -> AsyncIterator[ServerSentEvent]:
     after_sequence = prepared.after_sequence
     next_poll_delay = poll_backoff.initial_delay_seconds
+    streamed: list[PersistedRunEvent] = []
     if prepared.terminal and after_sequence == prepared.head_sequence:
         return
     while True:
@@ -201,9 +217,15 @@ async def stream_server_events(
         if page.events:
             next_poll_delay = poll_backoff.initial_delay_seconds
         for persisted in page.events:
+            streamed.append(persisted)
             try:
-                resource = run_event_resource(persisted)
-            except ValueError:
+                resource = run_event_resource(
+                    persisted,
+                    node_rail_resources(
+                        project_node_rail(prepared.projection, streamed)
+                    ),
+                )
+            except (ValueError, NodeRailUnprojectable):
                 yield _stream_failure("durable-state-corrupt")
                 return
             except AssertionError:

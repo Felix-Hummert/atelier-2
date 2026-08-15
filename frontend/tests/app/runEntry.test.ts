@@ -227,7 +227,7 @@ describe("mobile run entry", () => {
     expect(card.textContent).toContain("builder");
     expect(card.textContent).toContain("Attempt 1 prepared");
     eventFeed.handlers?.event(JSON.stringify(v2TerminalEvent(publishedRevision!.revision_hash)));
-    expect((await screen.findByRole("article", { name: "build — Done" })).textContent).toContain("Attempt 1 completed");
+    expect((await screen.findByRole("article", { name: "build — Done" })).textContent).toContain("Attempt 1 done");
     expect(screen.getByRole("article", { name: "review — Working" })).toBeTruthy();
     eventFeed.handlers?.event(JSON.stringify({ ...v2TerminalEvent(publishedRevision!.revision_hash), event: "NODE_PROGRESS" }));
     expect(await screen.findByText("Event invalid")).toBeTruthy();
@@ -244,6 +244,7 @@ describe("mobile run entry", () => {
     const replacementRun: RunV2 = {
       ...initial,
       latest_event_cursor: interrupted.cursor,
+      node_rail: v2Rail("working", { ordinal: 2, state: "PREPARED" }),
       agent_attempts: [
         {
           ...firstAttempt,
@@ -646,6 +647,19 @@ function v2Revision(hash: string, documentBase64 = ""): WorkflowRevisionDetail {
   };
 }
 
+function v2Rail(
+  build: RunV2["node_rail"][number]["state"],
+  attempt: RunV2["node_rail"][number]["attempt"]
+): RunV2["node_rail"] {
+  const successor = build === "working" ? "queued" : "working";
+  return [
+    { node_id: "build", state: build, attempt },
+    { node_id: "review", state: successor, attempt: null },
+    { node_id: "fix", state: "queued", attempt: null },
+    { node_id: "done", state: "queued", attempt: null }
+  ];
+}
+
 function v2Run(start: unknown, agentBindings: RunV2["agent_bindings"]): RunV2 {
   const workflowRevisionHash = (start as { workflow_revision_hash: string }).workflow_revision_hash;
   return {
@@ -658,12 +672,7 @@ function v2Run(start: unknown, agentBindings: RunV2["agent_bindings"]): RunV2 {
     state_version: 0,
     state: "STARTED",
     current_node: v2Revision(workflowRevisionHash).graph.nodes.find((node) => node.node_id === "build")! as RunV2["current_node"],
-    node_rail: [
-      { node_id: "build", state: "working" },
-      { node_id: "review", state: "queued" },
-      { node_id: "fix", state: "queued" },
-      { node_id: "done", state: "queued" }
-    ],
+    node_rail: v2Rail("working", { ordinal: 1, state: "PREPARED" }),
     agent_attempts: [{ attempt_id: "1".repeat(64), node_execution_id: "2".repeat(64), request_hash: "3".repeat(64),
       attempt_ordinal: 1, state: "PREPARED", failure_code: null, cancellation: null }],
     waiting: { type: "NONE" }, terminal_hash: null, latest_event_cursor: null
@@ -683,7 +692,8 @@ function v2TerminalEvent(workflowRevisionHash: string) {
     public_run_reference: v2PublicReference, workflow_revision_hash: workflowRevisionHash,
     node_id: "build", node_execution_id: "2".repeat(64), event_hash: "4".repeat(64),
     event: "AGENT_COMPLETED", output_base64: "", output_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    attempt_id: "1".repeat(64), attempt_ordinal: 1
+    attempt_id: "1".repeat(64), attempt_ordinal: 1,
+    node_rail: v2Rail("succeeded", { ordinal: 1, state: null })
   };
 }
 
@@ -710,6 +720,7 @@ function v2InterruptedEvent(
     event: "AGENT_INTERRUPTED",
     attempt_id: "1".repeat(64),
     attempt_ordinal: 1,
+    node_rail: v2Rail("working", { ordinal: 2, state: "PREPARED" }),
     command_id: "cancel",
     replacement: "ONE",
     disposition: "REAPED_AFTER_TERM",

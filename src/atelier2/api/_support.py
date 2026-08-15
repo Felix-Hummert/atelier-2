@@ -46,13 +46,25 @@ async def load_run_resource(
     limits: ApiLimits,
     projection_limit: DurableProjectionLimit,
 ) -> AnyRunResource:
+    return run_resource(
+        await load_run_projection(run_id, queries, runner, limits, projection_limit)
+    )
+
+
+async def load_run_projection(
+    run_id: RunId,
+    queries: RunQueries,
+    runner: BoundedQueryRunner,
+    limits: ApiLimits,
+    projection_limit: DurableProjectionLimit,
+) -> RunProjection:
     result = await run_control_query(
         runner, lambda: queries.get_run(run_id, projection_limit)
     )
     match result:
         case RunFound(projection):
             require_run_projections((projection,), limits)
-            return run_resource(projection)
+            return projection
         case RunQueryMissing():
             raise ApiProblem("run-not-found")
         case ReadUnavailable(detail):

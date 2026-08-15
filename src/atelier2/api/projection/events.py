@@ -32,13 +32,22 @@ from atelier2.api.wire.events import (
     WaitingInputEventResource,
     WaitingInputEventResourceV2,
 )
+from atelier2.api.wire.resources import NodeRailResource
 from atelier2.contracts.executions import RunEventKind, is_canonical_integer_bytes
 from atelier2.ports.run_events import PersistedRunEvent
 
 
-def run_event_resource(projection: PersistedRunEvent) -> AnyRunEventResource:
+def run_event_resource(
+    projection: PersistedRunEvent, node_rail: tuple[NodeRailResource, ...]
+) -> AnyRunEventResource:
+    """One durable event on the wire, carrying where its run stands after it.
+
+    The rail reaches a V2 resource only: the V1 event schema is byte-frozen, so
+    a V1 reader keeps deriving and the rail passed here is dropped.
+    """
+
     if projection.workflow_format_version == 2:
-        return _run_event_resource_v2(projection)
+        return _run_event_resource_v2(projection, node_rail)
     event = projection.event
     if event.event_kind is RunEventKind.AGENT_FAILED:
         raise ValueError("a V1 run cannot carry AGENT_FAILED")
@@ -107,10 +116,13 @@ def run_event_resource(projection: PersistedRunEvent) -> AnyRunEventResource:
     raise AssertionError("closed event union was extended without API mapping")
 
 
-def _run_event_resource_v2(projection: PersistedRunEvent) -> RunEventResourceV2:
+def _run_event_resource_v2(
+    projection: PersistedRunEvent, node_rail: tuple[NodeRailResource, ...]
+) -> RunEventResourceV2:
     event = projection.event
     common = {
         "workflow_format_version": 2,
+        "node_rail": node_rail,
         "cursor": encode_event_cursor(event.run_id, event.event_sequence),
         "sequence": event.event_sequence,
         "public_run_reference": encode_public_run_reference(event.run_id),

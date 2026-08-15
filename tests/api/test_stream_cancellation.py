@@ -24,10 +24,16 @@ from atelier2.ports.run_events import (
     RunEventQueries,
     StreamReady,
 )
+from atelier2.ports.run_queries import RunFound
 from atelier2.ports.workflow_revisions import (
     WorkflowRevisionPage,
 )
-from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
+from tests.scenarios.api import (
+    api_limits,
+    api_ports,
+    event_poll_backoff,
+    stream_run_projection,
+)
 
 RUN_ID = RunId("bounded-stream")
 REVISION_HASH = WorkflowRevisionHash("0" * 64)
@@ -152,7 +158,9 @@ def test_empty_stream_uses_capped_adaptive_backoff_with_injected_sleep() -> None
                 raise ProbeComplete
 
         stream = stream_server_events(
-            PreparedEventStream(RUN_ID, 0, 0, False),
+            PreparedEventStream(
+                RUN_ID, 0, 0, False, stream_run_projection(RUN_ID.value)
+            ),
             queries,
             BoundedQueryRunner(1, admission_timeout_seconds=1),
             page_size=1,
@@ -216,7 +224,9 @@ def test_poll_backoff_resets_to_initial_delay_immediately_after_progress() -> No
                 raise ProbeComplete
 
         stream = stream_server_events(
-            PreparedEventStream(RUN_ID, 0, 0, False),
+            PreparedEventStream(
+                RUN_ID, 0, 0, False, stream_run_projection(RUN_ID.value)
+            ),
             queries,
             BoundedQueryRunner(1, admission_timeout_seconds=1),
             page_size=1,
@@ -265,6 +275,11 @@ def test_saturated_event_poll_does_not_starve_an_app_control_route() -> None:
             self.poll_started.set()
             self.release_poll.wait(timeout=5)
             return RunEventPage((), True)
+
+        def get_run(self, run_id: RunId, projection_limit: object = None) -> RunFound:
+            assert run_id == RUN_ID
+            del projection_limit
+            return RunFound(stream_run_projection(RUN_ID.value))
 
         def list_workflow_revisions(
             self, after: object, limit: int
@@ -395,7 +410,9 @@ def test_event_poll_admission_timeout_mid_stream_closes_without_starting_query()
         received = [
             item
             async for item in stream_server_events(
-                PreparedEventStream(RUN_ID, 1, 2, False),
+                PreparedEventStream(
+                    RUN_ID, 1, 2, False, stream_run_projection(RUN_ID.value)
+                ),
                 cast(RunEventQueries, queries),
                 runner,
                 page_size=1,
@@ -495,7 +512,9 @@ def test_stream_does_not_read_the_next_bounded_page_before_yielding_the_current_
     async def scenario() -> None:
         queries = PagedQueries()
         stream = stream_server_events(
-            PreparedEventStream(RUN_ID, 0, 3, True),
+            PreparedEventStream(
+                RUN_ID, 0, 3, True, stream_run_projection(RUN_ID.value)
+            ),
             queries,
             BoundedQueryRunner(1, admission_timeout_seconds=1),
             page_size=2,
@@ -561,7 +580,9 @@ def test_cancelled_stream_starts_no_next_query_and_blocked_query_closes_once() -
         queries = BlockingQueries()
         runner = BoundedQueryRunner(1, admission_timeout_seconds=1)
         stream = stream_server_events(
-            PreparedEventStream(RUN_ID, 0, 0, False),
+            PreparedEventStream(
+                RUN_ID, 0, 0, False, stream_run_projection(RUN_ID.value)
+            ),
             queries,
             runner,
             page_size=2,

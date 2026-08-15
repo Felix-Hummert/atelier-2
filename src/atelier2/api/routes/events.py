@@ -8,6 +8,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from atelier2.api._support import (
     decode_public_reference,
+    load_run_projection,
     require_sse_accept,
     run_control_query,
 )
@@ -52,7 +53,19 @@ async def prepare_events(
     )
     match result:
         case StreamReady(head_sequence, terminal, first_after):
-            return PreparedEventStream(run_id, first_after, head_sequence, terminal)
+            return PreparedEventStream(
+                run_id,
+                first_after,
+                head_sequence,
+                terminal,
+                await load_run_projection(
+                    run_id,
+                    context.ports.run_queries,
+                    context.control_runner,
+                    context.limits,
+                    context.workflow_projection_limit,
+                ),
+            )
         case RunQueryMissing():
             raise ApiProblem("run-not-found")
         case CursorAhead():

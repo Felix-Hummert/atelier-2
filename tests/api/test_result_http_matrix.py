@@ -683,6 +683,8 @@ class MatrixQueries:
             return cast(GetRunResult, self.case.result)
         if self.case.source == "reconcile-retry":
             return RunFound(RUN_PROJECTION)
+        if self.case.source == "events":
+            return RunFound(RUN_PROJECTION)
         if self.case.source == "commander" and self.run_reads == 1:
             return RunFound(RECONCILIATION_PROJECTION)
         if self.case.source in {"starter", "answerer", "commander"}:

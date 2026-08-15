@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal, cast
 
 from atelier2.api.projection.workflows import command_resource, node_resource
@@ -15,6 +16,7 @@ from atelier2.api.wire.resources import (
     AgentAttemptResourceV2,
     AgentBindingResourceV2,
     AnyRunResource,
+    NodeRailAttemptResource,
     NodeRailResource,
     NodeResource,
     NodeResourceV2,
@@ -31,7 +33,7 @@ from atelier2.api.wire.resources import (
     WaitingResource,
     WaitingResourceV2,
 )
-from atelier2.application.project_node_rail import project_node_rail
+from atelier2.application.project_node_rail import NodeRailEntry, project_node_rail
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.workflows import (
@@ -41,6 +43,27 @@ from atelier2.contracts.workflows import (
     WorkflowNodeV2,
 )
 from atelier2.ports.run_queries import RunProjection
+
+
+def node_rail_resources(
+    entries: Sequence[NodeRailEntry],
+) -> tuple[NodeRailResource, ...]:
+    """The one mapping of the derived rail onto the wire, for a run and an event."""
+    return tuple(
+        NodeRailResource(
+            node_id=entry.node_id,
+            state=cast(NodeStateName, entry.state),
+            attempt=(
+                None
+                if entry.attempt is None
+                else NodeRailAttemptResource(
+                    ordinal=cast(Literal[1, 2], entry.attempt.ordinal),
+                    state=cast(PublicAttemptStateName | None, entry.attempt.state),
+                )
+            ),
+        )
+        for entry in entries
+    )
 
 
 def run_resource(projection: RunProjection) -> AnyRunResource:
@@ -151,12 +174,7 @@ def _run_resource_v2(
         current_node=cast(NodeResourceV2, node_resource(node)),
         # A run resource says where the snapshot stands, so no event has
         # overtaken it here; the event stream carries its own rail.
-        node_rail=tuple(
-            NodeRailResource(
-                node_id=entry.node_id, state=cast(NodeStateName, entry.state)
-            )
-            for entry in project_node_rail(projection, ())
-        ),
+        node_rail=node_rail_resources(project_node_rail(projection, ())),
         agent_attempts=tuple(
             AgentAttemptResourceV2(
                 attempt_id=attempt.attempt_id.value,

@@ -52,12 +52,9 @@ export interface StreamProjection {
   agent_outputs_by_cursor: ReadonlyMap<string, AgentOutputProjection>;
 }
 
-export type NodeState = RunV2["node_rail"][number]["state"];
-
-export interface AgentAttemptProjection {
-  ordinal: 1 | 2;
-  state: RunV2["agent_attempts"][number]["state"] | "COMPLETED";
-}
+type NodeRail = RunV2["node_rail"];
+export type NodeState = NodeRail[number]["state"];
+export type AgentAttemptProjection = NonNullable<NodeRail[number]["attempt"]>;
 
 export interface NodeProjection {
   node: WorkflowNode;
@@ -262,37 +259,52 @@ export function projectNodeRail(
   const latestEvent = events.at(-1) ?? null;
   const eventsLeadSnapshot =
     latestEvent !== null && latestEvent.sequence > snapshotEventSequence(run);
+  if ("node_rail" in run) {
+    const served = servedRail(run, latestEvent, eventsLeadSnapshot);
+    return nodes.map((node) => {
+      const entry = servedEntry(served, node.node_id);
+      return {
+        node,
+        state: entry.state,
+        last_event: lastNodeEvent(events, node.node_id),
+        attempt: entry.attempt
+      };
+    });
+  }
   return nodes.map((node, index) => {
     const lastEvent = lastNodeEvent(events, node.node_id);
     return {
       node,
       state: eventsLeadSnapshot
         ? eventDrivenNodeState(node, lastEvent, latestEvent, nodes)
-        : snapshotNodeState(run, node, index, currentIndex, lastEvent),
+        : v1SnapshotNodeState(run, node, index, currentIndex, lastEvent),
       last_event: lastEvent,
-      attempt: projectAgentAttempt(run, node, lastEvent, eventsLeadSnapshot)
+      attempt: null
     };
   });
 }
 
-function snapshotNodeState(
-  run: Run,
-  node: WorkflowNode,
-  index: number,
-  currentIndex: number,
-  lastEvent: RunEvent | null
-): NodeState {
-  return "node_rail" in run
-    ? servedNodeState(run, node.node_id)
-    : v1SnapshotNodeState(run, node, index, currentIndex, lastEvent);
+/**
+ * The rail the server named: the newest event's once the events lead the
+ * snapshot, the run resource's while they have not. Both were derived by the
+ * same function on the server, from the same two inputs this browser holds.
+ */
+function servedRail(
+  run: RunV2,
+  latestEvent: RunEvent | null,
+  eventsLeadSnapshot: boolean
+): NodeRail {
+  return eventsLeadSnapshot && latestEvent !== null && "node_rail" in latestEvent
+    ? latestEvent.node_rail
+    : run.node_rail;
 }
 
-function servedNodeState(run: RunV2, nodeId: string): NodeState {
-  const served = run.node_rail.find((entry) => entry.node_id === nodeId);
+function servedEntry(rail: NodeRail, nodeId: string): NodeRail[number] {
+  const served = rail.find((entry) => entry.node_id === nodeId);
   if (served === undefined) {
     throw new Error("the served node rail is missing a node of the workflow revision");
   }
-  return served.state;
+  return served;
 }
 
 function orderedNodes(graph: WorkflowGraph): WorkflowNode[] {
@@ -362,39 +374,6 @@ function v1SnapshotNodeState(
   }
   return node.node_id === run.current_node.node_id ? "working" : "queued";
 }
-
-function projectAgentAttempt(
-  run: Run,
-  node: WorkflowNode,
-  event: RunEvent | null,
-  eventsLeadSnapshot: boolean
-): AgentAttemptProjection | null {
-  if (!("workflow_format_version" in run) || node.type !== "agent") return null;
-  const eventAttempt =
-    event !== null && "workflow_format_version" in event && "attempt_id" in event
-      ? { ordinal: event.attempt_ordinal, state: agentEventStates[event.event] }
-      : null;
-  const currentAttempt =
-    node.node_id === run.current_node.node_id ? run.agent_attempts.at(-1) ?? null : null;
-  if (
-    eventsLeadSnapshot &&
-    eventAttempt !== null &&
-    (currentAttempt === null || eventAttempt.ordinal >= currentAttempt.attempt_ordinal)
-  ) {
-    return eventAttempt;
-  }
-  return currentAttempt === null
-    ? eventAttempt
-    : { ordinal: currentAttempt.attempt_ordinal, state: currentAttempt.state };
-}
-
-const agentEventStates = {
-  AGENT_COMPLETED: "COMPLETED",
-  AGENT_FAILED: "FAILED",
-  AGENT_CANCEL_REQUESTED: "CANCEL_REQUESTED",
-  AGENT_CANCELLED: "CANCELLED",
-  AGENT_INTERRUPTED: "INTERRUPTED"
-} as const;
 
 function eventDrivenNodeState(
   node: WorkflowNode,

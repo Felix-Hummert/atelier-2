@@ -359,7 +359,17 @@ export const NODE_STATES = [
 ] as const;
 
 const nodeRailEntrySchema = z
-  .object({ node_id: z.string().min(1), state: z.enum(NODE_STATES) })
+  .object({
+    node_id: z.string().min(1),
+    state: z.enum(NODE_STATES),
+    attempt: z
+      .object({
+        ordinal: z.union([z.literal(1), z.literal(2)]),
+        state: z.enum(PUBLIC_ATTEMPT_STATES).nullable()
+      })
+      .strict()
+      .nullable()
+  })
   .strict();
 
 const runV2Schema = z
@@ -458,7 +468,11 @@ const eventBase = {
   event_hash: sha256
 };
 
-const v2EventBase = { workflow_format_version: z.literal(2), ...eventBase };
+const v2EventBase = {
+  workflow_format_version: z.literal(2),
+  ...eventBase,
+  node_rail: z.array(nodeRailEntrySchema).min(1)
+};
 const v2AttemptEvent = {
   attempt_id: sha256,
   attempt_ordinal: z.union([z.literal(1), z.literal(2)])

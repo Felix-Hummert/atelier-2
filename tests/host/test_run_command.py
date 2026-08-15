@@ -32,6 +32,7 @@ from atelier2.api.wire.resources import (
     AgentNodeResourceV2,
     AuthProfileRevisionResource,
     NodeRailResource,
+    NodeStateName,
     NoWaitingResource,
     NoWaitingResourceV2,
     ProblemResource,
@@ -251,6 +252,16 @@ def terminal_node() -> SubworkflowNodeResource:
     )
 
 
+def node_rail(terminal_state: NodeStateName) -> tuple[NodeRailResource, ...]:
+    """The rail the service answers with, on the two nodes this command walks."""
+    return (
+        NodeRailResource(
+            node_id=AGENT_NODE_ID, state=NodeState.SUCCEEDED, attempt=None
+        ),
+        NodeRailResource(node_id=TERMINAL_NODE_ID, state=terminal_state, attempt=None),
+    )
+
+
 def run_resource(
     state: Literal["STARTED", "COMPLETED"],
     terminal_hash: str | None,
@@ -266,14 +277,8 @@ def run_resource(
         state_version=2,
         state=state,
         current_node=terminal_node(),
-        node_rail=(
-            NodeRailResource(node_id=AGENT_NODE_ID, state=NodeState.SUCCEEDED),
-            NodeRailResource(
-                node_id=TERMINAL_NODE_ID,
-                state=(
-                    NodeState.SUCCEEDED if state == "COMPLETED" else NodeState.WORKING
-                ),
-            ),
+        node_rail=node_rail(
+            NodeState.SUCCEEDED if state == "COMPLETED" else NodeState.WORKING
         ),
         agent_attempts=(),
         waiting=NoWaitingResourceV2(type="NONE"),
@@ -334,6 +339,7 @@ def stream_failure(code: str = STREAM_FAILURE_CODE) -> str:
 def agent_completed() -> str:
     return AgentCompletedEventResourceV2(
         workflow_format_version=2,
+        node_rail=node_rail(NodeState.WORKING),
         cursor=EVENT_CURSOR,
         sequence=1,
         public_run_reference=PUBLIC_RUN_REFERENCE,
@@ -369,6 +375,7 @@ def unbound_agent_completed() -> str:
 def agent_failed() -> str:
     return AgentFailedEventResourceV2(
         workflow_format_version=2,
+        node_rail=node_rail(NodeState.WORKING),
         cursor=EVENT_CURSOR,
         sequence=1,
         public_run_reference=PUBLIC_RUN_REFERENCE,
@@ -386,6 +393,7 @@ def agent_failed() -> str:
 def waiting_for_input() -> str:
     return WaitingInputEventResourceV2(
         workflow_format_version=2,
+        node_rail=node_rail(NodeState.WORKING),
         cursor=EVENT_CURSOR,
         sequence=1,
         public_run_reference=PUBLIC_RUN_REFERENCE,
