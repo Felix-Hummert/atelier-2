@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import Any
 
 import pytest
+from fastapi import FastAPI
+from fastapi.routing import iter_route_contexts
 from fastapi.testclient import TestClient
 from openapi_spec_validator import OpenAPIV31SpecValidator, validate
 
@@ -17,9 +21,31 @@ from atelier2.api.openapi import (
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
+FROZEN_DOCUMENT_PATH = Path(__file__).with_name("openapi_frozen.json")
+
 
 def empty_ports() -> ApiPorts:
     return api_ports()
+
+
+def served_app() -> FastAPI:
+    return create_app(
+        source_commit="commit",
+        source_tree="tree",
+        ports=empty_ports(),
+        limits=api_limits(),
+        event_poll_backoff=event_poll_backoff(),
+    )
+
+
+def rendered_document(document: dict[str, Any]) -> str:
+    """The published document as the frozen artefact stores it.
+
+    Byte equality is the point: it pins the order of the ``paths`` keys, which
+    follows registration order, on top of every value the document carries.
+    """
+
+    return json.dumps(document, separators=(",", ":"))
 
 
 EXPECTED_PATHS = {
@@ -35,6 +61,34 @@ EXPECTED_PATHS = {
     CANCELLATION_PATH,
     EVENT_PATH,
 }
+
+EXPECTED_ROUTE_SEQUENCE = (
+    ("GET", API_PREFIX + "/health", "health"),
+    (
+        "POST",
+        API_PREFIX + "/auth-profile-revisions",
+        "publish_auth_profile_revision_route",
+    ),
+    (
+        "POST",
+        API_PREFIX + "/agent-configuration-revisions",
+        "publish_agent_configuration_revision_route",
+    ),
+    ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
+    ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
+    ("GET", API_PREFIX + "/workflow-revisions/{revision_hash}", "get_revision"),
+    ("POST", API_PREFIX + "/runs", "start_run_route"),
+    ("GET", API_PREFIX + "/runs", "list_runs"),
+    ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
+    ("POST", CANCELLATION_PATH, "cancel_agent_attempt_route"),
+    ("POST", API_PREFIX + "/runs/{public_ref}/answers", "answer_run_route"),
+    (
+        "POST",
+        API_PREFIX + "/runs/{public_ref}/reconciliations",
+        "reconcile_run_route",
+    ),
+    ("GET", EVENT_PATH, "event_stream_route"),
+)
 
 EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/health", "get"): {"200"},
@@ -53,16 +107,39 @@ EXPECTED_SUCCESS_STATUSES = {
 }
 
 
-def test_openapi_31_validates_and_describes_exact_r2_surface() -> None:
-    client = TestClient(
-        create_app(
-            source_commit="commit",
-            source_tree="tree",
-            ports=empty_ports(),
-            limits=api_limits(),
-            event_poll_backoff=event_poll_backoff(),
-        )
+def test_schema_routes_keep_their_endpoint_names_in_registration_order() -> None:
+    """The document derives ``operationId`` and ``summary`` from these names.
+
+    Renaming an endpoint function or registering it elsewhere in the sequence
+    rewrites the published document, so both are pinned here where the failure
+    reads as the one line that moved. The routes are walked with the same
+    enumeration the schema generator uses, so the inventory is blind to
+    whether a route was registered on the application or on a router.
+    """
+
+    registered = tuple(
+        (method, route.path, route.name)
+        for route in iter_route_contexts(served_app().routes)
+        if route.include_in_schema and route.path is not None
+        for method in sorted(route.methods or ())
     )
+
+    assert registered == EXPECTED_ROUTE_SEQUENCE
+
+
+def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
+    """The published document is frozen; nothing below it may rewrite a byte.
+
+    The artefact was generated before the API layer was split into route
+    groups. Regenerating it is a wire change and needs its own decision, not a
+    refresh alongside a refactor.
+    """
+
+    assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
+
+
+def test_openapi_31_validates_and_describes_exact_r2_surface() -> None:
+    client = TestClient(served_app())
 
     response = client.get(API_PREFIX + "/openapi.json")
     schema = response.json()
@@ -78,14 +155,7 @@ def test_openapi_31_validates_and_describes_exact_r2_surface() -> None:
 
 
 def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> None:
-    app = create_app(
-        source_commit="commit",
-        source_tree="tree",
-        ports=empty_ports(),
-        limits=api_limits(),
-        event_poll_backoff=event_poll_backoff(),
-    )
-    schema = app.openapi()
+    schema = served_app().openapi()
 
     content = schema["paths"][EVENT_PATH]["get"]["responses"]["200"]["content"]
     assert set(content) == {"text/event-stream"}
@@ -126,13 +196,7 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
 
 
 def test_every_declared_error_response_is_problem_json_one_of() -> None:
-    schema = create_app(
-        source_commit="commit",
-        source_tree="tree",
-        ports=empty_ports(),
-        limits=api_limits(),
-        event_poll_backoff=event_poll_backoff(),
-    ).openapi()
+    schema = served_app().openapi()
 
     for path in schema["paths"].values():
         for operation in path.values():
@@ -146,13 +210,7 @@ def test_every_declared_error_response_is_problem_json_one_of() -> None:
 
 
 def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
-    schema = create_app(
-        source_commit="commit",
-        source_tree="tree",
-        ports=empty_ports(),
-        limits=api_limits(),
-        event_poll_backoff=event_poll_backoff(),
-    ).openapi()
+    schema = served_app().openapi()
 
     for (path, method), expected_statuses in EXPECTED_SUCCESS_STATUSES.items():
         responses = schema["paths"][path][method]["responses"]
@@ -211,13 +269,7 @@ def test_invalid_openapi_fails_during_app_construction(
     )
 
     with pytest.raises(InvalidGeneratedSchema):
-        create_app(
-            source_commit="commit",
-            source_tree="tree",
-            ports=empty_ports(),
-            limits=api_limits(),
-            event_poll_backoff=event_poll_backoff(),
-        )
+        served_app()
 
 
 def test_first_request_reuses_schema_built_during_app_construction(
@@ -233,13 +285,7 @@ def test_first_request_reuses_schema_built_during_app_construction(
 
     monkeypatch.setattr(openapi_module, "get_openapi", counted_get_openapi)
 
-    app = create_app(
-        source_commit="commit",
-        source_tree="tree",
-        ports=empty_ports(),
-        limits=api_limits(),
-        event_poll_backoff=event_poll_backoff(),
-    )
+    app = served_app()
     assert generated == 1
 
     response = TestClient(app).get(API_PREFIX + "/health")
