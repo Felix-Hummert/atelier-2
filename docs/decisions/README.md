@@ -20,6 +20,7 @@ number is never reused and never renumbered.
 - [ADR 0008: Node budgets separate hard limits from reported thresholds](0008-budget-units.md) — ACCEPTED, not yet implemented
 - [ADR 0009: One trust boundary separates the coordinating service from every runner](0009-runner-trust.md) — PROPOSED, not yet implemented
 - [ADR 0010: One GitHub adapter observes, publishes and reads back; the core stays platform-blind](0010-github-platform-adapter.md) — PROPOSED, not yet implemented
+- [ADR 0011: A project is a store root; the root bounds where a project exists, and destroying it is the only removal](0011-project-isolation.md) — PROPOSED, not yet implemented
 - [ADR 0012: Acceptance sentences are declared in the repository and proven by the run reports](0012-acceptance-trace-format.md) — ACCEPTED, implemented
 
 The product stack beyond recorded decisions remains undecided; an ADR is not a
