@@ -19,9 +19,9 @@
   the core-derived idempotency key and the `external_effects` attestation this
   record fills in, and which routed every platform specific here),
   [ADR 0009](0009-runner-trust.md) (secrets by reference, the typed actor, the
-  loopback rule this record's observation choice follows) — **PROPOSED in
-  [PR #78](https://github.com/FlexOr2/atelier-2/pull/78) and not yet on `main`, so
-  this record cannot be accepted before it is**,
+  declared-exposure rule this record's observation choice follows) — on `main`
+  via [PR #78](https://github.com/FlexOr2/atelier-2/pull/78), so this record's
+  acceptance precondition is met,
   [ADR 0005](0005-enforced-package-boundaries.md) (the boundary gate that keeps
   the client inside the adapter)
 - Feeds: [#79](https://github.com/FlexOr2/atelier-2/issues/79) (the queue, whose
