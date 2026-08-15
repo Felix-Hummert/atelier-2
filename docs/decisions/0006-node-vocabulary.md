@@ -438,6 +438,7 @@ revision reusable as a child:
 
 ```yaml
 format_version: 3
+name: Review a candidate and return one verdict
 graph_inputs:
   - name: candidate
     schema: {ref: workspace_candidate, revision: "<schema revision id>"}
