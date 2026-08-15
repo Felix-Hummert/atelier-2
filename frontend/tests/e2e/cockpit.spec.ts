@@ -51,7 +51,7 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   }).toPass();
   await page.screenshot({ path: "test-results/v2-working-desktop.png", fullPage: true });
 
-  const completed = page.getByRole("article", { name: "build — Completed" });
+  const completed = page.getByRole("article", { name: "build — Done" });
   await expect(async () => {
     await page.getByRole("button", { name: "Refresh" }).click();
     await expect(completed).toBeVisible({ timeout: 500 });

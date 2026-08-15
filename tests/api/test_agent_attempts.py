@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.projection.runs import run_resource
@@ -82,6 +84,18 @@ nodes:
             ),
         ),
     )
+
+
+@pytest.mark.proves("the-run-resource-names-the-state-of-every-node")
+def test_the_served_v2_run_names_the_state_of_every_node_of_its_revision() -> None:
+    projection = _projection(PublicAgentAttemptState.POSSIBLY_RAN)
+
+    payload = run_resource(projection).model_dump(mode="json")
+
+    assert payload["node_rail"] == [
+        {"node_id": "build", "state": "working"},
+        {"node_id": "done", "state": "queued"},
+    ]
 
 
 def test_attempt_surfaces_are_canonical_bounded_and_secret_free() -> None:

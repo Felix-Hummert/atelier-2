@@ -31,6 +31,7 @@ from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
     AgentNodeResourceV2,
     AuthProfileRevisionResource,
+    NodeRailResource,
     NoWaitingResource,
     NoWaitingResourceV2,
     ProblemResource,
@@ -41,6 +42,7 @@ from atelier2.api.wire.resources import (
     WorkflowGraphResourceV2,
     WorkflowRevisionDetailResource,
 )
+from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
@@ -264,6 +266,15 @@ def run_resource(
         state_version=2,
         state=state,
         current_node=terminal_node(),
+        node_rail=(
+            NodeRailResource(node_id=AGENT_NODE_ID, state=NodeState.SUCCEEDED),
+            NodeRailResource(
+                node_id=TERMINAL_NODE_ID,
+                state=(
+                    NodeState.SUCCEEDED if state == "COMPLETED" else NodeState.WORKING
+                ),
+            ),
+        ),
         agent_attempts=(),
         waiting=NoWaitingResourceV2(type="NONE"),
         terminal_hash=terminal_hash,

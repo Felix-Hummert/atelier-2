@@ -102,7 +102,8 @@ describe("reconciliation control", () => {
     expect(first.result_hash).toBe(emptyResultHash);
     expect(createCommandId).toHaveBeenCalledTimes(1);
     expect(screen.getByText("Empty result")).toBeTruthy();
-    expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
+    const stilledAction = screen.getByRole("article", { name: "action — Working" });
+    expect(stilledAction.querySelector(".state-mark")?.classList).toContain("state-still");
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 

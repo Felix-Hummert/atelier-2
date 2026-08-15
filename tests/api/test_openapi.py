@@ -176,9 +176,10 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was last regenerated when the publication request gained its
-    `requested_capability` field. Regenerating it is a wire change and needs its
-    own decision, not a refresh alongside a refactor.
+    The artefact was last regenerated when the V2 run resource gained its
+    `node_rail` field, which brought the `NodeRailResource` component and the
+    node-state vocabulary into the document. Regenerating it is a wire change and
+    needs its own decision, not a refresh alongside a refactor.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()

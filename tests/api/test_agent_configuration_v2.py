@@ -463,6 +463,10 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
             "job": "build",
             "next_node_id": "done",
         },
+        "node_rail": [
+            {"node_id": "build", "state": "working"},
+            {"node_id": "done", "state": "queued"},
+        ],
         "agent_attempts": [],
         "waiting": {"type": "NONE"},
         "terminal_hash": None,

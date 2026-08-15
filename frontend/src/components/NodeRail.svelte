@@ -6,34 +6,22 @@
     type RunEvent,
     type WorkflowGraph
   } from "../api/client";
+  import { applyInteractionOverlay, isStilled } from "../lib/interactionOverlay";
   import {
     projectNodeRail,
     type AgentOutputProjection,
     type NodeProjection
   } from "../lib/runProjection";
   import InfoHint from "./InfoHint.svelte";
-  import StateMark from "./StateMark.svelte";
+  import StateMark, { stateLabels } from "./StateMark.svelte";
 
   export let run: Run;
   export let graph: WorkflowGraph;
   export let events: readonly RunEvent[];
   export let agentOutputs: ReadonlyMap<string, AgentOutputProjection> = new Map();
-  export let workingHumanNodeIds: ReadonlySet<string> = new Set();
+  export let openFormNodeIds: ReadonlySet<string> = new Set();
 
-  $: rail = projectNodeRail(run, graph, events, workingHumanNodeIds);
-
-  function stateLabel(node: NodeProjection): string {
-    return {
-      queued: "Queued",
-      working: "Working",
-      needs_you: "Needs you",
-      done: "Done",
-      completed: "Completed",
-      failed: "Failed",
-      cancelled: "Cancelled",
-      interrupted: "Interrupted"
-    }[node.state];
-  }
+  $: rail = applyInteractionOverlay(projectNodeRail(run, graph, events), openFormNodeIds);
 
   function eventLabel(event: RunEvent): string {
     return event.event.replaceAll("_", " ");
@@ -129,13 +117,13 @@
       <li>
         <article
           class="node-card node-{projection.state}"
-          aria-label={`${projection.node.node_id} — ${stateLabel(projection)}`}
+          aria-label={`${projection.node.node_id} — ${stateLabels[projection.state]}`}
         >
           <header class="node-header">
             <span class="node-kind">{projection.node.type}</span>
             <StateMark
               state={projection.state}
-              animated={!workingHumanNodeIds.has(projection.node.node_id)}
+              animated={!isStilled(projection.node.node_id, openFormNodeIds)}
             />
           </header>
           <h3>{projection.node.node_id}</h3>
