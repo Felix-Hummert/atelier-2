@@ -224,7 +224,7 @@ WorkflowNodeV3 = Annotated[
 
 class WorkflowGraphV3(_ClosedV3Model):
     format_version: Literal[3]
-    name: NonemptyString | None = None
+    name: NonemptyString
     description: NonemptyString | None = None
     graph_inputs: Annotated[tuple[GraphInput, ...], DeclaredSequence] = ()
     graph_outputs: Annotated[tuple[GraphOutput, ...], DeclaredSequence] = ()
@@ -233,7 +233,10 @@ class WorkflowGraphV3(_ClosedV3Model):
     @field_validator("name")
     @classmethod
     def bound_one_line_name(cls, name: str) -> str:
-        if "\n" in name:
+        # A label a surface shows on one line must carry no boundary any renderer
+        # could break at, so the test is the whole Unicode set the language splits
+        # on — CR, VT, FF, the separators, NEL, LS and PS as well as LF.
+        if name.splitlines() != [name]:
             raise ValueError("name is the one line a picker shows")
         return _bounded_authored_text(name, "name", MAXIMUM_DOCUMENT_NAME_BYTES)
 
@@ -246,7 +249,6 @@ class WorkflowGraphV3(_ClosedV3Model):
 
     @model_validator(mode="after")
     def validate_vocabulary(self) -> WorkflowGraphV3:
-        _refuse_a_description_of_nothing(self)
         _refuse_colliding_ids(self.nodes)
         _refuse_broken_control_edges(self.nodes)
         _refuse_unresolvable_order(self.nodes)
@@ -314,15 +316,6 @@ def _first_duplicate(names: Iterable[str]) -> str | None:
             return name
         seen.add(name)
     return None
-
-
-def _refuse_a_description_of_nothing(graph: WorkflowGraphV3) -> None:
-    if graph.description is not None and graph.name is None:
-        raise _refuse(
-            WorkflowRefusalReason.MISSING_FIELD,
-            "name",
-            "a document describing itself must name itself",
-        )
 
 
 def _refuse_colliding_ids(nodes: Sequence[WorkflowNodeV3]) -> None:

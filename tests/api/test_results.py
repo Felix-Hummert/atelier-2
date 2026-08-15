@@ -159,6 +159,7 @@ def test_publication_rejects_invalid_yaml_before_the_write_port() -> None:
 def test_publication_refuses_a_parsed_v3_document_before_the_write_port() -> None:
     result = publish_workflow_revision(
         b"format_version: 3\n"
+        b"name: Land the comment\n"
         b"nodes:\n"
         b"  - {id: land, type: action, operation: {ref: comment, revision: r}}\n",
         cast(WorkflowRevisionPublisher, FakePort(None)),

@@ -31,7 +31,11 @@ from atelier2.contracts.workflows_v3 import (
     WorkflowGraphV3,
 )
 
+DOCUMENT_NAME = "Self-build review chain"
+NAME_LINE = f"name: {DOCUMENT_NAME}"
+
 DOCUMENT = b"""format_version: 3
+name: Self-build review chain
 graph_inputs:
   - name: brief
     schema: {ref: work_brief, revision: schema-brief}
@@ -151,6 +155,12 @@ def with_document_line(line: str, document: bytes = DOCUMENT) -> bytes:
     return document.replace(anchor, anchor + f"{line}\n".encode())
 
 
+def with_document_name(authored: str, document: bytes = DOCUMENT) -> bytes:
+    anchor = NAME_LINE.encode()
+    assert document.count(anchor) == 1
+    return document.replace(anchor, f"name: {authored}".encode())
+
+
 def without_line(line: str, document: bytes = DOCUMENT) -> bytes:
     return document.replace(f"{line}\n".encode(), b"", 1)
 
@@ -258,38 +268,52 @@ def test_all_terminal_stays_authorable_over_a_single_dependency() -> None:
     assert parsed.join_of("approve") == "all_terminal"
 
 
-DOCUMENT_NAME = "Self-build review chain"
-NAMED = with_document_line(f"name: {DOCUMENT_NAME}")
-NAMED_DOCUMENT = with_document_line(
-    "description: Two reviews, one merged verdict.", NAMED
-)
+DESCRIBED_DOCUMENT = with_document_line("description: Two reviews, one merged verdict.")
+# Every boundary Python's own str.splitlines breaks a line at, which is the set
+# YAML can decode into a scalar: LF, CR, VT, FF, the three separators, NEL, LS, PS.
+UNICODE_LINE_BOUNDARIES = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
 def test_a_document_carries_the_name_an_operator_picks_it_by() -> None:
-    named = graph(NAMED_DOCUMENT)
+    described = graph(DESCRIBED_DOCUMENT)
 
-    assert named.name == DOCUMENT_NAME
-    assert named.description == "Two reviews, one merged verdict."
+    assert (described.name, described.description) == (
+        DOCUMENT_NAME,
+        "Two reviews, one merged verdict.",
+    )
+    assert graph().description is None
 
 
-def test_a_document_that_names_itself_nowhere_still_parses() -> None:
-    unnamed = graph()
+@pytest.mark.parametrize(
+    "boundary", UNICODE_LINE_BOUNDARIES, ids=lambda char: f"U+{ord(char):04X}"
+)
+def test_a_name_broken_across_any_unicode_line_boundary_is_refused(
+    boundary: str,
+) -> None:
+    two_lines = with_document_name(f'"picker line\\u{ord(boundary):04x}hidden line"')
 
-    assert (unnamed.name, unnamed.description) == (None, None)
+    with pytest.raises(InvalidWorkflowDocument) as raised:
+        parse_workflow_document(two_lines)
+
+    refusal = raised.value.refusal
+    assert refusal is not None
+    assert (refusal.reason, refusal.node, refusal.field) == (
+        WorkflowRefusalReason.INVALID_VALUE,
+        None,
+        "name",
+    )
 
 
 def test_renaming_a_document_authors_a_new_revision() -> None:
-    original = WorkflowRevision(NAMED_DOCUMENT)
-    renamed = WorkflowRevision(
-        NAMED_DOCUMENT.replace(DOCUMENT_NAME.encode(), b"Renamed")
-    )
+    original = WorkflowRevision(DOCUMENT)
+    renamed = WorkflowRevision(with_document_name("Renamed"))
 
     assert renamed.revision_hash != original.revision_hash
     assert graph(renamed.document).nodes == graph(original.document).nodes
 
 
 def test_no_node_can_read_the_document_name_as_a_value() -> None:
-    reading_the_name = NAMED_DOCUMENT.replace(
+    reading_the_name = DOCUMENT.replace(
         b"        from: {context: story}\n", b"        from: {document: name}\n"
     )
 
@@ -321,49 +345,43 @@ REFUSALS: dict[str, tuple[bytes, WorkflowRefusalReason, str | None, str]] = {
         None,
         "owner",
     ),
+    "document-that-names-itself-nowhere": (
+        without_line(NAME_LINE),
+        WorkflowRefusalReason.MISSING_FIELD,
+        None,
+        "name",
+    ),
     "non-string-document-name": (
-        with_document_line("name: 7"),
+        with_document_name("7"),
         WorkflowRefusalReason.INVALID_VALUE,
         None,
         "name",
     ),
     "blank-document-name": (
-        with_document_line("name: ' '"),
-        WorkflowRefusalReason.INVALID_VALUE,
-        None,
-        "name",
-    ),
-    "document-name-over-more-than-one-line": (
-        with_document_line('name: "picker line\\nhidden line"'),
+        with_document_name("' '"),
         WorkflowRefusalReason.INVALID_VALUE,
         None,
         "name",
     ),
     "oversized-document-name": (
-        with_document_line("name: " + "x" * (MAXIMUM_DOCUMENT_NAME_BYTES + 1)),
+        with_document_name("x" * (MAXIMUM_DOCUMENT_NAME_BYTES + 1)),
         WorkflowRefusalReason.INVALID_VALUE,
         None,
         "name",
     ),
     "non-string-document-description": (
-        with_document_line("description: 7", NAMED),
+        with_document_line("description: 7"),
         WorkflowRefusalReason.INVALID_VALUE,
         None,
         "description",
     ),
     "oversized-document-description": (
         with_document_line(
-            "description: " + "x" * (MAXIMUM_DOCUMENT_DESCRIPTION_BYTES + 1), NAMED
+            "description: " + "x" * (MAXIMUM_DOCUMENT_DESCRIPTION_BYTES + 1)
         ),
         WorkflowRefusalReason.INVALID_VALUE,
         None,
         "description",
-    ),
-    "described-document-without-a-name": (
-        with_document_line("description: a description with nothing to describe"),
-        WorkflowRefusalReason.MISSING_FIELD,
-        None,
-        "name",
     ),
     "description-refused-by-a-node": (
         with_node_line("implement", "description: a node carries none"),
@@ -497,7 +515,7 @@ REFUSALS: dict[str, tuple[bytes, WorkflowRefusalReason, str | None, str]] = {
         "from",
     ),
     "no-nodes": (
-        b"format_version: 3\nnodes: []\n",
+        f"format_version: 3\n{NAME_LINE}\nnodes: []\n".encode(),
         WorkflowRefusalReason.INVALID_VALUE,
         None,
         "nodes",

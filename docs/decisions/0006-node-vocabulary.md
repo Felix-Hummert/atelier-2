@@ -96,13 +96,21 @@ description: |
 nodes: []
 ```
 
-Both are optional, and the block is closed at exactly these two. `name` is the one
-line a picker shows: bounded to 200 UTF-8 bytes, refused blank, refused when it
-carries a line break, because a label that wraps or hides a second line is not a
-label. `description` is the paragraph a detail view shows, bounded to 4 KiB. A
-`description` without a `name` is refused at parse — there is nothing for it to
-describe, the same reason a grant naming no read operation is refused above. A
-third metadata field is an amendment to this record, never a free key.
+**`name` is required**, and the block is closed at exactly these two. An optional
+name would leave the promise conditional: a surface listing revisions would still
+need a hash to fall back on for the documents that carried none, and the operator's
+sentence would hold for some chains and not others. Requiring it at parse is the
+only place the guarantee is unconditional and needs no second guard downstream — a
+document that does not name itself is refused `missing_field` at `name`, before it
+can be stored, published or offered.
+
+`name` is the one line a picker shows: bounded to 200 UTF-8 bytes, refused blank,
+and refused when it carries any Unicode line boundary — not only `\n`, but `\r`,
+VT, FF, the file/group/record separators, NEL, U+2028 and U+2029, each of which a
+renderer may break at, so a name could hide a second line behind the one an
+operator reads. `description` is the paragraph a detail view shows, optional and
+bounded to 4 KiB. A third metadata field is an amendment to this record, never a
+free key.
 
 **The name is inside the revision and outside execution.** It is ordinary authored
 bytes of the document, so [ADR 0002](0002-exact-yaml-graph.md)'s identity rule
@@ -785,9 +793,8 @@ an absent `mode`; an interactive node whose output is mapped downstream without
 operator confirmation; an `available_context` grant naming no read operation; a
 `wait` without exactly one output; a `graph_output` naming an undeclared node
 output or sourcing a node that is not a sink; a malformed or unpinned versioned
-reference; a document `name` that is blank, oversized or carries a line break; an
-oversized `description`; and a `description` on a document that does not name
-itself.
+reference; a document that does not name itself; a document `name` that is blank,
+oversized or carries a Unicode line boundary; and an oversized `description`.
 
 Refused at binding: any versioned reference — profile, skill, tool, policy,
 budget, retry, cancellation, schema, deterministic operation, adapter operation,
@@ -904,6 +911,7 @@ flowchart LR
 
 ```yaml
 format_version: 3
+name: Implement, review from two sides, publish the merged verdict
 nodes:
   - id: implement
     type: agent
@@ -1041,10 +1049,11 @@ store without mutation, and provides no runtime upgrade or downgrade migration. 
   profiles and skills, who sees what, parallel work, a deterministic join, bounds,
   and where a result lands. The substrate gap #6 names is closed at the document
   level.
-- A picker never has to offer a hash. The operator-facing name exists at the
-  document level, so every surface that lists revisions can show one without the
-  catalog store, and #22's display-name layer builds on a field that is already
-  there instead of being the first place a name can live.
+- A picker never has to offer a hash, for any document without exception. Every
+  parsed V3 document carries an operator-facing name, so every surface that lists
+  revisions can show one without the catalog store and without a fallback path,
+  and #22's display-name layer builds on a field that is always there instead of
+  being the first place a name can live.
 - A capability landing changes an attestation, not a format version. The cost is a
   second, published, build-produced artifact — the runtime capability revision —
   and the discipline that every refusal names a capability rather than a version.
@@ -1070,9 +1079,10 @@ This record is a draft; nothing below exists yet.
 - A V3 document parses to a closed frozen model, and every parse-time refusal
   above is proven by its own behavioral case, parametrized over the refusal list
   rather than copied per case — including each kind's refused fields.
-- The document's own `name` and `description` parse and are optional; each refused
-  form above is refused at parse naming the field; no node input can read the name
-  as a value; and two documents differing only in their `name` have different
+- Every parsed document carries a `name` and may carry a `description`; a document
+  that names itself nowhere is refused, a name carrying any Unicode line boundary
+  is refused, each refused form above names its field; no node input can read the
+  name as a value; and two documents differing only in their `name` have different
   revision hashes while their graphs are otherwise identical.
 - A failed dependency terminates the whole graph: under `all_succeeded` the
   dependent gets a `blocked` receipt naming the dependency and its delivery status,
