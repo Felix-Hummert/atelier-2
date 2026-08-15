@@ -491,19 +491,16 @@ def test_execution_under_operator_authorization_becomes_a_receipt_naming_its_com
     )
 
 
-@pytest.mark.parametrize(
-    "determination",
-    [operator_found_effect(), OperatorAuthoritativeAbsence()],
-    ids=["found", "authoritative-absence"],
-)
-def test_one_reconcile_command_only_ever_resolves_to_its_fixed_determination(
-    intent: EffectIntent, determination: ReconcileDetermination
+def test_authoritative_absence_resolves_to_an_authorization_naming_its_command(
+    intent: EffectIntent,
 ) -> None:
-    command = reconcile_command(intent, determination)
+    command = reconcile_command(intent, OperatorAuthoritativeAbsence())
 
     assert intent.resolve_reconciliation(
         command, PREPARED_STATE_VERSION
-    ) == intent.resolve_reconciliation(command, PREPARED_STATE_VERSION)
+    ) == AuthorizedEffectExecution(
+        intent=intent, reconcile_command_id=command.command_id
+    )
 
 
 @pytest.mark.parametrize(

@@ -634,12 +634,7 @@ class DbosAgentAttemptStore:
                     return AgentAttemptCancellationTargetMissing()
                 existing = attempt.cancellation
                 if existing is not None:
-                    if (
-                        existing.command_id != request.command_id
-                        or existing.expected_attempt_state_version
-                        != request.expected_attempt_state_version
-                        or existing.replacement is not request.replacement
-                    ):
+                    if not existing.matches(request):
                         return AgentAttemptCancellationCommandConflict()
                     return AgentAttemptCancellationAccepted(
                         attempt,
@@ -743,12 +738,7 @@ class DbosAgentAttemptStore:
         with canonical_write_transaction(self._engine) as connection:
             attempt = _load_attempt(connection, request.attempt_id)
             cancellation = attempt.cancellation
-            if cancellation is None or (
-                cancellation.command_id != request.command_id
-                or cancellation.expected_attempt_state_version
-                != request.expected_attempt_state_version
-                or cancellation.replacement is not request.replacement
-            ):
+            if cancellation is None or not cancellation.matches(request):
                 raise RunTransitionConflict(
                     "cleanup attestation differs from its cancellation command"
                 )
@@ -876,12 +866,7 @@ class DbosAgentAttemptStore:
         with canonical_write_transaction(self._engine) as connection:
             attempt = _load_attempt(connection, request.attempt_id)
             cancellation = attempt.cancellation
-            if cancellation is None or (
-                cancellation.command_id != request.command_id
-                or cancellation.expected_attempt_state_version
-                != request.expected_attempt_state_version
-                or cancellation.replacement is not request.replacement
-            ):
+            if cancellation is None or not cancellation.matches(request):
                 raise RunTransitionConflict(
                     "owner redrive differs from its cancellation command"
                 )

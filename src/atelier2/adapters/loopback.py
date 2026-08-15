@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-import threading
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,7 +54,7 @@ class LoopbackEffectAdapterFactory:
     def open(self) -> LoopbackEffectAdapter:
         database_path = self.database_path.resolve()
         database_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(database_path) as connection:
+        with closing(sqlite3.connect(database_path)) as connection, connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(_SCHEMA)
         return LoopbackEffectAdapter(database_path, self.binding)
@@ -64,12 +64,14 @@ class LoopbackEffectAdapter:
     def __init__(self, database_path: Path, binding: EffectAdapterBinding) -> None:
         self._database_path = database_path
         self._binding = binding
-        self._close_lock = threading.Lock()
         self._closed = False
 
     def readback(self, intent: EffectIntent) -> EffectReceipt | EffectAbsence:
         self._authorize_binding(intent)
-        with sqlite3.connect(self._database_path, timeout=30.0) as connection:
+        with (
+            closing(sqlite3.connect(self._database_path, timeout=30.0)) as connection,
+            connection,
+        ):
             record = connection.execute(
                 "SELECT canonical_request, request_hash, effect_id, result, result_hash "
                 "FROM loopback_effects WHERE logical_key=?",
@@ -90,9 +92,12 @@ class LoopbackEffectAdapter:
 
     def execute(self, intent: EffectIntent) -> PerformedEffect:
         self._authorize_binding(intent)
-        with sqlite3.connect(
-            self._database_path, timeout=30.0, isolation_level=None
-        ) as connection:
+        with (
+            closing(
+                sqlite3.connect(self._database_path, timeout=30.0, isolation_level=None)
+            ) as connection,
+            connection,
+        ):
             connection.execute("PRAGMA busy_timeout=30000")
             connection.execute("BEGIN IMMEDIATE")
             record = connection.execute(
@@ -134,8 +139,7 @@ class LoopbackEffectAdapter:
             )
 
     def close(self) -> None:
-        with self._close_lock:
-            self._closed = True
+        self._closed = True
 
     def _authorize_binding(self, intent: EffectIntent) -> None:
         self._require_open()

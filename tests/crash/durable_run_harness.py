@@ -17,6 +17,7 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
 
 CRASHED = 86
+UNSETTLED_STATUSES = ("PENDING", "ENQUEUED")
 
 
 def _runtime(database: Path, application_version: str) -> DbosRuntime:
@@ -93,6 +94,7 @@ def execute(
         runtime.launch()
         deadline = time.monotonic() + wait_seconds
         state = "PENDING"
+        running = 1
         while time.monotonic() < deadline:
             with sqlite3.connect(database) as connection:
                 state = connection.execute(
@@ -100,13 +102,22 @@ def execute(
                     "WHERE workflow_uuid=(SELECT bootstrap_workflow_id FROM runs WHERE run_id=?)",
                     (run_id,),
                 ).fetchone()[0]
-            if state == "SUCCESS":
+                running = connection.execute(
+                    "SELECT COUNT(*) FROM workflow_status WHERE status IN (?, ?)",
+                    UNSETTLED_STATUSES,
+                ).fetchone()[0]
+            # The bootstrap workflow only starts the node chain, so its own SUCCESS
+            # says nothing about the run state the chain writes. Returning while a
+            # started workflow is still running would leave the durable outcome to
+            # the shutdown drain, which is bounded by wall time.
+            if state == "SUCCESS" and running == 0:
                 return
             if state in {"ERROR", "CANCELLED"}:
                 raise RuntimeError(f"bootstrap workflow failed with {state}")
             time.sleep(0.025)
         raise TimeoutError(
-            f"bootstrap workflow stayed {state} for {wait_seconds} seconds"
+            f"bootstrap workflow stayed {state} with {running} workflows still "
+            f"running for {wait_seconds} seconds"
         )
     finally:
         runtime.close()
