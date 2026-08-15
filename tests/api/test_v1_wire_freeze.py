@@ -10,6 +10,7 @@ from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.models import (
     RunEventResource,
+    RunPageResource,
     RunResource,
     StartRunRequestResource,
     VersionedRunPageResource,
@@ -43,6 +44,7 @@ _OPENAPI_COMPONENT_HASHES = {
     "ActionNodeResource": "34f56da2c841de563ec5de5af70f78444426b43c7e7d3ac533bd63a15b0ee0f1",
     "AgentNodeResource": "05c759950ebf8a290f91623f2b5f2ba1c4e12578c4255672a5081c16199f0608",
     "RunEventResource": "8efab00ff6b627d261bac1b812c3a771990ace42c68069afafb77fe998103e83",
+    "RunPageResource": "723426649bc3c5965a38be1c8133d0011707e102b9185f138fdcd1987ef621c9",
     "RunResource": "19dddf38abce9d8ee136d18ae4f8500febdd030f2d9d2af8ec1e914199158ca5",
     "StartRunRequestResource": "4ecc26974cdabc9139f707ef4c499292ffe0556926bd9d986ce980e08dba2477",
     "SubworkflowNodeResource": "2df2bceb718fe14f0ae9a5c7a35ce163267124c91fe8d39b254f04320e149bca",
@@ -88,6 +90,7 @@ def test_v1_workflow_and_run_resources_keep_their_exact_raw_bytes() -> None:
     assert _wire(page) == _PAGE
     assert _wire(start) == _START
     assert _wire(run) == _RUN
+    assert _wire(RunPageResource(items=(run,), next_after=None)) == _RUN_PAGE
     assert _wire(VersionedRunPageResource(items=(run,), next_after=None)) == _RUN_PAGE
 
 

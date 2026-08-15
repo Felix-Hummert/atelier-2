@@ -21,6 +21,7 @@ from atelier2.api.limits import (
 from atelier2.api.models import (
     AgentConfigurationRevisionResource,
     AnswerWaitRequestResource,
+    AnyRunPageResource,
     AnyRunResource,
     AnyStartRunRequestResource,
     AuthProfileRevisionResource,
@@ -572,10 +573,10 @@ def create_app(
             status,
         )
 
-    @app.get(API_PREFIX + "/runs", response_model=VersionedRunPageResource)
+    @app.get(API_PREFIX + "/runs", response_model=AnyRunPageResource)
     async def list_runs(
         after: str | None = None, limit: str = "50"
-    ) -> VersionedRunPageResource:
+    ) -> AnyRunPageResource:
         boundary = None
         if after is not None:
             boundary = _decode_public_reference(after, limits)
