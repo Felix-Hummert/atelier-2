@@ -25,6 +25,7 @@ from atelier2.contracts.agents import (
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorKey,
+    AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
@@ -360,21 +361,16 @@ class ClaudeSubscriptionSettings:
     """
 
     executable: Path
-    workspace: Path
     credential_directory: Path
     search_path: str
 
     def __post_init__(self) -> None:
         executable = self.executable.resolve()
-        workspace = self.workspace.resolve()
         credential_directory = self.credential_directory.resolve()
         object.__setattr__(self, "executable", executable)
-        object.__setattr__(self, "workspace", workspace)
         object.__setattr__(self, "credential_directory", credential_directory)
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise ValueError("the Claude executable must be an executable file")
-        if not workspace.is_dir():
-            raise ValueError("the Claude workspace must be an existing directory")
         if not credential_directory.is_dir():
             raise ValueError(
                 "the Claude credential directory must be an existing directory"
@@ -396,11 +392,13 @@ class ClaudeSubscriptionExecutor:
 
     The invocation is as close to text-in/text-out as subscription
     authentication allows, because the process is handed the operator's
-    credential directory. Every flag and variable below exists in claude
-    2.1.221 and was measured there -- against a workspace holding a `CLAUDE.md`
-    and a `.claude/settings.json` whose `SessionStart` hook creates a file, and
-    against the executable's own `--help` and strings, with a deliberately
-    bogus flag as the control (it answers `error: unknown option`):
+    credential directory. It decides no working directory: the CLI writes into
+    wherever it is started, so where that is belongs to the attempt that owns
+    the process, not to this executor. Every flag and variable below exists in
+    claude 2.1.221 and was measured there -- against a workspace holding a
+    `CLAUDE.md` and a `.claude/settings.json` whose `SessionStart` hook creates
+    a file, and against the executable's own `--help` and strings, with a
+    deliberately bogus flag as the control (it answers `error: unknown option`):
 
     * without them the CLI ran that hook, obeyed that `CLAUDE.md`, and wrote a
       resumable transcript under `CLAUDE_CONFIG_DIR/projects/`;
@@ -456,16 +454,14 @@ class ClaudeSubscriptionExecutor:
 
     settings: ClaudeSubscriptionSettings
 
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
+    def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
         if binding.auth_profile.auth_mode is not AuthMode.SUBSCRIPTION:
             raise ClaudeSubscriptionAuthModeUnsupported(
                 "the Claude subscription executor serves subscription profiles only"
             )
         settings = self.settings
-        return AgentProcessInvocation(
+        return AgentProcessCommand(
             (
                 str(settings.executable),
                 _PRINT_FLAG,
@@ -485,7 +481,6 @@ class ClaudeSubscriptionExecutor:
                 _MAXIMUM_TURNS_FLAG,
                 _HEARTBEAT_MAXIMUM_TURNS,
             ),
-            settings.workspace,
             (
                 (
                     _CREDENTIAL_DIRECTORY_VARIABLE,

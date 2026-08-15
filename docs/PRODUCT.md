@@ -82,11 +82,29 @@ do not exist. A known reaped unsuccessful child becomes `FAILED`; a success
 records the non-secret operational identity and arbitrary output bytes in one
 atomic attempt/receipt/event/run transition.
 
+Every attempt is started in a scratch working directory of its own. The operator
+declares one provider-neutral scratch root, and the runtime leases from it a
+directory named after the exact attempt identity, so an attempt and its
+deliberate replacement never share one. The root is bound to a held directory
+descriptor and refused before any provider starts when it is shared, belongs to
+another user, is reached through a symbolic link, lies inside a git worktree, or
+holds anything that is not an attempt workspace; an attempt whose directory
+already exists is refused with that directory untouched, and no provider runs.
+A provider may write whatever it likes inside its own directory: the measured
+Claude CLI materializes a set of empty configuration and lock files there even
+tool-free, which is why a provider is never handed a project or repository path.
+The directory is removed once the process and its descendants are proven gone
+and the attempt is durably terminal -- after attested cleanup for a cancelled
+one -- and a restart removes what terminal attempts left behind while preserving
+every nonterminal one. Removal never follows a symbolic link out and never
+touches the root itself. This is a blank directory, not an operating-system
+sandbox: the process still runs as the serving user and can name other paths.
+
 The first real provider now sits behind that durable contract. When the operator
-declares a Claude executable, an agent workspace, and a credential directory, the
-host composes one Claude subscription executor. It runs the bound model headless
-through the CLI's print-JSON envelope, hands the node's job to the process over
-standard input rather than its command line, and grants the launched process only
+declares a Claude executable and a credential directory, the host composes one
+Claude subscription executor. It decides no working directory. It runs the bound
+model headless through the CLI's print-JSON envelope, hands the job to the
+process over standard input rather than its command line, and grants it only
 the declared `CLAUDE_CONFIG_DIR` credential boundary and the serving host's
 executable search path; nothing else of the server's environment is inherited. A
 configuration binding a non-subscription profile to this executor is refused

@@ -12,8 +12,10 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptSucceeded,
 )
 from atelier2.ports.agent_executions import (
+    AgentAttemptWorkspaceOwner,
     AgentExecutionFailure,
     AgentExecutorV2,
+    AgentProcessInvocation,
     AgentProcessRunner,
 )
 
@@ -23,31 +25,42 @@ def execute_agent_attempt(
     executor: AgentExecutorV2,
     store: AgentAttemptStore,
     supervisor: AgentProcessRunner,
+    workspaces: AgentAttemptWorkspaceOwner,
 ) -> AgentAttemptExecutionOutcome:
-    """Invoke only after this live call durably wins the launch boundary."""
+    """Invoke only after this live call durably wins the launch boundary.
+
+    Preparing the provider command and attesting the scratch root are pure, so
+    a call that loses the claim leaves no workspace behind: the directory is
+    created only once this call's own compare-and-set has won. It is removed
+    only once both facts that make removal safe are in hand -- the completion
+    proving no process or descendant of this attempt is left, and the durable
+    terminal attempt.
+    """
 
     store.prepare(execution)
-    invocation = executor.prepare_process(execution.request)
+    command = executor.prepare_process(execution.request)
+    workspaces.preflight()
+    invocation: AgentProcessInvocation | None = None
     try:
         supervisor.prepare(execution)
         claim = store.claim(execution)
         if not isinstance(claim, AgentAttemptClaimedByThisCall):
             if isinstance(claim, (AgentAttemptSucceeded, AgentAttemptFailed)):
                 supervisor.finalize(execution)
-            outcome = claim
+            return claim
+        lease = workspaces.acquire(execution.attempt_id)
+        invocation = AgentProcessInvocation(command, lease)
+        completion = supervisor.launch_and_wait(execution, invocation)
+        result = executor.decode_process_completion(invocation, completion)
+        if isinstance(result, AgentExecutionFailure):
+            if result.code is not AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY:
+                raise ValueError("executor returned an unsupported known failure")
+            outcome = store.complete_known_failure(execution)
         else:
-            completion = supervisor.launch_and_wait(execution, invocation)
-            result = executor.decode_process_completion(invocation, completion)
-            if isinstance(result, AgentExecutionFailure):
-                if (
-                    result.code
-                    is not AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-                ):
-                    raise ValueError("executor returned an unsupported known failure")
-                outcome = store.complete_known_failure(execution)
-            else:
-                outcome = store.complete_success(execution, result)
-            supervisor.finalize(execution)
+            outcome = store.complete_success(execution, result)
+        supervisor.finalize(execution)
+        workspaces.release(execution.attempt_id)
     finally:
-        executor.release_process(invocation)
+        if invocation is not None:
+            executor.release_process(invocation)
     return outcome

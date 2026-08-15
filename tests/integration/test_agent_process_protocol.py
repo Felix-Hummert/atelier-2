@@ -47,8 +47,8 @@ from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+    AgentProcessCommand,
     AgentProcessCompletion,
-    AgentProcessInvocation,
     AgentProcessOwnerNotLocal,
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
@@ -57,6 +57,8 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorV2,
     agent_attempt_execution,
     launching,
+    process_invocation,
+    runtime_workspace_owner,
 )
 
 _PROVIDER_WRITES_EXACT_BYTES = """
@@ -494,7 +496,8 @@ barrier.wait()
 for thread in threads:
     thread.join()
 """
-        invocation = AgentProcessInvocation(
+        invocation = process_invocation(
+            execution.attempt_id,
             (sys.executable, "-c", provider),
             Path.cwd(),
             standard_input=b"i" * MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
@@ -525,13 +528,12 @@ for thread in threads:
     (0, -1, 1.0, MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES + 1),
     ids=("zero", "negative", "not-an-integer", "above-port-bound"),
 )
-def test_an_invocation_without_a_positive_declared_frame_is_refused(
+def test_a_command_without_a_positive_declared_frame_is_refused(
     declared_frame_bytes: Any,
 ) -> None:
     with pytest.raises(ValueError, match="standard output frame"):
-        AgentProcessInvocation(
+        AgentProcessCommand(
             (sys.executable, "-c", "pass"),
-            Path.cwd(),
             standard_output_frame_bytes=declared_frame_bytes,
         )
 
@@ -579,7 +581,8 @@ def test_supervision_admits_the_declared_frame_and_refuses_one_byte_more(
             runtime.engine, runtime.settings.application_version
         )
         supervisor = runtime.agent_process_supervisor
-        invocation = AgentProcessInvocation(
+        invocation = process_invocation(
+            execution.attempt_id,
             (
                 sys.executable,
                 "-c",
@@ -622,12 +625,21 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
             attempt_request(runtime, "frame/frugal")
         )
 
+        workspaces = runtime_workspace_owner(runtime)
         accepted = execute_agent_attempt(
-            generous_execution, generous, store, runtime.agent_process_supervisor
+            generous_execution,
+            generous,
+            store,
+            runtime.agent_process_supervisor,
+            workspaces,
         )
         with pytest.raises(RuntimeError, match="did not return a process"):
             execute_agent_attempt(
-                frugal_execution, frugal, store, runtime.agent_process_supervisor
+                frugal_execution,
+                frugal,
+                store,
+                runtime.agent_process_supervisor,
+                workspaces,
             )
 
         assert isinstance(accepted, AgentAttemptSucceeded)
@@ -657,7 +669,8 @@ def test_lost_control_replies_replay_without_launching_twice(tmp_path: Path) -> 
         )
         supervisor = runtime.agent_process_supervisor
         counter = tmp_path / "provider-count"
-        invocation = AgentProcessInvocation(
+        invocation = process_invocation(
+            execution.attempt_id,
             (
                 sys.executable,
                 "-c",
@@ -770,7 +783,8 @@ def test_control_slots_bound_bad_peers_while_cancel_progresses_beside_wait(
         )
         with waiting:
             assert _receive_control(waiting) == {"type": "STOPPED"}
-        invocation = AgentProcessInvocation(
+        invocation = process_invocation(
+            execution.attempt_id,
             (
                 sys.executable,
                 "-c",
@@ -889,7 +903,8 @@ def test_real_transport_failures_retain_exact_durable_launch_authority(
             if peer_response is not None
             else None
         )
-        invocation = AgentProcessInvocation(
+        invocation = process_invocation(
+            execution.attempt_id,
             (sys.executable, "-c", "pass"),
             Path.cwd(),
             standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,

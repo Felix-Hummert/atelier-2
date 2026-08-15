@@ -38,7 +38,11 @@ from atelier2.adapters.systemd_timespans import (
 )
 from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGenerationId
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.ports.agent_executions import AgentProcessInvocation
+from atelier2.ports.agent_executions import (
+    AgentAttemptWorkspaceLease,
+    AgentProcessCommand,
+    AgentProcessInvocation,
+)
 
 
 def _configuration() -> DirectSystemdAgentProcessConfiguration:
@@ -58,7 +62,10 @@ def _configuration() -> DirectSystemdAgentProcessConfiguration:
 
 
 def _invocation(root: Path) -> AgentProcessInvocation:
-    return AgentProcessInvocation(("provider",), root, standard_output_frame_bytes=17)
+    return AgentProcessInvocation(
+        AgentProcessCommand(("provider",), standard_output_frame_bytes=17),
+        AgentAttemptWorkspaceLease(AgentAttemptId.of(b"attempt"), root),
+    )
 
 
 def _seed_generation(
@@ -78,7 +85,8 @@ def _seed_generation(
         generation_id,
         direct_systemd_unit_name(attempt_id, generation_id),
         Sha256Hash.of(envelope),
-        invocation.standard_output_frame_bytes,
+        invocation.command.standard_output_frame_bytes,
+        invocation.lease.working_directory,
     )
     records.publish_intent(intent)
     if started:
@@ -268,7 +276,7 @@ class _FakeSystemd:
             RuntimeMaxUSec="1min",
             SendSIGKILL="yes",
             CollectMode="inactive-or-failed",
-            WorkingDirectory=str(self.generation),
+            WorkingDirectory=str(self.invocation.lease.working_directory),
             InvocationID="0123456789abcdef0123456789abcdef",
             ExecStart="{ path=/python ; argv[]=/python -m atelier2.adapters.systemd_agent_collector ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=7 ; code=(null) ; status=0/0 }",
         )
@@ -527,7 +535,8 @@ def test_a_command_that_never_started_removes_only_the_unstarted_source(
             WatchdogGenerationId("generation"),
             generation,
             AgentProcessInvocation(
-                ("changed",), tmp_path, standard_output_frame_bytes=17
+                AgentProcessCommand(("changed",), standard_output_frame_bytes=17),
+                AgentAttemptWorkspaceLease(AgentAttemptId.of(b"attempt"), tmp_path),
             ),
         )
 

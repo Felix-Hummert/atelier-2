@@ -234,11 +234,11 @@ class AgentProcessSupervisor:
                 {"operation": "WAIT"},
                 timeout_seconds=None,
                 maximum_response_bytes=maximum_agent_wait_response_bytes(
-                    invocation.standard_output_frame_bytes
+                    invocation.command.standard_output_frame_bytes
                 ),
             )
             completion = _completion_from_response(
-                wait_response, invocation.standard_output_frame_bytes
+                wait_response, invocation.command.standard_output_frame_bytes
             )
         except Exception as error:
             with owned.condition:
@@ -583,13 +583,14 @@ def _close_watchdog_pipes(process: subprocess.Popen[bytes]) -> None:
 
 
 def _launch_request(invocation: AgentProcessInvocation) -> dict[str, object]:
+    command = invocation.command
     return {
-        "arguments": invocation.arguments,
-        "environment": invocation.environment,
+        "arguments": command.arguments,
+        "environment": command.environment,
         "operation": "LAUNCH",
-        "standard_input": base64.b64encode(invocation.standard_input).decode("ascii"),
-        "standard_output_frame_bytes": invocation.standard_output_frame_bytes,
-        "working_directory": str(invocation.working_directory),
+        "standard_input": base64.b64encode(command.standard_input).decode("ascii"),
+        "standard_output_frame_bytes": command.standard_output_frame_bytes,
+        "working_directory": str(invocation.lease.working_directory),
     }
 
 

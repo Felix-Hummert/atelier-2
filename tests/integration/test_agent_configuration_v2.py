@@ -81,6 +81,7 @@ from atelier2.ports.run_queries import (
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,
+    agent_scratch_root,
 )
 from tests.scenarios.api import api_limits, durable_queries, event_poll_backoff
 
@@ -105,7 +106,11 @@ def _runtime(
     root: Path, factories: tuple[RecordingAgentExecutorFactoryV2, ...]
 ) -> DbosRuntime:
     return DbosRuntime(
-        DbosRuntimeSettings(root / "atelier.sqlite", "v2-test"),
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "v2-test",
+            agent_scratch_root=agent_scratch_root(root),
+        ),
         _effect_factory(root),
         ExactOutputAgentExecutorFactory(),
         factories,

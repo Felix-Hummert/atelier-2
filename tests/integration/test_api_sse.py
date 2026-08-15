@@ -75,6 +75,7 @@ from atelier2.ports.run_queries import (
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,
+    agent_scratch_root,
     commit_configured_agent,
 )
 from tests.scenarios.api import (
@@ -242,7 +243,11 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
     )
     factory.__dict__["private_material"] = canary
     runtime = DbosRuntime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "failed-sse"),
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "failed-sse",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),

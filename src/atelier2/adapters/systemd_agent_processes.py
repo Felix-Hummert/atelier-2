@@ -398,7 +398,8 @@ class DirectSystemdAgentProcessManager:
             generation_id,
             direct_systemd_unit_name(attempt_id, generation_id),
             Sha256Hash.of(envelope),
-            invocation.standard_output_frame_bytes,
+            invocation.command.standard_output_frame_bytes,
+            invocation.lease.working_directory,
         )
         if os.path.lexists(records.intent_path):
             if _inspect(records).intent != intent:
@@ -482,7 +483,7 @@ class DirectSystemdAgentProcessManager:
             "KillMode": "control-group",
             "SendSIGKILL": "yes",
             "CollectMode": "inactive-or-failed",
-            "WorkingDirectory": str(generation_directory),
+            "WorkingDirectory": str(intent.working_directory),
         }
         durations = ("TimeoutStopUSec", "RuntimeMaxUSec")
         names = (*expected, *durations, "InvocationID", "ExecStart")
@@ -598,7 +599,7 @@ class DirectSystemdAgentProcessManager:
             f"--property=TimeoutStopSec={configuration.timeout_stop_seconds}s",
             f"--property=RuntimeMaxSec={configuration.runtime_max_seconds}s",
             "--property=SendSIGKILL=yes",
-            f"--property=WorkingDirectory={generation_directory}",
+            f"--property=WorkingDirectory={intent.working_directory}",
             f"--property=LoadCredential={DIRECT_SYSTEMD_LAUNCH_CREDENTIAL_NAME}:{source}",
             *self._collector,
         )

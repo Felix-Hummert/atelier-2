@@ -127,6 +127,7 @@ class HostSettings:
     port: int = DEFAULT_PORT
     limits: ApiLimits = field(default_factory=api_limits)
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
+    agent_scratch_root: Path | None = None
     claude_subscription: ClaudeSubscriptionSettings | None = None
     grok_subscription: GrokSubscriptionSettings | None = None
     codex_subscription: CodexSubscriptionSettings | None = None
@@ -169,6 +170,17 @@ class HostSettings:
         ):
             raise ValueError("frontend distribution must contain index.html and assets")
         billed = self.billed_providers
+        if billed and self.agent_scratch_root is None:
+            raise ValueError(
+                "serving a provider executor and declaring --agent-scratch-root "
+                "go together: every attempt runs in a scratch workspace of its "
+                "own, and a provider without a scratch root would share one "
+                "directory across every attempt"
+            )
+        if self.agent_scratch_root is not None and not billed:
+            raise ValueError(
+                "a scratch root without a provider executor serves nothing"
+            )
         if billed and not _is_loopback(self.host):
             raise ValueError(
                 f"serving {' and '.join(billed)} subscription agents requires a "
@@ -213,7 +225,11 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         ),
     )
     runtime = DbosRuntime(
-        DbosRuntimeSettings(settings.database_path, settings.application_version),
+        DbosRuntimeSettings(
+            settings.database_path,
+            settings.application_version,
+            agent_scratch_root=settings.agent_scratch_root,
+        ),
         LoopbackEffectAdapterFactory(
             settings.effect_store_path,
             AdapterRevision(settings.effect_adapter_revision),

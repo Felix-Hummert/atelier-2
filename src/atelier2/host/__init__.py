@@ -8,6 +8,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from atelier2.adapters.agent_workspaces import (
+    AgentScratchRootRefused,
+    LocalAgentAttemptWorkspaceOwner,
+)
 from atelier2.adapters.claude_subscription import (
     MANAGED_POLICY_ROOTS,
     ClaudeExecutableUnsupported,
@@ -91,6 +95,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             frontend_dist=parsed.frontend_dist,
             host=parsed.host,
             port=parsed.port,
+            agent_scratch_root=_attested_agent_scratch_root(parser, parsed),
             claude_subscription=_claude_subscription_settings(parser, parsed),
             grok_subscription=_grok_subscription_settings(parser, parsed),
             codex_subscription=_codex_subscription_settings(parser, parsed),
@@ -143,22 +148,38 @@ def _file_bytes(parser: argparse.ArgumentParser, path: Path) -> bytes:
         parser.error(f"cannot read {path}: {unreadable.strerror}")
 
 
+def _attested_agent_scratch_root(
+    parser: argparse.ArgumentParser, parsed: argparse.Namespace
+) -> Path | None:
+    """Refuse an unusable scratch root before the server exists.
+
+    A root that is a git worktree, is shared, or belongs to somebody else is
+    refused here rather than at the first run, where the refusal would cost a
+    started run and reach nobody but a log.
+    """
+
+    root: Path | None = parsed.agent_scratch_root
+    if root is None:
+        return None
+    try:
+        LocalAgentAttemptWorkspaceOwner(root).close()
+    except AgentScratchRootRefused as refusal:
+        parser.error(str(refusal))
+    return root
+
+
 def _claude_subscription_settings(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
 ) -> ClaudeSubscriptionSettings | None:
     """Compose the Claude subscription executor only when fully declared."""
 
-    declared = (
-        parsed.claude_executable,
-        parsed.claude_workspace,
-        parsed.claude_credential_directory,
-    )
+    declared = (parsed.claude_executable, parsed.claude_credential_directory)
     if all(value is None for value in declared):
         return None
     if any(value is None for value in declared):
         parser.error(
-            "serving Claude subscription agents requires --claude-executable, "
-            "--claude-workspace and --claude-credential-directory together"
+            "serving Claude subscription agents requires --claude-executable "
+            "and --claude-credential-directory together"
         )
     search_path = os.environ.get("PATH")
     if search_path is None:
@@ -167,10 +188,7 @@ def _claude_subscription_settings(
             "environment, because the launched provider inherits nothing else"
         )
     settings = ClaudeSubscriptionSettings(
-        parsed.claude_executable,
-        parsed.claude_workspace,
-        parsed.claude_credential_directory,
-        search_path,
+        parsed.claude_executable, parsed.claude_credential_directory, search_path
     )
     # The containment this executor claims belongs to a measured release on a
     # host no administrator policy can act on, so the deployment asks the named
@@ -226,17 +244,13 @@ def _codex_subscription_settings(
 ) -> CodexSubscriptionSettings | None:
     """Compose the Codex subscription executor only when fully declared."""
 
-    declared = (
-        parsed.codex_executable,
-        parsed.codex_workspace,
-        parsed.codex_credential_directory,
-    )
+    declared = (parsed.codex_executable, parsed.codex_credential_directory)
     if all(value is None for value in declared):
         return None
     if any(value is None for value in declared):
         parser.error(
-            "serving Codex subscription agents requires --codex-executable, "
-            "--codex-workspace and --codex-credential-directory together"
+            "serving Codex subscription agents requires --codex-executable "
+            "and --codex-credential-directory together"
         )
     search_path = os.environ.get("PATH")
     if search_path is None:
@@ -247,7 +261,6 @@ def _codex_subscription_settings(
     try:
         settings = CodexSubscriptionSettings(
             parsed.codex_executable,
-            parsed.codex_workspace,
             parsed.codex_credential_directory,
             search_path,
             CodexSandboxMode(parsed.codex_sandbox),
@@ -279,14 +292,13 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--frontend-dist", type=Path, required=True)
     serve_parser.add_argument("--host", default=DEFAULT_HOST)
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve_parser.add_argument("--agent-scratch-root", type=Path)
     serve_parser.add_argument("--claude-executable", type=Path)
-    serve_parser.add_argument("--claude-workspace", type=Path)
     serve_parser.add_argument("--claude-credential-directory", type=Path)
     serve_parser.add_argument("--grok-executable", type=Path)
     serve_parser.add_argument("--grok-workspace", type=Path)
     serve_parser.add_argument("--grok-credential-directory", type=Path)
     serve_parser.add_argument("--codex-executable", type=Path)
-    serve_parser.add_argument("--codex-workspace", type=Path)
     serve_parser.add_argument("--codex-credential-directory", type=Path)
     serve_parser.add_argument(
         "--codex-sandbox",
