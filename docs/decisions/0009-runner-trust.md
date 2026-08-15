@@ -26,7 +26,10 @@
   vocabulary), [#23](https://github.com/FlexOr2/atelier-2/issues/23)
   (multi-project isolation), [#58](https://github.com/FlexOr2/atelier-2/issues/58)
   (workspace lease), [#86](https://github.com/FlexOr2/atelier-2/issues/86) (the
-  graph interpreter's move into the core, predecessor of #21's code)
+  graph interpreter's move into the core, predecessor of #21's code),
+  [#15](https://github.com/FlexOr2/atelier-2/issues/15) (the same-host runner
+  lifecycle itself: the accepted direct-systemd replacement, its cutover, and the
+  deletion of the watchdog and exec-guard predecessor)
 
 ## Context
 
@@ -72,17 +75,33 @@ credential material that host holds. Not runners: the durable core and the API
 (the **coordinating service**), the cockpit and the conductor (#7) — both API
 clients — and the provider CLI child, which is the runner's child.
 
-**Today's runner is the per-attempt watchdog process, and it is already a
-separate process.** The service spawns one watchdog per attempt
-(`adapters/agent_processes.py`) and reaches it over a Unix control endpoint it
-created; that watchdog — not the service — launches the provider under the exec
-guard, holds its handle and its cgroup, supervises it, and reaps it
-(`adapters/agent_process_watchdog.py`). By the definition above that makes the
-watchdog the runner, without qualification. It is *co-located* with the service —
-one machine, one OS user, one watchdog generation — and co-location is not
-co-residence in a process. Naming it now is what keeps a remote runner from
-becoming a second architecture later, and it is what makes the boundary below a
-statement about running code rather than about a future.
+**The runner has always been a separate process, and which process it is, is
+mid-replacement.** The definition above is deliberately about what a runner
+*owns*, never about how it is built, because the same-host runner is being
+replaced underneath it:
+
+- **Predecessor, condemned.** Today the service spawns one watchdog process per
+  attempt (`adapters/agent_processes.py`) and reaches it over a Unix control
+  endpoint; that watchdog — not the service — launches the provider under the
+  exec guard, holds its handle and its cgroup, supervises it and reaps it
+  (`adapters/agent_process_watchdog.py`). By the definition above the watchdog is
+  the runner, without qualification. This 1,564-line supervisor, watchdog and
+  exec-guard lifecycle is **deleted** by #15's Slice 2 cutover under a binding
+  ruling. It is named here as the current state, never as the target.
+- **Successor, accepted and in build.** #15's direct-systemd replacement makes a
+  single transient unit installation the launch authorization: the service asks
+  the systemd manager for the unit, the manager owns launch, supervision and
+  reaping, and a collector inside the unit publishes durable launch and result
+  evidence bound to the unit's exact per-invocation identity. The runner is then
+  the unit the manager supervises — not a process Atelier writes, and reached by
+  no control connection at all.
+
+Both satisfy the definition, which is the reason to define a runner by what it
+owns. The runner is *co-located* with the service on this tier — one machine, one
+OS user — and co-location is not co-residence in a process. Binding the trust
+boundary to that ownership rather than to the transport of the day is what keeps
+this record true across the cutover, and what keeps a remote runner from becoming
+a second architecture later.
 
 There is exactly **one** trust boundary in the product: between the coordinating
 service and any runner. Everything a runner says is evidence; only the service
@@ -94,34 +113,42 @@ boundary, never the rules it enforces.
 A deployment declares its runner tier.
 
 - `same-host`: service and runner are **separate processes** on one machine under
-  one OS user, connected over the runner's local control endpoint — today a Unix
-  socket the service creates and the watchdog listens on.
+  one OS user. What carries the tier is #15's to build and is being replaced: a
+  Unix control endpoint today, a transient systemd unit and durable evidence
+  after the cutover.
 - `remote`: a separate machine or trust domain. Mutual authentication is
   mandatory in both directions. This tier is a named successor epic (#9 part 3);
   this record binds its rules, not its transport.
 
-A `same-host` mechanism is never accepted for a connection that did not arrive
-over that local endpoint: the service refuses it (`runner-transport-mismatch`).
-Tier is a property of the deployment, not a per-request claim.
+Work and evidence cross only by the path the declared tier owns; anything
+arriving by another path is refused (`runner-transport-mismatch`). Tier is a
+property of the deployment, not a per-request claim.
 
-**The cross-process invariant, stated without a transport.** Because §1's runner
-is a separate process on every tier, both tiers carry the same obligation: before
-any attempt binding crosses it, each side of a runner connection establishes what
-its counterpart is — the runner that its counterpart is the coordinating service
-(§4's return direction), the service that its counterpart is the enrolled runner
-it bound. That is an invariant about the boundary, not about a socket. This
-record decides no transport and no framing (see *Out of scope*), so it names no
-mechanism as the decision: a local socket implementation would carry it with the
-peer credential the kernel supplies and the peer's cgroup membership, a remote
-one with §4's mutual credential over TLS, and both are instances of the same
-sentence. The refusal `runner-peer-unverified` binds to the invariant; whichever
-item owns the control protocol when the invariant becomes required binds the
-mechanism (#92 gives that protocol its first single owner; #9 part 3 owns the
-remote transport).
+**The identity invariant, stated so it outlives any transport.** Because §1's
+runner is a separate process on every tier, every tier carries the same
+obligation, and it is written about the boundary rather than about a connection —
+the same-host boundary is losing its connection entirely:
+
+- Before the service binds an attempt to a runner, and before it accepts any
+  report as evidence about that attempt, it establishes that the runner is
+  **exactly the one it authorized** — identified per invocation, never by a name
+  or path that can be reused after the runner it named is gone.
+- A runner accepts work only from the coordinating service, which authenticates
+  itself in the same act (§4's return direction).
+
+This record decides no transport and no framing (see *Out of scope*), so it names
+no mechanism as the decision, and it deliberately names none that would preserve
+the condemned one. #15's direct-systemd successor supplies its own unit and
+manager identity when it is composed — its per-invocation unit identity is
+already the shape the first half asks for — and #9 part 3 supplies the remote
+transport's mutual credential. Both are instances of the sentence, not the
+sentence. The refusal `runner-peer-unverified` binds to the invariant; the item
+that owns the same-host lifecycle at the time (#15) binds the mechanism, and this
+record adds no second owner for it.
 
 **What `same-host` is today, stated as it is rather than as it sounds — and
-accepted as that.** The endpoint's protection is a `0700` directory and a `0600`
-socket, and the accept path performs no peer check at all
+accepted as that.** The predecessor endpoint's protection is a `0700` directory
+and a `0600` socket, and its accept path performs no peer check at all
 (`adapters/agent_process_watchdog.py`). That authenticates **the OS user**, not
 the peer: any process running as that user may connect. ADR 0001's cgroup attests
 the *provider child's* descendant relationship — it says nothing about who opened
@@ -129,13 +156,16 @@ a control connection. So `same-host` today is a **same-UID trust domain**, and
 this record accepts it as one rather than describing a control that does not
 exist. The stake is named with the acceptance: anything running as that user
 which reaches the endpoint can launch, cancel and read a billed provider process.
+Closing that gap in the predecessor is explicitly *not* asked for here — #15
+deletes it, and hardening a condemned owner is the waste this record would
+otherwise commission.
 
 That acceptance is bounded, and the bound is the point. It holds while the whole
 boundary stays on one machine, under one OS user, at exposure `this-machine`
-(§3). It **ends** — and the cross-process invariant above becomes mandatory
-before any attempt binding — at the first of: the `remote` tier; a `reachable`
-exposure; a second OS user or a second project sharing the host (#23); or a
-runner the service did not itself spawn. Past any of those, an unverified peer is
+(§3). It **ends** — and the identity invariant above becomes mandatory before any
+attempt binding — at the first of: the `remote` tier; a `reachable` exposure; a
+second OS user or a second project sharing the host (#23); or a runner the
+service did not itself authorize. Past any of those, an unestablished runner is
 refused (`runner-peer-unverified`) rather than admitted on the strength of its
 UID.
 
@@ -427,7 +457,7 @@ unchanged through the chain, so depth never launders identity.
 | `unauthenticated-exposure` | a deployment declaring `reachable` exposure, or declaring none, with no composed operator authenticator | host composition |
 | `exposure-bind-contradiction` | a deployment declaring `this-machine` exposure bound to a non-loopback address | host composition |
 | `runner-transport-mismatch` | a connection whose transport does not match the declared tier | runner connection |
-| `runner-peer-unverified` | a runner connection whose peer is not established in both directions, where §2's cross-process invariant is required | runner connection |
+| `runner-peer-unverified` | the runner's per-invocation identity is not established, or the service does not authenticate back, where §2's identity invariant is required | runner binding |
 | `runner-unknown` | a runner with no enrolment record requests work or a ticket | runner connection |
 | `runner-revoked` | the enrolment record is marked revoked | runner connection |
 | `runner-attestation-changed` | the presented runner attestation differs from the enrolled one | runner connection |
@@ -454,14 +484,17 @@ this record borrows that owner rather than opening a second vocabulary.
 - A deployment must now state its exposure, and stating none refuses. That is a
   new obligation on every deployment including today's local one, and it is the
   price of not inferring reach from a bind address a proxy can front.
-- V1 gains no daemon and no new process. The `same-host` runner is the watchdog
-  process that already exists; only its name and its obligations become explicit.
-  The record does not claim a peer control it lacks: it accepts today's same-UID
-  trust domain in writing, names what that costs, and states the boundary past
-  which the acceptance ends.
-- The cross-process invariant is written without a transport, so the record can
-  be satisfied by whatever carries the control endpoint at the time — and cannot
-  be quietly declared satisfied by keeping the endpoint and changing nothing.
+- V1 gains no daemon and no new process of this record's making. The `same-host`
+  runner is the process that already exists — the watchdog today, the transient
+  unit after #15's cutover — and only its name and its obligations become
+  explicit here. The record does not claim a peer control it lacks: it accepts
+  today's same-UID trust domain in writing, names what that costs, and states the
+  boundary past which the acceptance ends.
+- The identity invariant is written without a transport, so it survives the
+  same-host cutover instead of pinning the record to the owner #15 deletes — and
+  it cannot be quietly declared satisfied by changing nothing. This record
+  commissions no hardening of the condemned predecessor; that work would be
+  deleted with it.
 - The remote epic is unblocked in rules, not in build: transport, protocol and
   the ownership lease remain to be decided by it.
 - Per-runner credentials cost an enrolment ceremony, and the operator must
@@ -482,10 +515,12 @@ this record borrows that owner rather than opening a second vocabulary.
   and no attach ticket, and no durable row is written for the refusal path.
 - A revoked runner and a never-enrolled one produce **different** refusals from
   durable state, and re-enrolling a revoked id requires an explicit operator act.
-- Where §2's cross-process invariant is required, a runner connection whose peer
-  is not established in both directions is refused before any attempt binding —
-  proven against the transport that deployment actually uses, not against a
-  mechanism this record names.
+- Where §2's identity invariant is required, a runner whose per-invocation
+  identity is not established is refused before any attempt binding, and so is a
+  service that does not authenticate back — proven against whatever carries that
+  deployment's tier, not against a mechanism this record names.
+- A runner identity is not satisfied by a reused name: an identifier that
+  outlives the runner it named never binds a later attempt.
 - Run start refuses a binding no connected runner attests, naming node, binding
   and missing attestation, with no run, binding, attempt, receipt or process.
 - A runner report carrying a disposition, receipt, or catalog mutation is
@@ -526,7 +561,9 @@ record; a ticket value written into durable state, or redeemed by a
 read-then-mark sequence instead of an atomic compare-and-consume; a ticket bearer
 from anything but a cryptographically secure random source, or below the entropy
 floor, or verified by a non-constant-time comparison, or treated as authorized on
-its opaque id alone; a
+its opaque id alone; a runner bound by a reusable name instead of a
+per-invocation identity, or a same-host identity mechanism built into the
+predecessor lifecycle #15 deletes; a
 deployment-authored or probe-derived entry written into ADR 0006's immutable
 capability manifest; exposure inferred from the bind address, or a forwarded
 header read as identity; a revocation that deletes the enrolment record instead
