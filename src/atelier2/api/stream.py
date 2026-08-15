@@ -4,7 +4,7 @@ import asyncio
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypeVar, assert_never
+from typing import Final, Literal, TypeVar, assert_never, get_args
 
 from fastapi.sse import ServerSentEvent
 
@@ -25,6 +25,16 @@ from atelier2.ports.workflow_revisions import (
 )
 
 Result = TypeVar("Result")
+
+StreamFailureCode = Literal[
+    "durable-state-corrupt", "temporarily-unavailable", "internal-error"
+]
+STREAM_FAILURE_CODES: Final[tuple[StreamFailureCode, ...]] = get_args(StreamFailureCode)
+"""The problem vocabulary a failed stream may speak, owned by the only emitter.
+
+The published document narrows the failure frame to exactly these problems, so
+a consumer that accepts them accepts every frame this stream can send.
+"""
 
 
 class QueryAdmissionTimeout(TimeoutError):
@@ -120,7 +130,9 @@ class BoundedQueryRunner:
             raise
 
 
-def _stream_failure(code: str, detail: str | None = None) -> ServerSentEvent:
+def _stream_failure(
+    code: StreamFailureCode, detail: str | None = None
+) -> ServerSentEvent:
     """The last frame of a failed stream.
 
     It carries no id: a resume cursor on a refusal would invite the browser to

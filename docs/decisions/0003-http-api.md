@@ -77,7 +77,9 @@ the correct answer to both, and a client that reconnects into a permanent
 refusal would never be told. Errors are closed RFC 9457
 `application/problem+json` variants on both paths. The generated OpenAPI 3.1
 document is built and validated eagerly during application construction and adds
-a documented extension naming both SSE frame shapes.
+a documented extension naming both SSE frame shapes. The published failure frame
+promises exactly the problems the stream can speak, not the open problem shape,
+so it never offers a consumer a body the closed vocabulary would refuse.
 Streaming uses FastAPI's public `EventSourceResponse` and `ServerSentEvent`
 mechanisms.
 

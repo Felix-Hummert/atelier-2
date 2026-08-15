@@ -127,6 +127,14 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     }
     failure_frame = schema["components"]["schemas"]["StreamFailureResource"]
     assert failure_frame["properties"]["event"]["const"] == "STREAM_FAILED"
+    assert failure_frame["properties"]["problem"] == {
+        "oneOf": [
+            {"$ref": "#/components/schemas/ProblemDurableStateCorrupt"},
+            {"$ref": "#/components/schemas/ProblemTemporarilyUnavailable"},
+            {"$ref": "#/components/schemas/ProblemInternalError"},
+        ]
+    }
+    assert "ProblemResource" not in schema["components"]["schemas"]
     event_union = schema["components"]["schemas"]["RunEventResource"]
     assert len(event_union["oneOf"]) == 7
     assert set(event_union["discriminator"]["mapping"]) == set(EVENT_NAMES)

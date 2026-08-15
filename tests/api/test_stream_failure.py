@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from fastapi.sse import ServerSentEvent
 
-from atelier2.api.openapi import EVENT_PATH
+from atelier2.api.openapi import API_PREFIX, EVENT_PATH
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
     encode_public_run_reference,
@@ -179,6 +179,26 @@ def failed_stream_problem(
     )
 
 
+def problem_identity(problem: dict[str, Any]) -> tuple[str, str, int]:
+    return (problem["type"], problem["title"], problem["status"])
+
+
+def promised_stream_problems(document: dict[str, Any]) -> set[tuple[str, str, int]]:
+    """Every problem body the published document allows inside a failure frame."""
+
+    components = document["components"]["schemas"]
+    options = components["StreamFailureResource"]["properties"]["problem"]["oneOf"]
+    promised = (components[option["$ref"].rsplit("/", 1)[-1]] for option in options)
+    return {
+        (
+            component["properties"]["type"]["const"],
+            component["properties"]["title"]["const"],
+            component["properties"]["status"]["const"],
+        )
+        for component in promised
+    }
+
+
 @pytest.mark.parametrize(
     "page",
     [EventHistoryCorrupt(), QueryDurableStateCorrupt()],
@@ -282,3 +302,30 @@ def test_one_corrupt_history_reports_one_problem_before_and_inside_the_stream() 
         "event": "STREAM_FAILED",
         "problem": refused_before_headers.json(),
     }
+
+
+def test_the_document_promises_exactly_the_problem_bodies_the_stream_can_emit() -> None:
+    emitted = {
+        problem_identity(failed_stream_problem(OnePageQueries(EventHistoryCorrupt()))),
+        problem_identity(
+            failed_stream_problem(
+                OnePageQueries(
+                    one_event_page(RunEventKind.AGENT_COMPLETED, b"oversized")
+                ),
+                limit_changes={"maximum_decoded_payload_bytes": 4},
+            )
+        ),
+        problem_identity(
+            failed_stream_problem(
+                OnePageQueries(RunEventPage((persisted_v1_cancellation(),), False))
+            )
+        ),
+    }
+
+    document = (
+        event_stream_client(OnePageQueries(EventHistoryCorrupt()))
+        .get(API_PREFIX + "/openapi.json")
+        .json()
+    )
+
+    assert emitted == promised_stream_problems(document)
