@@ -27,7 +27,9 @@ version. A V2 run projection includes its immutable, public binding matrix. A V2
 `AGENT_COMPLETED` event carries canonical Base64 plus the exact output hash so
 arbitrary bytes never pass through UTF-8 decoding. The preexisting V1 raw JSON
 and named OpenAPI components are byte-frozen; adding V2 does not silently widen
-them.
+them. The SSE envelope carries only `id` and `data`: omitting the transport
+`event:` field makes every frame a default `message`, while `data.event` is the
+sole domain discriminant.
 
 Every mutation delegates to the runtime owner and decides created-versus-
 existing from the row written in that same transaction. Only a newly created
@@ -65,9 +67,15 @@ After an SSE response has started, an invalid or oversized durable event closes
 the stream without inventing an event. Errors are closed RFC 9457
 `application/problem+json` variants. The generated OpenAPI 3.1 document is
 built and validated eagerly during application construction and adds a
-documented extension for the closed SSE `id`, `event`, and `data` contract.
+documented extension for the closed SSE `id` and `data` contract.
 Streaming uses FastAPI's public `EventSourceResponse` and `ServerSentEvent`
 mechanisms.
+
+This default-message envelope is an explicit breaking pre-release migration
+from named SSE frames. Atelier 2 had no external consumer at the decision point;
+the sole local cockpit and tests migrate together. A cockpit tab left open
+across that deploy must reload. The durable payload, cursor, native reconnect,
+and `Last-Event-ID` semantics do not change.
 
 ## Consequences
 

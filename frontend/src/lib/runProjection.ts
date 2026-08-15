@@ -1,11 +1,14 @@
 import {
+  decodeCanonicalBase64,
   decodeRunEvent,
   type Problem,
   type Run,
   type RunEvent,
+  type RunV2,
   type WorkflowGraph,
   type WorkflowNode
 } from "../api/client";
+import { sha256Hex } from "./exactBytes";
 
 export type RequestState =
   | { state: "idle" }
@@ -21,7 +24,13 @@ export type ConnectionState = "connecting" | "live" | "reconnecting" | "complete
 export type ProtocolProblem =
   | { type: "decoder" }
   | { type: "sequence_gap"; expected: number; received: number }
-  | { type: "conflicting_duplicate"; cursor: string };
+  | { type: "conflicting_duplicate"; cursor: string }
+  | { type: "output_integrity"; cursor: string; expected: string; received: string };
+
+export type AgentOutputProjection =
+  | { kind: "utf8"; value: string; byte_count: number }
+  | { kind: "binary"; value: string; byte_count: number }
+  | { kind: "empty"; value: ""; byte_count: 0 };
 
 export interface StreamProjection {
   public_run_reference: string;
@@ -31,14 +40,29 @@ export interface StreamProjection {
   connection: ConnectionState;
   protocol_problem: ProtocolProblem | null;
   payload_bytes_by_cursor: ReadonlyMap<string, Uint8Array>;
+  agent_outputs_by_cursor: ReadonlyMap<string, AgentOutputProjection>;
 }
 
-export type NodeState = "queued" | "working" | "needs_you" | "done";
+export type NodeState =
+  | "queued"
+  | "working"
+  | "needs_you"
+  | "done"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface AgentAttemptProjection {
+  ordinal: 1 | 2;
+  state: RunV2["agent_attempts"][number]["state"] | "COMPLETED";
+}
 
 export interface NodeProjection {
   node: WorkflowNode;
   state: NodeState;
   last_event: RunEvent | null;
+  attempt: AgentAttemptProjection | null;
 }
 
 export function startLoading<T>(resource: RetainedResource<T>): RetainedResource<T> {
@@ -70,7 +94,8 @@ export function streamProjection(
     last_sequence: 0,
     connection: "connecting",
     protocol_problem: null,
-    payload_bytes_by_cursor: new Map()
+    payload_bytes_by_cursor: new Map(),
+    agent_outputs_by_cursor: new Map()
   };
 }
 
@@ -110,11 +135,12 @@ export function markComplete(projection: StreamProjection): StreamProjection {
   return { ...projection, connection: "complete" };
 }
 
-export function decodeAndApplyDurableEvent(
+export async function decodeAndApplyDurableEvent(
   projection: StreamProjection,
   rawData: string,
   graph?: WorkflowGraph
-): StreamProjection {
+): Promise<StreamProjection> {
+  if (projection.protocol_problem !== null) return projection;
   let decoded: RunEvent;
   try {
     decoded = decodeRunEvent(JSON.parse(rawData));
@@ -124,7 +150,49 @@ export function decodeAndApplyDurableEvent(
   if (graph !== undefined && !eventMatchesGraph(decoded, graph)) {
     return { ...projection, protocol_problem: { type: "decoder" } };
   }
-  return applyDurableEvent(projection, rawData, decoded);
+  let output: AgentOutputProjection | null = null;
+  if (decoded.event === "AGENT_COMPLETED" && "workflow_format_version" in decoded) {
+    const bytes = decodeCanonicalBase64(decoded.output_base64);
+    if (bytes === null) {
+      return { ...projection, protocol_problem: { type: "decoder" } };
+    }
+    const received = await sha256Hex(bytes);
+    if (received !== decoded.output_hash) {
+      return {
+        ...projection,
+        protocol_problem: {
+          type: "output_integrity",
+          cursor: decoded.cursor,
+          expected: decoded.output_hash,
+          received
+        }
+      };
+    }
+    output = classifyAgentOutput(bytes, decoded.output_base64);
+  }
+  const applied = applyDurableEvent(projection, rawData, decoded);
+  if (output === null || applied === projection || applied.protocol_problem !== null) {
+    return applied;
+  }
+  const outputs = new Map(applied.agent_outputs_by_cursor);
+  outputs.set(decoded.cursor, output);
+  return { ...applied, agent_outputs_by_cursor: outputs };
+}
+
+function classifyAgentOutput(
+  bytes: Uint8Array,
+  canonicalBase64: string
+): AgentOutputProjection {
+  if (bytes.byteLength === 0) return { kind: "empty", value: "", byte_count: 0 };
+  try {
+    return {
+      kind: "utf8",
+      value: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      byte_count: bytes.byteLength
+    };
+  } catch {
+    return { kind: "binary", value: canonicalBase64, byte_count: bytes.byteLength };
+  }
 }
 
 export function applyDurableEvent(
@@ -194,7 +262,8 @@ export function projectNodeRail(
         durableState === "needs_you" && workingHumanNodeIds.has(node.node_id)
           ? "working"
           : durableState,
-      last_event: lastEvent
+      last_event: lastEvent,
+      attempt: projectAgentAttempt(run, node, lastEvent, eventsLeadSnapshot)
     };
   });
 }
@@ -237,8 +306,20 @@ function snapshotNodeState(
   currentIndex: number,
   lastEvent: RunEvent | null
 ): NodeState {
-  if (lastEvent !== null && isTerminalNodeEvent(lastEvent)) {
-    return "done";
+  if (
+    index === currentIndex &&
+    "workflow_format_version" in run &&
+    node.type === "agent"
+  ) {
+    const attemptState = run.agent_attempts.at(-1)?.state;
+    if (attemptState === "FAILED") return "failed";
+    if (attemptState === "CANCELLED") return "cancelled";
+    if (attemptState === "INTERRUPTED") return "interrupted";
+    if (attemptState !== undefined) return "working";
+  }
+  if (lastEvent !== null) {
+    const terminal = terminalNodeState(lastEvent);
+    if (terminal !== null) return terminal;
   }
   if (index < currentIndex) {
     return "done";
@@ -261,14 +342,48 @@ function snapshotNodeState(
   return node.node_id === run.current_node.node_id ? "working" : "queued";
 }
 
+function projectAgentAttempt(
+  run: Run,
+  node: WorkflowNode,
+  event: RunEvent | null,
+  eventsLeadSnapshot: boolean
+): AgentAttemptProjection | null {
+  if (!("workflow_format_version" in run) || node.type !== "agent") return null;
+  const eventAttempt =
+    event !== null && "workflow_format_version" in event && "attempt_id" in event
+      ? { ordinal: event.attempt_ordinal, state: agentEventStates[event.event] }
+      : null;
+  const currentAttempt =
+    node.node_id === run.current_node.node_id ? run.agent_attempts.at(-1) ?? null : null;
+  if (
+    eventsLeadSnapshot &&
+    eventAttempt !== null &&
+    (currentAttempt === null || eventAttempt.ordinal >= currentAttempt.attempt_ordinal)
+  ) {
+    return eventAttempt;
+  }
+  return currentAttempt === null
+    ? eventAttempt
+    : { ordinal: currentAttempt.attempt_ordinal, state: currentAttempt.state };
+}
+
+const agentEventStates = {
+  AGENT_COMPLETED: "COMPLETED",
+  AGENT_FAILED: "FAILED",
+  AGENT_CANCEL_REQUESTED: "CANCEL_REQUESTED",
+  AGENT_CANCELLED: "CANCELLED",
+  AGENT_INTERRUPTED: "INTERRUPTED"
+} as const;
+
 function eventDrivenNodeState(
   node: WorkflowNode,
   lastNodeEventValue: RunEvent | null,
   latestEvent: RunEvent,
   nodes: readonly WorkflowNode[]
 ): NodeState {
-  if (lastNodeEventValue !== null && isTerminalNodeEvent(lastNodeEventValue)) {
-    return "done";
+  if (lastNodeEventValue !== null) {
+    const terminal = terminalNodeState(lastNodeEventValue);
+    if (terminal !== null) return terminal;
   }
   if (latestEvent.node_id === node.node_id) {
     if (
@@ -310,10 +425,30 @@ function isTerminalNodeEvent(event: RunEvent): boolean {
   );
 }
 
+function terminalNodeState(event: RunEvent): NodeState | null {
+  if (event.event === "AGENT_FAILED") return "failed";
+  if (event.event === "AGENT_CANCELLED") return "cancelled";
+  if (event.event === "AGENT_INTERRUPTED") return "interrupted";
+  if (event.event === "AGENT_COMPLETED" && "workflow_format_version" in event) {
+    return "completed";
+  }
+  return isTerminalNodeEvent(event) ? "done" : null;
+}
+
 function eventMatchesGraph(event: RunEvent, graph: WorkflowGraph): boolean {
+  const eventFormat = "workflow_format_version" in event ? 2 : 1;
+  if (eventFormat !== graph.format_version) return false;
   const node = graph.nodes.find((candidate) => candidate.node_id === event.node_id);
   if (node === undefined) return false;
-  if (node.type === "agent") return event.event === "AGENT_COMPLETED";
+  if (node.type === "agent") {
+    return [
+      "AGENT_COMPLETED",
+      "AGENT_FAILED",
+      "AGENT_CANCEL_REQUESTED",
+      "AGENT_CANCELLED",
+      "AGENT_INTERRUPTED"
+    ].includes(event.event);
+  }
   if (node.type === "action") {
     return (
       event.event === "ACTION_RECONCILIATION_REQUIRED" ||

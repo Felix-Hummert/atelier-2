@@ -12,7 +12,7 @@ import {
   startLoading,
   streamProjection
 } from "../../src/lib/runProjection";
-import type { Run, WorkflowRevisionDetail } from "../../src/api/client";
+import type { RunV1, RunV2, WorkflowRevisionDetail } from "../../src/api/client";
 
 const digest = "a".repeat(64);
 
@@ -91,10 +91,10 @@ describe("contiguous durable SSE projection", () => {
     expect(reconnecting.protocol_problem).toBeNull();
   });
 
-  it("surfaces an inexact wire integer as a decoder protocol problem", () => {
+  it("surfaces an inexact wire integer as a decoder protocol problem", async () => {
     const unsafe = event(1) as Record<string, unknown>;
     unsafe.sequence = Number.MAX_SAFE_INTEGER + 1;
-    const rejected = decodeAndApplyDurableEvent(projection(), JSON.stringify(unsafe));
+    const rejected = await decodeAndApplyDurableEvent(projection(), JSON.stringify(unsafe));
     expect(rejected.protocol_problem).toEqual({ type: "decoder" });
     expect(rejected.events).toEqual([]);
   });
@@ -111,13 +111,13 @@ describe("contiguous durable SSE projection", () => {
     expect(rejected.last_sequence).toBe(1);
   });
 
-  it("refuses an event whose node identity or kind is absent from the bound graph", () => {
-    const wrongNode = decodeAndApplyDurableEvent(
+  it("refuses an event whose node identity or kind is absent from the bound graph", async () => {
+    const wrongNode = await decodeAndApplyDurableEvent(
       projection(),
       JSON.stringify(event(1, { node_id: "missing" })),
       workflow().graph
     );
-    const wrongKind = decodeAndApplyDurableEvent(
+    const wrongKind = await decodeAndApplyDurableEvent(
       projection(),
       JSON.stringify({ ...waitInputEvent(1), node_id: "agent" }),
       workflow().graph
@@ -126,6 +126,94 @@ describe("contiguous durable SSE projection", () => {
     expect(wrongNode.protocol_problem).toEqual({ type: "decoder" });
     expect(wrongKind.protocol_problem).toEqual({ type: "decoder" });
   });
+
+  it.each([
+    ["V1 event with V2 graph", event(1), v2Scenario().graph],
+    ["V2 event with V1 graph", v2AgentEvent("AGENT_COMPLETED"), workflow().graph]
+  ] as const)("refuses a workflow/event format mismatch: %s", async (_case, mismatchedEvent, graph) => {
+    const rejected = await decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify(mismatchedEvent),
+      graph
+    );
+
+    expect(rejected.protocol_problem).toEqual({ type: "decoder" });
+  });
+});
+
+describe("verified V2 Agent output projection", () => {
+  it.each([
+    ["utf8", "R3LDvMOfZSDmnbHkuqw=", "d9f1fa3818c49d96dce2661015bdad90989df9e67244a7e5f1519ab466286332", "Grüße 東京", 14],
+    ["binary", "/wA=", "ea5dbf9596d187e9500f23e9a680109475341cf4e81f7e043f7d97152c10772f", "/wA=", 2],
+    ["empty", "", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", 0]
+  ] as const)("keeps exact %s bytes after SHA-256 verification", async (kind, outputBase64, outputHash, value, byteCount) => {
+    const completed = v2AgentEvent("AGENT_COMPLETED", { output_base64: outputBase64, output_hash: outputHash });
+
+    const applied = await decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify(completed),
+      v2Scenario().graph
+    );
+
+    expect(applied.protocol_problem).toBeNull();
+    expect(applied.events).toEqual([completed]);
+    expect(applied.agent_outputs_by_cursor.get(completed.cursor)).toEqual({
+      kind,
+      value,
+      byte_count: byteCount
+    });
+  });
+
+  it("refuses contradictory output bytes before accepting either event or output", async () => {
+    const completed = v2AgentEvent("AGENT_COMPLETED", {
+      output_base64: "R3LDvMOfZSDmnbHkuqw=",
+      output_hash: digest
+    });
+
+    const rejected = await decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify(completed),
+      v2Scenario().graph
+    );
+
+    expect(rejected.protocol_problem).toEqual({
+      type: "output_integrity",
+      cursor: completed.cursor,
+      expected: digest,
+      received: "d9f1fa3818c49d96dce2661015bdad90989df9e67244a7e5f1519ab466286332"
+    });
+    expect(rejected.events).toEqual([]);
+    expect(rejected.agent_outputs_by_cursor.size).toBe(0);
+  });
+});
+
+describe("V2 Agent terminal truth", () => {
+  it.each([
+    ["AGENT_COMPLETED", "completed", "working"],
+    ["AGENT_FAILED", "failed", "queued"],
+    ["AGENT_CANCELLED", "cancelled", "queued"],
+    ["AGENT_INTERRUPTED", "interrupted", "queued"]
+  ] as const)("projects %s without inventing successor progress", (eventKind, state, successor) => {
+    const scenario = v2Scenario();
+    const rail = projectNodeRail(
+      scenario.run,
+      scenario.graph,
+      [v2AgentEvent(eventKind)]
+    );
+
+    expect(rail.map((node) => node.state)).toEqual([state, successor]);
+  });
+
+  it.each(["AGENT_CANCELLED", "AGENT_INTERRUPTED"] as const)(
+    "keeps a prepared replacement live after %s remains terminal history",
+    (eventKind) => {
+      const scenario = v2ReplacementScenario(eventKind);
+
+      const rail = projectNodeRail(scenario.run, scenario.graph, [scenario.event]);
+
+      expect(rail.map((node) => node.state)).toEqual(["working", "queued"]);
+    }
+  );
 });
 
 describe("read-only node rail", () => {
@@ -150,10 +238,10 @@ describe("read-only node rail", () => {
 
   it("shows an accepted reconciliation as Working even while the snapshot still waits", () => {
     const value = waitingRun();
-    const pending: Run = {
+    const pending: RunV1 = {
       ...value,
       state: "WAITING_RECONCILIATION",
-      current_node: workflow().graph.nodes[1]!,
+      current_node: workflow().graph.nodes[1]! as RunV1["current_node"],
       waiting: {
         type: "WAITING_RECONCILIATION",
         node_id: "action",
@@ -247,26 +335,26 @@ function workflow(): WorkflowRevisionDetail {
   };
 }
 
-function waitingRun(): Run {
+function waitingRun(): RunV1 {
   return {
     run_id: "run",
     public_run_reference: "run1.cnVu",
     workflow_revision_hash: digest,
     state_version: 3,
     state: "WAITING_INPUT",
-    current_node: workflow().graph.nodes[2]!,
+    current_node: workflow().graph.nodes[2]! as RunV1["current_node"],
     waiting: { type: "WAITING_INPUT", node_id: "wait", answer_type: "integer" },
     terminal_hash: null,
     latest_event_cursor: "event1.cnVu.3"
   };
 }
 
-function startedRun(): Run {
+function startedRun(): RunV1 {
   return {
     ...waitingRun(),
     state_version: 1,
     state: "STARTED",
-    current_node: workflow().graph.nodes[1]!,
+    current_node: workflow().graph.nodes[1]! as RunV1["current_node"],
     waiting: { type: "NONE" },
     latest_event_cursor: "event1.cnVu.1"
   };
@@ -320,5 +408,105 @@ function reconciliationRequiredEvent(sequence: number) {
     event: "ACTION_RECONCILIATION_REQUIRED" as const,
     request_base64: "cmVxdWVzdA==",
     request_hash: digest
+  };
+}
+
+function v2Scenario() {
+  const graph = {
+    format_version: 2 as const,
+    start_node_id: "agent",
+    nodes: [
+      { type: "agent" as const, node_id: "agent", role: "builder", job: "Build", next_node_id: "final" },
+      { type: "subworkflow" as const, node_id: "final", operation: "add" as const, operands: [2, 3] as [number, number], next_node_id: null }
+    ]
+  };
+  const run: RunV2 = {
+    workflow_format_version: 2,
+    run_id: "run",
+    public_run_reference: "run1.cnVu",
+    workflow_revision_hash: digest,
+    agent_binding_set_hash: digest,
+    agent_bindings: [],
+    state_version: 1,
+    state: "STARTED",
+    current_node: graph.nodes[0]! as RunV2["current_node"],
+    agent_attempts: [{
+      attempt_id: digest, node_execution_id: digest, request_hash: digest,
+      attempt_ordinal: 1, state: "POSSIBLY_RAN", failure_code: null, cancellation: null
+    }],
+    waiting: { type: "NONE" },
+    terminal_hash: null,
+    latest_event_cursor: null
+  };
+  return { graph, run };
+}
+
+function v2AgentEvent(
+  eventKind: "AGENT_COMPLETED" | "AGENT_FAILED" | "AGENT_CANCELLED" | "AGENT_INTERRUPTED",
+  changes: Record<string, unknown> = {}
+) {
+  const common = {
+    workflow_format_version: 2 as const,
+    cursor: "event1.cnVu.1",
+    sequence: 1,
+    public_run_reference: "run1.cnVu",
+    workflow_revision_hash: digest,
+    node_id: "agent",
+    node_execution_id: digest,
+    event_hash: digest,
+    attempt_id: digest,
+    attempt_ordinal: 1 as const
+  };
+  if (eventKind === "AGENT_COMPLETED") {
+    return { ...common, event: eventKind, output_base64: "", output_hash: digest, ...changes };
+  }
+  if (eventKind === "AGENT_FAILED") {
+    return { ...common, event: eventKind, failure_code: "PROCESS_EXITED_UNSUCCESSFULLY" as const };
+  }
+  return {
+    ...common,
+    event: eventKind,
+    command_id: "cancel",
+    replacement: "NONE" as const,
+    disposition: "REAPED_AFTER_TERM" as const,
+    replacement_attempt_id: null
+  };
+}
+
+function v2ReplacementScenario(
+  eventKind: "AGENT_CANCELLED" | "AGENT_INTERRUPTED"
+) {
+  const scenario = v2Scenario();
+  const firstAttempt = scenario.run.agent_attempts[0]!;
+  const replacementAttemptId = "b".repeat(64);
+  return {
+    ...scenario,
+    run: {
+      ...scenario.run,
+      latest_event_cursor: "event1.cnVu.1",
+      agent_attempts: [
+        {
+          ...firstAttempt,
+          state: eventKind === "AGENT_CANCELLED" ? "CANCELLED" as const : "INTERRUPTED" as const,
+          cancellation: {
+            command_id: "cancel",
+            replacement: "ONE" as const,
+            redrive_state: "CLEANUP_ATTESTED" as const,
+            disposition: "REAPED_AFTER_TERM" as const
+          }
+        },
+        {
+          ...firstAttempt,
+          attempt_id: replacementAttemptId,
+          attempt_ordinal: 2 as const,
+          state: "PREPARED" as const
+        }
+      ]
+    },
+    event: {
+      ...v2AgentEvent(eventKind),
+      replacement: "ONE" as const,
+      replacement_attempt_id: replacementAttemptId
+    }
   };
 }

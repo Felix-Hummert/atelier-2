@@ -70,16 +70,18 @@ input:focus-visible {
   outline-offset: 3px;
 }
 
-button:disabled {
-  cursor: wait;
-  opacity: 0.55;
-}
-
 button.primary,
 .button.primary {
   border-color: var(--accent);
   color: white;
   background: var(--accent);
+}
+
+button:disabled {
+  cursor: wait;
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--paper);
 }
 
 button.quiet {
@@ -216,6 +218,7 @@ small {
 .notice > span:nth-child(2) {
   display: grid;
   gap: 0.15rem;
+  overflow-wrap: anywhere;
 }
 
 .notice-mark {
@@ -319,8 +322,45 @@ textarea {
 }
 
 .start-card,
-.pending {
+.pending,
+.binding-list {
   margin-top: 1.25rem;
+}
+
+.binding-list > h2 {
+  margin-bottom: 0.75rem;
+}
+
+.binding-card {
+  margin-top: 0.75rem;
+}
+
+.binding-card::after { content: none; }
+
+.binding-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.binding-grid label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.binding-grid input,
+.binding-grid select {
+  color: var(--ink);
+}
+
+.binding-error {
+  margin: 0.75rem 0 0;
+  color: var(--danger);
+  font-weight: 800;
 }
 
 .start-card h2 {
@@ -400,8 +440,12 @@ textarea {
   color: var(--warning);
 }
 
-.connection-reconnecting span,
-.connection-connecting span {
+.connection-problem {
+  color: var(--danger);
+}
+
+.connection-reconnecting:not(.connection-problem) span,
+.connection-connecting:not(.connection-problem) span {
   animation: connection-spin 1.25s linear infinite;
 }
 
@@ -467,8 +511,18 @@ textarea {
   border-left-color: var(--danger);
 }
 
-.node-done {
+.node-done,
+.node-completed {
   border-left-color: var(--accent);
+}
+
+.node-failed,
+.node-interrupted {
+  border-left-color: var(--warning);
+}
+
+.node-cancelled {
+  border-left-color: var(--queued);
 }
 
 .node-header,
@@ -544,12 +598,23 @@ textarea {
   clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
 }
 
-.state-done {
+.state-done,
+.state-completed {
   color: var(--accent);
 }
 
-.state-done .state-shape {
+.state-done .state-shape,
+.state-completed .state-shape {
   border-radius: 50%;
+}
+
+.state-failed,
+.state-interrupted {
+  color: var(--warning);
+}
+
+.state-cancelled {
+  color: var(--queued);
 }
 
 @keyframes working-pulse {
@@ -566,6 +631,17 @@ textarea {
 .work-item {
   display: grid;
   gap: 0.15rem;
+}
+
+.agent-binding {
+  display: grid;
+  gap: 0.15rem;
+  margin-bottom: 0;
+}
+
+.agent-binding span {
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .work-item span,
@@ -592,6 +668,15 @@ textarea {
 .context-row > code {
   flex: 1;
   font-size: 0.72rem;
+}
+
+.verified-output {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.verified-output .context-row > strong {
+  color: var(--accent);
 }
 
 .info-hint {
@@ -888,6 +973,10 @@ textarea {
 }
 
 @media (max-width: 28rem) {
+  .binding-grid {
+    grid-template-columns: 1fr;
+  }
+
   .page-header,
   .run-header,
   .start-card,

@@ -72,6 +72,7 @@
   let runStateElement: { focus(): void };
   let loadGeneration = 0;
   let disposed = false;
+  let eventQueue: Promise<void> = Promise.resolve();
   $: pendingAnswer = pendingWait === null ? null : waitAnswer(pendingWait);
   $: workingHumanNodeIds = new Set(
     [pendingWait?.node_id, pendingReconciliation?.node_id].filter(
@@ -170,10 +171,20 @@
   }
 
   function applyEvent(rawData: string): void {
+    eventQueue = eventQueue.then(() => applyEventInOrder(rawData)).catch((error: unknown) => {
+      stream?.close();
+      stream = null;
+      failureMessage = error instanceof Error
+        ? error.message
+        : "The durable event could not be verified.";
+    });
+  }
+
+  async function applyEventInOrder(rawData: string): Promise<void> {
     if (projection === null) return;
     const priorSequence = projection.last_sequence;
     const graph = snapshot.confirmed?.revision.graph;
-    const next = decodeAndApplyDurableEvent(projection, rawData, graph);
+    const next = await decodeAndApplyDurableEvent(projection, rawData, graph);
     projection = next;
     if (next.protocol_problem !== null) {
       stream?.close();
@@ -191,7 +202,10 @@
       latest?.event === "ACTION_RECONCILIATION_REQUIRED" ||
       latest?.event === "ACTION_RECONCILIATION_RESOLVED" ||
       latest?.event === "WAITING_INPUT" ||
-      latest?.event === "WAIT_ANSWERED"
+      latest?.event === "WAIT_ANSWERED" ||
+      latest?.event === "AGENT_FAILED" ||
+      latest?.event === "AGENT_CANCELLED" ||
+      latest?.event === "AGENT_INTERRUPTED"
     ) {
       void followDurableEvent(latest);
     }
@@ -711,6 +725,7 @@
   }
 
   function connectionLabel(value: StreamProjection): string {
+    if (value.protocol_problem !== null) return "Stopped";
     return {
       connecting: "Connecting",
       live: "Live",
@@ -724,7 +739,8 @@
     return {
       decoder: "Event invalid",
       sequence_gap: "Event gap",
-      conflicting_duplicate: "Event conflict"
+      conflicting_duplicate: "Event conflict",
+      output_integrity: "Output mismatch"
     }[value.protocol_problem.type];
   }
 
@@ -736,6 +752,9 @@
     }
     if (problem.type === "conflicting_duplicate") {
       return `Durable cursor ${problem.cursor} was replayed with different bytes.`;
+    }
+    if (problem.type === "output_integrity") {
+      return `Computed SHA-256 ${problem.received}; durable output says ${problem.expected}.`;
     }
     return "A durable event did not match the closed wire contract.";
   }
@@ -767,8 +786,8 @@
     {#if snapshot.request.state === "loading"}<p class="status compact-status" role="status">Refreshing</p>{/if}
 
     {#if projection !== null}
-      <p class="connection connection-{projection.connection}" role="status">
-        <span aria-hidden="true">{projection.connection === "complete" ? "✓" : projection.connection === "live" ? "●" : "↻"}</span>
+      <p class="connection connection-{projection.connection}" class:connection-problem={projection.protocol_problem !== null} role="status">
+        <span aria-hidden="true">{projection.protocol_problem !== null ? "◇" : projection.connection === "complete" ? "✓" : projection.connection === "live" ? "●" : "↻"}</span>
         {connectionLabel(projection)}
       </p>
       {#if protocolTitle(projection) !== null}
@@ -817,6 +836,7 @@
       run={snapshot.confirmed.run}
       graph={snapshot.confirmed.revision.graph}
       events={projection?.events ?? []}
+      agentOutputs={projection?.agent_outputs_by_cursor ?? new Map()}
       {workingHumanNodeIds}
     />
 

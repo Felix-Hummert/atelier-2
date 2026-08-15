@@ -21,12 +21,22 @@ const safeInteger = z.number().refine(Number.isSafeInteger, "integer must be exa
 const nonnegativeSafeInteger = safeInteger.refine((value) => value >= 0);
 const positiveSafeInteger = safeInteger.refine((value) => value > 0);
 
-const agentNodeSchema = z
+const agentNodeV1Schema = z
   .object({
     type: z.literal("agent"),
     node_id: z.string().min(1),
     job: z.string().min(1),
     output: z.string().min(1),
+    next_node_id: z.string().min(1)
+  })
+  .strict();
+
+const agentNodeV2Schema = z
+  .object({
+    type: z.literal("agent"),
+    node_id: z.string().min(1),
+    role: z.string().min(1),
+    job: z.string().min(1),
     next_node_id: z.string().min(1)
   })
   .strict();
@@ -59,20 +69,49 @@ const subworkflowNodeSchema = z
   .strict();
 
 export const nodeSchema = z.discriminatedUnion("type", [
-  agentNodeSchema,
+  agentNodeV1Schema,
   actionNodeSchema,
   waitNodeSchema,
   subworkflowNodeSchema
 ]);
 
-const workflowGraphSchema = z
+const nodeV2Schema = z.discriminatedUnion("type", [
+  agentNodeV2Schema,
+  actionNodeSchema,
+  waitNodeSchema,
+  subworkflowNodeSchema
+]);
+
+const workflowGraphV1Schema = z
   .object({
     format_version: z.literal(1),
     start_node_id: z.string().min(1),
     nodes: z.array(nodeSchema)
   })
   .strict()
-  .superRefine((graph, context) => {
+  .superRefine(validateWorkflowGraph);
+
+const workflowGraphV2Schema = z
+  .object({
+    format_version: z.literal(2),
+    start_node_id: z.string().min(1),
+    nodes: z.array(nodeV2Schema)
+  })
+  .strict()
+  .superRefine(validateWorkflowGraph);
+
+const workflowGraphSchema = z.discriminatedUnion("format_version", [
+  workflowGraphV1Schema,
+  workflowGraphV2Schema
+]);
+
+function validateWorkflowGraph(
+  graph: {
+    start_node_id: string;
+    nodes: Array<z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema>>;
+  },
+  context: z.RefinementCtx
+): void {
     const byId = new Map(graph.nodes.map((node) => [node.node_id, node]));
     if (graph.nodes.length === 0 || byId.size !== graph.nodes.length) {
       context.addIssue({ code: "custom", message: "workflow nodes must be nonempty and unique" });
@@ -108,7 +147,7 @@ const workflowGraphSchema = z
       }
     }
     const visited = new Set<string>();
-    let current: z.infer<typeof nodeSchema> | undefined = start;
+    let current: z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema> | undefined = start;
     while (current !== undefined) {
       if (visited.has(current.node_id)) {
         context.addIssue({ code: "custom", message: "workflow graph contains a cycle" });
@@ -120,7 +159,7 @@ const workflowGraphSchema = z
     if (visited.size !== graph.nodes.length) {
       context.addIssue({ code: "custom", message: "workflow graph contains unreachable nodes" });
     }
-  });
+}
 
 const workflowRevisionSummarySchema = z
   .object({ revision_hash: sha256 })
@@ -138,6 +177,35 @@ export const workflowRevisionPageSchema = z
   .object({
     items: z.array(workflowRevisionSummarySchema),
     next_after_revision_hash: sha256.nullable()
+  })
+  .strict();
+
+const authProfileInputSchema = z
+  .object({
+    profile_id: z.string().min(1).max(1_024),
+    revision_number: positiveSafeInteger,
+    provider_id: z.string().min(1).max(64),
+    auth_mode: z.enum(["subscription", "api_key"])
+  })
+  .strict();
+
+const authProfileRevisionSchema = authProfileInputSchema
+  .extend({ auth_profile_revision_hash: sha256 })
+  .strict();
+
+const agentConfigurationInputSchema = z
+  .object({
+    model: z.string().min(1).max(1_024),
+    auth_profile_revision_hash: sha256,
+    executor_revision: z.string().min(1).max(1_024)
+  })
+  .strict();
+
+const agentConfigurationRevisionSchema = agentConfigurationInputSchema
+  .extend({
+    provider_id: z.string().min(1).max(64),
+    auth_mode: z.enum(["subscription", "api_key"]),
+    agent_configuration_revision_hash: sha256
   })
   .strict();
 
@@ -193,7 +261,7 @@ const waitingSchema = z.discriminatedUnion("type", [
   waitingReconciliationSchema
 ]);
 
-export const runSchema = z
+const runV1Schema = z
   .object({
     run_id: z.string().min(1),
     public_run_reference: publicRunReference,
@@ -206,7 +274,107 @@ export const runSchema = z
     latest_event_cursor: eventCursor.nullable()
   })
   .strict()
-  .superRefine((run, context) => {
+  .superRefine(validateRunShape);
+
+const agentBindingV2Schema = z
+  .object({
+    role: z.string().min(1),
+    agent_configuration_revision_hash: sha256,
+    auth_profile_revision_hash: sha256,
+    profile_id: z.string().min(1),
+    revision_number: positiveSafeInteger,
+    provider_id: z.string().min(1),
+    auth_mode: z.enum(["subscription", "api_key"]),
+    model: z.string().min(1),
+    executor_revision: z.string().min(1)
+  })
+  .strict();
+
+const attemptCancellationV2Schema = z
+  .object({
+    command_id: z.string().min(1),
+    replacement: z.enum(["NONE", "ONE"]),
+    redrive_state: z.enum(["PENDING", "OWNER_NOT_LOCAL", "CLEANUP_ATTESTED"]),
+    disposition: z
+      .enum([
+        "NEVER_LAUNCHED",
+        "EXITED_BEFORE_SIGNAL",
+        "REAPED_AFTER_TERM",
+        "REAPED_AFTER_KILL",
+        "OWNER_LOST_AFTER_PARENT_DEATH"
+      ])
+      .nullable()
+  })
+  .strict()
+  .superRefine((cancellation, context) => {
+    if ((cancellation.redrive_state === "CLEANUP_ATTESTED") !== (cancellation.disposition !== null)) {
+      context.addIssue({ code: "custom", message: "cleanup attestation and disposition disagree" });
+    }
+  });
+
+const agentAttemptV2Schema = z
+  .object({
+    attempt_id: sha256,
+    node_execution_id: sha256,
+    request_hash: sha256,
+    attempt_ordinal: z.union([z.literal(1), z.literal(2)]),
+    state: z.enum([
+      "PREPARED",
+      "POSSIBLY_RAN",
+      "CANCEL_REQUESTED",
+      "CANCELLED",
+      "INTERRUPTED",
+      "FAILED"
+    ]),
+    failure_code: z.literal("PROCESS_EXITED_UNSUCCESSFULLY").nullable(),
+    cancellation: attemptCancellationV2Schema.nullable()
+  })
+  .strict()
+  .superRefine((attempt, context) => {
+    if ((attempt.state === "FAILED") !== (attempt.failure_code !== null)) {
+      context.addIssue({ code: "custom", message: "agent attempt state and failure code disagree" });
+    }
+    const cancellationState = ["CANCEL_REQUESTED", "CANCELLED", "INTERRUPTED"].includes(
+      attempt.state
+    );
+    if (cancellationState !== (attempt.cancellation !== null)) {
+      context.addIssue({ code: "custom", message: "agent attempt state and cancellation disagree" });
+    }
+  });
+
+const runV2Schema = z
+  .object({
+    workflow_format_version: z.literal(2),
+    run_id: z.string().min(1),
+    public_run_reference: publicRunReference,
+    workflow_revision_hash: sha256,
+    agent_binding_set_hash: sha256,
+    agent_bindings: z.array(agentBindingV2Schema).max(100),
+    state_version: nonnegativeSafeInteger,
+    state: z.enum(["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]),
+    current_node: nodeV2Schema,
+    agent_attempts: z.array(agentAttemptV2Schema).max(2),
+    waiting: waitingSchema,
+    terminal_hash: sha256.nullable(),
+    latest_event_cursor: eventCursor.nullable()
+  })
+  .strict()
+  .superRefine(validateRunShape);
+
+export const runSchema = z.union([runV2Schema, runV1Schema]);
+
+function validateRunShape(
+  run: {
+    run_id: string;
+    public_run_reference: string;
+    latest_event_cursor: string | null;
+    state: "STARTED" | "WAITING_RECONCILIATION" | "WAITING_INPUT" | "COMPLETED";
+    current_node: z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema>;
+    waiting: z.infer<typeof waitingSchema>;
+    terminal_hash: string | null;
+  },
+  context: z.RefinementCtx
+): void {
     const referencedRunId = decodePublicRunReference(run.public_run_reference);
     if (referencedRunId !== run.run_id) {
       context.addIssue({ code: "custom", message: "run id and public reference disagree" });
@@ -236,7 +404,7 @@ export const runSchema = z
     if (!valid) {
       context.addIssue({ code: "custom", message: "run state fields disagree" });
     }
-  });
+}
 
 export const runPageSchema = z
   .object({ items: z.array(runSchema), next_after: publicRunReference.nullable() })
@@ -269,7 +437,25 @@ const eventBase = {
   event_hash: sha256
 };
 
-export const runEventSchema = z
+const v2EventBase = { workflow_format_version: z.literal(2), ...eventBase };
+const v2AttemptEvent = {
+  attempt_id: sha256,
+  attempt_ordinal: z.union([z.literal(1), z.literal(2)])
+};
+const v2CancellationEvent = {
+  ...v2AttemptEvent,
+  command_id: z.string().min(1).max(1_024),
+  replacement: z.enum(["NONE", "ONE"])
+};
+const v2Disposition = z.enum([
+  "NEVER_LAUNCHED",
+  "EXITED_BEFORE_SIGNAL",
+  "REAPED_AFTER_TERM",
+  "REAPED_AFTER_KILL",
+  "OWNER_LOST_AFTER_PARENT_DEATH"
+]);
+
+const runEventV1Schema = z
   .discriminatedUnion("event", [
     z.object({ ...eventBase, event: z.literal("AGENT_COMPLETED"), output: z.string(), payload_hash: sha256 }).strict(),
     z.object({ ...eventBase, event: z.literal("ACTION_RECONCILIATION_REQUIRED"), request_base64: standardBase64, request_hash: sha256 }).strict(),
@@ -279,7 +465,30 @@ export const runEventSchema = z
     z.object({ ...eventBase, event: z.literal("WAIT_ANSWERED"), answer: z.string().regex(/^(?:0|-?[1-9][0-9]*)$/), answer_hash: sha256 }).strict(),
     z.object({ ...eventBase, event: z.literal("SUBWORKFLOW_COMPLETED"), result: safeInteger, result_hash: sha256 }).strict()
   ])
-  .superRefine((event, context) => {
+  .superRefine(validateEventCursor);
+
+const runEventV2Schema = z
+  .discriminatedUnion("event", [
+    z.object({ ...v2EventBase, ...v2AttemptEvent, event: z.literal("AGENT_COMPLETED"), output_base64: standardBase64, output_hash: sha256 }).strict(),
+    z.object({ ...v2EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.literal("PROCESS_EXITED_UNSUCCESSFULLY") }).strict(),
+    z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
+    z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
+    z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("ACTION_RECONCILIATION_REQUIRED"), request_base64: standardBase64, request_hash: sha256 }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("ACTION_RECONCILIATION_RESOLVED"), receipt: receiptSchema }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("ACTION_COMPLETED"), receipt: receiptSchema }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("WAITING_INPUT"), answer_type: z.literal("integer") }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("WAIT_ANSWERED"), answer: z.string().regex(/^(?:0|-?[1-9][0-9]*)$/), answer_hash: sha256 }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("SUBWORKFLOW_COMPLETED"), result: safeInteger, result_hash: sha256 }).strict()
+  ])
+  .superRefine(validateEventCursor);
+
+export const runEventSchema = z.union([runEventV2Schema, runEventV1Schema]);
+
+function validateEventCursor(
+  event: { cursor: string; public_run_reference: string; sequence: number },
+  context: z.RefinementCtx
+): void {
     const parsedCursor = parseEventCursor(event.cursor);
     if (
       parsedCursor?.publicRunReference !== event.public_run_reference ||
@@ -290,9 +499,16 @@ export const runEventSchema = z
         message: "event cursor, run reference, and sequence disagree"
       });
     }
-  });
+}
 
 export const problemDefinitions = {
+  "auth-profile-revision-conflict": { status: 409, title: "Auth profile revision conflict" },
+  "auth-profile-revision-collision": { status: 409, title: "Auth profile revision collision" },
+  "auth-profile-revision-not-found": { status: 404, title: "Auth profile revision not found" },
+  "agent-executor-binding-unavailable": { status: 409, title: "Agent executor binding unavailable" },
+  "agent-configuration-revision-collision": { status: 409, title: "Agent configuration revision collision" },
+  "agent-configuration-revision-not-found": { status: 404, title: "Agent configuration revision not found" },
+  "invalid-agent-bindings": { status: 422, title: "Invalid agent bindings" },
   "invalid-public-run-reference": { status: 400, title: "Invalid public run reference" },
   "invalid-event-cursor": { status: 400, title: "Invalid event cursor" },
   "invalid-revision-hash": { status: 400, title: "Invalid revision hash" },
@@ -324,6 +540,13 @@ export const problemDefinitions = {
 } as const;
 
 export const problemSchema = z.discriminatedUnion("type", [
+  problemVariant("auth-profile-revision-conflict", problemDefinitions["auth-profile-revision-conflict"]),
+  problemVariant("auth-profile-revision-collision", problemDefinitions["auth-profile-revision-collision"]),
+  problemVariant("auth-profile-revision-not-found", problemDefinitions["auth-profile-revision-not-found"]),
+  problemVariant("agent-executor-binding-unavailable", problemDefinitions["agent-executor-binding-unavailable"]),
+  problemVariant("agent-configuration-revision-collision", problemDefinitions["agent-configuration-revision-collision"]),
+  problemVariant("agent-configuration-revision-not-found", problemDefinitions["agent-configuration-revision-not-found"]),
+  problemVariant("invalid-agent-bindings", problemDefinitions["invalid-agent-bindings"]),
   problemVariant("invalid-public-run-reference", problemDefinitions["invalid-public-run-reference"]),
   problemVariant("invalid-event-cursor", problemDefinitions["invalid-event-cursor"]),
   problemVariant("invalid-revision-hash", problemDefinitions["invalid-revision-hash"]),
@@ -356,12 +579,18 @@ export const problemSchema = z.discriminatedUnion("type", [
 
 export type Problem = z.infer<typeof problemSchema>;
 export type Run = z.infer<typeof runSchema>;
+export type RunV1 = z.infer<typeof runV1Schema>;
+export type RunV2 = z.infer<typeof runV2Schema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
 export type WorkflowGraph = z.infer<typeof workflowGraphSchema>;
-export type WorkflowNode = z.infer<typeof nodeSchema>;
+export type WorkflowNode = z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema>;
 export type WorkflowRevisionDetail = z.infer<typeof workflowRevisionDetailSchema>;
 export type RunPage = z.infer<typeof runPageSchema>;
 export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
+export type AuthProfileInput = z.infer<typeof authProfileInputSchema>;
+export type AuthProfileRevision = z.infer<typeof authProfileRevisionSchema>;
+export type AgentConfigurationInput = z.infer<typeof agentConfigurationInputSchema>;
+export type AgentConfigurationRevision = z.infer<typeof agentConfigurationRevisionSchema>;
 
 export interface HttpResult<T> {
   status: number;
@@ -372,6 +601,10 @@ export interface CockpitApi {
   listRuns(): Promise<RunPage>;
   listWorkflowRevisions(): Promise<WorkflowRevisionPage>;
   publish(mutation: PublishMutation): Promise<HttpResult<WorkflowRevisionDetail>>;
+  publishAuthProfile(input: AuthProfileInput): Promise<HttpResult<AuthProfileRevision>>;
+  publishAgentConfiguration(
+    input: AgentConfigurationInput
+  ): Promise<HttpResult<AgentConfigurationRevision>>;
   start(mutation: StartMutation): Promise<HttpResult<Run>>;
   answer(mutation: WaitMutation): Promise<HttpResult<Run>>;
   reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
@@ -431,6 +664,30 @@ export function createCockpitApi(
         },
         [200, 201],
         workflowRevisionDetailSchema
+      ),
+    publishAuthProfile: async (input) =>
+      requestJsonResult(
+        fetcher,
+        "/atelier/api/v1/auth-profile-revisions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(authProfileInputSchema.parse(input))
+        },
+        [200, 201],
+        authProfileRevisionSchema
+      ),
+    publishAgentConfiguration: async (input) =>
+      requestJsonResult(
+        fetcher,
+        "/atelier/api/v1/agent-configuration-revisions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(agentConfigurationInputSchema.parse(input))
+        },
+        [200, 201],
+        agentConfigurationRevisionSchema
       ),
     start: async (mutation) =>
       requestJsonResult(
@@ -516,28 +773,16 @@ export function createCockpitApi(
         `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}/events`
       );
       source.addEventListener("open", () => handlers.opened());
-      for (const eventName of durableEventNames) {
-        source.addEventListener(eventName, (event) => {
-          if (event instanceof MessageEvent && typeof event.data === "string") {
-            handlers.event(event.data);
-          }
-        });
-      }
+      source.addEventListener("message", (event) => {
+        if (event instanceof MessageEvent && typeof event.data === "string") {
+          handlers.event(event.data);
+        }
+      });
       source.addEventListener("error", () => handlers.disconnected());
       return source;
     }
   };
 }
-
-const durableEventNames = [
-  "AGENT_COMPLETED",
-  "ACTION_RECONCILIATION_REQUIRED",
-  "ACTION_RECONCILIATION_RESOLVED",
-  "ACTION_COMPLETED",
-  "WAITING_INPUT",
-  "WAIT_ANSWERED",
-  "SUBWORKFLOW_COMPLETED"
-] as const;
 
 export function decodeProblem(value: unknown): Problem {
   return problemSchema.parse(value);

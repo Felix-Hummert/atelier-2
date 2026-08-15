@@ -496,7 +496,6 @@ def _install_sse_contract(schema: dict[str, Any]) -> None:
             "schema": {"type": "string"},
             "x-atelier2-sse-v1": {
                 "id": {"$ref": "#/components/schemas/EventCursor"},
-                "event": {"enum": list(EVENT_NAMES_V2)},
                 "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
             },
         }

@@ -2,6 +2,7 @@ import {
   decodeCanonicalBase64,
   decodePublicRunReference
 } from "../api/client";
+import { sha256Hex } from "./exactBytes";
 
 export type MutationDelivery = "prepared" | "uncertain";
 
@@ -20,6 +21,11 @@ export interface PublishMutation extends MutationBase {
 export interface StartMutation extends MutationBase {
   kind: "start";
   content_type: "application/json";
+}
+
+export interface StartAgentBinding {
+  role: string;
+  agent_configuration_revision_hash: string;
 }
 
 export async function publicationMutation(document: string): Promise<PublishMutation> {
@@ -46,6 +52,33 @@ export function startMutation(runId: string, workflowRevisionHash: string): Star
     content_type: "application/json",
     body_base64: encodeBase64(body)
   };
+}
+
+export function startMutationV2(
+  runId: string,
+  workflowRevisionHash: string,
+  agentBindings: readonly StartAgentBinding[]
+): StartMutation {
+  const body = new TextEncoder().encode(
+    JSON.stringify({
+      workflow_format_version: 2,
+      run_id: runId,
+      workflow_revision_hash: workflowRevisionHash,
+      agent_bindings: agentBindings
+    })
+  );
+  return {
+    mutation_id: `start:${runId}`,
+    kind: "start",
+    target: "/atelier/api/v1/runs",
+    content_type: "application/json",
+    body_base64: encodeBase64(body)
+  };
+}
+
+export function requestedStartAgentBindings(mutation: Pick<StartMutation, "body_base64">): readonly StartAgentBinding[] | null {
+  const body = requireStartBody(mutation.body_base64);
+  return "agent_bindings" in body ? body.agent_bindings : null;
 }
 
 export function createRunId(): string {
@@ -404,19 +437,56 @@ async function requirePublish(envelope: PublishMutation): Promise<void> {
 
 function requireStart(envelope: StartMutation): void {
   requireExactKeys(envelope, envelopeKeys(envelope));
-  const body = requireJsonBody(envelope.body_base64);
-  requireExactKeys(body, ["run_id", "workflow_revision_hash"]);
+  const body = requireStartBody(envelope.body_base64);
   if (
     envelope.target !== "/atelier/api/v1/runs" ||
     envelope.content_type !== "application/json" ||
-    typeof body.run_id !== "string" ||
-    body.run_id.length === 0 ||
-    typeof body.workflow_revision_hash !== "string" ||
-    !digestPattern.test(body.workflow_revision_hash) ||
     envelope.mutation_id !== `start:${body.run_id}`
   ) {
     throw new Error("invalid start mutation envelope");
   }
+}
+
+function requireStartBody(bodyBase64: string):
+  | { run_id: string; workflow_revision_hash: string }
+  | { workflow_format_version: 2; run_id: string; workflow_revision_hash: string; agent_bindings: StartAgentBinding[] } {
+  const body = requireJsonBody(bodyBase64);
+  const isV2 = body.workflow_format_version === 2;
+  requireExactKeys(
+    body,
+    isV2
+      ? ["workflow_format_version", "run_id", "workflow_revision_hash", "agent_bindings"]
+      : ["run_id", "workflow_revision_hash"]
+  );
+  if (
+    typeof body.run_id !== "string" ||
+    body.run_id.length === 0 ||
+    typeof body.workflow_revision_hash !== "string" ||
+    !digestPattern.test(body.workflow_revision_hash)
+  ) throw new Error("invalid start mutation body");
+  if (!isV2) return { run_id: body.run_id, workflow_revision_hash: body.workflow_revision_hash };
+  if (!Array.isArray(body.agent_bindings)) throw new Error("invalid V2 start mutation bindings");
+  const roles = new Set<string>();
+  for (const value of body.agent_bindings) {
+    if (!isRecord(value)) throw new Error("invalid V2 start mutation binding");
+    requireExactKeys(value, ["role", "agent_configuration_revision_hash"]);
+    if (
+      typeof value.role !== "string" ||
+      value.role.length === 0 ||
+      roles.has(value.role) ||
+      typeof value.agent_configuration_revision_hash !== "string" ||
+      !digestPattern.test(value.agent_configuration_revision_hash)
+    ) {
+      throw new Error("invalid V2 start mutation binding");
+    }
+    roles.add(value.role);
+  }
+  return {
+    workflow_format_version: 2,
+    run_id: body.run_id,
+    workflow_revision_hash: body.workflow_revision_hash,
+    agent_bindings: body.agent_bindings as StartAgentBinding[]
+  };
 }
 
 async function requireWait(envelope: WaitMutation): Promise<void> {
@@ -712,15 +782,6 @@ function sameEnvelope(left: MutationEnvelope, right: MutationEnvelope): boolean 
     (key) =>
       (left as unknown as Record<string, unknown>)[key] ===
       (right as unknown as Record<string, unknown>)[key]
-  );
-}
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const copied = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(copied).set(bytes);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", copied);
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(
-    ""
   );
 }
 

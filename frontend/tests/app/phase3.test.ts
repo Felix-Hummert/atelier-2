@@ -6,6 +6,7 @@ import {
   CockpitRequestError,
   type CockpitApi,
   type Run,
+  type RunV1,
   type RunEventHandlers,
   type WorkflowRevisionDetail
 } from "../../src/api/client";
@@ -49,7 +50,7 @@ describe("Phase 3 read-only run cockpit", () => {
     feed.handlers?.disconnected();
 
     expect(await screen.findByText("Reconnecting")).toBeTruthy();
-    expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2));
     getRun.mockRejectedValueOnce(
       new CockpitRequestError("Read failed", {
         type: "urn:atelier2:problem:v1:temporarily-unavailable",
@@ -210,6 +211,8 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     listRuns: vi.fn(async () => ({ items: [], next_after: null })),
     listWorkflowRevisions: vi.fn(async () => ({ items: [], next_after_revision_hash: null })),
     publish: vi.fn(),
+    publishAuthProfile: vi.fn(),
+    publishAgentConfiguration: vi.fn(),
     start: vi.fn(),
     answer: vi.fn(),
     reconcile: vi.fn(),
@@ -237,45 +240,45 @@ function revision(): WorkflowRevisionDetail {
   };
 }
 
-function startedRun(): Run {
+function startedRun(): RunV1 {
   return {
     run_id: "run",
     public_run_reference: publicReference,
     workflow_revision_hash: digest,
     state_version: 0,
     state: "STARTED",
-    current_node: revision().graph.nodes[0]!,
+    current_node: revision().graph.nodes[0]! as RunV1["current_node"],
     waiting: { type: "NONE" },
     terminal_hash: null,
     latest_event_cursor: null
   };
 }
 
-function waitingRun(): Run {
+function waitingRun(): RunV1 {
   return {
     ...startedRun(),
     state_version: 3,
     state: "WAITING_INPUT",
-    current_node: revision().graph.nodes[2]!,
+    current_node: revision().graph.nodes[2]! as RunV1["current_node"],
     waiting: { type: "WAITING_INPUT", node_id: "wait", answer_type: "integer" },
     latest_event_cursor: "event1.cnVu.3"
   };
 }
 
-function actionStartedRun(): Run {
+function actionStartedRun(): RunV1 {
   return {
     ...startedRun(),
     state_version: 1,
-    current_node: revision().graph.nodes[1]!,
+    current_node: revision().graph.nodes[1]! as RunV1["current_node"],
     latest_event_cursor: "event1.cnVu.1"
   };
 }
 
-function afterAnswerRun(): Run {
+function afterAnswerRun(): RunV1 {
   return {
     ...startedRun(),
     state_version: 4,
-    current_node: revision().graph.nodes[3]!,
+    current_node: revision().graph.nodes[3]! as RunV1["current_node"],
     latest_event_cursor: "event1.cnVu.4"
   };
 }
