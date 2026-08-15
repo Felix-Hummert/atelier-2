@@ -70,11 +70,19 @@ A **runner** is the process that launches, supervises, and reaps the provider
 process for exactly one bound attempt, on exactly one host, together with the
 credential material that host holds. Not runners: the durable core and the API
 (the **coordinating service**), the cockpit and the conductor (#7) — both API
-clients — and the provider CLI child, which is the runner's child. Today's runner
-is the supervisor inside the host process: ADR 0001's Unix control endpoint,
-watchdog generation, delegated cgroup and exec guard. That is a runner co-located
-with the service, not the absence of one, and naming it now is what keeps a
-remote runner from becoming a second architecture later.
+clients — and the provider CLI child, which is the runner's child.
+
+**Today's runner is the per-attempt watchdog process, and it is already a
+separate process.** The service spawns one watchdog per attempt
+(`adapters/agent_processes.py`) and reaches it over a Unix control endpoint it
+created; that watchdog — not the service — launches the provider under the exec
+guard, holds its handle and its cgroup, supervises it, and reaps it
+(`adapters/agent_process_watchdog.py`). By the definition above that makes the
+watchdog the runner, without qualification. It is *co-located* with the service —
+one machine, one OS user, one watchdog generation — and co-location is not
+co-residence in a process. Naming it now is what keeps a remote runner from
+becoming a second architecture later, and it is what makes the boundary below a
+statement about running code rather than about a future.
 
 There is exactly **one** trust boundary in the product: between the coordinating
 service and any runner. Everything a runner says is evidence; only the service
@@ -85,8 +93,9 @@ boundary, never the rules it enforces.
 
 A deployment declares its runner tier.
 
-- `same-host`: service and runner on one machine under one OS user, connected
-  over the supervisor's Unix control endpoint.
+- `same-host`: service and runner are **separate processes** on one machine under
+  one OS user, connected over the runner's local control endpoint — today a Unix
+  socket the service creates and the watchdog listens on.
 - `remote`: a separate machine or trust domain. Mutual authentication is
   mandatory in both directions. This tier is a named successor epic (#9 part 3);
   this record binds its rules, not its transport.
@@ -95,25 +104,40 @@ A `same-host` mechanism is never accepted for a connection that did not arrive
 over that local endpoint: the service refuses it (`runner-transport-mismatch`).
 Tier is a property of the deployment, not a per-request claim.
 
-**What `same-host` identity is today, stated as it is rather than as it sounds.**
-Today service and runner are **the same process under one OS user**, so there is
-no peer to authenticate and no cross-process check to make. The endpoint's
-protection is a `0700` directory and a `0600` socket
-(`adapters/agent_process_watchdog.py`), and that authenticates **the OS user**,
-not the service: any process running as that user may connect. ADR 0001's cgroup
-attests the *provider child's* descendant relationship — it says nothing about
-who opened a control connection. `same-host` is therefore a **same-UID trust
-domain**, and calling it "OS-enforced identity" would name a control that does
-not exist.
+**The cross-process invariant, stated without a transport.** Because §1's runner
+is a separate process on every tier, both tiers carry the same obligation: before
+any attempt binding crosses it, each side of a runner connection establishes what
+its counterpart is — the runner that its counterpart is the coordinating service
+(§4's return direction), the service that its counterpart is the enrolled runner
+it bound. That is an invariant about the boundary, not about a socket. This
+record decides no transport and no framing (see *Out of scope*), so it names no
+mechanism as the decision: a local socket implementation would carry it with the
+peer credential the kernel supplies and the peer's cgroup membership, a remote
+one with §4's mutual credential over TLS, and both are instances of the same
+sentence. The refusal `runner-peer-unverified` binds to the invariant; whichever
+item owns the control protocol when the invariant becomes required binds the
+mechanism (#92 gives that protocol its first single owner; #9 part 3 owns the
+remote transport).
 
-That is acceptable exactly while the runner is in the service's own process, and
-not one step further. The moment a `same-host` runner becomes a separate process,
-this tier requires a peer check at accept: the peer credential the kernel
-supplies (`SO_PEERCRED`: uid and pid, which the connecting process cannot forge)
-plus the cgroup membership of that pid, both verified before any attempt binding.
-Until that check exists, a `same-host` connection from a process that is not the
-service's own is refused (`runner-peer-unverified`) rather than admitted on the
-strength of its UID.
+**What `same-host` is today, stated as it is rather than as it sounds — and
+accepted as that.** The endpoint's protection is a `0700` directory and a `0600`
+socket, and the accept path performs no peer check at all
+(`adapters/agent_process_watchdog.py`). That authenticates **the OS user**, not
+the peer: any process running as that user may connect. ADR 0001's cgroup attests
+the *provider child's* descendant relationship — it says nothing about who opened
+a control connection. So `same-host` today is a **same-UID trust domain**, and
+this record accepts it as one rather than describing a control that does not
+exist. The stake is named with the acceptance: anything running as that user
+which reaches the endpoint can launch, cancel and read a billed provider process.
+
+That acceptance is bounded, and the bound is the point. It holds while the whole
+boundary stays on one machine, under one OS user, at exposure `this-machine`
+(§3). It **ends** — and the cross-process invariant above becomes mandatory
+before any attempt binding — at the first of: the `remote` tier; a `reachable`
+exposure; a second OS user or a second project sharing the host (#23); or a
+runner the service did not itself spawn. Past any of those, an unverified peer is
+refused (`runner-peer-unverified`) rather than admitted on the strength of its
+UID.
 
 ### 3. Operator authentication gates every exposure beyond this machine
 
@@ -285,7 +309,8 @@ refuses rather than downgrading.
 
 Attach is the one channel that lets a human's keystrokes into a
 credential-bearing process, so execution attestation never implies it. It is
-gated separately from execution at four points:
+gated separately from execution, and every gate below is load-bearing on its
+own:
 
 - **Default off.** A deployment enables it explicitly, and the runner carries
   that state as the `attach_channel` field of its runner attestation (§7) — a
@@ -301,6 +326,27 @@ gated separately from execution at four points:
   **opaque id and a digest of its value** — never the value itself, in any
   record, log, event, receipt or API resource, under the same secret rule §6
   applies to every other credential here.
+- **The bearer is unguessable, and the id is not authority.** Storing a digest
+  protects a *strong* bearer and publishes a brute-force target for a weak one:
+  a sequential counter, a UUID scheme, a timestamp, or any value derivable from
+  the attempt, runner or actor identity the record already publishes satisfies
+  every other sentence here and is recoverable offline from the durable digest by
+  anyone who reads it. So the bearer is drawn from a cryptographically secure
+  random source with **at least 256 bits of entropy** — the named need being
+  exactly that stored digest, since a guess costs one hash — and from no other
+  source. Because the bearer carries full entropy, a single SHA-256 is a
+  sufficient digest and no password-derivation function is wanted; that
+  sufficiency is a consequence of the entropy floor, so the two rules travel
+  together and neither is weakened alone. The opaque id **identifies** a ticket
+  and never authorizes one: redemption requires the bearer whose digest matches,
+  and presenting the id alone is refused like presenting nothing.
+- **Verification is constant-time, and the bearer is confined.** The stored
+  digest is compared against the presented bearer's digest with a constant-time
+  comparison, because a byte-wise compare over a stored digest leaks it one byte
+  at a time. Raw bearer bytes exist only at issue and at redemption: they cross
+  once to the authorized operator client, are compared and discarded, and are
+  never re-displayed or recoverable afterwards — an operator who loses a ticket
+  authorizes a new attach rather than retrieving the old one.
 - **Consumed exactly once, atomically.** Redemption is a compare-and-consume
   against durable state: the first redemption wins and marks the ticket spent in
   the same operation that authorizes the attach; a concurrent second redemption
@@ -381,7 +427,7 @@ unchanged through the chain, so depth never launders identity.
 | `unauthenticated-exposure` | a deployment declaring `reachable` exposure, or declaring none, with no composed operator authenticator | host composition |
 | `exposure-bind-contradiction` | a deployment declaring `this-machine` exposure bound to a non-loopback address | host composition |
 | `runner-transport-mismatch` | a connection whose transport does not match the declared tier | runner connection |
-| `runner-peer-unverified` | a `same-host` connection from a process outside the service, with no peer-credential and cgroup check | runner connection |
+| `runner-peer-unverified` | a runner connection whose peer is not established in both directions, where §2's cross-process invariant is required | runner connection |
 | `runner-unknown` | a runner with no enrolment record requests work or a ticket | runner connection |
 | `runner-revoked` | the enrolment record is marked revoked | runner connection |
 | `runner-attestation-changed` | the presented runner attestation differs from the enrolled one | runner connection |
@@ -390,6 +436,7 @@ unchanged through the chain, so depth never launders identity.
 | `attempt-binding-unknown` | a runner acts on an attempt it was not bound | attempt handoff |
 | `attempt-binding-terminal` | a runner acts under a terminal attempt id | attempt handoff |
 | `attach-ticket-consumed` | a ticket is redeemed a second time, including concurrently | attach |
+| `attach-ticket-invalid` | a redemption presents no bearer, an unissued bearer, or a bearer whose digest does not match the named ticket | attach |
 | `actor-kind-not-permitted` | an `agent` actor presents an operator actor, or enrols or delegates | service authorization |
 | `runner-report-out-of-scope` | a report carries a disposition, receipt, or catalog mutation | runner report |
 | `runner-not-authorized` | a runner attempts a catalog or command operation | service authorization |
@@ -407,10 +454,14 @@ this record borrows that owner rather than opening a second vocabulary.
 - A deployment must now state its exposure, and stating none refuses. That is a
   new obligation on every deployment including today's local one, and it is the
   price of not inferring reach from a bind address a proxy can front.
-- V1 gains no daemon and no new process. The same-host runner is the supervisor
-  that exists today; only its name and its obligations become explicit — and
-  this record says plainly that today's `same-host` identity is a same-UID trust
-  domain, so the peer check it will need is scheduled rather than assumed.
+- V1 gains no daemon and no new process. The `same-host` runner is the watchdog
+  process that already exists; only its name and its obligations become explicit.
+  The record does not claim a peer control it lacks: it accepts today's same-UID
+  trust domain in writing, names what that costs, and states the boundary past
+  which the acceptance ends.
+- The cross-process invariant is written without a transport, so the record can
+  be satisfied by whatever carries the control endpoint at the time — and cannot
+  be quietly declared satisfied by keeping the endpoint and changing nothing.
 - The remote epic is unblocked in rules, not in build: transport, protocol and
   the ownership lease remain to be decided by it.
 - Per-runner credentials cost an enrolment ceremony, and the operator must
@@ -431,9 +482,10 @@ this record borrows that owner rather than opening a second vocabulary.
   and no attach ticket, and no durable row is written for the refusal path.
 - A revoked runner and a never-enrolled one produce **different** refusals from
   durable state, and re-enrolling a revoked id requires an explicit operator act.
-- A `same-host` connection from a process that is not the service is refused
-  while the peer-credential and cgroup check is absent, rather than admitted on
-  its UID.
+- Where §2's cross-process invariant is required, a runner connection whose peer
+  is not established in both directions is refused before any attempt binding —
+  proven against the transport that deployment actually uses, not against a
+  mechanism this record names.
 - Run start refuses a binding no connected runner attests, naming node, binding
   and missing attestation, with no run, binding, attempt, receipt or process.
 - A runner report carrying a disposition, receipt, or catalog mutation is
@@ -445,7 +497,11 @@ this record borrows that owner rather than opening a second vocabulary.
   redeemed **twice concurrently** succeeds exactly once, the loser refusing with
   `attach-ticket-consumed`.
 - No ticket value appears in any durable record, log, event, receipt or API
-  resource — the same canary shape the credential proof above uses.
+  resource — the same canary shape the credential proof above uses — and it is
+  not retrievable after issue by any surface.
+- A redemption presenting the ticket's opaque id with no bearer, with an unissued
+  bearer, or with another ticket's bearer refuses (`attach-ticket-invalid`) and
+  consumes nothing, proving the id is an identifier and not authority.
 - An `agent` actor with no credential is refused; one presenting an `operator`
   actor is refused rather than downgraded; and a command its enrolling operator
   may not issue is refused for it too.
@@ -467,7 +523,10 @@ Stop implementation on: a shared runner secret; a runner writing a receipt,
 disposition, or catalog revision; a credential value crossing the service in
 either direction; an attach path without a per-attach ticket and an audit
 record; a ticket value written into durable state, or redeemed by a
-read-then-mark sequence instead of an atomic compare-and-consume; a
+read-then-mark sequence instead of an atomic compare-and-consume; a ticket bearer
+from anything but a cryptographically secure random source, or below the entropy
+floor, or verified by a non-constant-time comparison, or treated as authorized on
+its opaque id alone; a
 deployment-authored or probe-derived entry written into ADR 0006's immutable
 capability manifest; exposure inferred from the bind address, or a forwarded
 header read as identity; a revocation that deletes the enrolment record instead
