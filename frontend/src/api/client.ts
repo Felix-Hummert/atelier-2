@@ -197,7 +197,8 @@ const agentConfigurationInputSchema = z
   .object({
     model: z.string().min(1).max(1_024),
     auth_profile_revision_hash: sha256,
-    executor_revision: z.string().min(1).max(1_024)
+    executor_revision: z.string().min(1).max(1_024),
+    requested_capability: z.enum(["headless", "interactive"]).optional()
   })
   .strict();
 
@@ -205,6 +206,7 @@ const agentConfigurationRevisionSchema = agentConfigurationInputSchema
   .extend({
     provider_id: z.string().min(1).max(64),
     auth_mode: z.enum(["subscription", "api_key"]),
+    requested_capability: z.enum(["headless", "interactive"]),
     agent_configuration_revision_hash: sha256
   })
   .strict();

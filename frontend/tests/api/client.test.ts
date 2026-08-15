@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  createCockpitApi,
   decodeProblem,
   decodeRun,
   decodeRunEvent,
@@ -354,6 +355,72 @@ describe("closed API decoders", () => {
 
   it("matches the complete R2 problem definition matrix", () => {
     expect(problemDefinitions).toEqual(expectedProblemDefinitions);
+  });
+});
+
+const configurationInput = {
+  model: "claude-opus-5",
+  auth_profile_revision_hash: digest,
+  executor_revision: "claude-subscription/v1"
+};
+
+function configurationRevision(echo: Record<string, unknown>) {
+  return {
+    ...configurationInput,
+    provider_id: "anthropic",
+    auth_mode: "subscription",
+    agent_configuration_revision_hash: digest,
+    ...echo
+  };
+}
+
+function publishing(revision: unknown) {
+  return vi.fn<typeof fetch>().mockResolvedValue(
+    new Response(JSON.stringify(revision), {
+      status: 201,
+      headers: { "content-type": "application/json" }
+    })
+  );
+}
+
+function sentBody(fetcher: ReturnType<typeof publishing>): unknown {
+  return JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body));
+}
+
+describe("agent configuration publication", () => {
+  it("sends the requested capability and carries the echoed value back", async () => {
+    const fetcher = publishing(configurationRevision({ requested_capability: "interactive" }));
+
+    const published = await createCockpitApi(fetcher).publishAgentConfiguration({
+      ...configurationInput,
+      requested_capability: "interactive"
+    });
+
+    expect(sentBody(fetcher)).toEqual({
+      ...configurationInput,
+      requested_capability: "interactive"
+    });
+    expect(published.value.requested_capability).toBe("interactive");
+  });
+
+  it("leaves the capability out when none was requested and accepts the headless echo", async () => {
+    const fetcher = publishing(configurationRevision({ requested_capability: "headless" }));
+
+    const published = await createCockpitApi(fetcher).publishAgentConfiguration(configurationInput);
+
+    expect(sentBody(fetcher)).toEqual(configurationInput);
+    expect(published.value.requested_capability).toBe("headless");
+  });
+
+  it.each([
+    ["omits the capability echo", configurationRevision({})],
+    ["echoes a capability outside the contract", configurationRevision({ requested_capability: "supervised" })]
+  ])("refuses a publication response that %s", async (_case, revision) => {
+    const fetcher = publishing(revision);
+
+    await expect(
+      createCockpitApi(fetcher).publishAgentConfiguration(configurationInput)
+    ).rejects.toThrow("did not match the durable wire contract");
   });
 });
 
