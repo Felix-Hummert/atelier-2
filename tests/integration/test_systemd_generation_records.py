@@ -37,7 +37,7 @@ def intent() -> DirectSystemdIntent:
     return DirectSystemdIntent(
         AgentAttemptId.of(b"attempt-17"),
         WatchdogGenerationId("generation-4"),
-        "atelier2-attempt-17-generation-4.service",
+        r"atelier2:_.-\attempt.service",
         Sha256Hash.of(b"launch-envelope"),
         17,
     )
@@ -132,7 +132,7 @@ def test_every_port_valid_intent_shape_fits_its_derived_record_bound(
     maximum = DirectSystemdIntent(
         AgentAttemptId.of(b"maximum-intent"),
         WatchdogGenerationId("\U0010ffff" * 1024),
-        f"{'u' * 247}.service",
+        f"{'\\' * 247}.service",
         Sha256Hash.of(b"maximum-envelope"),
         MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     )
@@ -140,6 +140,20 @@ def test_every_port_valid_intent_shape_fits_its_derived_record_bound(
     records.publish_intent(maximum)
 
     assert records.read_intent() == maximum
+
+
+@pytest.mark.parametrize(
+    "unit_name",
+    tuple(
+        f"bad{character}name.service" for character in ('"', "\n", "/", " ", "ä", "@")
+    )
+    + ("missing-suffix", f"{'u' * 248}.service"),
+)
+def test_intent_refuses_names_outside_the_systemd_unit_charset(
+    unit_name: str,
+) -> None:
+    with pytest.raises(ValueError, match="service name"):
+        replace(intent(), unit_name=unit_name)
 
 
 def test_result_bound_admits_largest_valid_shape_and_refuses_one_byte_more(
@@ -288,6 +302,7 @@ def test_valid_result_must_bind_the_exact_started_and_invocation(
     records.publish_intent(intent())
     exact_started = started()
     records.publish_started(exact_started)
+    assert records.started_path.stat().st_mode & 0o777 == 0o600
     records.publish_result(
         DirectSystemdResult(
             Sha256Hash.of(encode_direct_systemd_started(exact_started)),
@@ -300,12 +315,19 @@ def test_valid_result_must_bind_the_exact_started_and_invocation(
             False,
         )
     )
+    assert records.result_path.stat().st_mode & 0o777 == 0o600
 
     inspection = records.inspect()
 
     assert inspection.state is DirectSystemdRecoveryState.RESULT_PRESENT
     assert inspection.result is not None
     assert inspection.result.standard_output == b"answer"
+    records.started_path.unlink()
+    with pytest.raises(RuntimeError, match="RESULT exists without STARTED"):
+        records.inspect()
+    assert records.result_path.read_bytes() == encode_direct_systemd_result(
+        inspection.result
+    )
 
 
 def test_valid_but_mismatching_started_fails_loud_and_preserves_evidence(

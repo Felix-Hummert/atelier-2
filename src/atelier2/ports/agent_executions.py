@@ -73,9 +73,10 @@ class AgentProcessInvocation:
 
     Direct process adapters may durably retain this invocation while proving
     at-most-once launch. Its ordered environment may therefore contain only
-    non-secret paths, references and toggles. Credential material is handed off
-    through a provider-owned path or OS credential channel, never as a value in
-    this record.
+    non-secret paths, references and toggles, and it is the child's complete
+    environment rather than an overlay on the controller's environment.
+    Credential material is handed off through a provider-owned path or OS
+    credential channel, never as a value in this record.
     """
 
     arguments: tuple[str, ...]

@@ -25,6 +25,9 @@ _INTENT_NAME = "INTENT"
 _STARTED_NAME = "STARTED"
 _RESULT_NAME = "RESULT"
 _INVOCATION_ID = re.compile(r"[0-9a-f]{32}")
+# systemd.unit(5)'s literal prefix alphabet; systemd-escape transforms inputs,
+# while persisted record validation must stay pure and bounded.
+_SYSTEMD_UNIT_NAME = re.compile(r"[A-Za-z0-9:_.\\-]+[.]service")
 
 
 @dataclass(frozen=True)
@@ -52,8 +55,7 @@ class DirectSystemdIntent:
         if not isinstance(self.generation_id, WatchdogGenerationId):
             raise TypeError("systemd intent generation id must be typed")
         if (
-            not self.unit_name.endswith(".service")
-            or not self.unit_name.isascii()
+            _SYSTEMD_UNIT_NAME.fullmatch(self.unit_name) is None
             or not 1 <= len(self.unit_name) <= 255
         ):
             raise ValueError("systemd intent unit name must be a bounded service name")
@@ -448,7 +450,7 @@ def _maximum_intent_bytes() -> int:
                 "launch_envelope_sha256": "f" * 64,
                 "standard_output_limit": MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
                 "type": _INTENT_NAME,
-                "unit_name": f"{'u' * 247}.service",
+                "unit_name": f"{'\\' * 247}.service",
                 "version": _RECORD_VERSION,
             }
         )

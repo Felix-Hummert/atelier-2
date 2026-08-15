@@ -25,7 +25,8 @@ def main() -> None:
     collect_direct_systemd_agent_process(
         records,
         DirectSystemdInvocationId(sys.argv[3]),
-        launch_envelope_path=Path(sys.argv[2]),
+        launch_credential_path=Path(sys.argv[2]),
+        source_envelope_path=Path(sys.argv[2]),
         barriers=DirectSystemdCollectorBarriers(
             after_started_file_fsync=crash_between_started_fsyncs
         ),
