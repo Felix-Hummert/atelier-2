@@ -1,0 +1,830 @@
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from types import MappingProxyType
+
+import pytest
+
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.bind_subworkflow_boundaries import (
+    bind_subworkflow_boundaries,
+)
+from atelier2.application.compose_preview import compose_preview
+from atelier2.contracts.agents import (
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
+    AgentExecutorRevision,
+    AgentRole,
+    AuthMode,
+    AuthProfileRevision,
+    ProviderId,
+    ResolvedAgentBinding,
+)
+from atelier2.contracts.capabilities_v3 import (
+    AttestedCapabilities,
+    CapabilityAttestation,
+    CapabilityRequirement,
+    CapabilitySubject,
+    Executable,
+    NotExecutable,
+    PublishedSkills,
+    RoleBindingRefused,
+    RuntimeCapability,
+    SkillContents,
+    required_capabilities,
+)
+from atelier2.contracts.composed_preview_v3 import (
+    ComposedPreview,
+    ComposedPreviewGraph,
+    ConfigurationBinding,
+    PreviewEdge,
+    PreviewNode,
+    PreviewNodeKind,
+    PreviewRole,
+)
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
+from atelier2.contracts.run_configuration_v3 import ReferenceRefusalReason
+from atelier2.contracts.runs import WorkflowRevision
+from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
+from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
+from atelier2.ports.published_revisions import (
+    PublishedRevisionFound,
+    PublishedRevisionMissing,
+    PublishRevisionResult,
+    ResolvePublishedRevisionResult,
+)
+from atelier2.ports.workflow_revisions import (
+    PublishedWorkflowFound,
+    PublishedWorkflowMissing,
+    ResolvePublishedWorkflowResult,
+)
+
+
+def published(kind: RevisionKind, body: str) -> PublishedRevision:
+    return PublishedRevision(kind, body.encode("utf-8"))
+
+
+SCHEMA_CANDIDATE = published(RevisionKind.SCHEMA, "the workspace a builder produced")
+SCHEMA_OPINION = published(RevisionKind.SCHEMA, "what one reviewer thought of it")
+SCHEMA_VERDICT = published(RevisionKind.SCHEMA, "the verdict a review panel returns")
+SCHEMA_APPROVAL = published(RevisionKind.SCHEMA, "the word an operator gave")
+SCHEMA_RECEIPT = published(RevisionKind.SCHEMA, "the receipt a comment leaves behind")
+PROFILE = published(RevisionKind.PROFILE, "the standing method of a builder")
+SKILL = published(RevisionKind.SKILL, "workspace discipline, and its tool grants")
+TOOL = published(RevisionKind.TOOL, "the grant that writes into a repository")
+CARRIED_TOOL = published(RevisionKind.TOOL, "the grant that skill brings with it")
+CONTEXT_SOURCE = published(RevisionKind.CONTEXT_SOURCE, "the requirement of record")
+READ_OPERATION = published(RevisionKind.READ_OPERATION, "search, bounded and receipted")
+DETERMINISTIC = published(
+    RevisionKind.DETERMINISTIC_OPERATION, "decide what the panel returned"
+)
+CHILD_DETERMINISTIC = published(
+    RevisionKind.DETERMINISTIC_OPERATION, "merge every review opinion"
+)
+ADAPTER = published(RevisionKind.ADAPTER_OPERATION, "comment on the requirement")
+
+REGISTRY_CONTENTS = (
+    SCHEMA_CANDIDATE,
+    SCHEMA_OPINION,
+    SCHEMA_VERDICT,
+    SCHEMA_APPROVAL,
+    SCHEMA_RECEIPT,
+    PROFILE,
+    SKILL,
+    TOOL,
+    CONTEXT_SOURCE,
+    READ_OPERATION,
+    DETERMINISTIC,
+    CHILD_DETERMINISTIC,
+    ADAPTER,
+)
+
+PARENT_TEMPLATE = """format_version: 3
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Build every acceptance sentence of the bound story.
+    profile: {{ref: builder_method, revision: {profile}}}
+    skills:
+      - {{ref: workspace_discipline, revision: {skill}}}
+    tools:
+      - {{ref: repository_write, revision: {tool}}}
+    required_context:
+      - name: story
+        source:
+          ref: requirement
+          revision: {source}
+          selector: story_acceptance
+    available_context:
+      - name: decisions
+        source: {{ref: decision_record_index, revision: {source}}}
+        read_operations:
+          - {{ref: search, revision: {read}}}
+    outputs:
+      - name: candidate
+        schema: {{ref: workspace_candidate, revision: {candidate}}}
+  - id: panel
+    type: subworkflow
+    depends_on: [implement]
+    workflow: {{ref: review_panel, revision: {child}}}
+    inputs:
+      - name: candidate
+        from: {{node: implement, output: candidate}}
+    outputs:
+      - name: verdict
+        schema: {{ref: review_verdict, revision: {verdict}}}
+  - id: decide
+    type: deterministic
+    depends_on: [panel]
+    operation: {{ref: settle_the_panel, revision: {deterministic}}}
+    inputs:
+      - name: verdict
+        from: {{node: panel, output: verdict}}
+    outputs:
+      - name: verdict
+        schema: {{ref: review_verdict, revision: {verdict}}}
+  - id: confirm
+    type: wait
+    depends_on: [decide]
+    prompt: Does this verdict go out to the requirement?
+    outputs:
+      - name: approval
+        schema: {{ref: operator_word, revision: {approval}}}
+  - id: hand_off
+    type: action
+    depends_on: [decide, confirm]
+    join: all_succeeded
+    operation: {{ref: requirement_comment, revision: {adapter}}}
+    inputs:
+      - name: verdict
+        from: {{node: decide, output: verdict}}
+    outputs:
+      - name: receipt
+        schema: {{ref: comment_receipt, revision: {receipt}}}
+"""
+
+CHILD_TEMPLATE = """format_version: 3
+graph_inputs:
+  - name: candidate
+    schema: {{ref: workspace_candidate, revision: {candidate}}}
+graph_outputs:
+  - name: verdict
+    from: {{node: merge, output: merged}}
+nodes:
+  - id: read_it
+    type: agent
+    role: reviewer
+    mode: interactive
+    instruction: Judge the candidate against the acceptance sentences.
+    outputs:
+      - name: opinion
+        schema: {{ref: review_opinion, revision: {opinion}}}
+        confirmed_by: operator
+  - id: merge
+    type: deterministic
+    depends_on: [read_it]
+    operation: {{ref: merge_review_opinions, revision: {deterministic}}}
+    inputs:
+      - name: read
+        from: {{node: read_it, output: opinion}}
+    outputs:
+      - name: merged
+        schema: {{ref: review_verdict, revision: {verdict}}}
+"""
+
+CHILD_REFERENCE = VersionedReference(
+    ref="review_panel",
+    revision=PublishedRevisionHash.of(b"the panel that reviews a candidate").value,
+)
+CHILD_CHAIN = (CHILD_REFERENCE,)
+SKILL_REFERENCE = VersionedReference(
+    ref="workspace_discipline", revision=SKILL.revision_hash.value
+)
+CARRIED_GRANT = VersionedReference(
+    ref="workspace_write", revision=CARRIED_TOOL.revision_hash.value
+)
+SKILL_CONTENTS = PublishedSkills(
+    (SkillContents(SKILL.revision_hash.value, (CARRIED_GRANT,)),)
+)
+
+CHILD = CHILD_TEMPLATE.format(
+    candidate=SCHEMA_CANDIDATE.revision_hash.value,
+    opinion=SCHEMA_OPINION.revision_hash.value,
+    deterministic=CHILD_DETERMINISTIC.revision_hash.value,
+    verdict=SCHEMA_VERDICT.revision_hash.value,
+).encode("utf-8")
+
+PARENT = PARENT_TEMPLATE.format(
+    profile=PROFILE.revision_hash.value,
+    skill=SKILL.revision_hash.value,
+    tool=TOOL.revision_hash.value,
+    source=CONTEXT_SOURCE.revision_hash.value,
+    read=READ_OPERATION.revision_hash.value,
+    candidate=SCHEMA_CANDIDATE.revision_hash.value,
+    child=CHILD_REFERENCE.revision,
+    verdict=SCHEMA_VERDICT.revision_hash.value,
+    deterministic=DETERMINISTIC.revision_hash.value,
+    approval=SCHEMA_APPROVAL.revision_hash.value,
+    adapter=ADAPTER.revision_hash.value,
+    receipt=SCHEMA_RECEIPT.revision_hash.value,
+).encode("utf-8")
+
+REUSED_PANEL = """  - id: {node}
+    type: subworkflow
+    depends_on: [implement]
+    workflow: {{{{ref: review_panel, revision: {{child}}}}}}
+    inputs:
+      - name: candidate
+        from: {{{{node: implement, output: candidate}}}}
+    outputs:
+      - name: verdict
+        schema: {{{{ref: review_verdict, revision: {{verdict}}}}}}
+"""
+
+TWICE_BOUND_TEMPLATE = (
+    """format_version: 3
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Build the candidate both panels are going to review.
+    outputs:
+      - name: candidate
+        schema: {{ref: workspace_candidate, revision: {candidate}}}
+"""
+    + REUSED_PANEL.format(node="panel")
+    + REUSED_PANEL.format(node="panel_two")
+)
+
+TWICE_BOUND = TWICE_BOUND_TEMPLATE.format(
+    candidate=SCHEMA_CANDIDATE.revision_hash.value,
+    child=CHILD_REFERENCE.revision,
+    verdict=SCHEMA_VERDICT.revision_hash.value,
+).encode("utf-8")
+
+UNPINNED_PARENT = b"""format_version: 3
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Build the story against a profile nobody pinned properly.
+    profile: {ref: builder_method, revision: the-latest-one}
+    outputs:
+      - name: candidate
+        schema: {ref: workspace_candidate, revision: also-not-a-hash}
+"""
+
+type RegistryAnswers = Mapping[tuple[RevisionKind, str], PublishedRevision]
+
+FULL_REGISTRY: RegistryAnswers = MappingProxyType(
+    {
+        (revision.kind, revision.revision_hash.value): revision
+        for revision in REGISTRY_CONTENTS
+    }
+)
+
+
+@dataclass(frozen=True)
+class PublishedRegistry:
+    """The registries as this preview reads them: what is asked, and what answers."""
+
+    answers: RegistryAnswers
+
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult:
+        revision = self.answers.get((kind, revision_hash.value))
+        if revision is None:
+            return PublishedRevisionMissing()
+        return PublishedRevisionFound(revision)
+
+    def publish_revision(self, revision: PublishedRevision) -> PublishRevisionResult:
+        raise NotImplementedError("composing a preview publishes nothing")
+
+
+@dataclass(frozen=True)
+class PublishedWorkflows:
+    documents: Mapping[tuple[str, str], bytes]
+
+    def resolve(self, reference: VersionedReference) -> ResolvePublishedWorkflowResult:
+        document = self.documents.get((reference.ref, reference.revision))
+        if document is None:
+            return PublishedWorkflowMissing()
+        return PublishedWorkflowFound(WorkflowRevision(document))
+
+
+def _auth() -> AuthProfileRevision:
+    return AuthProfileRevision(
+        "workshop", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+    )
+
+
+def _binding(role: str, model: str) -> ResolvedAgentBinding:
+    auth = _auth()
+    configuration = AgentConfigurationRevision(
+        model,
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    return ResolvedAgentBinding(AgentRole(role), configuration, auth)
+
+
+BUILDER = _binding("builder", "claude-opus-5")
+REVIEWER = _binding("reviewer", "claude-sonnet-5")
+ROLE_MATRIX = (BUILDER, REVIEWER)
+
+
+def parsed(document: bytes = PARENT) -> WorkflowGraphV3:
+    graph = parse_workflow_document(document)
+    assert isinstance(graph, WorkflowGraphV3)
+    return graph
+
+
+def bound_children(document: bytes = PARENT) -> SubworkflowBinding:
+    return bind_subworkflow_boundaries(
+        parsed(document),
+        PublishedWorkflows({(CHILD_REFERENCE.ref, CHILD_REFERENCE.revision): CHILD}),
+        parse_workflow_document,
+        2,
+    )
+
+
+def demanded(
+    document: bytes = PARENT,
+    role_matrix: Sequence[ResolvedAgentBinding] = ROLE_MATRIX,
+) -> tuple[CapabilityRequirement, ...]:
+    return required_capabilities(
+        parsed(document), bound_children(document), tuple(role_matrix), SKILL_CONTENTS
+    )
+
+
+def attesting(
+    requirements: Sequence[CapabilityRequirement],
+) -> AttestedCapabilities:
+    """The exact manifest that proves one requirement set, and nothing more."""
+    proven: dict[RuntimeCapability, set[str]] = {}
+    for requirement in requirements:
+        subjects = proven.setdefault(requirement.capability, set())
+        if requirement.subject is not None:
+            subjects.add(requirement.subject.revision)
+    return AttestedCapabilities(
+        tuple(
+            CapabilityAttestation(capability, frozenset(subjects))
+            for capability, subjects in proven.items()
+        )
+    )
+
+
+FULL_ATTESTATION = attesting(demanded())
+
+
+def without(
+    attested: AttestedCapabilities, capability: RuntimeCapability
+) -> AttestedCapabilities:
+    return AttestedCapabilities(
+        tuple(entry for entry in attested.entries if entry.capability is not capability)
+    )
+
+
+def without_publication(*absent: PublishedRevision) -> RegistryAnswers:
+    withdrawn = {(revision.kind, revision.revision_hash.value) for revision in absent}
+    return {
+        key: revision for key, revision in FULL_REGISTRY.items() if key not in withdrawn
+    }
+
+
+def preview(
+    document: bytes = PARENT,
+    answers: RegistryAnswers = FULL_REGISTRY,
+    role_matrix: Sequence[ResolvedAgentBinding] = ROLE_MATRIX,
+    attested: AttestedCapabilities = FULL_ATTESTATION,
+    configuration: ConfigurationBinding = ConfigurationBinding.PROPOSED,
+) -> ComposedPreview:
+    return compose_preview(
+        WorkflowRevision(document).revision_hash,
+        parsed(document),
+        bound_children(document),
+        tuple(role_matrix),
+        SKILL_CONTENTS,
+        attested,
+        PublishedRegistry(answers),
+        configuration,
+    )
+
+
+def node_of(graph: ComposedPreviewGraph, node_id: str) -> PreviewNode:
+    for node in graph.nodes:
+        if node.id == node_id:
+            return node
+    raise AssertionError(f"the preview carries no node {node_id!r}")
+
+
+def child_of(preview_graph: ComposedPreviewGraph, node_id: str) -> ComposedPreviewGraph:
+    child = node_of(preview_graph, node_id).child
+    assert child is not None
+    return child
+
+
+def demands_of(node: PreviewNode) -> set[RuntimeCapability]:
+    return {requirement.capability for requirement in node.demands}
+
+
+def every_node(graph: ComposedPreviewGraph) -> tuple[PreviewNode, ...]:
+    nodes: list[PreviewNode] = []
+    for node in graph.nodes:
+        nodes.append(node)
+        if node.child is not None:
+            nodes.extend(every_node(node.child))
+    return tuple(nodes)
+
+
+def test_every_node_is_previewed_under_the_kind_the_parser_gave_it() -> None:
+    composed = preview()
+
+    assert [(node.id, node.kind) for node in composed.graph.nodes] == [
+        ("implement", PreviewNodeKind.AGENT),
+        ("panel", PreviewNodeKind.SUBWORKFLOW),
+        ("decide", PreviewNodeKind.DETERMINISTIC),
+        ("confirm", PreviewNodeKind.WAIT),
+        ("hand_off", PreviewNodeKind.ACTION),
+    ]
+
+
+def test_the_previewed_kinds_are_the_vocabulary_the_document_writes() -> None:
+    written = {node.type for node in parsed().nodes} | {
+        node.type for node in parsed(CHILD).nodes
+    }
+
+    assert written == {kind.value for kind in PreviewNodeKind}
+
+
+def test_an_agent_node_carries_the_role_provider_model_and_mode_it_is_bound_to() -> (
+    None
+):
+    composed = preview()
+
+    implement = node_of(composed.graph, "implement")
+    assert implement.role == PreviewRole(
+        "builder",
+        "anthropic",
+        "claude-opus-5",
+        BUILDER.configuration.revision_hash.value,
+    )
+    assert implement.mode == "headless"
+
+
+def test_a_node_that_binds_no_role_previews_neither_a_role_nor_a_mode() -> None:
+    composed = preview()
+
+    assert [
+        (node.id, node.role, node.mode)
+        for node in composed.graph.nodes
+        if node.kind is not PreviewNodeKind.AGENT
+    ] == [
+        ("panel", None, None),
+        ("decide", None, None),
+        ("confirm", None, None),
+        ("hand_off", None, None),
+    ]
+
+
+def test_an_interactive_node_of_a_bound_child_previews_its_mode() -> None:
+    read_it = node_of(child_of(preview().graph, "panel"), "read_it")
+
+    assert read_it.mode == "interactive"
+    assert read_it.role == PreviewRole(
+        "reviewer",
+        "anthropic",
+        "claude-sonnet-5",
+        REVIEWER.configuration.revision_hash.value,
+    )
+
+
+def test_the_preview_carries_the_dependency_edges_the_document_declares() -> None:
+    composed = preview()
+
+    assert composed.graph.edges == (
+        PreviewEdge("implement", "panel"),
+        PreviewEdge("panel", "decide"),
+        PreviewEdge("decide", "confirm"),
+        PreviewEdge("decide", "hand_off"),
+        PreviewEdge("confirm", "hand_off"),
+    )
+
+
+def test_every_node_previews_the_join_a_scheduler_really_applies() -> None:
+    composed = preview()
+
+    assert [(node.id, node.join) for node in composed.graph.nodes] == [
+        ("implement", None),
+        ("panel", "all_succeeded"),
+        ("decide", "all_succeeded"),
+        ("confirm", "all_succeeded"),
+        ("hand_off", "all_succeeded"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("node_id", "capabilities"),
+    (
+        (
+            "implement",
+            {
+                RuntimeCapability.AGENT_EXECUTION,
+                RuntimeCapability.CONTEXT_MATERIALIZATION,
+                RuntimeCapability.CONTEXT_RESOLUTION,
+                RuntimeCapability.SKILL_INSTALLATION,
+                RuntimeCapability.TOOL_GRANTS,
+            },
+        ),
+        ("panel", {RuntimeCapability.SUBWORKFLOW_EXECUTION}),
+        (
+            "decide",
+            {
+                RuntimeCapability.DETERMINISTIC_OPERATIONS,
+                RuntimeCapability.DAG_SCHEDULING,
+            },
+        ),
+        ("confirm", set()),
+        (
+            "hand_off",
+            {RuntimeCapability.EXTERNAL_EFFECTS, RuntimeCapability.DAG_SCHEDULING},
+        ),
+    ),
+)
+def test_a_node_carries_exactly_the_capabilities_its_own_form_demands(
+    node_id: str, capabilities: set[RuntimeCapability]
+) -> None:
+    assert demands_of(node_of(preview().graph, node_id)) == capabilities
+
+
+def test_a_grant_a_skill_carries_lands_on_the_node_that_installs_the_skill() -> None:
+    implement = node_of(preview().graph, "implement")
+
+    assert [
+        (requirement.site.chain, requirement.subject)
+        for requirement in implement.demands
+        if requirement.capability is RuntimeCapability.TOOL_GRANTS
+        and requirement.site.chain
+    ] == [((SKILL_REFERENCE,), CapabilitySubject.of(CARRIED_GRANT))]
+
+
+def test_every_demand_of_the_closure_lands_on_exactly_one_node() -> None:
+    composed = preview()
+
+    landed = [
+        requirement
+        for node in every_node(composed.graph)
+        for requirement in node.demands
+    ]
+
+    assert sorted(map(str, landed)) == sorted(map(str, demanded()))
+
+
+def test_a_subworkflow_node_carries_the_preview_of_the_child_it_binds() -> None:
+    child = child_of(preview().graph, "panel")
+
+    assert [(node.id, node.kind) for node in child.nodes] == [
+        ("read_it", PreviewNodeKind.AGENT),
+        ("merge", PreviewNodeKind.DETERMINISTIC),
+    ]
+    assert child.edges == (PreviewEdge("read_it", "merge"),)
+
+
+def test_a_child_bound_by_two_nodes_is_previewed_once_under_each_of_them() -> None:
+    composed = preview(document=TWICE_BOUND, attested=attesting(demanded(TWICE_BOUND)))
+
+    first = child_of(composed.graph, "panel")
+    second = child_of(composed.graph, "panel_two")
+    assert first == second
+    assert [
+        (node.id, tuple(requirement.capability for requirement in node.demands))
+        for node in first.nodes
+    ] == [
+        ("read_it", (RuntimeCapability.AGENT_EXECUTION,)),
+        ("merge", (RuntimeCapability.DETERMINISTIC_OPERATIONS,)),
+    ]
+
+
+def test_a_demand_of_a_child_names_the_chain_it_entered_through() -> None:
+    child = child_of(preview().graph, "panel")
+
+    assert {
+        requirement.site.chain for node in child.nodes for requirement in node.demands
+    } == {CHILD_CHAIN}
+
+
+def test_every_reference_previews_the_published_revision_it_lands_in() -> None:
+    composed = preview()
+
+    assert {
+        (entry.site.node, entry.site.field, entry.kind, entry.revision_hash.value)
+        for entry in composed.graph.resolved_references
+    } == {
+        ("implement", "profile", RevisionKind.PROFILE, PROFILE.revision_hash.value),
+        ("implement", "skills", RevisionKind.SKILL, SKILL.revision_hash.value),
+        ("implement", "tools", RevisionKind.TOOL, TOOL.revision_hash.value),
+        (
+            "implement",
+            "required_context.source",
+            RevisionKind.CONTEXT_SOURCE,
+            CONTEXT_SOURCE.revision_hash.value,
+        ),
+        (
+            "implement",
+            "available_context.source",
+            RevisionKind.CONTEXT_SOURCE,
+            CONTEXT_SOURCE.revision_hash.value,
+        ),
+        (
+            "implement",
+            "available_context.read_operations",
+            RevisionKind.READ_OPERATION,
+            READ_OPERATION.revision_hash.value,
+        ),
+        (
+            "implement",
+            "outputs.schema",
+            RevisionKind.SCHEMA,
+            SCHEMA_CANDIDATE.revision_hash.value,
+        ),
+        (
+            "panel",
+            "outputs.schema",
+            RevisionKind.SCHEMA,
+            SCHEMA_VERDICT.revision_hash.value,
+        ),
+        (
+            "decide",
+            "operation",
+            RevisionKind.DETERMINISTIC_OPERATION,
+            DETERMINISTIC.revision_hash.value,
+        ),
+        (
+            "decide",
+            "outputs.schema",
+            RevisionKind.SCHEMA,
+            SCHEMA_VERDICT.revision_hash.value,
+        ),
+        (
+            "confirm",
+            "outputs.schema",
+            RevisionKind.SCHEMA,
+            SCHEMA_APPROVAL.revision_hash.value,
+        ),
+        (
+            "hand_off",
+            "operation",
+            RevisionKind.ADAPTER_OPERATION,
+            ADAPTER.revision_hash.value,
+        ),
+        (
+            "hand_off",
+            "outputs.schema",
+            RevisionKind.SCHEMA,
+            SCHEMA_RECEIPT.revision_hash.value,
+        ),
+    }
+    assert composed.graph.unresolved_references == ()
+
+
+def test_a_child_previews_the_references_it_declares_itself() -> None:
+    child = child_of(preview().graph, "panel")
+
+    assert {
+        (entry.site.node, entry.site.field, entry.site.chain)
+        for entry in child.resolved_references
+    } == {
+        (None, "graph_inputs.schema", CHILD_CHAIN),
+        ("read_it", "outputs.schema", CHILD_CHAIN),
+        ("merge", "operation", CHILD_CHAIN),
+        ("merge", "outputs.schema", CHILD_CHAIN),
+    }
+
+
+def test_an_unresolved_reference_is_named_instead_of_stopping_the_preview() -> None:
+    composed = preview(answers=without_publication(PROFILE, ADAPTER))
+
+    assert [
+        (entry.reason, entry.site.node, entry.site.field, entry.reference.ref)
+        for entry in composed.graph.unresolved_references
+    ] == [
+        (
+            ReferenceRefusalReason.UNPUBLISHED_REVISION,
+            "implement",
+            "profile",
+            "builder_method",
+        ),
+        (
+            ReferenceRefusalReason.UNPUBLISHED_REVISION,
+            "hand_off",
+            "operation",
+            "requirement_comment",
+        ),
+    ]
+    assert [node.id for node in composed.graph.nodes] == [
+        "implement",
+        "panel",
+        "decide",
+        "confirm",
+        "hand_off",
+    ]
+
+
+def test_a_reference_that_pins_no_revision_hash_is_named_as_malformed() -> None:
+    composed = compose_preview(
+        WorkflowRevision(UNPINNED_PARENT).revision_hash,
+        parsed(UNPINNED_PARENT),
+        SubworkflowBinding(),
+        ROLE_MATRIX,
+        SKILL_CONTENTS,
+        FULL_ATTESTATION,
+        PublishedRegistry(FULL_REGISTRY),
+        ConfigurationBinding.PROPOSED,
+    )
+
+    assert [
+        (entry.reason, entry.site.field)
+        for entry in composed.graph.unresolved_references
+    ] == [
+        (ReferenceRefusalReason.MALFORMED_REVISION, "outputs.schema"),
+        (ReferenceRefusalReason.MALFORMED_REVISION, "profile"),
+    ]
+
+
+def test_a_fully_attested_preview_carries_the_executable_verdict() -> None:
+    composed = preview()
+
+    assert composed.executability == Executable()
+    assert all(node.unproven == () for node in every_node(composed.graph))
+
+
+def test_a_node_names_the_capability_it_is_still_waiting_for() -> None:
+    composed = preview(
+        attested=without(FULL_ATTESTATION, RuntimeCapability.DETERMINISTIC_OPERATIONS)
+    )
+
+    assert isinstance(composed.executability, NotExecutable)
+    assert [
+        (node.id, tuple(refusal.requirement.capability for refusal in node.unproven))
+        for node in every_node(composed.graph)
+        if node.unproven
+    ] == [
+        ("merge", (RuntimeCapability.DETERMINISTIC_OPERATIONS,)),
+        ("decide", (RuntimeCapability.DETERMINISTIC_OPERATIONS,)),
+    ]
+
+
+def test_an_unproven_demand_of_the_run_is_named_on_the_node_that_raised_it() -> None:
+    composed = preview(
+        attested=without(FULL_ATTESTATION, RuntimeCapability.TOOL_GRANTS)
+    )
+
+    assert isinstance(composed.executability, NotExecutable)
+    assert sorted(
+        map(
+            str,
+            (
+                refusal
+                for node in every_node(composed.graph)
+                for refusal in node.unproven
+            ),
+        )
+    ) == sorted(map(str, composed.executability.refusals))
+
+
+@pytest.mark.parametrize(
+    "configuration", (ConfigurationBinding.PROPOSED, ConfigurationBinding.BOUND)
+)
+def test_a_preview_says_whether_its_configuration_is_proposed_or_bound(
+    configuration: ConfigurationBinding,
+) -> None:
+    composed = preview(configuration=configuration)
+
+    assert composed.configuration is configuration
+    assert composed.workflow_revision_hash == WorkflowRevision(PARENT).revision_hash
+
+
+def test_one_role_matrix_reached_in_any_order_is_one_preview() -> None:
+    assert preview(role_matrix=ROLE_MATRIX) == preview(
+        role_matrix=tuple(reversed(ROLE_MATRIX))
+    )
+
+
+def test_a_role_bound_to_no_configuration_stays_the_capability_refusal() -> None:
+    with pytest.raises(RoleBindingRefused) as refused:
+        preview(role_matrix=(BUILDER,))
+
+    assert refused.value.refusal.role == "reviewer"
