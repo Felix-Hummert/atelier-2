@@ -75,12 +75,18 @@ def test_the_body_is_the_system_prompt_byte_exact() -> None:
     assert definition.system_prompt.encode() == body.encode()
 
 
+@pytest.mark.proves(
+    "an-absent-tool-declaration-leaves-every-tool-and-a-declared-one-is-exact"
+)
 def test_an_absent_tools_field_leaves_the_agent_able_to_use_every_tool() -> None:
     definition = parse_agent_definition(authored_document())
 
     assert definition.tools == UnrestrictedTools()
 
 
+@pytest.mark.proves(
+    "an-absent-tool-declaration-leaves-every-tool-and-a-declared-one-is-exact"
+)
 def test_a_declared_tools_field_is_exactly_that_closed_set() -> None:
     definition = parse_agent_definition(
         authored_document(
@@ -139,6 +145,7 @@ def test_the_order_tools_are_typed_in_does_not_change_the_definition() -> None:
     assert parsed("Read, Grep, Bash") == parsed("Bash, Read, Grep")
 
 
+@pytest.mark.proves("missing-or-unknown-frontmatter-is-refused-by-name")
 @pytest.mark.parametrize(
     ("frontmatter", "refusal", "subject"),
     [
@@ -271,6 +278,7 @@ def test_frontmatter_nested_beyond_the_parsers_recursion_is_refused_by_name() ->
     )
 
 
+@pytest.mark.proves("the-same-file-is-the-same-revision-identity")
 def test_the_same_file_is_the_same_definition() -> None:
     first = parse_agent_definition(authored_document())
     second = parse_agent_definition(authored_document())
@@ -396,6 +404,7 @@ def test_a_description_carrying_yaml_punctuation_survives_rendering() -> None:
     )
 
 
+@pytest.mark.proves("a-markdown-file-becomes-a-published-configuration-revision")
 def test_the_same_file_publishes_the_same_configuration_revision() -> None:
     first = agent_configuration_revision_for(
         parse_agent_definition(authored_document()), deployment()
