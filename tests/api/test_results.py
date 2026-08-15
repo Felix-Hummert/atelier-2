@@ -20,6 +20,7 @@ from atelier2.application.answer_wait import (
     answer_wait_result,
 )
 from atelier2.application.publish_workflow_revision import (
+    UNPROJECTABLE_FORMAT_DETAIL,
     PublicationCollision,
     PublicationCreated,
     PublicationExisting,
@@ -153,6 +154,19 @@ def test_publication_rejects_invalid_yaml_before_the_write_port() -> None:
     )
 
     assert isinstance(result, PublicationInvalid)
+
+
+def test_publication_refuses_a_parsed_v3_document_before_the_write_port() -> None:
+    result = publish_workflow_revision(
+        b"format_version: 3\n"
+        b"name: Land the comment\n"
+        b"nodes:\n"
+        b"  - {id: land, type: action, operation: {ref: comment, revision: r}}\n",
+        cast(WorkflowRevisionPublisher, FakePort(None)),
+        parse_workflow_document,
+    )
+
+    assert result == PublicationInvalid(UNPROJECTABLE_FORMAT_DETAIL)
 
 
 def test_publication_returns_the_graph_validated_before_the_write() -> None:

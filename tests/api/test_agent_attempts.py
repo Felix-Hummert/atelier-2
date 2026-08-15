@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.models import run_event_resource, run_resource
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
@@ -36,7 +36,7 @@ nodes:
   - {id: build, type: agent, role: builder, job: build, next: done}
 """
     workflow = WorkflowRevision(document)
-    graph = parse_workflow_document(document)
+    graph = parse_executable_workflow_document(document)
     auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
     configuration = AgentConfigurationRevision(
         "opus",

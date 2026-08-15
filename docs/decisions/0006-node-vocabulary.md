@@ -1,7 +1,10 @@
 # ADR 0006: Format V3 is the whole authoring language; capabilities stage execution
 
-- Status: ACCEPTED 2026-08-14 (Codex fifth exact-head review PASS, PR #30) — not yet implemented
-- Date: 2026-08-14
+- Status: ACCEPTED 2026-08-14 (Codex fifth exact-head review PASS, PR #30) — document
+  surface implemented by PR #41
+- Date: 2026-08-14, amended 2026-08-15 with "The document names itself" (the
+  document-level `name` and `description`), decided while PR #41 was still draft
+  because a field added to a closed hashed model after it lands is a format change
 - Depends on: [ADR 0002](0002-exact-yaml-graph.md), [ADR 0001](0001-durable-runtime.md)
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   whose "Deklaratives Kontext- und Artefaktrouting", "Parallele DAG-Ausführung"
@@ -76,6 +79,60 @@ preview marks every such node with the capability it waits for. That is the poin
 of the record: revisions are immutable, so staging the *format* instead would force
 a new format version and a re-authoring of every catalog entry each time a
 capability lands. Staging execution costs one loud refusal instead.
+
+### The document names itself
+
+A revision is identified by its hash, and a hash answers no human's question about
+which chain it is. Every surface that offers a stored revision — the catalog
+picker, the composed preview, the run list — would otherwise have a SHA-256 to
+show, and Issue #1's operator requirement is that a hash is never an option a human
+chooses from. So the document carries its own operator-facing identity:
+
+```yaml
+format_version: 3
+name: Self-build review chain
+description: |
+  Implements a story, reviews it from two sides, and publishes the merged verdict.
+nodes: []
+```
+
+**`name` is required**, and the block is closed at exactly these two. An optional
+name would leave the promise conditional: a surface listing revisions would still
+need a hash to fall back on for the documents that carried none, and the operator's
+sentence would hold for some chains and not others. Requiring it at parse is the
+only place the guarantee is unconditional and needs no second guard downstream — a
+document that does not name itself is refused `missing_field` at `name`, before it
+can be stored, published or offered.
+
+`name` is the one line a picker shows: bounded to 200 UTF-8 bytes, refused blank,
+and refused when it carries any Unicode line boundary — not only `\n`, but `\r`,
+VT, FF, the file/group/record separators, NEL, U+2028 and U+2029, each of which a
+renderer may break at, so a name could hide a second line behind the one an
+operator reads. `description` is the paragraph a detail view shows, optional and
+bounded to 4 KiB. A third metadata field is an amendment to this record, never a
+free key.
+
+**The name is inside the revision and outside execution.** It is ordinary authored
+bytes of the document, so [ADR 0002](0002-exact-yaml-graph.md)'s identity rule
+already covers it unchanged: a rename is a **new revision** with a new hash,
+exactly like a changed instruction. The alternative was considered and refused —
+hashing a canonical form with the metadata stripped would let two documents share
+one revision id, so the entry an operator picked *by name* would not be pinned to
+the chain that runs, and a published name could be rewritten under a revision
+somebody already approved. Immutability is worth more than a free rename; renaming
+authors a successor, which is what every other authored change here already does.
+
+Nothing executable may read it. There is no `document` input source form, so no
+node can bind the name as a value; it contributes no capability requirement and
+adds no element to `node-execution-request/v3`. That request's first element, the
+workflow revision hash, covers it as bytes and never resolves it as a value: what a
+chain is called must not be able to change what the chain does.
+
+This is where a catalog display name comes from. #22 owns catalog identity,
+lineage and storage and may index, present or override this name; what this record
+decides is only that the document itself has an honest place to carry one, so a
+picker has a name to show before any catalog row exists and without waiting for the
+non-preserving store cutover.
 
 ### The node contract
 
@@ -381,6 +438,7 @@ revision reusable as a child:
 
 ```yaml
 format_version: 3
+name: Review a candidate and return one verdict
 graph_inputs:
   - name: candidate
     schema: {ref: workspace_candidate, revision: "<schema revision id>"}
@@ -736,7 +794,8 @@ an absent `mode`; an interactive node whose output is mapped downstream without
 operator confirmation; an `available_context` grant naming no read operation; a
 `wait` without exactly one output; a `graph_output` naming an undeclared node
 output or sourcing a node that is not a sink; a malformed or unpinned versioned
-reference.
+reference; a document that does not name itself; a document `name` that is blank,
+oversized or carries a Unicode line boundary; and an oversized `description`.
 
 Refused at binding: any versioned reference — profile, skill, tool, policy,
 budget, retry, cancellation, schema, deterministic operation, adapter operation,
@@ -853,6 +912,7 @@ flowchart LR
 
 ```yaml
 format_version: 3
+name: Implement, review from two sides, publish the merged verdict
 nodes:
   - id: implement
     type: agent
@@ -945,12 +1005,15 @@ runs any of this is #1 story 3.
 ## Implementation status
 
 [`docs/PRODUCT.md`](../PRODUCT.md) owns implementation status. What this record must
-say: nothing above is implemented — today's parser accepts format versions 1 and 2
-and refuses `format_version: 3`, and no runtime capability revision exists, so no
-capability above is attested. The first story that implements V3 attests the subset
-it proves, and every later capability is an attestation change rather than a format
-change. Falsifiably: if a later capability forces a format version anyway, this
-record was wrong.
+say: only the document surface above is implemented — the parser accepts
+`format_version: 3` into the closed model and refuses every parse-time form named
+here, naming the node and the field. Nothing behind it exists: no reference binding,
+no runtime capability revision, and no V3 record shape in the store, so no capability
+above is attested and every publication and execution path refuses a V3 document
+naming the format. The stories that implement the rest attest the subset they prove,
+and every later capability is an attestation change rather than a format change.
+Falsifiably: if a later capability forces a format version anyway, this record was
+wrong.
 
 ## Migration and the persistence cutover
 
@@ -987,6 +1050,11 @@ store without mutation, and provides no runtime upgrade or downgrade migration. 
   profiles and skills, who sees what, parallel work, a deterministic join, bounds,
   and where a result lands. The substrate gap #6 names is closed at the document
   level.
+- A picker never has to offer a hash, for any document without exception. Every
+  parsed V3 document carries an operator-facing name, so every surface that lists
+  revisions can show one without the catalog store and without a fallback path,
+  and #22's display-name layer builds on a field that is always there instead of
+  being the first place a name can live.
 - A capability landing changes an attestation, not a format version. The cost is a
   second, published, build-produced artifact — the runtime capability revision —
   and the discipline that every refusal names a capability rather than a version.
@@ -1012,6 +1080,11 @@ This record is a draft; nothing below exists yet.
 - A V3 document parses to a closed frozen model, and every parse-time refusal
   above is proven by its own behavioral case, parametrized over the refusal list
   rather than copied per case — including each kind's refused fields.
+- Every parsed document carries a `name` and may carry a `description`; a document
+  that names itself nowhere is refused, a name carrying any Unicode line boundary
+  is refused, each refused form above names its field; no node input can read the
+  name as a value; and two documents differing only in their `name` have different
+  revision hashes while their graphs are otherwise identical.
 - A failed dependency terminates the whole graph: under `all_succeeded` the
   dependent gets a `blocked` receipt naming the dependency and its delivery status,
   that block propagates to its own dependents, running siblings still drain, and

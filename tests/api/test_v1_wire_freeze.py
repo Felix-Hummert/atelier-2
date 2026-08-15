@@ -6,7 +6,7 @@ from typing import cast
 
 from pydantic import BaseModel, TypeAdapter
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.models import (
     RunEventResource,
@@ -58,7 +58,7 @@ def _wire(model: BaseModel) -> bytes:
 
 def test_v1_workflow_and_run_resources_keep_their_exact_raw_bytes() -> None:
     revision = WorkflowRevision(_DOCUMENT)
-    graph = parse_workflow_document(_DOCUMENT)
+    graph = parse_executable_workflow_document(_DOCUMENT)
     detail = workflow_revision_detail_resource(
         WorkflowRevisionProjection(revision, graph)
     )

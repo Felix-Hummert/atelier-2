@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits, RequestBodyLimitMiddleware
 from atelier2.api.models import AgentAttemptResourceV2
@@ -72,7 +72,7 @@ def client_for(mutations: RecordingMutationPorts, limits: ApiLimits) -> TestClie
                 cast(WorkflowRevisionQueries, unused),
                 cast(RunQueries, unused),
                 cast(RunEventQueries, unused),
-                parse_workflow_document,
+                parse_executable_workflow_document,
                 cast(AgentConfigurationCatalog, unused),
             ),
             limits=limits,
@@ -372,7 +372,7 @@ def test_public_reference_is_bounded_before_base64_decode(
 def test_wire_reference_and_cursor_are_bounded_by_their_own_encoding() -> None:
     document = workflow_document()
     revision = WorkflowRevision(document)
-    graph = parse_workflow_document(document)
+    graph = parse_executable_workflow_document(document)
     run = Run(
         RunId("x"),
         revision.revision_hash,

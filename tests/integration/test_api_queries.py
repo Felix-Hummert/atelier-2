@@ -883,14 +883,14 @@ def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
     )
     _seed_runs(engine, assignments)
     parse_calls = 0
-    original_parse = run_store.parse_workflow_document
+    original_parse = run_store.parse_executable_workflow_document
 
     def count_parse(document: bytes):
         nonlocal parse_calls
         parse_calls += 1
         return original_parse(document)
 
-    monkeypatch.setattr(run_store, "parse_workflow_document", count_parse)
+    monkeypatch.setattr(run_store, "parse_executable_workflow_document", count_parse)
     selects = 0
 
     def count_selects(

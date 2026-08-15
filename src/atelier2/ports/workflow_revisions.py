@@ -5,6 +5,7 @@ from typing import Protocol
 
 from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflows import AnyWorkflowGraph
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
 PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."
@@ -41,7 +42,7 @@ class WorkflowRevisionPublisher(Protocol):
 
 
 class WorkflowDocumentParser(Protocol):
-    def __call__(self, document: bytes) -> AnyWorkflowGraph: ...
+    def __call__(self, document: bytes) -> AnyWorkflowDocument: ...
 
 
 class WorkflowProjectionLimit(Protocol):
