@@ -33,7 +33,6 @@ SSE_CURSOR_AFTER_THREE = "event1.c3NlL3J1bg.3"
 SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
     {
         "id": "event1.c3NlL3J1bg.1",
-        "event": "AGENT_COMPLETED",
         "data": {
             "cursor": "event1.c3NlL3J1bg.1",
             "sequence": 1,
@@ -53,7 +52,6 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
     },
     {
         "id": "event1.c3NlL3J1bg.2",
-        "event": "ACTION_RECONCILIATION_REQUIRED",
         "data": {
             "cursor": "event1.c3NlL3J1bg.2",
             "sequence": 2,
@@ -73,7 +71,6 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
     },
     {
         "id": "event1.c3NlL3J1bg.3",
-        "event": "ACTION_RECONCILIATION_RESOLVED",
         "data": {
             "cursor": "event1.c3NlL3J1bg.3",
             "sequence": 3,
@@ -105,7 +102,6 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
     },
     {
         "id": "event1.c3NlL3J1bg.4",
-        "event": "ACTION_COMPLETED",
         "data": {
             "cursor": "event1.c3NlL3J1bg.4",
             "sequence": 4,
@@ -137,7 +133,6 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
     },
     {
         "id": "event1.c3NlL3J1bg.5",
-        "event": "WAITING_INPUT",
         "data": {
             "cursor": "event1.c3NlL3J1bg.5",
             "sequence": 5,
@@ -156,7 +151,6 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
     },
     {
         "id": "event1.c3NlL3J1bg.6",
-        "event": "WAIT_ANSWERED",
         "data": {
             "cursor": "event1.c3NlL3J1bg.6",
             "sequence": 6,
@@ -178,7 +172,6 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
     },
     {
         "id": "event1.c3NlL3J1bg.7",
-        "event": "SUBWORKFLOW_COMPLETED",
         "data": {
             "cursor": "event1.c3NlL3J1bg.7",
             "sequence": 7,

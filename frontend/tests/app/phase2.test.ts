@@ -2,10 +2,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/sv
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
+import NodeRail from "../../src/components/NodeRail.svelte";
 import {
   CockpitRequestError,
   createCockpitApi,
   type CockpitApi,
+  type RunEventHandlers,
+  type RunEvent,
   type RunV1,
   type RunV2,
   type WorkflowRevisionDetail
@@ -103,6 +106,7 @@ describe("Phase 2 mobile run entry", () => {
     const authHash = "b".repeat(64);
     let publishedRevision: WorkflowRevisionDetail;
     let boundRun: RunV2;
+    const eventFeed: { handlers: RunEventHandlers | null } = { handlers: null };
     let startResponses = 0, continueRetry = (): void => {};
     const retryGate = new Promise<void>((resolve) => { continueRetry = resolve; });
     let rejectConfiguration = (reason: unknown): void => void reason;
@@ -131,7 +135,11 @@ describe("Phase 2 mobile run entry", () => {
           ? v2Run(jsonBody(mutation), []) : (boundRun = v2Run(jsonBody(mutation), v2Bindings(authHash))) };
       }),
       getRun: vi.fn(async () => boundRun),
-      getWorkflowRevision: vi.fn(async () => publishedRevision)
+      getWorkflowRevision: vi.fn(async () => publishedRevision),
+      openRunEvents: vi.fn((_publicReference, handlers) => {
+        eventFeed.handlers = handlers;
+        return { close: vi.fn() };
+      })
     });
     render(App, {
       props: {
@@ -187,7 +195,52 @@ describe("Phase 2 mobile run entry", () => {
     });
     const card = await screen.findByRole("article", { name: "build — Working" });
     expect(card.textContent).toContain("builder");
-    expect(card.textContent).toContain("Attempt 1prepared");
+    expect(card.textContent).toContain("Attempt 1 prepared");
+    eventFeed.handlers?.event(JSON.stringify(v2TerminalEvent(publishedRevision!.revision_hash)));
+    expect((await screen.findByRole("article", { name: "build — Completed" })).textContent).toContain("Attempt 1 completed");
+    expect(screen.getByRole("article", { name: "review — Working" })).toBeTruthy();
+    eventFeed.handlers?.event(JSON.stringify({ ...v2TerminalEvent(publishedRevision!.revision_hash), event: "NODE_PROGRESS" }));
+    expect(await screen.findByText("Event invalid")).toBeTruthy();
+  });
+
+  it("shows the prepared replacement attempt as live while its predecessor remains history", () => {
+    const initial = v2Run(
+      { workflow_revision_hash: revisionHash },
+      v2Bindings("b".repeat(64))
+    );
+    const firstAttempt = initial.agent_attempts[0]!;
+    const replacementAttemptId = "5".repeat(64);
+    const interrupted = v2InterruptedEvent(revisionHash, replacementAttemptId);
+    const replacementRun: RunV2 = {
+      ...initial,
+      latest_event_cursor: interrupted.cursor,
+      agent_attempts: [
+        {
+          ...firstAttempt,
+          state: "INTERRUPTED",
+          cancellation: {
+            command_id: "cancel",
+            replacement: "ONE",
+            redrive_state: "CLEANUP_ATTESTED",
+            disposition: "REAPED_AFTER_TERM"
+          }
+        },
+        {
+          ...firstAttempt,
+          attempt_id: replacementAttemptId,
+          attempt_ordinal: 2,
+          state: "PREPARED"
+        }
+      ]
+    };
+
+    render(NodeRail, {
+      props: { run: replacementRun, graph: v2Revision(revisionHash).graph, events: [interrupted] }
+    });
+
+    const card = screen.getByRole("article", { name: "build — Working" });
+    expect(card.textContent).toContain("Attempt 2 prepared");
+    expect(card.textContent).toContain("AGENT INTERRUPTED");
   });
 
   it("cancels publication with Escape, restores focus, and sends no bytes", async () => {
@@ -483,6 +536,39 @@ function v2Bindings(authHash: string): RunV2["agent_bindings"] {
     { role: "builder", profile_id: "review-key", revision_number: 2, provider_id: "openai", auth_mode: "api_key", model: "gpt-5.6-sol", executor_revision: "codex/v1", auth_profile_revision_hash: authHash, agent_configuration_revision_hash: "d".repeat(64) },
     { role: "reviewer", profile_id: "max", revision_number: 1, provider_id: "anthropic", auth_mode: "subscription", model: "sonnet", executor_revision: "claude-subscription/v1", auth_profile_revision_hash: authHash, agent_configuration_revision_hash: "c".repeat(64) }
   ];
+}
+
+function v2TerminalEvent(workflowRevisionHash: string) {
+  return {
+    workflow_format_version: 2, cursor: "event1.cnVuLXYy.1", sequence: 1,
+    public_run_reference: v2PublicReference, workflow_revision_hash: workflowRevisionHash,
+    node_id: "build", node_execution_id: "2".repeat(64), event_hash: "4".repeat(64),
+    event: "AGENT_COMPLETED", output_base64: "", output_hash: revisionHash,
+    attempt_id: "1".repeat(64), attempt_ordinal: 1
+  };
+}
+
+function v2InterruptedEvent(
+  workflowRevisionHash: string,
+  replacementAttemptId: string
+): RunEvent {
+  return {
+    workflow_format_version: 2,
+    cursor: "event1.cnVuLXYy.1",
+    sequence: 1,
+    public_run_reference: v2PublicReference,
+    workflow_revision_hash: workflowRevisionHash,
+    node_id: "build",
+    node_execution_id: "2".repeat(64),
+    event_hash: "4".repeat(64),
+    event: "AGENT_INTERRUPTED",
+    attempt_id: "1".repeat(64),
+    attempt_ordinal: 1,
+    command_id: "cancel",
+    replacement: "ONE",
+    disposition: "REAPED_AFTER_TERM",
+    replacement_attempt_id: replacementAttemptId
+  };
 }
 
 async function fillBinding(index: number, values: readonly string[]): Promise<void> {

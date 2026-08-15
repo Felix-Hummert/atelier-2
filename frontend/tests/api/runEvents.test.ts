@@ -1,29 +1,36 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createCockpitApi, type RunEventHandlers } from "../../src/api/client";
+import {
+  decodeAndApplyDurableEvent,
+  streamProjection
+} from "../../src/lib/runProjection";
 
 describe("native durable event transport", () => {
-  it("opens the exact same-origin event route and forwards every named R2 event", () => {
+  it("opens the exact same-origin event route and forwards known and unknown message frames", () => {
     const source = new FakeEventSource();
     const factory = vi.fn(() => source);
+    let projection = streamProjection("run1.cnVu", "a".repeat(64));
     const handlers: RunEventHandlers = {
       opened: vi.fn(),
-      event: vi.fn(),
+      event: vi.fn((rawData) => {
+        projection = decodeAndApplyDurableEvent(projection, rawData);
+      }),
       disconnected: vi.fn()
     };
     const api = createCockpitApi(fetch, factory);
 
     const subscription = api.openRunEvents("run1.cnVu", handlers);
     source.dispatch("open", new Event("open"));
-    for (const name of eventNames) {
-      source.dispatch(name, message(name));
-    }
+    source.dispatch("message", message(agentCompleted()));
+    source.dispatch("message", message({ ...agentCompleted(), event: "NODE_PROGRESS" }));
     source.dispatch("error", new Event("error"));
 
     expect(factory).toHaveBeenCalledWith("/atelier/api/v1/runs/run1.cnVu/events");
     expect(handlers.opened).toHaveBeenCalledTimes(1);
-    expect(handlers.event).toHaveBeenCalledTimes(eventNames.length);
-    expect(handlers.event).toHaveBeenLastCalledWith(JSON.stringify({ event: "SUBWORKFLOW_COMPLETED" }));
+    expect(handlers.event).toHaveBeenCalledTimes(2);
+    expect(projection.events).toHaveLength(1);
+    expect(projection.protocol_problem).toEqual({ type: "decoder" });
     expect(handlers.disconnected).toHaveBeenCalledTimes(1);
     subscription.close();
     expect(source.closed).toBe(true);
@@ -62,18 +69,23 @@ describe("native durable event transport", () => {
   });
 });
 
-const eventNames = [
-  "AGENT_COMPLETED",
-  "ACTION_RECONCILIATION_REQUIRED",
-  "ACTION_RECONCILIATION_RESOLVED",
-  "ACTION_COMPLETED",
-  "WAITING_INPUT",
-  "WAIT_ANSWERED",
-  "SUBWORKFLOW_COMPLETED"
-] as const;
+function message(data: unknown): MessageEvent<string> {
+  return new MessageEvent("message", { data: JSON.stringify(data) });
+}
 
-function message(event: string): MessageEvent<string> {
-  return new MessageEvent("message", { data: JSON.stringify({ event }) });
+function agentCompleted() {
+  return {
+    cursor: "event1.cnVu.1",
+    sequence: 1,
+    public_run_reference: "run1.cnVu",
+    workflow_revision_hash: "a".repeat(64),
+    node_id: "agent",
+    node_execution_id: "b".repeat(64),
+    event_hash: "c".repeat(64),
+    event: "AGENT_COMPLETED",
+    output: "done",
+    payload_hash: "d".repeat(64)
+  };
 }
 
 class FakeEventSource {

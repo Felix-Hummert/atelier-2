@@ -191,7 +191,10 @@
       latest?.event === "ACTION_RECONCILIATION_REQUIRED" ||
       latest?.event === "ACTION_RECONCILIATION_RESOLVED" ||
       latest?.event === "WAITING_INPUT" ||
-      latest?.event === "WAIT_ANSWERED"
+      latest?.event === "WAIT_ANSWERED" ||
+      latest?.event === "AGENT_FAILED" ||
+      latest?.event === "AGENT_CANCELLED" ||
+      latest?.event === "AGENT_INTERRUPTED"
     ) {
       void followDurableEvent(latest);
     }

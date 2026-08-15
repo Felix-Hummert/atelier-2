@@ -216,10 +216,10 @@ def _parse_events(body: str) -> list[dict[str, object]]:
     parsed: list[dict[str, object]] = []
     for block in body.strip().split("\n\n"):
         fields = dict(line.split(": ", maxsplit=1) for line in block.splitlines())
+        assert set(fields) == {"id", "data"}
         parsed.append(
             {
                 "id": fields["id"],
-                "event": fields["event"],
                 "data": json.loads(fields["data"]),
             }
         )
@@ -270,6 +270,7 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
             return await anext(stream)
 
         streamed = asyncio.run(first_event())
+        assert streamed.event is None
         stream_json = streamed.model_dump_json()
         run_json = (
             _client(runtime)

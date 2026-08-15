@@ -22,7 +22,11 @@
       queued: "Queued",
       working: "Working",
       needs_you: "Needs you",
-      done: "Done"
+      done: "Done",
+      completed: "Completed",
+      failed: "Failed",
+      cancelled: "Cancelled",
+      interrupted: "Interrupted"
     }[node.state];
   }
 
@@ -30,16 +34,17 @@
     return event.event.replaceAll("_", " ");
   }
 
-  function agentView(node: NodeProjection["node"]): {
+  function agentView(projection: NodeProjection): {
     role: string;
     binding: RunV2["agent_bindings"][number] | null;
-    attempt: RunV2["agent_attempts"][number] | null;
+    attempt: NodeProjection["attempt"];
   } | null {
+    const node = projection.node;
     if (node.type !== "agent" || !("role" in node) || !("workflow_format_version" in run)) return null;
     return {
       role: node.role,
       binding: run.agent_bindings.find((binding) => binding.role === node.role) ?? null,
-      attempt: node.node_id === run.current_node.node_id ? run.agent_attempts.at(-1) ?? null : null
+      attempt: projection.attempt
     };
   }
 
@@ -53,6 +58,7 @@
     }
     if (event === null) return null;
     if (event.event === "AGENT_COMPLETED") {
+      if ("workflow_format_version" in event) return null;
       return {
         label: "Output",
         bytes: new globalThis.TextEncoder().encode(event.output).byteLength,
@@ -101,7 +107,7 @@
   <ol>
     {#each rail as projection (projection.node.node_id)}
       {@const value = context(projection)}
-      {@const agent = agentView(projection.node)}
+      {@const agent = agentView(projection)}
       <li>
         <article
           class="node-card node-{projection.state}"
@@ -123,7 +129,12 @@
               <strong>{agent.role}</strong>
               {#if agent.binding === null}<span>Binding missing</span>{:else}<span>{agent.binding.provider_id} · {agent.binding.model}</span><span>{agent.binding.auth_mode === "api_key" ? "API key" : "Subscription"} · {agent.binding.executor_revision}</span>{/if}
             </p>
-            {#if agent.attempt !== null}<p class="latest-event"><span>Attempt {agent.attempt.attempt_ordinal}</span><strong>{agent.attempt.state.replaceAll("_", " ").toLowerCase()}</strong></p>{/if}
+            {#if agent.attempt !== null}
+              <p class="latest-event">
+                <span>Attempt {agent.attempt.ordinal}</span>
+                <strong>{agent.attempt.state.replaceAll("_", " ").toLowerCase()}</strong>
+              </p>
+            {/if}
           {/if}
           {#if value !== null}
             <div class="context-row">

@@ -437,7 +437,25 @@ const eventBase = {
   event_hash: sha256
 };
 
-export const runEventSchema = z
+const v2EventBase = { workflow_format_version: z.literal(2), ...eventBase };
+const v2AttemptEvent = {
+  attempt_id: sha256,
+  attempt_ordinal: z.union([z.literal(1), z.literal(2)])
+};
+const v2CancellationEvent = {
+  ...v2AttemptEvent,
+  command_id: z.string().min(1).max(1_024),
+  replacement: z.enum(["NONE", "ONE"])
+};
+const v2Disposition = z.enum([
+  "NEVER_LAUNCHED",
+  "EXITED_BEFORE_SIGNAL",
+  "REAPED_AFTER_TERM",
+  "REAPED_AFTER_KILL",
+  "OWNER_LOST_AFTER_PARENT_DEATH"
+]);
+
+const runEventV1Schema = z
   .discriminatedUnion("event", [
     z.object({ ...eventBase, event: z.literal("AGENT_COMPLETED"), output: z.string(), payload_hash: sha256 }).strict(),
     z.object({ ...eventBase, event: z.literal("ACTION_RECONCILIATION_REQUIRED"), request_base64: standardBase64, request_hash: sha256 }).strict(),
@@ -447,7 +465,30 @@ export const runEventSchema = z
     z.object({ ...eventBase, event: z.literal("WAIT_ANSWERED"), answer: z.string().regex(/^(?:0|-?[1-9][0-9]*)$/), answer_hash: sha256 }).strict(),
     z.object({ ...eventBase, event: z.literal("SUBWORKFLOW_COMPLETED"), result: safeInteger, result_hash: sha256 }).strict()
   ])
-  .superRefine((event, context) => {
+  .superRefine(validateEventCursor);
+
+const runEventV2Schema = z
+  .discriminatedUnion("event", [
+    z.object({ ...v2EventBase, ...v2AttemptEvent, event: z.literal("AGENT_COMPLETED"), output_base64: standardBase64, output_hash: sha256 }).strict(),
+    z.object({ ...v2EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.literal("PROCESS_EXITED_UNSUCCESSFULLY") }).strict(),
+    z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
+    z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
+    z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("ACTION_RECONCILIATION_REQUIRED"), request_base64: standardBase64, request_hash: sha256 }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("ACTION_RECONCILIATION_RESOLVED"), receipt: receiptSchema }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("ACTION_COMPLETED"), receipt: receiptSchema }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("WAITING_INPUT"), answer_type: z.literal("integer") }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("WAIT_ANSWERED"), answer: z.string().regex(/^(?:0|-?[1-9][0-9]*)$/), answer_hash: sha256 }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("SUBWORKFLOW_COMPLETED"), result: safeInteger, result_hash: sha256 }).strict()
+  ])
+  .superRefine(validateEventCursor);
+
+export const runEventSchema = z.union([runEventV2Schema, runEventV1Schema]);
+
+function validateEventCursor(
+  event: { cursor: string; public_run_reference: string; sequence: number },
+  context: z.RefinementCtx
+): void {
     const parsedCursor = parseEventCursor(event.cursor);
     if (
       parsedCursor?.publicRunReference !== event.public_run_reference ||
@@ -458,7 +499,7 @@ export const runEventSchema = z
         message: "event cursor, run reference, and sequence disagree"
       });
     }
-  });
+}
 
 export const problemDefinitions = {
   "auth-profile-revision-conflict": { status: 409, title: "Auth profile revision conflict" },
@@ -732,28 +773,16 @@ export function createCockpitApi(
         `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}/events`
       );
       source.addEventListener("open", () => handlers.opened());
-      for (const eventName of durableEventNames) {
-        source.addEventListener(eventName, (event) => {
-          if (event instanceof MessageEvent && typeof event.data === "string") {
-            handlers.event(event.data);
-          }
-        });
-      }
+      source.addEventListener("message", (event) => {
+        if (event instanceof MessageEvent && typeof event.data === "string") {
+          handlers.event(event.data);
+        }
+      });
       source.addEventListener("error", () => handlers.disconnected());
       return source;
     }
   };
 }
-
-const durableEventNames = [
-  "AGENT_COMPLETED",
-  "ACTION_RECONCILIATION_REQUIRED",
-  "ACTION_RECONCILIATION_RESOLVED",
-  "ACTION_COMPLETED",
-  "WAITING_INPUT",
-  "WAIT_ANSWERED",
-  "SUBWORKFLOW_COMPLETED"
-] as const;
 
 export function decodeProblem(value: unknown): Problem {
   return problemSchema.parse(value);
