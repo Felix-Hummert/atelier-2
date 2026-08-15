@@ -157,7 +157,6 @@ async def stream_server_events(
                 return
             yield ServerSentEvent(
                 id=resource.cursor,
-                event=resource.event,
                 data=resource,
             )
             after_sequence = resource.sequence

@@ -75,7 +75,6 @@ class ReceivedEventData(TypedDict):
 
 class ReceivedEvent(TypedDict):
     id: str
-    event: str
     data: ReceivedEventData
 
 
@@ -297,6 +296,7 @@ def _read_events(
             fields[name] = value
             continue
         if fields and "data" in fields:
+            assert set(fields) == {"id", "data"}
             data = json.loads(fields["data"])
             assert isinstance(data, dict)
             assert type(data.get("sequence")) is int
@@ -304,7 +304,6 @@ def _read_events(
             events.append(
                 {
                     "id": fields["id"],
-                    "event": fields["event"],
                     "data": cast(ReceivedEventData, data),
                 }
             )

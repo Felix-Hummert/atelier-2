@@ -37,27 +37,14 @@
   function agentView(projection: NodeProjection): {
     role: string;
     binding: RunV2["agent_bindings"][number] | null;
-    attempt: { ordinal: number; state: string } | null;
+    attempt: NodeProjection["attempt"];
   } | null {
     const node = projection.node;
     if (node.type !== "agent" || !("role" in node) || !("workflow_format_version" in run)) return null;
-    const event = projection.last_event;
-    const eventAttempt = event !== null && "workflow_format_version" in event && "attempt_id" in event
-      ? {
-          ordinal: event.attempt_ordinal,
-          state: event.event.replace("AGENT_", "")
-        }
-      : null;
-    const currentAttempt = node.node_id === run.current_node.node_id
-      ? run.agent_attempts.at(-1) ?? null
-      : null;
     return {
       role: node.role,
       binding: run.agent_bindings.find((binding) => binding.role === node.role) ?? null,
-      attempt: eventAttempt ?? (currentAttempt === null ? null : {
-        ordinal: currentAttempt.attempt_ordinal,
-        state: currentAttempt.state
-      })
+      attempt: projection.attempt
     };
   }
 

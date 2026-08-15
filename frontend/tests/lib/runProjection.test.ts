@@ -126,6 +126,19 @@ describe("contiguous durable SSE projection", () => {
     expect(wrongNode.protocol_problem).toEqual({ type: "decoder" });
     expect(wrongKind.protocol_problem).toEqual({ type: "decoder" });
   });
+
+  it.each([
+    ["V1 event with V2 graph", event(1), v2Scenario().graph],
+    ["V2 event with V1 graph", v2AgentEvent("AGENT_COMPLETED"), workflow().graph]
+  ] as const)("refuses a workflow/event format mismatch: %s", (_case, mismatchedEvent, graph) => {
+    const rejected = decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify(mismatchedEvent),
+      graph
+    );
+
+    expect(rejected.protocol_problem).toEqual({ type: "decoder" });
+  });
 });
 
 describe("V2 Agent terminal truth", () => {
@@ -144,6 +157,17 @@ describe("V2 Agent terminal truth", () => {
 
     expect(rail.map((node) => node.state)).toEqual([state, successor]);
   });
+
+  it.each(["AGENT_CANCELLED", "AGENT_INTERRUPTED"] as const)(
+    "keeps a prepared replacement live after %s remains terminal history",
+    (eventKind) => {
+      const scenario = v2ReplacementScenario(eventKind);
+
+      const rail = projectNodeRail(scenario.run, scenario.graph, [scenario.event]);
+
+      expect(rail.map((node) => node.state)).toEqual(["working", "queued"]);
+    }
+  );
 });
 
 describe("read-only node rail", () => {
@@ -399,5 +423,43 @@ function v2AgentEvent(
     replacement: "NONE" as const,
     disposition: "REAPED_AFTER_TERM" as const,
     replacement_attempt_id: null
+  };
+}
+
+function v2ReplacementScenario(
+  eventKind: "AGENT_CANCELLED" | "AGENT_INTERRUPTED"
+) {
+  const scenario = v2Scenario();
+  const firstAttempt = scenario.run.agent_attempts[0]!;
+  const replacementAttemptId = "b".repeat(64);
+  return {
+    ...scenario,
+    run: {
+      ...scenario.run,
+      latest_event_cursor: "event1.cnVu.1",
+      agent_attempts: [
+        {
+          ...firstAttempt,
+          state: eventKind === "AGENT_CANCELLED" ? "CANCELLED" as const : "INTERRUPTED" as const,
+          cancellation: {
+            command_id: "cancel",
+            replacement: "ONE" as const,
+            redrive_state: "CLEANUP_ATTESTED" as const,
+            disposition: "REAPED_AFTER_TERM" as const
+          }
+        },
+        {
+          ...firstAttempt,
+          attempt_id: replacementAttemptId,
+          attempt_ordinal: 2 as const,
+          state: "PREPARED" as const
+        }
+      ]
+    },
+    event: {
+      ...v2AgentEvent(eventKind),
+      replacement: "ONE" as const,
+      replacement_attempt_id: replacementAttemptId
+    }
   };
 }

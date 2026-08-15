@@ -3,6 +3,7 @@ import {
   type Problem,
   type Run,
   type RunEvent,
+  type RunV2,
   type WorkflowGraph,
   type WorkflowNode
 } from "../api/client";
@@ -43,10 +44,16 @@ export type NodeState =
   | "cancelled"
   | "interrupted";
 
+export interface AgentAttemptProjection {
+  ordinal: 1 | 2;
+  state: RunV2["agent_attempts"][number]["state"] | "COMPLETED";
+}
+
 export interface NodeProjection {
   node: WorkflowNode;
   state: NodeState;
   last_event: RunEvent | null;
+  attempt: AgentAttemptProjection | null;
 }
 
 export function startLoading<T>(resource: RetainedResource<T>): RetainedResource<T> {
@@ -202,7 +209,8 @@ export function projectNodeRail(
         durableState === "needs_you" && workingHumanNodeIds.has(node.node_id)
           ? "working"
           : durableState,
-      last_event: lastEvent
+      last_event: lastEvent,
+      attempt: projectAgentAttempt(run, node, lastEvent, eventsLeadSnapshot)
     };
   });
 }
@@ -245,6 +253,17 @@ function snapshotNodeState(
   currentIndex: number,
   lastEvent: RunEvent | null
 ): NodeState {
+  if (
+    index === currentIndex &&
+    "workflow_format_version" in run &&
+    node.type === "agent"
+  ) {
+    const attemptState = run.agent_attempts.at(-1)?.state;
+    if (attemptState === "FAILED") return "failed";
+    if (attemptState === "CANCELLED") return "cancelled";
+    if (attemptState === "INTERRUPTED") return "interrupted";
+    if (attemptState !== undefined) return "working";
+  }
   if (lastEvent !== null) {
     const terminal = terminalNodeState(lastEvent);
     if (terminal !== null) return terminal;
@@ -267,14 +286,41 @@ function snapshotNodeState(
       ? "working"
       : "needs_you";
   }
-  if ("workflow_format_version" in run && node.type === "agent") {
-    const attemptState = run.agent_attempts.at(-1)?.state;
-    if (attemptState === "FAILED") return "failed";
-    if (attemptState === "CANCELLED") return "cancelled";
-    if (attemptState === "INTERRUPTED") return "interrupted";
-  }
   return node.node_id === run.current_node.node_id ? "working" : "queued";
 }
+
+function projectAgentAttempt(
+  run: Run,
+  node: WorkflowNode,
+  event: RunEvent | null,
+  eventsLeadSnapshot: boolean
+): AgentAttemptProjection | null {
+  if (!("workflow_format_version" in run) || node.type !== "agent") return null;
+  const eventAttempt =
+    event !== null && "workflow_format_version" in event && "attempt_id" in event
+      ? { ordinal: event.attempt_ordinal, state: agentEventStates[event.event] }
+      : null;
+  const currentAttempt =
+    node.node_id === run.current_node.node_id ? run.agent_attempts.at(-1) ?? null : null;
+  if (
+    eventsLeadSnapshot &&
+    eventAttempt !== null &&
+    (currentAttempt === null || eventAttempt.ordinal >= currentAttempt.attempt_ordinal)
+  ) {
+    return eventAttempt;
+  }
+  return currentAttempt === null
+    ? eventAttempt
+    : { ordinal: currentAttempt.attempt_ordinal, state: currentAttempt.state };
+}
+
+const agentEventStates = {
+  AGENT_COMPLETED: "COMPLETED",
+  AGENT_FAILED: "FAILED",
+  AGENT_CANCEL_REQUESTED: "CANCEL_REQUESTED",
+  AGENT_CANCELLED: "CANCELLED",
+  AGENT_INTERRUPTED: "INTERRUPTED"
+} as const;
 
 function eventDrivenNodeState(
   node: WorkflowNode,
@@ -337,6 +383,8 @@ function terminalNodeState(event: RunEvent): NodeState | null {
 }
 
 function eventMatchesGraph(event: RunEvent, graph: WorkflowGraph): boolean {
+  const eventFormat = "workflow_format_version" in event ? 2 : 1;
+  if (eventFormat !== graph.format_version) return false;
   const node = graph.nodes.find((candidate) => candidate.node_id === event.node_id);
   if (node === undefined) return false;
   if (node.type === "agent") {

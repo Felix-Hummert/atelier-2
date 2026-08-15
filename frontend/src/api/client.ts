@@ -773,32 +773,16 @@ export function createCockpitApi(
         `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}/events`
       );
       source.addEventListener("open", () => handlers.opened());
-      for (const eventName of durableEventNames) {
-        source.addEventListener(eventName, (event) => {
-          if (event instanceof MessageEvent && typeof event.data === "string") {
-            handlers.event(event.data);
-          }
-        });
-      }
+      source.addEventListener("message", (event) => {
+        if (event instanceof MessageEvent && typeof event.data === "string") {
+          handlers.event(event.data);
+        }
+      });
       source.addEventListener("error", () => handlers.disconnected());
       return source;
     }
   };
 }
-
-const durableEventNames = [
-  "AGENT_COMPLETED",
-  "AGENT_FAILED",
-  "AGENT_CANCEL_REQUESTED",
-  "AGENT_CANCELLED",
-  "AGENT_INTERRUPTED",
-  "ACTION_RECONCILIATION_REQUIRED",
-  "ACTION_RECONCILIATION_RESOLVED",
-  "ACTION_COMPLETED",
-  "WAITING_INPUT",
-  "WAIT_ANSWERED",
-  "SUBWORKFLOW_COMPLETED"
-] as const;
 
 export function decodeProblem(value: unknown): Problem {
   return problemSchema.parse(value);

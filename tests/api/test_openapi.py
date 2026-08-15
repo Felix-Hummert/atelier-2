@@ -14,7 +14,6 @@ from atelier2.api.openapi import (
     API_PREFIX,
     CANCELLATION_PATH,
     EVENT_NAMES,
-    EVENT_NAMES_V2,
     EVENT_PATH,
 )
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
@@ -117,10 +116,9 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     assert set(content) == {"text/event-stream"}
     assert content["text/event-stream"]["schema"] == {"type": "string"}
     extension = content["text/event-stream"]["x-atelier2-sse-v1"]
-    assert extension["id"] == {"$ref": "#/components/schemas/EventCursor"}
-    assert extension["event"] == {"enum": list(EVENT_NAMES_V2)}
-    assert extension["data"] == {
-        "$ref": "#/components/schemas/VersionedRunEventResource"
+    assert extension == {
+        "id": {"$ref": "#/components/schemas/EventCursor"},
+        "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
     }
     event_union = schema["components"]["schemas"]["RunEventResource"]
     assert len(event_union["oneOf"]) == 7
