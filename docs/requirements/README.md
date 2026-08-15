@@ -239,6 +239,27 @@ An identifier is lowercase words joined by single hyphens and is unique across
 every declaration. Unknown keys, a schema version the gate does not read, a
 sentence without text, and a repeated identifier are refused rather than ignored.
 
+### What a landing states, and the written exemption
+
+A story declares in the repository, but a repository cannot tell on its own that
+a story exists. The landing says so. Every pull request answers the template's
+`Literal acceptance sentence(s)` field with either the identifiers in
+`acceptance/` this landing proves, or `none` and one written line saying why this
+change declares none.
+
+Documentation, cleanup, and pure motion carry no acceptance sentence
+legitimately. Writing that down is what makes the absence legitimate: an
+exemption stated in one line is a claim a reviewer can weigh, while an absence
+nobody wrote down is indistinguishable from a wish quietly dropped. `none`
+without a reason is not an exemption, and neither is an empty field.
+
+The gate reads that field from the pull-request body the run's own event
+carries, the same way it reads run reports and never workflow text. It consults
+no issue tracker and never decides for itself whether a change is a story: the
+landing states its position and the gate names a landing that states neither.
+Whether a stated exemption is honest stays a review judgment — the same division
+of labour the rest of this gate keeps.
+
 A test names the sentence it proves where the test run itself reports it:
 
 - Python: `@pytest.mark.proves("<sentence id>")` on a test function. The marker is
@@ -270,7 +291,9 @@ rather than staying invisible because the gate only looked where a runner looks.
 proves: every declared sentence was proven by a test that ran and passed here
 proves: every claim in this repository names a sentence some story declared
 proves: every claim was honoured by a passing test in this pipeline's reports
+proves: a proposed landing states its sentences by identifier, or why it has none
 does not prove: that a test carries its sentence in meaning - review judges that
+does not prove: that a stated exemption is honest - review judges that
 does not measure: any ratio, case count, or coverage target
 ```
 <!-- acceptance-gate-bound:end -->
@@ -279,26 +302,27 @@ Whether the claiming test really carries its sentence stays a review judgment,
 the same division of labour the architecture gate keeps: the machine names what
 is missing, the reviewer names what is hollow.
 
-### The open sentence, graded DESK
+### The sentence that was carried open, and how it closed
 
-`acceptance/94-acceptance-trace-in-ci.toml` declares six sentences; Issue #94
-carries one more — *"a story that declares no acceptance sentence is named by
-verification"* — that nothing here proves, because this gate can only check
-sentences a story did declare.
+`acceptance/94-acceptance-trace-in-ci.toml` carried five sentences while a sixth
+— *"a story that declares no acceptance sentence is named by verification"* —
+stayed named on Issue #94 with nothing proving it, because a gate reading only
+`acceptance/` cannot see a story that declared nothing. That sentence is now
+declared and proven, and the note recording the debt is gone from the file.
 
-**DESK.** A step that builds the mechanism of acceptance verification may land
-with one sentence of the capability it serves unproven, provided that sentence
-is named on the open item and the item does not close. The alternative — binding
-every landing to a declaration — needs to know which issue a pull request closes
-and whether that issue is a story or cleanup. That is pull-request metadata, not
-repository content, and a gate whose whole claim is that it does not guess must
-not begin by guessing it. As precedent and not as authority: atelier-1's
+What resolved it was not the metadata the debt assumed it needed. Binding a
+landing to a declaration looked as if it required knowing which issue a pull
+request closes and whether that issue is a story or cleanup, which is pull-request
+metadata and would have made a gate whose whole claim is that it does not guess
+begin by guessing. The landing states it instead: the template field above is
+answered with identifiers or with a reasoned `none`, and the gate reads that
+answer rather than inferring one. Nothing consults the issue tracker.
+
+**DESK, and it outlives the sentence it was written for.** A step that builds the
+mechanism of a capability may land while one sentence of that capability is
+unproven, provided the sentence is named on the open item and the item does not
+close. This is what #94 did, and what the six declared sentences now show it cost:
+one further change. As precedent and not as authority: atelier-1's
 `work.unproven_acceptance` names only sentences on items that declared any, so
-docs and cleanup are exempt by carrying none.
-
-A `DESK` rule binds nothing until an operator rules it, so the question is open
-on Issue #94 with two options. **(A), recommended** — ratify this reading, after
-which it is written down as an `OPERATOR` rule and the sixth sentence closes in
-the change that proves it. **(B)** — rule that no story may land with an unproven
-sentence, after which this mechanism waits on a check over pull-request metadata
-that must invent the docs-and-cleanup exemption first.
+documentation and cleanup are exempt there by carrying none — here they are
+exempt by saying so.

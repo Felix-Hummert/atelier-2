@@ -36,12 +36,24 @@ JUNIT_PROPERTY = "properties/property"
 JUNIT_UNPASSED_OUTCOMES = ("failure", "error", "skipped")
 VITEST_PASSED_STATUS = "passed"
 
+LANDING_FIELD = re.compile(
+    r"^[ \t]*[-*]?[ \t]*Literal acceptance sentence\(s\)[^:]*:[ \t]*(?P<stated>.*?)[ \t]*$",
+    re.MULTILINE,
+)
+LANDING_EXEMPTION = re.compile(r"^none\b[ \t]*:?[ \t]*(?P<reason>.*)$", re.IGNORECASE)
+LANDING_SEPARATOR = re.compile(r"[,\s]+")
+LANDING_UNCHECKED = (
+    "Landing binding: not checked, this run carries no proposed pull request"
+)
+
 HONESTY_BOUND = (
     "```text",
     "proves: every declared sentence was proven by a test that ran and passed here",
     "proves: every claim in this repository names a sentence some story declared",
     "proves: every claim was honoured by a passing test in this pipeline's reports",
+    "proves: a proposed landing states its sentences by identifier, or why it has none",
     "does not prove: that a test carries its sentence in meaning - review judges that",
+    "does not prove: that a stated exemption is honest - review judges that",
     "does not measure: any ratio, case count, or coverage target",
     "```",
 )
@@ -97,10 +109,25 @@ class ProofClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class LandingBinding:
+    """What the pull request proposing this landing states about its own sentences.
+
+    At most one side is filled: a landing either names sentences or claims a
+    reasoned exemption. Neither filled is a landing that stated nothing, whether
+    it emptied the template field, wrote a bare ``none``, or carries no such
+    field at all.
+    """
+
+    named_sentences: tuple[str, ...]
+    exemption_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptanceTrace:
     sentences: tuple[AcceptanceSentence, ...]
     claims: tuple[ProofClaim, ...]
     proofs: tuple[ReportedProof, ...]
+    landing: LandingBinding | None
     problems: tuple[str, ...]
 
 
@@ -303,6 +330,59 @@ def read_typescript_claims(source: str, location: Path) -> Iterator[ProofClaim]:
         yield ProofClaim(claim.group("identifier"), claim.group(0), location)
 
 
+def read_landing_binding(body: Path) -> LandingBinding:
+    """Read what the pull request states, from the body the run's own event carries.
+
+    Nothing here consults the issue tracker or decides for itself whether a
+    change is a story: the landing states its position and the gate reads it.
+    """
+
+    try:
+        proposed = body.read_text(encoding="utf-8")
+    except OSError as error:
+        raise AcceptanceGateError(
+            f"the pull request body at {body} is not readable: {error}"
+        ) from error
+    field = LANDING_FIELD.search(proposed)
+    if field is None:
+        return LandingBinding((), None)
+    stated = field.group("stated")
+    exempted = LANDING_EXEMPTION.match(stated)
+    if exempted is not None:
+        return LandingBinding((), exempted.group("reason").strip() or None)
+    return LandingBinding(
+        tuple(
+            stripped
+            for token in LANDING_SEPARATOR.split(stated)
+            if (stripped := token.strip("`"))
+        ),
+        None,
+    )
+
+
+def landing_problems(
+    landing: LandingBinding, sentences: tuple[AcceptanceSentence, ...]
+) -> tuple[str, ...]:
+    if landing.exemption_reason is not None:
+        return ()
+    if not landing.named_sentences:
+        return (
+            (
+                "the pull request states no acceptance sentence and claims no "
+                "exemption: answer the template's acceptance field with the "
+                f"identifiers in {ACCEPTANCE_DIRECTORY} this landing proves, or "
+                "with 'none' and one line saying why this change declares none"
+            ),
+        )
+    declared = {sentence.identifier for sentence in sentences}
+    return tuple(
+        f"the pull request names {named!r} as an acceptance sentence of this "
+        "landing, which no story declares"
+        for named in landing.named_sentences
+        if named not in declared
+    )
+
+
 def acceptance_problems(
     sentences: tuple[AcceptanceSentence, ...],
     claims: tuple[ProofClaim, ...],
@@ -339,12 +419,29 @@ def acceptance_problems(
     return tuple(problems)
 
 
-def trace_acceptance(project_root: Path, reports_directory: Path) -> AcceptanceTrace:
+def trace_acceptance(
+    project_root: Path, reports_directory: Path, pull_request_body: Path | None
+) -> AcceptanceTrace:
     sentences = read_declared_sentences(project_root)
     claims = read_source_claims(project_root)
     proofs = read_passing_proofs(reports_directory)
-    return AcceptanceTrace(
-        sentences, claims, proofs, acceptance_problems(sentences, claims, proofs)
+    landing = (
+        None if pull_request_body is None else read_landing_binding(pull_request_body)
+    )
+    problems = acceptance_problems(sentences, claims, proofs) + (
+        () if landing is None else landing_problems(landing, sentences)
+    )
+    return AcceptanceTrace(sentences, claims, proofs, landing, problems)
+
+
+def render_landing(landing: LandingBinding | None) -> str:
+    if landing is None:
+        return LANDING_UNCHECKED
+    if landing.exemption_reason is not None:
+        return f"Landing binding: exempt, {landing.exemption_reason}"
+    return (
+        f"Landing binding: {len(landing.named_sentences)} sentence(s) named by "
+        "the proposed landing"
     )
 
 
@@ -363,9 +460,18 @@ def main() -> int:
         required=True,
         help="directory holding the run reports the verification jobs uploaded",
     )
+    parser.add_argument(
+        "--pull-request-body",
+        type=Path,
+        default=None,
+        help="file holding the body of the pull request proposing this landing; "
+        "absent when no pull request proposes the checked commit",
+    )
     arguments = parser.parse_args()
     try:
-        trace = trace_acceptance(Path.cwd(), arguments.reports)
+        trace = trace_acceptance(
+            Path.cwd(), arguments.reports, arguments.pull_request_body
+        )
     except AcceptanceGateError as error:
         print(f"Acceptance gate refused: {error}", file=sys.stderr)
         return 1
@@ -380,6 +486,7 @@ def main() -> int:
         f"{len(REQUIRED_REPORTS)} run reports",
         flush=True,
     )
+    print(render_landing(trace.landing), flush=True)
     print(render_honesty_bound(), flush=True)
     return 0
 
