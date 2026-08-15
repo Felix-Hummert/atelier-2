@@ -20,6 +20,7 @@ from atelier2.api.references import (
     encode_public_run_reference,
 )
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
 from atelier2.ports.durable_runs import (
     DurableAnswerRunMissing,
@@ -76,7 +77,7 @@ def test_agent_attempt_public_fields_use_the_shared_field_bound() -> None:
         node_execution_id="1" * 64,
         request_hash="2" * 64,
         attempt_ordinal=1,
-        state="POSSIBLY_RAN",
+        state=PublicAgentAttemptState.POSSIBLY_RAN,
         failure_code=None,
         cancellation=None,
     )

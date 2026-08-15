@@ -22,13 +22,14 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import PersistedRunEvent
 from atelier2.ports.run_queries import AgentAttemptProjection, RunProjection
 from tests.scenarios.api import api_limits
 
 
-def _projection(state: str, failure: bool = False) -> RunProjection:
+def _projection(state: PublicAgentAttemptState, failure: bool = False) -> RunProjection:
     document = b"""format_version: 2
 start: build
 nodes:
@@ -83,7 +84,7 @@ nodes:
 
 
 def test_attempt_surfaces_are_canonical_bounded_and_secret_free() -> None:
-    projection = _projection("POSSIBLY_RAN")
+    projection = _projection(PublicAgentAttemptState.POSSIBLY_RAN)
 
     resource = run_resource(projection)
     api_limits().require_run_projection(projection)
@@ -116,7 +117,7 @@ def test_attempt_surfaces_are_canonical_bounded_and_secret_free() -> None:
 
 
 def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
-    projection = _projection("FAILED", failure=True)
+    projection = _projection(PublicAgentAttemptState.FAILED, failure=True)
     attempt_resource = run_resource(projection).model_dump(mode="json")[
         "agent_attempts"
     ][0]

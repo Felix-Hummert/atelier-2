@@ -58,6 +58,7 @@ from atelier2.contracts.executions import (
     logical_effect_key_for,
 )
 from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_projections import public_agent_attempt_state
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     RunId,
@@ -219,6 +220,15 @@ def _validate_bounded_record(
         projection_limit.validate_field_length(len(str(value)))
 
 
+def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
+    try:
+        return AgentAttemptState(str(persisted_value))
+    except ValueError as outside_vocabulary:
+        raise RunTransitionConflict(
+            "persisted agent attempt state is outside the durable vocabulary"
+        ) from outside_vocabulary
+
+
 def _current_attempt_projection(
     record: Mapping[Any, Any],
     *,
@@ -266,24 +276,25 @@ def _current_attempt_projection(
         )
     ):
         raise RunTransitionConflict("current agent attempt binding disagrees")
-    durable_state = AgentAttemptState(str(record["state"]))
+    durable_state = _durable_attempt_state(record["state"])
+    public_state = public_agent_attempt_state(durable_state)
+    if public_state is None:
+        raise RunTransitionConflict(
+            "successful current attempt has no atomic successor transition"
+        )
     failure_value = record["failure_code"]
     receipt_value = record["receipt_hash"]
     state_version = int(record["state_version"])
+    failure: AgentAttemptFailureCode | None = None
     if durable_state is AgentAttemptState.PREPARED:
         if state_version not in (0, 1) or receipt_value is not None:
             raise RunTransitionConflict("prepared agent attempt shape disagrees")
-        public_state = "PREPARED"
-        failure = None
     elif durable_state is AgentAttemptState.LAUNCH_ARMED:
         if state_version < 1 or receipt_value is not None:
             raise RunTransitionConflict("armed agent attempt shape disagrees")
-        public_state = "POSSIBLY_RAN"
-        failure = None
     elif durable_state is AgentAttemptState.FAILED:
         if state_version < 2 or receipt_value is not None:
             raise RunTransitionConflict("failed agent attempt shape disagrees")
-        public_state = "FAILED"
         failure = AgentAttemptFailureCode(str(failure_value))
     elif durable_state in {
         AgentAttemptState.CANCEL_REQUESTED,
@@ -292,12 +303,8 @@ def _current_attempt_projection(
     }:
         if receipt_value is not None or record["cancellation_command_id"] is None:
             raise RunTransitionConflict("cancelled agent attempt shape disagrees")
-        public_state = durable_state.value
-        failure = None
     else:
-        raise RunTransitionConflict(
-            "successful current attempt has no atomic successor transition"
-        )
+        raise RunTransitionConflict("agent attempt state has no projected shape")
     if (failure_value is None) != (failure is None):
         raise RunTransitionConflict("current agent attempt failure shape disagrees")
     command_id = record["cancellation_command_id"]
