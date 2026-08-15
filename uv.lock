@@ -40,6 +40,7 @@ source = { editable = "." }
 dependencies = [
     { name = "dbos" },
     { name = "fastapi" },
+    { name = "jsonschema" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
@@ -61,6 +62,7 @@ dev = [
 requires-dist = [
     { name = "dbos", specifier = "==2.29.0" },
     { name = "fastapi", specifier = "==0.141.1" },
+    { name = "jsonschema", specifier = "==4.26.0" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "sqlalchemy", specifier = "==2.0.51" },

@@ -8,12 +8,13 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_FLOOR = 98
+EXPECTED_SOURCE_MODULE_FLOOR = 99
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
     "dbos-owner": "DBOS and SQLAlchemy stay inside their adapter",
     "wire-projection-split": "Wire schemas name no port type",
+    "schema-owner": "JSON Schema evaluation stays inside one profile owner",
 }
 EXPECTED_LAYER_ROWS = (
     "__main__",

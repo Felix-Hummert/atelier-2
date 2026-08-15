@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -71,11 +72,22 @@ def published(kind: RevisionKind, body: str) -> PublishedRevision:
     return PublishedRevision(kind, body.encode("utf-8"))
 
 
-SCHEMA_CANDIDATE = published(RevisionKind.SCHEMA, "the workspace a builder produced")
-SCHEMA_OPINION = published(RevisionKind.SCHEMA, "what one reviewer thought of it")
-SCHEMA_VERDICT = published(RevisionKind.SCHEMA, "the verdict a review panel returns")
-SCHEMA_APPROVAL = published(RevisionKind.SCHEMA, "the word an operator gave")
-SCHEMA_RECEIPT = published(RevisionKind.SCHEMA, "the receipt a comment leaves behind")
+def published_schema(title: str) -> PublishedRevision:
+    """A real Draft 2020-12 schema, titled by the thing it describes.
+
+    Prose published under the name `schema` is refused at the reference site, so
+    a fixture standing in for a schema has to be one.
+    """
+    return published(
+        RevisionKind.SCHEMA, json.dumps({"title": title, "type": "object"})
+    )
+
+
+SCHEMA_CANDIDATE = published_schema("the workspace a builder produced")
+SCHEMA_OPINION = published_schema("what one reviewer thought of it")
+SCHEMA_VERDICT = published_schema("the verdict a review panel returns")
+SCHEMA_APPROVAL = published_schema("the word an operator gave")
+SCHEMA_RECEIPT = published_schema("the receipt a comment leaves behind")
 PROFILE = published(RevisionKind.PROFILE, "the standing method of a builder")
 SKILL = published(RevisionKind.SKILL, "workspace discipline, and its tool grants")
 TOOL = published(RevisionKind.TOOL, "the grant that writes into a repository")
