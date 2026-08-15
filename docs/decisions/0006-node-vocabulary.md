@@ -1007,11 +1007,16 @@ runs any of this is #1 story 3.
 [`docs/PRODUCT.md`](../PRODUCT.md) owns implementation status. What this record must
 say: only the document surface above is implemented — the parser accepts
 `format_version: 3` into the closed model and refuses every parse-time form named
-here, naming the node and the field. Nothing behind it exists: no reference binding,
-no runtime capability revision, and no V3 record shape in the store, so no capability
-above is attested and every publication and execution path refuses a V3 document
-naming the format. The stories that implement the rest attest the subset they prove,
-and every later capability is an attestation change rather than a format change.
+here, naming the node and the field, and the subworkflow half of binding holds — a
+node's inputs and outputs bind one to one against the published child revision's own
+`graph_inputs` and `graph_outputs`, and a chain deeper than the depth its caller
+attests is refused naming the chain. Nothing else behind it exists: no registry
+resolving the remaining references, no runtime capability revision, and no V3 record
+shape in the store, so no capability above is attested, the depth bound is a caller
+argument rather than a proven `subworkflow_execution` entry, and every publication
+and execution path refuses a V3 document naming the format. The stories that
+implement the rest attest the subset they prove, and every later capability is an
+attestation change rather than a format change.
 Falsifiably: if a later capability forces a format version anyway, this record was
 wrong.
 
