@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from collections.abc import Iterable, Mapping
+from contextlib import closing
 from enum import IntEnum, StrEnum
 
 import pytest
@@ -74,17 +76,24 @@ def _declared_vocabularies(
     that column may ever hold. Every other CHECK that names the column branches
     on a part of that set, so reading those too would let a narrowed declaration
     stay green on the strength of a state-shape mention elsewhere.
+
+    A table may spell more than one such CHECK, and SQLite requires every one of
+    them, so what the database admits is their intersection, never their union.
     """
 
-    declared: dict[str, set[str | int]] = {}
+    declared: dict[str, frozenset[str | int]] = {}
     for table_name, condition in conditions:
         spelled = _DECLARATION.match(condition)
-        if spelled is not None:
-            column, members = spelled.groups()
-            declared.setdefault(f"{table_name}.{column}", set()).update(
-                _literals(members)
-            )
-    return {column: frozenset(literals) for column, literals in declared.items()}
+        if spelled is None:
+            continue
+        column, members = spelled.groups()
+        qualified = f"{table_name}.{column}"
+        admitted = _literals(members)
+        still_admitted = declared.get(qualified)
+        declared[qualified] = (
+            admitted if still_admitted is None else still_admitted & admitted
+        )
+    return declared
 
 
 def _compared_literals(conditions: Conditions) -> Mapping[str, frozenset[str | int]]:
@@ -338,6 +347,33 @@ def test_a_kind_added_to_its_own_check_without_a_contract_is_drift() -> None:
     assert _declared_vocabularies(widened)["run_events.event_kind"] == (
         OWNED_VOCABULARIES["run_events.event_kind"] | {"AGENT_ABANDONED"}
     )
+
+
+def test_a_column_under_two_membership_checks_admits_only_their_intersection() -> None:
+    """The premise a declaration is read under: SQLite requires every CHECK at once."""
+
+    with closing(sqlite3.connect(":memory:")) as database:
+        database.execute(
+            "CREATE TABLE two_declarations (kind TEXT NOT NULL, "
+            "CHECK (kind IN ('KEPT', 'SHUT_OUT')), CHECK (kind IN ('KEPT')))"
+        )
+
+        database.execute("INSERT INTO two_declarations VALUES ('KEPT')")
+        with pytest.raises(sqlite3.IntegrityError):
+            database.execute("INSERT INTO two_declarations VALUES ('SHUT_OUT')")
+
+
+def test_a_second_check_narrowing_a_column_is_drift_though_the_first_names_every_kind() -> (
+    None
+):
+    narrowed = (
+        *SCHEMA_CONDITIONS,
+        ("run_events", f"event_kind IN ('{RunEventKind.AGENT_COMPLETED.value}')"),
+    )
+
+    assert _declared_vocabularies(narrowed)["run_events.event_kind"] == {
+        RunEventKind.AGENT_COMPLETED.value
+    }
 
 
 def test_every_persisted_hash_column_is_bounded_at_the_length_of_a_real_digest() -> (
