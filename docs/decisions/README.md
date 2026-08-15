@@ -17,6 +17,7 @@ number is never reused and never renumbered.
 - [ADR 0004: The local cockpit is a projection and control adapter](0004-local-cockpit.md)
 - [ADR 0005: CI enforces package boundaries](0005-enforced-package-boundaries.md)
 - [ADR 0006: Format V3 is the whole authoring language; capabilities stage execution](0006-node-vocabulary.md) — ACCEPTED, not yet implemented
+- [ADR 0007: Named lineages own catalog identity above hash-true revisions](0007-catalog-identity.md) — PROPOSED, not yet implemented
 - [ADR 0008: Node budgets separate hard limits from reported thresholds](0008-budget-units.md) — ACCEPTED, not yet implemented
 - [ADR 0009: One trust boundary separates the coordinating service from every runner](0009-runner-trust.md) — PROPOSED, not yet implemented
 - [ADR 0010: One GitHub adapter observes, publishes and reads back; the core stays platform-blind](0010-github-platform-adapter.md) — PROPOSED, not yet implemented
