@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import cast
+from typing import Any, cast
 
 from httpx import ASGITransport, AsyncClient
 
@@ -79,19 +79,17 @@ def persisted_event(
     )
 
 
-SCHEDULER_TURNS_UNTIL_A_TASK_BLOCKS = 10
-
-
-async def settle_scheduled_tasks() -> None:
-    """Give every runnable task the turns it needs to reach its next await.
+def tasks_that_could_still_run() -> set[asyncio.Task[Any]]:
+    """Everything besides this test that the loop could still hand a turn to.
 
     These tests prove that something does *not* happen. A wall-clock sleep buys
-    that proof with real time and goes false-green under load, while the event
-    they actually wait for is the scheduler running out of ready work.
+    that proof with real time and goes false-green under load. An empty set ends
+    the question instead: a single-threaded loop with nothing left to run cannot
+    reach the query afterwards, however long anybody waits.
     """
 
-    for _ in range(SCHEDULER_TURNS_UNTIL_A_TASK_BLOCKS):
-        await asyncio.sleep(0)
+    running = asyncio.current_task()
+    return {task for task in asyncio.all_tasks() if task is not running}
 
 
 def test_cancelled_query_keeps_global_slot_until_real_thread_finishes() -> None:
@@ -101,7 +99,6 @@ def test_cancelled_query_keeps_global_slot_until_real_thread_finishes() -> None:
         )
         first_started = threading.Event()
         release_first = threading.Event()
-        second_started = threading.Event()
 
         def first() -> str:
             first_started.set()
@@ -116,16 +113,15 @@ def test_cancelled_query_keeps_global_slot_until_real_thread_finishes() -> None:
         except asyncio.CancelledError:
             pass
 
-        second_task = asyncio.create_task(
-            runner.run(lambda: second_started.set() or "second")
-        )
-        await settle_scheduled_tasks()
-        assert not second_started.is_set()
+        second_task = asyncio.create_task(runner.run(lambda: "second"))
         assert runner.abandoned_queries == 1
 
         release_first.set()
         assert await second_task == "second"
         assert runner.abandoned_queries == 0
+        # Admission raises the active count inside the event loop, before any
+        # thread exists. A slot handed over while the abandoned thread was still
+        # running would therefore have peaked at two, whatever the machine did.
         assert runner.peak_active_queries == 1
 
     asyncio.run(scenario())
@@ -452,15 +448,25 @@ def test_cancellation_while_waiting_for_slot_starts_no_query() -> None:
         first_started = threading.Event()
         release_first = threading.Event()
         waiting_started = threading.Event()
+        asking_for_a_slot = asyncio.Event()
 
         def first() -> None:
             first_started.set()
             release_first.wait(timeout=5)
 
+        async def ask_for_a_slot() -> None:
+            asking_for_a_slot.set()
+            await runner.run(lambda: waiting_started.set())
+
         first_task = asyncio.create_task(runner.run(first))
         assert await asyncio.to_thread(first_started.wait, 5)
-        waiting_task = asyncio.create_task(runner.run(lambda: waiting_started.set()))
-        await settle_scheduled_tasks()
+        waiting_task = asyncio.create_task(ask_for_a_slot())
+        # Setting the event does not suspend the asking task, so it runs on into
+        # `run` and parks on the admission it cannot get. This test resumes only
+        # afterwards, with the waiter provably at the point being cancelled.
+        await asking_for_a_slot.wait()
+        assert runner.peak_active_queries == 1
+
         waiting_task.cancel()
         try:
             await waiting_task
@@ -472,6 +478,8 @@ def test_cancellation_while_waiting_for_slot_starts_no_query() -> None:
         await first_task
         assert not waiting_started.is_set()
         assert runner.peak_active_queries == 1
+        assert runner.abandoned_queries == 0
+        assert tasks_that_could_still_run() == set()
 
     asyncio.run(scenario())
 
@@ -526,8 +534,9 @@ def test_stream_does_not_read_the_next_bounded_page_before_yielding_the_current_
         first = await anext(stream)
         assert first.id is not None
         assert queries.calls == [0]
-        await settle_scheduled_tasks()
-        assert queries.calls == [0]
+        # Nothing is left that could fetch the next page behind the consumer's
+        # back, so the second page stays unread until it is asked for.
+        assert tasks_that_could_still_run() == set()
 
         second = await anext(stream)
         assert second.id is not None
@@ -599,12 +608,12 @@ def test_cancelled_stream_starts_no_next_query_and_blocked_query_closes_once() -
         assert runner.abandoned_queries == 1
 
         queries.release.set()
-        deadline = asyncio.get_running_loop().time() + 5
-        while runner.abandoned_queries and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.01)
+        await asyncio.gather(*tasks_that_could_still_run())
         assert runner.abandoned_queries == 0
         assert queries.closes == 1
-        await settle_scheduled_tasks()
+        # The abandoned query has finished and left nothing behind that could
+        # ask for a second page on the cancelled stream's behalf.
         assert queries.calls == 1
+        assert tasks_that_could_still_run() == set()
 
     asyncio.run(scenario())
