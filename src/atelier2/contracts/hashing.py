@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import struct
 from dataclasses import dataclass
@@ -8,6 +9,19 @@ from typing import Self
 
 SHA256_HEX_DIGEST = re.compile(r"[0-9a-f]{64}")
 _FRAME_PREFIX = b"ATELIER2\x00"
+
+
+def canonical_json(payload: object) -> bytes:
+    """Encode one unambiguous JSON spelling: sorted keys, no spacing, ASCII only.
+
+    Every Atelier identity, fingerprint, and control frame that is compared byte
+    for byte is written through here, so two writers of the same payload cannot
+    disagree about its bytes.
+    """
+
+    return json.dumps(
+        payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("ascii")
 
 
 def frame(domain: str, *fields: bytes) -> bytes:

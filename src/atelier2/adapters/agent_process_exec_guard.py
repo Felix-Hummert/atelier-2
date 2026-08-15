@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import ctypes
-import json
 import os
 from collections.abc import Sequence
 from pathlib import Path
 
-_PR_SET_PDEATHSIG = 1
-_SIGKILL = 9
-_ENVIRONMENT_CHANNEL = "ATELIER2_AGENT_ENVIRONMENT_B64"
+from atelier2.adapters.agent_process_protocol import (
+    PROVIDER_ENVIRONMENT_CHANNEL,
+    decode_provider_environment,
+)
+
+PARENT_DEATH_OPTION = 1
+PARENT_DEATH_SIGNAL = 9
 
 
 def guarded_exec(
@@ -25,7 +27,7 @@ def guarded_exec(
     if os.getppid() != watchdog_pid:
         raise RuntimeError("watchdog disappeared before exec guard armed")
     libc = ctypes.CDLL(None, use_errno=True)
-    if libc.prctl(_PR_SET_PDEATHSIG, _SIGKILL) != 0:
+    if libc.prctl(PARENT_DEATH_OPTION, PARENT_DEATH_SIGNAL) != 0:
         errno = ctypes.get_errno()
         raise OSError(errno, os.strerror(errno))
     if os.getppid() != watchdog_pid:
@@ -45,15 +47,10 @@ def main(arguments: Sequence[str] | None = None) -> None:
         command = command[1:]
     if not command:
         parser.error("a provider command is required")
-    encoded_environment = os.environ.pop(_ENVIRONMENT_CHANNEL, None)
+    encoded_environment = os.environ.pop(PROVIDER_ENVIRONMENT_CHANNEL, None)
     if encoded_environment is None:
         parser.error("the provider environment channel is required")
-    environment = {
-        str(name): str(value)
-        for name, value in json.loads(
-            base64.b64decode(encoded_environment, validate=True).decode("utf-8")
-        )
-    }
+    environment = decode_provider_environment(encoded_environment)
     guarded_exec(
         cgroup=parsed.cgroup,
         watchdog_pid=parsed.watchdog_pid,

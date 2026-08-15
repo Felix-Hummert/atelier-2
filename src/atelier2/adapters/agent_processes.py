@@ -13,11 +13,13 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from atelier2.adapters.agent_process_watchdog import (
+from atelier2.adapters.agent_process_protocol import (
     CONTROL_FRAME_TIMEOUT_SECONDS,
     MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
     MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES,
+    cgroup_populated,
     encode_control_frame,
+    launch_request,
     maximum_agent_wait_response_bytes,
 )
 from atelier2.contracts.agent_attempts import (
@@ -167,15 +169,7 @@ class AgentProcessSupervisor:
                         self._owned[execution.attempt_id] = owned
                         publish = True
             except BaseException:
-                os.close(write_pipe)
-                process.kill()
-                process.wait()
-                _close_watchdog_pipes(process)
-                endpoint.unlink(missing_ok=True)
-                try:
-                    cgroup.rmdir()
-                except OSError:
-                    pass
+                self._close_owned(owned)
                 raise
             if not publish:
                 self._close_owned(owned)
@@ -185,8 +179,8 @@ class AgentProcessSupervisor:
     def launch_and_wait(
         self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
     ) -> AgentProcessCompletion:
-        launch_request = _launch_request(invocation)
-        launch_frame = encode_control_frame(launch_request)
+        request = launch_request(invocation)
+        launch_frame = encode_control_frame(request)
         if len(launch_frame) > MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES:
             raise ValueError(
                 "encoded agent launch exceeds "
@@ -218,7 +212,7 @@ class AgentProcessSupervisor:
         try:
             launch_response = self._request_with_retry(
                 owned,
-                launch_request,
+                request,
                 timeout_seconds=CONTROL_FRAME_TIMEOUT_SECONDS,
                 maximum_response_bytes=MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES,
             )
@@ -444,7 +438,7 @@ class AgentProcessSupervisor:
         if (
             not owned.endpoint.is_socket()
             or not (owned.cgroup / "cgroup.kill").is_file()
-            or _cgroup_populated(owned.cgroup)
+            or cgroup_populated(owned.cgroup)
         ):
             raise RuntimeError("watchdog readiness attestation disagrees")
 
@@ -582,17 +576,6 @@ def _close_watchdog_pipes(process: subprocess.Popen[bytes]) -> None:
         process.stderr.close()
 
 
-def _launch_request(invocation: AgentProcessInvocation) -> dict[str, object]:
-    return {
-        "arguments": invocation.arguments,
-        "environment": invocation.environment,
-        "operation": "LAUNCH",
-        "standard_input": base64.b64encode(invocation.standard_input).decode("ascii"),
-        "standard_output_frame_bytes": invocation.standard_output_frame_bytes,
-        "working_directory": str(invocation.working_directory),
-    }
-
-
 def _completion_from_response(
     response: dict[str, object], standard_output_frame_bytes: int
 ) -> AgentProcessCompletion:
@@ -623,17 +606,12 @@ def _completion_from_response(
     return AgentProcessCompletion(return_code, standard_output, standard_error)
 
 
-def _cgroup_populated(cgroup: Path) -> bool:
-    events = (cgroup / "cgroup.events").read_text(encoding="ascii").splitlines()
-    return "populated 1" in events
-
-
 def _kill_cgroup_and_wait_empty(cgroup: Path, timeout_seconds: float) -> None:
     (cgroup / "cgroup.kill").write_text("1", encoding="ascii")
     deadline = time.monotonic() + timeout_seconds
-    while _cgroup_populated(cgroup) and time.monotonic() < deadline:
+    while cgroup_populated(cgroup) and time.monotonic() < deadline:
         time.sleep(0.01)
-    if _cgroup_populated(cgroup):
+    if cgroup_populated(cgroup):
         raise RuntimeError("agent cgroup did not become empty in bounds")
 
 
