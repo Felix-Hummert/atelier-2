@@ -17,6 +17,7 @@ from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     DurableRunCreated,
     DurableRunExisting,
+    DurableRunFormatNotExecutable,
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
     DurableWriteUnavailable,
@@ -47,6 +48,11 @@ class RunIdentityConflict:
 
 
 @dataclass(frozen=True)
+class RunFormatNotExecutable:
+    pass
+
+
+@dataclass(frozen=True)
 class InvalidAgentBindings:
     pass
 
@@ -66,6 +72,7 @@ type StartPublishedRunResult = (
     | RunExisting
     | RevisionMissing
     | RunIdentityConflict
+    | RunFormatNotExecutable
     | InvalidAgentBindings
     | AgentConfigurationRevisionMissing
     | AgentExecutorBindingUnavailable
@@ -87,6 +94,8 @@ def start_published_run(
             return RevisionMissing()
         case DurableRunIdentityConflict():
             return RunIdentityConflict()
+        case DurableRunFormatNotExecutable():
+            return RunFormatNotExecutable()
         case DurableInvalidAgentBindings():
             return InvalidAgentBindings()
         case DurableAgentConfigurationRevisionMissing():

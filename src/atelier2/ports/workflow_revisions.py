@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
-from atelier2.contracts.workflows import AnyWorkflowGraph
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, VersionedReference
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
@@ -69,7 +68,7 @@ class PublishedWorkflowResolver(Protocol):
 class WorkflowProjectionLimit(Protocol):
     def validate_document(self, document: bytes) -> None: ...
 
-    def validate_graph(self, graph: AnyWorkflowGraph) -> None: ...
+    def validate_graph(self, graph: AnyWorkflowDocument) -> None: ...
 
 
 class DurableProjectionLimit(WorkflowProjectionLimit, Protocol):
@@ -96,7 +95,7 @@ class ProjectionLimitExceeded(ValueError):
 @dataclass(frozen=True)
 class WorkflowRevisionProjection:
     revision: WorkflowRevision
-    graph: AnyWorkflowGraph
+    graph: AnyWorkflowDocument
 
 
 @dataclass(frozen=True)

@@ -40,6 +40,11 @@ class DurableRunIdentityConflict:
 
 
 @dataclass(frozen=True)
+class DurableRunFormatNotExecutable:
+    """The named revision is published, and no runtime here executes its format."""
+
+
+@dataclass(frozen=True)
 class DurableInvalidAgentBindings:
     pass
 
@@ -64,6 +69,7 @@ type DurablePublishedRunResult = (
     | DurableRunExisting
     | DurableRunRevisionMissing
     | DurableRunIdentityConflict
+    | DurableRunFormatNotExecutable
     | DurableInvalidAgentBindings
     | DurableAgentConfigurationRevisionMissing
     | DurableAgentExecutorBindingUnavailable

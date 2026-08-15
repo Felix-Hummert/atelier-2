@@ -154,6 +154,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Workflow revision collision",
         "Stop and inspect durable revision integrity.",
     ),
+    "workflow-format-not-executable": ProblemDefinition(
+        409,
+        "Workflow format is not executable",
+        "This revision is published and no runtime here runs its format version yet.",
+    ),
     "run-identity-conflict": ProblemDefinition(
         409,
         "Run identity conflict",

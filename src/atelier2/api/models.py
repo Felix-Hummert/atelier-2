@@ -38,6 +38,7 @@ from atelier2.contracts.workflows import (
     WorkflowNode,
     WorkflowNodeV2,
 )
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
 from atelier2.ports.run_events import PersistedRunEvent
 from atelier2.ports.run_queries import RunProjection
 from atelier2.ports.workflow_revisions import WorkflowRevisionProjection
@@ -146,8 +147,16 @@ class WorkflowGraphResourceV2(ApiModel):
     nodes: tuple[NodeResourceV2, ...]
 
 
+class WorkflowGraphResourceV3(ApiModel):
+    """A published V3 revision: its format, its size, and that nothing runs it."""
+
+    format_version: Literal[3]
+    executable: Literal[False]
+    node_count: int = Field(ge=1)
+
+
 AnyWorkflowGraphResource = Annotated[
-    WorkflowGraphResource | WorkflowGraphResourceV2,
+    WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3,
     Field(discriminator="format_version"),
 ]
 
@@ -735,8 +744,12 @@ def node_resource(node: WorkflowNode | WorkflowNodeV2) -> NodeResource | NodeRes
 
 
 def graph_resource(
-    graph: WorkflowGraph | WorkflowGraphV2,
-) -> WorkflowGraphResource | WorkflowGraphResourceV2:
+    graph: AnyWorkflowDocument,
+) -> WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3:
+    if isinstance(graph, WorkflowGraphV3):
+        return WorkflowGraphResourceV3(
+            format_version=3, executable=False, node_count=len(graph.nodes)
+        )
     ordered = sorted(graph.nodes, key=lambda item: item.id.encode("utf-8"))
     if isinstance(graph, WorkflowGraph):
         return WorkflowGraphResource(

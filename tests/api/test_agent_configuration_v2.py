@@ -314,8 +314,8 @@ def test_openapi_names_both_publish_operations_and_exact_problem_sets() -> None:
     graph = schema["components"]["schemas"]["WorkflowRevisionDetailResource"][
         "properties"
     ]["graph"]
-    assert set(graph["discriminator"]["mapping"]) == {"1", "2"}
-    assert len(graph["oneOf"]) == 2
+    assert set(graph["discriminator"]["mapping"]) == {"1", "2", "3"}
+    assert len(graph["oneOf"]) == 3
 
 
 def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> None:

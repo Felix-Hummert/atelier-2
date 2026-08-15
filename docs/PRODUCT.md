@@ -187,9 +187,17 @@ resolution is lineage-free and a reference's `ref` is carried into that snapshot
 without proving membership, because named lineages, admitted membership and name
 resolution belong to the proposed catalog-identity record, which is not accepted and
 whose `resolve_reference` this port gains when it is; there is no capability attestation
-and no V3 record shape in the store, so publication and every run path still refuse a
-V3 document naming the format, and no runtime executes a child. V1 and V2 documents
-keep their exact meaning under their own models.
+and no V3 record shape in the store, and no runtime executes a child.
+
+A valid V3 document is publishable long before it is executable: it
+becomes an immutable revision under the same exact-bytes hash identity as V1 and V2,
+and the revision projection names its format and marks it unexecutable, while an
+invalid one is refused at publication carrying that named node and field. Starting a
+run on such a revision is refused naming its format and writes no run. V1 and V2
+documents keep their exact meaning under their own models, and their wire bytes are
+unchanged.
+[ADR 0006](decisions/0006-node-vocabulary.md) owns this vocabulary and the staging
+rule behind it.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically

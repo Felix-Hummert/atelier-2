@@ -100,6 +100,7 @@ from atelier2.application.start_published_run import (
     RevisionMissing,
     RunCreated,
     RunExisting,
+    RunFormatNotExecutable,
     RunIdentityConflict,
     start_published_run,
 )
@@ -139,6 +140,7 @@ from atelier2.contracts.executions import (
     is_canonical_integer_bytes,
 )
 from atelier2.contracts.runs import RunId
+from atelier2.contracts.workflow_refusals import WorkflowRefusal
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
@@ -420,6 +422,8 @@ def create_app(
                 status = HTTPStatus.CREATED
             case PublicationExisting(projection):
                 status = HTTPStatus.OK
+            case PublicationInvalid(detail, WorkflowRefusal()):
+                raise ApiProblem("invalid-workflow-document", detail)
             case PublicationInvalid():
                 raise ApiProblem("invalid-workflow-document")
             case PublicationCollision():
@@ -547,6 +551,8 @@ def create_app(
                 raise ApiProblem("workflow-revision-not-found")
             case RunIdentityConflict():
                 raise ApiProblem("run-identity-conflict")
+            case RunFormatNotExecutable():
+                raise ApiProblem("workflow-format-not-executable")
             case InvalidAgentBindings():
                 raise ApiProblem("invalid-agent-bindings")
             case AgentConfigurationRevisionMissing():

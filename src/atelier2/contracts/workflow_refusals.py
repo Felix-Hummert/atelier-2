@@ -53,3 +53,16 @@ class WorkflowDocumentRefused(Exception):
     def __init__(self, refusal: WorkflowRefusal) -> None:
         super().__init__(str(refusal))
         self.refusal = refusal
+
+
+class WorkflowDocumentInvalid(ValueError):
+    """Exact bytes are not one valid workflow document.
+
+    Carries the named refusal whenever the format could name one, so a caller
+    above the parsing adapter can report the node and field without reading
+    prose.
+    """
+
+    def __init__(self, detail: str, refusal: WorkflowRefusal | None = None) -> None:
+        super().__init__(detail)
+        self.refusal = refusal
