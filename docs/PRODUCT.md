@@ -209,13 +209,19 @@ the body is the system prompt, kept byte-exact. An absent `tools` field leaves
 the agent able to use every tool its executor offers, because a restriction is
 only ever explicit, and a present one declares exactly that closed set. Every
 other key, missing required field, unreadable value, duplicated key or tool, and
-empty prompt is refused by its own name. A definition renders back to the
-document it was read from, and it publishes deterministically into an existing
+empty prompt is refused by its own name. A definition renders back to a canonical
+document that reads as the same definition — the declared tool set always as a
+sequence, so a tool name that itself spells the comma an author may separate by
+survives the round trip — and it publishes deterministically into an existing
 agent-configuration revision, with the deployment rather than the file owning the
 authentication profile, the executor, and the model an unspelled one falls back
-to. Nothing enforces a tool declaration yet, and today's configuration revision
+to. This is the authoring format alone: nothing enforces a tool declaration yet,
+no serving surface publishes a definition yet, and today's configuration revision
 carries no field for a name, description, tool declaration, or system prompt, so
 the published revision alone cannot reconstruct the definition it came from.
+Where an authored definition durably lives is the open catalog-identity
+decision; until it is made, the round trip holds over the definition's own
+canonical bytes and not over the catalog.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically

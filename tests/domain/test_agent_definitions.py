@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from atelier2.adapters.markdown_agent_definitions import (
@@ -259,6 +261,16 @@ def test_a_refused_document_names_why(
     assert refusal_of(document)[0] is refusal
 
 
+def test_frontmatter_nested_beyond_the_parsers_recursion_is_refused_by_name() -> None:
+    beyond_the_interpreters_stack = sys.getrecursionlimit() * 2
+    nested = "[" * beyond_the_interpreters_stack + "]" * beyond_the_interpreters_stack
+
+    assert (
+        refusal_of(authored_document(frontmatter=f"name: {nested}\n"))[0]
+        is AgentDefinitionRefusal.FRONTMATTER_UNPARSABLE
+    )
+
+
 def test_the_same_file_is_the_same_definition() -> None:
     first = parse_agent_definition(authored_document())
     second = parse_agent_definition(authored_document())
@@ -347,6 +359,19 @@ def test_a_definition_survives_rendering_and_parsing_unchanged(
 ) -> None:
     definition = parse_agent_definition(authored_document(frontmatter=frontmatter))
 
+    assert parse_agent_definition(render_agent_definition(definition)) == definition
+
+
+def test_a_tool_name_spelling_the_comma_separator_survives_rendering() -> None:
+    definition = parse_agent_definition(
+        authored_document(
+            frontmatter=f"name: {AUTHORED_NAME}\n"
+            f"description: {AUTHORED_DESCRIPTION}\n"
+            'tools:\n  - "Read,Grep"\n'
+        )
+    )
+
+    assert definition.tools == DeclaredTools((AgentToolName("Read,Grep"),))
     assert parse_agent_definition(render_agent_definition(definition)) == definition
 
 

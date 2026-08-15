@@ -54,22 +54,28 @@ def parse_agent_definition(document: bytes) -> AgentDefinition:
 
 
 def render_agent_definition(definition: AgentDefinition) -> bytes:
-    """Write the canonical document one definition was read from.
+    """Write the canonical document of one definition.
 
-    Reading this back yields the same definition, so a stored definition can be
-    shown to the human who authored it without a second, divergent format.
+    Reading this back yields the same definition, so a held definition can be
+    shown to the human who authored it without a second, divergent format. The
+    canonical spelling is not the only accepted one: an author may separate
+    tools by comma as they do today, and this writes the sequence that spelling
+    cannot always express.
     """
 
-    frontmatter: dict[str, str] = {
+    frontmatter: dict[str, str | list[str]] = {
         AgentDefinitionField.NAME.value: definition.name,
         AgentDefinitionField.DESCRIPTION.value: definition.description,
     }
     if definition.model is not None:
         frontmatter[AgentDefinitionField.MODEL.value] = definition.model
     if isinstance(definition.tools, DeclaredTools):
-        frontmatter[AgentDefinitionField.TOOLS.value] = f"{TOOL_SEPARATOR} ".join(
+        # The sequence spelling is the canonical one because it is the only
+        # lossless one: a tool name may itself contain the comma separator, and
+        # the comma spelling would read that single name back as two.
+        frontmatter[AgentDefinitionField.TOOLS.value] = [
             name.value for name in definition.tools.names
-        )
+        ]
     document = (
         f"{FRONTMATTER_DELIMITER}\n"
         + yaml.safe_dump(
@@ -98,7 +104,10 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
 def _frontmatter_fields(frontmatter: str) -> dict[str, Node]:
     try:
         root = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
-    except yaml.YAMLError as error:
+    except (yaml.YAMLError, RecursionError) as error:
+        # A document nested deeper than the composer can recurse is a document
+        # this parser cannot read, and an external file must never reach a
+        # caller as a bare interpreter error instead of a named refusal.
         raise AgentDefinitionRefused(
             AgentDefinitionRefusal.FRONTMATTER_UNPARSABLE
         ) from error
