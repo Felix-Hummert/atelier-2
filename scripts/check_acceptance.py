@@ -38,8 +38,9 @@ VITEST_PASSED_STATUS = "passed"
 
 HONESTY_BOUND = (
     "```text",
-    "proves: every declared sentence is claimed by a test this pipeline runs",
-    "proves: every claim names a sentence some story declared",
+    "proves: every declared sentence was proven by a test that ran and passed here",
+    "proves: every claim in this repository names a sentence some story declared",
+    "proves: every claim was honoured by a passing test in this pipeline's reports",
     "does not prove: that a test carries its sentence in meaning - review judges that",
     "does not measure: any ratio, case count, or coverage target",
     "```",

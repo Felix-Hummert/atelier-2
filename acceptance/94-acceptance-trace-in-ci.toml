@@ -20,8 +20,8 @@ id = "an-orphaned-proof-fails-the-gate"
 text = "A test claiming to prove a sentence that no story declares fails verification, and the failure names that claim."
 
 [[sentence]]
-id = "a-proof-no-verification-invocation-runs-fails-the-gate"
-text = "A proof that no verification invocation of this pipeline actually runs counts as no proof, and the failure names it."
+id = "a-proof-that-did-not-run-and-pass-fails-the-gate"
+text = "A proof that did not run and pass in this pipeline's own run reports counts as no proof, and the failure names it."
 
 [[sentence]]
 id = "the-gate-states-the-bound-of-what-it-proves"

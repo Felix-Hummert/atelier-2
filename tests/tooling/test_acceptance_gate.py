@@ -215,7 +215,7 @@ def a_pytest_run_of_the_proving_test(outcome: Outcome) -> str:
     )
 
 
-@pytest.mark.proves("a-proof-no-verification-invocation-runs-fails-the-gate")
+@pytest.mark.proves("a-proof-that-did-not-run-and-pass-fails-the-gate")
 @pytest.mark.parametrize(
     "run",
     [
