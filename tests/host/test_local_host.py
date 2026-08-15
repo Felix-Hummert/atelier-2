@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import signal
 import socket
@@ -29,6 +30,8 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
+from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.host import (
     DEFAULT_HOST,
@@ -189,6 +192,40 @@ def test_host_settings_own_named_production_defaults(tmp_path: Path) -> None:
     assert settings.port == 8422
     assert settings.limits == api_limits()
     assert settings.event_poll_backoff == event_poll_backoff()
+
+
+@pytest.mark.parametrize(
+    "payload_bytes",
+    [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        MAXIMUM_AGENT_OUTPUT_BYTES_V2 - 1,
+        MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    ],
+)
+def test_the_base64_expansion_is_what_the_encoder_actually_produces(
+    payload_bytes: int,
+) -> None:
+    encoded = base64.b64encode(b"x" * payload_bytes)
+
+    assert base64_characters_for(payload_bytes) == len(encoded)
+
+
+def test_the_host_bounds_admit_exactly_what_the_durable_contract_accepts() -> None:
+    limits = api_limits()
+    largest_durable_result = b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+
+    assert limits.maximum_decoded_payload_bytes == MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    assert limits.maximum_base64_characters == len(
+        base64.b64encode(largest_durable_result)
+    )
+    limits.require_encoded_payload(largest_durable_result)
+    with pytest.raises(ApiLimitExceeded):
+        limits.require_encoded_payload(largest_durable_result + b"x")
 
 
 def served_settings(

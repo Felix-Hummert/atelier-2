@@ -33,8 +33,9 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
-from atelier2.api.limits import ApiLimits
+from atelier2.api.limits import ApiLimits, base64_characters_for
 from atelier2.api.stream import EventPollBackoff
+from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 
 DEFAULT_HOST = "127.0.0.1"
@@ -42,8 +43,16 @@ DEFAULT_PORT = 8422
 
 MAXIMUM_REQUEST_BODY_BYTES = 65_536
 MAXIMUM_FIELD_CHARACTERS = 1_024
-MAXIMUM_BASE64_CHARACTERS = 65_536
-MAXIMUM_DECODED_PAYLOAD_BYTES = 49_152
+
+# The edge must admit exactly the largest result the durable agent contract
+# accepts, and nothing larger: a tighter bound refuses work the store would
+# have kept, a looser one admits work the store then refuses. So both numbers
+# are derivations of one owner rather than typed constants -- the decoded bound
+# *is* the durable bound, and the base64 bound is that same number in transport
+# form. As typed literals they drifted silently, because `api/stream.py`
+# reports the resulting refusal as a clean end of stream.
+MAXIMUM_DECODED_PAYLOAD_BYTES = MAXIMUM_AGENT_OUTPUT_BYTES_V2
+MAXIMUM_BASE64_CHARACTERS = base64_characters_for(MAXIMUM_DECODED_PAYLOAD_BYTES)
 MAXIMUM_WORKFLOW_NODES = 100
 EVENT_PAGE_SIZE = 50
 MAXIMUM_CONTROL_QUERIES = 8
