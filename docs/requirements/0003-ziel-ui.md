@@ -3,9 +3,9 @@
 ```text
 Status:         DRAFT
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/9
-Source-Threads: #9
-Distilled-From: 5294009202, 5301898411, 5302066517, 5302109868, 5302132001,
-                5302769095, 5302788411
+Source-Threads: #9, #5
+Distilled-From: 5294009202, 5294316639, 5301898411, 5302066517, 5302109868,
+                5302132001, 5302769095, 5302788411
                 #9 body, sha256
                 36800d6ecd5d3e8922028425835b368b42d163098e5d32da930e40d25f49ce99
 Approved-By:    none
