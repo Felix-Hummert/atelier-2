@@ -26,28 +26,32 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
-from atelier2.api.models import (
+from atelier2.api.openapi import API_PREFIX
+from atelier2.api.references import decode_canonical_base64
+from atelier2.api.wire.events import (
     ActionReconciliationRequiredEventResource,
     ActionReconciliationRequiredEventResourceV2,
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
-    AgentConfigurationRevisionResource,
     AgentFailedEventResourceV2,
-    AnyRunResource,
-    AuthProfileRevisionResource,
-    ProblemResource,
+    WaitingInputEventResource,
+    WaitingInputEventResourceV2,
+)
+from atelier2.api.wire.requests import (
     PublishAgentConfigurationRevisionRequestResource,
     PublishAuthProfileRevisionRequestResource,
     StartRunAgentBindingResourceV2,
     StartRunRequestResource,
     StartRunRequestResourceV2,
+)
+from atelier2.api.wire.resources import (
+    AgentConfigurationRevisionResource,
+    AnyRunResource,
+    AuthProfileRevisionResource,
+    ProblemResource,
     StreamFailureResource,
-    WaitingInputEventResource,
-    WaitingInputEventResourceV2,
     WorkflowRevisionDetailResource,
 )
-from atelier2.api.openapi import API_PREFIX
-from atelier2.api.references import decode_canonical_base64
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import RunState

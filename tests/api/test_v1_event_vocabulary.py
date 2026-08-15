@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from atelier2.api.models import run_event_resource
 from atelier2.api.openapi import EVENT_NAMES
+from atelier2.api.projection.events import run_event_resource
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,

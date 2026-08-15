@@ -21,21 +21,23 @@ from atelier2.api._support import (
 )
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
-from atelier2.api.models import (
-    AnswerWaitRequestResource,
-    AnyRunPageResource,
-    AnyRunResource,
-    AnyStartRunRequestResource,
-    CancelAgentAttemptRequestResource,
-    OperatorFoundDeterminationResource,
-    ReconcileRunRequestResource,
-    StartRunRequestResourceV2,
-    VersionedRunPageResource,
-    run_resource,
-)
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import ApiProblem
+from atelier2.api.projection.runs import run_resource
 from atelier2.api.references import encode_public_run_reference, parse_revision_hash
+from atelier2.api.wire.requests import (
+    AnswerWaitRequestResource,
+    AnyStartRunRequestResource,
+    CancelAgentAttemptRequestResource,
+    ReconcileRunRequestResource,
+    StartRunRequestResourceV2,
+)
+from atelier2.api.wire.resources import (
+    AnyRunPageResource,
+    AnyRunResource,
+    OperatorFoundDeterminationResource,
+    VersionedRunPageResource,
+)
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     AnswerBytesConflict,

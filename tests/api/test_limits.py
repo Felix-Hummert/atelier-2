@@ -12,13 +12,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits, RequestBodyLimitMiddleware
-from atelier2.api.models import AgentAttemptResourceV2
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import (
     encode_canonical_base64,
     encode_event_cursor,
     encode_public_run_reference,
 )
+from atelier2.api.wire.resources import AgentAttemptResourceV2
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision

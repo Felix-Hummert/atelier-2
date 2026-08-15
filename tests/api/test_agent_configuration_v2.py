@@ -11,8 +11,9 @@ from pydantic import TypeAdapter
 
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
-from atelier2.api.models import RunEventResourceV2, run_event_resource
 from atelier2.api.openapi import API_PREFIX
+from atelier2.api.projection.events import run_event_resource
+from atelier2.api.wire.events import RunEventResourceV2
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
     AgentBinding,

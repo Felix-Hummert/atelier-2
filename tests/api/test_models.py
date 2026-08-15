@@ -3,13 +3,12 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from atelier2.api.models import (
+from atelier2.api.wire.events import AgentCompletedEventResource, RunEventResource
+from atelier2.api.wire.resources import (
     ActionNodeResource,
     AgentAttemptResourceV2,
-    AgentCompletedEventResource,
     AgentNodeResource,
     NoWaitingResource,
-    RunEventResource,
     RunResource,
     SubworkflowNodeResource,
     WaitingInputResource,

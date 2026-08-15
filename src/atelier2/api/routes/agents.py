@@ -12,16 +12,20 @@ from atelier2.api._support import (
     run_control_query,
 )
 from atelier2.api.context import ApiContext, api_context_dependency
-from atelier2.api.models import (
-    AgentConfigurationRevisionResource,
-    AuthProfileRevisionResource,
-    PublishAgentConfigurationRevisionRequestResource,
-    PublishAuthProfileRevisionRequestResource,
+from atelier2.api.openapi import API_PREFIX
+from atelier2.api.problems import ApiProblem
+from atelier2.api.projection.agents import (
     agent_configuration_revision_resource,
     auth_profile_revision_resource,
 )
-from atelier2.api.openapi import API_PREFIX
-from atelier2.api.problems import ApiProblem
+from atelier2.api.wire.requests import (
+    PublishAgentConfigurationRevisionRequestResource,
+    PublishAuthProfileRevisionRequestResource,
+)
+from atelier2.api.wire.resources import (
+    AgentConfigurationRevisionResource,
+    AuthProfileRevisionResource,
+)
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,

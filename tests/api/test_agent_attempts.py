@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
-from atelier2.api.models import run_event_resource, run_resource
+from atelier2.api.projection.events import run_event_resource
+from atelier2.api.projection.runs import run_resource
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
     AgentAttemptId,

@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
-from atelier2.api.models import ProblemResource
+from atelier2.api.wire.resources import ProblemResource
 
 PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:"
 

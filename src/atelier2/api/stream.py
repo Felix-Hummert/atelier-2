@@ -9,8 +9,9 @@ from typing import Final, Literal, TypeVar, assert_never, get_args
 from fastapi.sse import ServerSentEvent
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
-from atelier2.api.models import StreamFailureResource, run_event_resource
 from atelier2.api.problems import problem_resource
+from atelier2.api.projection.events import run_event_resource
+from atelier2.api.wire.resources import StreamFailureResource
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
