@@ -165,6 +165,9 @@ nodes:
   - id: merge
     type: deterministic
     operation: {{ref: merge_review_verdicts, revision: {deterministic}}}
+    inputs:
+      - name: candidate
+        from: {{graph_input: candidate}}
     outputs:
       - name: merged
         schema: {{ref: review_verdict, revision: {verdict}}}

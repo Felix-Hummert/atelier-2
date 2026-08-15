@@ -24,6 +24,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     ContextEntrySource,
     DeterministicNodeV3,
+    GraphInputSource,
     NodeOutputSource,
     NodeReceiptSource,
     SubworkflowNodeV3,
@@ -69,6 +70,8 @@ nodes:
     inputs:
       - name: story_text
         from: {context: story}
+      - name: order
+        from: {graph_input: brief}
       - name: label
         value: needs-review
     outputs:
@@ -194,18 +197,76 @@ def test_every_node_kind_of_the_record_parses_into_its_own_closed_model() -> Non
     assert builder.outputs[0].schema_reference.revision == "schema-candidate"
 
 
-def test_the_four_input_sources_carry_their_declared_shape() -> None:
+def test_the_five_input_sources_carry_their_declared_shape() -> None:
     parsed = graph()
     builder = parsed.node("implement")
     reviewer = parsed.node("code_review")
     merge = parsed.node("merge_findings")
 
     assert isinstance(builder.inputs[0].source, ContextEntrySource)
-    assert builder.inputs[1].source is None
-    assert builder.inputs[1].value == "needs-review"
+    assert isinstance(builder.inputs[1].source, GraphInputSource)
+    assert builder.inputs[1].source.graph_input == "brief"
+    assert builder.inputs[2].source is None
+    assert builder.inputs[2].value == "needs-review"
     assert isinstance(reviewer.inputs[0].source, NodeOutputSource)
     assert isinstance(merge.inputs[1].source, NodeReceiptSource)
     assert merge.inputs[1].source.node == "code_review"
+
+
+ORDER_READ = b"""      - name: order
+        from: {graph_input: brief}
+"""
+
+
+@pytest.mark.proves("an-unreadable-or-unread-graph-input-is-refused-by-name")
+def test_a_node_reading_a_graph_input_the_document_never_declared_is_refused() -> None:
+    misread = DOCUMENT.replace(b"{graph_input: brief}", b"{graph_input: rumour}")
+
+    with pytest.raises(InvalidWorkflowDocument) as raised:
+        parse_workflow_document(misread)
+
+    refusal = raised.value.refusal
+    assert refusal is not None
+    assert (refusal.reason, refusal.field, refusal.node) == (
+        WorkflowRefusalReason.UNDECLARED_GRAPH_INPUT,
+        "inputs",
+        "implement",
+    )
+    assert "rumour" in refusal.detail
+
+
+@pytest.mark.proves("an-unreadable-or-unread-graph-input-is-refused-by-name")
+def test_a_graph_input_no_node_reads_is_refused_rather_than_demanded_for_nothing() -> (
+    None
+):
+    assert DOCUMENT.count(ORDER_READ) == 1
+    unread = DOCUMENT.replace(ORDER_READ, b"")
+
+    with pytest.raises(InvalidWorkflowDocument) as raised:
+        parse_workflow_document(unread)
+
+    refusal = raised.value.refusal
+    assert refusal is not None
+    assert (refusal.reason, refusal.field, refusal.node) == (
+        WorkflowRefusalReason.GRAPH_INPUT_UNREAD,
+        "graph_inputs",
+        None,
+    )
+    assert "brief" in refusal.detail
+
+
+def test_an_order_is_available_to_an_entry_node_that_no_dependency_precedes() -> None:
+    """A graph input is bound before the graph runs, so no data edge orders it.
+
+    `implement` is the entry node — its dependency closure is empty — and it reads
+    the order anyway. An upstream output could not be read there, which is what
+    makes the fourth source a different kind of edge rather than a spelling of the
+    first three.
+    """
+    parsed = graph()
+
+    assert parsed.dependency_closure("implement") == frozenset()
+    assert isinstance(parsed.node("implement").inputs[1].source, GraphInputSource)
 
 
 def test_control_edges_alone_derive_the_entry_sink_and_dependency_sets() -> None:

@@ -100,10 +100,21 @@ class ContextEntrySource(_ClosedV3Model):
     context: NonemptyString
 
 
+class GraphInputSource(_ClosedV3Model):
+    """One order the graph itself was started with, read by name.
+
+    The other three sources name something the run produces; this one names
+    something the run was given. It is therefore the only source available to an
+    entry node, and the only one a start has to satisfy before the first node runs.
+    """
+
+    graph_input: NonemptyString
+
+
 def _input_source_form(value: object) -> str | None:
     if not isinstance(value, Mapping):
         return None
-    for key in ("output", "receipt", "context"):
+    for key in ("output", "receipt", "context", "graph_input"):
         if key in value:
             return key
     return None
@@ -112,7 +123,8 @@ def _input_source_form(value: object) -> str | None:
 InputSource = Annotated[
     Annotated[NodeOutputSource, Tag("output")]
     | Annotated[NodeReceiptSource, Tag("receipt")]
-    | Annotated[ContextEntrySource, Tag("context")],
+    | Annotated[ContextEntrySource, Tag("context")]
+    | Annotated[GraphInputSource, Tag("graph_input")],
     Discriminator(_input_source_form),
 ]
 
@@ -423,6 +435,7 @@ def _refuse_colliding_declared_names(node: WorkflowNodeV3) -> None:
 def _refuse_unbound_inputs(node: WorkflowNodeV3, graph: WorkflowGraphV3) -> None:
     closure = graph.dependency_closure(node.id)
     context_names = _declared_context_names(node)
+    graph_input_names = {entry.name for entry in graph.graph_inputs}
     for entry in node.inputs:
         source = entry.source
         if isinstance(source, ContextEntrySource):
@@ -432,6 +445,16 @@ def _refuse_unbound_inputs(node: WorkflowNodeV3, graph: WorkflowGraphV3) -> None
                     "inputs",
                     f"input {entry.name!r} reads context {source.context!r}, "
                     "which this node does not require",
+                    node.id,
+                )
+            continue
+        if isinstance(source, GraphInputSource):
+            if source.graph_input not in graph_input_names:
+                raise _refuse(
+                    WorkflowRefusalReason.UNDECLARED_GRAPH_INPUT,
+                    "inputs",
+                    f"input {entry.name!r} reads graph input "
+                    f"{source.graph_input!r}, which this graph does not declare",
                     node.id,
                 )
             continue
@@ -523,6 +546,20 @@ def _refuse_broken_graph_boundary(graph: WorkflowGraphV3) -> None:
                 field,
                 f"{duplicate!r} is declared twice",
             )
+    read_graph_inputs = {
+        entry.source.graph_input
+        for node in graph.nodes
+        for entry in node.inputs
+        if isinstance(entry.source, GraphInputSource)
+    }
+    for graph_input in graph.graph_inputs:
+        if graph_input.name not in read_graph_inputs:
+            raise _refuse(
+                WorkflowRefusalReason.GRAPH_INPUT_UNREAD,
+                "graph_inputs",
+                f"graph input {graph_input.name!r} is read by no node, so every "
+                "start would have to supply a value nothing consumes",
+            )
     declared = {node.id for node in graph.nodes}
     sinks = set(graph.sink_node_ids)
     for entry in graph.graph_outputs:
@@ -569,6 +606,7 @@ _VOCABULARY_FIELDS = frozenset(
         NodeOutputSource,
         NodeReceiptSource,
         ContextEntrySource,
+        GraphInputSource,
     )
     for name, field in model.model_fields.items()
 )

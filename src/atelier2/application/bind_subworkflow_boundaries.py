@@ -13,6 +13,8 @@ from atelier2.contracts.workflow_bindings_v3 import (
     SubworkflowBindingRefused,
 )
 from atelier2.contracts.workflows_v3 import (
+    GraphInput,
+    GraphInputSource,
     GraphOutput,
     NodeInput,
     NodeOutput,
@@ -276,7 +278,7 @@ def _refuse_differing_schema(
     )
 
 
-def _named[Declared: (NodeInput, NodeOutput)](
+def _named[Declared: (NodeInput, NodeOutput, GraphInput)](
     declared: Sequence[Declared], name: str
 ) -> Declared:
     return next(entry for entry in declared if entry.name == name)
@@ -290,14 +292,21 @@ def _proven_schema(
 ) -> VersionedReference:
     """The schema revision one bound input proves, or a refusal that it proves none.
 
-    A child's graph input demands a typed value, and only an upstream node output
-    declares the schema revision of what it carries. An authored literal, a
-    terminal receipt and a context entry each declare none, so binding one to a
-    typed graph input would assert a type nothing in the document states.
+    A child's graph input demands a typed value, and exactly two declarations state
+    the schema revision of what they carry: an upstream node output, and an order
+    the parent graph itself was started with. An authored literal, a terminal
+    receipt and a context entry each declare none, so binding one to a typed graph
+    input would assert a type nothing in the document states.
+
+    Passing an order down is what makes one published workflow reusable through a
+    whole nesting: the order a run supplies at the top reaches the node that reads
+    it, however deep it sits, under the schema revision every level agreed on.
     """
     source = bound.source
     if isinstance(source, NodeOutputSource):
         return _named(graph.node(source.node).outputs, source.output).schema_reference
+    if isinstance(source, GraphInputSource):
+        return _named(graph.graph_inputs, source.graph_input).schema_reference
     raise _refuse(
         SubworkflowBindingRefusalReason.UNPROVEN_INPUT_SCHEMA,
         node,

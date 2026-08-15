@@ -187,6 +187,9 @@ nodes:
     role: reviewer
     mode: interactive
     instruction: Judge the candidate against the acceptance sentences.
+    inputs:
+      - name: candidate
+        from: {{graph_input: candidate}}
     outputs:
       - name: opinion
         schema: {{ref: review_opinion, revision: {opinion}}}
@@ -857,6 +860,19 @@ def test_a_subworkflow_node_previews_the_child_it_named_and_what_that_resolved_t
     assert child.reference == CHILD_REFERENCE
     assert child.revision_hash == WorkflowRevision(CHILD).revision_hash.value
     assert [node.id for node in child.graph.nodes] == ["read_it", "merge"]
+
+
+@pytest.mark.proves("the-preview-names-every-declared-graph-input-with-its-schema")
+def test_the_preview_names_the_order_each_graph_demands_where_it_was_declared() -> None:
+    composed = preview()
+    child = node_of(composed.graph, "panel").child
+
+    assert child is not None
+    assert [
+        (entry.name, entry.schema_reference.ref, entry.schema_reference.revision)
+        for entry in child.graph.graph_inputs
+    ] == [("candidate", "workspace_candidate", SCHEMA_CANDIDATE.revision_hash.value)]
+    assert composed.graph.graph_inputs == ()
 
 
 def test_a_reference_that_pins_no_revision_hash_is_named_as_malformed() -> None:
