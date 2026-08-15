@@ -37,6 +37,38 @@ for descriptor, byte, count in ((1, b'o', int(sys.argv[1])), (2, b'e', int(sys.a
         remaining = remaining[os.write(descriptor, remaining):]
 """
 
+_WRITE_BOTH_STREAMS_AFTER_STDOUT_CLOSE = """
+import os, select, threading
+
+stdout_closed = threading.Event()
+
+def write_all(descriptor, payload):
+    while payload:
+        payload = payload[os.write(descriptor, payload):]
+
+def write_stdout():
+    write_all(1, b'o' * 18)
+    closed = select.poll()
+    closed.register(1, select.POLLERR | select.POLLHUP)
+    if not closed.poll(5_000):
+        os._exit(91)
+    stdout_closed.set()
+
+def write_stderr():
+    if not stdout_closed.wait(5):
+        os._exit(92)
+    try:
+        write_all(2, b'e' * 49_153)
+    except BrokenPipeError:
+        pass
+
+threads = (threading.Thread(target=write_stdout), threading.Thread(target=write_stderr))
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+"""
+
 
 def invocation(
     standard_output_bytes: int = 17,
@@ -160,6 +192,40 @@ def test_overflow_has_no_completion_and_cannot_reach_the_provider_decoder(
     assert result.outcome is DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED
     assert completion is None
     assert decoded == []
+
+
+def test_both_streams_at_limit_plus_one_are_bounded_and_bypass_decode(
+    tmp_path: Path,
+) -> None:
+    process_invocation = AgentProcessInvocation(
+        (sys.executable, "-c", _WRITE_BOTH_STREAMS_AFTER_STDOUT_CLOSE),
+        Path.cwd(),
+        standard_output_frame_bytes=17,
+    )
+    records, launch_envelope_path = prepared_records(tmp_path, process_invocation)
+    processes: list[subprocess.Popen[bytes]] = []
+
+    def recording_popen(
+        arguments: tuple[str, ...], **keywords: Any
+    ) -> subprocess.Popen[bytes]:
+        process = cast(subprocess.Popen[bytes], subprocess.Popen(arguments, **keywords))
+        processes.append(process)
+        return process
+
+    result = collect_direct_systemd_agent_process(
+        records,
+        DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
+        launch_envelope_path=launch_envelope_path,
+        popen=recording_popen,
+    )
+
+    assert processes[0].wait(timeout=5) == 0
+    assert result.outcome is DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED
+    assert len(result.standard_output) <= process_invocation.standard_output_frame_bytes
+    assert len(result.standard_error) <= MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
+    assert result.standard_output_overflow
+    assert result.standard_error_overflow
+    assert result.process_completion is None
 
 
 @pytest.mark.parametrize(

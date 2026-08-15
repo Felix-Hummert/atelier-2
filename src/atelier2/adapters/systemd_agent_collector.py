@@ -243,8 +243,6 @@ def _collect_process(
                     standard_output_overflow |= overflow
                 else:
                     standard_error_overflow |= overflow
-            if standard_output_overflow or standard_error_overflow:
-                break
     finally:
         for name in tuple(streams):
             _close_stream(selector, streams, name)
@@ -284,6 +282,7 @@ def _read_bounded_stream(
     if len(target) <= limit:
         return False
     del target[limit:]
+    _close_stream(selector, streams, name)
     return True
 
 
