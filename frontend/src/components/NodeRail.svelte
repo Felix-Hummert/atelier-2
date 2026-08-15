@@ -6,13 +6,18 @@
     type RunEvent,
     type WorkflowGraph
   } from "../api/client";
-  import { projectNodeRail, type NodeProjection } from "../lib/runProjection";
+  import {
+    projectNodeRail,
+    type AgentOutputProjection,
+    type NodeProjection
+  } from "../lib/runProjection";
   import InfoHint from "./InfoHint.svelte";
   import StateMark from "./StateMark.svelte";
 
   export let run: Run;
   export let graph: WorkflowGraph;
   export let events: readonly RunEvent[];
+  export let agentOutputs: ReadonlyMap<string, AgentOutputProjection> = new Map();
   export let workingHumanNodeIds: ReadonlySet<string> = new Set();
 
   $: rail = projectNodeRail(run, graph, events, workingHumanNodeIds);
@@ -48,7 +53,11 @@
     };
   }
 
-  function context(projection: NodeProjection): { label: string; bytes: number; hash: string; exact: string } | null {
+  type ContextView =
+    | { kind: "context"; label: string; bytes: number; hash: string; exact: string }
+    | { kind: "agent_output"; hash: string; output: AgentOutputProjection };
+
+  function context(projection: NodeProjection): ContextView | null {
     const event = projection.last_event;
     if (
       projection.node.node_id === run.current_node.node_id &&
@@ -58,8 +67,14 @@
     }
     if (event === null) return null;
     if (event.event === "AGENT_COMPLETED") {
-      if ("workflow_format_version" in event) return null;
+      if ("workflow_format_version" in event) {
+        const output = agentOutputs.get(event.cursor);
+        return output === undefined
+          ? null
+          : { kind: "agent_output", hash: event.output_hash, output };
+      }
       return {
+        kind: "context",
         label: "Output",
         bytes: new globalThis.TextEncoder().encode(event.output).byteLength,
         hash: event.payload_hash,
@@ -74,6 +89,7 @@
     }
     if (event.event === "WAIT_ANSWERED") {
       return {
+        kind: "context",
         label: "Answer",
         bytes: new globalThis.TextEncoder().encode(event.answer).byteLength,
         hash: event.answer_hash,
@@ -83,6 +99,7 @@
     if (event.event === "SUBWORKFLOW_COMPLETED") {
       const exact = String(event.result);
       return {
+        kind: "context",
         label: "Result",
         bytes: new globalThis.TextEncoder().encode(exact).byteLength,
         hash: event.result_hash,
@@ -94,6 +111,7 @@
 
   function encodedContext(label: string, encoded: string, hash: string) {
     return {
+      kind: "context" as const,
       label,
       bytes: decodeCanonicalBase64(encoded)?.byteLength ?? 0,
       hash,
@@ -137,11 +155,29 @@
             {/if}
           {/if}
           {#if value !== null}
-            <div class="context-row">
-              <span><strong>{value.label}</strong><small>{value.bytes} bytes</small></span>
-              <code>{value.hash}</code>
-              <InfoHint label={`${value.label} info`} exact={value.exact} />
-            </div>
+            {#if value.kind === "context"}
+              <div class="context-row">
+                <span><strong>{value.label}</strong><small>{value.bytes} bytes</small></span>
+                <code>{value.hash}</code>
+                <InfoHint label={`${value.label} info`} exact={value.exact} />
+              </div>
+            {:else}
+              <section class="verified-output" aria-label="Verified output">
+                <div class="context-row">
+                  <span><strong>Output</strong><small>{value.output.byte_count} bytes</small></span>
+                  <strong>✓ Verified</strong>
+                </div>
+                <dl class="request-summary">
+                  <div><dt>Format</dt><dd>{value.output.kind === "utf8" ? "UTF-8" : value.output.kind === "binary" ? "Binary" : "Empty"}</dd></div>
+                  <div><dt>SHA-256</dt><dd><code>{value.hash}</code></dd></div>
+                </dl>
+                {#if value.output.kind === "binary"}
+                  <details><summary class="button">Details</summary><code class="exact-answer">{value.output.value}</code></details>
+                {:else}
+                  <output class="exact-answer">{value.output.kind === "empty" ? "Empty" : value.output.value}</output>
+                {/if}
+              </section>
+            {/if}
           {/if}
           <p class="latest-event">
             <span>Latest event</span>

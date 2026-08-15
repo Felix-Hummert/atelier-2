@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
@@ -37,6 +37,8 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await page.getByRole("button", { name: "Start" }).click();
   await expect(page.getByRole("status")).toContainText("Starting the exact run");
   await expect(binding).toHaveClass(/node-working/);
+  await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
+  await assertContrastAtLeast(page.getByRole("button", { name: "Start" }), 4.5);
   await page.screenshot({ path: "test-results/v2-bindings-loading-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
   continueAuth();
@@ -45,12 +47,28 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await expect(working).toContainText("Subscription · blocking/v1");
   await expect(async () => {
     await page.getByRole("button", { name: "Refresh" }).click();
-    await expect(working).toContainText("Attempt 1");
+    await expect(working).toContainText("possibly ran");
   }).toPass();
   await page.screenshot({ path: "test-results/v2-working-desktop.png", fullPage: true });
+
+  const completed = page.getByRole("article", { name: "build — Completed" });
+  await expect(async () => {
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(completed).toBeVisible({ timeout: 500 });
+  }).toPass({ timeout: 8_000 });
+  await expect(completed).toContainText("Grüße 東京");
+  await expect(completed).toContainText("14 bytes");
+  await expect(completed).toContainText("Verified");
+  await page.screenshot({ path: "test-results/v2-completed-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await assertMobileSurface(page);
-  await page.screenshot({ path: "test-results/v2-working-390x844.png", fullPage: true });
+  await page.screenshot({ path: "test-results/v2-completed-390x844.png", fullPage: true });
+
+  await page.reload();
+  await expect(page.getByRole("alert")).toContainText("Output mismatch");
+  await expect(page.getByRole("region", { name: "Verified output" })).toHaveCount(0);
+  await assertMobileSurface(page);
+  await page.screenshot({ path: "test-results/v2-output-mismatch-390x844.png", fullPage: true });
 });
 
 test("mobile Found and Absent reconcile exact durable runs", async ({ browser }) => {
@@ -171,6 +189,13 @@ async function assertMobileSurface(page: Page): Promise<void> {
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth
   );
   expect(overflow).toBeLessThanOrEqual(0);
+  const surfaces = page.locator("[role=alert], article");
+  for (let index = 0; index < await surfaces.count(); index += 1) {
+    const clipped = await surfaces.nth(index).evaluate(
+      (element) => element.scrollWidth - element.clientWidth
+    );
+    expect(clipped, `surface ${index} must not clip content`).toBeLessThanOrEqual(0);
+  }
   const controls = page.locator(
     "button, input[type=text], textarea, .determination-picker label, summary"
   );
@@ -189,4 +214,26 @@ async function assertNoSeriousAccessibilityFindings(page: Page): Promise<void> {
       violation.impact === "serious" || violation.impact === "critical"
     )
   ).toEqual([]);
+}
+
+async function assertContrastAtLeast(control: Locator, minimum: number): Promise<void> {
+  const [foreground, background, effectiveOpacity] = await control.evaluate((element) => {
+    const style = getComputedStyle(element);
+    let opacity = 1;
+    for (let current: Element | null = element; current !== null; current = current.parentElement) {
+      opacity *= Number(getComputedStyle(current).opacity);
+    }
+    return [style.color, style.backgroundColor, opacity] as const;
+  });
+  expect(effectiveOpacity).toBe(1);
+  const luminance = (color: string): number => {
+    const channels = color.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [];
+    const linear = channels.map((value) => {
+      const ratio = value / 255;
+      return ratio <= 0.04045 ? ratio / 12.92 : ((ratio + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * linear[0]! + 0.7152 * linear[1]! + 0.0722 * linear[2]!;
+  };
+  const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+  expect((values[0]! + 0.05) / (values[1]! + 0.05)).toBeGreaterThanOrEqual(minimum);
 }

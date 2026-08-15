@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -10,15 +12,18 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import sqlalchemy as sa
+import uvicorn
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from atelier2 import host
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.schema import agent_attempts, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.references import encode_public_run_reference
 from atelier2.application.start_run import start_run
-from atelier2.contracts.agents import AgentExecutionRequestV2
+from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectAdapterBinding,
@@ -31,13 +36,13 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
 from atelier2.host import HostSettings
 from atelier2.ports.agent_executions import (
+    AgentExecutionFailure,
     AgentExecutorFactory,
     AgentExecutorFactoryV2,
-    AgentProcessInvocation,
+    AgentProcessCompletion,
 )
 from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
 from tests.scenarios.agents import (
-    SCENARIO_PROVIDER_FRAME_BYTES,
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
 )
@@ -81,21 +86,91 @@ class UnknownReadbackFactory:
 
 
 class BlockingAgentExecutor(RecordingAgentExecutorV2):
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        self.requests.append(request)
-        return AgentProcessInvocation(
-            (sys.executable, "-c", "import threading; threading.Event().wait()"),
-            Path.cwd(),
-            standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
-        )
+    def __init__(
+        self,
+        output: bytes,
+        requests: list[AgentExecutionRequestV2],
+        lifecycle: list[str],
+        name: str,
+        release: threading.Event,
+    ) -> None:
+        super().__init__(output, requests, lifecycle, name)
+        self.release = release
+
+    def decode_process_completion(
+        self, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        if not self.release.wait(TIMEOUT_SECONDS):
+            raise RuntimeError("browser did not observe the working attempt")
+        return super().decode_process_completion(completion)
 
 
 class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
     def open(self) -> RecordingAgentExecutorV2:
-        self.opened = BlockingAgentExecutor(b"", [], self.lifecycle, self.provider)
+        self.opens += 1
+        self.lifecycle.append(f"open:{self.provider}")
+        self.opened = BlockingAgentExecutor(
+            self.output, [], self.lifecycle, self.provider, threading.Event()
+        )
         return self.opened
+
+
+class BrowserProofHarness:
+    def __init__(
+        self, app: ASGIApp, engine: sa.Engine, factory: BlockingAgentExecutorFactory
+    ) -> None:
+        self.app, self.engine, self.factory = app, engine, factory
+        self.expected_hash = hashlib.sha256(factory.output).hexdigest().encode("ascii")
+        self.released = False
+        self.observed_run_responses = 0
+        self.stream_counts: dict[str, int] = {}
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope.get("path", "")
+        stream_number = 0
+        if path.endswith("/events"):
+            stream_number = self.stream_counts.get(path, 0) + 1
+            self.stream_counts[path] = stream_number
+        status = 0
+
+        async def proof_send(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            if message["type"] == "http.response.body" and stream_number >= 2:
+                body = message.get("body", b"").replace(self.expected_hash, b"0" * 64)
+                message = {**message, "body": body}
+            await send(message)
+            if message["type"] == "http.response.body" and not message.get(
+                "more_body", False
+            ):
+                self.release_after_observed(path, status)
+
+        await self.app(scope, receive, proof_send)
+
+    def release_after_observed(self, path: str, status: int) -> None:
+        executor = self.factory.opened
+        if self.released or status != 200 or executor is None or not executor.requests:
+            return
+        reference = encode_public_run_reference(executor.requests[0].run_id)
+        if path != f"/atelier/api/v1/runs/{reference}":
+            return
+        with self.engine.connect() as connection:
+            observed = connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(agent_attempts)
+                .where(agent_attempts.c.process_phase == "PROCESS_OBSERVED")
+            )
+        if observed:
+            self.observed_run_responses += 1
+            if self.observed_run_responses < 3:
+                return
+            self.released = True
+            if not isinstance(executor, BlockingAgentExecutor):
+                raise RuntimeError(
+                    "the test executor changed while the browser observed it"
+                )
+            executor.release.set()
 
 
 def main() -> None:
@@ -130,7 +205,7 @@ def main() -> None:
         prepare.close()
 
     factory = BlockingAgentExecutorFactory(
-        "e2e", "blocking/v1", "e2e-blocking-process", b""
+        "e2e", "blocking/v1", "e2e-blocking-process", "Grüße 東京".encode()
     )
 
     def runtime(
@@ -142,20 +217,29 @@ def main() -> None:
         factories = (*agent_factories_v2, factory)
         return DbosRuntime(settings, effect_factory, agent_factory, factories)
 
+    settings = HostSettings(
+        database_path=database,
+        effect_store_path=effects,
+        effect_adapter_revision="loopback-v1",
+        effect_destination="r3-phase5-e2e",
+        application_version=application_version,
+        source_commit="r3-phase5-e2e",
+        source_tree="r3-phase5-e2e",
+        frontend_dist=Path(os.environ["ATELIER2_E2E_FRONTEND_DIST"]),
+        port=port,
+    )
     with patch.object(host, "DbosRuntime", side_effect=runtime):
-        host.serve(
-            HostSettings(
-                database_path=database,
-                effect_store_path=effects,
-                effect_adapter_revision="loopback-v1",
-                effect_destination="r3-phase5-e2e",
-                application_version=application_version,
-                source_commit="r3-phase5-e2e",
-                source_tree="r3-phase5-e2e",
-                frontend_dist=Path(os.environ["ATELIER2_E2E_FRONTEND_DIST"]),
-                port=port,
+        app, live_runtime = host.compose_application(settings)
+    try:
+        uvicorn.Server(
+            uvicorn.Config(
+                BrowserProofHarness(app, live_runtime.engine, factory),
+                host=settings.host,
+                port=settings.port,
             )
-        )
+        ).run()
+    finally:
+        live_runtime.close()
 
 
 def wait_for_reconciliation(runtime: DbosRuntime) -> None:
