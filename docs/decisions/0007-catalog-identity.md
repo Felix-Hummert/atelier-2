@@ -1,7 +1,7 @@
 # ADR 0007: Named lineages own catalog identity above hash-true revisions
 
-- Status: PROPOSED — round 4, reopened on the operator direction of 2026-08-15 and
-  resubmitted for review; not accepted, not implemented
+- Status: PROPOSED — round 5, rebased onto `main` `f9ff73c` and answering the Codex
+  REVISE of 2026-08-15; not accepted, not implemented
 - Date: 2026-08-15
 - Depends on: [ADR 0001](0001-durable-runtime.md),
   [ADR 0002](0002-exact-yaml-graph.md), [ADR 0006](0006-node-vocabulary.md)
@@ -14,30 +14,60 @@
   [#22](https://github.com/FlexOr2/atelier-2/issues/22#issuecomment-5301973340):
   the operator decides which agents and skills he has and where they come from,
   files in git are the source of truth, atelier-2 imports rather than versioning in
-  parallel, and sharing is a future requirement
-- Consistent with: ADR 0009 (PROPOSED in PR #78, not yet on main), which owns the
-  product's one trust boundary; decision 2 states why a definition source adds no
-  second one
-- Answers: [#22](https://github.com/FlexOr2/atelier-2/issues/22)
+  parallel, and sharing is a future requirement. The landed requirement documents
+  this record must not contradict — each `DRAFT`, and never outranking a landed
+  decision record — are [0002](../requirements/0002-teams-und-zugang.md) rule 9
+  (sharing a library or a workflow is sharing a git source; sources are registered
+  globally and selected per project; there is no second sharing channel) and rule 14
+  (credentials stay references and are never transported)
+- Consistent with, and each on `main`:
+  [ADR 0008](0008-budget-units.md) (ACCEPTED), whose recorded meter decision 5's
+  consumption entries read; [ADR 0009](0009-runner-trust.md) — merged as
+  `1a88dbdd` — which owns the product's one trust boundary, its §6 credentials-by-
+  reference rule and its §9 typed actor kinds, and decision 2 states why a definition
+  source adds no second boundary; [ADR 0010](0010-github-platform-adapter.md) —
+  merged as `87cd5700` — the platform adapter whose stable external reference
+  decision 5 cites as evidence; and [ADR 0011](0011-project-isolation.md) — merged
+  as `4fa26889` — which **owns where a definition source is scoped** (decision 2
+  below defers to it) and whose decision 6 builds on decision 6 below
+- Answers: the ADR mandate of
+  [#22](https://github.com/FlexOr2/atelier-2/issues/22) — where named lineages live,
+  where their definitions come from, and the sync semantics. It **does not close
+  #22**, which also carries the operator-visible slice named under *Successor*
+  below; the record decides, the slice ships, and the issue closes with the slice.
+  Merging this record while calling #22 closed would report an unbuilt picker as
+  delivered
 - Feeds: [#6](https://github.com/FlexOr2/atelier-2/issues/6) (the catalog, its
   publish gate and its precedence), [#8](https://github.com/FlexOr2/atelier-2/issues/8)
   (the scorecard and the consumption measurements folded into it),
-  [#66](https://github.com/FlexOr2/atelier-2/issues/66) (the authoring format, whose
-  reconstruction sentence decision 4 gives a durable home), and ADR 0006's reference
-  binding, whose slice V3-4 builds against the port in decision 9
+  [#66](https://github.com/FlexOr2/atelier-2/issues/66) (the landed authoring format,
+  whose fifth acceptance sentence
+  `acceptance/66-agent-as-a-markdown-file.toml` holds back until this record gives the
+  definition a durable home — decision 4), and ADR 0006's reference binding, whose
+  slice V3-4 builds against the port in decision 9
 - Names, never decides: [#16](https://github.com/FlexOr2/atelier-2/issues/16) (sole
-  schema-version owner), [#24](https://github.com/FlexOr2/atelier-2/issues/24) (platform
+  owner of the preserving V7→V8→V9 sequence),
+  [#63](https://github.com/FlexOr2/atelier-2/issues/63) (owner of the non-preserving
+  V3 cutover these shapes land in, after #16 Phase 2's explicit handoff),
+  [#24](https://github.com/FlexOr2/atelier-2/issues/24) and ADR 0010 (platform
   adapter), [#26](https://github.com/FlexOr2/atelier-2/issues/26) (budget),
   [#79](https://github.com/FlexOr2/atelier-2/issues/79) (the queue, a consumer of
-  decision 8's precedence and never a second selector)
-- Evidence: documentary. Read at `b9c7796`: ADRs 0001–0006, 0008 and the 0009 draft,
+  decision 8's precedence and never a second selector),
+  [#23](https://github.com/FlexOr2/atelier-2/issues/23) and ADR 0011 (project and
+  source scope), [#9](https://github.com/FlexOr2/atelier-2/issues/9) (the library and
+  canvas surface), [#38](https://github.com/FlexOr2/atelier-2/issues/38) (a run's own
+  purpose and input, which is never a catalog fact)
+- Evidence: documentary. Read at `f9ff73c`: ADRs 0001–0006 and 0008–0012,
   `src/atelier2/adapters/dbos/schema.py` (`SCHEMA_VERSION = 7`, `workflow_revisions`,
   `auth_profile_revisions`), `src/atelier2/contracts/agents.py`
   (`auth-profile-revision/v1`), `src/atelier2/contracts/hashing.py` (`frame`),
-  `src/atelier2/application/publish_workflow_revision.py`, and at
-  `origin/fable/agent-markdown` `1ceaef73` the landed authoring format
-  `src/atelier2/contracts/agent_definitions.py` with its stated gap; issues #1, #6, #8,
-  #16, #22, #24, #66, #79. No code changed, no gate run; nothing below is implemented.
+  `src/atelier2/contracts/workflows_v3.py` (the V3 document's authored `name` and
+  optional `description`), `src/atelier2/application/publish_workflow_revision.py`,
+  and the authoring format `src/atelier2/contracts/agent_definitions.py` with its
+  stated gap, landed with PR #68 as `f9ff73c7` together with
+  `acceptance/66-agent-as-a-markdown-file.toml` and
+  `tests/domain/test_agent_definitions.py`; issues #1, #6, #8, #16, #22, #23, #24,
+  #63, #66, #79. No code changed, no gate run; nothing below is implemented.
 
 ## Context
 
@@ -58,17 +88,33 @@ revision hash, so that series can never be renamed, while catalog entries must b
 Identity is therefore **layered**, not embedded: a stable derived id below, a mutable
 display name above, joined by rows and not by bytes.
 
-Two further holes are open, and the operator named the first of them. **Nothing in the
-product says where a definition comes from.** A revision enters the store only by being
-typed into "Publish YAML", so the operator cannot answer which agents and skills he has,
-where they came from, or whether the file he edited is the one that runs — and sharing
-one has no mechanism at all. **And nothing in the store holds what a definition says.**
-The landed #66 authoring format parses an agent's name, description, model, tool
-declaration and system prompt out of one markdown file, but
+Three further holes are open, and the operator named the first of them.
+
+**Nothing in the product says where a definition comes from.** A revision enters the
+store only by being typed into "Publish YAML", so the operator cannot answer which agents
+and skills he has, where they came from, or whether the file he edited is the one that
+runs — and sharing one has no mechanism at all.
+
+**Nothing in the store holds what a definition says.** #66's authoring format landed on
+`main` with PR #68 as `f9ff73c7`: `src/atelier2/contracts/agent_definitions.py` parses an
+agent's `name`, `description`, optional `model`, optional tool declaration and system
+prompt out of one markdown file and hashes them as `agent-definition/v1`. But
 `agent_configuration_revision_for` can put only model, auth profile, executor and
-capability into a revision: two definitions differing solely in their prompt publish the
-same revision, pinned red by `test_todays_catalog_revision_cannot_tell_two_prompts_apart`
-and escalated to this record on #66. Decisions 2 and 4 close them.
+capability into a published revision, and its own docstring says so: those authored facts
+"reach no durable owner through this mapping", so two definitions differing solely in
+their prompt publish one revision. `test_todays_catalog_revision_cannot_tell_two_prompts_apart`
+pins that as today's truth, and `acceptance/66-agent-as-a-markdown-file.toml` names the
+consequence in the landed file itself — #66's fifth sentence, that the definition is
+reconstructible from the published revision, is deliberately absent from that gate and
+"joins this file in the change that proves it", once #22 gives the definition a durable
+home. This record is that home.
+
+**And a lineage has a name with no description beside it.** The landed formats already
+carry both: `workflows_v3.py` gives a V3 document an authored one-line `name` and an
+optional `description`, and an agent definition requires both in its frontmatter. The
+catalog has no rule saying where either lives, so a picker showing "name and description"
+has nothing to read them from, and nothing says which label an already-terminated run is
+listed under after its lineage is renamed. Decisions 1, 2 and 4 close all three.
 
 ## ADR 0006 amendment A1, required for acceptance
 
@@ -129,19 +175,48 @@ learns the entry was renamed instead of getting a silent hit or a silent miss. T
 no `to` column to close, which is what makes the history append-only in fact rather than
 only in wording.
 
-**A name is authored wherever its content is authored**, so that one writer owns it. For a
-lineage whose members come from a definition source (decision 2), the name is the one the
-authored file declares: admitting a member appends the alias event carrying that name with
-the intake as actor, so an upstream rename becomes a real attributed catalog event rather
-than a silent one, and the catalog offers no second rename beside it. For a lineage
-authored directly in the catalog, renaming stays a cockpit act, as it is today. Either
-way the history is the same shape and the refusals below are the same, which is why an
-authored name outside this record's name syntax is refused **at admission**, naming the
-file — the authoring format accepts any non-empty text and is not narrowed here. The
-never-reassigned rule below therefore becomes reachable by an ordinary file operation:
-reusing a retired lineage's name in a new file is refused **naming both**, so the operator
-renames the file or admits into the existing lineage, and never discovers later that two
-histories answer to one name.
+**A name is authored wherever its content is authored**, so that one writer owns it, and
+**what decides that is the authoring format, not where the bytes came from.** A kind whose
+format declares a name takes the declared one: admitting a member appends the alias event
+carrying that name, with the admitting actor, so an authored rename becomes a real
+attributed catalog event rather than a silent one, and the catalog offers **no second
+rename beside it** — a catalog rename of such a lineage is refused. Both formats on `main`
+declare one: `workflows_v3.py` calls its `name` "the one line a picker shows", and an
+agent definition's frontmatter requires `name`. A kind whose format declares none — every
+V1 and V2 workflow revision — keeps the catalog label, renamed in the cockpit as today.
+Origin does not enter this rule: a V3 document typed into "Publish YAML" carries its name
+in its bytes exactly as one taken in from a source does, so there is one rule and not a
+rule per authoring path. Either way the history is the same shape and the refusals below
+are the same, which is why an authored name outside this record's name syntax is refused
+**at admission**, naming the file — neither format is narrowed here, and both admit more
+than the catalog does. The never-reassigned rule below therefore becomes reachable by an
+ordinary file operation: reusing a retired lineage's name in a new file is refused
+**naming both**, so the operator renames the file or admits into the existing lineage, and
+never discovers later that two histories answer to one name.
+
+**A description is authored the same way, and the catalog stores none.** The operator
+contract is a name *and* a description, and both are content: a description is what the
+definition says about itself, so decision 4's rule owns it — it lives in the bytes and is
+parsed from them, never in a column beside them, and there is no catalog description event
+and no cockpit description edit. Where a format declares no description the library shows
+**none**, and says so rather than inventing one: an optional `description` absent from a V3
+document, and every V1 and V2 revision, whose bytes carry neither field. That absence is a
+real thing an operator sees in a picker, and the honest reading is what makes it worth
+closing — by authoring a description into the file, which is one edit in the place the
+content already lives, and never by the catalog minting a second authority over it.
+
+**A run is listed under the current name, and the alias history is where the rename is
+visible.** A run pins a revision hash and no display name ever enters its configuration,
+its snapshot or its receipt, so *every* label a run list shows is a projection read at
+display time; the only question is which projection, and a stored bound-at-run label would
+be a second name authority with no arbiter against the alias history — the failure decision
+4 refuses for content and this decision refuses for names. So the label is the latest alias
+event of the lineage the bound revision is a member of, and a reader who asks what it was
+called then reads the alias history, which is attributed and complete. A run whose revision
+belongs to no lineage — every historical V7 revision, and any published-not-admitted one —
+is listed by its **revision hash and no name at all**, because there is nothing honest to
+show. Accepted and visible price: renaming relabels the operator's own history, and it is
+the alias history that keeps the old name from disappearing.
 
 **Retirement is the same shape**: one **retirement event** `(lineage, state token, actor,
 activated_at)` per change, the current state being the latest event's token. `retired` is
@@ -173,7 +248,20 @@ A **definition source** is a configured origin of authored content the operator 
 in V1; `marketplace` is named as the future token and adding one is an amendment, because
 nothing calls it today and a source type without a caller is architecture on speculation. A
 private source names its credential **by reference, never as material**, exactly as ADR
-0009 requires of every credential in the product.
+0009 §6 requires of every credential in the product.
+
+**Whose source it is — the installation's or one project's — is not decided here.** ADR
+0011 decision 1 owns that scope and has decided it: the **register** of definition sources
+and libraries is installation-level, the **selection** of registered sources is a project
+bundle revision, and the resolution order is one sentence — the project's value wins,
+absence in the project inherits the installation's, and an explicit deselection is never
+re-inherited. Requirement 0002 rule 9 states the same split in the operator's own words.
+This record therefore decides what a source *is* and what the three acts below do, and it
+adds no second scope rule: it holds for a source registered once and selected by one
+project exactly as for one selected by five. What follows from ADR 0011 decision 4 and is
+not restated as a rule of this record: intake copies bytes into the **taking project's**
+store, the reference direction is project → source, and a source learns nothing about which
+projects took from it.
 
 **A file's kind is configured, never inferred.** The operator says which paths hold agent
 definitions, which hold skills and which hold workflow documents; a file matching two
@@ -240,12 +328,20 @@ retires no lineage — a revision already taken in is immutable, and retirement 
 
 The rejected alternative is **auto-intake on change**, and it is rejected on a bound stated
 honestly rather than an exaggerated one. It would *not* rebind a running or an already
-published run configuration — those pin hashes, and #1 forbids anything else. What it
-would do is put content the operator has never seen one `resolve_name(…, head)` away from
-his next authored run, and write a durable revision no actor can be named for. An
-unattributed durable write is exactly what ADR 0009 forbids at the boundary it owns, and
-"the poller did it" is not an actor. Explicit publication costs one operator action per
-upstream change; the drift reading is what keeps that action from being forgotten.
+published run configuration — those pin hashes, and #1 forbids anything else. Nor is it
+rejected for being unattributable: ADR 0009 §9 already has an actor kind for it, an `agent`
+holding its own credential and acting under a published policy revision, so a poller could
+be made attributable and the argument that no actor exists would be false. What it would do
+is put content the operator has never seen one `resolve_name(…, head)` away from his next
+authored run — the moment a definition he did not read becomes the head his next authored
+binding resolves to. That is the whole of the reason, and it is enough: the operator asked
+to decide **which** agents he has, and content arriving without him reading it is exactly
+that decision taken from him. Explicit publication costs one operator action per upstream
+change; the drift reading is what keeps that action from being forgotten. Should the
+operator later want it, the shape is already named — an enrolled `agent` actor under a
+published intake-policy revision, made current through `catalog_policy_activations` like
+every other policy — and it is an amendment to this record, not a switch inside it, because
+nothing calls it today.
 
 **A source is a content trust decision, and it creates no second trust boundary.** ADR
 0009's one boundary is service ↔ runner, and a source crosses nothing: it does not
@@ -258,16 +354,19 @@ is his decision to record, not the catalog's to infer.
 
 **Sharing, in V1, is a shared repository.** Sharing an agent, a skill or a whole workflow
 means pushing its file to a repository the other operator configures as a source; git is
-already the mechanism and nothing is built for it. Decision 6's complete-store export is
-deliberately *not* that channel: it is the catalog's transport and carries measurements and
-lineage, and sharing a definition must not hand another operator a balance.
+already the mechanism and nothing is built for it, and requirement 0002 rule 9 says the
+same in the operator's words: there is no second sharing channel. Decision 6's
+complete-store export is deliberately *not* that channel — it is the catalog's transport
+and carries measurements and lineage, and sharing a definition must not hand another
+operator a balance — and ADR 0011 decision 6 keeps that split, adding no third form.
 
-**The library is a view, never a silo.** It holds no fact of its own — display name,
-description, kind, source and position, head revision and drift are owned here, the
-scorecard by #8 — and it is a view over sources *and* revisions together, so an entry the
-operator can see but has not taken in is visible as such rather than absent. Scanning and
-drift belong to the source adapter; they are not operations of decision 9's resolution
-port, which stays at three.
+**The library is a view, never a silo.** It holds no fact of its own: the display name of a
+lineage whose format declares none, the kind, the source and position, the head revision and
+the drift are owned here; the name and the description of every kind whose format declares
+them are owned by the bytes (decision 4); the scorecard is #8's. It is a view over sources
+*and* revisions together, so an entry the operator can see but has not taken in is visible
+as such rather than absent. Scanning and drift belong to the source adapter; they are not
+operations of decision 9's resolution port, which stays at three.
 
 ### 3. Content publication and catalog admission are two states, two commands
 
@@ -297,28 +396,35 @@ refuses, because only there does a `ref` claim a membership.
 
 ### 4. What a definition says lives in its bytes and in nothing beside them
 
-This is the durable home #66 has no owner for, and it is the same rule ADR 0002 already
-applies to a workflow document, extended to every kind the catalog names.
+This is the durable home the landed #66 format has no owner for, and it is the same rule
+ADR 0002 already applies to a workflow document, extended to every kind the catalog names.
 
 **The authored file's exact bytes are the published revision.** An agent definition, a
 skill and a profile enter the store the way a workflow document enters it today: exact
 UTF-8 bytes, SHA-256 identity, immutable, never re-parsed for identity. Reconstruction is
 therefore reading the bytes by hash and parsing them with the authoring format's own
-parser — the definition comes back byte-identically, including its system prompt and its
-tool declaration, and #66's reconstruction sentence becomes provable here rather than
-narrowed there.
+parser — `parse_agent_definition` for an agent definition, the V3 document parser for a
+workflow — so the definition comes back byte-identically, including its name, its
+description, its system prompt and its tool declaration. That is #66's fifth acceptance
+sentence, the one `acceptance/66-agent-as-a-markdown-file.toml` deliberately withheld until
+this record exists; it becomes provable here rather than narrowed there, and it joins that
+file in the change that builds it.
 
-**The contract shape, named; the columns are #16's.** One content shape keyed by revision
-hash, carrying the exact bytes and the **kind token** of the registry the revision belongs
-to. `workflow_revisions(revision_hash, document)` is that shape today for exactly one
-kind; carrying the kind is the schema consequence, and which store version takes it is
-#16's alone. Nothing here decides a column.
+**The contract shape, named; the columns are the schema owners'.** One content shape keyed
+by revision hash, carrying the exact bytes and the **kind token** of the registry the
+revision belongs to. `workflow_revisions(revision_hash, document)` is that shape today for
+exactly one kind; carrying the kind is the schema consequence, and which store version
+takes it belongs to the owners named under *Store dimensions* below. Nothing here decides a
+column.
 
 **Per-attribute columns are refused.** A `name`, `description`, `prompt` or `tools` column
 beside the bytes would make the store a second authority over what a definition says, and
 the first disagreement between a column and its bytes would have no arbiter. Every field
-the library shows is parsed from the bytes; anything stored beside them is a projection
-that can be dropped and rebuilt, never a fact.
+the library shows — including the name and the description the operator's picker needs — is
+parsed from the bytes; anything stored beside them is a projection that can be dropped and
+rebuilt, never a fact. The one thing that is *not* parsed from the bytes is the display name
+of a lineage whose format declares none, which is decision 1's catalog label and exists
+precisely because those bytes say nothing about it.
 
 **The deployment half stays separate, and that is what makes a file portable.** Which
 model, which auth profile and which executor a deployment runs an agent under is authored
@@ -536,18 +642,20 @@ how #1's and ADR 0006's no-silent-rebinding invariant survives a moving head.
 
 - **Source configuration:** a source kind token outside the closed set; a selection naming a
   kind token outside decision 1's closed set; a source carrying credential material instead
-  of a credential reference (ADR 0009).
+  of a credential reference (ADR 0009 §6).
 - **Scan and intake:** a file matching two selections, naming both; a scanned position that
   no longer resolves in the source, naming it; bytes that changed between the scan and the
   intake, naming both content hashes, because an intake publishes exactly what was scanned
   and never what has since appeared; a path outside every selection.
 - **Admission:** a revision not published; a name outside 1–128 characters of
-  `[a-z][a-z0-9._-]*`, and for a source-owned lineage that is the **authored** name,
-  refused naming the file; a name of exactly 64 lowercase hexadecimal characters, which
-  would be indistinguishable from a lineage id; a name currently or previously held by
-  another lineage of the same kind, naming both; bytes owned by another lineage of the same
-  kind, naming it; a missing #6 Rev. 2 justification; a retired lineage; a rename requested
-  in the catalog for a source-owned lineage, naming the source that owns the name.
+  `[a-z][a-z0-9._-]*`, and where the authoring format declares the name that is the
+  **authored** one, refused naming the file; a name of exactly 64 lowercase hexadecimal
+  characters, which would be indistinguishable from a lineage id; a name currently or
+  previously held by another lineage of the same kind, naming both; bytes owned by another
+  lineage of the same kind, naming it; a missing #6 Rev. 2 justification; a retired lineage;
+  a catalog rename requested for a lineage whose authoring format declares its name, naming
+  the file that owns it; any catalog write of a description, for every kind, since no format
+  and no cockpit path may put one beside the bytes.
 - **Binding:** a reference whose revision is not an admitted member of the lineage its
   `ref` names, naming both — under every admission policy, permissive or not.
 - **Selection and policy activation:** a selection revision naming a retired lineage, a
@@ -564,7 +672,8 @@ how #1's and ADR 0006's no-silent-rebinding invariant survives a moving head.
 
 ## Store dimensions and their migration cost
 
-Named honestly, per #16. **Seven durable shapes, every one append-only, not one updated in
+Named honestly, for the two schema owners below. **Seven durable shapes, every one
+append-only, not one updated in
 place:** `catalog_lineages` (id, kind, founding revision hash — no mutable column at all),
 `catalog_lineage_aliases` and `catalog_lineage_retirements` (decision 1's two attributed
 event histories), `catalog_lineage_members` (`(lineage, revision_number, revision_hash)`,
@@ -582,16 +691,22 @@ revision-bytes shape gains the **kind token** decision 4 requires, so one conten
 serves every registry rather than one table per kind. And a **definition source is
 configuration, not catalog data** — it varies by operator and deployment, it carries a
 credential reference, and it is therefore #1's configuration surface, never a store shape
-and never exported.
+and never exported. Which configuration level holds it is ADR 0011 decision 1's, not this
+record's: registered at the installation, selected per project.
 
-**The cost is one cutover, and it is a cutover ADR 0006 already requires.** None of these
-may enter #16's preserving V7→V8 or V8→V9 phases: a preserving migration cannot invent a
-lineage for revisions that never had one, and inventing one per existing revision would
-fabricate exactly the founding facts #8 aggregates over. They land only in the
-non-preserving store replacement ADR 0006 names for its V3 records; which version that is
-remains #16's. The catalog then starts empty, and existing V7 revisions stay
-published-not-admitted until admitted — which costs nothing, since identical bytes yield
-the identical hash.
+**The cost is one cutover, and it is a cutover ADR 0006 already requires — and the boundary
+between the two schema owners is named rather than left to whoever builds first.** None of
+these shapes, and not the kind token above, may enter **#16's preserving V7→V8 or V8→V9
+phases**: a preserving migration cannot invent a lineage for revisions that never had one,
+and inventing one per existing revision would fabricate exactly the founding facts #8
+aggregates over. #16 stays the sole owner of that preserving sequence and hands the next
+exact store version on. **They land in #63's non-preserving V3 cutover**, which by its own
+Schema-ownership section owns that cutover after #16 Phase 2 and takes the next exact
+version by explicit handoff — never two versions writing at once and no in-place
+reinterpretation of V9 data as V3. So the routing is: #16 for everything preserving, #63
+for the cutover these shapes ride, and neither has a decision left to invent here. The
+catalog then starts empty, and existing V7 revisions stay published-not-admitted until
+admitted — which costs nothing, since identical bytes yield the identical hash.
 
 ## Consequences
 
@@ -605,12 +720,22 @@ than prevented.
 The source model has its own prices. **Keeping content up to date costs one operator action
 per upstream change** — the drift reading is what makes forgetting visible, not what
 removes the action. **Authoring moves out of the cockpit** for anything a source owns:
-"Publish YAML" stays the path for catalog-authored entries, and so does the catalog rename,
-so the product carries two authoring paths with one rule deciding which applies. **Sharing
-gains a mechanism and no automation**: a shared repository is the whole of V1, a marketplace
-is a source kind nobody has written, and neither is a channel for measurements. And a
-definition is only as trustworthy as the source the operator configured — this record makes
-the origin visible and attributable, it does not judge the content.
+"Publish YAML" stays the path for entries the operator types, and the catalog rename stays
+the path for kinds whose format declares no name, so the product carries two authoring paths
+with one rule deciding which applies. **Sharing gains a mechanism and no automation**: a
+shared repository is the whole of V1, a marketplace is a source kind nobody has written, and
+neither is a channel for measurements. And a definition is only as trustworthy as the source
+the operator configured — this record makes the origin visible and attributable, it does not
+judge the content.
+
+The name-and-description model has two prices the operator will see. **A rename relabels his
+own history**: yesterday's runs are listed under today's name, and the alias history is
+where the old one survives — the alternative, a bound-at-run label stored beside the run,
+buys a stable list at the cost of a second name authority no reader could arbitrate.
+**A pre-V3 entry has no description and never gets one from the catalog**: every V1 and V2
+revision's bytes carry neither field, so its picker row shows a name and an empty
+description until someone authors the content forward. Nothing is hidden, and nothing is
+invented to fill the row.
 
 ## Required proofs before acceptance
 
@@ -634,6 +759,22 @@ the origin visible and attributable, it does not judge the content.
   admission and at rename, and `resolve_name` therefore reads every 64-hex input as a lineage
   id and every other input as a display name — proven with a name and a lineage id that would
   otherwise collide, and with no discriminating parameter available to the caller.
+- **The run label follows the rename:** a terminated run bound to a member of a lineage is
+  listed under the lineage's current name before and after a rename, the alias history names
+  the earlier one with its actor, and no run configuration, snapshot or receipt row changed
+  in either state — proven by comparing the whole run record before and after, not only the
+  label. A run bound to a published-not-admitted revision is listed by its revision hash with
+  no name and no invented one.
+- **Name and description come from the bytes:** for each kind whose format declares them —
+  a V3 workflow document and an agent definition — the picker's name and description are the
+  parsed authored values, changing them in the file and re-admitting changes both, and no
+  store row beside the bytes carries either. A V3 document with no `description`, and a V1 or
+  V2 revision that can carry neither field, read back as **absent** rather than as an empty
+  or defaulted string, and a catalog write of a description is refused for every kind.
+- **The name's owner is the format, not the origin:** a V3 document typed into "Publish YAML"
+  and one taken in from a source both take the authored name, and a catalog rename of either
+  is refused naming the file; a V1 or V2 revision, whose format declares no name, is renamed
+  in the cockpit and its alias event carries the operator as actor.
 - Publication succeeds with no catalog present and reads back as published-not-admitted;
   `resolve` returns such a revision, `resolve_reference` refuses it naming the lineage the
   `ref` claimed, binds a real member, and refuses a non-member naming both; `resolve_name`
@@ -692,14 +833,18 @@ the origin visible and attributable, it does not judge the content.
   refused by `resolve_reference` and never selected by decision 8's precedence; admission
   requires a named actor and the #6 Rev. 2 justification whether the bytes were authored in
   the cockpit or pushed by a stranger.
-- **A source-owned name is the authored name:** admitting a member appends one alias event
-  carrying the file's declared name with the intake as actor; a catalog rename of that
-  lineage is refused naming the source; and an authored name outside the name syntax, or of
-  exactly 64 hexadecimal characters, is refused at admission naming the file.
-- **Reconstruction (#66):** a published `agent_definition` revision parses back to the
-  identical definition including its system prompt and its tool declaration, and two
-  definitions differing only in their prompt publish two distinct revisions — the case
-  `test_todays_catalog_revision_cannot_tell_two_prompts_apart` pins as impossible today.
+- **An authored name reaches the catalog as an event:** admitting a member appends one alias
+  event carrying the file's declared name with the admitting actor; and an authored name
+  outside the name syntax, or of exactly 64 hexadecimal characters, is refused at admission
+  naming the file.
+- **Reconstruction (#66):** a published `agent_definition` revision parses back through
+  `parse_agent_definition` to the identical definition — name, description, model, tool
+  declaration and system prompt — and two definitions differing only in their prompt publish
+  two distinct revisions, which is exactly the equality
+  `test_todays_catalog_revision_cannot_tell_two_prompts_apart` asserts today. That test's
+  own docstring says it "pins the boundary so the day it moves is visible": the day it moves
+  is this proof, and #66's fifth sentence is declared in
+  `acceptance/66-agent-as-a-markdown-file.toml` in the same change.
 - Export then import preserves every intake record; an intake entry for a revision the
   manifest does not carry is refused naming both; and no source configuration leaves the
   store.
@@ -716,9 +861,11 @@ the origin visible and attributable, it does not judge the content.
 The document surface, its bindings and its refusals beyond amendment A1 (ADR 0006); the
 scheduler and executor; how a difficulty covariate is derived and which measurements #8
 finally names; any successor identity for auth profiles (decision 7); platform addressing,
-authorization, event observation and the item-level binding's storage (#24); budget units
-(#26); which schema version carries the cutover (#16); project isolation (#23); and any
-conversational authoring surface above the catalog (#7).
+authorization, event observation and the item-level binding's storage (#24, ADR 0010);
+budget units (#26); the preserving schema sequence (#16) and the exact cutover version
+(#63); project and source scope (#23, ADR 0011); the library and canvas surface (#9); a
+run's own purpose and input (#38); and any conversational authoring surface above the
+catalog (#7).
 
 From decision 2, four things are deliberately not decided. **How a git source is read** —
 clone or fetch, protocol, scan cadence, rate limits — is implementation under this record,
@@ -727,6 +874,23 @@ designed nowhere. **The library's layout and interaction** are the cockpit's; th
 fixes only which facts it may show and who owns each. And **the queue's triage, readiness
 and automation rules** are #79's, which consumes decision 8's precedence rather than
 extending it.
+
+## Successor
+
+A decision record is not an implementable slice, and this one deliberately does not become
+one by being longer. The smallest honest successor is **workflow-only and visible**: the
+saved-workflow picker and the runs list gain the authored display name, the authored
+description, the lineage and the revision, the exact hash moves under Details, and a
+revision belonging to no lineage renders as decision 1 says it must — its hash, no name, no
+invented description. Its proof is authoring, the rename projection over an already
+terminated run, exact revision binding at run start, the API and store behaviour behind
+both, the component's own states, and one thin desktop-and-390px journey.
+
+It builds **no** library surface, no graph, no scorecard, no source adapter, no sync and no
+export: this record decides those so that the slice after it has an owner to build against,
+not so that they ship together. The slice belongs to #22, which is why this record does not
+close it, and the decisions it consumes are 1, 3, 4 and 9 — sources (decision 2), the
+ledger (5), transport (6) and precedence (8) wait for callers of their own.
 
 ## Supersedes
 
