@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import json
 import os
-import selectors
 import shutil
-import signal
 import subprocess
 import tempfile
-import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from atelier2.adapters.bounded_processes import bounded_process_answer
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -191,74 +189,6 @@ def _parsed_version(reported: str) -> tuple[int, int, int] | None:
     return major, minor, patch
 
 
-def _terminated_process_tree(process: subprocess.Popen[bytes]) -> None:
-    """End the probe's whole session, then reap it and release its pipes.
-
-    The probe runs in a session of its own, so one signal reaches whatever the
-    external program started, not only the program itself. An already reaped
-    probe is left alone: its identifier is free for the operating system to
-    hand to somebody else, so signalling it could reach a stranger's session.
-    """
-
-    if process.returncode is None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
-    for stream in (process.stdout, process.stderr):
-        if stream is not None:
-            stream.close()
-
-
-def _bounded_answer(
-    process: subprocess.Popen[bytes], deadline: float
-) -> tuple[int, bytes]:
-    """Read both streams of a probe under one byte bound and one deadline."""
-
-    if process.stdout is None or process.stderr is None:
-        raise ClaudeExecutableUnsupported("the version probe has no readable streams")
-    answered = process.stdout.fileno()
-    captured: dict[int, bytearray] = {}
-    with selectors.DefaultSelector() as selector:
-        for stream in (process.stdout, process.stderr):
-            descriptor = stream.fileno()
-            os.set_blocking(descriptor, False)
-            captured[descriptor] = bytearray()
-            selector.register(descriptor, selectors.EVENT_READ)
-        while selector.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise ClaudeExecutableUnsupported(
-                    f"the Claude executable did not answer {_VERSION_FLAG} in time"
-                )
-            for ready, _ in selector.select(remaining):
-                descriptor = ready.fd
-                chunk = os.read(descriptor, _VERSION_PROBE_OUTPUT_BYTES)
-                if not chunk:
-                    selector.unregister(descriptor)
-                    continue
-                stream_bytes = captured[descriptor]
-                stream_bytes += chunk
-                if len(stream_bytes) > _VERSION_PROBE_OUTPUT_BYTES:
-                    raise ClaudeExecutableUnsupported(
-                        f"the Claude executable answered {_VERSION_FLAG} with more "
-                        f"than {_VERSION_PROBE_OUTPUT_BYTES} bytes"
-                    )
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise ClaudeExecutableUnsupported(
-            f"the Claude executable did not answer {_VERSION_FLAG} in time"
-        )
-    try:
-        return_code = process.wait(timeout=remaining)
-    except subprocess.TimeoutExpired as error:
-        raise ClaudeExecutableUnsupported(
-            f"the Claude executable did not answer {_VERSION_FLAG} in time"
-        ) from error
-    return return_code, bytes(captured[answered])
-
-
 def read_claude_version(
     executable: Path, timeout_seconds: float = _VERSION_PROBE_TIMEOUT_SECONDS
 ) -> tuple[int, int, int]:
@@ -292,15 +222,13 @@ def read_claude_version(
                 f"the Claude executable did not answer {_VERSION_FLAG}: {error}"
             ) from error
         try:
-            return_code, answer = _bounded_answer(
-                process, time.monotonic() + timeout_seconds
+            return_code, answer = bounded_process_answer(
+                process, timeout_seconds, _VERSION_PROBE_OUTPUT_BYTES
             )
         except OSError as error:
             raise ClaudeExecutableUnsupported(
                 f"the Claude executable did not answer {_VERSION_FLAG}: {error}"
             ) from error
-        finally:
-            _terminated_process_tree(process)
     if return_code != 0:
         raise ClaudeExecutableUnsupported(
             f"the Claude executable refused {_VERSION_FLAG} "
