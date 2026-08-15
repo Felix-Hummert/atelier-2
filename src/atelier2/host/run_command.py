@@ -16,6 +16,7 @@ first run again instead of starting - and paying for - a second one.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import IO
@@ -328,8 +329,8 @@ def _run_outputs(api: str, public_run_reference: str) -> tuple[AgentOutput, ...]
     )
     outputs: list[AgentOutput] = []
     with _open(request, timeout=None) as stream:
-        for event_name, data in _server_sent_events(stream):
-            if event_name not in ACTED_EVENT_NAMES:
+        for data in _server_sent_data(stream):
+            if _event_kind(data) not in ACTED_EVENT_NAMES:
                 continue
             event = _decoded(_acted_event_resource, data.encode(), "a run event")
             match event:
@@ -381,8 +382,26 @@ def _decoded_output(output_base64: str) -> bytes:
         ) from error
 
 
-def _server_sent_events(stream: IO[bytes]) -> Iterator[tuple[str, str]]:
-    event_name = ""
+def _event_kind(data: str) -> str:
+    """Read which event this is from the event itself.
+
+    Every run event resource carries its own kind, and that field is the
+    published contract; the stream frame's optional name field is not, and the
+    served API does not write one, so the payload is what this command reads.
+    """
+
+    try:
+        carried = json.loads(data)
+    except json.JSONDecodeError as error:
+        raise UnreadableServiceAnswer(
+            f"the event stream carried something that is not JSON: {error}"
+        ) from error
+    if not isinstance(carried, dict):
+        raise UnreadableServiceAnswer("the event stream carried no run event")
+    return str(carried.get("event", ""))
+
+
+def _server_sent_data(stream: IO[bytes]) -> Iterator[str]:
     data_lines: list[str] = []
     for raw_line in stream:
         try:
@@ -393,18 +412,14 @@ def _server_sent_events(stream: IO[bytes]) -> Iterator[tuple[str, str]]:
             ) from error
         if not line:
             if data_lines:
-                yield event_name, "\n".join(data_lines)
-            event_name = ""
+                yield "\n".join(data_lines)
             data_lines = []
             continue
         field, _, value = line.partition(":")
-        value = value.removeprefix(" ")
-        if field == "event":
-            event_name = value
-        elif field == "data":
-            data_lines.append(value)
+        if field == "data":
+            data_lines.append(value.removeprefix(" "))
     if data_lines:
-        yield event_name, "\n".join(data_lines)
+        yield "\n".join(data_lines)
 
 
 def _post(url: str, payload: bytes, media_type: str = JSON_MEDIA_TYPE) -> bytes:

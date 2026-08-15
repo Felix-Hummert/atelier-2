@@ -34,7 +34,6 @@ from atelier2.api.models import (
 )
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_canonical_base64
-from atelier2.contracts.executions import RunEventKind
 from atelier2.host import main
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
@@ -268,16 +267,15 @@ def completed_run() -> Answer:
     return Answer(run_resource("COMPLETED", TERMINAL_HASH).model_dump_json().encode())
 
 
-def event_stream(*events: tuple[RunEventKind, str]) -> Answer:
-    frames = "".join(
-        f"id: {EVENT_CURSOR}\nevent: {name}\ndata: {payload}\n\n"
-        for name, payload in events
-    )
+def event_stream(*events: str) -> Answer:
+    """The frames exactly as the served API writes them: data, then id."""
+
+    frames = "".join(f"data: {payload}\nid: {EVENT_CURSOR}\n\n" for payload in events)
     return Answer(frames.encode(), media_type=EVENT_STREAM_MEDIA_TYPE)
 
 
-def agent_completed() -> tuple[RunEventKind, str]:
-    return RunEventKind.AGENT_COMPLETED, AgentCompletedEventResourceV2(
+def agent_completed() -> str:
+    return AgentCompletedEventResourceV2(
         workflow_format_version=2,
         cursor=EVENT_CURSOR,
         sequence=1,
@@ -294,8 +292,8 @@ def agent_completed() -> tuple[RunEventKind, str]:
     ).model_dump_json()
 
 
-def agent_failed() -> tuple[RunEventKind, str]:
-    return RunEventKind.AGENT_FAILED, AgentFailedEventResourceV2(
+def agent_failed() -> str:
+    return AgentFailedEventResourceV2(
         workflow_format_version=2,
         cursor=EVENT_CURSOR,
         sequence=1,
@@ -311,8 +309,8 @@ def agent_failed() -> tuple[RunEventKind, str]:
     ).model_dump_json()
 
 
-def waiting_for_input() -> tuple[RunEventKind, str]:
-    return RunEventKind.WAITING_INPUT, WaitingInputEventResourceV2(
+def waiting_for_input() -> str:
+    return WaitingInputEventResourceV2(
         workflow_format_version=2,
         cursor=EVENT_CURSOR,
         sequence=1,
@@ -383,6 +381,21 @@ def test_the_output_of_a_run_that_ended_is_printed_with_what_binds_it_to_that_ru
     assert TERMINAL_HASH in reported
     assert OUTPUT_HASH in reported
     assert ATTEMPT_ID in reported
+
+
+def test_an_event_kind_this_command_knows_nothing_about_is_passed_over(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """A history may carry kinds this client predates; only ours decide."""
+
+    unknown = json.dumps({"event": "SOMETHING_LATER", "sequence": 1})
+    with ScriptedService(
+        serving_answers(events=event_stream(unknown, agent_completed()))
+    ) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (0, AGENT_OUTPUT + b"\n")
 
 
 def test_the_started_run_binds_the_hashes_the_service_answered_with(
