@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import argparse
 import ipaddress
-import os
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,13 +8,8 @@ import uvicorn
 from fastapi import FastAPI
 
 from atelier2.adapters.claude_subscription import (
-    MANAGED_POLICY_ROOTS,
-    ClaudeExecutableUnsupported,
-    ClaudeManagedPolicyPresent,
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
-    attest_no_managed_policy,
-    verify_claude_capability,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
@@ -38,9 +30,7 @@ from atelier2.api.limits import ApiLimits, base64_characters_for
 from atelier2.api.stream import EventPollBackoff
 from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8422
+from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 
 MAXIMUM_REQUEST_BODY_BYTES = 65_536
 MAXIMUM_FIELD_CHARACTERS = 1_024
@@ -217,92 +207,3 @@ def serve(settings: HostSettings) -> None:
         ).run()
     finally:
         runtime.close()
-
-
-def main(arguments: Sequence[str] | None = None) -> None:
-    parser = _argument_parser()
-    parsed = parser.parse_args(arguments)
-    if parsed.command != "serve":
-        parser.error("a command is required")
-    try:
-        settings = HostSettings(
-            database_path=parsed.database,
-            effect_store_path=parsed.effect_store,
-            effect_adapter_revision=parsed.effect_adapter_revision,
-            effect_destination=parsed.effect_destination,
-            application_version=parsed.application_version,
-            source_commit=parsed.source_commit,
-            source_tree=parsed.source_tree,
-            frontend_dist=parsed.frontend_dist,
-            host=parsed.host,
-            port=parsed.port,
-            claude_subscription=_claude_subscription_settings(parser, parsed),
-        )
-    except ValueError as refusal:
-        parser.error(str(refusal))
-    try:
-        serve(settings)
-    except KeyboardInterrupt:
-        return
-
-
-def _claude_subscription_settings(
-    parser: argparse.ArgumentParser, parsed: argparse.Namespace
-) -> ClaudeSubscriptionSettings | None:
-    """Compose the Claude subscription executor only when fully declared."""
-
-    declared = (
-        parsed.claude_executable,
-        parsed.claude_workspace,
-        parsed.claude_credential_directory,
-    )
-    if all(value is None for value in declared):
-        return None
-    if any(value is None for value in declared):
-        parser.error(
-            "serving Claude subscription agents requires --claude-executable, "
-            "--claude-workspace and --claude-credential-directory together"
-        )
-    search_path = os.environ.get("PATH")
-    if search_path is None:
-        parser.error(
-            "serving Claude subscription agents requires PATH in the server "
-            "environment, because the launched provider inherits nothing else"
-        )
-    settings = ClaudeSubscriptionSettings(
-        parsed.claude_executable,
-        parsed.claude_workspace,
-        parsed.claude_credential_directory,
-        search_path,
-    )
-    # The containment this executor claims belongs to a measured release on a
-    # host no administrator policy can act on, so the deployment asks the named
-    # executable which one it is and attests that policy's absence before the
-    # server exists at all -- never at invocation time, where a refusal costs a
-    # run.
-    try:
-        attest_no_managed_policy(settings.credential_directory, MANAGED_POLICY_ROOTS)
-        verify_claude_capability(settings.executable)
-    except (ClaudeExecutableUnsupported, ClaudeManagedPolicyPresent) as error:
-        parser.error(str(error))
-    return settings
-
-
-def _argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="atelier2")
-    commands = parser.add_subparsers(dest="command")
-    serve_parser = commands.add_parser("serve", help="serve the local cockpit")
-    serve_parser.add_argument("--database", type=Path, required=True)
-    serve_parser.add_argument("--effect-store", type=Path, required=True)
-    serve_parser.add_argument("--effect-adapter-revision", required=True)
-    serve_parser.add_argument("--effect-destination", required=True)
-    serve_parser.add_argument("--application-version", required=True)
-    serve_parser.add_argument("--source-commit", required=True)
-    serve_parser.add_argument("--source-tree", required=True)
-    serve_parser.add_argument("--frontend-dist", type=Path, required=True)
-    serve_parser.add_argument("--host", default=DEFAULT_HOST)
-    serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    serve_parser.add_argument("--claude-executable", type=Path)
-    serve_parser.add_argument("--claude-workspace", type=Path)
-    serve_parser.add_argument("--claude-credential-directory", type=Path)
-    return parser

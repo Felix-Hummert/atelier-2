@@ -244,6 +244,26 @@ workflow editing. The graph, API, and local cockpit are a proven durable
 vertical, not yet a general-purpose workflow engine or a deployed remote
 product.
 
+That API now has a command-line client of its own, so starting real work costs
+one command instead of four ceremonies. `atelier2 run` publishes one workflow
+document and one agent file per bound role, starts the run they describe,
+follows its event history to the end, and writes the agent output that run
+produced to standard output, with the run, its revision, its terminal hash and
+one hash per output on standard error. Every publication is idempotent and the
+run identity is derived from the published hashes unless the operator names one,
+so the same command run twice reports the first run instead of paying for a
+second. The client owns nothing: it holds no durable state, adds no route, and
+hands the service's typed problems on unchanged, whether the service refused an
+answer or ended the event stream with its own failure frame. A run that stops on
+a decision the command cannot make — a waiting node, an unknown effect outcome, a
+failed agent attempt — ends it by name with a nonzero exit code instead of
+waiting. Exit 0 says the command read that run's history as far as the run's own
+latest event, so a history that broke off is refused by name and a truncated or
+empty output is never dressed as a receipt. The
+job still travels inside the published document, so one distinct input burns one
+revision, and neither a run-level input, a workflow name, nor an output contract
+that could decide an exit code exists yet.
+
 The canonical store is schema V8. A fresh store is created as exact V8; an exact
 V7 store is upgraded once in one SQLite transaction by adding the configuration
 format and requested-capability fields. Existing rows and hashes remain

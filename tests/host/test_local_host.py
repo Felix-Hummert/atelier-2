@@ -34,13 +34,13 @@ from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
 from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.host import (
-    DEFAULT_HOST,
+from atelier2.host import main
+from atelier2.host.address import DEFAULT_HOST
+from atelier2.host.serving import (
     HostSettings,
     api_limits,
     compose_application,
     event_poll_backoff,
-    main,
 )
 from tests.scenarios.agents import claude_subscription_deployment
 from tests.scenarios.api import api_limits as scenario_api_limits

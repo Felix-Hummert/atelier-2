@@ -67,6 +67,7 @@ source_modules = ["atelier2"]
 forbidden_modules = [
     "atelier2.__main__",
     "atelier2.host",
+    "atelier2.host.**",
     "atelier2.api",
     "atelier2.api.**",
     "atelier2.adapters",
