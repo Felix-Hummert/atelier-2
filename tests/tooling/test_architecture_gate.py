@@ -108,7 +108,7 @@ def test_forbidden_inward_and_dbos_owner_imports_fail(
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "Contracts: 3 kept, 1 broken." in result.stdout
+    assert one_broken_contract() in result.stdout
 
 
 @pytest.mark.proves("wire-schemas-name-no-port-type")
@@ -119,7 +119,7 @@ def test_a_wire_schema_module_that_names_a_port_fails(tmp_path: Path) -> None:
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "Contracts: 3 kept, 1 broken." in result.stdout
+    assert one_broken_contract() in result.stdout
 
 
 def test_green_gate_reports_positive_source_contract_layer_and_native_graph_counts(
@@ -137,14 +137,15 @@ def test_green_gate_reports_positive_source_contract_layer_and_native_graph_coun
     script = load_architecture_script()
     assert source_count == script.source_module_count(PROJECT_ROOT / "src/atelier2")
     assert source_count >= script.EXPECTED_SOURCE_MODULE_FLOOR
-    assert (contract_count, layer_count) == (4, 7)
+    assert (contract_count, layer_count) == (len(script.EXPECTED_CONTRACT_NAMES), 7)
 
     native_counts = re.search(
         r"Analyzed (\d+) files, (\d+) dependencies\.", result.stdout
     )
     assert native_counts is not None
     assert all(count > 0 for count in map(int, native_counts.groups()))
-    assert "Contracts: 4 kept, 0 broken." in result.stdout
+    reviewed = len(script.EXPECTED_CONTRACT_NAMES)
+    assert f"Contracts: {reviewed} kept, 0 broken." in result.stdout
 
 
 def empty_source_scan(project: Path) -> None:
@@ -188,6 +189,16 @@ def test_empty_shrunken_or_changed_contract_scan_fails(
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert "Architecture preflight refused:" in result.stderr
+
+
+def one_broken_contract() -> str:
+    """What the gate prints when exactly one reviewed contract is broken.
+
+    Derived from the reviewed set rather than spelled out, so adding a contract
+    cannot leave these assertions quietly describing an older gate.
+    """
+    reviewed = len(load_architecture_script().EXPECTED_CONTRACT_NAMES)
+    return f"Contracts: {reviewed - 1} kept, 1 broken."
 
 
 def load_architecture_script() -> ModuleType:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -50,9 +51,20 @@ def published(kind: RevisionKind, body: str) -> PublishedRevision:
     return PublishedRevision(kind, body.encode("utf-8"))
 
 
-SCHEMA_CANDIDATE = published(RevisionKind.SCHEMA, "the workspace a builder produced")
-SCHEMA_VERDICT = published(RevisionKind.SCHEMA, "the verdict a review panel returns")
-SCHEMA_RECEIPT = published(RevisionKind.SCHEMA, "the receipt a comment leaves behind")
+def published_schema(title: str) -> PublishedRevision:
+    """A real Draft 2020-12 schema, titled by the thing it describes.
+
+    Prose published under the name `schema` is refused at the reference site, so
+    a fixture standing in for a schema has to be one.
+    """
+    return published(
+        RevisionKind.SCHEMA, json.dumps({"title": title, "type": "object"})
+    )
+
+
+SCHEMA_CANDIDATE = published_schema("the workspace a builder produced")
+SCHEMA_VERDICT = published_schema("the verdict a review panel returns")
+SCHEMA_RECEIPT = published_schema("the receipt a comment leaves behind")
 PROFILE = published(RevisionKind.PROFILE, "the standing method of a builder")
 SKILL = published(RevisionKind.SKILL, "workspace discipline, and its tool grants")
 TOOL = published(RevisionKind.TOOL, "the grant that writes into a repository")
@@ -336,7 +348,9 @@ DECLARED_PARENT_REFERENCES = (
 
 
 def test_a_published_revision_is_identified_by_the_exact_bytes_it_carries() -> None:
-    body = b"the workspace a builder produced"
+    body = json.dumps(
+        {"title": "the workspace a builder produced", "type": "object"}
+    ).encode("utf-8")
 
     assert SCHEMA_CANDIDATE.revision_hash == PublishedRevisionHash.of(body)
     assert (
@@ -408,7 +422,7 @@ def test_the_snapshot_binds_every_reference_to_the_revision_it_resolved_to() -> 
 def test_a_registry_answering_with_another_revision_refuses_the_whole_snapshot() -> (
     None
 ):
-    other_bytes = published(RevisionKind.SCHEMA, "a verdict shaped differently")
+    other_bytes = published_schema("a verdict shaped differently")
     contradicting = dict(FULL_REGISTRY) | {
         (RevisionKind.SCHEMA, SCHEMA_VERDICT.revision_hash.value): other_bytes
     }

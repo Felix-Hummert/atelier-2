@@ -1,0 +1,46 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/57"
+
+# This file carries head 1 only, and names what it deliberately leaves open.
+#
+# Head 1 proves that a document published as a `schema` revision is a schema at
+# all. It does NOT prove that an agent's decoded output satisfies it: that needs
+# an execution path, and a V3 document cannot become a run until the two locks
+# named in ruling 5304496219 fall with #63's non-preserving cutover
+# (`adapters/yaml_workflows.py` WorkflowFormatNotExecutable, and schema.py's
+# `workflow_format_version IN (1, 2)` CHECK).
+#
+# The item's own acceptance sentences that stay OPEN and UNPROVEN after head 1,
+# named rather than silently dropped, per the pattern of
+# acceptance/66-agent-as-a-markdown-file.toml:
+#
+#   1b. "Autoritaet bleibt der providerneutrale Core: nach Provider-Decode und
+#       vor Success-Write validiert er dieselben gebundenen Bytes." (heads 2/3)
+#   2.  "Gueltig schreibt atomar Artefakt, succeeded-node-receipt/v3 und
+#       Run-Ereignis; erst danach waechst Ready." (head 3)
+#   3.  "Ungueltiges UTF-8/JSON, Schema-Abweichung oder Bound-Verletzung schreibt
+#       atomar ein failed-node-receipt/v3 mit stabilem Reason-Token,
+#       Schema-Revision und Hash der exakten decodierten Bytes; kein Artefakt und
+#       kein Success-Receipt." (head 3)
+#   4.  "Join bleibt ADR 0006: all_succeeded blockiert; all_terminal darf starten
+#       und erhaelt das Failure-Receipt." (head 3)
+#   5.  "Retry/Restart erzeugt weder zweites Artefakt noch zweites terminales
+#       Receipt." (head 3)
+#   6.  "Derselbe Vertrag gilt fuer Claude und Codex; genau ein billbarer Canary
+#       nach allen lokalen Gates." (head 4)
+#
+# The first sentence declared below is 1a, and 1a is EXPRESSLY NOT a substitute
+# for 1b: 1a proves the bound contract is a contract, 1b proves the core holds an
+# output to it. #57 is not verified and not retired while any of the six is open.
+
+[[sentence]]
+id = "a-schema-revision-outside-the-profile-is-refused-by-name"
+text = "A document whose outputs[*].schema pins a published revision that is not a Draft 2020-12 schema inside the closed profile is refused by name at the reference site, before anything can be bound or started."
+
+[[sentence]]
+id = "no-schema-reference-ever-leaves-the-document"
+text = "A nonlocal $ref, an $id, an $anchor, an $dynamicAnchor and an $dynamicRef are each refused by name, and reading any schema document attempts exactly zero retrievals."
+
+[[sentence]]
+id = "an-unusable-schema-is-drawn-as-unresolved-and-refuses-the-binding"
+text = "One finding reaches both callers correctly: the composed preview names it as an unresolved reference and keeps drawing, while the run-configuration binding refuses the whole snapshot."

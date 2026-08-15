@@ -16,7 +16,11 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from typing import assert_never
 
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.contracts.run_configuration_v3 import (
     DeclaredReference,
     ReferenceChain,
@@ -26,6 +30,7 @@ from atelier2.contracts.run_configuration_v3 import (
     declared_references,
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
+from atelier2.contracts.schemas_v3 import SchemaRefused, read_schema_document
 from atelier2.contracts.workflow_bindings_v3 import BoundSubworkflow, SubworkflowBinding
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.published_revisions import (
@@ -82,6 +87,9 @@ def resolve_declared_reference(
                     declared,
                     f"the registry answered with revision {revision.revision_hash.value}",
                 )
+            unusable = _unusable_schema(declared, revision)
+            if unusable is not None:
+                return unusable
             return ResolvedReference(
                 declared.site, declared.kind, declared.reference, revision_hash
             )
@@ -93,6 +101,27 @@ def resolve_declared_reference(
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _unusable_schema(
+    declared: DeclaredReference, revision: PublishedRevision
+) -> ReferenceRefusal | None:
+    """Whether a `schema` revision resolved to bytes that are not a schema.
+
+    Every other kind resolves on identity alone, because nothing here knows what
+    its bytes must say. A `schema` is the one kind this product must read to do
+    its job at all, so the reference that pins it is where the reading belongs.
+    """
+    if declared.kind is not RevisionKind.SCHEMA:
+        return None
+    verdict = read_schema_document(revision.document)
+    if isinstance(verdict, SchemaRefused):
+        return _refusal(
+            ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT,
+            declared,
+            f"the published revision is not a schema this product enforces ({verdict})",
+        )
+    return None
 
 
 def _bound_child(

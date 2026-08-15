@@ -69,6 +69,7 @@ class ReferenceRefusalReason(StrEnum):
     REVISION_KIND_MISMATCH = "revision_kind_mismatch"
     RESOLVED_REVISION_MISMATCH = "resolved_revision_mismatch"
     UNBOUND_WORKFLOW_REFERENCE = "unbound_workflow_reference"
+    UNUSABLE_SCHEMA_DOCUMENT = "unusable_schema_document"
 
 
 @dataclass(frozen=True, slots=True)

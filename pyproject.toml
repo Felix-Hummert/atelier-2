@@ -9,6 +9,7 @@ requires-python = "==3.12.3"
 dependencies = [
     "dbos==2.29.0",
     "fastapi==0.141.1",
+    "jsonschema==4.26.0",
     "pydantic==2.13.4",
     "pyyaml==6.0.3",
     "sqlalchemy==2.0.51",
@@ -101,6 +102,24 @@ source_modules = ["atelier2.api.wire"]
 forbidden_modules = ["atelier2.ports", "atelier2.ports.**"]
 allow_indirect_imports = true
 as_packages = true
+
+# One profile, one owner: the closed Draft 2020-12 subset a published `schema`
+# revision must satisfy is decided in exactly one module, so a second consumer
+# cannot quietly evaluate against a second dialect.
+[[tool.importlinter.contracts]]
+id = "schema-owner"
+name = "JSON Schema evaluation stays inside one profile owner"
+type = "forbidden"
+source_modules = ["atelier2"]
+forbidden_modules = ["jsonschema", "jsonschema_specifications", "referencing"]
+allow_indirect_imports = true
+as_packages = true
+ignore_imports = [
+    "atelier2.contracts.schemas_v3 -> jsonschema",
+    "atelier2.contracts.schemas_v3 -> jsonschema_specifications",
+    "atelier2.contracts.schemas_v3 -> referencing",
+]
+unmatched_ignore_imports_alerting = "error"
 
 [tool.ruff.lint.per-file-ignores]
 # Runtime lifecycle must preserve the initiating failure while collecting every
