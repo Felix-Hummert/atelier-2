@@ -13,6 +13,7 @@ EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
     "dbos-owner": "DBOS and SQLAlchemy stay inside their adapter",
+    "wire-projection-split": "Wire schemas name no port type",
 }
 EXPECTED_LAYER_ROWS = (
     "__main__",

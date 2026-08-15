@@ -93,6 +93,15 @@ ignore_imports = [
 ]
 unmatched_ignore_imports_alerting = "error"
 
+[[tool.importlinter.contracts]]
+id = "wire-projection-split"
+name = "Wire schemas name no port type"
+type = "forbidden"
+source_modules = ["atelier2.api.wire"]
+forbidden_modules = ["atelier2.ports", "atelier2.ports.**"]
+allow_indirect_imports = true
+as_packages = true
+
 [tool.ruff.lint.per-file-ignores]
 # Runtime lifecycle must preserve the initiating failure while collecting every
 # independently failing third-party cleanup operation.
