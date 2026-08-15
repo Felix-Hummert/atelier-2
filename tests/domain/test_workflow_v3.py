@@ -13,8 +13,11 @@ from atelier2.adapters.yaml_workflows import (
     parse_executable_workflow_document,
     parse_workflow_document,
 )
+from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflow_refusals import WorkflowRefusalReason
 from atelier2.contracts.workflows_v3 import (
+    MAXIMUM_DOCUMENT_DESCRIPTION_BYTES,
+    MAXIMUM_DOCUMENT_NAME_BYTES,
     MAXIMUM_INSTRUCTION_BYTES,
     RETIRED_KEY_REPLACEMENTS,
     ActionNodeV3,
@@ -130,8 +133,8 @@ nodes:
 """
 
 
-def graph() -> WorkflowGraphV3:
-    parsed = parse_workflow_document(DOCUMENT)
+def graph(document: bytes = DOCUMENT) -> WorkflowGraphV3:
+    parsed = parse_workflow_document(document)
     assert isinstance(parsed, WorkflowGraphV3)
     return parsed
 
@@ -140,6 +143,12 @@ def with_node_line(node_id: str, line: str, document: bytes = DOCUMENT) -> bytes
     anchor = f"  - id: {node_id}\n".encode()
     assert document.count(anchor) == 1
     return document.replace(anchor, anchor + f"    {line}\n".encode())
+
+
+def with_document_line(line: str, document: bytes = DOCUMENT) -> bytes:
+    anchor = b"format_version: 3\n"
+    assert document.count(anchor) == 1
+    return document.replace(anchor, anchor + f"{line}\n".encode())
 
 
 def without_line(line: str, document: bytes = DOCUMENT) -> bytes:
@@ -249,6 +258,53 @@ def test_all_terminal_stays_authorable_over_a_single_dependency() -> None:
     assert parsed.join_of("approve") == "all_terminal"
 
 
+DOCUMENT_NAME = "Self-build review chain"
+NAMED = with_document_line(f"name: {DOCUMENT_NAME}")
+NAMED_DOCUMENT = with_document_line(
+    "description: Two reviews, one merged verdict.", NAMED
+)
+
+
+def test_a_document_carries_the_name_an_operator_picks_it_by() -> None:
+    named = graph(NAMED_DOCUMENT)
+
+    assert named.name == DOCUMENT_NAME
+    assert named.description == "Two reviews, one merged verdict."
+
+
+def test_a_document_that_names_itself_nowhere_still_parses() -> None:
+    unnamed = graph()
+
+    assert (unnamed.name, unnamed.description) == (None, None)
+
+
+def test_renaming_a_document_authors_a_new_revision() -> None:
+    original = WorkflowRevision(NAMED_DOCUMENT)
+    renamed = WorkflowRevision(
+        NAMED_DOCUMENT.replace(DOCUMENT_NAME.encode(), b"Renamed")
+    )
+
+    assert renamed.revision_hash != original.revision_hash
+    assert graph(renamed.document).nodes == graph(original.document).nodes
+
+
+def test_no_node_can_read_the_document_name_as_a_value() -> None:
+    reading_the_name = NAMED_DOCUMENT.replace(
+        b"        from: {context: story}\n", b"        from: {document: name}\n"
+    )
+
+    with pytest.raises(InvalidWorkflowDocument) as raised:
+        parse_workflow_document(reading_the_name)
+
+    refusal = raised.value.refusal
+    assert refusal is not None
+    assert (refusal.reason, refusal.node, refusal.field) == (
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "from",
+    )
+
+
 def test_a_parsed_v3_document_is_deeply_immutable() -> None:
     parsed = graph()
 
@@ -264,6 +320,56 @@ REFUSALS: dict[str, tuple[bytes, WorkflowRefusalReason, str | None, str]] = {
         WorkflowRefusalReason.UNKNOWN_FIELD,
         None,
         "owner",
+    ),
+    "non-string-document-name": (
+        with_document_line("name: 7"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        None,
+        "name",
+    ),
+    "blank-document-name": (
+        with_document_line("name: ' '"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        None,
+        "name",
+    ),
+    "document-name-over-more-than-one-line": (
+        with_document_line('name: "picker line\\nhidden line"'),
+        WorkflowRefusalReason.INVALID_VALUE,
+        None,
+        "name",
+    ),
+    "oversized-document-name": (
+        with_document_line("name: " + "x" * (MAXIMUM_DOCUMENT_NAME_BYTES + 1)),
+        WorkflowRefusalReason.INVALID_VALUE,
+        None,
+        "name",
+    ),
+    "non-string-document-description": (
+        with_document_line("description: 7", NAMED),
+        WorkflowRefusalReason.INVALID_VALUE,
+        None,
+        "description",
+    ),
+    "oversized-document-description": (
+        with_document_line(
+            "description: " + "x" * (MAXIMUM_DOCUMENT_DESCRIPTION_BYTES + 1), NAMED
+        ),
+        WorkflowRefusalReason.INVALID_VALUE,
+        None,
+        "description",
+    ),
+    "described-document-without-a-name": (
+        with_document_line("description: a description with nothing to describe"),
+        WorkflowRefusalReason.MISSING_FIELD,
+        None,
+        "name",
+    ),
+    "description-refused-by-a-node": (
+        with_node_line("implement", "description: a node carries none"),
+        WorkflowRefusalReason.REFUSED_FIELD,
+        "implement",
+        "description",
     ),
     "unknown-node-field": (
         with_node_line("implement", "surprise: yes"),

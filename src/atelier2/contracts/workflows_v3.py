@@ -23,6 +23,8 @@ from atelier2.contracts.workflow_refusals import (
 from atelier2.contracts.workflows import AnyWorkflowGraph, NonemptyString
 
 MAXIMUM_INSTRUCTION_BYTES = 16 * 1024
+MAXIMUM_DOCUMENT_NAME_BYTES = 200
+MAXIMUM_DOCUMENT_DESCRIPTION_BYTES = 4 * 1024
 
 type JoinRule = Literal["all_succeeded", "all_terminal"]
 type AgentMode = Literal["headless", "interactive"]
@@ -46,6 +48,14 @@ def _declared_sequence(value: object) -> object:
 
 
 DeclaredSequence = BeforeValidator(_declared_sequence)
+
+
+def _bounded_authored_text(text: str, subject: str, maximum_bytes: int) -> str:
+    if not text.strip():
+        raise ValueError(f"{subject} must carry text")
+    if len(text.encode("utf-8")) > maximum_bytes:
+        raise ValueError(f"{subject} exceeds {maximum_bytes} UTF-8 bytes")
+    return text
 
 
 class _ClosedV3Model(BaseModel):
@@ -166,13 +176,9 @@ class AgentNodeV3(_NodeV3):
     @field_validator("instruction")
     @classmethod
     def bound_authored_instruction(cls, instruction: str) -> str:
-        if not instruction.strip():
-            raise ValueError("instruction must carry work-specific text")
-        if len(instruction.encode("utf-8")) > MAXIMUM_INSTRUCTION_BYTES:
-            raise ValueError(
-                f"instruction exceeds {MAXIMUM_INSTRUCTION_BYTES} UTF-8 bytes"
-            )
-        return instruction
+        return _bounded_authored_text(
+            instruction, "instruction", MAXIMUM_INSTRUCTION_BYTES
+        )
 
 
 class DeterministicNodeV3(_NodeV3):
@@ -218,12 +224,29 @@ WorkflowNodeV3 = Annotated[
 
 class WorkflowGraphV3(_ClosedV3Model):
     format_version: Literal[3]
+    name: NonemptyString | None = None
+    description: NonemptyString | None = None
     graph_inputs: Annotated[tuple[GraphInput, ...], DeclaredSequence] = ()
     graph_outputs: Annotated[tuple[GraphOutput, ...], DeclaredSequence] = ()
     nodes: Annotated[tuple[WorkflowNodeV3, ...], DeclaredSequence, Field(min_length=1)]
 
+    @field_validator("name")
+    @classmethod
+    def bound_one_line_name(cls, name: str) -> str:
+        if "\n" in name:
+            raise ValueError("name is the one line a picker shows")
+        return _bounded_authored_text(name, "name", MAXIMUM_DOCUMENT_NAME_BYTES)
+
+    @field_validator("description")
+    @classmethod
+    def bound_description(cls, description: str) -> str:
+        return _bounded_authored_text(
+            description, "description", MAXIMUM_DOCUMENT_DESCRIPTION_BYTES
+        )
+
     @model_validator(mode="after")
     def validate_vocabulary(self) -> WorkflowGraphV3:
+        _refuse_a_description_of_nothing(self)
         _refuse_colliding_ids(self.nodes)
         _refuse_broken_control_edges(self.nodes)
         _refuse_unresolvable_order(self.nodes)
@@ -291,6 +314,15 @@ def _first_duplicate(names: Iterable[str]) -> str | None:
             return name
         seen.add(name)
     return None
+
+
+def _refuse_a_description_of_nothing(graph: WorkflowGraphV3) -> None:
+    if graph.description is not None and graph.name is None:
+        raise _refuse(
+            WorkflowRefusalReason.MISSING_FIELD,
+            "name",
+            "a document describing itself must name itself",
+        )
 
 
 def _refuse_colliding_ids(nodes: Sequence[WorkflowNodeV3]) -> None:

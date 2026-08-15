@@ -1,7 +1,10 @@
 # ADR 0006: Format V3 is the whole authoring language; capabilities stage execution
 
-- Status: ACCEPTED 2026-08-14 (Codex fifth exact-head review PASS, PR #30) — not yet implemented
-- Date: 2026-08-14
+- Status: ACCEPTED 2026-08-14 (Codex fifth exact-head review PASS, PR #30) — document
+  surface implemented by PR #41
+- Date: 2026-08-14, amended 2026-08-15 with "The document names itself" (the
+  document-level `name` and `description`), decided while PR #41 was still draft
+  because a field added to a closed hashed model after it lands is a format change
 - Depends on: [ADR 0002](0002-exact-yaml-graph.md), [ADR 0001](0001-durable-runtime.md)
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   whose "Deklaratives Kontext- und Artefaktrouting", "Parallele DAG-Ausführung"
@@ -76,6 +79,52 @@ preview marks every such node with the capability it waits for. That is the poin
 of the record: revisions are immutable, so staging the *format* instead would force
 a new format version and a re-authoring of every catalog entry each time a
 capability lands. Staging execution costs one loud refusal instead.
+
+### The document names itself
+
+A revision is identified by its hash, and a hash answers no human's question about
+which chain it is. Every surface that offers a stored revision — the catalog
+picker, the composed preview, the run list — would otherwise have a SHA-256 to
+show, and Issue #1's operator requirement is that a hash is never an option a human
+chooses from. So the document carries its own operator-facing identity:
+
+```yaml
+format_version: 3
+name: Self-build review chain
+description: |
+  Implements a story, reviews it from two sides, and publishes the merged verdict.
+nodes: []
+```
+
+Both are optional, and the block is closed at exactly these two. `name` is the one
+line a picker shows: bounded to 200 UTF-8 bytes, refused blank, refused when it
+carries a line break, because a label that wraps or hides a second line is not a
+label. `description` is the paragraph a detail view shows, bounded to 4 KiB. A
+`description` without a `name` is refused at parse — there is nothing for it to
+describe, the same reason a grant naming no read operation is refused above. A
+third metadata field is an amendment to this record, never a free key.
+
+**The name is inside the revision and outside execution.** It is ordinary authored
+bytes of the document, so [ADR 0002](0002-exact-yaml-graph.md)'s identity rule
+already covers it unchanged: a rename is a **new revision** with a new hash,
+exactly like a changed instruction. The alternative was considered and refused —
+hashing a canonical form with the metadata stripped would let two documents share
+one revision id, so the entry an operator picked *by name* would not be pinned to
+the chain that runs, and a published name could be rewritten under a revision
+somebody already approved. Immutability is worth more than a free rename; renaming
+authors a successor, which is what every other authored change here already does.
+
+Nothing executable may read it. There is no `document` input source form, so no
+node can bind the name as a value; it contributes no capability requirement and
+adds no element to `node-execution-request/v3`. That request's first element, the
+workflow revision hash, covers it as bytes and never resolves it as a value: what a
+chain is called must not be able to change what the chain does.
+
+This is where a catalog display name comes from. #22 owns catalog identity,
+lineage and storage and may index, present or override this name; what this record
+decides is only that the document itself has an honest place to carry one, so a
+picker has a name to show before any catalog row exists and without waiting for the
+non-preserving store cutover.
 
 ### The node contract
 
@@ -736,7 +785,9 @@ an absent `mode`; an interactive node whose output is mapped downstream without
 operator confirmation; an `available_context` grant naming no read operation; a
 `wait` without exactly one output; a `graph_output` naming an undeclared node
 output or sourcing a node that is not a sink; a malformed or unpinned versioned
-reference.
+reference; a document `name` that is blank, oversized or carries a line break; an
+oversized `description`; and a `description` on a document that does not name
+itself.
 
 Refused at binding: any versioned reference — profile, skill, tool, policy,
 budget, retry, cancellation, schema, deterministic operation, adapter operation,
@@ -990,6 +1041,10 @@ store without mutation, and provides no runtime upgrade or downgrade migration. 
   profiles and skills, who sees what, parallel work, a deterministic join, bounds,
   and where a result lands. The substrate gap #6 names is closed at the document
   level.
+- A picker never has to offer a hash. The operator-facing name exists at the
+  document level, so every surface that lists revisions can show one without the
+  catalog store, and #22's display-name layer builds on a field that is already
+  there instead of being the first place a name can live.
 - A capability landing changes an attestation, not a format version. The cost is a
   second, published, build-produced artifact — the runtime capability revision —
   and the discipline that every refusal names a capability rather than a version.
@@ -1015,6 +1070,10 @@ This record is a draft; nothing below exists yet.
 - A V3 document parses to a closed frozen model, and every parse-time refusal
   above is proven by its own behavioral case, parametrized over the refusal list
   rather than copied per case — including each kind's refused fields.
+- The document's own `name` and `description` parse and are optional; each refused
+  form above is refused at parse naming the field; no node input can read the name
+  as a value; and two documents differing only in their `name` have different
+  revision hashes while their graphs are otherwise identical.
 - A failed dependency terminates the whole graph: under `all_succeeded` the
   dependent gets a `blocked` receipt naming the dependency and its delivery status,
   that block propagates to its own dependents, running siblings still drain, and
