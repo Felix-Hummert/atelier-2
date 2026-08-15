@@ -319,7 +319,26 @@ class UnresolvedSkill:
             raise ValueError("an unresolved skill names the revision that resolved")
 
 
-type SkillReading = SkillContents | UnresolvedSkill
+@dataclass(frozen=True, slots=True)
+class UnreadSkill:
+    """A published skill revision nobody read, so what it carries is unknown, not none.
+
+    It differs from an unresolved skill in the one way that decides what a reader is
+    told: the registry does carry this revision, so it installs whatever it installs
+    — only the reading is incomplete. A caller declares one exactly where it also
+    reports that incompleteness to its own reader, which is why the lookup below may
+    answer with no grants for it while a revision missing from the reading
+    altogether stays loud: that one is a caller believing its reading was complete.
+    """
+
+    revision: str
+
+    def __post_init__(self) -> None:
+        if not self.revision:
+            raise ValueError("an unread skill names the revision nobody read")
+
+
+type SkillReading = SkillContents | UnresolvedSkill | UnreadSkill
 
 
 @dataclass(frozen=True)
@@ -345,20 +364,52 @@ class PublishedSkills:
             + tuple(UnresolvedSkill(revision) for revision in sorted(unresolved))
         )
 
+    def unread(self, revisions: Iterable[str]) -> tuple[str, ...]:
+        """Every one of these revisions this reading carries no read contents for.
+
+        A caller asks this about the skills the registry answered for, so that it can
+        say which grants it is going to be missing before it derives anything from a
+        reading it now knows is incomplete.
+        """
+        read = {
+            entry.revision
+            for entry in self.contents
+            if isinstance(entry, SkillContents)
+        }
+        return tuple(
+            dict.fromkeys(revision for revision in revisions if revision not in read)
+        )
+
+    def with_unread(self, revisions: Iterable[str]) -> PublishedSkills:
+        """The same reading, with these published revisions declared unread here.
+
+        Declaring is the point: what a skill carries stays unknown, and the caller
+        that declares it has taken on saying so. Nothing is claimed about a revision
+        this reading never heard of, which is still the loud case below.
+        """
+        unread = frozenset(revisions)
+        return PublishedSkills(
+            tuple(entry for entry in self.contents if entry.revision not in unread)
+            + tuple(UnreadSkill(revision) for revision in sorted(unread))
+        )
+
     def carried_tool_grants(
         self, skill: VersionedReference
     ) -> tuple[VersionedReference, ...]:
         """The grants one pinned skill carries, or a loud refusal to guess at them.
 
         Answering "none" for a skill nobody read would silently drop every grant that
-        skill installs, which is the one failure this contract exists to prevent.
+        skill installs, which is the one failure this contract exists to prevent. The
+        two states that answer with no grants are the two where nothing is being
+        guessed: a skill that resolves to nothing installs nothing, and a skill
+        declared unread has a caller reporting that its grants are unknown.
         """
         for entry in self.contents:
             if entry.revision == skill.revision:
                 match entry:
                     case SkillContents():
                         return entry.carried_tool_grants
-                    case UnresolvedSkill():
+                    case UnresolvedSkill() | UnreadSkill():
                         return ()
         raise ValueError(
             f"skill revision {skill.revision!r} is pinned, but its carried tool "

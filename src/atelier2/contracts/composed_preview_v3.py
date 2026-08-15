@@ -24,7 +24,11 @@ from atelier2.contracts.capabilities_v3 import (
     ExecutabilityDecision,
     ExecutabilityRefusal,
 )
-from atelier2.contracts.run_configuration_v3 import ReferenceRefusal, ResolvedReference
+from atelier2.contracts.run_configuration_v3 import (
+    ReferenceRefusal,
+    ReferenceSite,
+    ResolvedReference,
+)
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import (
     ActionNodeV3,
@@ -145,6 +149,29 @@ class PreviewNode:
     child: PreviewChild | None
 
 
+@dataclass(frozen=True, slots=True)
+class UnknownSkillGrants:
+    """A published skill this preview could not read, so its grants are unknown.
+
+    The reference resolved — the registry carries the revision — so this is not an
+    unresolved reference, and nothing is missing from the run. What is missing is
+    the reading: no contents were read for it here, so the tool grants it installs
+    are absent from the demands drawn on every node declaring it. A preview that
+    answered "no grants" instead would draw a node as fully attested while it
+    installs tools no build proved, which is the one mistake this refusal prevents.
+    """
+
+    site: ReferenceSite
+    reference: VersionedReference
+
+    def __str__(self) -> str:
+        return (
+            f"{self.site} skill {self.reference.ref}@{self.reference.revision}: "
+            "its published contents were never read, so the tool grants it carries "
+            "are unknown rather than none"
+        )
+
+
 @dataclass(frozen=True)
 class ComposedPreviewGraph:
     """One document's derived graph, and the registries its references land in.
@@ -153,12 +180,20 @@ class ComposedPreviewGraph:
     where it is used rather than flattened into its parent. References are kept
     where they were declared: a child's reference sits in the child's graph, under
     the chain it was reached by.
+
+    The last two fields are what this graph could not answer, each at the site that
+    asked: a reference that resolved to nothing, and a skill whose grants nobody
+    read. Both are drawn rather than raised, because a revision that is publishable
+    and not yet executable is the state decision 0006 exists for — and because the
+    executability verdict speaks only for the demands that could be derived, a
+    reader learns the rest of the distance here.
     """
 
     nodes: tuple[PreviewNode, ...]
     edges: tuple[PreviewEdge, ...]
     resolved_references: tuple[ResolvedReference, ...]
     unresolved_references: tuple[ReferenceRefusal, ...]
+    unknown_skill_grants: tuple[UnknownSkillGrants, ...]
 
 
 @dataclass(frozen=True)

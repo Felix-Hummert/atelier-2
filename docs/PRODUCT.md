@@ -167,12 +167,14 @@ revision and mode it is bound to, the dependency edges and the join a scheduler
 really applies, the capabilities each node demands including the grants its skills
 carry in transitively, the published revision every reference lands in or the named
 reason it lands nowhere — a withdrawn skill among them, named rather than ending the
-drawing — the child every subworkflow node binds, by the reference it authored and
-the exact revision that resolved to, with that child's own preview under it, and
-the executability verdict with the capability each still-waiting node needs — marked
-proposed or bound, so an author's intent is never read as a binding. That preview is
-a derivation and nothing else: no route, no rendering and no stored shape carries it.
-Behind that, nothing: the registries are ports a caller supplies,
+drawing — every published skill whose contents nobody read, whose carried grants the
+preview says are unknown instead of answering that it carries none, the child every
+subworkflow node binds, by the reference it authored and the exact revision that
+resolved to, with that child's own preview under it, and the executability verdict
+with the capability each still-waiting node needs — marked proposed or bound, so an
+author's intent is never read as a binding. That preview is a derivation and nothing
+else: no route, no rendering and no stored shape carries it. Behind that, nothing:
+the registries are ports a caller supplies,
 because no durable registry shape and no publication command for one exists yet;
 resolution is lineage-free and a reference's `ref` is carried into that snapshot
 without proving membership, because named lineages, admitted membership and name

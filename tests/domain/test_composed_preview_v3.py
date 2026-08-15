@@ -423,13 +423,14 @@ def preview(
     role_matrix: Sequence[ResolvedAgentBinding] = ROLE_MATRIX,
     attested: AttestedCapabilities = FULL_ATTESTATION,
     configuration: ConfigurationBinding = ConfigurationBinding.PROPOSED,
+    skills: PublishedSkills = SKILL_CONTENTS,
 ) -> ComposedPreview:
     return compose_preview(
         WorkflowRevision(document).revision_hash,
         parsed(document),
         bound_children(document),
         tuple(role_matrix),
-        SKILL_CONTENTS,
+        skills,
         attested,
         PublishedRegistry(answers),
         configuration,
@@ -802,18 +803,49 @@ def test_a_withdrawn_skill_is_named_unresolved_instead_of_ending_the_preview() -
     ] == [CapabilitySubject.of(RevisionKind.TOOL, TOOL_REFERENCE)]
 
 
-def test_a_skill_nobody_read_and_no_registry_withdrew_is_still_loud() -> None:
-    with pytest.raises(ValueError, match="never read"):
-        compose_preview(
-            WorkflowRevision(PARENT).revision_hash,
-            parsed(),
-            bound_children(),
-            ROLE_MATRIX,
-            PublishedSkills(),
-            FULL_ATTESTATION,
-            PublishedRegistry(FULL_REGISTRY),
-            ConfigurationBinding.PROPOSED,
-        )
+def test_a_skill_nobody_read_keeps_its_grants_unknown_instead_of_ending_the_preview() -> (
+    None
+):
+    composed = preview(skills=PublishedSkills())
+
+    assert [
+        (entry.site.node, entry.site.field, entry.reference)
+        for entry in composed.graph.unknown_skill_grants
+    ] == [("implement", "skills", SKILL_REFERENCE)]
+    assert "unknown rather than none" in str(composed.graph.unknown_skill_grants[0])
+    implement = node_of(composed.graph, "implement")
+    assert RuntimeCapability.SKILL_INSTALLATION in demands_of(implement)
+    assert [
+        requirement.subject
+        for requirement in implement.demands
+        if requirement.capability is RuntimeCapability.TOOL_GRANTS
+    ] == [CapabilitySubject.of(RevisionKind.TOOL, TOOL_REFERENCE)]
+
+
+def test_an_unread_skill_and_an_unresolved_reference_are_named_in_one_preview() -> None:
+    composed = preview(answers=without_publication(PROFILE), skills=PublishedSkills())
+
+    assert [
+        (entry.site.node, entry.site.field, entry.reference.ref)
+        for entry in composed.graph.unresolved_references
+    ] == [("implement", "profile", "builder_method")]
+    assert [
+        (entry.site.node, entry.reference.ref)
+        for entry in composed.graph.unknown_skill_grants
+    ] == [("implement", "workspace_discipline")]
+    assert [node.id for node in composed.graph.nodes] == [
+        "implement",
+        "panel",
+        "decide",
+        "confirm",
+        "hand_off",
+    ]
+
+
+def test_a_withdrawn_skill_is_no_unknown_reading_because_it_installs_nothing() -> None:
+    composed = preview(answers=without_publication(SKILL), skills=PublishedSkills())
+
+    assert composed.graph.unknown_skill_grants == ()
 
 
 def test_a_subworkflow_node_previews_the_child_it_named_and_what_that_resolved_to() -> (

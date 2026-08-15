@@ -9,8 +9,11 @@ Where a slice before this one already ruled, its ruling is propagated rather tha
 softened: a child that does not bind is the subworkflow binding's refusal, and a
 role bound to no agent-configuration revision is the executability record's. What
 this decision does add is tolerance for the state decision 0006 exists for — a
-revision that is publishable and not yet executable — so an unresolved reference
-and an unproven capability are drawn instead of ending the drawing.
+revision that is publishable and not yet executable — so an unresolved reference,
+an unproven capability and a skill nobody read the contents of are drawn instead of
+ending the drawing. Tolerance is not silence: a skill the registry carries but this
+composition was handed no contents for keeps its grants *unknown*, and the preview
+says so at the site that declared it rather than answering that it carries none.
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ from atelier2.contracts.composed_preview_v3 import (
     PreviewNode,
     PreviewNodeKind,
     PreviewRole,
+    UnknownSkillGrants,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_configuration_v3 import (
@@ -84,7 +88,9 @@ def compose_preview(
         declared: resolve_declared_reference(declared, registry, children)
         for declared in declared_through(document, subworkflows)
     }
-    readable = skills.with_unresolved(_unresolved_skills(resolutions))
+    withdrawn = skills.with_unresolved(_unresolved_skills(resolutions))
+    unread = withdrawn.unread(_resolved_skills(resolutions))
+    readable = withdrawn.with_unread(unread)
     requirements = required_capabilities(
         document, subworkflows, agent_bindings, readable
     )
@@ -97,6 +103,7 @@ def compose_preview(
         unproven,
         {binding.role.value: binding for binding in agent_bindings},
         resolutions,
+        frozenset(unread),
     )
     graph = _preview_graph(document, subworkflows.subworkflows, (), derivation)
     return ComposedPreview(workflow_revision_hash, configuration, graph, executability)
@@ -119,6 +126,23 @@ def _unresolved_skills(
     )
 
 
+def _resolved_skills(
+    resolutions: Mapping[DeclaredReference, ReferenceResolution],
+) -> tuple[str, ...]:
+    """Every pinned skill revision the registry does carry, whoever read it.
+
+    These are the skills a reading is allowed to be incomplete about: the revision
+    exists, so its grants are whatever it installs, and a preview that was handed no
+    contents for one has to say that rather than end at it.
+    """
+    return tuple(
+        declared.reference.revision
+        for declared, resolution in resolutions.items()
+        if declared.kind is RevisionKind.SKILL
+        and isinstance(resolution, ResolvedReference)
+    )
+
+
 @dataclass(frozen=True)
 class _Derivation:
     """What every graph of one preview reads while it is being drawn."""
@@ -127,6 +151,7 @@ class _Derivation:
     unproven: tuple[ExecutabilityRefusal, ...]
     roles: Mapping[str, ResolvedAgentBinding]
     resolutions: Mapping[DeclaredReference, ReferenceResolution]
+    unread_skills: frozenset[str]
 
 
 def _preview_graph(
@@ -138,10 +163,18 @@ def _preview_graph(
     children = {child.node_id: child for child in bound}
     resolved: list[ResolvedReference] = []
     unresolved: list[ReferenceRefusal] = []
+    unknown_grants: list[UnknownSkillGrants] = []
     for declared in declared_references(graph, chain):
         resolution = derivation.resolutions[declared]
         if isinstance(resolution, ResolvedReference):
             resolved.append(resolution)
+            if (
+                declared.kind is RevisionKind.SKILL
+                and declared.reference.revision in derivation.unread_skills
+            ):
+                unknown_grants.append(
+                    UnknownSkillGrants(declared.site, declared.reference)
+                )
         else:
             unresolved.append(resolution)
     return ComposedPreviewGraph(
@@ -156,6 +189,7 @@ def _preview_graph(
         ),
         tuple(resolved),
         tuple(unresolved),
+        tuple(unknown_grants),
     )
 
 
