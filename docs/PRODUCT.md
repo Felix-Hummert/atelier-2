@@ -203,6 +203,20 @@ unchanged.
 [ADR 0006](decisions/0006-node-vocabulary.md) owns this vocabulary and the staging
 rule behind it.
 
+An agent is authored as one markdown file. Its frontmatter is a closed set of
+`name`, `description`, an optional `model`, and an optional `tools` declaration;
+the body is the system prompt, kept byte-exact. An absent `tools` field leaves
+the agent able to use every tool its executor offers, because a restriction is
+only ever explicit, and a present one declares exactly that closed set. Every
+other key, missing required field, unreadable value, duplicated key or tool, and
+empty prompt is refused by its own name. A definition renders back to the
+document it was read from, and it publishes deterministically into an existing
+agent-configuration revision, with the deployment rather than the file owning the
+authentication profile, the executor, and the model an unspelled one falls back
+to. Nothing enforces a tool declaration yet, and today's configuration revision
+carries no field for a name, description, tool declaration, or system prompt, so
+the published revision alone cannot reconstruct the definition it came from.
+
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically
 records a distinct success receipt with its existing event and successor. Action
