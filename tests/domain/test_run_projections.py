@@ -4,9 +4,22 @@ import pytest
 
 from atelier2.contracts.agent_attempts import AgentAttemptState
 from atelier2.contracts.run_projections import (
+    NodeState,
     PublicAgentAttemptState,
     public_agent_attempt_state,
 )
+
+
+def test_a_node_ending_in_success_has_exactly_one_name() -> None:
+    assert {state.value for state in NodeState} == {
+        "queued",
+        "working",
+        "needs_you",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "interrupted",
+    }
 
 
 @pytest.mark.parametrize("durable_state", sorted(AgentAttemptState))
