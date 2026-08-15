@@ -132,6 +132,7 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
     descendant_pid_file = tmp_path / "descendant-pid"
+    descendant_pid: int | None = None
     try:
         ready_file = tmp_path / "descendant-ready"
         execution = agent_attempt_execution(
@@ -175,8 +176,7 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
         waiter.start()
         _wait_for_observed_process(store, execution.attempt_id)
         _wait_for_file(ready_file)
-        _wait_for_file(descendant_pid_file)
-        descendant_pid = int(descendant_pid_file.read_text(encoding="ascii"))
+        descendant_pid = _wait_for_process_id(descendant_pid_file)
 
         disposition = _cancel_and_release(store, supervisor, execution.attempt_id)
         waiter.join(timeout=5)
@@ -186,13 +186,14 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
         assert not waiter.is_alive()
         assert len(result) == 1
     finally:
-        if descendant_pid_file.exists():
-            descendant_pid = int(descendant_pid_file.read_text(encoding="ascii"))
-            try:
-                os.kill(descendant_pid, 9)
-            except ProcessLookupError:
-                pass
-        runtime.close()
+        try:
+            if descendant_pid is not None:
+                try:
+                    os.kill(descendant_pid, 9)
+                except ProcessLookupError:
+                    pass
+        finally:
+            runtime.close()
 
 
 def _wait_for_file(path: Path) -> None:
@@ -202,6 +203,16 @@ def _wait_for_file(path: Path) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("controlled process did not become ready")
+
+
+def _wait_for_process_id(path: Path) -> int:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            return int(path.read_text(encoding="ascii"))
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.01)
+    raise AssertionError("controlled process did not publish its process id")
 
 
 def _cancel_and_release(
