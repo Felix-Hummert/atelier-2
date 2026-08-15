@@ -13,15 +13,15 @@ from atelier2.api._support import (
     run_control_query,
 )
 from atelier2.api.context import ApiContext, api_context_dependency
-from atelier2.api.models import (
+from atelier2.api.openapi import API_PREFIX
+from atelier2.api.problems import ApiProblem
+from atelier2.api.projection.workflows import workflow_revision_detail_resource
+from atelier2.api.references import InvalidRevisionHash, parse_revision_hash
+from atelier2.api.wire.resources import (
     WorkflowRevisionDetailResource,
     WorkflowRevisionPageResource,
     WorkflowRevisionSummaryResource,
-    workflow_revision_detail_resource,
 )
-from atelier2.api.openapi import API_PREFIX
-from atelier2.api.problems import ApiProblem
-from atelier2.api.references import InvalidRevisionHash, parse_revision_hash
 from atelier2.application.publish_workflow_revision import (
     DurableStateCorrupt,
     PublicationCollision,

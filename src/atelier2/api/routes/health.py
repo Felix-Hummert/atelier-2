@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from atelier2.api.context import ApiContext, api_context_dependency
-from atelier2.api.models import HealthResource
 from atelier2.api.openapi import API_PREFIX
+from atelier2.api.wire.resources import HealthResource
 
 router = APIRouter()
 

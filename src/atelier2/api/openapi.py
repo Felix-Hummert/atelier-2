@@ -8,7 +8,15 @@ from fastapi import FastAPI
 from fastapi.openapi.models import OpenAPI
 from fastapi.openapi.utils import get_openapi
 
-from atelier2.api.models import (
+from atelier2.api.problems import PROBLEM_DEFINITIONS, PROBLEM_TYPE_PREFIX
+from atelier2.api.references import (
+    EVENT_CURSOR_PATTERN,
+    PUBLIC_RUN_REFERENCE_PATTERN,
+    REVISION_HASH_PATTERN,
+    SHA256_HASH_PATTERN,
+)
+from atelier2.api.stream import STREAM_FAILURE_CODES
+from atelier2.api.wire.events import (
     ActionCompletedEventResource,
     ActionCompletedEventResourceV2,
     ActionReconciliationRequiredEventResource,
@@ -21,7 +29,6 @@ from atelier2.api.models import (
     AgentCompletedEventResourceV2,
     AgentFailedEventResourceV2,
     AgentInterruptedEventResourceV2,
-    StreamFailureResource,
     SubworkflowCompletedEventResource,
     SubworkflowCompletedEventResourceV2,
     WaitAnsweredEventResource,
@@ -29,14 +36,7 @@ from atelier2.api.models import (
     WaitingInputEventResource,
     WaitingInputEventResourceV2,
 )
-from atelier2.api.problems import PROBLEM_DEFINITIONS, PROBLEM_TYPE_PREFIX
-from atelier2.api.references import (
-    EVENT_CURSOR_PATTERN,
-    PUBLIC_RUN_REFERENCE_PATTERN,
-    REVISION_HASH_PATTERN,
-    SHA256_HASH_PATTERN,
-)
-from atelier2.api.stream import STREAM_FAILURE_CODES
+from atelier2.api.wire.resources import StreamFailureResource
 from atelier2.contracts.executions import RunEventKind
 
 API_PREFIX = "/atelier/api/v1"

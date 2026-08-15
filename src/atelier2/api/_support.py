@@ -10,8 +10,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
-from atelier2.api.models import AnyRunResource, run_resource
 from atelier2.api.problems import ApiProblem
+from atelier2.api.projection.runs import run_resource
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
     InvalidPublicRunReference,
@@ -19,6 +19,7 @@ from atelier2.api.references import (
     decode_public_run_reference,
 )
 from atelier2.api.stream import BoundedQueryRunner, QueryAdmissionTimeout
+from atelier2.api.wire.resources import AnyRunResource
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_queries import (
     RunFound,

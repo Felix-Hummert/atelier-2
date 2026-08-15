@@ -8,16 +8,16 @@ from pydantic import BaseModel, TypeAdapter
 
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
-from atelier2.api.models import (
-    RunEventResource,
+from atelier2.api.projection.runs import run_resource
+from atelier2.api.projection.workflows import workflow_revision_detail_resource
+from atelier2.api.wire.events import RunEventResource
+from atelier2.api.wire.requests import StartRunRequestResource
+from atelier2.api.wire.resources import (
     RunPageResource,
     RunResource,
-    StartRunRequestResource,
     VersionedRunPageResource,
     WorkflowRevisionPageResource,
     WorkflowRevisionSummaryResource,
-    run_resource,
-    workflow_revision_detail_resource,
 )
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
 from atelier2.ports.run_queries import RunProjection

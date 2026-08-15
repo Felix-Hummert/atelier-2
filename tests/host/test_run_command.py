@@ -18,11 +18,17 @@ from typing import Any, Literal, Self
 
 import pytest
 
-from atelier2.api.models import (
+from atelier2.api.openapi import API_PREFIX
+from atelier2.api.problems import problem_resource
+from atelier2.api.references import encode_canonical_base64
+from atelier2.api.wire.events import (
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
-    AgentConfigurationRevisionResource,
     AgentFailedEventResourceV2,
+    WaitingInputEventResourceV2,
+)
+from atelier2.api.wire.resources import (
+    AgentConfigurationRevisionResource,
     AgentNodeResourceV2,
     AuthProfileRevisionResource,
     NoWaitingResource,
@@ -32,13 +38,9 @@ from atelier2.api.models import (
     RunResourceV2,
     StreamFailureResource,
     SubworkflowNodeResource,
-    WaitingInputEventResourceV2,
     WorkflowGraphResourceV2,
     WorkflowRevisionDetailResource,
 )
-from atelier2.api.openapi import API_PREFIX
-from atelier2.api.problems import problem_resource
-from atelier2.api.references import encode_canonical_base64
 from atelier2.host import main
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,

@@ -1,0 +1,12 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/87"
+
+# Issue #87 is built as six serial heads, and its remaining sentences — no route
+# calling a port, no fail-open port default, no port formulating an HTTP phrase —
+# are unbuilt. Declaring them here would red this gate on main for a capability
+# nobody has built, so each joins this file in the change that proves it. This
+# file therefore does not list every sentence of #87.
+
+[[sentence]]
+id = "wire-schemas-name-no-port-type"
+text = "The schemas the API accepts and answers with name no durable port type: the wire and the projection that fills it are separate modules, and a schema module that reaches for a port fails verification instead of being noticed in review."

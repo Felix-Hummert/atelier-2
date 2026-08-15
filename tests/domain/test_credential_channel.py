@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import ast
+import importlib
+import pkgutil
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from atelier2.adapters.dbos import schema
-from atelier2.api import models
+from atelier2.api import wire
+from atelier2.api.wire.resources import ApiModel
 
 FORBIDDEN_CHANNEL_NAMES = frozenset(
     {
@@ -79,13 +82,24 @@ def test_no_source_name_or_literal_key_names_a_credential_channel() -> None:
 
 
 def _api_resources() -> tuple[type[BaseModel], ...]:
-    return tuple(
-        value
-        for value in vars(models).values()
-        if isinstance(value, type)
-        and issubclass(value, models.ApiModel)
-        and value is not models.ApiModel
-    )
+    """Every schema the wire package publishes, however its modules are cut.
+
+    Read from the package rather than from a listed set of modules, so a wire
+    module added later joins this canary instead of silently escaping it.
+    """
+    found: dict[type[BaseModel], None] = {}
+    for module in pkgutil.iter_modules(wire.__path__):
+        published = importlib.import_module(f"{wire.__name__}.{module.name}")
+        found.update(
+            dict.fromkeys(
+                value
+                for value in vars(published).values()
+                if isinstance(value, type)
+                and issubclass(value, ApiModel)
+                and value is not ApiModel
+            )
+        )
+    return tuple(found)
 
 
 def _serialized_names(model: type[BaseModel]) -> set[str]:

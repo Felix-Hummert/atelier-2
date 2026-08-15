@@ -75,6 +75,13 @@ def add_empty_rogue_package(project: Path) -> None:
     (rogue / "__init__.py").touch()
 
 
+def add_wire_to_port_import(project: Path) -> None:
+    (project / "src/atelier2/api/wire/violation.py").write_text(
+        "from atelier2.ports.run_queries import RunProjection\n",
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.parametrize(
     "violation",
     [
@@ -101,7 +108,18 @@ def test_forbidden_inward_and_dbos_owner_imports_fail(
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "Contracts: 2 kept, 1 broken." in result.stdout
+    assert "Contracts: 3 kept, 1 broken." in result.stdout
+
+
+@pytest.mark.proves("wire-schemas-name-no-port-type")
+def test_a_wire_schema_module_that_names_a_port_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    add_wire_to_port_import(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Contracts: 3 kept, 1 broken." in result.stdout
 
 
 def test_green_gate_reports_positive_source_contract_layer_and_native_graph_counts(
@@ -119,14 +137,14 @@ def test_green_gate_reports_positive_source_contract_layer_and_native_graph_coun
     script = load_architecture_script()
     assert source_count == script.source_module_count(PROJECT_ROOT / "src/atelier2")
     assert source_count >= script.EXPECTED_SOURCE_MODULE_FLOOR
-    assert (contract_count, layer_count) == (3, 7)
+    assert (contract_count, layer_count) == (4, 7)
 
     native_counts = re.search(
         r"Analyzed (\d+) files, (\d+) dependencies\.", result.stdout
     )
     assert native_counts is not None
     assert all(count > 0 for count in map(int, native_counts.groups()))
-    assert "Contracts: 3 kept, 0 broken." in result.stdout
+    assert "Contracts: 4 kept, 0 broken." in result.stdout
 
 
 def empty_source_scan(project: Path) -> None:
