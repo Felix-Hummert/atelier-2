@@ -70,16 +70,18 @@ input:focus-visible {
   outline-offset: 3px;
 }
 
-button:disabled {
-  cursor: wait;
-  opacity: 0.55;
-}
-
 button.primary,
 .button.primary {
   border-color: var(--accent);
   color: white;
   background: var(--accent);
+}
+
+button:disabled {
+  cursor: wait;
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--paper);
 }
 
 button.quiet {

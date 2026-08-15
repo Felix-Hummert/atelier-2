@@ -38,6 +38,7 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await expect(page.getByRole("status")).toContainText("Starting the exact run");
   await expect(binding).toHaveClass(/node-working/);
   await page.screenshot({ path: "test-results/v2-bindings-loading-desktop.png", fullPage: true });
+  await assertNoSeriousAccessibilityFindings(page);
   continueAuth();
   const working = page.getByRole("article", { name: "build — Working" });
   await expect(working).toContainText("e2e · test-model");
