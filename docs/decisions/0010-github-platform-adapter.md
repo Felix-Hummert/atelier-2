@@ -74,9 +74,10 @@ operations under `external_effects`, and states outright that no platform
 identifier belongs in the core because addressing, authorization and readback are
 #24's. Observation has no owner at all.
 
-One constraint is decisive for observation: ADR 0009 refuses any non-loopback bind
-until an operator authenticator exists, so this deployment has no reachable
-inbound URL today.
+One constraint is decisive for observation: under ADR 0009 §3 a deployment declares
+its exposure rather than having it inferred from a bind address, and this one
+declares `this-machine` — nothing outside the machine session may reach the API, so
+there is no reachable inbound URL today.
 
 ## Decision
 
@@ -235,8 +236,9 @@ only names what the references are.
 
 ### 4. Item observation: polling in V1, a webhook as a hint later
 
-**V1 polls.** The reason is not effort: ADR 0009 refuses a non-loopback bind until
-an operator authenticator exists, so there is no address a delivery could reach.
+**V1 polls.** The reason is not effort: this deployment declares `this-machine`
+exposure under ADR 0009 §3, and under that declaration nothing outside the machine
+session may reach the API, so there is no address a delivery could reach.
 Webhooks are unreachable today, and a decision record that chose them would be
 choosing an architecture the deployment cannot run.
 
