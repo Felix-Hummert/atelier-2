@@ -1,0 +1,30 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/66"
+
+# A fifth sentence is declared on issue #66 — "aus der publizierten Revision ist
+# die Definition rekonstruierbar (Anzeige im Cockpit/Preview)" — and is
+# deliberately absent here. Ruling 5300492366 on #66 keeps that sentence as
+# acceptance of the item and makes its proof due once #22, under #23, gives the
+# definition a durable home: today's agent-configuration revision carries no
+# name, description, tool declaration or system prompt, which
+# test_todays_catalog_revision_cannot_tell_two_prompts_apart pins. Declaring it
+# now would red this gate on main for a capability nobody has built, and
+# inventing a schema here to make it green is what that ruling forbids. It joins
+# this file in the change that proves it. This file therefore does not list every
+# sentence of #66.
+
+[[sentence]]
+id = "a-markdown-file-becomes-a-published-configuration-revision"
+text = "A markdown file with frontmatter and a prompt body becomes a published agent-configuration revision deterministically, over the existing catalog API and without a new schema."
+
+[[sentence]]
+id = "missing-or-unknown-frontmatter-is-refused-by-name"
+text = "A missing or unknown frontmatter field is refused by name in a typed refusal, and nothing about the authored agent is guessed."
+
+[[sentence]]
+id = "an-absent-tool-declaration-leaves-every-tool-and-a-declared-one-is-exact"
+text = "An agent whose file declares no tools may use every tool, and an agent whose file declares them may use exactly that set, visible in the contract: the restriction is explicit, never implicit."
+
+[[sentence]]
+id = "the-same-file-is-the-same-revision-identity"
+text = "The same authored file is the same revision identity, and every authored difference is a different one."
