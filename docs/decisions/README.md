@@ -12,7 +12,8 @@ may point to that record but must not restate it as a separate truth.
 - [ADR 0004: The local cockpit is a projection and control adapter](0004-local-cockpit.md)
 - [ADR 0005: CI enforces package boundaries](0005-enforced-package-boundaries.md)
 - [ADR 0006: Format V3 is the whole authoring language; capabilities stage execution](0006-node-vocabulary.md) — ACCEPTED, not yet implemented
-- [ADR 0008: Node budgets separate hard limits from reported thresholds](0008-budget-units.md) — PROPOSED, not yet implemented
+- [ADR 0008: Node budgets separate hard limits from reported thresholds](0008-budget-units.md) — ACCEPTED, not yet implemented
+- [ADR 0009: One trust boundary separates the coordinating service from every runner](0009-runner-trust.md) — PROPOSED, not yet implemented
 
 The product stack beyond recorded decisions remains undecided; an ADR is not a
 claim that its product slice already exists.
