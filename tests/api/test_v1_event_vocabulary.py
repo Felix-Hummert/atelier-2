@@ -83,14 +83,19 @@ def v1_projection(kind: RunEventKind) -> PersistedRunEvent:
     return PersistedRunEvent(event, receipt, 1)
 
 
-def kinds_the_v1_projection_refuses() -> frozenset[RunEventKind]:
-    refused: set[RunEventKind] = set()
-    for kind in RunEventKind:
-        try:
-            run_event_resource(v1_projection(kind))
-        except ValueError:
-            refused.add(kind)
-    return frozenset(refused)
+UNPUBLISHED_KINDS = tuple(
+    sorted(kind for kind in RunEventKind if kind.value not in EVENT_NAMES)
+)
+ESCAPES_THE_CLOSED_UNION = pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "the V1 event vocabulary is spelled twice and the copies disagree: "
+        "openapi.EVENT_NAMES excludes this kind while models.run_event_resource "
+        "refuses only AGENT_FAILED, so this kind leaves the closed union through "
+        "the fall-through assertion instead of a refusal. #88 gives the set one "
+        "owner; this marker comes off with the fix."
+    ),
+)
 
 
 @pytest.mark.parametrize(
@@ -104,19 +109,36 @@ def test_every_kind_the_v1_wire_publishes_renders_under_its_own_name(
     assert resource.model_dump()["event"] == kind.value
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the V1 event vocabulary is spelled twice and the copies disagree: "
-        "openapi.EVENT_NAMES excludes four kinds while models.run_event_resource "
-        "refuses only AGENT_FAILED, so the three cancellation kinds escape the "
-        "closed union as an AssertionError instead of a refusal. #88 gives the "
-        "set one owner; this marker comes off with the fix."
-    ),
+@pytest.mark.parametrize(
+    "kind",
+    [
+        pytest.param(
+            kind,
+            id=kind.value,
+            marks=[ESCAPES_THE_CLOSED_UNION] if kind in CANCELLATION_KINDS else [],
+        )
+        for kind in UNPUBLISHED_KINDS
+    ],
 )
-def test_both_v1_event_vocabularies_name_the_same_kinds() -> None:
-    unpublished = frozenset(
-        kind for kind in RunEventKind if kind.value not in EVENT_NAMES
-    )
+def test_every_kind_the_v1_wire_does_not_publish_is_refused_as_durable_drift(
+    kind: RunEventKind,
+) -> None:
+    with pytest.raises(ValueError):
+        run_event_resource(v1_projection(kind))
 
-    assert kinds_the_v1_projection_refuses() == unpublished
+
+@pytest.mark.parametrize(
+    "kind", sorted(CANCELLATION_KINDS), ids=lambda kind: str(kind.value)
+)
+def test_a_v1_cancellation_kind_escapes_the_closed_union_instead_of_being_refused(
+    kind: RunEventKind,
+) -> None:
+    """What the refusal above is expected to fail on, named rather than assumed.
+
+    A strict xfail is satisfied by any failure, so this pins the exact exception
+    that ends the projection today. #88 makes both tests speak at once: this one
+    must be deleted when the fall-through becomes a refusal.
+    """
+
+    with pytest.raises(AssertionError, match="closed event union"):
+        run_event_resource(v1_projection(kind))
