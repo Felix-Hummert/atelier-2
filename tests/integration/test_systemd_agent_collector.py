@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 
@@ -67,6 +68,21 @@ for thread in threads:
     thread.start()
 for thread in threads:
     thread.join()
+"""
+
+_EXIT_WITH_PIPE_INHERITING_DESCENDANT = """
+import pathlib, subprocess, sys, time
+child = '''
+import pathlib, sys, time
+release = pathlib.Path(sys.argv[1])
+pathlib.Path(sys.argv[2]).touch()
+while not release.exists():
+    time.sleep(0.01)
+'''
+subprocess.Popen((sys.executable, '-c', child, sys.argv[1], sys.argv[2]), stdout=sys.stdout, stderr=sys.stderr)
+while not pathlib.Path(sys.argv[2]).exists():
+    time.sleep(0.01)
+sys.stdout.write('done')
 """
 
 
@@ -230,6 +246,44 @@ def test_both_streams_at_limit_plus_one_are_bounded_and_bypass_decode(
     assert result.standard_output_overflow
     assert result.standard_error_overflow
     assert result.process_completion is None
+
+
+def test_provider_exit_is_not_delayed_by_a_pipe_inheriting_descendant(
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "release-descendant"
+    descendant_ready = tmp_path / "descendant-ready"
+    process_invocation = AgentProcessInvocation(
+        (
+            sys.executable,
+            "-c",
+            _EXIT_WITH_PIPE_INHERITING_DESCENDANT,
+            str(release),
+            str(descendant_ready),
+        ),
+        Path.cwd(),
+        standard_output_frame_bytes=17,
+    )
+    records, launch_envelope_path = prepared_records(tmp_path, process_invocation)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            collect_direct_systemd_agent_process,
+            records,
+            DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
+            launch_envelope_path=launch_envelope_path,
+        )
+        try:
+            result = future.result(timeout=1)
+            assert descendant_ready.exists()
+            assert not release.exists()
+        finally:
+            release.touch()
+            if not future.done():
+                future.result(timeout=2)
+
+    assert result.outcome is DirectSystemdResultOutcome.COMPLETED
+    assert result.standard_output == b"done"
 
 
 @pytest.mark.parametrize(

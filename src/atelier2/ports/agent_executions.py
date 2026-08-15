@@ -12,7 +12,7 @@ from atelier2.contracts.agent_attempts import (
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
-    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     MAXIMUM_SIGNED_INT64,
     AgentExecutionCapability,
     AgentExecutionRequest,
@@ -27,8 +27,6 @@ from atelier2.contracts.executions import AgentAttemptExecution
 
 MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
 MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = 49_152
-# V1's admitted Claude envelope proves this portable supervision ceiling.
-MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 
 
 class AgentExecutor(Protocol):

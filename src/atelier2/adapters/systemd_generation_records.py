@@ -469,53 +469,22 @@ def _maximum_started_bytes() -> int:
 
 
 def _maximum_result_bytes(standard_output_limit: int) -> int:
-    maximum_process_data_bytes = 4 * ((standard_output_limit + 2) // 3) + 4 * (
-        (MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES + 2) // 3
+    # Overflow's longer outcome plus one false flag is the widest valid fixed
+    # shape; the signed minimum is the longest admitted return code.
+    maximum_shape = DirectSystemdResult(
+        Sha256Hash("f" * 64),
+        DirectSystemdInvocationId("f" * 32),
+        DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED,
+        -MAXIMUM_SIGNED_INT64 - 1,
+        b"",
+        b"",
+        True,
+        False,
     )
-    widest_return_code = -MAXIMUM_SIGNED_INT64 - 1
-    valid_shapes = (
-        (DirectSystemdResultOutcome.COMPLETED, False, False),
-        (DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED, True, False),
-        (DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED, False, True),
-        (DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED, True, True),
-    )
-    return max(
-        *(
-            len(
-                encode_canonical_systemd_json(
-                    {
-                        "invocation_id": "f" * 32,
-                        "outcome": outcome.value,
-                        "return_code": widest_return_code,
-                        "standard_error": "",
-                        "standard_error_overflow": standard_error_overflow,
-                        "standard_output": "",
-                        "standard_output_overflow": standard_output_overflow,
-                        "started_sha256": "f" * 64,
-                        "type": _RESULT_NAME,
-                        "version": _RECORD_VERSION,
-                    }
-                )
-            )
-            + maximum_process_data_bytes
-            for outcome, standard_output_overflow, standard_error_overflow in valid_shapes
-        ),
-        len(
-            encode_canonical_systemd_json(
-                {
-                    "invocation_id": "f" * 32,
-                    "outcome": DirectSystemdResultOutcome.PROCESS_BOUNDARY_FAILED.value,
-                    "return_code": None,
-                    "standard_error": "",
-                    "standard_error_overflow": False,
-                    "standard_output": "",
-                    "standard_output_overflow": False,
-                    "started_sha256": "f" * 64,
-                    "type": _RESULT_NAME,
-                    "version": _RECORD_VERSION,
-                }
-            )
-        ),
+    return (
+        len(encode_direct_systemd_result(maximum_shape))
+        + 4 * ((standard_output_limit + 2) // 3)
+        + 4 * ((MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES + 2) // 3)
     )
 
 

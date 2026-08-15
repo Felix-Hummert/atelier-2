@@ -30,10 +30,9 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
 )
 
-# systemd's established per-unit credential boundary owns the launch-envelope
-# ceiling; later composition sends this exact record as the unit's one credential.
-MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES = 1_048_576
+MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES = 262_144
 _LAUNCH_ENVELOPE_VERSION = 1
+_PROCESS_EXIT_OBSERVATION_SECONDS = 0.05
 
 
 class DirectSystemdPopen(Protocol):
@@ -213,7 +212,11 @@ def _collect_process(
         _close_stream(selector, streams, "stdin")
     try:
         while "stdout" in streams or "stderr" in streams:
-            events = selector.select()
+            # Overflow closes only its stream; it never ends this loop. While the
+            # provider lives, 1B's unit lifetime is the loop bound. After provider
+            # exit, this internal observation interval makes the drain branch live,
+            # so a pipe-inheriting descendant cannot delay the durable result.
+            events = selector.select(_PROCESS_EXIT_OBSERVATION_SECONDS)
             if not events and process.poll() is not None:
                 for name in ("stdout", "stderr"):
                     overflow = _drain_available(
@@ -262,8 +265,6 @@ def _collect_process(
         selector.close()
 
     overflow = standard_output_overflow or standard_error_overflow
-    # RuntimeMaxSec bounds a surviving provider or other pipe after overflow;
-    # KillMode=control-group owns any survivor after the collector exits.
     return_code = process.poll()
     if not overflow:
         return_code = process.wait()

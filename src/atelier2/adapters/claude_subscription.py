@@ -15,6 +15,7 @@ from pathlib import Path
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -54,7 +55,7 @@ CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
 #     about seventy times the observed envelope -- room for more models in
 #     `modelUsage`, permission denials and future fields without ever bounding
 #     an answer the durable contract would accept.
-CLAUDE_SUBSCRIPTION_FRAME_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+CLAUDE_SUBSCRIPTION_FRAME_BYTES = MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
 
 # Every Claude Code whose containment behaviour was measured end to end for
 # this executor. A version bound would only prove that the flags were
