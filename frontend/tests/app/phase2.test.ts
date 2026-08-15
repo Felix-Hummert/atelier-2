@@ -6,13 +6,15 @@ import {
   CockpitRequestError,
   createCockpitApi,
   type CockpitApi,
-  type Run,
+  type RunV1,
+  type RunV2,
   type WorkflowRevisionDetail
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 
 const revisionHash = "a".repeat(64);
 const publicReference = "run1.cnVuLWRyYWZ0";
+const v2PublicReference = "run1.cnVuLXYy";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -96,6 +98,98 @@ describe("Phase 2 mobile run entry", () => {
     expect(screen.getByRole("button", { name: "Start" }).isConnected).toBe(true);
   });
 
+  it("publishes each distinct V2 role binding and starts its exact request", async () => {
+    window.history.replaceState(null, "", "/atelier/new");
+    const authHash = "b".repeat(64);
+    let publishedRevision: WorkflowRevisionDetail;
+    let boundRun: RunV2;
+    let startResponses = 0, continueRetry = (): void => {};
+    const retryGate = new Promise<void>((resolve) => { continueRetry = resolve; });
+    let rejectConfiguration = (reason: unknown): void => void reason;
+    const configurationFailure = new Promise<never>((_, reject) => { rejectConfiguration = reject; });
+    const cockpitApi = api({
+      publish: vi.fn(async (mutation) => {
+        publishedRevision = v2Revision(mutation.mutation_id.slice("publish:".length), mutation.body_base64);
+        return { status: 201, value: publishedRevision };
+      }),
+      publishAuthProfile: vi.fn(async (input) => ({
+        status: 201,
+        value: { ...input, auth_profile_revision_hash: authHash }
+      })),
+      publishAgentConfiguration: vi.fn(async (input) => ({
+        status: 201,
+        value: {
+          ...input,
+          provider_id: input.model === "sonnet" ? "anthropic" : "openai",
+          auth_mode: input.model === "sonnet" ? "subscription" as const : "api_key" as const,
+          agent_configuration_revision_hash: input.model === "sonnet" ? "c".repeat(64) : "d".repeat(64)
+        }
+      })).mockReturnValueOnce(configurationFailure),
+      start: vi.fn(async (mutation) => {
+        if (++startResponses === 2) await retryGate;
+        return { status: 201, value: startResponses < 3
+          ? v2Run(jsonBody(mutation), []) : (boundRun = v2Run(jsonBody(mutation), v2Bindings(authHash))) };
+      }),
+      getRun: vi.fn(async () => boundRun),
+      getWorkflowRevision: vi.fn(async () => publishedRevision)
+    });
+    render(App, {
+      props: {
+        cockpitApi,
+        mutationJournal: new MutationJournal(sessionStorage),
+        createRunId: () => "run-v2"
+      }
+    });
+
+    await fireEvent.click(await screen.findByLabelText("Publish YAML"));
+    await fireEvent.input(screen.getByLabelText("Exact workflow YAML"), {
+      target: { value: "format_version: 2\nstart: build\n" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Review publication" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    expect(await screen.findAllByRole("article", { name: /^Binding / })).toHaveLength(2);
+    expect(screen.getAllByText("builder", { selector: "h3" })).toHaveLength(1);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(screen.getAllByText("Complete every field.")).toHaveLength(2);
+    expect(screen.getByRole("article", { name: "Binding builder" }).classList).toContain("node-needs_you");
+    await fillBinding(0, ["max", "1", "anthropic", "subscription", "sonnet", "claude-subscription/v1"]);
+    await fillBinding(1, ["review-key", "2", "openai", "api_key", "gpt-5.6-sol", "codex/v1"]);
+    expect(screen.queryByText("Complete every field.")).toBeNull();
+    expect(cockpitApi.publishAuthProfile).not.toHaveBeenCalled();
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(screen.getByRole("status").textContent).toContain("Starting the exact run");
+    expect(screen.getByLabelText("Saved workflow")).toHaveProperty("disabled", true);
+    expect(screen.getByRole("article", { name: "Binding builder" }).classList).toContain("node-working");
+    rejectConfiguration(new Error("config offline"));
+    expect(await screen.findByText("config offline")).toBeTruthy();
+    expect(cockpitApi.publishAuthProfile).toHaveBeenLastCalledWith({ profile_id: "max", revision_number: 1, provider_id: "anthropic", auth_mode: "subscription" });
+    expect(cockpitApi.publishAgentConfiguration).toHaveBeenLastCalledWith({ model: "sonnet", auth_profile_revision_hash: authHash, executor_revision: "claude-subscription/v1" });
+    expect((screen.getAllByLabelText("Profile ID")[0] as HTMLInputElement).value).toBe("max");
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(await screen.findByText("The start response changed the exact role bindings.")).toBeTruthy();
+    await fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    expect(screen.getByRole("status").textContent).toContain("Retrying exact request");
+    expect(screen.getByRole("article", { name: "Binding builder" }).classList).toContain("node-queued");
+    continueRetry();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toHaveProperty("disabled", false));
+    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(3));
+    expect(jsonBody(vi.mocked(cockpitApi.start).mock.calls[2]?.[0])).toEqual({
+      workflow_format_version: 2,
+      run_id: "run-v2",
+      workflow_revision_hash: publishedRevision!.revision_hash,
+      agent_bindings: [
+        { role: "reviewer", agent_configuration_revision_hash: "c".repeat(64) },
+        { role: "builder", agent_configuration_revision_hash: "d".repeat(64) }
+      ]
+    });
+    const card = await screen.findByRole("article", { name: "build — Working" });
+    expect(card.textContent).toContain("builder");
+    expect(card.textContent).toContain("Attempt 1prepared");
+  });
+
   it("cancels publication with Escape, restores focus, and sends no bytes", async () => {
     window.history.replaceState(null, "", "/atelier/new");
     const cockpitApi = api();
@@ -117,17 +211,19 @@ describe("Phase 2 mobile run entry", () => {
     expect(cockpitApi.publish).not.toHaveBeenCalled();
   });
 
-  it("does not leave a saved-workflow start armed after switching to publication", async () => {
+  it("discards a stale saved-workflow response after switching to publication", async () => {
     window.history.replaceState(null, "", "/atelier/new");
+    let resolveRevision = (revision: WorkflowRevisionDetail): void => void revision;
+    const deferred = new Promise<WorkflowRevisionDetail>((resolve) => { resolveRevision = resolve; });
     render(App, {
-      props: { cockpitApi: api(), mutationJournal: new MutationJournal(sessionStorage) }
+      props: { cockpitApi: api({ getWorkflowRevision: vi.fn(() => deferred) }), mutationJournal: new MutationJournal(sessionStorage) }
     });
     await fireEvent.click(await screen.findByLabelText(revisionHash));
-    expect(screen.getByRole("button", { name: "Start" }).isConnected).toBe(true);
-
+    expect(screen.getByText("Loading workflow…")).toBeTruthy();
     await fireEvent.click(screen.getByLabelText("Publish YAML"));
+    resolveRevision(revision());
 
-    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Start" })).toBeNull());
   });
 
   it("keeps an ambiguous start byte-identical and exposes Retry or Discard after reload", async () => {
@@ -313,6 +409,8 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
       next_after_revision_hash: null
     })),
     publish: vi.fn(async () => ({ status: 201, value: revision() })),
+    publishAuthProfile: vi.fn(),
+    publishAgentConfiguration: vi.fn(),
     start: vi.fn(async () => ({ status: 201, value: run() })),
     answer: vi.fn(),
     reconcile: vi.fn(),
@@ -323,7 +421,7 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
   };
 }
 
-function run(): Run {
+function run(): RunV1 {
   return {
     run_id: "run-draft",
     public_run_reference: publicReference,
@@ -345,6 +443,54 @@ function run(): Run {
 
 function revision(): WorkflowRevisionDetail {
   return { revision_hash: revisionHash, document_base64: "", graph: graph() };
+}
+
+function v2Revision(hash: string, documentBase64 = ""): WorkflowRevisionDetail {
+  return {
+    revision_hash: hash, document_base64: documentBase64,
+    graph: {
+      format_version: 2, start_node_id: "build",
+      nodes: [
+        { type: "agent", node_id: "review", role: "reviewer", job: "Review", next_node_id: "fix" },
+        { type: "agent", node_id: "build", role: "builder", job: "Build", next_node_id: "review" },
+        { type: "agent", node_id: "fix", role: "builder", job: "Fix", next_node_id: "done" },
+        { type: "subworkflow", node_id: "done", operation: "add", operands: [1, 1], next_node_id: null }
+      ]
+    }
+  };
+}
+
+function v2Run(start: unknown, agentBindings: RunV2["agent_bindings"]): RunV2 {
+  const workflowRevisionHash = (start as { workflow_revision_hash: string }).workflow_revision_hash;
+  return {
+    workflow_format_version: 2,
+    run_id: "run-v2",
+    public_run_reference: v2PublicReference,
+    workflow_revision_hash: workflowRevisionHash,
+    agent_binding_set_hash: revisionHash,
+    agent_bindings: agentBindings,
+    state_version: 0,
+    state: "STARTED",
+    current_node: v2Revision(workflowRevisionHash).graph.nodes.find((node) => node.node_id === "build")! as RunV2["current_node"],
+    agent_attempts: [{ attempt_id: "1".repeat(64), node_execution_id: "2".repeat(64), request_hash: "3".repeat(64),
+      attempt_ordinal: 1, state: "PREPARED", failure_code: null, cancellation: null }],
+    waiting: { type: "NONE" }, terminal_hash: null, latest_event_cursor: null
+  };
+}
+
+function v2Bindings(authHash: string): RunV2["agent_bindings"] {
+  return [
+    { role: "builder", profile_id: "review-key", revision_number: 2, provider_id: "openai", auth_mode: "api_key", model: "gpt-5.6-sol", executor_revision: "codex/v1", auth_profile_revision_hash: authHash, agent_configuration_revision_hash: "d".repeat(64) },
+    { role: "reviewer", profile_id: "max", revision_number: 1, provider_id: "anthropic", auth_mode: "subscription", model: "sonnet", executor_revision: "claude-subscription/v1", auth_profile_revision_hash: authHash, agent_configuration_revision_hash: "c".repeat(64) }
+  ];
+}
+
+async function fillBinding(index: number, values: readonly string[]): Promise<void> {
+  const labels = ["Profile ID", "Revision", "Provider", "Auth mode", "Model", "Executor"];
+  for (const [field, label] of labels.entries()) {
+    const control = screen.getAllByLabelText(label)[index]!;
+    await (label === "Auth mode" ? fireEvent.change : fireEvent.input)(control, { target: { value: values[field] } });
+  }
 }
 
 function graph() {

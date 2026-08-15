@@ -2,6 +2,7 @@
   import {
     decodeCanonicalBase64,
     type Run,
+    type RunV2,
     type RunEvent,
     type WorkflowGraph
   } from "../api/client";
@@ -27,6 +28,19 @@
 
   function eventLabel(event: RunEvent): string {
     return event.event.replaceAll("_", " ");
+  }
+
+  function agentView(node: NodeProjection["node"]): {
+    role: string;
+    binding: RunV2["agent_bindings"][number] | null;
+    attempt: RunV2["agent_attempts"][number] | null;
+  } | null {
+    if (node.type !== "agent" || !("role" in node) || !("workflow_format_version" in run)) return null;
+    return {
+      role: node.role,
+      binding: run.agent_bindings.find((binding) => binding.role === node.role) ?? null,
+      attempt: node.node_id === run.current_node.node_id ? run.agent_attempts.at(-1) ?? null : null
+    };
   }
 
   function context(projection: NodeProjection): { label: string; bytes: number; hash: string; exact: string } | null {
@@ -87,6 +101,7 @@
   <ol>
     {#each rail as projection (projection.node.node_id)}
       {@const value = context(projection)}
+      {@const agent = agentView(projection.node)}
       <li>
         <article
           class="node-card node-{projection.state}"
@@ -102,6 +117,13 @@
           <h3>{projection.node.node_id}</h3>
           {#if projection.node.type === "agent"}
             <p class="work-item"><span>Work item</span><strong>{projection.node.job}</strong></p>
+          {/if}
+          {#if agent !== null}
+            <p class="agent-binding">
+              <strong>{agent.role}</strong>
+              {#if agent.binding === null}<span>Binding missing</span>{:else}<span>{agent.binding.provider_id} · {agent.binding.model}</span><span>{agent.binding.auth_mode === "api_key" ? "API key" : "Subscription"} · {agent.binding.executor_revision}</span>{/if}
+            </p>
+            {#if agent.attempt !== null}<p class="latest-event"><span>Attempt {agent.attempt.attempt_ordinal}</span><strong>{agent.attempt.state.replaceAll("_", " ").toLowerCase()}</strong></p>{/if}
           {/if}
           {#if value !== null}
             <div class="context-row">

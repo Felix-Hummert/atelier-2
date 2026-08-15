@@ -334,6 +334,13 @@ describe("closed API decoders", () => {
 });
 
 const expectedProblemDefinitions = {
+  "auth-profile-revision-conflict": { status: 409, title: "Auth profile revision conflict" },
+  "auth-profile-revision-collision": { status: 409, title: "Auth profile revision collision" },
+  "auth-profile-revision-not-found": { status: 404, title: "Auth profile revision not found" },
+  "agent-executor-binding-unavailable": { status: 409, title: "Agent executor binding unavailable" },
+  "agent-configuration-revision-collision": { status: 409, title: "Agent configuration revision collision" },
+  "agent-configuration-revision-not-found": { status: 404, title: "Agent configuration revision not found" },
+  "invalid-agent-bindings": { status: 422, title: "Invalid agent bindings" },
   "invalid-public-run-reference": { status: 400, title: "Invalid public run reference" },
   "invalid-event-cursor": { status: 400, title: "Invalid event cursor" },
   "invalid-revision-hash": { status: 400, title: "Invalid revision hash" },
