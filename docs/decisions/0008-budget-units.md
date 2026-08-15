@@ -1,7 +1,13 @@
 # ADR 0008: Node budgets separate hard limits from reported thresholds
 
 - Status: ACCEPTED 2026-08-15 — decision only, runtime not implemented
-- Date: 2026-08-15
+- Date: 2026-08-15, amended 2026-08-15 (revision 3) with the four sentences #26's
+  amendment and rulings bound after this record landed — multi-turn turn
+  bounding, the authored generous starting bound, the admission cap's unit, and
+  the three-line cost display — and with the removal of the
+  `<executor-declared>` placeholder, which a per-executor-revision ceiling rule
+  replaces; the decision authority body below is unchanged and its digest still
+  holds
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #26](https://github.com/FlexOr2/atelier-2/issues/26),
   exact body SHA-256
@@ -37,7 +43,7 @@ names and failure behavior must make that difference impossible to hide.
 | Field | Presence | Meaning |
 | --- | --- | --- |
 | `attempt_deadline_seconds` | required | hard elapsed deadline for each attempt |
-| `maximum_assistant_turns` | optional in revision content, requirable per executor revision | hard assistant-turn limit, when the executor attests its native enforcement and meter |
+| `maximum_assistant_turns` | optional in revision content; **required by every executor revision that can produce more than one assistant turn** | hard assistant-turn limit, when the executor attests its native enforcement and meter; a multi-turn revision that cannot attest both starts no run |
 | `reported_input_token_threshold` | optional | threshold evaluated from the completed attempt's provider report |
 | `reported_output_token_threshold` | optional | threshold evaluated from the completed attempt's provider report |
 
@@ -66,6 +72,23 @@ Join/Ready/Scheduler owner implements them, binding one refuses the whole run at
 that ADR's Executability gate. This adds no new state and no new owner. There is
 no separate run budget in this decision.
 
+### The generous starting bound is authored, never defaulted
+
+An absent field remains not budgeted, and the runtime still substitutes nothing.
+The operator's expectation that a budget never has to be authored by hand is met
+one layer up: the atelier ships one published `budget-revision/v1` as a catalog
+seed in a `budget_policy` lineage (#22), and every workflow the atelier ships
+binds that seed explicitly at its Agent nodes. Its values therefore carry an
+author, a revision, a diff and a stated need, and an operator who changes
+nothing still runs bounded.
+
+Overriding it is the ordinary act of binding a different Budget revision at an
+Agent node — the per-agent, per-role override the operator asked for, with no
+second mechanism. The seed is an ordinary catalog revision; it is **not** the
+`selection_policy` default layer, which answers which workflow a work-item type
+gets, not which budget a node binds. There is no runtime fallback, no
+server-start value, and no central cap.
+
 ### Hard limits and reported thresholds
 
 A **hard limit** is enforced before or during an attempt:
@@ -85,20 +108,42 @@ Two further bounds are declared by the executor revision itself, as a second
 typed declaration alongside the manifest entry's declared capabilities, leaving
 the `AgentExecutionCapability` enum untouched:
 
-- **An absolute per-attempt ceiling for each hard dimension it enforces.** The
-  attested value is `<executor-declared>`; it is decided with #26 for the first
-  tool-bearing revision and carried in that revision, not in a central cap and
-  not in server start. A budget binding a value above it is refused at run
-  start, never clamped, and the refusal names both the bound value and the
-  attested ceiling. Raising a ceiling is a new published executor revision,
-  visible in a diff. This rule outlives the temporary #60 frame below and is
-  what keeps a published `budget-revision/v1` from binding an arbitrarily large
-  turn or deadline value once that frame is deleted.
+- **An absolute per-attempt ceiling for each hard dimension it enforces.** Each
+  executor revision declares such a ceiling for every hard dimension it
+  enforces, in that revision, not in a central cap and not in server start; a
+  revision declaring none for a dimension does not enforce it and refuses any
+  budget binding it. This record carries no number. For the first tool-bearing
+  revision, `claude-subscription-tools-foundation/v1`, the non-configurable
+  Foundation frame below **is** that ceiling. A budget binding a value above it
+  is refused at run start, never clamped, and the refusal names both the bound
+  value and the attested ceiling. Raising a ceiling is a new published executor
+  revision, visible in a diff. This rule outlives the temporary #60 frame below
+  and is what keeps a published `budget-revision/v1` from binding an
+  arbitrarily large turn or deadline value once that frame is deleted.
 - **Which dimensions it requires.** A budget omitting a required dimension is
   refused at run start, naming the missing dimension, the Budget revision, and
-  the executor revision. A tool-bearing executor revision declares
-  `maximum_assistant_turns` required, so no tool executor starts on a deadline
-  alone with an unbounded paid turn loop (#60).
+  the executor revision. **Every executor revision that can produce more than
+  one assistant turn declares `maximum_assistant_turns` required**,
+  tool-bearing or not, so no paid multi-turn loop can start on a deadline alone
+  (#60). A revision that can produce exactly one turn is bounded by its own
+  definition and declares nothing — today's heartbeat path, whose `--max-turns`
+  is the fixed literal `1`, is that case
+  (`src/atelier2/adapters/claude_subscription.py:126-130`). The declaration
+  lives in the executor revision, never in a central list and never in server
+  start.
+
+  **This rule has one consequence, stated here so no builder rediscovers it.** A
+  multi-turn revision requires `maximum_assistant_turns`; a required hard
+  dimension binds only where the revision attests both the exact native limiter
+  and its matching meter; and an executor that cannot enforce an authored hard
+  dimension refuses at run start before process creation. A multi-turn executor
+  revision **without** an attested native turn limiter therefore cannot start a
+  run at all. It is not downgraded to a post-hoc check, not clamped to a
+  deadline, and not exempted. Publishing such a revision as single-turn to
+  escape the rule is a false attestation — the same typed provider-contract
+  breach this record already names for a false meter. Concretely, Codex
+  receives no multi-turn revision before its native stream mapping is measured
+  and its meter revision exists.
 
 A **reported threshold** is evaluated only after an attempt supplies its usage
 report. The attempt may exceed it. The receipt stores the actual larger value,
@@ -151,12 +196,31 @@ that Subworkflow and parallel composition behavior.
 summed as tokens, turns, or money. Actual duration is telemetry and never an
 invented Budget-consumption value.
 
+A queue- or day-level admission cap is denominated only in units the atelier
+itself counts: **started attempts**, and **attempt seconds** on the
+authoritative process owner's clock. Neither is a provider report, so neither
+carries a meter revision and both compose across providers. Provider-reported
+values — tokens and assistant turns — carry a meter revision, are never summed
+across revisions, and therefore can never denominate such a cap. The cap admits
+or refuses *starts*; per-attempt enforcement stays exactly where this record
+already put it, so no run budget and no second Budget owner is created. #79 owns
+the cap; this record owns its unit.
+
 ### Money is absent
 
 `budget-revision/v1` contains no money field. `AuthMode.API_KEY` selects a
 credential path; it does not create a charge meter. A later revision may add
 currency only after an exact provider charge or billing-ledger owner supplies
 the measurement. Token-to-money estimates never enter a receipt or gate work.
+
+Displayed cost is three separate lines and never one. **Measured provider
+values** come from the receipt as `(dimension, meter_revision_id, value)`,
+aggregated per meter revision. **Subscription quota share** is shown as unknown
+until a provider supplies a quota meter, and as a share — never a currency —
+once one exists. **Money** appears only where an exact charge or billing-ledger
+owner measures it; until that owner exists the column is absent rather than
+derived. No estimate enters a receipt, a gate, or a display, so a display number
+can never migrate into a gate by already being on screen.
 
 ### Temporary foundation frame for #60
 
