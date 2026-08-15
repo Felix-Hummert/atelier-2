@@ -4,13 +4,14 @@ Audience: humans and agents deciding what Atelier 2 should become.
 
 This file owns implementation status: what Atelier 2 currently is, proven by
 what has landed. It no longer owns product intent. Intent is stated by
-[GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1) and distilled
-into the numbered requirement documents indexed by
-[docs/requirements/README.md](requirements/README.md); the intent section below
-is a derived view of those sources, corrected by rewriting it against them and
-never by editing it into a second, independent truth. Where this view and a
-requirement document disagree, the requirement document is right. Technical
-decisions and implementation evidence belong to their own owners.
+[GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1) and by the
+issue threads that the numbered documents indexed by
+[docs/requirements/README.md](requirements/README.md) read; the intent section
+below is a derived view of those sources, corrected by rewriting it against them
+and never by editing it into a second, independent truth. It is hand-maintained
+and nothing checks it, so where it and a source disagree the source is right and
+this view is simply stale. Technical decisions and implementation evidence
+belong to their own owners.
 
 Atelier 2 is intended to become a lean, independent agentic orchestrator. An
 operator will describe work as versioned state machines assembled from
