@@ -19,7 +19,8 @@ GATE = Path("scripts/check_acceptance.py")
 DECLARATION = Path("acceptance/94-acceptance-trace-in-ci.toml")
 CONFTEST = Path("tests/conftest.py")
 DOCUMENTATION = Path("docs/requirements/README.md")
-COPIED_FILES = (GATE, DECLARATION)
+PROOFS = Path("tests/tooling/test_acceptance_gate.py")
+COPIED_FILES = (GATE, DECLARATION, PROOFS)
 
 BOUND_START = "<!-- acceptance-gate-bound:start -->"
 BOUND_END = "<!-- acceptance-gate-bound:end -->"
@@ -30,6 +31,8 @@ FRONTEND_REPORT = "frontend.vitest.json"
 MOVABLE_SENTENCE = "an-unproven-sentence-fails-the-gate"
 UNDECLARED_SENTENCE = "a-sentence-no-story-declares"
 UNPROVEN_REFUSAL = "with no test that ran and passed in this pipeline"
+UNCOLLECTED_PYTHON_CLAIM = Path("scripts/proof_helper.py")
+UNCOLLECTED_TYPESCRIPT_CLAIM = Path("frontend/tools/proof.ts")
 
 
 class Outcome(Enum):
@@ -147,7 +150,8 @@ def test_a_run_proving_every_declared_sentence_passes_the_gate(tmp_path: Path) -
 
     assert result.returncode == 0, result.stdout + result.stderr
     counts = re.search(
-        r"Acceptance trace: (\d+) sentences, (\d+) passing proofs, (\d+) run reports",
+        r"Acceptance trace: (\d+) sentences, (\d+) claims, (\d+) passing proofs, "
+        r"(\d+) run reports",
         result.stdout,
     )
     assert counts is not None
@@ -282,8 +286,85 @@ def test_a_sentence_any_required_report_proves_counts(
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def write_claim(project: Path, relative: Path, text: str) -> None:
+    written = project / relative
+    written.parent.mkdir(parents=True, exist_ok=True)
+    written.write_text(text, encoding="utf-8")
+
+
+def a_python_claim_no_runner_collects(identifier: str) -> str:
+    return (
+        "import pytest\n\n\n"
+        f'@pytest.mark.proves("{identifier}")\n'
+        "def test_helps() -> None:\n    pass\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("claim", "located_in", "claiming", "problem"),
+    [
+        (
+            a_python_claim_no_runner_collects(UNDECLARED_SENTENCE),
+            UNCOLLECTED_PYTHON_CLAIM,
+            "test_helps",
+            f"claims {UNDECLARED_SENTENCE!r}, which no story declares",
+        ),
+        (
+            a_python_claim_no_runner_collects(MOVABLE_SENTENCE),
+            UNCOLLECTED_PYTHON_CLAIM,
+            "test_helps",
+            f"claims {MOVABLE_SENTENCE!r}, which no run report shows passing",
+        ),
+        (
+            f'it("proves({MOVABLE_SENTENCE}): nothing runs this file", () => {{}});\n',
+            UNCOLLECTED_TYPESCRIPT_CLAIM,
+            f"proves({MOVABLE_SENTENCE})",
+            f"claims {MOVABLE_SENTENCE!r}, which no run report shows passing",
+        ),
+    ],
+    ids=["undeclared-sentence", "declared-sentence", "typescript-claim"],
+)
+def test_a_claim_no_run_report_carries_is_named_wherever_it_sits(
+    tmp_path: Path, claim: str, located_in: Path, claiming: str, problem: str
+) -> None:
+    project = copied_project(
+        tmp_path,
+        {QUALITY_REPORT: a_pytest_run_proving_every_sentence(without=MOVABLE_SENTENCE)},
+    )
+    write_claim(project, located_in, claim)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert f"{located_in}:{claiming} {problem}" in result.stderr
+
+
+def test_every_sentence_this_repository_declares_is_claimed_by_one_of_its_tests() -> (
+    None
+):
+    script = load_acceptance_script()
+
+    claimed = {
+        claim.sentence_identifier for claim in script.read_source_claims(PROJECT_ROOT)
+    }
+
+    declared = {
+        sentence.identifier for sentence in script.read_declared_sentences(PROJECT_ROOT)
+    }
+    assert declared <= claimed, f"unclaimed: {sorted(declared - claimed)}"
+    assert claimed <= declared, f"undeclared: {sorted(claimed - declared)}"
+
+
 def empty_the_declarations(project: Path) -> None:
     (project / DECLARATION).unlink()
+
+
+def claim_without_naming_a_sentence(project: Path) -> None:
+    write_claim(
+        project,
+        UNCOLLECTED_PYTHON_CLAIM,
+        "import pytest\n\n\n@pytest.mark.proves\ndef test_helps() -> None:\n    pass\n",
+    )
 
 
 def declare_an_unknown_key(project: Path) -> None:
@@ -324,6 +405,7 @@ def truncate_the_cockpit_report(project: Path) -> None:
         (declare_an_unknown_key, "declares unknown keys ['owner']"),
         (declare_a_future_schema_version, "this gate reads version 1"),
         (declare_a_sentence_twice, "is declared twice"),
+        (claim_without_naming_a_sentence, "without naming one sentence"),
         (lose_the_cockpit_report, f"the run report {FRONTEND_REPORT} is absent"),
         (
             truncate_the_quality_report,
@@ -339,6 +421,7 @@ def truncate_the_cockpit_report(project: Path) -> None:
         "unknown-declaration-key",
         "unread-schema-version",
         "duplicate-sentence",
+        "marker-without-a-sentence",
         "missing-run-report",
         "unreadable-pytest-report",
         "unreadable-vitest-report",

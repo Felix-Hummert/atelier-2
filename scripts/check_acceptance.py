@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
+import os
 import re
 import sys
 import tomllib
@@ -20,7 +22,14 @@ SENTENCE_KEYS = frozenset({"id", "text"})
 SENTENCE_IDENTIFIER = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 PROOF_MARKER = "proves"
+PYTHON_MARKER_NAMESPACE = "mark"
 TYPESCRIPT_PROOF_CLAIM = re.compile(rf"\b{PROOF_MARKER}\((?P<identifier>[^)]*)\)")
+PYTHON_SUFFIX = ".py"
+TYPESCRIPT_SUFFIX = ".ts"
+CLAIMABLE_SUFFIXES = (PYTHON_SUFFIX, TYPESCRIPT_SUFFIX)
+UNSCANNED_DIRECTORIES = frozenset(
+    {".git", ".venv", "__pycache__", "node_modules", "dist"}
+)
 
 JUNIT_TESTCASE = "testcase"
 JUNIT_PROPERTY = "properties/property"
@@ -80,8 +89,16 @@ class ReportedProof:
 
 
 @dataclass(frozen=True, slots=True)
+class ProofClaim:
+    sentence_identifier: str
+    claiming_test: str
+    located_in: Path
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptanceTrace:
     sentences: tuple[AcceptanceSentence, ...]
+    claims: tuple[ProofClaim, ...]
     proofs: tuple[ReportedProof, ...]
     problems: tuple[str, ...]
 
@@ -213,8 +230,82 @@ def read_passing_proofs(reports_directory: Path) -> tuple[ReportedProof, ...]:
     return tuple(proofs)
 
 
+def read_source_claims(project_root: Path) -> tuple[ProofClaim, ...]:
+    """Find every claim the repository makes, bound to no runner and no invocation.
+
+    A claim a runner never collects has to be reachable here, or it stays
+    invisible instead of being named as a missing test or a line to delete.
+    """
+    claims: list[ProofClaim] = []
+    for directory, subdirectories, file_names in os.walk(project_root):
+        subdirectories[:] = [
+            name for name in subdirectories if name not in UNSCANNED_DIRECTORIES
+        ]
+        for file_name in sorted(file_names):
+            found = Path(directory, file_name)
+            if found.suffix not in CLAIMABLE_SUFFIXES:
+                continue
+            source = found.read_text(encoding="utf-8")
+            if PROOF_MARKER not in source:
+                continue
+            location = found.relative_to(project_root)
+            reader = (
+                read_python_claims
+                if found.suffix == PYTHON_SUFFIX
+                else read_typescript_claims
+            )
+            claims.extend(reader(source, location))
+    return tuple(claims)
+
+
+def read_python_claims(source: str, location: Path) -> Iterator[ProofClaim]:
+    try:
+        tree = ast.parse(source, filename=str(location))
+    except SyntaxError as error:
+        raise AcceptanceGateError(f"{location} is not readable: {error}") from error
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            identifier = python_marker_identifier(decorator, node.name, location)
+            if identifier is not None:
+                yield ProofClaim(identifier, node.name, location)
+
+
+def python_marker_identifier(
+    decorator: ast.expr, test_name: str, location: Path
+) -> str | None:
+    marked = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if not isinstance(marked, ast.Attribute) or marked.attr != PROOF_MARKER:
+        return None
+    namespace = marked.value
+    if (
+        not isinstance(namespace, ast.Attribute)
+        or namespace.attr != PYTHON_MARKER_NAMESPACE
+    ):
+        return None
+    named = (
+        decorator.args[0]
+        if isinstance(decorator, ast.Call) and len(decorator.args) == 1
+        else None
+    )
+    if not isinstance(named, ast.Constant) or not isinstance(named.value, str):
+        raise AcceptanceGateError(
+            f"{location}:{test_name} carries the {PROOF_MARKER} marker "
+            "without naming one sentence in a literal"
+        )
+    return named.value
+
+
+def read_typescript_claims(source: str, location: Path) -> Iterator[ProofClaim]:
+    for claim in TYPESCRIPT_PROOF_CLAIM.finditer(source):
+        yield ProofClaim(claim.group("identifier"), claim.group(0), location)
+
+
 def acceptance_problems(
-    sentences: tuple[AcceptanceSentence, ...], proofs: tuple[ReportedProof, ...]
+    sentences: tuple[AcceptanceSentence, ...],
+    claims: tuple[ProofClaim, ...],
+    proofs: tuple[ReportedProof, ...],
 ) -> tuple[str, ...]:
     problems: list[str] = []
     declared = {sentence.identifier for sentence in sentences}
@@ -227,6 +318,17 @@ def acceptance_problems(
             )
             continue
         proven.add(proof.sentence_identifier)
+    for claim in claims:
+        unhonoured = (
+            "which no story declares"
+            if claim.sentence_identifier not in declared
+            else "which no run report shows passing"
+        )
+        if claim.sentence_identifier not in proven:
+            problems.append(
+                f"{claim.located_in}:{claim.claiming_test} claims "
+                f"{claim.sentence_identifier!r}, {unhonoured}"
+            )
     for sentence in sentences:
         if sentence.identifier not in proven:
             problems.append(
@@ -238,8 +340,11 @@ def acceptance_problems(
 
 def trace_acceptance(project_root: Path, reports_directory: Path) -> AcceptanceTrace:
     sentences = read_declared_sentences(project_root)
+    claims = read_source_claims(project_root)
     proofs = read_passing_proofs(reports_directory)
-    return AcceptanceTrace(sentences, proofs, acceptance_problems(sentences, proofs))
+    return AcceptanceTrace(
+        sentences, claims, proofs, acceptance_problems(sentences, claims, proofs)
+    )
 
 
 def render_honesty_bound() -> str:
@@ -269,8 +374,9 @@ def main() -> int:
             print(f"  - {problem}", file=sys.stderr)
         return 1
     print(
-        f"Acceptance trace: {len(trace.sentences)} sentences, {len(trace.proofs)} "
-        f"passing proofs, {len(REQUIRED_REPORTS)} run reports",
+        f"Acceptance trace: {len(trace.sentences)} sentences, {len(trace.claims)} "
+        f"claims, {len(trace.proofs)} passing proofs, "
+        f"{len(REQUIRED_REPORTS)} run reports",
         flush=True,
     )
     print(render_honesty_bound(), flush=True)

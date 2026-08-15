@@ -259,6 +259,11 @@ carries a claim no story declares. It refuses outright when the declarations are
 empty and when a required report is absent or unreadable, because a report that
 cannot be read is a run that cannot be trusted, never a smaller proof surface.
 
+Claims themselves are found by reading every `.py` and `.ts` file in the
+repository, bound to no runner and no invocation. A claim in a file nothing
+collects is therefore named — it is either a missing test or a line to delete —
+rather than staying invisible because the gate only looked where a runner looks.
+
 <!-- acceptance-gate-bound:start -->
 ```text
 proves: every declared sentence is claimed by a test this pipeline runs
