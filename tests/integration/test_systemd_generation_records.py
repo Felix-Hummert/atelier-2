@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,12 @@ from atelier2.adapters.systemd_generation_records import (
     encode_direct_systemd_started,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGenerationId
+from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.ports.agent_executions import (
+    MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+)
 
 
 def intent() -> DirectSystemdIntent:
@@ -101,6 +107,102 @@ def test_intent_decoder_rejects_changed_or_noncanonical_bytes(
 
     with pytest.raises(ValueError):
         decode_direct_systemd_intent(mutate(canonical))
+
+
+def test_corrupt_intent_output_limit_is_bounded_before_result_allocation(
+    tmp_path: Path,
+) -> None:
+    records = DirectSystemdGenerationRecords(tmp_path)
+    oversized = encode_direct_systemd_intent(intent()).replace(
+        b'"standard_output_limit":17',
+        (
+            f'"standard_output_limit":{MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES + 1}'
+        ).encode("ascii"),
+    )
+    records.intent_path.write_bytes(oversized)
+
+    with pytest.raises(ValueError, match="output limit"):
+        records.inspect()
+
+
+def test_every_port_valid_intent_shape_fits_its_derived_record_bound(
+    tmp_path: Path,
+) -> None:
+    records = DirectSystemdGenerationRecords(tmp_path)
+    maximum = DirectSystemdIntent(
+        AgentAttemptId.of(b"maximum-intent"),
+        WatchdogGenerationId("\U0010ffff" * 1024),
+        f"{'u' * 247}.service",
+        Sha256Hash.of(b"maximum-envelope"),
+        MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+    )
+
+    records.publish_intent(maximum)
+
+    assert records.read_intent() == maximum
+
+
+def test_result_bound_admits_largest_valid_shape_and_refuses_one_byte_more(
+    tmp_path: Path,
+) -> None:
+    records = DirectSystemdGenerationRecords(tmp_path)
+    maximum_intent = DirectSystemdIntent(
+        AgentAttemptId.of(b"maximum-result"),
+        WatchdogGenerationId("maximum-result"),
+        "maximum-result.service",
+        Sha256Hash.of(b"maximum-envelope"),
+        MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+    )
+    records.publish_intent(maximum_intent)
+    exact_started = started(maximum_intent)
+    records.publish_started(exact_started)
+    maximum_result = DirectSystemdResult(
+        Sha256Hash.of(encode_direct_systemd_started(exact_started)),
+        exact_started.invocation_id,
+        DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED,
+        -MAXIMUM_SIGNED_INT64 - 1,
+        b"o" * MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+        b"e" * MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+        True,
+        False,
+    )
+
+    records.publish_result(maximum_result)
+
+    inspection = records.inspect()
+    assert inspection.state is DirectSystemdRecoveryState.RESULT_PRESENT
+    assert inspection.result == maximum_result
+    records.result_path.write_bytes(
+        encode_direct_systemd_result(
+            replace(
+                maximum_result,
+                standard_output=maximum_result.standard_output + b"x",
+            )
+        )
+    )
+
+    inspection = records.inspect()
+    assert inspection.state is DirectSystemdRecoveryState.POSSIBLY_RAN
+    assert inspection.result is None
+
+
+@pytest.mark.parametrize(
+    "return_code", [-MAXIMUM_SIGNED_INT64 - 2, MAXIMUM_SIGNED_INT64 + 1]
+)
+def test_result_refuses_return_code_outside_the_signed_int64_domain(
+    return_code: int,
+) -> None:
+    with pytest.raises(ValueError, match="return code"):
+        DirectSystemdResult(
+            Sha256Hash.of(b"started"),
+            DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
+            DirectSystemdResultOutcome.COMPLETED,
+            return_code,
+            b"",
+            b"",
+            False,
+            False,
+        )
 
 
 def test_exclusive_record_publication_never_repairs_or_replaces_evidence(

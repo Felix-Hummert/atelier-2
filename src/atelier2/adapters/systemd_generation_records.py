@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Any, cast
 
 from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGenerationId
+from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     AgentProcessCompletion,
 )
 
@@ -22,7 +24,6 @@ _RECORD_VERSION = 1
 _INTENT_NAME = "INTENT"
 _STARTED_NAME = "STARTED"
 _RESULT_NAME = "RESULT"
-_MAXIMUM_SMALL_RECORD_BYTES = 8_192
 _INVOCATION_ID = re.compile(r"[0-9a-f]{32}")
 
 
@@ -61,8 +62,9 @@ class DirectSystemdIntent:
         if (
             type(self.standard_output_limit) is not int
             or self.standard_output_limit < 1
+            or self.standard_output_limit > MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
         ):
-            raise ValueError("systemd intent output limit must be a positive integer")
+            raise ValueError("systemd intent output limit exceeds the portable bound")
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,10 @@ class DirectSystemdResult:
             raise TypeError("systemd RESULT outcome must be typed")
         if self.return_code is not None and type(self.return_code) is not int:
             raise TypeError("systemd RESULT return code must be an integer or null")
+        if self.return_code is not None and not (
+            -MAXIMUM_SIGNED_INT64 - 1 <= self.return_code <= MAXIMUM_SIGNED_INT64
+        ):
+            raise ValueError("systemd RESULT return code must fit signed int64")
         if len(self.standard_error) > MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES:
             raise ValueError("systemd RESULT standard error exceeds its exact bound")
         if self.outcome is DirectSystemdResultOutcome.COMPLETED:
@@ -183,7 +189,7 @@ class DirectSystemdGenerationRecords:
 
     def read_intent(self) -> DirectSystemdIntent:
         return decode_direct_systemd_intent(
-            _read_bounded(self.intent_path, _MAXIMUM_SMALL_RECORD_BYTES)
+            _read_bounded(self.intent_path, _maximum_intent_bytes())
         )
 
     def inspect(self) -> DirectSystemdGenerationInspection:
@@ -195,9 +201,7 @@ class DirectSystemdGenerationRecords:
                 DirectSystemdRecoveryState.SAFE_TO_RETRY, intent
             )
         try:
-            started_bytes = _read_bounded(
-                self.started_path, _MAXIMUM_SMALL_RECORD_BYTES
-            )
+            started_bytes = _read_bounded(self.started_path, _maximum_started_bytes())
             started = decode_direct_systemd_started(started_bytes)
         except (OSError, ValueError):
             return DirectSystemdGenerationInspection(
@@ -209,13 +213,11 @@ class DirectSystemdGenerationRecords:
             return DirectSystemdGenerationInspection(
                 DirectSystemdRecoveryState.POSSIBLY_RAN, intent, started
             )
-        maximum_result_bytes = (
-            4 * ((intent.standard_output_limit + 2) // 3)
-            + 4 * ((MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES + 2) // 3)
-            + _MAXIMUM_SMALL_RECORD_BYTES
-        )
         try:
-            result_bytes = _read_bounded(self.result_path, maximum_result_bytes)
+            result_bytes = _read_bounded(
+                self.result_path,
+                _maximum_result_bytes(intent.standard_output_limit),
+            )
             result = decode_direct_systemd_result(result_bytes)
         except (OSError, ValueError):
             return DirectSystemdGenerationInspection(
@@ -262,7 +264,7 @@ class DirectSystemdGenerationRecords:
 
 
 def encode_direct_systemd_intent(intent: DirectSystemdIntent) -> bytes:
-    return _encode(
+    return encode_canonical_systemd_json(
         {
             "attempt_id": intent.attempt_id.value,
             "generation_id": intent.generation_id.value,
@@ -276,7 +278,7 @@ def encode_direct_systemd_intent(intent: DirectSystemdIntent) -> bytes:
 
 
 def decode_direct_systemd_intent(payload: bytes) -> DirectSystemdIntent:
-    value = _decode(payload)
+    value = decode_canonical_systemd_json(payload)
     _require_fields(
         value,
         {
@@ -300,7 +302,7 @@ def decode_direct_systemd_intent(payload: bytes) -> DirectSystemdIntent:
 
 
 def encode_direct_systemd_started(started: DirectSystemdStarted) -> bytes:
-    return _encode(
+    return encode_canonical_systemd_json(
         {
             "intent_sha256": started.intent_hash.value,
             "invocation_id": started.invocation_id.value,
@@ -311,7 +313,7 @@ def encode_direct_systemd_started(started: DirectSystemdStarted) -> bytes:
 
 
 def decode_direct_systemd_started(payload: bytes) -> DirectSystemdStarted:
-    value = _decode(payload)
+    value = decode_canonical_systemd_json(payload)
     _require_fields(
         value,
         {"intent_sha256", "invocation_id", "type", "version"},
@@ -324,7 +326,7 @@ def decode_direct_systemd_started(payload: bytes) -> DirectSystemdStarted:
 
 
 def encode_direct_systemd_result(result: DirectSystemdResult) -> bytes:
-    return _encode(
+    return encode_canonical_systemd_json(
         {
             "invocation_id": result.invocation_id.value,
             "outcome": result.outcome.value,
@@ -341,7 +343,7 @@ def encode_direct_systemd_result(result: DirectSystemdResult) -> bytes:
 
 
 def decode_direct_systemd_result(payload: bytes) -> DirectSystemdResult:
-    value = _decode(payload)
+    value = decode_canonical_systemd_json(payload)
     _require_fields(
         value,
         {
@@ -366,21 +368,21 @@ def decode_direct_systemd_result(payload: bytes) -> DirectSystemdResult:
         DirectSystemdInvocationId(_require_string(value, "invocation_id")),
         DirectSystemdResultOutcome(_require_string(value, "outcome")),
         raw_return_code,
-        _decode_base64(value, "standard_output"),
-        _decode_base64(value, "standard_error"),
+        decode_canonical_systemd_base64(value, "standard_output"),
+        decode_canonical_systemd_base64(value, "standard_error"),
         _require_boolean(value, "standard_output_overflow"),
         _require_boolean(value, "standard_error_overflow"),
     )
 
 
-def _encode(value: dict[str, object]) -> bytes:
+def encode_canonical_systemd_json(value: dict[str, object]) -> bytes:
     return (
         json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         + "\n"
     ).encode("ascii")
 
 
-def _decode(payload: bytes) -> dict[str, Any]:
+def decode_canonical_systemd_json(payload: bytes) -> dict[str, Any]:
     def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         value: dict[str, Any] = {}
         for name, field in pairs:
@@ -393,7 +395,7 @@ def _decode(payload: bytes) -> dict[str, Any]:
         decoded = json.loads(payload.decode("ascii"), object_pairs_hook=unique_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("systemd record is malformed") from error
-    if type(decoded) is not dict or _encode(decoded) != payload:
+    if type(decoded) is not dict or encode_canonical_systemd_json(decoded) != payload:
         raise ValueError("systemd record is not canonical")
     return decoded
 
@@ -426,7 +428,7 @@ def _require_boolean(value: dict[str, Any], name: str) -> bool:
     return field
 
 
-def _decode_base64(value: dict[str, Any], name: str) -> bytes:
+def decode_canonical_systemd_base64(value: dict[str, Any], name: str) -> bytes:
     encoded = _require_string(value, name)
     try:
         decoded = base64.b64decode(encoded, validate=True)
@@ -435,6 +437,86 @@ def _decode_base64(value: dict[str, Any], name: str) -> bytes:
     if base64.b64encode(decoded).decode("ascii") != encoded:
         raise ValueError(f"systemd record {name} is not canonical")
     return decoded
+
+
+def _maximum_intent_bytes() -> int:
+    return len(
+        encode_canonical_systemd_json(
+            {
+                "attempt_id": "f" * 64,
+                "generation_id": "\U0010ffff" * 1024,
+                "launch_envelope_sha256": "f" * 64,
+                "standard_output_limit": MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+                "type": _INTENT_NAME,
+                "unit_name": f"{'u' * 247}.service",
+                "version": _RECORD_VERSION,
+            }
+        )
+    )
+
+
+def _maximum_started_bytes() -> int:
+    return len(
+        encode_canonical_systemd_json(
+            {
+                "intent_sha256": "f" * 64,
+                "invocation_id": "f" * 32,
+                "type": _STARTED_NAME,
+                "version": _RECORD_VERSION,
+            }
+        )
+    )
+
+
+def _maximum_result_bytes(standard_output_limit: int) -> int:
+    maximum_process_data_bytes = 4 * ((standard_output_limit + 2) // 3) + 4 * (
+        (MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES + 2) // 3
+    )
+    widest_return_code = -MAXIMUM_SIGNED_INT64 - 1
+    valid_shapes = (
+        (DirectSystemdResultOutcome.COMPLETED, False, False),
+        (DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED, True, False),
+        (DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED, False, True),
+        (DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED, True, True),
+    )
+    return max(
+        *(
+            len(
+                encode_canonical_systemd_json(
+                    {
+                        "invocation_id": "f" * 32,
+                        "outcome": outcome.value,
+                        "return_code": widest_return_code,
+                        "standard_error": "",
+                        "standard_error_overflow": standard_error_overflow,
+                        "standard_output": "",
+                        "standard_output_overflow": standard_output_overflow,
+                        "started_sha256": "f" * 64,
+                        "type": _RESULT_NAME,
+                        "version": _RECORD_VERSION,
+                    }
+                )
+            )
+            + maximum_process_data_bytes
+            for outcome, standard_output_overflow, standard_error_overflow in valid_shapes
+        ),
+        len(
+            encode_canonical_systemd_json(
+                {
+                    "invocation_id": "f" * 32,
+                    "outcome": DirectSystemdResultOutcome.PROCESS_BOUNDARY_FAILED.value,
+                    "return_code": None,
+                    "standard_error": "",
+                    "standard_error_overflow": False,
+                    "standard_output": "",
+                    "standard_output_overflow": False,
+                    "started_sha256": "f" * 64,
+                    "type": _RESULT_NAME,
+                    "version": _RECORD_VERSION,
+                }
+            )
+        ),
+    )
 
 
 def _read_bounded(path: Path, maximum_bytes: int) -> bytes:

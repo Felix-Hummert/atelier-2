@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 import selectors
 import stat
@@ -18,6 +17,9 @@ from atelier2.adapters.systemd_generation_records import (
     DirectSystemdResultOutcome,
     DirectSystemdStarted,
     RecordPublicationBarriers,
+    decode_canonical_systemd_base64,
+    decode_canonical_systemd_json,
+    encode_canonical_systemd_json,
     encode_direct_systemd_intent,
     encode_direct_systemd_started,
 )
@@ -28,7 +30,9 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
 )
 
-MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES = 262_144
+# systemd's established per-unit credential boundary owns the launch-envelope
+# ceiling; later composition sends this exact record as the unit's one credential.
+MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES = 1_048_576
 _LAUNCH_ENVELOPE_VERSION = 1
 
 
@@ -57,19 +61,16 @@ def _popen(arguments: tuple[str, ...], **keywords: Any) -> subprocess.Popen[byte
 def encode_direct_systemd_launch_envelope(
     invocation: AgentProcessInvocation,
 ) -> bytes:
-    if invocation.environment:
-        raise ValueError(
-            "direct systemd launch envelope cannot carry provider environment"
-        )
     value = {
         "arguments": list(invocation.arguments),
+        "environment": [list(entry) for entry in invocation.environment],
         "standard_input": base64.b64encode(invocation.standard_input).decode("ascii"),
         "standard_output_limit": invocation.standard_output_frame_bytes,
         "type": "LAUNCH",
         "version": _LAUNCH_ENVELOPE_VERSION,
         "working_directory": str(invocation.working_directory),
     }
-    payload = _encode(value)
+    payload = encode_canonical_systemd_json(value)
     if len(payload) > MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES:
         raise ValueError("direct systemd launch envelope exceeds its exact bound")
     return payload
@@ -78,9 +79,10 @@ def encode_direct_systemd_launch_envelope(
 def decode_direct_systemd_launch_envelope(payload: bytes) -> AgentProcessInvocation:
     if len(payload) > MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES:
         raise ValueError("direct systemd launch envelope exceeds its exact bound")
-    value = _decode(payload)
+    value = decode_canonical_systemd_json(payload)
     fields = {
         "arguments",
+        "environment",
         "standard_input",
         "standard_output_limit",
         "type",
@@ -98,7 +100,15 @@ def decode_direct_systemd_launch_envelope(payload: bytes) -> AgentProcessInvocat
         type(argument) is not str for argument in raw_arguments
     ):
         raise ValueError("direct systemd launch arguments are malformed")
-    standard_input = _decode_base64(value, "standard_input")
+    raw_environment = value["environment"]
+    if type(raw_environment) is not list or any(
+        type(entry) is not list
+        or len(entry) != 2
+        or any(type(field) is not str for field in entry)
+        for entry in raw_environment
+    ):
+        raise ValueError("direct systemd launch environment is malformed")
+    standard_input = decode_canonical_systemd_base64(value, "standard_input")
     if len(standard_input) > MAXIMUM_AGENT_PROCESS_INPUT_BYTES:
         raise ValueError("direct systemd launch input exceeds its exact bound")
     working_directory = value["working_directory"]
@@ -108,6 +118,7 @@ def decode_direct_systemd_launch_envelope(payload: bytes) -> AgentProcessInvocat
     return AgentProcessInvocation(
         tuple(raw_arguments),
         Path(working_directory),
+        tuple((entry[0], entry[1]) for entry in raw_environment),
         standard_input=standard_input,
         standard_output_frame_bytes=standard_output_limit,
     )
@@ -148,6 +159,8 @@ def collect_direct_systemd_agent_process(
 
     started_hash = Sha256Hash.of(encode_direct_systemd_started(started))
     try:
+        # A crash from durable STARTED onward deliberately sacrifices retry to
+        # keep provider execution at most once.
         process = popen(
             invocation.arguments,
             cwd=invocation.working_directory,
@@ -200,7 +213,7 @@ def _collect_process(
         _close_stream(selector, streams, "stdin")
     try:
         while "stdout" in streams or "stderr" in streams:
-            events = selector.select(0.05)
+            events = selector.select()
             if not events and process.poll() is not None:
                 for name in ("stdout", "stderr"):
                     overflow = _drain_available(
@@ -249,6 +262,8 @@ def _collect_process(
         selector.close()
 
     overflow = standard_output_overflow or standard_error_overflow
+    # RuntimeMaxSec bounds a surviving provider or other pipe after overflow;
+    # KillMode=control-group owns any survivor after the collector exits.
     return_code = process.poll()
     if not overflow:
         return_code = process.wait()
@@ -274,7 +289,7 @@ def _read_bounded_stream(
     limit: int,
 ) -> bool:
     stream = streams[name]
-    chunk = os.read(stream.fileno(), min(65_536, limit + 1 - len(target)))
+    chunk = os.read(stream.fileno(), limit + 1 - len(target))
     if not chunk:
         _close_stream(selector, streams, name)
         return False
@@ -325,15 +340,7 @@ def _read_launch_envelope(path: Path) -> bytes:
             or stat.S_IMODE(metadata.st_mode) != 0o600
         ):
             raise ValueError("direct systemd launch envelope must be a mode-0600 file")
-        chunks: list[bytes] = []
-        remaining = MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES + 1
-        while remaining:
-            chunk = os.read(descriptor, min(65_536, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        payload = b"".join(chunks)
+        payload = os.read(descriptor, MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES + 1)
     finally:
         os.close(descriptor)
     if len(payload) > MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES:
@@ -347,41 +354,3 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
-
-def _encode(value: dict[str, object]) -> bytes:
-    return (
-        json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-        + "\n"
-    ).encode("ascii")
-
-
-def _decode(payload: bytes) -> dict[str, Any]:
-    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for name, field in pairs:
-            if name in value:
-                raise ValueError("direct systemd launch envelope has duplicate fields")
-            value[name] = field
-        return value
-
-    try:
-        decoded = json.loads(payload.decode("ascii"), object_pairs_hook=unique_object)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("direct systemd launch envelope is malformed") from error
-    if type(decoded) is not dict or _encode(decoded) != payload:
-        raise ValueError("direct systemd launch envelope is not canonical")
-    return decoded
-
-
-def _decode_base64(value: dict[str, Any], name: str) -> bytes:
-    encoded = value[name]
-    if type(encoded) is not str:
-        raise ValueError(f"direct systemd launch {name} is malformed")
-    try:
-        decoded = base64.b64decode(encoded, validate=True)
-    except ValueError as error:
-        raise ValueError(f"direct systemd launch {name} is malformed") from error
-    if base64.b64encode(decoded).decode("ascii") != encoded:
-        raise ValueError(f"direct systemd launch {name} is not canonical")
-    return decoded

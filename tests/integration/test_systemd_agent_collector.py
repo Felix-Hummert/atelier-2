@@ -124,16 +124,20 @@ def test_launch_envelope_roundtrips_exact_live_only_invocation_bytes() -> None:
         decode_direct_systemd_launch_envelope(encoded.replace(b",", b", ", 1))
 
 
-def test_launch_envelope_refuses_every_provider_environment_value() -> None:
+def test_launch_envelope_roundtrips_exact_ordered_secret_free_environment() -> None:
     process_invocation = AgentProcessInvocation(
         ("/bin/provider",),
         Path("/workspace"),
-        (("API_KEY", "secret"),),
+        (("CLAUDE_CONFIG_DIR", "/credentials/claude"), ("PATH", "/usr/bin")),
         standard_output_frame_bytes=29,
     )
 
-    with pytest.raises(ValueError, match="cannot carry provider environment"):
-        encode_direct_systemd_launch_envelope(process_invocation)
+    assert (
+        decode_direct_systemd_launch_envelope(
+            encode_direct_systemd_launch_envelope(process_invocation)
+        )
+        == process_invocation
+    )
 
 
 @pytest.mark.parametrize(
