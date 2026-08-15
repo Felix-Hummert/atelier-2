@@ -6,10 +6,6 @@ from enum import StrEnum
 from atelier2.contracts.hashing import Sha256Hash
 
 
-class RunIdentityConflict(RuntimeError):
-    """A caller reused a RunId for a different workflow revision."""
-
-
 class RevisionHashCollision(RuntimeError):
     """Durable bytes disagree with the document identified by their hash."""
 
@@ -62,9 +58,3 @@ class Run:
             raise ValueError("run versions and cursors must be nonnegative")
         if (self.state is RunState.COMPLETED) != (self.terminal_hash is not None):
             raise ValueError("only a completed run has a terminal hash")
-
-
-@dataclass(frozen=True)
-class StartRunRequest:
-    run_id: RunId
-    revision: WorkflowRevision

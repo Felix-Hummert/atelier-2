@@ -23,7 +23,6 @@ from atelier2.ports.effects import (
     DurableReconciliationDeterminationConflict,
     DurableReconciliationExisting,
     DurableReconciliationTargetMissing,
-    EffectReconcileCommander,
     TransactionalEffectReconcileCommander,
 )
 
@@ -81,12 +80,6 @@ type ReconcileRunResult = (
     | WriteUnavailable
     | DurableStateCorrupt
 )
-
-
-def reconcile_effect(
-    command: ReconcileCommand, commander: EffectReconcileCommander
-) -> ReconcileCommandSnapshot:
-    return commander.submit(command)
 
 
 def reconcile_effect_result(

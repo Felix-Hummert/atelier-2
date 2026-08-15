@@ -36,7 +36,15 @@ def child(
         [sys.executable, str(HARNESS), command, str(database), version, *arguments],
         capture_output=True,
         check=False,
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2] / "src")},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                (
+                    str(Path(__file__).parents[2]),
+                    str(Path(__file__).parents[2] / "src"),
+                )
+            ),
+        },
         text=True,
         timeout=timeout,
     )

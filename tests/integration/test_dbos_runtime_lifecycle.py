@@ -15,10 +15,6 @@ import sqlalchemy as sa
 from dbos import SQLAlchemyDatasource
 from sqlalchemy.engine import Engine
 
-from atelier2.adapters.dbos.advancer import (
-    DbosDurableRunAdvancer,
-    graph_action_intent,
-)
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeBindingConflict,
@@ -26,15 +22,10 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeSettings,
 )
 from atelier2.adapters.dbos.schema import runs
-from atelier2.adapters.dbos.starter import (
-    DbosDurableRunStarter,
-    bootstrap_workflow_id_for,
-)
+from atelier2.adapters.dbos.starter import bootstrap_workflow_id_for
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.application.advance_run import advance_run
-from atelier2.application.start_run import start_run
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutorOperationalIdentity,
@@ -50,7 +41,8 @@ from atelier2.contracts.effects import (
     EffectReadback,
     PerformedEffect,
 )
-from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+from atelier2.contracts.run_bindings import AnyRun
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_executions import (
     AgentExecutorFactoryV2,
     AgentExecutorKey,
@@ -60,6 +52,10 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     commit_configured_agent,
     failing_agent_executor_factory,
+)
+from tests.scenarios.runs import (
+    prepare_and_launch_graph_action,
+    start_published_v1_run,
 )
 from tests.scenarios.runtime import exact_output_runtime
 
@@ -120,12 +116,13 @@ def canonical_database(root: Path) -> Path:
     return root / "atelier.sqlite"
 
 
-def start_request() -> StartRunRequest:
-    return StartRunRequest(RunId("run-1"), WorkflowRevision(WORKFLOW_DOCUMENT))
-
-
-def starter_for(runtime: DbosRuntime) -> DbosDurableRunStarter:
-    return DbosDurableRunStarter(runtime.engine, runtime.settings)
+def start_v1_run(runtime: DbosRuntime) -> AnyRun:
+    return start_published_v1_run(
+        runtime.engine,
+        runtime.settings,
+        RunId("run-1"),
+        WorkflowRevision(WORKFLOW_DOCUMENT),
+    )
 
 
 def run_state(engine: Engine, run_id: RunId) -> RunState:
@@ -165,7 +162,7 @@ def wait_until_run_state(engine: Engine, run_id: RunId, expected: RunState) -> R
 
 def execute_one_bootstrap(runtime: DbosRuntime) -> RunState:
     runtime.initialize_storage()
-    started = start_run(start_request(), starter_for(runtime))
+    started = start_v1_run(runtime)
     runtime.launch()
     assert wait_until_bootstrap_succeeds(runtime.engine, started.run_id) == "SUCCESS"
     return wait_until_run_state(runtime.engine, started.run_id, RunState.WAITING_INPUT)
@@ -263,7 +260,7 @@ def test_closing_one_of_two_identical_leases_keeps_the_executor_running(
 
     first.close()
 
-    started = start_run(start_request(), starter_for(second))
+    started = start_v1_run(second)
     assert wait_until_bootstrap_succeeds(second.engine, started.run_id) == "SUCCESS"
     assert (
         wait_until_run_state(second.engine, started.run_id, RunState.WAITING_INPUT)
@@ -282,7 +279,7 @@ def test_initializing_storage_from_a_second_lease_keeps_the_executor_running(
 
     second.initialize_storage()
 
-    started = start_run(start_request(), starter_for(first))
+    started = start_v1_run(first)
     assert wait_until_bootstrap_succeeds(first.engine, started.run_id) == "SUCCESS"
     assert (
         wait_until_run_state(first.engine, started.run_id, RunState.WAITING_INPUT)
@@ -481,7 +478,7 @@ def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
     )
     runtime = exact_output_runtime(settings, original_factory)
     runtime.initialize_storage()
-    started = start_run(start_request(), starter_for(runtime))
+    started = start_v1_run(runtime)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(
             connection,
@@ -489,17 +486,12 @@ def test_restart_refuses_a_store_identity_different_from_the_durable_intent(
             started.revision_hash,
             "agent",
         )
-        intent = graph_action_intent(
-            connection,
-            started.run_id,
-            started.revision_hash,
-            runtime.effect_adapter_binding,
-        )
-    advance_run(
-        intent,
-        DbosDurableRunAdvancer(
-            runtime.engine, runtime.settings, runtime.effect_adapter_binding
-        ),
+    prepare_and_launch_graph_action(
+        runtime.engine,
+        runtime.settings,
+        started.run_id,
+        started.revision_hash,
+        runtime.effect_adapter_binding,
     )
     runtime.close()
     changed_path = tmp_path / "changed" / "external.sqlite"

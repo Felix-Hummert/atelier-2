@@ -6,8 +6,7 @@ from typing import Any, cast
 
 from httpx import ASGITransport, AsyncClient
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
 from atelier2.api.stream import (
     BoundedQueryRunner,
     EventPollBackoff,
@@ -18,12 +17,6 @@ from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
-from atelier2.ports.agent_configurations import AgentConfigurationCatalog
-from atelier2.ports.durable_runs import (
-    DurablePublishedRunStarter,
-    TransactionalWaitAnswerer,
-)
-from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.run_events import (
     PersistedRunEvent,
     PrepareRunEventStreamResult,
@@ -31,13 +24,10 @@ from atelier2.ports.run_events import (
     RunEventQueries,
     StreamReady,
 )
-from atelier2.ports.run_queries import RunQueries
 from atelier2.ports.workflow_revisions import (
     WorkflowRevisionPage,
-    WorkflowRevisionPublisher,
-    WorkflowRevisionQueries,
 )
-from tests.scenarios.api import api_limits, event_poll_backoff
+from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 RUN_ID = RunId("bounded-stream")
 REVISION_HASH = WorkflowRevisionHash("0" * 64)
@@ -285,20 +275,13 @@ def test_saturated_event_poll_does_not_starve_an_app_control_route() -> None:
 
     async def scenario() -> None:
         queries = AppQueries()
-        unused = object()
         app = create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=ApiPorts(
-                cast(WorkflowRevisionPublisher, unused),
-                cast(DurablePublishedRunStarter, unused),
-                cast(TransactionalWaitAnswerer, unused),
-                cast(TransactionalEffectReconcileCommander, unused),
-                cast(WorkflowRevisionQueries, queries),
-                cast(RunQueries, queries),
-                queries,
-                parse_workflow_document,
-                cast(AgentConfigurationCatalog, unused),
+            ports=api_ports(
+                workflow_revision_queries=queries,
+                run_queries=queries,
+                run_event_queries=queries,
             ),
             limits=api_limits(
                 maximum_control_queries=1,
@@ -352,21 +335,10 @@ def test_saturated_control_admission_returns_503_without_starting_another_query(
 
     async def scenario() -> None:
         queries = BlockingQueries()
-        unused = object()
         app = create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=ApiPorts(
-                cast(WorkflowRevisionPublisher, unused),
-                cast(DurablePublishedRunStarter, unused),
-                cast(TransactionalWaitAnswerer, unused),
-                cast(TransactionalEffectReconcileCommander, unused),
-                cast(WorkflowRevisionQueries, queries),
-                cast(RunQueries, unused),
-                cast(RunEventQueries, unused),
-                parse_workflow_document,
-                cast(AgentConfigurationCatalog, unused),
-            ),
+            ports=api_ports(workflow_revision_queries=queries),
             limits=api_limits(
                 maximum_control_queries=1,
                 maximum_query_admission_wait_milliseconds=10,

@@ -104,7 +104,8 @@ or authorizing that same request's execution.
 The runtime lives behind `atelier2.adapters.dbos`. Contracts own immutable
 workflow revisions, caller-supplied run identifiers, effect lifecycles, exact
 payloads, and reconciliation decisions. Application functions depend on narrow
-start, advance, answer, and reconcile ports. The adapter owns the canonical
+published-start, answer, and reconcile ports; the run workflow prepares each
+graph action inside its own transaction step. The adapter owns the canonical
 engine, schema, durable codecs and transactions, explicit application version,
 and the node, agent-result, effect, reconciliation, answer, and continuation
 workflows. DBOS and SQLAlchemy do not cross that boundary. Workflow-revision
@@ -135,7 +136,7 @@ provider contract.
 
 | Production proof | What it establishes |
 | --- | --- |
-| Atomic start, advance, and answer | Revision/run/bootstrap, intent/effect enqueue, and exact Wait answer/enqueue each commit or roll back together; exact retries do not enqueue again. |
+| Atomic start, advance, and answer | Run/bootstrap enqueue, the prepared effect intent, and exact Wait answer/enqueue each commit or roll back together; exact retries do not enqueue again. |
 | Agent result | Pinned request and receipt vectors bind the invocation, executor, and exact output; receipt, `AGENT_COMPLETED`, and successor commit together, exact recovery remains singular, and binding drift is refused before executor open. |
 | Bootstrap recovery | A matching application version fills the outer DBOS ledger after a datasource commit without changing or regressing the product run. |
 | Effect recovery | Real subprocess kills after recorded observation (C1), after external commit (C2), and after product confirmation converge with one external call, one receipt, and the configured Wait successor. |

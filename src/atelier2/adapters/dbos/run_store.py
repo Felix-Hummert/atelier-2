@@ -862,18 +862,6 @@ class DbosWaitAnswerer:
         self._engine = engine
         self._application_version = application_version
 
-    def submit(self, request: SubmitWaitAnswerRequest) -> WaitAnswerSnapshot:
-        result = self.submit_result(request)
-        if isinstance(result, (DurableAnswerCreated, DurableAnswerExisting)):
-            return result.snapshot
-        if isinstance(
-            result, DurableAnswerStateConflict
-        ) and not is_canonical_integer_bytes(request.answer_bytes):
-            raise ValueError(
-                "integer answer must be canonical base-10 bytes without whitespace or plus"
-            )
-        raise RunTransitionConflict(f"wait answer refused: {type(result).__name__}")
-
     def submit_result(self, request: SubmitWaitAnswerRequest) -> DurableAnswerResult:
         if not is_canonical_integer_bytes(request.answer_bytes):
             return DurableAnswerStateConflict()

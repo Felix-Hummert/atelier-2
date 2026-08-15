@@ -16,9 +16,6 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 AGENT_ATTEMPT_ORDINAL = 1
 REPLACEMENT_AGENT_ATTEMPT_ORDINAL = 2
-AGENT_ATTEMPT_ORDINALS = frozenset(
-    (AGENT_ATTEMPT_ORDINAL, REPLACEMENT_AGENT_ATTEMPT_ORDINAL)
-)
 
 
 class AgentAttemptId(Sha256Hash):

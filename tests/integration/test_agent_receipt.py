@@ -22,7 +22,6 @@ from atelier2.adapters.dbos.schema import (
     run_events,
     runs,
 )
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import (
     EXACT_OUTPUT_EXECUTOR_BINDING,
@@ -37,8 +36,9 @@ from atelier2.contracts.agents import (
     AgentExecutorRevision,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, WorkflowRevision
 from tests.scenarios.agents import configured_agent_request
+from tests.scenarios.runs import start_published_v1_run
 
 DOCUMENT = b"""format_version: 1
 start: agent
@@ -97,8 +97,7 @@ def seeded(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
     run_id = RunId("run-1")
     revision = WorkflowRevision(DOCUMENT)
     runtime.initialize_storage()
-    runtime_starter = DbosDurableRunStarter(runtime.engine, runtime.settings)
-    runtime_starter.start(StartRunRequest(run_id, revision))
+    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
     return run_id, revision
 
 

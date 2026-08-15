@@ -17,6 +17,7 @@ from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     ClaudeSubscriptionSettings,
 )
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
@@ -168,6 +169,9 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
         workflow_document_parser=parse_workflow_document,
         agent_configuration_catalog=DbosAgentConfigurationCatalog(
             runtime.engine, runtime.agent_executor_registry
+        ),
+        agent_attempt_canceller=DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
         ),
     )
 

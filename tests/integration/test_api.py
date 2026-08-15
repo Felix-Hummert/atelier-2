@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos import run_store as run_store_module
 from atelier2.adapters.dbos import starter as starter_module
-from atelier2.adapters.dbos.advancer import DbosDurableRunAdvancer, graph_action_intent
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.queries import DbosQueries
@@ -52,7 +52,6 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.limits import ApiLimits
 from atelier2.api.references import encode_canonical_base64, encode_public_run_reference
-from atelier2.application.advance_run import advance_run
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -75,7 +74,6 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.runs import (
     RunId,
-    StartRunRequest,
     WorkflowRevision,
     WorkflowRevisionHash,
 )
@@ -107,6 +105,10 @@ from tests.scenarios.api import (
     RECONCILIATION_REVISION_HASH,
     api_limits,
     event_poll_backoff,
+)
+from tests.scenarios.runs import (
+    prepare_and_launch_graph_action,
+    start_published_v1_run,
 )
 from tests.scenarios.runtime import exact_output_runtime
 from tests.scenarios.workflows import V3_DOCUMENT
@@ -388,8 +390,8 @@ def test_concurrent_wait_answer_enqueues_only_the_created_answer(
     runtime: DbosRuntime,
 ) -> None:
     revision = WorkflowRevision(DOCUMENT)
-    DbosDurableRunStarter(runtime.engine, runtime.settings).start(
-        StartRunRequest(RunId("wait-run"), revision)
+    start_published_v1_run(
+        runtime.engine, runtime.settings, RunId("wait-run"), revision
     )
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(
@@ -468,9 +470,7 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
     assert start_statuses.count(200) == parallelism - 1
 
     answer_run_id = RunId("http-concurrent-answer")
-    DbosDurableRunStarter(runtime.engine, runtime.settings).start(
-        StartRunRequest(answer_run_id, revision)
-    )
+    start_published_v1_run(runtime.engine, runtime.settings, answer_run_id, revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(
             connection,
@@ -533,27 +533,16 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
 
 def _waiting_reconciliation(runtime: DbosRuntime) -> EffectIntent:
     revision = WorkflowRevision(ACTION_DOCUMENT)
-    DbosDurableRunStarter(runtime.engine, runtime.settings).start(
-        StartRunRequest(RunId("reconcile-run"), revision)
-    )
+    run_id = RunId("reconcile-run")
+    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
     with canonical_write_transaction(runtime.engine) as connection:
-        commit_configured_agent(
-            connection,
-            RunId("reconcile-run"),
-            revision.revision_hash,
-            "agent",
-        )
-        intent = graph_action_intent(
-            connection,
-            RunId("reconcile-run"),
-            revision.revision_hash,
-            runtime.effect_adapter_binding,
-        )
-    advance_run(
-        intent,
-        DbosDurableRunAdvancer(
-            runtime.engine, runtime.settings, runtime.effect_adapter_binding
-        ),
+        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
+    intent = prepare_and_launch_graph_action(
+        runtime.engine,
+        runtime.settings,
+        run_id,
+        revision.revision_hash,
+        runtime.effect_adapter_binding,
     )
     with canonical_write_transaction(runtime.engine) as connection:
         connection.execute(
@@ -769,6 +758,9 @@ def _client(
                 workflow_document_parser=parse_workflow_document,
                 agent_configuration_catalog=DbosAgentConfigurationCatalog(
                     runtime.engine, runtime.agent_executor_registry
+                ),
+                agent_attempt_canceller=DbosAgentAttemptStore(
+                    runtime.engine, runtime.settings.application_version
                 ),
             ),
             limits=active_limits,
@@ -1083,9 +1075,7 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
 ) -> None:
     revision = WorkflowRevision(DOCUMENT)
     run_id = RunId("answer/run")
-    DbosDurableRunStarter(runtime.engine, runtime.settings).start(
-        StartRunRequest(run_id, revision)
-    )
+    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
@@ -1497,9 +1487,7 @@ def test_wait_answer_parses_workflow_before_begin_immediate(
 ) -> None:
     revision = WorkflowRevision(DOCUMENT)
     run_id = RunId("parse-before-answer-lock")
-    DbosDurableRunStarter(runtime.engine, runtime.settings).start(
-        StartRunRequest(run_id, revision)
-    )
+    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
@@ -1577,9 +1565,7 @@ def test_wait_answer_rechecks_revision_bytes_after_outside_parse_without_mutatio
 ) -> None:
     revision = WorkflowRevision(DOCUMENT)
     run_id = RunId("revision-drift-answer")
-    DbosDurableRunStarter(runtime.engine, runtime.settings).start(
-        StartRunRequest(run_id, revision)
-    )
+    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")

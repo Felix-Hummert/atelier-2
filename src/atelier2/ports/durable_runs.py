@@ -6,7 +6,7 @@ from typing import Protocol
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
 from atelier2.contracts.run_bindings import AnyRun
-from atelier2.contracts.runs import Run, RunId, StartRunRequest, WorkflowRevisionHash
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 
 @dataclass(frozen=True)
@@ -147,14 +147,6 @@ type DurableAnswerResult = (
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )
-
-
-class DurableRunStarter(Protocol):
-    def start(self, request: StartRunRequest) -> Run: ...
-
-
-class WaitAnswerer(Protocol):
-    def submit(self, request: SubmitWaitAnswerRequest) -> WaitAnswerSnapshot: ...
 
 
 class TransactionalWaitAnswerer(Protocol):

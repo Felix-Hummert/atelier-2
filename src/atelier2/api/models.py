@@ -411,6 +411,11 @@ class RunResourceV2(ApiModel):
 AnyRunResource = RunResource | RunResourceV2
 
 
+# No handler builds this: /runs returns VersionedRunPageResource. It stays
+# because ADR 0003 freezes the preexisting V1 named OpenAPI components, and this
+# one reaches the served document only through AnyRunPageResource below. A
+# docstring here would be published as the component's description and break
+# that freeze.
 class RunPageResource(ApiModel):
     items: tuple[RunResource, ...]
     next_after: str | None = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)

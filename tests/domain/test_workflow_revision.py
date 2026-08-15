@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
 
 import pytest
 
-from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 
 
 @pytest.mark.parametrize("document", [b"workflow-v1", b"", b"\x00\xffrevision"])
@@ -33,11 +32,3 @@ def test_run_state_round_trips_through_its_durable_token(state: RunState) -> Non
 
 def test_a_run_awaiting_reconciliation_has_a_durable_token() -> None:
     assert RunState("WAITING_RECONCILIATION") is RunState.WAITING_RECONCILIATION
-
-
-def test_start_request_is_frozen() -> None:
-    request = StartRunRequest(RunId("run-1"), WorkflowRevision(b"workflow-v1"))
-    mutable_view: Any = request
-
-    with pytest.raises((AttributeError, TypeError)):
-        mutable_view.run_id = RunId("changed")

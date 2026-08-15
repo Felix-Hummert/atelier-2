@@ -256,9 +256,6 @@ class AgentExecutorRegistry:
     def keys(self) -> frozenset[AgentExecutorKey]:
         return frozenset(self._by_key)
 
-    def factory(self, key: AgentExecutorKey) -> AgentExecutorFactoryV2:
-        return self._by_key[key].factory
-
     def contains(self, key: AgentExecutorKey) -> bool:
         return key in self._by_key
 

@@ -213,7 +213,7 @@ class ApiPorts:
     run_event_queries: RunEventQueries
     workflow_document_parser: WorkflowDocumentParser
     agent_configuration_catalog: AgentConfigurationCatalog
-    agent_attempt_canceller: TransactionalAgentAttemptCanceller | None = None
+    agent_attempt_canceller: TransactionalAgentAttemptCanceller
 
 
 def create_app(
@@ -514,10 +514,7 @@ def create_app(
     ) -> JSONResponse:
         run_id = RunId(body.run_id)
         _require_new_run_identity(run_id, limits)
-        try:
-            revision_hash = parse_revision_hash(body.workflow_revision_hash)
-        except InvalidRevisionHash as error:
-            raise ApiProblem("invalid-revision-hash") from error
+        revision_hash = parse_revision_hash(body.workflow_revision_hash)
         if isinstance(body, StartRunRequestResourceV2):
             try:
                 request = StartPublishedRunRequestV2(
@@ -643,11 +640,9 @@ def create_app(
             )
         except (ApiLimitExceeded, TypeError, ValueError) as error:
             raise ApiProblem("invalid-agent-attempt-id") from error
-        canceller = ports.agent_attempt_canceller
-        if canceller is None:
-            raise ApiProblem("internal-error")
         result = await _run_control_query(
-            runner, lambda: cancel_agent_attempt(request, canceller)
+            runner,
+            lambda: cancel_agent_attempt(request, ports.agent_attempt_canceller),
         )
         match result:
             case AgentAttemptCancellationAccepted(terminal=terminal):
@@ -696,10 +691,7 @@ def create_app(
     ) -> JSONResponse:
         run_id = _decode_public_reference(public_ref, limits)
         _require_field(body.node_id, limits)
-        try:
-            revision_hash = parse_revision_hash(body.revision_hash)
-        except InvalidRevisionHash as error:
-            raise ApiProblem("invalid-revision-hash") from error
+        revision_hash = parse_revision_hash(body.revision_hash)
         answer_bytes = _decode_base64(body.answer_base64, limits)
         if not is_canonical_integer_bytes(answer_bytes):
             raise ApiProblem("invalid-request")

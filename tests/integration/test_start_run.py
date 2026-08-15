@@ -31,20 +31,27 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
+    DbosWorkflowRevisionPublisher,
     bootstrap_workflow_id_for,
 )
 from atelier2.adapters.dbos.workflow import bootstrap_run_binding
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.application.start_run import start_run
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.runs import (
-    RevisionHashCollision,
-    RunId,
-    RunIdentityConflict,
-    RunState,
-    StartRunRequest,
-    WorkflowRevision,
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.publish_workflow_revision import (
+    DurableStateCorrupt,
+    PublicationInvalid,
+    publish_workflow_revision,
 )
+from atelier2.application.start_published_run import (
+    InvalidAgentBindings,
+    RunIdentityConflict,
+    start_published_run,
+)
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.run_bindings import AnyRun
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.ports.durable_runs import StartPublishedRunRequest
+from tests.scenarios.runs import publish_revision, start_published_v1_run
 from tests.scenarios.runtime import exact_output_runtime
 
 WORKFLOW_DOCUMENT = b"""format_version: 1
@@ -74,10 +81,32 @@ def storage(tmp_path: Path) -> Iterator[tuple[DbosRuntime, DbosDurableRunStarter
         runtime.close()
 
 
-def request(
-    run_id: str = "run-1", document: bytes = WORKFLOW_DOCUMENT
-) -> StartRunRequest:
-    return StartRunRequest(RunId(run_id), WorkflowRevision(document))
+def revision(document: bytes = WORKFLOW_DOCUMENT) -> WorkflowRevision:
+    return WorkflowRevision(document)
+
+
+def start(
+    runtime: DbosRuntime,
+    starter: DbosDurableRunStarter,
+    run_id: str = "run-1",
+    document: bytes = WORKFLOW_DOCUMENT,
+) -> AnyRun:
+    return start_published_v1_run(
+        runtime.engine, runtime.settings, RunId(run_id), revision(document)
+    )
+
+
+def start_result(
+    runtime: DbosRuntime,
+    starter: DbosDurableRunStarter,
+    run_id: str = "run-1",
+    document: bytes = WORKFLOW_DOCUMENT,
+):
+    publish_revision(runtime.engine, revision(document))
+    return start_published_run(
+        StartPublishedRunRequest(RunId(run_id), revision(document).revision_hash),
+        starter,
+    )
 
 
 def count(engine: sa.Engine, table: str) -> int:
@@ -92,12 +121,12 @@ def test_workflow_id_is_deterministic_from_exact_run_id(run_id: str) -> None:
     )
 
 
-def test_start_commits_revision_run_and_enqueue_atomically(
+def test_start_commits_the_run_and_its_enqueue_atomically(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
     runtime, starter = storage
 
-    started = start_run(request(), starter)
+    started = start(runtime, starter)
 
     assert started.state is RunState.STARTED
     with runtime.engine.connect() as connection:
@@ -109,7 +138,7 @@ def test_start_commits_revision_run_and_enqueue_atomically(
         ).all() == [
             (
                 "run-1",
-                request().revision.revision_hash.value,
+                revision().revision_hash.value,
                 "agent",
                 "STARTED",
                 0,
@@ -122,7 +151,7 @@ def test_start_commits_revision_run_and_enqueue_atomically(
         ).all() == [(bootstrap_workflow_id_for(RunId("run-1")), "executor-A")]
 
 
-def test_raise_after_real_enqueue_rolls_back_every_record(
+def test_raise_after_real_enqueue_rolls_back_the_run_and_its_workflow(
     storage: tuple[DbosRuntime, DbosDurableRunStarter], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime, starter = storage
@@ -140,10 +169,9 @@ def test_raise_after_real_enqueue_rolls_back_every_record(
 
     monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", enqueue_then_raise)
 
-    with pytest.raises(RuntimeError, match="injected"):
-        start_run(request(), starter)
+    assert isinstance(start_result(runtime, starter), DurableStateCorrupt)
 
-    assert count(runtime.engine, "workflow_revisions") == 0
+    assert count(runtime.engine, "workflow_revisions") == 1
     assert count(runtime.engine, "runs") == 0
     assert count(runtime.engine, "workflow_status") == 0
 
@@ -151,18 +179,23 @@ def test_raise_after_real_enqueue_rolls_back_every_record(
 def test_invalid_graph_writes_no_revision_run_event_answer_or_dbos_workflow(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
-    runtime, starter = storage
+    runtime, _starter = storage
     invalid = WORKFLOW_DOCUMENT.replace(b"start: agent", b"start: action")
 
-    with pytest.raises(ValueError):
-        start_run(request(document=invalid), starter)
+    result = publish_workflow_revision(
+        invalid,
+        DbosWorkflowRevisionPublisher(runtime.engine),
+        parse_workflow_document,
+    )
+
+    assert isinstance(result, PublicationInvalid)
 
     for table in PRODUCT_TABLE_NAMES - {"atelier_schema_versions"}:
         assert count(runtime.engine, table) == 0
     assert count(runtime.engine, "workflow_status") == 0
 
 
-def test_v1_direct_start_refuses_a_v2_graph_before_any_durable_write(
+def test_a_v1_start_request_refuses_a_v2_graph_without_a_durable_run(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
     runtime, starter = storage
@@ -173,10 +206,13 @@ nodes:
   - {id: build, type: agent, role: builder, job: build, next: done}
 """
 
-    with pytest.raises(TypeError, match="V1 direct-start"):
-        start_run(request(document=document), starter)
+    result = start_result(runtime, starter, document=document)
 
-    for table in PRODUCT_TABLE_NAMES - {"atelier_schema_versions"}:
+    assert isinstance(result, InvalidAgentBindings)
+    for table in PRODUCT_TABLE_NAMES - {
+        "atelier_schema_versions",
+        "workflow_revisions",
+    }:
         assert count(runtime.engine, table) == 0
     assert count(runtime.engine, "workflow_status") == 0
 
@@ -185,13 +221,13 @@ def test_identical_retry_returns_current_run_without_enqueueing_again(
     storage: tuple[DbosRuntime, DbosDurableRunStarter], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime, starter = storage
-    first = start_run(request(), starter)
+    first = start(runtime, starter)
 
     def unexpected_enqueue(*args: object, **kwargs: object) -> object:
         raise AssertionError("retry enqueued again")
 
     monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
-    second = start_run(request(), starter)
+    second = start(runtime, starter)
 
     assert second == first
     assert count(runtime.engine, "runs") == 1
@@ -212,7 +248,7 @@ def test_retry_after_progress_returns_the_current_run(
     terminal_hash: str | None,
 ) -> None:
     runtime, starter = storage
-    start_run(request(), starter)
+    start(runtime, starter)
     with runtime.engine.begin() as connection:
         connection.execute(
             sa.text(
@@ -226,7 +262,7 @@ def test_retry_after_progress_returns_the_current_run(
             },
         )
 
-    assert start_run(request(), starter).state is state
+    assert start(runtime, starter).state is state
     assert count(runtime.engine, "workflow_status") == 1
 
 
@@ -234,16 +270,17 @@ def test_conflicting_run_id_fails_without_mutation(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
     runtime, starter = storage
-    original = start_run(request(), starter)
+    original = start(runtime, starter)
 
-    with pytest.raises(RunIdentityConflict):
-        start_run(
-            request(document=WORKFLOW_DOCUMENT.replace(b"draft-17", b"draft-18")),
-            starter,
-        )
+    conflict = start_result(
+        runtime,
+        starter,
+        document=WORKFLOW_DOCUMENT.replace(b"draft-17", b"draft-18"),
+    )
 
-    assert start_run(request(), starter) == original
-    assert count(runtime.engine, "workflow_revisions") == 1
+    assert isinstance(conflict, RunIdentityConflict)
+    assert start(runtime, starter) == original
+    assert count(runtime.engine, "workflow_revisions") == 2
     assert count(runtime.engine, "runs") == 1
     assert count(runtime.engine, "workflow_status") == 1
 
@@ -253,8 +290,8 @@ def test_different_runs_share_the_same_exact_revision(
 ) -> None:
     runtime, starter = storage
 
-    start_run(request("run-1"), starter)
-    start_run(request("run-2"), starter)
+    start(runtime, starter, "run-1")
+    start(runtime, starter, "run-2")
 
     assert count(runtime.engine, "workflow_revisions") == 1
     assert count(runtime.engine, "runs") == 2
@@ -265,18 +302,19 @@ def test_durable_hash_collision_fails_without_run_or_enqueue(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
     runtime, starter = storage
-    revision = request().revision
     with runtime.engine.begin() as connection:
         connection.execute(
             workflow_revisions.insert().values(
-                revision_hash=revision.revision_hash.value,
+                revision_hash=revision().revision_hash.value,
                 document=b"different durable bytes",
             )
         )
 
-    with pytest.raises(RevisionHashCollision):
-        start_run(request(), starter)
+    result = start_published_run(
+        StartPublishedRunRequest(RunId("run-1"), revision().revision_hash), starter
+    )
 
+    assert isinstance(result, DurableStateCorrupt)
     assert count(runtime.engine, "workflow_revisions") == 1
     assert count(runtime.engine, "runs") == 0
     assert count(runtime.engine, "workflow_status") == 0
@@ -287,7 +325,7 @@ def test_revision_document_cannot_be_updated_or_deleted(
     storage: tuple[DbosRuntime, DbosDurableRunStarter], operation: str
 ) -> None:
     runtime, starter = storage
-    started = start_run(request(), starter)
+    started = start(runtime, starter)
     statement = (
         "UPDATE workflow_revisions SET document=X'00' WHERE revision_hash=:hash"
         if operation == "UPDATE"
@@ -404,7 +442,7 @@ def test_initialized_runtime_can_execute_a_later_seeded_workflow(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
     runtime, starter = storage
-    started = start_run(request(), starter)
+    started = start(runtime, starter)
 
     runtime.launch()
     deadline = time.monotonic() + 5
@@ -441,7 +479,7 @@ def test_bootstrap_returns_configured_start_and_requires_the_exact_new_run_bindi
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
     runtime, starter = storage
-    started = start_run(request(), starter)
+    started = start(runtime, starter)
 
     assert (
         bootstrap_run_binding(runtime.datasource, started.run_id, started.revision_hash)

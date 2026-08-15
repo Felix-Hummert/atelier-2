@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import cast
+from typing import Any, Never
 
 from fastapi.testclient import TestClient
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
@@ -18,18 +19,7 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.limits import ApiLimits
 from atelier2.api.stream import EventPollBackoff
-from atelier2.ports.agent_configurations import AgentConfigurationCatalog
-from atelier2.ports.durable_runs import (
-    DurablePublishedRunStarter,
-    TransactionalWaitAnswerer,
-)
-from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.run_events import RunEventQueries
-from atelier2.ports.run_queries import RunQueries
-from atelier2.ports.workflow_revisions import (
-    WorkflowRevisionPublisher,
-    WorkflowRevisionQueries,
-)
 
 RECONCILIATION_REVISION_HASH = (
     "c93767cc7790bdb39258bb6d9bdfb3168218705038932119e6628c6312c6e34e"
@@ -207,6 +197,32 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
 ]
 
 
+class UnusedPort:
+    """A port the route under test must not reach."""
+
+    def __getattr__(self, name: str) -> Never:
+        raise AssertionError(f"the route under test reached the {name} port")
+
+
+def api_ports(**overrides: object) -> ApiPorts:
+    """The full port set with only the ports a test names actually wired."""
+    unused = UnusedPort()
+    ports: dict[str, Any] = {
+        "workflow_revision_publisher": unused,
+        "published_run_starter": unused,
+        "wait_answerer": unused,
+        "reconcile_commander": unused,
+        "workflow_revision_queries": unused,
+        "run_queries": unused,
+        "run_event_queries": unused,
+        "workflow_document_parser": parse_workflow_document,
+        "agent_configuration_catalog": unused,
+        "agent_attempt_canceller": unused,
+    }
+    ports.update(overrides)
+    return ApiPorts(**ports)
+
+
 def api_limits(**changes: int) -> ApiLimits:
     configured = ApiLimits(
         maximum_request_body_bytes=65_536,
@@ -234,22 +250,11 @@ def event_stream_client(queries: RunEventQueries) -> TestClient:
     it here instead of calling the generator by hand.
     """
 
-    unused = object()
     return TestClient(
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=ApiPorts(
-                workflow_revision_publisher=cast(WorkflowRevisionPublisher, unused),
-                published_run_starter=cast(DurablePublishedRunStarter, unused),
-                wait_answerer=cast(TransactionalWaitAnswerer, unused),
-                reconcile_commander=cast(TransactionalEffectReconcileCommander, unused),
-                workflow_revision_queries=cast(WorkflowRevisionQueries, unused),
-                run_queries=cast(RunQueries, unused),
-                run_event_queries=queries,
-                workflow_document_parser=parse_workflow_document,
-                agent_configuration_catalog=cast(AgentConfigurationCatalog, unused),
-            ),
+            ports=api_ports(run_event_queries=queries),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
         )
@@ -288,6 +293,9 @@ def durable_api_client(runtime: DbosRuntime) -> TestClient:
                 workflow_document_parser=parse_workflow_document,
                 agent_configuration_catalog=DbosAgentConfigurationCatalog(
                     runtime.engine, runtime.agent_executor_registry
+                ),
+                agent_attempt_canceller=DbosAgentAttemptStore(
+                    runtime.engine, runtime.settings.application_version
                 ),
             ),
             limits=api_limits(),

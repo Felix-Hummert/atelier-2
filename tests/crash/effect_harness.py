@@ -10,14 +10,10 @@ from pathlib import Path
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
-from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.application.reconcile_effect import reconcile_effect
-from atelier2.application.start_run import start_run
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectAdapterBinding,
@@ -31,8 +27,12 @@ from atelier2.contracts.effects import (
     ReconcileCommand,
     ReconcileCommandId,
 )
-from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.effects import EffectAdapter
+from tests.scenarios.runs import (
+    start_published_v1_run,
+    submit_reconcile_command,
+)
 
 CRASHED = 86
 ADAPTER_EXECUTE_AFTER_COMMIT = "adapter/execute-after-commit"
@@ -145,9 +145,8 @@ def seed(
     lease = runtime(database, external, version, unknown_marker)
     try:
         lease.initialize_storage()
-        start_run(
-            StartRunRequest(RunId(run_id), WorkflowRevision(document)),
-            DbosDurableRunStarter(lease.engine, lease.settings),
+        start_published_v1_run(
+            lease.engine, lease.settings, RunId(run_id), WorkflowRevision(document)
         )
     finally:
         lease.close()
@@ -263,9 +262,7 @@ def submit_absence(
             "inspected the exact external destination",
             OperatorAuthoritativeAbsence(),
         )
-        reconcile_effect(
-            command, DbosEffectReconcileCommander(lease.engine, lease.settings)
-        )
+        submit_reconcile_command(lease.engine, lease.settings, command)
     finally:
         lease.close()
 

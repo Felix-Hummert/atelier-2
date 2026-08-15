@@ -8,13 +8,12 @@ import time
 from pathlib import Path
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.workflow import BOOTSTRAP_STEP_NAME
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.application.start_run import start_run
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.runs import RunId, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, WorkflowRevision
+from tests.scenarios.runs import start_published_v1_run
 
 CRASHED = 86
 UNSETTLED_STATUSES = ("PENDING", "ENQUEUED")
@@ -72,9 +71,11 @@ def seed(
 ) -> None:
     runtime = _runtime(database, application_version)
     try:
-        start_run(
-            StartRunRequest(RunId(run_id), WorkflowRevision(document)),
-            DbosDurableRunStarter(runtime.engine, runtime.settings),
+        start_published_v1_run(
+            runtime.engine,
+            runtime.settings,
+            RunId(run_id),
+            WorkflowRevision(document),
         )
     finally:
         runtime.close()

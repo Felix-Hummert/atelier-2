@@ -13,6 +13,7 @@ from atelier2.api.models import (
     RunPageResource,
     RunResource,
     StartRunRequestResource,
+    VersionedRunPageResource,
     WorkflowRevisionPageResource,
     WorkflowRevisionSummaryResource,
     run_resource,
@@ -90,6 +91,7 @@ def test_v1_workflow_and_run_resources_keep_their_exact_raw_bytes() -> None:
     assert _wire(start) == _START
     assert _wire(run) == _RUN
     assert _wire(RunPageResource(items=(run,), next_after=None)) == _RUN_PAGE
+    assert _wire(VersionedRunPageResource(items=(run,), next_after=None)) == _RUN_PAGE
 
 
 def test_all_seven_v1_sse_data_resources_keep_their_exact_raw_bytes() -> None:

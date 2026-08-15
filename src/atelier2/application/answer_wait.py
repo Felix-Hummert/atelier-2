@@ -20,7 +20,6 @@ from atelier2.ports.durable_runs import (
     DurableAnswerStateConflict,
     DurableWriteUnavailable,
     TransactionalWaitAnswerer,
-    WaitAnswerer,
 )
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
@@ -79,12 +78,6 @@ type AnswerWaitResult = (
     | WriteUnavailable
     | DurableStateCorrupt
 )
-
-
-def answer_wait(
-    request: SubmitWaitAnswerRequest, answerer: WaitAnswerer
-) -> WaitAnswerSnapshot:
-    return answerer.submit(request)
 
 
 def answer_wait_result(

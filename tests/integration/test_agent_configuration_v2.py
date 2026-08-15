@@ -132,6 +132,9 @@ def _api_client(runtime: DbosRuntime) -> TestClient:
                 agent_configuration_catalog=DbosAgentConfigurationCatalog(
                     runtime.engine, runtime.agent_executor_registry
                 ),
+                agent_attempt_canceller=DbosAgentAttemptStore(
+                    runtime.engine, runtime.settings.application_version
+                ),
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),

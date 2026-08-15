@@ -10,7 +10,7 @@ from httpx import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits, RequestBodyLimitMiddleware
 from atelier2.api.models import AgentAttemptResourceV2
 from atelier2.api.openapi import API_PREFIX
@@ -21,22 +21,16 @@ from atelier2.api.references import (
 )
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
-from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
     DurableAnswerRunMissing,
-    DurablePublishedRunStarter,
     DurableRunRevisionMissing,
-    TransactionalWaitAnswerer,
 )
-from atelier2.ports.effects import TransactionalEffectReconcileCommander
-from atelier2.ports.run_events import PersistedRunEvent, RunEventQueries
-from atelier2.ports.run_queries import RunProjection, RunQueries
+from atelier2.ports.run_events import PersistedRunEvent
+from atelier2.ports.run_queries import RunProjection
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCreated,
-    WorkflowRevisionPublisher,
-    WorkflowRevisionQueries,
 )
-from tests.scenarios.api import api_limits, event_poll_backoff
+from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 
 @dataclass
@@ -59,21 +53,15 @@ class RecordingMutationPorts:
 
 
 def client_for(mutations: RecordingMutationPorts, limits: ApiLimits) -> TestClient:
-    unused = object()
     return TestClient(
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=ApiPorts(
-                cast(WorkflowRevisionPublisher, mutations),
-                cast(DurablePublishedRunStarter, mutations),
-                cast(TransactionalWaitAnswerer, mutations),
-                cast(TransactionalEffectReconcileCommander, unused),
-                cast(WorkflowRevisionQueries, unused),
-                cast(RunQueries, unused),
-                cast(RunEventQueries, unused),
-                parse_executable_workflow_document,
-                cast(AgentConfigurationCatalog, unused),
+            ports=api_ports(
+                workflow_revision_publisher=mutations,
+                published_run_starter=mutations,
+                wait_answerer=mutations,
+                workflow_document_parser=parse_executable_workflow_document,
             ),
             limits=limits,
             event_poll_backoff=event_poll_backoff(),

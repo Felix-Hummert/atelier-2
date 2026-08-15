@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
-from atelier2.api.app import ApiPorts, create_app
+from atelier2.api.app import create_app
 from atelier2.api.references import encode_public_run_reference
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
@@ -35,7 +34,7 @@ from atelier2.ports.run_queries import (
 )
 from atelier2.ports.workflow_revisions import DurableProjectionLimit
 from tests.api.test_agent_attempts import _projection
-from tests.scenarios.api import api_limits, event_poll_backoff
+from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 
 @dataclass
@@ -155,19 +154,7 @@ def test_cancellation_result_has_one_exact_http_mapping(
     problem_code: str | None,
 ) -> None:
     canceller = _Canceller(result)
-    unused = object()
-    ports = ApiPorts(
-        cast(Any, unused),
-        cast(Any, unused),
-        cast(Any, unused),
-        cast(Any, unused),
-        cast(Any, unused),
-        _RunQueries(),
-        cast(Any, unused),
-        cast(Any, unused),
-        cast(Any, unused),
-        canceller,
-    )
+    ports = api_ports(run_queries=_RunQueries(), agent_attempt_canceller=canceller)
     client = TestClient(
         create_app(
             source_commit="commit",
@@ -211,22 +198,12 @@ def test_cancellation_result_has_one_exact_http_mapping(
 
 def test_cancellation_rejects_noncanonical_attempt_identity_before_the_port() -> None:
     canceller = _Canceller(AgentAttemptCancellationRunMissing())
-    unused = object()
     client = TestClient(
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=ApiPorts(
-                cast(Any, unused),
-                cast(Any, unused),
-                cast(Any, unused),
-                cast(Any, unused),
-                cast(Any, unused),
-                _RunQueries(),
-                cast(Any, unused),
-                cast(Any, unused),
-                cast(Any, unused),
-                canceller,
+            ports=api_ports(
+                run_queries=_RunQueries(), agent_attempt_canceller=canceller
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),

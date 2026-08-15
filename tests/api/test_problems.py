@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from typing import cast
-
 import pytest
 from fastapi.testclient import TestClient
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.problems import (
     PROBLEM_DEFINITIONS,
@@ -13,19 +10,8 @@ from atelier2.api.problems import (
     problem_resource,
 )
 from atelier2.contracts.runs import RunId
-from atelier2.ports.agent_configurations import AgentConfigurationCatalog
-from atelier2.ports.durable_runs import (
-    DurablePublishedRunStarter,
-    TransactionalWaitAnswerer,
-)
-from atelier2.ports.effects import TransactionalEffectReconcileCommander
-from atelier2.ports.run_events import RunEventQueries
-from atelier2.ports.run_queries import GetRunResult, ListRunsResult, RunQueries
-from atelier2.ports.workflow_revisions import (
-    WorkflowRevisionPublisher,
-    WorkflowRevisionQueries,
-)
-from tests.scenarios.api import api_limits, event_poll_backoff
+from atelier2.ports.run_queries import GetRunResult, ListRunsResult
+from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 EXPECTED_PROBLEMS = {
     "invalid-agent-attempt-id": (
@@ -247,8 +233,6 @@ EXPECTED_PROBLEMS = {
 
 
 def empty_ports() -> ApiPorts:
-    missing = object()
-
     class UnusedRunQueries:
         def get_run(self, run_id: RunId) -> GetRunResult:
             del run_id
@@ -258,17 +242,7 @@ def empty_ports() -> ApiPorts:
             del after, limit
             raise AssertionError("invalid request reached run queries")
 
-    return ApiPorts(
-        workflow_revision_publisher=cast(WorkflowRevisionPublisher, missing),
-        published_run_starter=cast(DurablePublishedRunStarter, missing),
-        wait_answerer=cast(TransactionalWaitAnswerer, missing),
-        reconcile_commander=cast(TransactionalEffectReconcileCommander, missing),
-        workflow_revision_queries=cast(WorkflowRevisionQueries, missing),
-        run_queries=cast(RunQueries, UnusedRunQueries()),
-        run_event_queries=cast(RunEventQueries, missing),
-        workflow_document_parser=parse_workflow_document,
-        agent_configuration_catalog=cast(AgentConfigurationCatalog, missing),
-    )
+    return api_ports(run_queries=UnusedRunQueries())
 
 
 @pytest.mark.parametrize("code", sorted(EXPECTED_PROBLEMS))

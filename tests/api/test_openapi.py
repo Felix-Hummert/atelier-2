@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
 from openapi_spec_validator import OpenAPIV31SpecValidator, validate
 
-from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api import openapi as openapi_module
 from atelier2.api.app import ApiPorts, create_app
 from atelier2.api.openapi import (
@@ -16,35 +14,11 @@ from atelier2.api.openapi import (
     EVENT_NAMES,
     EVENT_PATH,
 )
-from atelier2.ports.agent_configurations import AgentConfigurationCatalog
-from atelier2.ports.durable_runs import (
-    DurablePublishedRunStarter,
-    TransactionalWaitAnswerer,
-)
-from atelier2.ports.effects import TransactionalEffectReconcileCommander
-from atelier2.ports.run_events import RunEventQueries
-from atelier2.ports.run_queries import RunQueries
-from atelier2.ports.workflow_revisions import (
-    WorkflowRevisionPublisher,
-    WorkflowRevisionQueries,
-)
-from tests.scenarios.api import api_limits, event_poll_backoff
+from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 
 def empty_ports() -> ApiPorts:
-    missing = object()
-
-    return ApiPorts(
-        workflow_revision_publisher=cast(WorkflowRevisionPublisher, missing),
-        published_run_starter=cast(DurablePublishedRunStarter, missing),
-        wait_answerer=cast(TransactionalWaitAnswerer, missing),
-        reconcile_commander=cast(TransactionalEffectReconcileCommander, missing),
-        workflow_revision_queries=cast(WorkflowRevisionQueries, missing),
-        run_queries=cast(RunQueries, missing),
-        run_event_queries=cast(RunEventQueries, missing),
-        workflow_document_parser=parse_workflow_document,
-        agent_configuration_catalog=cast(AgentConfigurationCatalog, missing),
-    )
+    return api_ports()
 
 
 EXPECTED_PATHS = {

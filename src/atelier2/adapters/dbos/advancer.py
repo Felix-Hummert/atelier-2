@@ -4,15 +4,10 @@ import hashlib
 from typing import Any
 
 import sqlalchemy as sa
-from dbos import DBOSClient, EnqueueOptions
-from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.run_store import load_graph, load_run
-from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents, run_events
-from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.dbos.workflow import EFFECT_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.contracts.effects import (
     CanonicalRequest,
     EffectAdapterBinding,
@@ -107,23 +102,7 @@ def prepare_graph_action(
     revision_hash: WorkflowRevisionHash,
     effect_adapter_binding: EffectAdapterBinding,
 ) -> EffectIntentSnapshot:
-    snapshot, _created = _prepare_intent(
-        session,
-        graph_action_intent(session, run_id, revision_hash, effect_adapter_binding),
-        effect_adapter_binding,
-    )
-    return snapshot
-
-
-def _prepare_intent(
-    session: Any,
-    intent: EffectIntent,
-    effect_adapter_binding: EffectAdapterBinding,
-) -> tuple[EffectIntentSnapshot, bool]:
-    if intent.binding.adapter_binding != effect_adapter_binding:
-        raise EffectIntentIdentityConflict(
-            "intent does not match the runtime effect adapter binding"
-        )
+    intent = graph_action_intent(session, run_id, revision_hash, effect_adapter_binding)
     existing_record = (
         session.execute(
             sa.select(effect_intents).where(
@@ -139,27 +118,7 @@ def _prepare_intent(
             raise EffectIntentIdentityConflict(
                 "logical effect key already belongs to another exact intent"
             )
-        return snapshot, False
-    expected_intent = graph_action_intent(
-        session,
-        intent.binding.run_id,
-        intent.binding.workflow_revision_hash,
-        effect_adapter_binding,
-    )
-    if intent != expected_intent:
-        raise RunEffectConflict("effect differs from the graph-derived Action intent")
-    current = load_run(session, intent.binding.run_id)
-    if (
-        current.revision_hash != intent.binding.workflow_revision_hash
-        or current.state is not RunState.STARTED
-    ):
-        raise RunEffectConflict("effect requires its exact revision-bound STARTED run")
-    if session.scalar(
-        sa.select(sa.func.count())
-        .select_from(effect_intents)
-        .where(effect_intents.c.run_id == intent.binding.run_id.value)
-    ):
-        raise RunEffectConflict("V1 permits exactly one effect per run")
+        return snapshot
     session.execute(
         effect_intents.insert().values(
             logical_key=intent.binding.logical_key.value,
@@ -177,51 +136,8 @@ def _prepare_intent(
             reconciliation_owner_command_id=None,
         )
     )
-    return (
-        EffectIntentSnapshot(
-            intent,
-            EffectIntentState.PREPARED,
-            EffectIntentStateVersion(0),
-        ),
-        True,
+    return EffectIntentSnapshot(
+        intent,
+        EffectIntentState.PREPARED,
+        EffectIntentStateVersion(0),
     )
-
-
-class DbosDurableRunAdvancer:
-    def __init__(
-        self,
-        engine: Engine,
-        settings: DbosRuntimeSettings,
-        effect_adapter_binding: EffectAdapterBinding,
-    ) -> None:
-        self._engine = engine
-        self._settings = settings
-        self._effect_adapter_binding = effect_adapter_binding
-
-    def advance(self, intent: EffectIntent) -> EffectIntentSnapshot:
-        client = DBOSClient(
-            system_database_engine=self._engine, use_listen_notify=False
-        )
-        try:
-            with canonical_write_transaction(self._engine) as connection:
-                snapshot, created = _prepare_intent(
-                    connection, intent, self._effect_adapter_binding
-                )
-                if not created:
-                    return snapshot
-                workflow_id = effect_workflow_id_for(intent.binding.logical_key)
-                options: EnqueueOptions = {
-                    "workflow_name": EFFECT_WORKFLOW_NAME,
-                    "queue_name": QUEUE_NAME,
-                    "workflow_id": workflow_id,
-                    "app_version": self._settings.application_version,
-                }
-                client.enqueue_in_transaction(
-                    connection,
-                    options,
-                    intent.binding.logical_key.value,
-                    intent.binding.workflow_revision_hash.value,
-                )
-                return snapshot
-        finally:
-            client.destroy()

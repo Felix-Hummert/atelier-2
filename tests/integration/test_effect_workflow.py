@@ -10,16 +10,9 @@ import sqlalchemy as sa
 from sqlalchemy import exc
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos.advancer import (
-    DbosDurableRunAdvancer,
-    effect_workflow_id_for,
-    graph_action_intent,
-)
+from atelier2.adapters.dbos.advancer import effect_workflow_id_for
 from atelier2.adapters.dbos.effect_store import commit_resolution
-from atelier2.adapters.dbos.reconciler import (
-    DbosEffectReconcileCommander,
-    reconcile_workflow_id_for,
-)
+from atelier2.adapters.dbos.reconciler import reconcile_workflow_id_for
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
@@ -30,12 +23,8 @@ from atelier2.adapters.dbos.schema import (
     run_events,
     runs,
 )
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.application.advance_run import advance_run
-from atelier2.application.reconcile_effect import reconcile_effect
-from atelier2.application.start_run import start_run
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -56,9 +45,14 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
     ReconcileCommandState,
 )
-from atelier2.contracts.runs import RunId, RunState, StartRunRequest, WorkflowRevision
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.runs import (
+    prepare_and_launch_graph_action,
+    start_published_v1_run,
+    submit_reconcile_command,
+)
 from tests.scenarios.runtime import exact_output_runtime
 
 TIMEOUT_SECONDS = 5.0
@@ -121,10 +115,7 @@ def prepared(
     )
     runtime.initialize_storage()
     revision = WorkflowRevision(WORKFLOW_DOCUMENT)
-    start_run(
-        StartRunRequest(RunId("run-1"), revision),
-        DbosDurableRunStarter(runtime.engine, runtime.settings),
-    )
+    start_published_v1_run(runtime.engine, runtime.settings, RunId("run-1"), revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(
             connection,
@@ -132,17 +123,12 @@ def prepared(
             revision.revision_hash,
             "agent",
         )
-        intent = graph_action_intent(
-            connection,
-            RunId("run-1"),
-            revision.revision_hash,
-            runtime.effect_adapter_binding,
-        )
-    advance_run(
-        intent,
-        DbosDurableRunAdvancer(
-            runtime.engine, runtime.settings, runtime.effect_adapter_binding
-        ),
+    intent = prepare_and_launch_graph_action(
+        runtime.engine,
+        runtime.settings,
+        RunId("run-1"),
+        revision.revision_hash,
+        runtime.effect_adapter_binding,
     )
     try:
         yield runtime, intent, external
@@ -188,10 +174,7 @@ def prepare_with_factory(
     )
     runtime.initialize_storage()
     revision = WorkflowRevision(WORKFLOW_DOCUMENT)
-    start_run(
-        StartRunRequest(RunId("run-1"), revision),
-        DbosDurableRunStarter(runtime.engine, runtime.settings),
-    )
+    start_published_v1_run(runtime.engine, runtime.settings, RunId("run-1"), revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(
             connection,
@@ -199,15 +182,12 @@ def prepare_with_factory(
             revision.revision_hash,
             "agent",
         )
-        intent = graph_action_intent(
-            connection,
-            RunId("run-1"),
-            revision.revision_hash,
-            factory.binding,
-        )
-    advance_run(
-        intent,
-        DbosDurableRunAdvancer(runtime.engine, runtime.settings, factory.binding),
+    intent = prepare_and_launch_graph_action(
+        runtime.engine,
+        runtime.settings,
+        RunId("run-1"),
+        revision.revision_hash,
+        factory.binding,
     )
     return runtime, intent, external
 
@@ -420,10 +400,7 @@ def test_unknown_waits_without_an_effect_then_an_operator_command_finishes(
             )
         )
         submitted = reconcile_command(intent, determination)
-        reconcile_effect(
-            submitted,
-            DbosEffectReconcileCommander(runtime.engine, runtime.settings),
-        )
+        submit_reconcile_command(runtime.engine, runtime.settings, submitted)
         assert (
             wait_for_workflow(runtime, reconcile_workflow_id_for(submitted.command_id))
             == "SUCCESS"
@@ -498,10 +475,7 @@ def test_authorized_absence_keeps_operator_provenance_after_later_readback(
             factory.opened.execute(intent)
         factory.unknown = False
         submitted = reconcile_command(intent, OperatorAuthoritativeAbsence())
-        reconcile_effect(
-            submitted,
-            DbosEffectReconcileCommander(runtime.engine, runtime.settings),
-        )
+        submit_reconcile_command(runtime.engine, runtime.settings, submitted)
 
         assert (
             wait_for_workflow(runtime, reconcile_workflow_id_for(submitted.command_id))

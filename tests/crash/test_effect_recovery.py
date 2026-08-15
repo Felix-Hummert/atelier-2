@@ -59,7 +59,15 @@ def child(
         ],
         capture_output=True,
         check=False,
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2] / "src")},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                (
+                    str(Path(__file__).parents[2]),
+                    str(Path(__file__).parents[2] / "src"),
+                )
+            ),
+        },
         text=True,
         timeout=timeout,
     )
@@ -632,7 +640,15 @@ def test_two_matching_recovery_processes_converge_after_c2(tmp_path: Path) -> No
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2] / "src")},
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(
+                    (
+                        str(Path(__file__).parents[2]),
+                        str(Path(__file__).parents[2] / "src"),
+                    )
+                ),
+            },
         )
         for _ in range(2)
     ]
