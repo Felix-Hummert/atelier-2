@@ -7,20 +7,26 @@ import {
   createCockpitApi,
   type CockpitApi,
   type Run,
-  type RunV1,
-  type RunEventHandlers,
-  type WorkflowRevisionDetail
+  type RunV1
 } from "../../src/api/client";
 import {
   MutationJournal,
   reconciliationCommand,
   type ReconciliationMutation
 } from "../../src/lib/mutationJournal";
+import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
+import {
+  agentCompleted,
+  agentCompletedRun,
+  eventCursor,
+  publicReference,
+  reconciliationRequired,
+  revisionHash,
+  workflowRevision
+} from "../support/workflowV1";
 
-const digest = "a".repeat(64);
 const requestHash = "1f58b9145b24d108d7ac38887338b3ea3229833b9c1e418250343f907bfd1047";
 const emptyResultHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-const publicReference = "run1.cnVu";
 
 beforeEach(() => {
   Object.defineProperties(HTMLDialogElement.prototype, {
@@ -46,7 +52,7 @@ afterEach(() => cleanup());
 describe("reconciliation control", () => {
   it("reconcile_found_keeps_exact_identity_and_result", async () => {
     const journal = new MutationJournal(sessionStorage);
-    const feed = new FakeFeed();
+    const feed = new FakeRunEventFeed();
     const reconcile = vi
       .fn()
       .mockRejectedValueOnce(new CockpitRequestError("The connection ended without a response."))
@@ -107,7 +113,7 @@ describe("reconciliation control", () => {
     expect(await journal.get(first.mutation_id)).toMatchObject({ ...first, delivery: "uncertain" });
 
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
-    feed.handlers?.event(JSON.stringify(reconciliationRequired(2)));
+    feed.handlers?.event(JSON.stringify(reconciliationRequired(2, { request_hash: requestHash })));
     expect(await screen.findByRole("heading", { name: "Decision pending" })).toBeTruthy();
     expect(await journal.get(first.mutation_id)).not.toBeNull();
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-found", "OPERATOR_FOUND")));
@@ -119,7 +125,7 @@ describe("reconciliation control", () => {
 
   it("keeps a durable reconciliation authoritative when its event arrives before the 202 response", async () => {
     const journal = new MutationJournal(sessionStorage);
-    const feed = new FakeFeed();
+    const feed = new FakeRunEventFeed();
     let acceptDecision!: (result: { status: number; value: Run }) => void;
     const reconcile = vi.fn(
       () => new Promise<{ status: number; value: Run }>((resolve) => { acceptDecision = resolve; })
@@ -145,7 +151,7 @@ describe("reconciliation control", () => {
     await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
 
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
-    feed.handlers?.event(JSON.stringify(reconciliationRequired(2)));
+    feed.handlers?.event(JSON.stringify(reconciliationRequired(2, { request_hash: requestHash })));
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-race", "OPERATOR_FOUND")));
     acceptDecision({ status: 202, value: reconciliationRun() });
 
@@ -216,7 +222,7 @@ describe("reconciliation control", () => {
 
   it("shows reconciliation only for its exact durable state and projects server-owned pending as Working", async () => {
     const first = render(App, {
-      props: { cockpitApi: api({ getRun: vi.fn(async () => startedRun()) }) }
+      props: { cockpitApi: api({ getRun: vi.fn(async () => agentCompletedRun()) }) }
     });
     await screen.findByRole("heading", { name: "Run run" });
     expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
@@ -267,67 +273,18 @@ describe("reconciliation control", () => {
   });
 });
 
-class FakeFeed {
-  handlers: RunEventHandlers | null = null;
-  open = vi.fn((_publicReference: string, handlers: RunEventHandlers) => {
-    this.handlers = handlers;
-    return { close: vi.fn() };
-  });
-}
-
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
-  return {
-    listRuns: vi.fn(async () => ({ items: [], next_after: null })),
-    listWorkflowRevisions: vi.fn(async () => ({ items: [], next_after_revision_hash: null })),
-    publish: vi.fn(),
-    publishAuthProfile: vi.fn(),
-    publishAgentConfiguration: vi.fn(),
-    start: vi.fn(),
-    answer: vi.fn(),
-    reconcile: vi.fn(),
+  return cockpitApiStub({
     getRun: vi.fn(async () => reconciliationRun()),
-    getWorkflowRevision: vi.fn(async () => revision()),
-    openRunEvents: vi.fn(),
+    getWorkflowRevision: vi.fn(async () => workflowRevision()),
     ...overrides
-  };
-}
-
-function revision(): WorkflowRevisionDetail {
-  return {
-    revision_hash: digest,
-    document_base64: "",
-    graph: {
-      format_version: 1,
-      start_node_id: "agent",
-      nodes: [
-        { type: "agent", node_id: "agent", job: "Build it", output: "candidate", next_node_id: "action" },
-        { type: "action", node_id: "action", next_node_id: "wait" },
-        { type: "wait", node_id: "wait", answer_type: "integer", next_node_id: "final" },
-        { type: "subworkflow", node_id: "final", operation: "add", operands: [2, 3], next_node_id: null }
-      ]
-    }
-  };
-}
-
-function startedRun(): RunV1 {
-  return {
-    run_id: "run",
-    public_run_reference: publicReference,
-    workflow_revision_hash: digest,
-    state_version: 1,
-    state: "STARTED",
-    current_node: revision().graph.nodes[1]! as RunV1["current_node"],
-    waiting: { type: "NONE" },
-    terminal_hash: null,
-    latest_event_cursor: "event1.cnVu.1"
-  };
+  });
 }
 
 function reconciliationRun(
   pending_command: Extract<RunV1["waiting"], { type: "WAITING_RECONCILIATION" }>["pending_command"] = null
 ): RunV1 {
-  return {
-    ...startedRun(),
+  return agentCompletedRun({
     state_version: pending_command === null ? 2 : 3,
     state: "WAITING_RECONCILIATION",
     waiting: {
@@ -339,16 +296,12 @@ function reconciliationRun(
       intent_state_version: 7,
       pending_command
     },
-    latest_event_cursor: "event1.cnVu.2"
-  };
+    latest_event_cursor: eventCursor(2)
+  });
 }
 
 function afterReconciliationRun(): RunV1 {
-  return {
-    ...startedRun(),
-    state_version: 4,
-    latest_event_cursor: "event1.cnVu.3"
-  };
+  return agentCompletedRun({ state_version: 4, latest_event_cursor: eventCursor(3) });
 }
 
 function pendingFoundCommand() {
@@ -375,37 +328,20 @@ function pendingAbsentCommand() {
   };
 }
 
-function event(sequence: number, kind: string, fields: Record<string, unknown>) {
-  return {
-    cursor: `event1.cnVu.${sequence}`,
-    sequence,
-    public_run_reference: publicReference,
-    workflow_revision_hash: digest,
-    node_id: sequence === 1 ? "agent" : "action",
-    node_execution_id: digest,
-    event_hash: digest,
-    event: kind,
-    ...fields
-  };
-}
-
-function agentCompleted(sequence: number) {
-  return event(sequence, "AGENT_COMPLETED", { output: "candidate", payload_hash: digest });
-}
-
-function reconciliationRequired(sequence: number) {
-  return event(sequence, "ACTION_RECONCILIATION_REQUIRED", {
-    request_base64: "cmVxdWVzdA==",
-    request_hash: requestHash
-  });
-}
-
 function reconciliationResolved(
   sequence: number,
   commandId: string,
   confirmationSource: "OPERATOR_FOUND" | "OPERATOR_AUTHORIZED_EXECUTION"
 ) {
-  return event(sequence, "ACTION_RECONCILIATION_RESOLVED", {
+  return {
+    cursor: eventCursor(sequence),
+    sequence,
+    public_run_reference: publicReference,
+    workflow_revision_hash: revisionHash,
+    node_id: "action",
+    node_execution_id: revisionHash,
+    event_hash: revisionHash,
+    event: "ACTION_RECONCILIATION_RESOLVED" as const,
     receipt: {
       logical_effect_key: "effect-key",
       request_hash: requestHash,
@@ -415,14 +351,14 @@ function reconciliationResolved(
       confirmation_source: confirmationSource,
       reconcile_command_id: commandId
     }
-  });
+  };
 }
 
 async function reconciliationMutationForTransport(): Promise<ReconciliationMutation> {
   const { reconciliationMutation } = await import("../../src/lib/mutationJournal");
   return reconciliationMutation(
     publicReference,
-    digest,
+    revisionHash,
     "action",
     "cmVxdWVzdA==",
     requestHash,

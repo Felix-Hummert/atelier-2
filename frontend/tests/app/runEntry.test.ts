@@ -14,6 +14,8 @@ import {
   type WorkflowRevisionDetail
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
+import { base64Bytes, bytesBase64 } from "../support/exactBytes";
 
 const revisionHash = "a".repeat(64);
 const publicReference = "run1.cnVuLWRyYWZ0";
@@ -248,7 +250,7 @@ describe("mobile run entry", () => {
 
   it("shows byte-verified V2 output and preserves synchronous event arrival order", async () => {
     window.history.replaceState(null, "", `/atelier/runs/${v2PublicReference}`);
-    const feed = runEventFeed();
+    const feed = new FakeRunEventFeed();
     const digestImplementation = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
     let releaseFirstDigest = (): void => {};
     const firstDigestGate = new Promise<void>((resolve) => { releaseFirstDigest = resolve; });
@@ -294,7 +296,7 @@ describe("mobile run entry", () => {
 
   it("closes the stream and keeps contradictory V2 output out of the cockpit", async () => {
     window.history.replaceState(null, "", `/atelier/runs/${v2PublicReference}`);
-    const feed = runEventFeed();
+    const feed = new FakeRunEventFeed();
     render(App, {
       props: {
         cockpitApi: api({
@@ -321,7 +323,7 @@ describe("mobile run entry", () => {
 
   it("reports the durable corruption the stream named instead of a finished run", async () => {
     window.history.replaceState(null, "", `/atelier/runs/${v2PublicReference}`);
-    const feed = runEventFeed();
+    const feed = new FakeRunEventFeed();
     render(App, {
       props: {
         cockpitApi: api({
@@ -567,23 +569,17 @@ describe("same-origin API transport", () => {
 });
 
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
-  return {
-    listRuns: vi.fn(async () => ({ items: [], next_after: null })),
+  return cockpitApiStub({
     listWorkflowRevisions: vi.fn(async () => ({
       items: [{ revision_hash: revisionHash }],
       next_after_revision_hash: null
     })),
     publish: vi.fn(async () => ({ status: 201, value: revision() })),
-    publishAuthProfile: vi.fn(),
-    publishAgentConfiguration: vi.fn(),
     start: vi.fn(async () => ({ status: 201, value: run() })),
-    answer: vi.fn(),
-    reconcile: vi.fn(),
     getRun: vi.fn(async () => run()),
     getWorkflowRevision: vi.fn(async () => revision()),
-    openRunEvents: vi.fn(() => ({ close: vi.fn() })),
     ...overrides
-  };
+  });
 }
 
 function run(): RunV1 {
@@ -665,23 +661,6 @@ function v2CompletedEvent(changes: Record<string, unknown> = {}) {
     ...v2TerminalEvent(revisionHash),
     ...changes
   };
-}
-
-function runEventFeed() {
-  const feed: {
-    handlers: RunEventHandlers | null;
-    close: ReturnType<typeof vi.fn>;
-    open: CockpitApi["openRunEvents"];
-  } = {
-    handlers: null,
-    close: vi.fn(),
-    open: vi.fn()
-  };
-  feed.open = vi.fn((_publicReference, handlers) => {
-    feed.handlers = handlers;
-    return { close: feed.close };
-  });
-  return feed;
 }
 
 function v2InterruptedEvent(
@@ -769,14 +748,6 @@ function textBody(mutation: { body_base64: string } | undefined): string {
 
 function jsonBody(mutation: { body_base64: string } | undefined): unknown {
   return JSON.parse(textBody(mutation));
-}
-
-function base64Bytes(value: string): Uint8Array {
-  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
-}
-
-function bytesBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes));
 }
 
 function withinRole(container: HTMLElement, role: string, name: string): HTMLElement {
