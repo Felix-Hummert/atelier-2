@@ -69,6 +69,9 @@ nodes:
   - id: merge_findings
     type: deterministic
     operation: {ref: merge_review_verdicts, revision: operation-1}
+    inputs:
+      - name: candidate
+        from: {graph_input: candidate}
     outputs:
       - name: merged
         schema: {ref: review_verdict, revision: schema-verdict}
@@ -92,6 +95,9 @@ nodes:
   - id: decide
     type: deterministic
     operation: {ref: decide_alone, revision: operation-3}
+    inputs:
+      - name: seed
+        from: {graph_input: seed}
     outputs:
       - name: verdict
         schema: {ref: review_verdict, revision: schema-verdict}
@@ -109,6 +115,9 @@ nodes:
   - id: seed_the_panel
     type: deterministic
     operation: {ref: seed_the_panel, revision: operation-4}
+    inputs:
+      - name: candidate
+        from: {graph_input: candidate}
     outputs:
       - name: seed
         schema: {ref: seed_note, revision: schema-seed}
@@ -164,7 +173,23 @@ def carrying(**children: bytes) -> dict[tuple[str, str], bytes]:
     return {(ref, revision_of(child)): child for ref, child in children.items()}
 
 
+ORDER_DECLARATION = b"""graph_inputs:
+  - name: order
+    schema: {ref: workspace_candidate, revision: schema-candidate}
+"""
+
+ORDERED_PARENT_TEMPLATE = PARENT_TEMPLATE.replace(
+    b"nodes:\n", ORDER_DECLARATION + b"nodes:\n"
+).replace(
+    BOUND_INPUT,
+    b"""    inputs:
+      - name: candidate
+        from: {graph_input: order}
+""",
+)
+
 PARENT = pinning(PARENT_TEMPLATE, CHILD)
+ORDERED_PARENT = pinning(ORDERED_PARENT_TEMPLATE, CHILD)
 NESTING_CHILD = pinning(NESTING_CHILD_TEMPLATE, LEAF_CHILD)
 NESTING_PARENT = pinning(PARENT_TEMPLATE, NESTING_CHILD)
 
@@ -234,6 +259,37 @@ def test_a_subworkflow_node_binds_the_published_child_revision_it_names() -> Non
     assert [entry.name for entry in bound.child.graph_inputs] == ["candidate"]
     assert [entry.name for entry in bound.child.graph_outputs] == ["verdict"]
     assert binding.nesting_depth == 1
+
+
+@pytest.mark.proves("a-parent-graph-input-reaches-a-child-through-the-boundary")
+def test_an_order_the_parent_was_started_with_binds_to_the_graph_input_of_its_child() -> (
+    None
+):
+    binding = bind(document=ORDERED_PARENT)
+
+    bound = binding.subworkflows[0]
+    assert (bound.node_id, bound.reference.ref) == ("review_panel", "review_panel")
+    assert [entry.name for entry in bound.child.graph_inputs] == ["candidate"]
+    assert bound.child_revision_hash == WorkflowRevision(CHILD).revision_hash
+
+
+@pytest.mark.proves("a-parent-graph-input-reaches-a-child-through-the-boundary")
+def test_an_order_declared_under_another_schema_revision_than_the_child_is_refused() -> (
+    None
+):
+    disagreeing = ORDERED_PARENT.replace(
+        b"    schema: {ref: workspace_candidate, revision: schema-candidate}\n",
+        b"    schema: {ref: workspace_candidate, revision: schema-other}\n",
+    )
+    assert disagreeing != ORDERED_PARENT
+
+    with pytest.raises(SubworkflowBindingRefused) as raised:
+        bind(document=disagreeing)
+
+    refusal = raised.value.refusal
+    assert refusal.reason is SubworkflowBindingRefusalReason.SCHEMA_REVISION_MISMATCH
+    assert refusal.node == "review_panel"
+    assert "schema-other" in str(refusal)
 
 
 def test_a_document_naming_no_child_binds_to_an_empty_boundary() -> None:

@@ -172,14 +172,28 @@ class UnknownSkillGrants:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PreviewGraphInput:
+    """One order a graph demands at start: its name, and the schema it must match.
+
+    This is the only part of a preview that says what a caller still has to bring
+    rather than what the revision will do. Without it a reader cannot tell a
+    workflow that runs from one that will refuse every start until it is handed
+    something — the two draw identically until a start is attempted.
+    """
+
+    name: str
+    schema_reference: VersionedReference
+
+
 @dataclass(frozen=True)
 class ComposedPreviewGraph:
     """One document's derived graph, and the registries its references land in.
 
     A subworkflow node carries the child's own graph, so a reused workflow is drawn
-    where it is used rather than flattened into its parent. References are kept
-    where they were declared: a child's reference sits in the child's graph, under
-    the chain it was reached by.
+    where it is used rather than flattened into its parent. Orders and references
+    are both kept where they were declared: a child's sit in the child's graph,
+    under the chain it was reached by.
 
     The last two fields are what this graph could not answer, each at the site that
     asked: a reference that resolved to nothing, and a skill whose grants nobody
@@ -189,6 +203,7 @@ class ComposedPreviewGraph:
     reader learns the rest of the distance here.
     """
 
+    graph_inputs: tuple[PreviewGraphInput, ...]
     nodes: tuple[PreviewNode, ...]
     edges: tuple[PreviewEdge, ...]
     resolved_references: tuple[ResolvedReference, ...]

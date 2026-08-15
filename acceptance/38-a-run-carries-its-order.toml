@@ -1,0 +1,43 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/38"
+
+# This file does not list every sentence of #38, and that is deliberate.
+#
+# #38 wants a run to carry its order as input. The head that lands here — plan
+# 5304493237, amendment 5304533072, deputy PASS 5304543725 — makes that order
+# declarable, completely checked and visible. It does not make commissioning
+# real: no V3 document can become a run yet (`parse_executable_workflow_document`
+# refuses format 3, and `runs.workflow_format_version IN (1, 2)` refuses the row),
+# and that gate belongs to #63.
+#
+# Four sentences of #38 therefore have no proof of any kind and are named here
+# rather than quietly dropped:
+#
+#   1. A published workflow is reusable with different run inputs, without a new
+#      revision.
+#   2b. The supplied value is hash-bound in the run snapshot as a context-package
+#      member, and visible with its provenance.
+#   3b. A run start with a missing, schema-violating or oversized input is refused
+#      by name, leaving no run, context, attempt, event, enqueue or process behind.
+#   4. The conductor loop needs no revision per turn.
+#
+# Sentence 2 was split into 2a (declared below) and 2b; sentence 3 into 3a
+# (declared below) and 3b. 3a is a document-level refusal and is EXPLICITLY NOT a
+# substitute for 3b, which is a start-level refusal: no review may count 3a for
+# it. #38 is not verified and not retired while any of the four above is open.
+#
+# Declaring them now would red this gate on main for a capability nobody has
+# built, and inventing a proof to make it green is the one thing ADR 0012 forbids.
+# They join this file in the change that proves them.
+
+[[sentence]]
+id = "an-unreadable-or-unread-graph-input-is-refused-by-name"
+text = "A document whose node reads a graph input the graph never declared, and a document whose declared graph input no node reads, are both refused by name before anything can be published or started."
+
+[[sentence]]
+id = "a-parent-graph-input-reaches-a-child-through-the-boundary"
+text = "An order the parent graph declares reaches a subworkflow: it binds as a node input to the child's graph input, and a differing schema revision is refused by name."
+
+[[sentence]]
+id = "the-preview-names-every-declared-graph-input-with-its-schema"
+text = "Before any start, the preview names every declared graph input with its name and schema revision, at the graph that declared it."

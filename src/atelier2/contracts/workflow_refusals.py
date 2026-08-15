@@ -26,7 +26,9 @@ class WorkflowRefusalReason(StrEnum):
     DATA_EDGE_OUTSIDE_CLOSURE = "data_edge_outside_closure"
     UNDECLARED_OUTPUT = "undeclared_output"
     UNDECLARED_CONTEXT = "undeclared_context"
+    UNDECLARED_GRAPH_INPUT = "undeclared_graph_input"
     GRAPH_OUTPUT_NOT_SINK = "graph_output_not_sink"
+    GRAPH_INPUT_UNREAD = "graph_input_unread"
     UNCONFIRMED_INTERACTIVE_OUTPUT = "unconfirmed_interactive_output"
     CONFIRMATION_WITHOUT_INTERACTIVE_MODE = "confirmation_without_interactive_mode"
 

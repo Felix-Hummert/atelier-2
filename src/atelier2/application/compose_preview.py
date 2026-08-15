@@ -43,6 +43,7 @@ from atelier2.contracts.composed_preview_v3 import (
     ConfigurationBinding,
     PreviewChild,
     PreviewEdge,
+    PreviewGraphInput,
     PreviewNode,
     PreviewNodeKind,
     PreviewRole,
@@ -178,6 +179,10 @@ def _preview_graph(
         else:
             unresolved.append(resolution)
     return ComposedPreviewGraph(
+        tuple(
+            PreviewGraphInput(entry.name, entry.schema_reference)
+            for entry in graph.graph_inputs
+        ),
         tuple(
             _preview_node(node, graph, children, chain, derivation)
             for node in graph.nodes

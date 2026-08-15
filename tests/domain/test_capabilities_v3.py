@@ -125,6 +125,9 @@ nodes:
     role: reviewer
     mode: headless
     instruction: Judge the candidate against the acceptance sentences.
+    inputs:
+      - name: candidate
+        from: {graph_input: candidate}
     outputs:
       - name: opinion
         schema: {ref: review_opinion, revision: schema-4}
