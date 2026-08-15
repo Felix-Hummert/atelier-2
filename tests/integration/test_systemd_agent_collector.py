@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
@@ -7,9 +8,11 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 
+import atelier2.adapters.systemd_agent_collector as collector_module
 from atelier2.adapters.systemd_agent_collector import (
     DirectSystemdCollectorBarriers,
     collect_direct_systemd_agent_process,
@@ -84,6 +87,7 @@ while not pathlib.Path(sys.argv[2]).exists():
     time.sleep(0.01)
 sys.stdout.write('done')
 """
+_PRINT_ENV = "import os;print(os.getenv('DECLARED'),os.getenv('INHERITED'))"
 
 
 def invocation(
@@ -156,6 +160,83 @@ def test_launch_envelope_roundtrips_exact_ordered_secret_free_environment() -> N
     )
 
 
+@pytest.mark.parametrize(("mode", "extra"), [(0o400, 0), (0o600, 0), (0o400, 1)])
+def test_launch_envelope_reader_enforces_credential_modes_and_exact_bound(
+    tmp_path: Path, mode: int, extra: int
+) -> None:
+    envelope_path = tmp_path / "credential"
+    payload = b"x" * (
+        collector_module.MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES + extra
+    )
+    envelope_path.write_bytes(payload)
+    envelope_path.chmod(mode)
+
+    read = lambda: collector_module.read_direct_systemd_launch_envelope(
+        envelope_path, allowed_modes=frozenset({0o400, 0o600})
+    )
+    if extra:
+        with pytest.raises(ValueError, match="exact bound"):
+            read()
+    else:
+        assert read() == payload
+
+
+def test_launch_envelope_reader_completes_a_short_regular_file_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    envelope_path = tmp_path / "credential"
+    payload = b"bounded-complete-envelope"
+    envelope_path.write_bytes(payload)
+    envelope_path.chmod(0o400)
+    original_read = os.read
+    raw_reads: list[int] = []
+
+    class ShortFile(io.FileIO):
+        def readinto(self, buffer: Any) -> int | None:
+            return raw_reads.append(1) or super().readinto(memoryview(buffer)[:3])
+
+    def short_read(descriptor: int, count: int) -> bytes:
+        return original_read(descriptor, min(count, 3))
+
+    monkeypatch.setattr(os, "read", short_read)
+    monkeypatch.setattr(
+        os,
+        "fdopen",
+        lambda descriptor, *_args, **_kwargs: io.BufferedReader(ShortFile(descriptor)),
+    )
+
+    assert (
+        collector_module.read_direct_systemd_launch_envelope(
+            envelope_path, allowed_modes=frozenset({0o400, 0o600})
+        )
+        == payload
+    )
+    assert len(raw_reads) > 1
+
+
+def test_collector_cli_derives_only_credential_and_source_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    credential_directory = tmp_path / "credentials"
+    collect = Mock()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(credential_directory))
+    monkeypatch.setenv("INVOCATION_ID", "0123456789abcdef0123456789abcdef")
+    monkeypatch.setattr(
+        collector_module, "collect_direct_systemd_agent_process", collect
+    )
+
+    collector_module.main()
+
+    call = collect.call_args
+    assert call.args[0].intent_path.parent == tmp_path
+    assert call.args[1] == DirectSystemdInvocationId("0123456789abcdef0123456789abcdef")
+    assert call.kwargs == {
+        "launch_credential_path": credential_directory / "atelier2-launch",
+        "source_envelope_path": tmp_path / "launch-envelope",
+    }
+
+
 @pytest.mark.parametrize(
     ("standard_output_bytes", "standard_error_bytes", "outcome"),
     [
@@ -177,7 +258,8 @@ def test_collector_reads_each_stream_to_exactly_its_bound_plus_one(
     result = collect_direct_systemd_agent_process(
         records,
         DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-        launch_envelope_path=launch_envelope_path,
+        launch_credential_path=launch_envelope_path,
+        source_envelope_path=launch_envelope_path,
     )
 
     assert result.outcome is outcome
@@ -203,7 +285,8 @@ def test_overflow_has_no_completion_and_cannot_reach_the_provider_decoder(
     result = collect_direct_systemd_agent_process(
         records,
         DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-        launch_envelope_path=launch_envelope_path,
+        launch_credential_path=launch_envelope_path,
+        source_envelope_path=launch_envelope_path,
     )
     completion = result.process_completion
     if completion is not None:
@@ -235,7 +318,8 @@ def test_both_streams_at_limit_plus_one_are_bounded_and_bypass_decode(
     result = collect_direct_systemd_agent_process(
         records,
         DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-        launch_envelope_path=launch_envelope_path,
+        launch_credential_path=launch_envelope_path,
+        source_envelope_path=launch_envelope_path,
         popen=recording_popen,
     )
 
@@ -271,7 +355,8 @@ def test_provider_exit_is_not_delayed_by_a_pipe_inheriting_descendant(
             collect_direct_systemd_agent_process,
             records,
             DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-            launch_envelope_path=launch_envelope_path,
+            launch_credential_path=launch_envelope_path,
+            source_envelope_path=launch_envelope_path,
         )
         try:
             result = future.result(timeout=1)
@@ -316,7 +401,8 @@ def test_no_popen_path_exists_before_started_directory_fsync_and_envelope_remova
         collect_direct_systemd_agent_process(
             records,
             DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-            launch_envelope_path=launch_envelope_path,
+            launch_credential_path=launch_envelope_path,
+            source_envelope_path=launch_envelope_path,
             barriers=barriers,
             popen=forbidden_popen,
         )
@@ -328,61 +414,89 @@ def test_no_popen_path_exists_before_started_directory_fsync_and_envelope_remova
         collect_direct_systemd_agent_process(
             records,
             DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-            launch_envelope_path=launch_envelope_path,
+            launch_credential_path=launch_envelope_path,
+            source_envelope_path=launch_envelope_path,
             popen=forbidden_popen,
         )
     assert popen_calls == []
 
 
 def test_popen_runs_only_after_started_is_durable_and_envelope_unlink_is_durable(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    process_invocation = invocation()
-    records, launch_envelope_path = prepared_records(tmp_path, process_invocation)
-    observed: list[tuple[bool, bool]] = []
+    monkeypatch.setenv("INHERITED", "must-not-reach-child")
+    process_invocation = AgentProcessInvocation(
+        (sys.executable, "-c", _PRINT_ENV),
+        Path.cwd(),
+        (("DECLARED", "yes"),),
+        standard_output_frame_bytes=32,
+    )
+    records, source_path = prepared_records(tmp_path, process_invocation)
+    credential_path = tmp_path / "credential"
+    credential_path.write_bytes(source_path.read_bytes())
+    credential_path.chmod(0o400)
+    observed: list[tuple[bool, bool, bool, object]] = []
 
     def observing_popen(
         arguments: tuple[str, ...], **keywords: Any
     ) -> subprocess.Popen[bytes]:
-        observed.append((records.started_path.exists(), launch_envelope_path.exists()))
+        observed.append(
+            (
+                records.started_path.exists(),
+                source_path.exists(),
+                credential_path.exists(),
+                keywords.get("env"),
+            )
+        )
         return cast(subprocess.Popen[bytes], subprocess.Popen(arguments, **keywords))
 
-    collect_direct_systemd_agent_process(
+    result = collect_direct_systemd_agent_process(
         records,
         DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-        launch_envelope_path=launch_envelope_path,
+        launch_credential_path=credential_path,
+        source_envelope_path=source_path,
         popen=observing_popen,
     )
 
-    assert observed == [(True, False)]
+    assert observed == [(True, False, True, {"DECLARED": "yes"})]
+    assert result.standard_output == b"yes None\n"
 
 
-def test_changed_or_malformed_launch_envelope_never_publishes_started_or_runs_popen(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "failure", ["credential", "missing-source", "changed-source", "source-mode"]
+)
+def test_changed_credential_or_source_never_runs_popen(
+    tmp_path: Path, failure: str
 ) -> None:
-    process_invocation = invocation()
-    records, launch_envelope_path = prepared_records(tmp_path, process_invocation)
-    launch_envelope_path.write_bytes(b"changed")
-    popen_called = False
+    records, source_path = prepared_records(tmp_path, invocation())
+    credential_path = tmp_path / "credential"
+    credential_path.write_bytes(source_path.read_bytes())
+    if failure == "credential":
+        credential_path.write_bytes(b"changed")
+    elif failure == "missing-source":
+        source_path.unlink()
+    elif failure == "changed-source":
+        source_path.write_bytes(b"changed")
+    else:
+        source_path.chmod(0o400)
+    credential_path.chmod(0o400)
+    forbidden_popen = Mock(side_effect=AssertionError("provider started"))
 
-    def forbidden_popen(
-        arguments: tuple[str, ...], **_keywords: Any
-    ) -> subprocess.Popen[bytes]:
-        del arguments
-        nonlocal popen_called
-        popen_called = True
-        raise AssertionError
-
-    with pytest.raises(ValueError, match="launch envelope"):
+    with pytest.raises((FileNotFoundError, ValueError)):
         collect_direct_systemd_agent_process(
             records,
             DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-            launch_envelope_path=launch_envelope_path,
+            launch_credential_path=credential_path,
+            source_envelope_path=source_path,
             popen=forbidden_popen,
         )
 
-    assert not records.started_path.exists()
-    assert not popen_called
+    assert records.inspect().state is (
+        DirectSystemdRecoveryState.SAFE_TO_RETRY
+        if failure == "credential"
+        else DirectSystemdRecoveryState.POSSIBLY_RAN
+    )
+    forbidden_popen.assert_not_called()
 
 
 def test_launch_fifo_is_rejected_without_blocking_or_publishing_started(
@@ -397,7 +511,8 @@ def test_launch_fifo_is_rejected_without_blocking_or_publishing_started(
         collect_direct_systemd_agent_process(
             records,
             DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-            launch_envelope_path=launch_envelope_path,
+            launch_credential_path=launch_envelope_path,
+            source_envelope_path=launch_envelope_path,
         )
 
     assert not records.started_path.exists()
@@ -418,7 +533,8 @@ def test_popen_refusal_writes_one_invocation_bound_process_boundary_result(
     result = collect_direct_systemd_agent_process(
         records,
         DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
-        launch_envelope_path=launch_envelope_path,
+        launch_credential_path=launch_envelope_path,
+        source_envelope_path=launch_envelope_path,
         popen=refusing_popen,
     )
 

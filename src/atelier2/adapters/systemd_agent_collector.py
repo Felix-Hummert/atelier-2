@@ -31,8 +31,12 @@ from atelier2.ports.agent_executions import (
 )
 
 MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES = 262_144
+DIRECT_SYSTEMD_LAUNCH_CREDENTIAL_NAME = "atelier2-launch"
+DIRECT_SYSTEMD_LAUNCH_ENVELOPE_NAME = "launch-envelope"
 _LAUNCH_ENVELOPE_VERSION = 1
 _PROCESS_EXIT_OBSERVATION_SECONDS = 0.05
+_CREDENTIAL_MODES = frozenset({0o400, 0o600})
+_SOURCE_MODE = frozenset({0o600})
 
 
 class DirectSystemdPopen(Protocol):
@@ -127,14 +131,17 @@ def collect_direct_systemd_agent_process(
     records: DirectSystemdGenerationRecords,
     invocation_id: DirectSystemdInvocationId,
     *,
-    launch_envelope_path: Path,
+    launch_credential_path: Path,
+    source_envelope_path: Path,
     barriers: DirectSystemdCollectorBarriers = _NO_COLLECTOR_BARRIERS,
     popen: DirectSystemdPopen = _popen,
 ) -> DirectSystemdResult:
     if os.path.lexists(records.started_path):
         raise FileExistsError("direct systemd STARTED already exists")
     intent = records.read_intent()
-    envelope = _read_launch_envelope(launch_envelope_path)
+    envelope = read_direct_systemd_launch_envelope(
+        launch_credential_path, allowed_modes=_CREDENTIAL_MODES
+    )
     if Sha256Hash.of(envelope) != intent.launch_envelope_hash:
         raise ValueError("direct systemd launch envelope differs from INTENT")
     invocation = decode_direct_systemd_launch_envelope(envelope)
@@ -152,8 +159,15 @@ def collect_direct_systemd_agent_process(
             after_directory_fsync=barriers.after_started_directory_fsync,
         ),
     )
-    launch_envelope_path.unlink()
-    _fsync_directory(launch_envelope_path.parent)
+    if (
+        read_direct_systemd_launch_envelope(
+            source_envelope_path, allowed_modes=_SOURCE_MODE
+        )
+        != envelope
+    ):
+        raise ValueError("direct systemd source envelope differs from credential")
+    source_envelope_path.unlink()
+    fsync_direct_systemd_directory(source_envelope_path.parent)
     barriers.after_envelope_directory_fsync()
 
     started_hash = Sha256Hash.of(encode_direct_systemd_started(started))
@@ -265,6 +279,8 @@ def _collect_process(
         selector.close()
 
     overflow = standard_output_overflow or standard_error_overflow
+    # RuntimeMaxSec with KillMode=control-group owns a live provider; after exit,
+    # poll avoids inherited pipes while wait owns the ordinary exit code.
     return_code = process.poll()
     if not overflow:
         return_code = process.wait()
@@ -332,26 +348,41 @@ def _close_stream(
     stream.close()
 
 
-def _read_launch_envelope(path: Path) -> bytes:
+def read_direct_systemd_launch_envelope(
+    path: Path, *, allowed_modes: frozenset[int]
+) -> bytes:
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
-        metadata = os.fstat(descriptor)
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
         if (
             not stat.S_ISREG(metadata.st_mode)
-            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or stat.S_IMODE(metadata.st_mode) not in allowed_modes
         ):
-            raise ValueError("direct systemd launch envelope must be a mode-0600 file")
-        payload = os.read(descriptor, MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES + 1)
-    finally:
-        os.close(descriptor)
+            raise ValueError("launch envelope is not a mode-0600 file or credential")
+        payload = stream.read(MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES + 1)
     if len(payload) > MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES:
         raise ValueError("direct systemd launch envelope exceeds its exact bound")
     return payload
 
 
-def _fsync_directory(path: Path) -> None:
+def main() -> None:
+    generation_directory = Path.cwd()
+    collect_direct_systemd_agent_process(
+        DirectSystemdGenerationRecords(generation_directory),
+        DirectSystemdInvocationId(os.environ["INVOCATION_ID"]),
+        launch_credential_path=Path(os.environ["CREDENTIALS_DIRECTORY"])
+        / DIRECT_SYSTEMD_LAUNCH_CREDENTIAL_NAME,
+        source_envelope_path=generation_directory / DIRECT_SYSTEMD_LAUNCH_ENVELOPE_NAME,
+    )
+
+
+def fsync_direct_systemd_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+if __name__ == "__main__":
+    main()

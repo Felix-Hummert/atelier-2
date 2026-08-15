@@ -77,6 +77,7 @@ def test_process_death_between_started_file_and_directory_fsync_never_runs_provi
         collect_direct_systemd_agent_process(
             records,
             INVOCATION_ID,
-            launch_envelope_path=launch_envelope_path,
+            launch_credential_path=launch_envelope_path,
+            source_envelope_path=launch_envelope_path,
         )
     assert not provider_marker.exists()
