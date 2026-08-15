@@ -239,6 +239,27 @@ An identifier is lowercase words joined by single hyphens and is unique across
 every declaration. Unknown keys, a schema version the gate does not read, a
 sentence without text, and a repeated identifier are refused rather than ignored.
 
+### What a landing states, and the written exemption
+
+A story declares in the repository, but a repository cannot tell on its own that
+a story exists. The landing says so. Every pull request answers the template's
+`Literal acceptance sentence(s)` field with either the identifiers in
+`acceptance/` this landing proves, or `none` and one written line saying why this
+change declares none.
+
+Documentation, cleanup, and pure motion carry no acceptance sentence
+legitimately. Writing that down is what makes the absence legitimate: an
+exemption stated in one line is a claim a reviewer can weigh, while an absence
+nobody wrote down is indistinguishable from a wish quietly dropped. `none`
+without a reason is not an exemption, and neither is an empty field.
+
+The gate reads that field from the pull-request body the run's own event
+carries, the same way it reads run reports and never workflow text. It consults
+no issue tracker and never decides for itself whether a change is a story: the
+landing states its position and the gate names a landing that states neither.
+Whether a stated exemption is honest stays a review judgment — the same division
+of labour the rest of this gate keeps.
+
 A test names the sentence it proves where the test run itself reports it:
 
 - Python: `@pytest.mark.proves("<sentence id>")` on a test function. The marker is
