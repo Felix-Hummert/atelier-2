@@ -232,7 +232,8 @@ story uses those decisions; where the two disagree, the record wins.
 A story declares its acceptance sentences in `acceptance/<issue-number>-<slug>.toml`
 — `acceptance/94-acceptance-trace-in-ci.toml` is the first one. The file is the
 sentence's only versioned home; pull-request prose quotes it and never replaces
-it.
+it. Every declaration in that directory is read, so a repository in which many
+stories declare verifies exactly like one in which a single story does.
 
 An identifier is lowercase words joined by single hyphens and is unique across
 every declaration. Unknown keys, a schema version the gate does not read, a
@@ -280,8 +281,8 @@ is missing, the reviewer names what is hollow.
 
 ### The open sentence, graded DESK
 
-`acceptance/94-acceptance-trace-in-ci.toml` declares five sentences; Issue #94
-carries a sixth — *"a story that declares no acceptance sentence is named by
+`acceptance/94-acceptance-trace-in-ci.toml` declares six sentences; Issue #94
+carries one more — *"a story that declares no acceptance sentence is named by
 verification"* — that nothing here proves, because this gate can only check
 sentences a story did declare.
 

@@ -16,11 +16,13 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts/check_acceptance.py")
-DECLARATION = Path("acceptance/94-acceptance-trace-in-ci.toml")
+ACCEPTANCE = Path("acceptance")
+DECLARATION = ACCEPTANCE / "94-acceptance-trace-in-ci.toml"
+SECOND_STORY_DECLARATION = ACCEPTANCE / "89-a-second-story.toml"
 CONFTEST = Path("tests/conftest.py")
 DOCUMENTATION = Path("docs/requirements/README.md")
 PROOFS = Path("tests/tooling/test_acceptance_gate.py")
-COPIED_FILES = (GATE, DECLARATION, PROOFS)
+COPIED_FILES = (GATE, PROOFS)
 
 BOUND_START = "<!-- acceptance-gate-bound:start -->"
 BOUND_END = "<!-- acceptance-gate-bound:end -->"
@@ -33,6 +35,11 @@ UNDECLARED_SENTENCE = "a-sentence-no-story-declares"
 UNPROVEN_REFUSAL = "with no test that ran and passed in this pipeline"
 UNCOLLECTED_PYTHON_CLAIM = Path("scripts/proof_helper.py")
 UNCOLLECTED_TYPESCRIPT_CLAIM = Path("frontend/tools/proof.ts")
+SECOND_STORY_SENTENCE = "a-sentence-a-second-story-declares"
+TRACE_COUNTS = re.compile(
+    r"Acceptance trace: (\d+) sentences, (\d+) claims, (\d+) passing proofs, "
+    r"(\d+) run reports"
+)
 
 
 class Outcome(Enum):
@@ -46,6 +53,20 @@ class ReportedTest:
     name: str
     claims: str | None = None
     outcome: Outcome = Outcome.PASSED
+
+
+@dataclass(frozen=True, slots=True)
+class TracedCounts:
+    sentences: int
+    claims: int
+    passing_proofs: int
+    run_reports: int
+
+
+def traced_counts(stdout: str) -> TracedCounts:
+    counted = TRACE_COUNTS.search(stdout)
+    assert counted is not None, stdout
+    return TracedCounts(*(int(count) for count in counted.groups()))
 
 
 def junit_report(reported: Iterable[ReportedTest]) -> str:
@@ -100,24 +121,35 @@ def load_acceptance_script() -> ModuleType:
     return module
 
 
-def a_pytest_run_proving_every_sentence(*, without: str | None = None) -> str:
+def a_pytest_run_proving_every_sentence(
+    project: Path, *, without: str | None = None
+) -> str:
     return junit_report(
         ReportedTest(
             f"test_proves_{sentence.identifier.replace('-', '_')}", sentence.identifier
         )
-        for sentence in load_acceptance_script().read_declared_sentences(PROJECT_ROOT)
+        for sentence in load_acceptance_script().read_declared_sentences(project)
         if sentence.identifier != without
     )
 
 
-def copied_project(tmp_path: Path, reports: Mapping[str, str] | None = None) -> Path:
+def copied_project(
+    tmp_path: Path,
+    reports: Mapping[str, str] | None = None,
+    *,
+    also_declaring: Mapping[Path, str] | None = None,
+    unproven: str | None = None,
+) -> Path:
     project = tmp_path / "project"
     for relative in COPIED_FILES:
         destination = project / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT_ROOT / relative, destination)
+    shutil.copytree(PROJECT_ROOT / ACCEPTANCE, project / ACCEPTANCE)
+    for relative, declaration in (also_declaring or {}).items():
+        (project / relative).write_text(declaration, encoding="utf-8")
     written = {
-        QUALITY_REPORT: a_pytest_run_proving_every_sentence(),
+        QUALITY_REPORT: a_pytest_run_proving_every_sentence(project, without=unproven),
         CRASH_REPORT: junit_report(()),
         FRONTEND_REPORT: vitest_report(()),
         **(reports or {}),
@@ -149,13 +181,9 @@ def test_a_run_proving_every_declared_sentence_passes_the_gate(tmp_path: Path) -
     result = run_gate(copied_project(tmp_path))
 
     assert result.returncode == 0, result.stdout + result.stderr
-    counts = re.search(
-        r"Acceptance trace: (\d+) sentences, (\d+) claims, (\d+) passing proofs, "
-        r"(\d+) run reports",
-        result.stdout,
-    )
-    assert counts is not None
-    assert all(count > 0 for count in map(int, counts.groups()))
+    counted = traced_counts(result.stdout)
+    assert counted.sentences > 0 and counted.claims > 0
+    assert counted.passing_proofs > 0 and counted.run_reports > 0
 
 
 @pytest.mark.proves("acceptance-sentences-are-declared-in-the-repository")
@@ -177,10 +205,7 @@ def test_every_declared_sentence_is_readable_from_a_versioned_repository_file() 
 
 @pytest.mark.proves("an-unproven-sentence-fails-the-gate")
 def test_a_sentence_no_test_claims_is_named_and_fails_the_gate(tmp_path: Path) -> None:
-    project = copied_project(
-        tmp_path,
-        {QUALITY_REPORT: a_pytest_run_proving_every_sentence(without=MOVABLE_SENTENCE)},
-    )
+    project = copied_project(tmp_path, unproven=MOVABLE_SENTENCE)
 
     result = run_gate(project)
 
@@ -260,20 +285,14 @@ def test_the_gate_and_the_documentation_state_the_same_bound(tmp_path: Path) -> 
     "run",
     [
         {
-            QUALITY_REPORT: a_pytest_run_proving_every_sentence(
-                without=MOVABLE_SENTENCE
-            ),
             CRASH_REPORT: junit_report(
                 (ReportedTest("test_recovers_after_a_crash", MOVABLE_SENTENCE),)
-            ),
+            )
         },
         {
-            QUALITY_REPORT: a_pytest_run_proving_every_sentence(
-                without=MOVABLE_SENTENCE
-            ),
             FRONTEND_REPORT: vitest_report(
                 (ReportedTest(f"proves({MOVABLE_SENTENCE}): the title carries it"),)
-            ),
+            )
         },
     ],
     ids=["only-the-crash-run", "only-the-cockpit-run"],
@@ -281,9 +300,37 @@ def test_the_gate_and_the_documentation_state_the_same_bound(tmp_path: Path) -> 
 def test_a_sentence_any_required_report_proves_counts(
     tmp_path: Path, run: Mapping[str, str]
 ) -> None:
-    result = run_gate(copied_project(tmp_path, run))
+    result = run_gate(copied_project(tmp_path, run, unproven=MOVABLE_SENTENCE))
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def a_second_story_declaration() -> str:
+    return (
+        "schema_version = 1\n"
+        'story = "https://github.com/FlexOr2/atelier-2/issues/89"\n\n'
+        "[[sentence]]\n"
+        f'id = "{SECOND_STORY_SENTENCE}"\n'
+        'text = "A second story declares an acceptance sentence of its own."\n'
+    )
+
+
+@pytest.mark.proves("a-second-story-declaration-verifies-like-the-first")
+def test_a_second_story_declaration_verifies_like_the_first(tmp_path: Path) -> None:
+    one_story = run_gate(copied_project(tmp_path / "one-story"))
+
+    two_stories = run_gate(
+        copied_project(
+            tmp_path / "two-stories",
+            also_declaring={SECOND_STORY_DECLARATION: a_second_story_declaration()},
+        )
+    )
+
+    assert two_stories.returncode == 0, two_stories.stdout + two_stories.stderr
+    assert (
+        traced_counts(two_stories.stdout).sentences
+        == traced_counts(one_story.stdout).sentences + 1
+    )
 
 
 def write_claim(project: Path, relative: Path, text: str) -> None:
@@ -327,10 +374,7 @@ def a_python_claim_no_runner_collects(identifier: str) -> str:
 def test_a_claim_no_run_report_carries_is_named_wherever_it_sits(
     tmp_path: Path, claim: str, located_in: Path, claiming: str, problem: str
 ) -> None:
-    project = copied_project(
-        tmp_path,
-        {QUALITY_REPORT: a_pytest_run_proving_every_sentence(without=MOVABLE_SENTENCE)},
-    )
+    project = copied_project(tmp_path, unproven=MOVABLE_SENTENCE)
     write_claim(project, located_in, claim)
 
     result = run_gate(project)
@@ -356,7 +400,8 @@ def test_every_sentence_this_repository_declares_is_claimed_by_one_of_its_tests(
 
 
 def empty_the_declarations(project: Path) -> None:
-    (project / DECLARATION).unlink()
+    for declaration in (project / ACCEPTANCE).glob(f"*{DECLARATION.suffix}"):
+        declaration.unlink()
 
 
 def claim_without_naming_a_sentence(project: Path) -> None:

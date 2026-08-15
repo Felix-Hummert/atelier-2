@@ -1,7 +1,7 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/94"
 
-# A sixth sentence is declared on issue #94 — "a story that declares no
+# One further sentence is declared on issue #94 — "a story that declares no
 # acceptance sentence is named by verification" — and is deliberately absent
 # here: it is unbuilt, and declaring it would red this gate on main for a
 # capability nobody has built. It joins this file in the change that proves it.
@@ -22,6 +22,10 @@ text = "A test claiming to prove a sentence that no story declares fails verific
 [[sentence]]
 id = "a-proof-that-did-not-run-and-pass-fails-the-gate"
 text = "A proof that did not run and pass in this pipeline's own run reports counts as no proof, and the failure names it."
+
+[[sentence]]
+id = "a-second-story-declaration-verifies-like-the-first"
+text = "A repository in which a second story declares its own acceptance sentences verifies exactly like one in which a single story does: the extra declaration is read as one more story, never as a failure."
 
 [[sentence]]
 id = "the-gate-states-the-bound-of-what-it-proves"
