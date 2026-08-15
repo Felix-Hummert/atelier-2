@@ -1,6 +1,6 @@
 # ADR 0008: Node budgets separate hard limits from reported thresholds
 
-- Status: PROPOSED 2026-08-15 — decision only, not implemented
+- Status: ACCEPTED 2026-08-15 — decision only, runtime not implemented
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #26](https://github.com/FlexOr2/atelier-2/issues/26),
