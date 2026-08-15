@@ -45,6 +45,13 @@ rule needs to tell an operator intervention from an agent's own run, and #79's
 automation filter needs to know which items agents may take. All three read the
 same missing fact.
 
+Who Atelier acts as, however, is the operator's call rather than an architectural
+one, and the operator ruled it on 2026-08-15: they configure the method when they
+connect a project. So this record specifies both methods, states plainly what each
+one can and cannot prove, and keeps the recognizability the finding above demands
+in a place neither method can lose — the content Atelier writes and the receipts
+Atelier keeps.
+
 Requirement revisions are hand-rolled the same way: an agent copies an issue body,
 computes its SHA-256 and pastes the digest into prose — issue #4's "Requirement
 binding" block and this record's own decision-authority line above are both that
@@ -76,9 +83,9 @@ already enforces for DBOS and SQLAlchemy; ADR 0005 owns that gate.
 
 Publication and readback open **no new port**. The GitHub adapter is an
 `EffectAdapterFactory`: its `EffectDestination` is the platform, its
-`AdapterOperationalIdentity` is the exact repository and installation a durable
-effect targets, and its `readback`/`execute` are the ones `ports.effects` already
-declares. Reusing that owner is what makes GitLab or a board backend a new
+`AdapterOperationalIdentity` is the exact repository and project connection a
+durable effect targets, and its `readback`/`execute` are the ones `ports.effects`
+already declares. Reusing that owner is what makes GitLab or a board backend a new
 adapter and a new operation registry rather than a core change.
 
 Observation opens **one** new port, the only one this record opens: a platform
@@ -87,53 +94,93 @@ observed facts plus the next cursor. Its facts name platform-neutral things — 
 external item, its state, its labels, its actor, the commit an evidence object
 speaks about — so a second platform implements the same port.
 
-### 2. Auth: a GitHub App with one installation, in V1
+### 2. Auth: the operator chooses the method when a project is connected
 
-| | GitHub App | Personal access token |
+**The authentication method is the operator's choice at project-connect time, not
+this record's mandate** (operator ruling on #24, 2026-08-15). V1 carries **both**
+methods, each fully specified here, and a connected project binds exactly one of
+them as a published configuration revision under #1's live-configuration rule.
+
+- **Personal access token — the low-friction path, and V1 must support it.** The
+  operator pastes a token when connecting the project and is done. A token scoped
+  to the connected repository is the recommended form within this path, because
+  narrowing the scope costs the operator nothing at the moment they paste it.
+- **GitHub App — the second method, recommended, never forced.** It buys an actor
+  identity of its own, per-repository and per-permission scope, short-lived
+  installation tokens minted from a private key, and the identity a signed webhook
+  delivery and a multi-user successor would need.
+
+| | Personal access token | GitHub App |
 | --- | --- | --- |
-| Identity of an agent action | the App's own actor, distinct from the operator | the operator, indistinguishable from their own hand |
-| Scope | per installation, per repository, per permission | the granting user's reach, fine-grained tokens included |
-| Credential lifetime | short-lived installation token minted from a private key | long-lived token |
-| Setup cost | one operator act: create, install, place the key | paste a token |
-| Later webhook identity | delivery identified per installation and signed | none |
+| Setup | paste a token when connecting the project | create the App, install it, place its key |
+| Credential held | the token itself, long-lived until the operator rotates it | a private key, from which short-lived installation tokens are minted |
+| Scope | the granting user's reach, narrowable per repository and permission | per installation, per repository, per permission |
+| Actor the platform records | the granting user — the operator | the App's own actor, distinct from every human |
+| How an Atelier action is recognizable | by the marker Atelier writes into the object's content | by the account that acted, and by the same marker |
+| Multi-user successor | none: the connection is one human's reach | user-to-server tokens per operator under the same App |
+| Revocation blast radius | rotating the token affects everything that token drives | one installation, revocable alone |
 
-**V1 uses a GitHub App with a single installation.** The deciding need is not
-scope, it is identity: ADR 0009 §9 requires a typed actor, and an actor is only
-readable from the platform if the platform recorded who acted. A PAT structurally
-cannot record it — it acts as the operator — which is exactly the failure already
-in this repository's history. Simplicity is real and it buys nothing here, because
-the one thing V1 needs from GitHub auth is the difference a PAT erases.
+**Whichever method is bound, Atelier marks its own actions.** Every object it
+creates or updates carries a machine-readable marker naming Atelier, the run and
+the node that produced it — the same marker decision 5 already requires for
+idempotency, carrying its attribution alongside — and Atelier's own receipts carry
+the typed actor of ADR 0009 §9 regardless of method. So an Atelier action is always
+recognizable in content and always attributed in Atelier's own record.
 
-- **Installation enrolment is an explicit operator act**, with a durable record
-  binding the installation, its repository scope, the reference to its credential,
-  and the enrolling actor — the same shape as ADR 0009 §4's runner enrolment, and
-  deliberately not a second ceremony. An unenrolled installation performs no
-  operation and yields no observation (`platform-installation-unknown`); a revoked
-  one likewise (`platform-installation-revoked`).
-- **Permissions are requested per named operation**, least privilege: read access
-  for the objects observation names, write access only for the objects a published
-  Action operation revision creates or updates. A permission with no operation
-  behind it is not requested.
-- **Multi-user successor**: the same App, with a user-to-server token per operator,
-  so each human acts as themselves while agent actions keep the App identity. V1
-  builds none of it.
-- The operator's own `gh` credential, which the bootstrap harness uses today, is
-  **not an Atelier auth mode**. It gets no adapter support and disappears when this
-  adapter lands.
+**The honest weakening this record names rather than forbids:** in the token method
+the platform itself records the operator as the actor, so the difference between an
+agent's action and the operator's own hand lives in the object's content, which any
+holder of that account can also write. It is honest labeling, not proof. Two named
+consequences follow, and neither blocks the method: the account-level separation
+#8's fourth anti-gaming rule and #79's automation filter would like exists only in
+the App method, and in the token method those owners read the content marker as a
+*claim* with its provenance rather than as platform-proven attribution
+(decision 6). That is the tradeoff the operator is choosing, stated where they can
+see it.
+
+- **Connecting a project is an explicit operator act**, with a durable record
+  binding the project, the chosen method, the reference to its credential, the
+  repository scope and the connecting actor — the same shape as ADR 0009 §4's
+  runner enrolment, and deliberately not a second ceremony. An unconnected project
+  performs no operation and yields no observation
+  (`platform-connection-unknown`); a revoked connection likewise
+  (`platform-connection-revoked`).
+- **Scope is requested per named operation**, least privilege in both methods: read
+  access for the objects observation names, write access only for the objects a
+  published Action operation revision creates or updates. A permission with no
+  operation behind it is not requested, and in the PAT path this is a
+  recommendation the connect surface presents rather than a rule the platform can
+  enforce for the operator.
+- **The multi-user successor exists only on the App path** — user-to-server tokens
+  per operator, so each human acts as themselves while agent actions keep the App
+  identity. A PAT-connected project is single-operator by construction. V1 builds
+  neither.
+- **An ambient credential is never an auth method.** The adapter resolves the
+  reference its project connection names, and never a token that merely happens to
+  be in the environment or in a CLI's configuration — including the `gh` credential
+  the bootstrap harness uses today. Connecting is a decision, not an inheritance.
 
 ### 3. Credentials reach the adapter by reference, never by value
 
-ADR 0009 §6 holds here unchanged; this record only names what the references are.
+ADR 0009 §6 holds here unchanged and **identically for both methods**; this record
+only names what the references are.
 
-- The durable secret is the App **private key**. The adapter's host resolves it
+- The durable secret is the connection's credential — the **token** in the PAT
+  method, the App **private key** in the App method. The adapter's host resolves it
   from a credential reference at composition, exactly as
   `ClaudeSubscriptionSettings.credential_directory` already does for the Claude
-  adapter. It never appears in a workflow document, prompt, context package,
+  adapter. Neither ever appears in a workflow document, prompt, context package,
   event, receipt, log, database row, API resource, crash evidence or test fixture.
-- **Installation tokens are derived, never stored.** They are minted in memory,
-  refreshed by the client, and persisted nowhere. A durable store of an
-  installation token is refused as a design, because it converts a short-lived
-  credential into a long-lived one and gives the leak a place to live.
+  The operator pastes a token into the credential channel, never into a project
+  record, an issue, or a workflow.
+- **Installation tokens are derived, never stored.** In the App method they are
+  minted in memory, refreshed by the client, and persisted nowhere. A durable store
+  of an installation token is refused as a design, because it converts a
+  short-lived credential into a long-lived one and gives the leak a place to live.
+- **A long-lived token is the PAT method's accepted cost**, and it is bounded where
+  Atelier can bound it: the credential channel holds it, rotation and expiry stay
+  the operator's, and revoking it is one operator act on the platform. Atelier
+  neither copies it nor extends its life.
 - A bound credential reference that does not resolve refuses at run start
   (`platform-credential-unresolvable`), with no fallback to another auth mode.
 - **Raw platform responses do not land durably.** ADR 0006 already has the rule:
@@ -185,7 +232,10 @@ choosing an architecture the deployment cannot run.
   key of its own, so the adapter **carries the effect's request hash as a
   machine-readable marker in the object it creates**, and `execute` is always
   readback-then-create. The marker is what lets a re-attempt after a crash find the
-  first effect instead of creating its twin.
+  first effect instead of creating its twin. It is the same marker that carries
+  decision 2's attribution, so an Atelier-created object is recognizable as
+  Atelier's under either auth method, and an object created without it is a defect
+  rather than an untracked effect.
 - **Absence is only authoritative from a strongly consistent read** — a direct read
   of the object, or a listing scoped to the bound repository. The platform's search
   index is eventually consistent, so an empty search is `UNKNOWN`, never
@@ -195,9 +245,9 @@ choosing an architecture the deployment cannot run.
   `contracts.effects` already owns.
 - **An update is idempotent by content.** A target that already carries the intended
   content hash is `FOUND`, not a second write.
-- **Scope is bound.** An operation addressing an object outside the enrolled
-  installation's repository scope refuses (`platform-object-out-of-scope`);
-  multi-project isolation stays #23's.
+- **Scope is bound.** An operation addressing an object outside the connected
+  project's repository scope refuses (`platform-object-out-of-scope`), whichever
+  method holds the credential; multi-project isolation stays #23's.
 - **Requirement-revision publication stops being hand-rolled.** The adapter observes
   the requirement issue and publishes an immutable revision from the exact served
   UTF-8 body bytes and their SHA-256 — the same canonical rule the fleet applies by
@@ -230,12 +280,17 @@ marker. Only the core writes a verdict.
 - **A check or a review is evidence about exactly one commit.** A check result or an
   approval observed against a different head is not evidence about this candidate,
   because an approval goes stale the moment a new commit is pushed.
-- **Every observed action carries its actor**, mapped onto ADR 0009 §9's typed
-  actor: the App installation is an `agent`, recorded with the published revision it
-  acted under; a user is an `operator`. An action whose actor cannot be mapped is
-  recorded as unattributed and counted as neither
-  (`platform-actor-unattributable`), because #8's fourth rule needs that difference
-  and today's record cannot supply it.
+- **Every observed action carries its actor, and how strongly it is proven.** In the
+  App method the platform's own actor maps onto ADR 0009 §9's typed actor: the
+  installation is an `agent`, recorded with the published revision it acted under,
+  and a user is an `operator`. In the PAT method the platform records the operator
+  for both, so the adapter reads decision 2's content marker as an `agent` **claim**
+  and records it as such — a claim with its provenance, never platform-proven
+  attribution. The observed fact therefore carries the actor *and* whether the
+  account or only the content established it, so #8's fourth rule and #79's filter
+  can decide what they trust instead of being told a claim is a proof. An action
+  that maps to neither, and carries no marker, is recorded as unattributed and
+  counted as neither (`platform-actor-unattributable`).
 - **For #8 the adapter supplies facts, not metrics.** Merged or not, the check
   outcome per head, the review rounds, the platform timestamps between opening and
   merging. It computes no rate, no duration aggregate and no cost; token and cost
@@ -244,15 +299,18 @@ marker. Only the core writes a verdict.
 
 ### 7. The client is chosen, not written
 
-A hand-rolled client would own four jobs: signing an App assertion and minting and
-refreshing installation tokens, pagination, conditional requests and rate-limit
-headers, and webhook signature verification. A maintained client owns them, so
-hand-rolling the REST client is refused as a design.
+A hand-rolled client would own four jobs: authenticating both methods — a pasted
+token, and an App assertion whose installation tokens must be minted and refreshed
+— pagination, conditional requests and rate-limit headers, and webhook signature
+verification. A maintained client owns them, so hand-rolling the REST client is
+refused as a design.
 
 The leading candidate is `githubkit` — typed models generated from GitHub's own
-OpenAPI description, App authentication strategies and webhook verification in one
-library, on the Pydantic this project already depends on; `PyGithub` is the
-alternative. The implementing slice confirms the choice by measuring what the
+OpenAPI description, both token and App authentication strategies, and webhook
+verification in one library, on the Pydantic this project already depends on;
+`PyGithub` is the alternative. Carrying both auth methods behind one client is
+itself part of the measurement, since a library that covers only one of them
+leaves the other hand-rolled. The implementing slice confirms the choice by measuring what the
 library deletes and what it makes this project own, and records that measurement.
 Whichever is chosen stays inside the adapter under the boundary contract of
 decision 1.
@@ -261,12 +319,12 @@ decision 1.
 
 | Name | Raised when | Boundary |
 | --- | --- | --- |
-| `platform-installation-unknown` | an operation or observation names an installation with no enrolment record | adapter composition |
-| `platform-installation-revoked` | the enrolment record was removed | adapter composition |
+| `platform-connection-unknown` | an operation or observation names a project with no connection record | adapter composition |
+| `platform-connection-revoked` | the connection record was removed | adapter composition |
 | `platform-credential-unresolvable` | the bound credential reference does not resolve on the adapter's host | run start |
-| `platform-object-out-of-scope` | an operation addresses an object outside the enrolled repository scope | operation binding |
+| `platform-object-out-of-scope` | an operation addresses an object outside the connected repository scope | operation binding |
 | `platform-absence-unprovable` | an operation offers an absence derived from an eventually consistent search | readback |
-| `platform-actor-unattributable` | an observed action's actor maps to neither an enrolled installation nor a user | observation |
+| `platform-actor-unattributable` | an observed action maps to no known actor and carries no Atelier marker | observation |
 | `platform-observation-rate-limited` | the platform's limit stops a poll; visible, cursor preserved | observation |
 
 Durable failure tokens, where any of these must become one, are minted by #16;
@@ -274,12 +332,18 @@ this record borrows that owner rather than opening a second vocabulary.
 
 ## Consequences
 
-- An agent's action becomes distinguishable from the operator's at the source. The
-  prose signature stops being the attribution mechanism, #7 gets a readable actor,
-  and a disowned verdict becomes visible instead of merged.
-- The cost is an operator setup ceremony a token would not need — create the App,
-  install it, place the key. Accepted: that identity is the entire reason for the
-  choice.
+- The operator connects a project in the way they choose, and the low-friction path
+  is a first-class one rather than a concession. Neither method is a different
+  product: the same operations, receipts, refusals and secret rules hold on both.
+- An Atelier action stops being recognizable only by a prose signature. In both
+  methods it carries a machine-readable marker and a typed actor in Atelier's own
+  receipts; in the App method the account proves it too. The difference between the
+  methods is how strong that attribution is, and the record says which one a
+  consumer is looking at instead of flattening the two.
+- The disowned-verdict failure is therefore mitigated in both methods and closed
+  only in the App one. Naming that honestly is the point: a consumer that needs
+  account-level proof — #8's fourth rule, a future multi-user path — knows it must
+  ask for the App method rather than discovering the gap later.
 - V1 gains a poll loop and one new port. It gains no inbound surface, no new
   process and no new trust boundary; ADR 0009's remains the only one.
 - The fleet's hand-rolled patterns become machine truth: a claim or verdict comment
@@ -293,23 +357,28 @@ this record borrows that owner rather than opening a second vocabulary.
 
 ## Required proofs before implementation is accepted
 
-- A full durable and API projection after a fake run contains no private key, no
-  installation token and no credential path — the canary shape ADR 0009 already
-  uses.
+- A full durable and API projection after a fake run contains no token, no private
+  key, no installation token and no credential path — the canary shape ADR 0009
+  already uses, run once per auth method.
+- Both auth methods perform the same operations, produce the same receipt shape and
+  raise the same refusals; no operation is available in one method only.
 - The same Action node re-executed after a crash between send and receipt leaves
   exactly one platform object, found by readback, never a twin.
 - A readback that can only search returns `UNKNOWN` and routes to reconciliation;
   no path returns `AUTHORITATIVE_NOT_FOUND` from a search.
-- An unenrolled or revoked installation performs no operation and yields no
+- An unconnected or revoked project performs no operation and yields no
   observation, and no durable row is written on the refusal path.
+- Every object Atelier creates carries its marker, in both methods; an object
+  created without one fails the proof.
 - A restart mid-observation resumes from the durable cursor, producing the same
   fact set once, with no gap and no replay.
 - A closed-unmerged pull request never reads as merged, and a landing receipt names
   reviewed head, reviewed tree and merge commit.
 - A check result observed against another head is refused as evidence for this
   candidate.
-- An action by the App installation and one by the operator yield different typed
-  actors from the same observation path.
+- In the App method an action by the installation and one by the operator yield
+  different typed actors from the same observation path; in the PAT method the same
+  path records the marker-derived actor as a claim and never as platform-proven.
 - No module outside the GitHub adapter imports the client library or names a GitHub
   concept, proven by the ADR 0005 boundary gate.
 - A rate-limit exhaustion is visible in the projection and loses no cursor.
@@ -324,13 +393,15 @@ isolation (#23); the durable requirement-revision store and trace format
 (#22); cost, pricing and quota (ADR 0008); the remote transport and inbound surface
 a webhook needs (ADR 0009 and #9 part 3).
 
-Stop implementation on: a personal access token, or any credential that makes an
-agent's action wear the operator's identity; a stored installation token; a secret
-value in a workflow, prompt, context package, event, receipt, log or API resource;
-a create without a prior readback; an absence derived from search; a GitHub
-identifier outside the adapter; an agent shell publishing through `gh` instead of
-an Action node; a webhook accepted as truth without a readback; a poll interval
-hardcoded instead of configured; or a label name minted here.
+Stop implementation on: an auth method hardcoded instead of chosen per project
+connection, or either method built as a second-class path with fewer operations; a
+marker-derived actor presented as platform-proven attribution; an object Atelier
+creates without its marker; a stored token or installation token; a secret value in
+a workflow, prompt, context package, event, receipt, log or API resource; a create
+without a prior readback; an absence derived from search; a GitHub identifier
+outside the adapter; an agent shell publishing through `gh` instead of an Action
+node; a webhook accepted as truth without a readback; a poll interval hardcoded
+instead of configured; or a label name minted here.
 
 ## Supersedes
 
