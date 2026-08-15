@@ -141,6 +141,20 @@ class AgentAttemptCancellation:
                 "cancellation cleanup attestation and disposition must agree"
             )
 
+    def matches(self, request: CancelAgentAttemptRequest) -> bool:
+        """Answer whether this cancellation is the one the request commands.
+
+        Redrive progress and disposition are outcomes the request never carries,
+        so they never take part in the identity.
+        """
+
+        return (
+            self.command_id == request.command_id
+            and self.expected_attempt_state_version
+            == request.expected_attempt_state_version
+            and self.replacement is request.replacement
+        )
+
 
 @dataclass(frozen=True)
 class CancelAgentAttemptRequest:

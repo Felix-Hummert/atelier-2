@@ -79,6 +79,21 @@ def persisted_event(
     )
 
 
+SCHEDULER_TURNS_UNTIL_A_TASK_BLOCKS = 10
+
+
+async def settle_scheduled_tasks() -> None:
+    """Give every runnable task the turns it needs to reach its next await.
+
+    These tests prove that something does *not* happen. A wall-clock sleep buys
+    that proof with real time and goes false-green under load, while the event
+    they actually wait for is the scheduler running out of ready work.
+    """
+
+    for _ in range(SCHEDULER_TURNS_UNTIL_A_TASK_BLOCKS):
+        await asyncio.sleep(0)
+
+
 def test_cancelled_query_keeps_global_slot_until_real_thread_finishes() -> None:
     async def scenario() -> None:
         runner = BoundedQueryRunner(
@@ -104,7 +119,7 @@ def test_cancelled_query_keeps_global_slot_until_real_thread_finishes() -> None:
         second_task = asyncio.create_task(
             runner.run(lambda: second_started.set() or "second")
         )
-        await asyncio.sleep(0.05)
+        await settle_scheduled_tasks()
         assert not second_started.is_set()
         assert runner.abandoned_queries == 1
 
@@ -445,7 +460,7 @@ def test_cancellation_while_waiting_for_slot_starts_no_query() -> None:
         first_task = asyncio.create_task(runner.run(first))
         assert await asyncio.to_thread(first_started.wait, 5)
         waiting_task = asyncio.create_task(runner.run(lambda: waiting_started.set()))
-        await asyncio.sleep(0.05)
+        await settle_scheduled_tasks()
         waiting_task.cancel()
         try:
             await waiting_task
@@ -456,6 +471,7 @@ def test_cancellation_while_waiting_for_slot_starts_no_query() -> None:
         release_first.set()
         await first_task
         assert not waiting_started.is_set()
+        assert runner.peak_active_queries == 1
 
     asyncio.run(scenario())
 
@@ -510,7 +526,7 @@ def test_stream_does_not_read_the_next_bounded_page_before_yielding_the_current_
         first = await anext(stream)
         assert first.id is not None
         assert queries.calls == [0]
-        await asyncio.sleep(0.02)
+        await settle_scheduled_tasks()
         assert queries.calls == [0]
 
         second = await anext(stream)
@@ -588,7 +604,7 @@ def test_cancelled_stream_starts_no_next_query_and_blocked_query_closes_once() -
             await asyncio.sleep(0.01)
         assert runner.abandoned_queries == 0
         assert queries.closes == 1
-        await asyncio.sleep(0.03)
+        await settle_scheduled_tasks()
         assert queries.calls == 1
 
     asyncio.run(scenario())

@@ -126,6 +126,11 @@ nodes:
   - {id: action, type: action, next: wait}
   - {id: agent, type: agent, job: test, output: request, next: action}
 """
+CONTENDED_WRITE_TIMEOUT_SECONDS = 0.005
+# Every refusal must come from the configured connection timeout rather than
+# from the 30-second default the pool would otherwise wait out. The multiple is
+# wide on purpose: it names which bound governed, not how fast this machine is.
+REFUSAL_TIMEOUT_MULTIPLE = 200
 
 
 @pytest.fixture
@@ -229,8 +234,11 @@ def test_every_typed_writer_maps_connection_contention_to_unavailable(
         runtime.engine.url,
         pool_size=1,
         max_overflow=0,
-        pool_timeout=0.005,
-        connect_args={"check_same_thread": False, "timeout": 0.005},
+        pool_timeout=CONTENDED_WRITE_TIMEOUT_SECONDS,
+        connect_args={
+            "check_same_thread": False,
+            "timeout": CONTENDED_WRITE_TIMEOUT_SECONDS,
+        },
     )
     operations = (
         lambda: DbosWorkflowRevisionPublisher(configured).publish(revision),
@@ -267,7 +275,10 @@ def test_every_typed_writer_maps_connection_contention_to_unavailable(
         configured.dispose()
 
     assert all(isinstance(result, DurableWriteUnavailable) for result in results)
-    assert time.monotonic() - started < 1
+    assert (
+        time.monotonic() - started
+        < CONTENDED_WRITE_TIMEOUT_SECONDS * REFUSAL_TIMEOUT_MULTIPLE
+    )
 
 
 def test_missing_revision_is_a_typed_in_transaction_start_result(

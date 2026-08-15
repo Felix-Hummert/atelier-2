@@ -18,6 +18,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     AgentAttemptState,
     AgentProcessOwnerId,
+    CancelAgentAttemptRequest,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
@@ -176,3 +177,50 @@ def test_attempt_contract_rejects_every_noncanonical_state_shape(
 ) -> None:
     with pytest.raises((TypeError, ValueError)):
         mutation(_attempt())
+
+
+def _cancellation() -> AgentAttemptCancellation:
+    return AgentAttemptCancellation(
+        command_id="cancel-17",
+        expected_attempt_state_version=1,
+        replacement=AgentAttemptReplacement.ONE,
+    )
+
+
+def _cancel_request() -> CancelAgentAttemptRequest:
+    return CancelAgentAttemptRequest(
+        RunId("run-1"),
+        AgentAttemptId("2" * 64),
+        "cancel-17",
+        1,
+        AgentAttemptReplacement.ONE,
+    )
+
+
+def test_a_cancellation_matches_the_request_that_named_its_exact_command() -> None:
+    assert _cancellation().matches(_cancel_request())
+
+
+@pytest.mark.parametrize(
+    "divergence",
+    (
+        {"command_id": "cancel-18"},
+        {"expected_attempt_state_version": 2},
+        {"replacement": AgentAttemptReplacement.NONE},
+    ),
+    ids=("command id", "expected state version", "replacement policy"),
+)
+def test_a_cancellation_matches_no_request_that_differs_in_any_bound_field(
+    divergence: dict[str, object],
+) -> None:
+    assert not _cancellation().matches(replace(_cancel_request(), **divergence))
+
+
+def test_a_cancellation_ignores_progress_the_request_never_carries() -> None:
+    attested = replace(
+        _cancellation(),
+        redrive_state=AgentAttemptRedriveState.CLEANUP_ATTESTED,
+        disposition=AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
+    )
+
+    assert attested.matches(_cancel_request())

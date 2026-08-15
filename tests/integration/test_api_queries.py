@@ -51,6 +51,12 @@ from atelier2.ports.workflow_revisions import (
 )
 from tests.scenarios.agents import agent_attempt_execution, commit_configured_agent
 
+POOL_CHECKOUT_TIMEOUT_SECONDS = 0.001
+# A refusal must come from the configured checkout timeout rather than from the
+# 30-second default the pool would otherwise wait out. The multiple is wide on
+# purpose: it names which bound governed, and it must not read machine speed.
+REFUSAL_TIMEOUT_MULTIPLE = 500
+
 
 @pytest.fixture
 def engine(tmp_path: Path) -> Iterator[Engine]:
@@ -263,7 +269,7 @@ def test_pool_checkout_timeout_is_a_typed_read_unavailable(tmp_path: Path) -> No
         f"sqlite:///{tmp_path / 'pool-timeout.sqlite'}",
         pool_size=1,
         max_overflow=0,
-        pool_timeout=0.001,
+        pool_timeout=POOL_CHECKOUT_TIMEOUT_SECONDS,
     )
     initialize_schema(configured)
     try:
@@ -271,7 +277,10 @@ def test_pool_checkout_timeout_is_a_typed_read_unavailable(tmp_path: Path) -> No
             started = time.monotonic()
             result = DbosQueries(configured).list_workflow_revisions(None, 1)
         assert isinstance(result, ReadUnavailable)
-        assert time.monotonic() - started < 0.5
+        assert (
+            time.monotonic() - started
+            < POOL_CHECKOUT_TIMEOUT_SECONDS * REFUSAL_TIMEOUT_MULTIPLE
+        )
     finally:
         configured.dispose()
 
