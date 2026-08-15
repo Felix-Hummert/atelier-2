@@ -1,7 +1,7 @@
 # ADR 0012: Acceptance sentences are declared in the repository and proven by the run reports
 
-- Status: ACCEPTED 2026-08-15 — the store and the claim syntax are implemented;
-  the report evidence lands with the remaining heads of
+- Status: ACCEPTED 2026-08-15 — implemented: the store, the claim syntax, and
+  the run-report evidence all land with
   [#94](https://github.com/FlexOr2/atelier-2/issues/94)
 
 ## Context
