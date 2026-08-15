@@ -12,9 +12,19 @@ import {
   startLoading,
   streamProjection
 } from "../../src/lib/runProjection";
-import type { RunV1, RunV2, WorkflowRevisionDetail } from "../../src/api/client";
-
-const digest = "a".repeat(64);
+import type { RunV1, RunV2 } from "../../src/api/client";
+import {
+  actionCompleted as actionEvent,
+  agentCompleted as event,
+  agentCompletedRun as startedRun,
+  eventCursor,
+  publicReference,
+  reconciliationRequired as reconciliationRequiredEvent,
+  revisionHash as digest,
+  waitingInput as waitInputEvent,
+  waitingInputRun as waitingRun,
+  workflowRevision as workflow
+} from "../support/workflowV1";
 
 describe("retained resource truth", () => {
   it("keeps confirmed data visible while a refresh loads and later fails", () => {
@@ -62,7 +72,7 @@ describe("contiguous durable SSE projection", () => {
     const confirmed = applyDurableEvent(projection(), raw, event(1));
     const failed = applyDurableEvent(confirmed, JSON.stringify(event(3)), event(3));
 
-    const restarted = restartStreamProjection(failed, "run1.cnVu", digest);
+    const restarted = restartStreamProjection(failed, publicReference, digest);
 
     expect(restarted.events).toEqual([event(1)]);
     expect(restarted.last_sequence).toBe(1);
@@ -185,7 +195,7 @@ describe("a stream that ends because it failed", () => {
       JSON.stringify(streamFailure())
     );
 
-    const restarted = restartStreamProjection(failed, "run1.cnVu", digest);
+    const restarted = restartStreamProjection(failed, publicReference, digest);
 
     expect(restarted.connection).toBe("connecting");
     expect(restarted.stream_failure).toBeNull();
@@ -271,7 +281,7 @@ describe("read-only node rail", () => {
   it("orders the graph from its start edge and projects all four durable node states", () => {
     const events = [
       event(1),
-      actionEvent(2, "ACTION_COMPLETED"),
+      actionEvent(2),
       waitInputEvent(3)
     ];
 
@@ -323,7 +333,7 @@ describe("read-only node rail", () => {
     const advanced = projectNodeRail(initial, workflow().graph, [
       event(1),
       reconciliationRequiredEvent(2),
-      actionEvent(3, "ACTION_COMPLETED")
+      actionEvent(3)
     ]);
 
     expect(caughtUp.map(({ state }) => state)).toEqual(["done", "working", "queued", "queued"]);
@@ -333,31 +343,7 @@ describe("read-only node rail", () => {
 });
 
 function projection() {
-  return streamProjection("run1.cnVu", digest);
-}
-
-function event(
-  sequence: number,
-  changes: Partial<{
-    cursor: string;
-    public_run_reference: string;
-    workflow_revision_hash: string;
-    node_id: string;
-  }> = {}
-) {
-  return {
-    cursor: `event1.cnVu.${sequence}`,
-    sequence,
-    public_run_reference: "run1.cnVu",
-    workflow_revision_hash: digest,
-    node_id: "agent",
-    node_execution_id: digest,
-    event_hash: digest,
-    event: "AGENT_COMPLETED" as const,
-    output: "result",
-    payload_hash: digest,
-    ...changes
-  };
+  return streamProjection(publicReference, digest);
 }
 
 function problem() {
@@ -381,99 +367,6 @@ function streamFailure() {
   };
 }
 
-function workflow(): WorkflowRevisionDetail {
-  return {
-    revision_hash: digest,
-    document_base64: "",
-    graph: {
-      format_version: 1,
-      start_node_id: "agent",
-      nodes: [
-        { type: "agent", node_id: "agent", job: "Build it", output: "candidate", next_node_id: "action" },
-        { type: "action", node_id: "action", next_node_id: "wait" },
-        { type: "wait", node_id: "wait", answer_type: "integer", next_node_id: "final" },
-        { type: "subworkflow", node_id: "final", operation: "add", operands: [2, 3], next_node_id: null }
-      ]
-    }
-  };
-}
-
-function waitingRun(): RunV1 {
-  return {
-    run_id: "run",
-    public_run_reference: "run1.cnVu",
-    workflow_revision_hash: digest,
-    state_version: 3,
-    state: "WAITING_INPUT",
-    current_node: workflow().graph.nodes[2]! as RunV1["current_node"],
-    waiting: { type: "WAITING_INPUT", node_id: "wait", answer_type: "integer" },
-    terminal_hash: null,
-    latest_event_cursor: "event1.cnVu.3"
-  };
-}
-
-function startedRun(): RunV1 {
-  return {
-    ...waitingRun(),
-    state_version: 1,
-    state: "STARTED",
-    current_node: workflow().graph.nodes[1]! as RunV1["current_node"],
-    waiting: { type: "NONE" },
-    latest_event_cursor: "event1.cnVu.1"
-  };
-}
-
-function actionEvent(sequence: number, kind: "ACTION_COMPLETED") {
-  return {
-    cursor: `event1.cnVu.${sequence}`,
-    sequence,
-    public_run_reference: "run1.cnVu",
-    workflow_revision_hash: digest,
-    node_id: "action",
-    node_execution_id: digest,
-    event_hash: digest,
-    event: kind,
-    receipt: {
-      logical_effect_key: "effect",
-      request_hash: digest,
-      effect_id: "effect-1",
-      result_hash: digest,
-      result_base64: "cmVzdWx0",
-      confirmation_source: "ADAPTER_EXECUTION" as const,
-      reconcile_command_id: null
-    }
-  };
-}
-
-function waitInputEvent(sequence: number) {
-  return {
-    cursor: `event1.cnVu.${sequence}`,
-    sequence,
-    public_run_reference: "run1.cnVu",
-    workflow_revision_hash: digest,
-    node_id: "wait",
-    node_execution_id: digest,
-    event_hash: digest,
-    event: "WAITING_INPUT" as const,
-    answer_type: "integer" as const
-  };
-}
-
-function reconciliationRequiredEvent(sequence: number) {
-  return {
-    cursor: `event1.cnVu.${sequence}`,
-    sequence,
-    public_run_reference: "run1.cnVu",
-    workflow_revision_hash: digest,
-    node_id: "action",
-    node_execution_id: digest,
-    event_hash: digest,
-    event: "ACTION_RECONCILIATION_REQUIRED" as const,
-    request_base64: "cmVxdWVzdA==",
-    request_hash: digest
-  };
-}
-
 function v2Scenario() {
   const graph = {
     format_version: 2 as const,
@@ -486,7 +379,7 @@ function v2Scenario() {
   const run: RunV2 = {
     workflow_format_version: 2,
     run_id: "run",
-    public_run_reference: "run1.cnVu",
+    public_run_reference: publicReference,
     workflow_revision_hash: digest,
     agent_binding_set_hash: digest,
     agent_bindings: [],
@@ -510,9 +403,9 @@ function v2AgentEvent(
 ) {
   const common = {
     workflow_format_version: 2 as const,
-    cursor: "event1.cnVu.1",
+    cursor: eventCursor(1),
     sequence: 1,
-    public_run_reference: "run1.cnVu",
+    public_run_reference: publicReference,
     workflow_revision_hash: digest,
     node_id: "agent",
     node_execution_id: digest,
@@ -546,7 +439,7 @@ function v2ReplacementScenario(
     ...scenario,
     run: {
       ...scenario.run,
-      latest_event_cursor: "event1.cnVu.1",
+      latest_event_cursor: eventCursor(1),
       agent_attempts: [
         {
           ...firstAttempt,

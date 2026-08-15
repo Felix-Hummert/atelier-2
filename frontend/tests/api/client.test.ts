@@ -8,6 +8,7 @@ import {
   problemDefinitions,
   type Problem
 } from "../../src/api/client";
+import { workflowRevision } from "../support/workflowV1";
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
@@ -55,20 +56,7 @@ const v2Cancellation = { ...v2Attempt, command_id: "cancel-1", replacement: "ONE
 
 describe("closed API decoders", () => {
   it("decodes all four graph node variants and refuses unknown fields", () => {
-    const decoded = decodeWorkflowRevisionDetail({
-      revision_hash: digest,
-      document_base64: "eA==",
-      graph: {
-        format_version: 1,
-        start_node_id: "agent",
-        nodes: [
-          { type: "agent", node_id: "agent", job: "do work", output: "x", next_node_id: "action" },
-          { type: "action", node_id: "action", next_node_id: "wait" },
-          { type: "wait", node_id: "wait", answer_type: "integer", next_node_id: "final" },
-          { type: "subworkflow", node_id: "final", operation: "add", operands: [2, 3], next_node_id: null }
-        ]
-      }
-    });
+    const decoded = decodeWorkflowRevisionDetail(workflowRevision());
 
     expect(decoded.graph.nodes.map((node) => node.type)).toEqual([
       "agent",

@@ -6,10 +6,7 @@ import {
   CockpitRequestError,
   createCockpitApi,
   type CockpitApi,
-  type Run,
-  type RunV1,
-  type RunEventHandlers,
-  type WorkflowRevisionDetail
+  type Run
 } from "../../src/api/client";
 import {
   MutationJournal,
@@ -17,10 +14,21 @@ import {
   waitMutationId,
   type WaitMutation
 } from "../../src/lib/mutationJournal";
-
-const digest = "a".repeat(64);
-const answerHash = "4523540f1504cd17100c4835e85b7eefd49911580f8efff0599a8f283be6b9e3";
-const publicReference = "run1.cnVu";
+import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
+import { exactBody } from "../support/exactBytes";
+import {
+  actionCompleted,
+  agentCompleted,
+  answerHash,
+  answeredRun,
+  publicReference,
+  revisionHash as digest,
+  startedRun,
+  waitAnswered,
+  waitingInput,
+  waitingInputRun,
+  workflowRevision as revision
+} from "../support/workflowV1";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -29,19 +37,19 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe("Phase 4 Wait control", () => {
+describe("Wait control", () => {
   it("wait_ambiguous_retry_is_exact_and_disappears_after_durable_event", async () => {
     const journal = new MutationJournal(sessionStorage);
-    const feed = new FakeFeed();
+    const feed = new FakeRunEventFeed();
     const answer = vi
       .fn()
       .mockRejectedValueOnce(new CockpitRequestError("The connection ended without a response."))
-      .mockResolvedValueOnce({ status: 202, value: waitingRun() });
+      .mockResolvedValueOnce({ status: 202, value: waitingInputRun() });
     const getRun = vi
       .fn()
-      .mockResolvedValueOnce(waitingRun())
-      .mockResolvedValueOnce(waitingRun())
-      .mockResolvedValue(afterAnswerRun());
+      .mockResolvedValueOnce(waitingInputRun())
+      .mockResolvedValueOnce(waitingInputRun())
+      .mockResolvedValue(answeredRun());
 
     render(App, {
       props: {
@@ -131,12 +139,12 @@ describe("Phase 4 Wait control", () => {
 
   it("keeps a durable answer authoritative when its event arrives before the 202 response", async () => {
     const journal = new MutationJournal(sessionStorage);
-    const feed = new FakeFeed();
+    const feed = new FakeRunEventFeed();
     let acceptAnswer!: (result: { status: number; value: Run }) => void;
     const answer = vi.fn(
       () => new Promise<{ status: number; value: Run }>((resolve) => { acceptAnswer = resolve; })
     );
-    const getRun = vi.fn().mockResolvedValueOnce(waitingRun()).mockResolvedValue(afterAnswerRun());
+    const getRun = vi.fn().mockResolvedValueOnce(waitingInputRun()).mockResolvedValue(answeredRun());
     render(App, {
       props: {
         cockpitApi: api({ answer, getRun, openRunEvents: feed.open }),
@@ -153,12 +161,37 @@ describe("Phase 4 Wait control", () => {
     feed.handlers?.event(JSON.stringify(actionCompleted(2)));
     feed.handlers?.event(JSON.stringify(waitingInput(3)));
     feed.handlers?.event(JSON.stringify(waitAnswered(4)));
-    acceptAnswer({ status: 202, value: waitingRun() });
+    acceptAnswer({ status: 202, value: waitingInputRun() });
 
     expect(await screen.findByText("started")).toBeTruthy();
     await waitFor(async () => expect(await journal.entries()).toEqual([]));
     expect(screen.queryByRole("heading", { name: /Answer/ })).toBeNull();
     expect(screen.getByRole("article", { name: "wait — Done" })).toBeTruthy();
+  });
+
+  it("names a definitively refused answer as failed and hands the form back with nothing pending", async () => {
+    const journal = new MutationJournal(sessionStorage);
+    const answer = vi.fn().mockRejectedValue(
+      new CockpitRequestError("The answer state conflicts with the durable run.", {
+        type: "urn:atelier2:problem:v1:answer-state-conflict",
+        title: "Answer state conflict",
+        status: 409,
+        detail: "The durable run is no longer waiting for this answer."
+      }, true)
+    );
+    render(App, { props: { cockpitApi: api({ answer }), mutationJournal: journal } });
+
+    await fireEvent.input(await screen.findByLabelText("Integer answer"), {
+      target: { value: "17" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+
+    const alert = await screen.findByRole("alert", { name: "Send failed" });
+    expect(alert.textContent).toContain("The answer state conflicts with the durable run.");
+    expect(screen.getByRole("heading", { name: "Answer needed" }).isConnected).toBe(true);
+    expect(screen.getByLabelText("Integer answer").isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(await journal.entries()).toEqual([]);
   });
 
   it("shows no Wait action unless the authoritative run is WAITING_INPUT", async () => {
@@ -172,7 +205,7 @@ describe("Phase 4 Wait control", () => {
   it("sends the saved exact JSON bytes to the R2 answer endpoint", async () => {
     const mutation = await waitMutation(publicReference, digest, "wait", "17");
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify(waitingRun()), {
+      new Response(JSON.stringify(waitingInputRun()), {
         status: 202,
         headers: { "content-type": "application/json" }
       })
@@ -189,124 +222,10 @@ describe("Phase 4 Wait control", () => {
   });
 });
 
-class FakeFeed {
-  handlers: RunEventHandlers | null = null;
-  open = vi.fn((_publicReference: string, handlers: RunEventHandlers) => {
-    this.handlers = handlers;
-    return { close: vi.fn() };
-  });
-}
-
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
-  return {
-    listRuns: vi.fn(async () => ({ items: [], next_after: null })),
-    listWorkflowRevisions: vi.fn(async () => ({ items: [], next_after_revision_hash: null })),
-    publish: vi.fn(),
-    publishAuthProfile: vi.fn(),
-    publishAgentConfiguration: vi.fn(),
-    start: vi.fn(),
-    answer: vi.fn(),
-    reconcile: vi.fn(),
-    getRun: vi.fn(async () => waitingRun()),
+  return cockpitApiStub({
+    getRun: vi.fn(async () => waitingInputRun()),
     getWorkflowRevision: vi.fn(async () => revision()),
-    openRunEvents: vi.fn(),
     ...overrides
-  };
-}
-
-function revision(): WorkflowRevisionDetail {
-  return {
-    revision_hash: digest,
-    document_base64: "",
-    graph: {
-      format_version: 1,
-      start_node_id: "agent",
-      nodes: [
-        { type: "agent", node_id: "agent", job: "Build it", output: "candidate", next_node_id: "action" },
-        { type: "action", node_id: "action", next_node_id: "wait" },
-        { type: "wait", node_id: "wait", answer_type: "integer", next_node_id: "final" },
-        { type: "subworkflow", node_id: "final", operation: "add", operands: [2, 3], next_node_id: null }
-      ]
-    }
-  };
-}
-
-function startedRun(): RunV1 {
-  return {
-    run_id: "run",
-    public_run_reference: publicReference,
-    workflow_revision_hash: digest,
-    state_version: 0,
-    state: "STARTED",
-    current_node: revision().graph.nodes[0]! as RunV1["current_node"],
-    waiting: { type: "NONE" },
-    terminal_hash: null,
-    latest_event_cursor: null
-  };
-}
-
-function waitingRun(): RunV1 {
-  return {
-    ...startedRun(),
-    state_version: 3,
-    state: "WAITING_INPUT",
-    current_node: revision().graph.nodes[2]! as RunV1["current_node"],
-    waiting: { type: "WAITING_INPUT", node_id: "wait", answer_type: "integer" },
-    latest_event_cursor: "event1.cnVu.3"
-  };
-}
-
-function afterAnswerRun(): RunV1 {
-  return {
-    ...startedRun(),
-    state_version: 4,
-    current_node: revision().graph.nodes[3]! as RunV1["current_node"],
-    latest_event_cursor: "event1.cnVu.4"
-  };
-}
-
-function event(sequence: number, node_id: string, kind: string, fields: Record<string, unknown>) {
-  return {
-    cursor: `event1.cnVu.${sequence}`,
-    sequence,
-    public_run_reference: publicReference,
-    workflow_revision_hash: digest,
-    node_id,
-    node_execution_id: digest,
-    event_hash: digest,
-    event: kind,
-    ...fields
-  };
-}
-
-function agentCompleted(sequence: number) {
-  return event(sequence, "agent", "AGENT_COMPLETED", { output: "candidate", payload_hash: digest });
-}
-
-function actionCompleted(sequence: number) {
-  return event(sequence, "action", "ACTION_COMPLETED", {
-    receipt: {
-      logical_effect_key: "effect",
-      request_hash: digest,
-      effect_id: "effect-1",
-      result_hash: digest,
-      result_base64: "cmVzdWx0",
-      confirmation_source: "ADAPTER_EXECUTION",
-      reconcile_command_id: null
-    }
   });
-}
-
-function waitingInput(sequence: number) {
-  return event(sequence, "wait", "WAITING_INPUT", { answer_type: "integer" });
-}
-
-function waitAnswered(sequence: number) {
-  return event(sequence, "wait", "WAIT_ANSWERED", { answer: "17", answer_hash: answerHash });
-}
-
-function exactBody(mutation: WaitMutation): string {
-  return new TextDecoder().decode(
-    Uint8Array.from(atob(mutation.body_base64), (character) => character.charCodeAt(0))
-  );
 }

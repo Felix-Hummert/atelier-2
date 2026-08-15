@@ -5,6 +5,7 @@ import {
   type MutationEnvelope,
   type MutationEvidence
 } from "../../src/lib/mutationJournal";
+import { utf8Base64 } from "../support/exactBytes";
 
 const revisionHash = "5e828c8d522a41e966cd17b8172ede0d954f44be653f832cd4f9dc9e8271fb9b";
 const requestHash = "1f58b9145b24d108d7ac38887338b3ea3229833b9c1e418250343f907bfd1047";
@@ -357,11 +358,6 @@ function httpEvidence(envelope: MutationEnvelope, status: number): MutationEvide
     target: envelope.target,
     request_body_base64: envelope.body_base64
   };
-}
-
-function utf8Base64(value: string): string {
-  const bytes = new TextEncoder().encode(value);
-  return btoa(String.fromCharCode(...bytes));
 }
 
 function storage(overrides: Partial<Storage>): Storage {

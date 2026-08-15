@@ -8,12 +8,15 @@ import {
   createCockpitApi,
   type CockpitApi,
   type RunEventHandlers,
+  type RunPage,
   type RunEvent,
   type RunV1,
   type RunV2,
   type WorkflowRevisionDetail
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
+import { base64Bytes, bytesBase64 } from "../support/exactBytes";
 
 const revisionHash = "a".repeat(64);
 const publicReference = "run1.cnVuLWRyYWZ0";
@@ -29,7 +32,7 @@ afterEach(() => {
   cleanup();
 });
 
-describe("Phase 2 mobile run entry", () => {
+describe("mobile run entry", () => {
   it("lists a bounded durable run page and keeps confirmed rows visible when refresh fails", async () => {
     const listRuns = vi.fn().mockResolvedValue({ items: [run()], next_after: null });
     const cockpitApi = api({ listRuns });
@@ -43,6 +46,29 @@ describe("Phase 2 mobile run entry", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("offline");
     expect(screen.getByRole("link", { name: /run-draft/i }).isConnected).toBe(true);
+  });
+
+  it("says the durable run list is still loading instead of showing an empty one", async () => {
+    const listRuns = vi.fn(() => new Promise<RunPage>(() => undefined));
+    render(App, {
+      props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    expect((await screen.findByRole("status")).textContent).toBe("Loading durable runs…");
+    expect(screen.queryByText("No runs yet")).toBeNull();
+    expect(screen.queryByRole("listitem")).toBeNull();
+  });
+
+  it("names an empty durable run list and points at where a run comes from", async () => {
+    const listRuns = vi.fn(async () => ({ items: [], next_after: null }));
+    render(App, {
+      props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    expect((await screen.findByRole("heading", { name: "No runs yet" })).isConnected).toBe(true);
+    expect(screen.getByText("Start one from a saved or newly published workflow.").isConnected).toBe(true);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("link", { name: "New" }).getAttribute("href")).toBe("/atelier/new");
   });
 
   it("new_saved_mobile starts a saved revision with one visible Run ID and stable bytes", async () => {
@@ -248,7 +274,7 @@ describe("Phase 2 mobile run entry", () => {
 
   it("shows byte-verified V2 output and preserves synchronous event arrival order", async () => {
     window.history.replaceState(null, "", `/atelier/runs/${v2PublicReference}`);
-    const feed = runEventFeed();
+    const feed = new FakeRunEventFeed();
     const digestImplementation = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
     let releaseFirstDigest = (): void => {};
     const firstDigestGate = new Promise<void>((resolve) => { releaseFirstDigest = resolve; });
@@ -294,7 +320,7 @@ describe("Phase 2 mobile run entry", () => {
 
   it("closes the stream and keeps contradictory V2 output out of the cockpit", async () => {
     window.history.replaceState(null, "", `/atelier/runs/${v2PublicReference}`);
-    const feed = runEventFeed();
+    const feed = new FakeRunEventFeed();
     render(App, {
       props: {
         cockpitApi: api({
@@ -321,7 +347,7 @@ describe("Phase 2 mobile run entry", () => {
 
   it("reports the durable corruption the stream named instead of a finished run", async () => {
     window.history.replaceState(null, "", `/atelier/runs/${v2PublicReference}`);
-    const feed = runEventFeed();
+    const feed = new FakeRunEventFeed();
     render(App, {
       props: {
         cockpitApi: api({
@@ -567,23 +593,17 @@ describe("same-origin API transport", () => {
 });
 
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
-  return {
-    listRuns: vi.fn(async () => ({ items: [], next_after: null })),
+  return cockpitApiStub({
     listWorkflowRevisions: vi.fn(async () => ({
       items: [{ revision_hash: revisionHash }],
       next_after_revision_hash: null
     })),
     publish: vi.fn(async () => ({ status: 201, value: revision() })),
-    publishAuthProfile: vi.fn(),
-    publishAgentConfiguration: vi.fn(),
     start: vi.fn(async () => ({ status: 201, value: run() })),
-    answer: vi.fn(),
-    reconcile: vi.fn(),
     getRun: vi.fn(async () => run()),
     getWorkflowRevision: vi.fn(async () => revision()),
-    openRunEvents: vi.fn(() => ({ close: vi.fn() })),
     ...overrides
-  };
+  });
 }
 
 function run(): RunV1 {
@@ -665,23 +685,6 @@ function v2CompletedEvent(changes: Record<string, unknown> = {}) {
     ...v2TerminalEvent(revisionHash),
     ...changes
   };
-}
-
-function runEventFeed() {
-  const feed: {
-    handlers: RunEventHandlers | null;
-    close: ReturnType<typeof vi.fn>;
-    open: CockpitApi["openRunEvents"];
-  } = {
-    handlers: null,
-    close: vi.fn(),
-    open: vi.fn()
-  };
-  feed.open = vi.fn((_publicReference, handlers) => {
-    feed.handlers = handlers;
-    return { close: feed.close };
-  });
-  return feed;
 }
 
 function v2InterruptedEvent(
@@ -769,14 +772,6 @@ function textBody(mutation: { body_base64: string } | undefined): string {
 
 function jsonBody(mutation: { body_base64: string } | undefined): unknown {
   return JSON.parse(textBody(mutation));
-}
-
-function base64Bytes(value: string): Uint8Array {
-  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
-}
-
-function bytesBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes));
 }
 
 function withinRole(container: HTMLElement, role: string, name: string): HTMLElement {
