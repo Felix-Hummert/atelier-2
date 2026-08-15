@@ -14,6 +14,7 @@ from atelier2.api.openapi import (
     EVENT_NAMES,
     EVENT_PATH,
 )
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 
@@ -245,3 +246,22 @@ def test_first_request_reuses_schema_built_during_app_construction(
 
     assert response.status_code == 200
     assert generated == 1
+
+
+def test_served_agent_attempt_state_is_exactly_the_public_vocabulary() -> None:
+    app = create_app(
+        source_commit="commit",
+        source_tree="tree",
+        ports=empty_ports(),
+        limits=api_limits(),
+        event_poll_backoff=event_poll_backoff(),
+    )
+
+    schema = app.openapi()
+    served = schema["components"]["schemas"]["AgentAttemptResourceV2"]["properties"]
+
+    assert served["state"] == {
+        "enum": [state.value for state in PublicAgentAttemptState],
+        "title": "State",
+        "type": "string",
+    }

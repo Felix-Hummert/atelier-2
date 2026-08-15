@@ -26,6 +26,7 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import RunEventKind, is_canonical_integer_bytes
 from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.workflows import (
     ActionNode,
@@ -304,29 +305,43 @@ class WaitingReconciliationResourceV2(ApiModel):
     pending_command: ReconciliationCommandResource | None
 
 
+# The wire names the vocabulary as the closed union of its owner's members rather
+# than as the owner's type, because the served document spells a union out where the
+# field stands and puts an enum behind a component reference. Giving the vocabulary
+# an owner is not allowed to move a byte of the document.
+PublicAttemptStateName = Literal[
+    PublicAgentAttemptState.PREPARED,
+    PublicAgentAttemptState.POSSIBLY_RAN,
+    PublicAgentAttemptState.CANCEL_REQUESTED,
+    PublicAgentAttemptState.CANCELLED,
+    PublicAgentAttemptState.INTERRUPTED,
+    PublicAgentAttemptState.FAILED,
+]
+
+
 class AgentAttemptResourceV2(ApiModel):
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
     request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
-    state: Literal[
-        "PREPARED",
-        "POSSIBLY_RAN",
-        "CANCEL_REQUESTED",
-        "CANCELLED",
-        "INTERRUPTED",
-        "FAILED",
-    ]
+    state: PublicAttemptStateName
     failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"] | None
     cancellation: AgentAttemptCancellationResourceV2 | None
 
     @model_validator(mode="after")
     def validate_failure_shape(self) -> AgentAttemptResourceV2:
-        if (self.state == "FAILED") != (self.failure_code is not None):
-            raise ValueError("agent attempt state and failure code disagree")
-        if (self.state in {"CANCEL_REQUESTED", "CANCELLED", "INTERRUPTED"}) != (
-            self.cancellation is not None
+        if (self.state is PublicAgentAttemptState.FAILED) != (
+            self.failure_code is not None
         ):
+            raise ValueError("agent attempt state and failure code disagree")
+        if (
+            self.state
+            in {
+                PublicAgentAttemptState.CANCEL_REQUESTED,
+                PublicAgentAttemptState.CANCELLED,
+                PublicAgentAttemptState.INTERRUPTED,
+            }
+        ) != (self.cancellation is not None):
             raise ValueError("agent attempt state and cancellation disagree")
         return self
 
@@ -919,17 +934,7 @@ def _run_resource_v2(
                 node_execution_id=attempt.node_execution_id.value,
                 request_hash=attempt.request_hash.value,
                 attempt_ordinal=cast(Literal[1, 2], attempt.attempt_ordinal),
-                state=cast(
-                    Literal[
-                        "PREPARED",
-                        "POSSIBLY_RAN",
-                        "CANCEL_REQUESTED",
-                        "CANCELLED",
-                        "INTERRUPTED",
-                        "FAILED",
-                    ],
-                    attempt.state,
-                ),
+                state=cast(PublicAttemptStateName, attempt.state),
                 failure_code=(
                     None if attempt.failure_code is None else attempt.failure_code.value
                 ),

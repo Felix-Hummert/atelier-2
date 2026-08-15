@@ -14,6 +14,7 @@ from atelier2.contracts.agent_attempts import (
     CancelAgentAttemptRequest,
 )
 from atelier2.contracts.agents import AgentExecutorOperationalIdentity
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
@@ -57,7 +58,7 @@ class _RunQueries:
         projection_limit: DurableProjectionLimit | None = None,
     ) -> GetRunResult:
         del run_id, projection_limit
-        return RunFound(_projection("PREPARED"))
+        return RunFound(_projection(PublicAgentAttemptState.PREPARED))
 
     def list_runs(
         self,
@@ -79,7 +80,7 @@ class _RunQueries:
 
 
 def _attempt() -> AgentAttempt:
-    projection = _projection("PREPARED")
+    projection = _projection(PublicAgentAttemptState.PREPARED)
     projected = projection.current_agent_attempt
     assert projected is not None
     run = projection.run

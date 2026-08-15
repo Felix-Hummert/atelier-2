@@ -18,6 +18,7 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import AnyRun
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.workflows import AnyWorkflowGraph
 from atelier2.ports.workflow_revisions import (
@@ -47,7 +48,7 @@ class AgentAttemptProjection:
     node_execution_id: NodeExecutionId
     request_hash: AgentExecutionRequestHash
     attempt_ordinal: int
-    state: str
+    state: PublicAgentAttemptState
     failure_code: AgentAttemptFailureCode | None
     cancellation: AgentAttemptCancellationProjection | None = None
 
