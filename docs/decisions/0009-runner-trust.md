@@ -67,18 +67,21 @@ newline beside the digest, so a reader can re-derive it rather than trust it.
 
 ## Decision
 
-### 1. A runner is the process that owns provider invocation
+### 1. A runner is the per-invocation execution scope that owns provider invocation
 
-A **runner** is the process that launches, supervises, and reaps the provider
-process for exactly one bound attempt, on exactly one host, together with the
-credential material that host holds. Not runners: the durable core and the API
-(the **coordinating service**), the cockpit and the conductor (#7) — both API
-clients — and the provider CLI child, which is the runner's child.
+A **runner** is the bounded **execution scope** that owns the provider
+invocation of exactly one bound attempt, on exactly one host, together with the
+credential material that host holds — and that is **identified per invocation**,
+so the scope begins and ends with that one invocation and no later invocation
+inherits its identity. Ownership and identity are the whole definition; the shape
+of the thing that carries the scope is not part of it. Not runners: the durable
+core and the API (the **coordinating service**), the cockpit and the conductor
+(#7) — both API clients — and the provider CLI process, which runs *inside* a
+runner and is never one.
 
-**The runner has always been a separate process, and which process it is, is
-mid-replacement.** The definition above is deliberately about what a runner
-*owns*, never about how it is built, because the same-host runner is being
-replaced underneath it:
+**What a runner is stays fixed; what carries it is mid-replacement**, and the
+two must not be conflated, because the same-host carrier is being replaced
+underneath this record:
 
 - **Predecessor, condemned.** Today the service spawns one watchdog process per
   attempt (`adapters/agent_processes.py`) and reaches it over a Unix control
@@ -88,20 +91,38 @@ replaced underneath it:
   the runner, without qualification. This 1,564-line supervisor, watchdog and
   exec-guard lifecycle is **deleted** by #15's Slice 2 cutover under a binding
   ruling. It is named here as the current state, never as the target.
-- **Successor, accepted and in build.** #15's direct-systemd replacement makes a
-  single transient unit installation the launch authorization: the service asks
-  the systemd manager for the unit, the manager owns launch, supervision and
-  reaping, and a collector inside the unit publishes durable launch and result
-  evidence bound to the unit's exact per-invocation identity. The runner is then
-  the unit the manager supervises — not a process Atelier writes, and reached by
-  no control connection at all.
+- **Successor, accepted and in build.** #15's direct-systemd replacement splits
+  what the predecessor packed into one process across three roles, and **only one
+  of them is the runner**:
+  - the **systemd manager** is long-lived, shared, and one per host — never one
+    per attempt. It installs the transient unit the service requests, enforces
+    the unit's declared bounds, kills its control group and reaps the unit. It
+    is host infrastructure the deployment already runs, shared by every unit on
+    the machine, and it is *not* a runner: it owns no attempt and carries no
+    per-attempt identity.
+  - the **transient unit invocation** is the runner: one per bound attempt,
+    carrying systemd's own per-invocation identity, and its installation *is* the
+    launch authorization. A reused unit name is a different runner, because the
+    invocation identity — not the name — is what this record binds.
+  - inside that invocation, the **collector** is the unit's main process: it
+    validates the launch envelope, publishes the durable launch and result
+    evidence bound to that exact invocation identity, starts the provider process
+    and observes its exit; the **provider process** is the child the invocation
+    exists to run. Neither is a runner — the collector is the runner's voice, the
+    provider its subject, and both live and die inside the scope.
 
-Both satisfy the definition, which is the reason to define a runner by what it
-owns. The runner is *co-located* with the service on this tier — one machine, one
-OS user — and co-location is not co-residence in a process. Binding the trust
-boundary to that ownership rather than to the transport of the day is what keeps
-this record true across the cutover, and what keeps a remote runner from becoming
-a second architecture later.
+The predecessor collapses all three roles into one process, which is why a runner
+reads there as "a process"; the successor separates them. The definition survives
+that cutover precisely because it binds the runner to the scope's ownership and
+per-invocation identity rather than to whichever role executes a step — and
+because it never claims that one noun performs launch, supervision and reaping in
+both worlds. What crosses the trust boundary is identical under either carrier:
+one bound attempt in, one host's credential material held locally, evidence out,
+and no durable truth. The runner is *co-located* with the service on this tier —
+one machine, one OS user — and co-location is neither co-residence in a process
+nor shared identity. Binding the trust boundary to that ownership rather than to
+the carrier of the day is what keeps this record true across the cutover, and what
+keeps a remote runner from becoming a second architecture later.
 
 There is exactly **one** trust boundary in the product: between the coordinating
 service and any runner. Everything a runner says is evidence; only the service
@@ -112,10 +133,11 @@ boundary, never the rules it enforces.
 
 A deployment declares its runner tier.
 
-- `same-host`: service and runner are **separate processes** on one machine under
-  one OS user. What carries the tier is #15's to build and is being replaced: a
-  Unix control endpoint today, a transient systemd unit and durable evidence
-  after the cutover.
+- `same-host`: service and runner are **separate execution scopes** on one
+  machine under one OS user — never the service's own scope. What carries the
+  tier is #15's to build and is being replaced: a watchdog process behind a Unix
+  control endpoint today, a transient systemd unit and durable evidence after the
+  cutover.
 - `remote`: a separate machine or trust domain. Mutual authentication is
   mandatory in both directions. This tier is a named successor epic (#9 part 3);
   this record binds its rules, not its transport.
@@ -124,9 +146,10 @@ Work and evidence cross only by the path the declared tier owns; anything
 arriving by another path is refused (`runner-transport-mismatch`). Tier is a
 property of the deployment, not a per-request claim.
 
-**The identity invariant, stated so it outlives any transport.** Because §1's
-runner is a separate process on every tier, every tier carries the same
-obligation, and it is written about the boundary rather than about a connection —
+**The identity invariant, stated so it outlives any transport.** Because a runner
+is never the coordinating service's own execution scope on any tier, every tier
+carries the same obligation, and it is written about the boundary rather than
+about a connection —
 the same-host boundary is losing its connection entirely:
 
 - Before the service binds an attempt to a runner, and before it accepts any
@@ -242,7 +265,8 @@ bindings; it asserts nothing about an attempt already in flight (§10).
 A runner **may**: accept exactly one attempt binding — the attempt whose id and
 request hash it was handed after the *service's* own compare-and-set to
 `LAUNCH_ARMED` (ADR 0001; the service arms, never the runner); launch, supervise,
-cancel, and reap that provider process; resolve the credential its bound auth
+cancel, and reap that provider process — by whichever roles its carrier assigns
+those steps to inside the scope (§1); resolve the credential its bound auth
 profile names by reference (§6); and report observations — process state, exit,
 provider frames, usage measurements.
 
@@ -485,11 +509,12 @@ this record borrows that owner rather than opening a second vocabulary.
   new obligation on every deployment including today's local one, and it is the
   price of not inferring reach from a bind address a proxy can front.
 - V1 gains no daemon and no new process of this record's making. The `same-host`
-  runner is the process that already exists — the watchdog today, the transient
-  unit after #15's cutover — and only its name and its obligations become
-  explicit here. The record does not claim a peer control it lacks: it accepts
-  today's same-UID trust domain in writing, names what that costs, and states the
-  boundary past which the acceptance ends.
+  runner is the execution scope that already exists — the watchdog process today,
+  the transient unit under the host's own systemd manager after #15's cutover —
+  and only its name and its obligations become explicit here. The record does
+  not claim a peer control it lacks: it accepts today's same-UID trust domain in
+  writing, names what that costs, and states the boundary past which the
+  acceptance ends.
 - The identity invariant is written without a transport, so it survives the
   same-host cutover instead of pinning the record to the owner #15 deletes — and
   it cannot be quietly declared satisfied by changing nothing. This record
