@@ -314,20 +314,23 @@ const attemptCancellationV2Schema = z
     }
   });
 
+/** The attempt states the served document names, in the order it names them. */
+export const PUBLIC_ATTEMPT_STATES = [
+  "PREPARED",
+  "POSSIBLY_RAN",
+  "CANCEL_REQUESTED",
+  "CANCELLED",
+  "INTERRUPTED",
+  "FAILED"
+] as const;
+
 const agentAttemptV2Schema = z
   .object({
     attempt_id: sha256,
     node_execution_id: sha256,
     request_hash: sha256,
     attempt_ordinal: z.union([z.literal(1), z.literal(2)]),
-    state: z.enum([
-      "PREPARED",
-      "POSSIBLY_RAN",
-      "CANCEL_REQUESTED",
-      "CANCELLED",
-      "INTERRUPTED",
-      "FAILED"
-    ]),
+    state: z.enum(PUBLIC_ATTEMPT_STATES),
     failure_code: z.literal("PROCESS_EXITED_UNSUCCESSFULLY").nullable(),
     cancellation: attemptCancellationV2Schema.nullable()
   })
@@ -344,6 +347,21 @@ const agentAttemptV2Schema = z
     }
   });
 
+/** The states the served document names; tests/api/servedVocabulary holds them to it. */
+export const NODE_STATES = [
+  "queued",
+  "working",
+  "needs_you",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "interrupted"
+] as const;
+
+const nodeRailEntrySchema = z
+  .object({ node_id: z.string().min(1), state: z.enum(NODE_STATES) })
+  .strict();
+
 const runV2Schema = z
   .object({
     workflow_format_version: z.literal(2),
@@ -355,6 +373,7 @@ const runV2Schema = z
     state_version: nonnegativeSafeInteger,
     state: z.enum(["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]),
     current_node: nodeV2Schema,
+    node_rail: z.array(nodeRailEntrySchema).min(1),
     agent_attempts: z.array(agentAttemptV2Schema).max(2),
     waiting: waitingSchema,
     terminal_hash: sha256.nullable(),

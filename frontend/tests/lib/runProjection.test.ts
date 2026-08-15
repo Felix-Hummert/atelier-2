@@ -250,7 +250,7 @@ describe("verified V2 Agent output projection", () => {
 
 describe("V2 Agent terminal truth", () => {
   it.each([
-    ["AGENT_COMPLETED", "completed", "working"],
+    ["AGENT_COMPLETED", "succeeded", "working"],
     ["AGENT_FAILED", "failed", "queued"],
     ["AGENT_CANCELLED", "cancelled", "queued"],
     ["AGENT_INTERRUPTED", "interrupted", "queued"]
@@ -288,7 +288,7 @@ describe("read-only node rail", () => {
     const rail = projectNodeRail(waitingRun(), workflow().graph, events);
 
     expect(rail.map(({ node }) => node.node_id)).toEqual(["agent", "action", "wait", "final"]);
-    expect(rail.map(({ state }) => state)).toEqual(["done", "done", "needs_you", "queued"]);
+    expect(rail.map(({ state }) => state)).toEqual(["succeeded", "succeeded", "needs_you", "queued"]);
     expect(rail.map(({ last_event }) => last_event?.event ?? null)).toEqual([
       "AGENT_COMPLETED",
       "ACTION_COMPLETED",
@@ -336,9 +336,9 @@ describe("read-only node rail", () => {
       actionEvent(3)
     ]);
 
-    expect(caughtUp.map(({ state }) => state)).toEqual(["done", "working", "queued", "queued"]);
-    expect(newlyWaiting.map(({ state }) => state)).toEqual(["done", "needs_you", "queued", "queued"]);
-    expect(advanced.map(({ state }) => state)).toEqual(["done", "done", "working", "queued"]);
+    expect(caughtUp.map(({ state }) => state)).toEqual(["succeeded", "working", "queued", "queued"]);
+    expect(newlyWaiting.map(({ state }) => state)).toEqual(["succeeded", "needs_you", "queued", "queued"]);
+    expect(advanced.map(({ state }) => state)).toEqual(["succeeded", "succeeded", "working", "queued"]);
   });
 });
 
@@ -386,6 +386,10 @@ function v2Scenario() {
     state_version: 1,
     state: "STARTED",
     current_node: graph.nodes[0]! as RunV2["current_node"],
+    node_rail: [
+      { node_id: "agent", state: "working" },
+      { node_id: "final", state: "queued" }
+    ],
     agent_attempts: [{
       attempt_id: digest, node_execution_id: digest, request_hash: digest,
       attempt_ordinal: 1, state: "POSSIBLY_RAN", failure_code: null, cancellation: null

@@ -10,6 +10,7 @@ from atelier2.contracts.run_projections import (
 )
 
 
+@pytest.mark.proves("a-node-ending-in-success-has-exactly-one-name")
 def test_a_node_ending_in_success_has_exactly_one_name() -> None:
     assert {state.value for state in NodeState} == {
         "queued",

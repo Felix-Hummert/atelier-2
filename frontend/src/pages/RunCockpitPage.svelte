@@ -76,7 +76,7 @@
   let disposed = false;
   let eventQueue: Promise<void> = Promise.resolve();
   $: pendingAnswer = pendingWait === null ? null : waitAnswer(pendingWait);
-  $: workingHumanNodeIds = new Set(
+  $: openFormNodeIds = new Set(
     [pendingWait?.node_id, pendingReconciliation?.node_id].filter(
       (nodeId): nodeId is string => nodeId !== undefined
     )
@@ -850,7 +850,7 @@
       graph={snapshot.confirmed.revision.graph}
       events={projection?.events ?? []}
       agentOutputs={projection?.agent_outputs_by_cursor ?? new Map()}
-      {workingHumanNodeIds}
+      {openFormNodeIds}
     />
 
     <details class="event-log">

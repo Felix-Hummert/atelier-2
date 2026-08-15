@@ -511,8 +511,7 @@ textarea {
   border-left-color: var(--danger);
 }
 
-.node-done,
-.node-completed {
+.node-succeeded {
   border-left-color: var(--accent);
 }
 
@@ -598,13 +597,11 @@ textarea {
   clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
 }
 
-.state-done,
-.state-completed {
+.state-succeeded {
   color: var(--accent);
 }
 
-.state-done .state-shape,
-.state-completed .state-shape {
+.state-succeeded .state-shape {
   border-radius: 50%;
 }
 

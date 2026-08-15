@@ -5,6 +5,7 @@ import {
   type Problem,
   type Run,
   type RunEvent,
+  type RunV1,
   type RunV2,
   type StreamFrame,
   type WorkflowGraph,
@@ -51,15 +52,7 @@ export interface StreamProjection {
   agent_outputs_by_cursor: ReadonlyMap<string, AgentOutputProjection>;
 }
 
-export type NodeState =
-  | "queued"
-  | "working"
-  | "needs_you"
-  | "done"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "interrupted";
+export type NodeState = RunV2["node_rail"][number]["state"];
 
 export interface AgentAttemptProjection {
   ordinal: 1 | 2;
@@ -259,8 +252,7 @@ export function applyDurableEvent(
 export function projectNodeRail(
   run: Run,
   graph: WorkflowGraph,
-  events: readonly RunEvent[],
-  workingHumanNodeIds: ReadonlySet<string> = new Set()
+  events: readonly RunEvent[]
 ): readonly NodeProjection[] {
   const nodes = orderedNodes(graph);
   const currentIndex = nodes.findIndex((node) => node.node_id === run.current_node.node_id);
@@ -272,19 +264,35 @@ export function projectNodeRail(
     latestEvent !== null && latestEvent.sequence > snapshotEventSequence(run);
   return nodes.map((node, index) => {
     const lastEvent = lastNodeEvent(events, node.node_id);
-    const durableState = eventsLeadSnapshot
-      ? eventDrivenNodeState(node, lastEvent, latestEvent, nodes)
-      : snapshotNodeState(run, node, index, currentIndex, lastEvent);
     return {
       node,
-      state:
-        durableState === "needs_you" && workingHumanNodeIds.has(node.node_id)
-          ? "working"
-          : durableState,
+      state: eventsLeadSnapshot
+        ? eventDrivenNodeState(node, lastEvent, latestEvent, nodes)
+        : snapshotNodeState(run, node, index, currentIndex, lastEvent),
       last_event: lastEvent,
       attempt: projectAgentAttempt(run, node, lastEvent, eventsLeadSnapshot)
     };
   });
+}
+
+function snapshotNodeState(
+  run: Run,
+  node: WorkflowNode,
+  index: number,
+  currentIndex: number,
+  lastEvent: RunEvent | null
+): NodeState {
+  return "node_rail" in run
+    ? servedNodeState(run, node.node_id)
+    : v1SnapshotNodeState(run, node, index, currentIndex, lastEvent);
+}
+
+function servedNodeState(run: RunV2, nodeId: string): NodeState {
+  const served = run.node_rail.find((entry) => entry.node_id === nodeId);
+  if (served === undefined) {
+    throw new Error("the served node rail is missing a node of the workflow revision");
+  }
+  return served.state;
 }
 
 function orderedNodes(graph: WorkflowGraph): WorkflowNode[] {
@@ -318,36 +326,30 @@ function lastNodeEvent(events: readonly RunEvent[], nodeId: string): RunEvent | 
   return null;
 }
 
-function snapshotNodeState(
-  run: Run,
+/**
+ * The last durable state this browser still derives, and only for a V1 run: the
+ * V1 run resource is byte-frozen, so it cannot carry the rail a V2 run reads off
+ * the wire. Every name it answers is a name the server would have answered.
+ */
+function v1SnapshotNodeState(
+  run: RunV1,
   node: WorkflowNode,
   index: number,
   currentIndex: number,
   lastEvent: RunEvent | null
 ): NodeState {
-  if (
-    index === currentIndex &&
-    "workflow_format_version" in run &&
-    node.type === "agent"
-  ) {
-    const attemptState = run.agent_attempts.at(-1)?.state;
-    if (attemptState === "FAILED") return "failed";
-    if (attemptState === "CANCELLED") return "cancelled";
-    if (attemptState === "INTERRUPTED") return "interrupted";
-    if (attemptState !== undefined) return "working";
-  }
   if (lastEvent !== null) {
     const terminal = terminalNodeState(lastEvent);
     if (terminal !== null) return terminal;
   }
   if (index < currentIndex) {
-    return "done";
+    return "succeeded";
   }
   if (index > currentIndex) {
     return "queued";
   }
   if (run.state === "COMPLETED") {
-    return "done";
+    return "succeeded";
   }
   if (run.state === "WAITING_INPUT") {
     return "needs_you";
@@ -448,10 +450,7 @@ function terminalNodeState(event: RunEvent): NodeState | null {
   if (event.event === "AGENT_FAILED") return "failed";
   if (event.event === "AGENT_CANCELLED") return "cancelled";
   if (event.event === "AGENT_INTERRUPTED") return "interrupted";
-  if (event.event === "AGENT_COMPLETED" && "workflow_format_version" in event) {
-    return "completed";
-  }
-  return isTerminalNodeEvent(event) ? "done" : null;
+  return isTerminalNodeEvent(event) ? "succeeded" : null;
 }
 
 function eventMatchesGraph(event: RunEvent, graph: WorkflowGraph): boolean {

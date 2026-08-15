@@ -227,7 +227,7 @@ describe("mobile run entry", () => {
     expect(card.textContent).toContain("builder");
     expect(card.textContent).toContain("Attempt 1 prepared");
     eventFeed.handlers?.event(JSON.stringify(v2TerminalEvent(publishedRevision!.revision_hash)));
-    expect((await screen.findByRole("article", { name: "build — Completed" })).textContent).toContain("Attempt 1 completed");
+    expect((await screen.findByRole("article", { name: "build — Done" })).textContent).toContain("Attempt 1 completed");
     expect(screen.getByRole("article", { name: "review — Working" })).toBeTruthy();
     eventFeed.handlers?.event(JSON.stringify({ ...v2TerminalEvent(publishedRevision!.revision_hash), event: "NODE_PROGRESS" }));
     expect(await screen.findByText("Event invalid")).toBeTruthy();
@@ -658,6 +658,12 @@ function v2Run(start: unknown, agentBindings: RunV2["agent_bindings"]): RunV2 {
     state_version: 0,
     state: "STARTED",
     current_node: v2Revision(workflowRevisionHash).graph.nodes.find((node) => node.node_id === "build")! as RunV2["current_node"],
+    node_rail: [
+      { node_id: "build", state: "working" },
+      { node_id: "review", state: "queued" },
+      { node_id: "fix", state: "queued" },
+      { node_id: "done", state: "queued" }
+    ],
     agent_attempts: [{ attempt_id: "1".repeat(64), node_execution_id: "2".repeat(64), request_hash: "3".repeat(64),
       attempt_ordinal: 1, state: "PREPARED", failure_code: null, cancellation: null }],
     waiting: { type: "NONE" }, terminal_hash: null, latest_event_cursor: null

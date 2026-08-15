@@ -299,6 +299,7 @@ def test_a_prepared_replacement_stays_working_after_terminal_cancellation_histor
     assert state_names(rail) == ["working", "queued"]
 
 
+@pytest.mark.proves("the-node-state-derivation-is-provable-without-a-browser")
 def test_the_rail_is_ordered_from_the_start_edge_and_names_every_durable_state() -> (
     None
 ):

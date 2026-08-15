@@ -13,7 +13,7 @@ from atelier2.api.references import (
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
-from atelier2.contracts.run_projections import PublicAgentAttemptState
+from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 
 
 class ApiModel(BaseModel):
@@ -332,6 +332,27 @@ WaitingResourceV2 = Annotated[
     Field(discriminator="type"),
 ]
 
+# Spelled out as the closed union of its owner's members, like the attempt
+# vocabulary above: the served document then names every state where the field
+# stands, in one form, instead of holding one enum inline and another behind a
+# component reference.
+NodeStateName = Literal[
+    NodeState.QUEUED,
+    NodeState.WORKING,
+    NodeState.NEEDS_YOU,
+    NodeState.SUCCEEDED,
+    NodeState.FAILED,
+    NodeState.CANCELLED,
+    NodeState.INTERRUPTED,
+]
+
+
+class NodeRailResource(ApiModel):
+    """Where one node of a run stands, said by the server rather than guessed."""
+
+    node_id: str = Field(min_length=1)
+    state: NodeStateName
+
 
 class RunResourceV2(ApiModel):
     workflow_format_version: Literal[2]
@@ -343,6 +364,7 @@ class RunResourceV2(ApiModel):
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]
     current_node: NodeResourceV2
+    node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     agent_attempts: tuple[AgentAttemptResourceV2, ...] = Field(max_length=2)
     waiting: WaitingResourceV2
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)

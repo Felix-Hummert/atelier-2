@@ -1,0 +1,37 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/89"
+
+# Two sentences of #89 are deliberately absent, because head B2 does not close
+# them and declaring them here would red this gate for work nobody has built:
+#
+#   "the browser derives no durable state any more" — the derivation still lives
+#   in frontend/src/lib/runProjection.ts and is deleted by head C, which also
+#   carries the rail on the event stream. B2 replaces only the snapshot half,
+#   and only for V2 runs: the V1 run resource is byte-frozen, so a V1 cockpit
+#   keeps deriving until head C decides how a V1 run reads its rail.
+#
+#   "the V1 wire is unchanged" — it is a standing guard of every head rather
+#   than an outcome of one, and tests/api/test_v1_wire_freeze.py already holds
+#   it without this gate.
+#
+# This file therefore does not list every sentence of #89.
+
+[[sentence]]
+id = "the-node-state-derivation-is-provable-without-a-browser"
+text = "The state of every node of a run is derived by a pure function in src/, provable over a snapshot and its events without a browser, without an HTTP client and without a real database."
+
+[[sentence]]
+id = "a-node-ending-in-success-has-exactly-one-name"
+text = "A node that ended in success has exactly one name everywhere it is named; the second spelling is deleted rather than kept as an alias."
+
+[[sentence]]
+id = "the-run-resource-names-the-state-of-every-node"
+text = "A served V2 run names the state of every node of the revision it is bound to, so the browser renders that state instead of inventing it."
+
+[[sentence]]
+id = "the-browser-and-the-served-contract-know-the-same-node-states"
+text = "The browser and the served contract know exactly the same set of node states: a member added on one side alone fails a test."
+
+[[sentence]]
+id = "the-interaction-overlay-lifts-and-stills-under-separate-gates"
+text = "The only state rule left in the browser is the interaction overlay, it is client-owned, and its two rules are gated separately: a node is lifted to working only when it needs the operator and his form is open, while it is stilled by the open form alone."

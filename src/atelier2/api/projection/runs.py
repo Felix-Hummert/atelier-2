@@ -15,8 +15,10 @@ from atelier2.api.wire.resources import (
     AgentAttemptResourceV2,
     AgentBindingResourceV2,
     AnyRunResource,
+    NodeRailResource,
     NodeResource,
     NodeResourceV2,
+    NodeStateName,
     NoWaitingResource,
     NoWaitingResourceV2,
     PublicAttemptStateName,
@@ -29,6 +31,7 @@ from atelier2.api.wire.resources import (
     WaitingResource,
     WaitingResourceV2,
 )
+from atelier2.application.project_node_rail import project_node_rail
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.workflows import (
@@ -146,6 +149,14 @@ def _run_resource_v2(
         state_version=run.state_version,
         state=run.state.value,
         current_node=cast(NodeResourceV2, node_resource(node)),
+        # A run resource says where the snapshot stands, so no event has
+        # overtaken it here; the event stream carries its own rail.
+        node_rail=tuple(
+            NodeRailResource(
+                node_id=entry.node_id, state=cast(NodeStateName, entry.state)
+            )
+            for entry in project_node_rail(projection, ())
+        ),
         agent_attempts=tuple(
             AgentAttemptResourceV2(
                 attempt_id=attempt.attempt_id.value,
