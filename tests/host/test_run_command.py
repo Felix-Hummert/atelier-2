@@ -204,6 +204,7 @@ def published_agent_configuration() -> Answer:
             executor_revision="claude-subscription-v1",
             provider_id="claude",
             auth_mode="subscription",
+            requested_capability="headless",
             agent_configuration_revision_hash=AGENT_CONFIGURATION_HASH,
         )
         .model_dump_json()
