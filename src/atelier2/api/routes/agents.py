@@ -110,7 +110,7 @@ async def publish_agent_configuration_revision_route(
             body.model,
             AuthProfileRevisionHash(body.auth_profile_revision_hash),
             AgentExecutorRevision(body.executor_revision),
-            AgentExecutionCapability.HEADLESS,
+            AgentExecutionCapability(body.requested_capability),
             AgentConfigurationRevisionFormatVersion.V2,
         )
     except (TypeError, ValueError) as error:

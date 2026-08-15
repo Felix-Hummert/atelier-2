@@ -59,10 +59,12 @@ run mutation, and persists the sorted complete matrix with the run. A host owns
 an immutable registry keyed by provider ID and executor revision. Configuration
 revision format V1 retains the original hash frame and is restricted to
 `headless`; format V2 adds a typed requested capability to its hash frame. New
-API publications are V2/headless, while migrated rows remain V1/headless. Every
-registry entry must attest headless and may attest interactive. Start refuses an
-unattested requested capability before run/enqueue mutation or provider process;
-restart refuses a nonterminal durable capability mismatch before factory open.
+API publications are V2 and carry the capability the caller requested, which
+defaults to `headless` when the request omits it; migrated rows remain
+V1/headless. Every registry entry must attest headless and may attest
+interactive. Start refuses an unattested requested capability before
+run/enqueue mutation or provider process; restart refuses a nonterminal durable
+capability mismatch before factory open.
 Each V2 Agent request and receipt binds the role, configuration and auth hashes and fields,
 executor operational identity, job, and exact result bytes. At most 49,152
 output bytes are accepted; an oversized result is rejected before receipt,

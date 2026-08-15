@@ -37,6 +37,7 @@ from atelier2.adapters.claude_subscription import (
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.schema import (
+    agent_attempts,
     agent_receipts_v2,
     run_agent_bindings,
     run_events,
@@ -78,10 +79,10 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
 )
 from tests.scenarios.agents import (
+    CLAUDE_SUBSCRIPTION_WORKFLOW,
     MEASURED_CLAUDE_VERSION,
     claude_subscription_attempt,
     claude_subscription_deployment,
-    claude_subscription_publication,
     claude_subscription_runtime,
     claude_subscription_start,
 )
@@ -861,12 +862,18 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
 ) -> None:
     """The public answer to the capability this provider cannot serve.
 
-    The refusal above is the starter's; this is what a caller of the composed
-    server actually receives for it -- 409 `agent-executor-binding-unavailable`
-    -- and it arrives before the run row, the binding row, the run event, the
-    durable queue, and any launch of the provider at all. The recording fake
-    would leave a file behind the moment it were started, so its absence is
-    what proves the last one.
+    Everything a caller needs is asked for over HTTP here, including the
+    interactive configuration itself: publication accepts it, because the
+    catalog binds a configuration to an executor key rather than to a
+    capability, and that acceptance is what leaves the refusal to the start.
+    The registry answering both calls is immutable and attests only headless,
+    so the executor key that resolved for the `201` still resolves at start --
+    the capability is the only thing left that this `409` can be about.
+
+    It arrives before the run row, the binding row, the run event, the attempt,
+    the receipt, the durable queue, and any launch of the provider at all. The
+    recording fake would leave a file behind the moment it were started, so its
+    absence is what proves the last one.
     """
 
     deployment = tmp_path / "deployment"
@@ -880,21 +887,44 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
 
     monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
     try:
-        configuration, workflow = claude_subscription_publication(
-            runtime, requested_capability=AgentExecutionCapability.INTERACTIVE
+        client = durable_api_client(runtime)
+        auth = client.post(
+            API_PREFIX + "/auth-profile-revisions",
+            json={
+                "profile_id": "max",
+                "revision_number": 1,
+                "provider_id": "anthropic",
+                "auth_mode": "subscription",
+            },
         )
-        refused = durable_api_client(runtime).post(
+        configuration = client.post(
+            API_PREFIX + "/agent-configuration-revisions",
+            json={
+                "model": "claude-haiku-4-5",
+                "auth_profile_revision_hash": auth.json()["auth_profile_revision_hash"],
+                "executor_revision": (
+                    CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value
+                ),
+                "requested_capability": "interactive",
+            },
+        )
+        workflow = client.post(
+            API_PREFIX + "/workflow-revisions",
+            content=CLAUDE_SUBSCRIPTION_WORKFLOW,
+            headers={"content-type": "application/yaml"},
+        )
+        refused = client.post(
             API_PREFIX + "/runs",
             json={
                 "workflow_format_version": 2,
                 "run_id": "claude-interactive-over-http",
-                "workflow_revision_hash": workflow.revision_hash.value,
+                "workflow_revision_hash": workflow.json()["revision_hash"],
                 "agent_bindings": [
                     {
                         "role": "builder",
-                        "agent_configuration_revision_hash": (
-                            configuration.revision_hash.value
-                        ),
+                        "agent_configuration_revision_hash": configuration.json()[
+                            "agent_configuration_revision_hash"
+                        ],
                     }
                 ],
             },
@@ -902,14 +932,24 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
         with runtime.engine.connect() as connection:
             written = tuple(
                 connection.scalar(sa.select(sa.func.count()).select_from(table))
-                for table in (runs, run_agent_bindings, run_events)
+                for table in (
+                    runs,
+                    run_agent_bindings,
+                    agent_attempts,
+                    agent_receipts_v2,
+                    run_events,
+                )
             )
     finally:
         runtime.close()
 
+    assert auth.status_code == 201
+    assert configuration.status_code == 201
+    assert configuration.json()["requested_capability"] == "interactive"
+    assert workflow.status_code == 201
     assert refused.status_code == 409
     assert refused.json()["type"].endswith(":agent-executor-binding-unavailable")
-    assert written == (0, 0, 0)
+    assert written == (0, 0, 0, 0, 0)
     assert not (deployment / PROBE_RECORD_NAME).exists()
 
 

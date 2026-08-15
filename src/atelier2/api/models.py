@@ -74,6 +74,7 @@ class PublishAgentConfigurationRevisionRequestResource(ApiModel):
     model: str = Field(min_length=1, max_length=1_024)
     auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     executor_revision: str = Field(min_length=1, max_length=1_024)
+    requested_capability: Literal["headless", "interactive"] = "headless"
 
 
 class AgentConfigurationRevisionResource(ApiModel):
@@ -82,6 +83,7 @@ class AgentConfigurationRevisionResource(ApiModel):
     executor_revision: str = Field(min_length=1, max_length=1_024)
     provider_id: str = Field(min_length=1, max_length=64)
     auth_mode: Literal["subscription", "api_key"]
+    requested_capability: Literal["headless", "interactive"]
     agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
@@ -720,6 +722,7 @@ def agent_configuration_revision_resource(
         executor_revision=revision.executor_revision.value,
         provider_id=auth_profile.provider_id.value,
         auth_mode=auth_profile.auth_mode.value,
+        requested_capability=revision.requested_capability.value,
         agent_configuration_revision_hash=revision.revision_hash.value,
     )
 
