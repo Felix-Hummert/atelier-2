@@ -68,6 +68,23 @@ class RunEventKind(StrEnum):
     SUBWORKFLOW_COMPLETED = "SUBWORKFLOW_COMPLETED"
 
 
+KINDS_NO_V1_RUN_CARRIES: frozenset[RunEventKind] = frozenset(
+    {
+        RunEventKind.AGENT_FAILED,
+        RunEventKind.AGENT_CANCEL_REQUESTED,
+        RunEventKind.AGENT_CANCELLED,
+        RunEventKind.AGENT_INTERRUPTED,
+    }
+)
+"""The kinds a V1 run cannot produce, owned once for the wire and the projection.
+
+The set used to be spelled twice and the copies disagreed: the published V1 name
+list excluded four kinds while the projection refused only one, so the other
+three left the closed union through a fall-through assertion instead of a named
+refusal. One owner is what makes the schema and the mapping answer together.
+"""
+
+
 class WaitAnswerState(StrEnum):
     PENDING = "PENDING"
     APPLIED = "APPLIED"

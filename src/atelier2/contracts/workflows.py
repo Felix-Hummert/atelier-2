@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -74,6 +76,22 @@ WorkflowNodeV2 = Annotated[
 ]
 
 
+def _sink_node_id(nodes: Sequence[Any]) -> str:
+    """Name the one node no successor is configured for.
+
+    The run's terminal condition is this structural fact, not a node kind: the
+    sink's completion completes the run, and for a one-node document the sink
+    is that node. Each executable format decides separately which kinds may
+    stand there -- V1 and V2 both require it to be their Subworkflow -- but no
+    runtime rule asks about the kind.
+    """
+
+    sinks = [node.id for node in nodes if node.next is None]
+    if len(sinks) != 1:
+        raise ValueError("a workflow graph requires exactly one sink node")
+    return sinks[0]
+
+
 class WorkflowGraph(_StrictWorkflowModel):
     format_version: Literal[1]
     start: NonemptyString
@@ -143,10 +161,21 @@ class WorkflowGraph(_StrictWorkflowModel):
                 return node
         raise KeyError(node_id)
 
+    @property
+    def sink_node_id(self) -> str:
+        """The node whose completion completes the run."""
+
+        return _sink_node_id(self.nodes)
+
+    def is_sink(self, node_id: str) -> bool:
+        """Whether no successor is configured for this node."""
+
+        return self.node(node_id).next is None
+
     def successor(self, node_id: str) -> WorkflowNode:
         node = self.node(node_id)
-        if isinstance(node, SubworkflowNode):
-            raise TypeError("terminal Subworkflow has no successor")
+        if node.next is None:
+            raise TypeError("the sink node has no successor")
         return self.node(node.next)
 
     def predecessor(self, node_id: str) -> WorkflowNode:
@@ -234,10 +263,21 @@ class WorkflowGraphV2(_StrictWorkflowModel):
                 return node
         raise KeyError(node_id)
 
+    @property
+    def sink_node_id(self) -> str:
+        """The node whose completion completes the run."""
+
+        return _sink_node_id(self.nodes)
+
+    def is_sink(self, node_id: str) -> bool:
+        """Whether no successor is configured for this node."""
+
+        return self.node(node_id).next is None
+
     def successor(self, node_id: str) -> WorkflowNodeV2:
         node = self.node(node_id)
-        if isinstance(node, SubworkflowNode):
-            raise TypeError("terminal Subworkflow has no successor")
+        if node.next is None:
+            raise TypeError("the sink node has no successor")
         return self.node(node.next)
 
     def predecessor(self, node_id: str) -> WorkflowNodeV2:
@@ -256,3 +296,30 @@ class WorkflowGraphV2(_StrictWorkflowModel):
 
 type AnyWorkflowNode = WorkflowNode | WorkflowNodeV2
 type AnyWorkflowGraph = WorkflowGraph | WorkflowGraphV2
+
+
+@dataclass(frozen=True)
+class RunContinues:
+    """A completed node advances the run to this exact successor."""
+
+    node_id: str
+
+    def __post_init__(self) -> None:
+        if not self.node_id:
+            raise ValueError("a run successor node id must not be empty")
+
+
+@dataclass(frozen=True)
+class RunCompletes:
+    """A completed node is the run's terminal node."""
+
+
+type NodeCompletion = RunContinues | RunCompletes
+
+
+def completion_after_node(graph: AnyWorkflowGraph, node_id: str) -> NodeCompletion:
+    """Decide continuation once, without inventing a successor for the sink."""
+
+    if graph.is_sink(node_id):
+        return RunCompletes()
+    return RunContinues(graph.successor(node_id).id)

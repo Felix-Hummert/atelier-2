@@ -99,9 +99,24 @@ demanding an interactive one is refused before that run exists at all. An
 unsuccessful exit, an unreadable envelope, an envelope declaring a provider
 error, and an answer larger than the durable output bound all fail the attempt
 instead of recording invented output. Undeclared, the
-host composes no V2 provider factory and behaves exactly as before. Codex remains
-absent, and the isolated read, edit, and test tools an agent needs to change its
-own workspace are not part of this contract.
+host composes no V2 provider factory and behaves exactly as before. The isolated
+read, edit, and test tools an agent needs to change its own workspace are not
+part of this contract.
+
+Codex sits behind the same boundary, declared the same way and composed
+alongside Claude rather than instead of it. Its CLI has no prompt-file flag, so
+the node's job travels on standard input and never on the command line, and its
+durable answer is read from the last-message file the CLI writes rather than
+from an event stream this contract has not measured — an answer that never
+arrives is a failed attempt, not an invented one. What differs is that a Codex
+binding also carries the sandbox policy its attempts run under. That policy is
+part of the prepared command, and the deployment proves at startup that the
+CLI's own sandbox can actually start on this host, because a sandbox that
+cannot start contains nothing and discovering that at the first run costs a
+run. The same startup proves the composed profile resolves the credential
+directory it was given, loads no user configuration, and configures no MCP
+server, so the operator's own Codex trust — including the per-project trust its
+configuration records — is never inherited by a served agent.
 
 The raw frame a provider writes has its own bound, distinct from the durable
 output bound, because the durable answer travels inside a JSON envelope. The
@@ -215,13 +230,14 @@ executability verdict with the capability each still-waiting node needs — mark
 proposed or bound, so an
 author's intent is never read as a binding. That preview is a derivation and nothing
 else: no route, no rendering and no stored shape carries it. Behind that, nothing:
-the registries are ports a caller supplies,
-because no durable registry shape and no publication command for one exists yet;
-resolution is lineage-free and a reference's `ref` is carried into that snapshot
-without proving membership, because named lineages, admitted membership and name
-resolution belong to the accepted but unimplemented catalog-identity record, whose
-`resolve_reference` this port gains only when it is implemented; there is no capability
-attestation and no V3 record shape in the store, and no runtime executes a child.
+the registries are ports a caller supplies. A durable catalog adapter now
+publishes exact revision bytes, founds a named lineage through a typed writer
+that derives the lineage id, and resolves an admitted name or lineage id to
+those bytes; run-configuration binding is still lineage-free and a reference's
+`ref` is carried into that snapshot without calling `resolve_reference`. A
+64-hex query is a lineage id; anything else is a display name. A retired
+lineage is refused by id or any alias. There is no capability attestation, and
+no runtime executes a child.
 
 A valid V3 document is publishable long before it is executable: it
 becomes an immutable revision under the same exact-bytes hash identity as V1 and V2,
@@ -334,13 +350,19 @@ job still travels inside the published document, so one distinct input burns one
 revision, and neither a run-level input, a workflow name, nor an output contract
 that could decide an exit code exists yet.
 
-The canonical store is schema V11. A fresh store is created as exact V11 and
-carries published revisions, lineage membership, format-3 runs, immutable node
-artifact bytes, node receipts, and their ordered output and access bindings. A
-typed in-process writer can commit that exact supervised V3 start as one atomic
-set. It does not enqueue a V3 engine, validate artifact bytes against an output
-schema, write run events, or declare a terminal hash. Alias history,
-measurements, and policy activations are not in this profile. V9 and V10 remain
-published predecessor objects; exact V7 through V10 files are refused without
-mutation, with no runtime migration or downgrade. Until a named maturity there
-is no compatibility promise.
+The canonical store is schema V12. A fresh store is created as exact V12 and
+carries published revisions of the closed kind set, lineage membership bound
+to those revisions, append-only alias and retirement histories, format-3
+runs, immutable node artifact bytes, node receipts, and their ordered output
+and access bindings. A typed in-process writer can commit that exact
+supervised V3 start as one atomic set. The catalog adapter founds a lineage
+and admits members through a typed writer that derives `CatalogLineageId`
+from kind and founding hash and refuses a mismatched id before mutation. An
+admitted name or lineage id resolves to the exact published bytes; a missing
+founding, unpublished member, wrong kind, or retired lineage is refused by
+name. Measurements and policy activations are not in this profile. The start
+writer does not enqueue a V3 engine, validate artifact bytes against an
+output schema, write run events, or declare a terminal hash. V11 remains a
+published predecessor object; exact V7 through V11 files are refused without
+mutation, with no runtime migration or downgrade. Until a named maturity
+there is no compatibility promise.

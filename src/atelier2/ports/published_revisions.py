@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, TypeGuard
 
 from atelier2.contracts.catalog_v3 import (
+    CatalogLineage,
     CatalogLineageDisplayName,
     CatalogLineageId,
 )
@@ -98,6 +99,117 @@ class CatalogNameMissing:
 
 
 type ResolveCatalogNameResult = CatalogNameFound | CatalogNameMissing
+
+
+@dataclass(frozen=True)
+class CatalogLineageFounded:
+    lineage: CatalogLineage
+    revision: PublishedRevision
+    display_name: CatalogLineageDisplayName
+
+
+@dataclass(frozen=True)
+class CatalogMemberAdmitted:
+    lineage: CatalogLineage
+    revision: PublishedRevision
+    revision_number: int
+    display_name: CatalogLineageDisplayName
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionExisting:
+    lineage: CatalogLineage
+    revision: PublishedRevision
+    revision_number: int
+    display_name: CatalogLineageDisplayName
+
+
+@dataclass(frozen=True)
+class CatalogLineageIdMismatch:
+    claimed: CatalogLineageId
+    derived: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionUnpublished:
+    revision_hash: PublishedRevisionHash
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionNameHeld:
+    name: CatalogLineageDisplayName
+    holder: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionRevisionOwned:
+    revision_hash: PublishedRevisionHash
+    owner: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionRetired:
+    lineage_id: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionLineageMissing:
+    lineage_id: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionKindMismatch:
+    lineage_id: CatalogLineageId
+    expected: RevisionKind
+    actual: RevisionKind
+
+
+type FoundCatalogLineageResult = (
+    CatalogLineageFounded
+    | CatalogAdmissionExisting
+    | CatalogLineageIdMismatch
+    | CatalogAdmissionUnpublished
+    | CatalogAdmissionNameHeld
+    | CatalogAdmissionRevisionOwned
+    | CatalogAdmissionRetired
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
+)
+
+
+type AdmitCatalogMemberResult = (
+    CatalogMemberAdmitted
+    | CatalogAdmissionExisting
+    | CatalogLineageIdMismatch
+    | CatalogAdmissionUnpublished
+    | CatalogAdmissionNameHeld
+    | CatalogAdmissionRevisionOwned
+    | CatalogAdmissionRetired
+    | CatalogAdmissionLineageMissing
+    | CatalogAdmissionKindMismatch
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
+)
+
+
+@dataclass(frozen=True)
+class CatalogLineageRetired:
+    lineage_id: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogRetirementExisting:
+    lineage_id: CatalogLineageId
+
+
+type RetireCatalogLineageResult = (
+    CatalogLineageRetired
+    | CatalogRetirementExisting
+    | CatalogAdmissionLineageMissing
+    | CatalogLineageIdMismatch
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
+)
 
 
 class PublishedRevisionResolver(Protocol):
