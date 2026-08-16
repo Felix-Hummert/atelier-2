@@ -29,24 +29,13 @@ USE_CASE_RECORD_IMPORT = "atelier2.api.context"
 USE_CASE_RECORD_MODULE = "src/atelier2/api/context.py"
 USE_CASE_RECORD_NAME = "ApiUseCases"
 PORTS_RECORD_NAME = "ApiPorts"
-_UNREADABLE_OUTCOME_TYPES: set[str] = set()
 
 
 class _UnresolvedOutcome:
-    """A port whose fields could not be read, so nothing about it is proven."""
+    """An outcome whose fields could not be read, so nothing about it is proven."""
 
 
 _UNRESOLVED_OUTCOME = _UnresolvedOutcome()
-
-
-@dataclass(frozen=True, slots=True)
-class _Unreadable:
-    """A type outside `ports` whose fields this closure could not read."""
-
-    subject: Any
-
-    def __str__(self) -> str:
-        return f"{getattr(self.subject, '__module__', '?')}.{getattr(self.subject, '__qualname__', self.subject)}"
 
 
 ROUTE_PACKAGE = "src/atelier2/api/routes"
@@ -245,6 +234,27 @@ def _is_a_port_capability(candidate: Any) -> bool:
     )
 
 
+def _readable_fields(outcome: type) -> dict[str, Any] | None:
+    """This type's annotated fields, or `None` when nothing can resolve them.
+
+    A generic declared with PEP 695 type parameters carries them in a lexical
+    scope rather than in its module, so a subclass's annotations name something
+    `get_type_hints` cannot see from the outside. The parameters are therefore
+    offered back from the whole inheritance chain, bound to what they were bound
+    to — which is what the annotation meant in the first place.
+    """
+    parameters: dict[str, Any] = {}
+    for base in getattr(outcome, "__mro__", ()):
+        for parameter in getattr(base, "__type_params__", ()) or ():
+            parameters[parameter.__name__] = (
+                getattr(parameter, "__bound__", None) or object
+            )
+    try:
+        return typing.get_type_hints(outcome, localns=parameters)
+    except (NameError, TypeError, AttributeError):
+        return None
+
+
 def _carried_by(outcome: Any, seen: set[int]) -> Iterator[Any]:
     """Every type a value of this outcome could carry, however deep it sits.
 
@@ -270,18 +280,12 @@ def _carried_by(outcome: Any, seen: set[int]) -> Iterator[Any]:
     if isinstance(outcome, type) and _owned_by(
         getattr(outcome, "__module__", ""), ROOT_PACKAGE
     ):
-        try:
-            fields = typing.get_type_hints(outcome)
-        except (NameError, TypeError, AttributeError):
-            # A type whose own fields cannot be read stops the walk here. Under
-            # `ports` that is refused outright — the danger lives there. Elsewhere
-            # it is carried out as a named residual instead of a silent gap, so
-            # every run prints what this closure could not see.
-            yield (
-                _UNRESOLVED_OUTCOME
-                if _owned_by(getattr(outcome, "__module__", ""), PORT_PACKAGE)
-                else _Unreadable(outcome)
-            )
+        fields = _readable_fields(outcome)
+        if fields is None:
+            # A type whose own fields cannot be read cannot be shown to be free of
+            # ports, and the safe answer to that is no. It is refused wherever it
+            # lives: an outcome nobody can read is exactly where one would hide.
+            yield _UNRESOLVED_OUTCOME
             return
         for field in fields.values():
             yield from _carried_by(field, seen)
@@ -302,7 +306,6 @@ def use_case_record_problems(project_root: Path) -> tuple[str, ...]:
     """
     record = _record_under_test(project_root)
     problems = list(_unannotated_fields(project_root))
-    unreadable = _UNREADABLE_OUTCOME_TYPES
     try:
         resolved = typing.get_type_hints(record)
     except (NameError, TypeError, AttributeError) as error:
@@ -349,12 +352,9 @@ def use_case_record_problems(project_root: Path) -> tuple[str, ...]:
             )
         elif any(carrier is _UNRESOLVED_OUTCOME for carrier in carried):
             problems.append(
-                f"{stated}, whose outcome carries a port this check could not "
+                f"{stated}, whose outcome carries a type this check could not "
                 "read, so it cannot be shown to be free of ports"
             )
-        unreadable.update(
-            str(carrier) for carrier in carried if isinstance(carrier, _Unreadable)
-        )
     return tuple(problems)
 
 
@@ -378,21 +378,55 @@ def _unannotated_fields(project_root: Path) -> Iterator[str]:
                 )
 
 
-def _port_reached_at(node: ast.AST) -> str | None:
+PORTS_RECORD_FIELD = "ports"
+
+
+def _binds_the_ports_record(node: ast.AST) -> bool:
+    """Whether this expression hands over the whole record of ports."""
+    return isinstance(node, ast.Attribute) and node.attr == PORTS_RECORD_FIELD
+
+
+def _port_reached_at(node: ast.AST, aliases: frozenset[str]) -> str | None:
     """The port this one node reaches, if it is the access itself.
 
     One node, never its subtree: an access nested inside another expression must
     count once, not once per level it sits under.
+
+    An access is recognised by what it reaches, not by how it is spelled. Reading
+    `context.ports.run_queries` and binding `ports = context.ports` to read
+    `ports.run_queries` off the name are the same reach, so the names a function
+    binds the record to are resolved first and counted the same way. Otherwise the
+    check measures a spelling, and a spelling is exactly what a caller can change
+    without changing what it holds.
     """
     if isinstance(node, ast.Name) and node.id == PORTS_RECORD_NAME:
         return PORTS_RECORD_NAME
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Attribute)
-        and node.value.attr == "ports"
-    ):
-        return node.attr
+    if isinstance(node, ast.Attribute):
+        if _binds_the_ports_record(node):
+            return PORTS_RECORD_FIELD
+        if isinstance(node.value, ast.Attribute) and _binds_the_ports_record(
+            node.value
+        ):
+            return node.attr
+        if isinstance(node.value, ast.Name) and node.value.id in aliases:
+            return node.attr
     return None
+
+
+def _ports_record_aliases(nodes: Iterable[ast.AST]) -> frozenset[str]:
+    """Every local name these nodes bind the whole record of ports to."""
+    bound: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        if value is None or not any(
+            _binds_the_ports_record(inner) for inner in ast.walk(value)
+        ):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        bound.update(target.id for target in targets if isinstance(target, ast.Name))
+    return frozenset(bound)
 
 
 def _ports_reached_in(nodes: Iterable[ast.AST]) -> tuple[str, ...]:
@@ -401,9 +435,21 @@ def _ports_reached_in(nodes: Iterable[ast.AST]) -> tuple[str, ...]:
     A repeated access is a repeated entry: two reads of the same port are two
     decisions, and collapsing them would let one hide behind the other.
     """
+    own = list(nodes)
+    aliases = _ports_record_aliases(own)
+    # `context.ports.run_queries` is one access, not two: the record it reads
+    # through is part of the same expression, so only the outermost node counts.
+    consumed = {
+        id(node.value)
+        for node in own
+        if isinstance(node, ast.Attribute) and _binds_the_ports_record(node.value)
+    }
     return tuple(
         sorted(
-            reached for node in nodes if (reached := _port_reached_at(node)) is not None
+            reached
+            for node in own
+            if id(node) not in consumed
+            and (reached := _port_reached_at(node, aliases)) is not None
         )
     )
 
@@ -486,12 +532,6 @@ def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
         f"{sum(len(ports) for calls in ROUTE_CALLS_STILL_HOLDING_PORTS.values() for ports in calls.values())} route port reaches still declared",
         flush=True,
     )
-    if _UNREADABLE_OUTCOME_TYPES:
-        print(
-            "Outcome types this closure could not read, so no port inside them "
-            "could be ruled out: " + ", ".join(sorted(_UNREADABLE_OUTCOME_TYPES)),
-            flush=True,
-        )
     return configuration
 
 
