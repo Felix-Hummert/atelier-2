@@ -633,8 +633,10 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
         assert isinstance(accepted, AgentAttemptSucceeded)
         observed_frame = generous.completions[0].standard_output
         assert generous.results == [AgentExecutionResult(b"ok")]
+        assert len(generous.released_invocations) == 1
         assert len(observed_frame) > MAXIMUM_AGENT_OUTPUT_BYTES_V2
         assert frugal.results == []
+        assert len(frugal.released_invocations) == 1
         assert (
             store.load(frugal_execution.attempt_id).state
             is not AgentAttemptState.SUCCEEDED
