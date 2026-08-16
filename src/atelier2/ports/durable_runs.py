@@ -163,6 +163,20 @@ type DurableV3StartWithReceiptResult = (
 )
 
 
+class DurableV3RunStarter(Protocol):
+    """Persist one supervised V3 start and its terminal truth, or nothing.
+
+    The port exists so a caller can reach the atomic start without reaching for
+    the adapter that implements it: what makes the write trustworthy is the one
+    transaction behind this method, and a caller proves that by depending on the
+    method rather than on a store.
+    """
+
+    def start_v3_with_receipt(
+        self, request: StartV3RunWithReceiptRequest
+    ) -> DurableV3StartWithReceiptResult: ...
+
+
 @dataclass(frozen=True)
 class DurableAnswerCreated:
     snapshot: WaitAnswerSnapshot

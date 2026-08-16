@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Annotated, Literal
+from typing import Annotated, Literal, assert_never
 
 from pydantic import (
     BaseModel,
@@ -21,7 +21,12 @@ from atelier2.contracts.workflow_refusals import (
     WorkflowRefusal,
     WorkflowRefusalReason,
 )
-from atelier2.contracts.workflows import AnyWorkflowGraph, NonemptyString
+from atelier2.contracts.workflows import (
+    AnyWorkflowGraph,
+    NonemptyString,
+    WorkflowGraph,
+    WorkflowGraphV2,
+)
 
 MAXIMUM_INSTRUCTION_BYTES = 16 * 1024
 MAXIMUM_DOCUMENT_NAME_BYTES = 200
@@ -350,6 +355,42 @@ class WorkflowGraphV3(_ClosedV3Model):
 
 
 type AnyWorkflowDocument = AnyWorkflowGraph | WorkflowGraphV3
+
+
+class MultipleSinkCompletionUnsupported(ValueError):
+    """V3 needs all-sinks state before one of several sinks can complete a run."""
+
+    def __init__(self, sink_node_ids: tuple[str, ...]) -> None:
+        super().__init__(
+            "V3 run completion currently requires exactly one sink node, "
+            f"not {len(sink_node_ids)}"
+        )
+        self.sink_node_ids = sink_node_ids
+
+
+def is_sink_node(graph: AnyWorkflowDocument, node_id: str) -> bool:
+    """Whether this node's completion completes the run, in any executable format.
+
+    One decider for every graph family the runtime can load, because the run's
+    terminal condition is one rule with two spellings: V1 and V2 configure a
+    single successor, so their sink is the node naming none; V3 declares
+    dependencies, so its sinks are the nodes nothing depends on. Asking a graph
+    object for the spelling it happens to carry would hold only until the other
+    family reaches the same call, and that break would surface in a completion
+    run rather than here.
+    """
+
+    match graph:
+        case WorkflowGraphV3():
+            graph.node(node_id)
+            sink_node_ids = graph.sink_node_ids
+            if len(sink_node_ids) != 1:
+                raise MultipleSinkCompletionUnsupported(sink_node_ids)
+            return node_id == sink_node_ids[0]
+        case WorkflowGraph() | WorkflowGraphV2():
+            return graph.is_sink(node_id)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _refuse(
