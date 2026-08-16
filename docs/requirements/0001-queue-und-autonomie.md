@@ -185,12 +185,20 @@ star, not a sentence of it.)
     Bindung, Beweise/Receipts); Lackmustest je Kopf: „Bietet die Plattform das
     schon?" → Adapter, nie Nachbau.
 
-21. `OPERATOR` — **Priorität ist bindend und wohnt im Atelier, nicht im
-    Tracker-Kommentar.** Der Operator wörtlich (an Fable, 16.08., via
+21. `DESK` — **Priorität soll im Atelier sichtbar und bindend sein, nicht im
+    Tracker-Kommentar.** Die zitierte Quelle trägt diesen Satz **nicht positiv**:
+    sie stellt zwei Fragen und weist eine Ablage zurück. `OPERATOR` ist deshalb
+    der falsche Grad, solange kein späteres, direktes Ruling zitiert wird — und
+    das Zitat bleibt genau deshalb stehen, damit ein Leser die Lücke selbst sieht
+    statt sie glauben zu müssen. Der Operator wörtlich (an Fable, 16.08., via
     5307639686 auf #79, ersetzt Punkt 3 von 5307633402):
 
     > „das kann schon auch im atelier sichtbar sein? und es muss so sein dass
     > es bindend ist? […] im kommentar sicher nicht"
+
+    Was die Quelle wirklich entscheidet: **im Kommentar nicht** — das ist die
+    einzige Festlegung, und sie ist negativ. Dass Priorität bindender
+    Orchestrierungszustand *ist*, bleibt Desk-Lesart bis zu einem Ruling.
 
     Desk-Ausarbeitung um diesen Kern (selbe Quelle, Grad DESK): Priorität ist
     typisierter, dauerhafter, ereignis-historisierter Orchestrierungszustand —
@@ -217,9 +225,15 @@ star, not a sentence of it.)
   not a technical question** and no technical item answers it. (5302109936 §4c.)
 - **The stated order is much shorter than the real chain.** This item sits
   behind #15 → #58 → #60 → #38 → the V3 chain → #16 phase 2 + #63 → the #24
-  implementation → #23: eight owners, two of them not schedulable. The vision is
-  not wrong; the sentence "Reihenfolge: nach Funktions-Kette (#60/#38) und #24"
-  is just far shorter than the chain it names. (5302109936 §5.)
+  implementation → #23: eight owners. The vision is not wrong; the sentence
+  "Reihenfolge: nach Funktions-Kette (#60/#38) und #24" is just far shorter than
+  the chain it names. (5302109936 §5.)
+
+  Nachgeführt am heutigen Stand, weil die Quelle von 2026-08 zwei Glieder als
+  *nicht planbar* führte: **#23 und #63 sind geschlossen**, und die V3-Grundlage
+  ist gelandet. Der Satz „zwei davon nicht planbar" galt für den Stand seiner
+  Quelle und gilt nicht mehr; die Kette ist kürzer, nicht anders. Offen in ihr
+  bleibt #16 Phase 2.
 
 ## Acceptance
 

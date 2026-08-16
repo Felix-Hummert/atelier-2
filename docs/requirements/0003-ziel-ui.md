@@ -261,9 +261,13 @@ not add features. (5302788411.)
 - **`MAXIMUM_WORKFLOW_NODES = 100` is a hard ceiling** a drawing board will make
   visible quickly. (5302109868 §4.)
 - **A graph composed on the canvas has no home under ADR 0007** ("atelier-2
-  never writes a source"). The ruling for it is the kind `unsourced` with export
-  as the way *to* a source, never as writing *into* the source; it goes into the
-  next revision of PR #45 (see #22). (5302132001 closing.)
+  never writes a source"). **Ungelöst**, und hier nicht als kommende Ergänzung
+  eines angenommenen Records geführt: die gelandete ADR 0007 enthält den Token
+  `unsourced` nicht, und ein Requirement darf einem akzeptierten Record keine
+  Regel zuschreiben, die er nicht trägt. Die Desk-Lesart aus der Quelle — eine
+  Art `unsourced`, mit Export als Weg *zu* einer Quelle und nie als Schreiben
+  *in* sie — bleibt zitiert als das, was sie ist: ein Vorschlag ohne Eigentümer.
+  (5302132001 closing.)
 - **Deferred, as named successors:** the ⌘K command palette and the multi-run
   tile wall — weight without carrying power while there is one kind of run and a
   handful of objects. Bringing them back later costs nothing. (5302132001.)
