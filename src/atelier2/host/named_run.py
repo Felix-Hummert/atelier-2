@@ -13,11 +13,11 @@ subcommand is a thin caller of it in the #114 pattern, and it belongs to #111.
 
 What this composes, and nothing else:
 
-1. the catalog resolves a name to one admitted lineage member,
-2. that member resolves to its exact published bytes,
-3. the caller's already-decided terminal truth is checked to be about *those*
+1. the catalog resolves a name to the exact published bytes of one admitted
+   lineage member -- one call, because the membership proof lives inside it,
+2. the caller's already-decided terminal truth is checked to be about *those*
    bytes,
-4. Cut B's supervised start persists revision, run, artifacts and receipt in one
+3. Cut B's supervised start persists revision, run, artifacts and receipt in one
    transaction, or persists nothing.
 
 It executes no graph. Cut B's starter takes a decided truth rather than producing
@@ -28,15 +28,12 @@ bytes were started and that the record of them is whole.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import assert_never
 
 from atelier2.application.resolve_catalog_name import (
     CatalogNameResolved,
     CatalogNameResult,
     CatalogReferenceNonMember,
-    CatalogReferenceResolved,
     resolve_catalog_name,
-    resolve_catalog_reference,
 )
 from atelier2.contracts.catalog_v3 import (
     CatalogLineageDisplayName,
@@ -113,19 +110,13 @@ def start_named_run(
     starter: DurableV3RunStarter,
 ) -> NamedRunResult:
     """Start the exact revision this name holds, or write nothing and say why."""
-    resolution = resolve_catalog_name(kind, lineage_id_or_name, position, catalog)
-    if not isinstance(resolution, CatalogNameResolved):
-        return NamedRunNameUnresolved(resolution)
-
-    match resolve_catalog_reference(
-        kind, resolution.lineage_id, resolution.revision_hash, catalog
-    ):
+    match resolve_catalog_name(kind, lineage_id_or_name, position, catalog):
+        case CatalogNameResolved() as resolution:
+            revision = resolution.revision
         case CatalogReferenceNonMember(lineage_id, revision_hash):
             return NamedRunRevisionUnbound(lineage_id, revision_hash)
-        case CatalogReferenceResolved(revision):
-            pass
-        case _ as unreachable:
-            assert_never(unreachable)
+        case _ as unresolved:
+            return NamedRunNameUnresolved(unresolved)
 
     if decided.revision.revision_hash != revision.revision_hash:
         return NamedRunTruthForAnotherRevision(
