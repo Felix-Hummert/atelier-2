@@ -26,7 +26,7 @@ from atelier2.ports.run_events import (
 )
 from atelier2.ports.run_queries import RunFound
 from atelier2.ports.workflow_revisions import (
-    DescribedWorkflowRevisionPage,
+    WorkflowRevisionPage,
 )
 from tests.scenarios.api import (
     api_limits,
@@ -281,17 +281,12 @@ def test_saturated_event_poll_does_not_starve_an_app_control_route() -> None:
             del projection_limit
             return RunFound(stream_run_projection(RUN_ID.value))
 
-        def list_described_workflow_revisions(
-            self,
-            after: object,
-            limit: int,
-            budget: object,
-            projection_limit: object = None,
-        ) -> DescribedWorkflowRevisionPage:
+        def list_workflow_revisions(
+            self, after: object, limit: int
+        ) -> WorkflowRevisionPage:
             assert after is None
             assert limit == 50
-            del budget, projection_limit
-            return DescribedWorkflowRevisionPage((), None)
+            return WorkflowRevisionPage((), None)
 
     async def scenario() -> None:
         queries = AppQueries()
@@ -343,20 +338,15 @@ def test_saturated_control_admission_returns_503_without_starting_another_query(
             self.release_first = threading.Event()
             self.calls = 0
 
-        def list_described_workflow_revisions(
-            self,
-            after: object,
-            limit: int,
-            budget: object,
-            projection_limit: object = None,
-        ) -> DescribedWorkflowRevisionPage:
+        def list_workflow_revisions(
+            self, after: object, limit: int
+        ) -> WorkflowRevisionPage:
             assert after is None
             assert limit == 50
-            del budget, projection_limit
             self.calls += 1
             self.first_started.set()
             self.release_first.wait(timeout=5)
-            return DescribedWorkflowRevisionPage((), None)
+            return WorkflowRevisionPage((), None)
 
     async def scenario() -> None:
         queries = BlockingQueries()

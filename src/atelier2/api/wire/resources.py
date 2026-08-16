@@ -107,14 +107,12 @@ class WorkflowGraphResourceV2(ApiModel):
     nodes: tuple[NodeResourceV2, ...]
 
 
+# A docstring here is published as this component's description, so the reason
+# the two authored fields carry no column of their own stays a comment: ADR 0007
+# decision 4 has them parsed out of the published bytes on the way to the wire,
+# which is what keeps this resource able only to repeat what the author wrote.
 class WorkflowGraphResourceV3(ApiModel):
-    """A published V3 revision: what it calls itself, its size, and that nothing
-    runs it.
-
-    The name and the description are parsed out of the published bytes on the way
-    to the wire and are stored beside them nowhere, so this resource can only
-    repeat what the author wrote (ADR 0007 decision 4).
-    """
+    """A published V3 revision: its format, its size, and that nothing runs it."""
 
     format_version: Literal[3]
     executable: Literal[False]

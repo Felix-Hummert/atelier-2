@@ -161,8 +161,21 @@ function validateWorkflowGraph(
     }
 }
 
-const workflowRevisionSummarySchema = z
-  .object({ revision_hash: sha256 })
+/**
+ * The cockpit asks for the described listing, because a picker has to offer a
+ * name rather than a hash. These fields mirror `WorkflowRevisionSummaryResourceV2`
+ * in the frozen document and `servedVocabulary.test.ts` holds them to it: the
+ * decoder is `.strict()`, so a field the server adds without this file throws on
+ * every load instead of being quietly ignored.
+ */
+export const workflowRevisionSummarySchema = z
+  .object({
+    revision_hash: sha256,
+    format_version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    executable: z.boolean(),
+    name: z.string().nullable(),
+    description: z.string().nullable()
+  })
   .strict();
 
 export const workflowRevisionDetailSchema = z
@@ -691,7 +704,7 @@ export function createCockpitApi(
     listWorkflowRevisions: () =>
       requestJson(
         fetcher,
-        "/atelier/api/v1/workflow-revisions?limit=50",
+        "/atelier/api/v1/workflow-revisions?limit=50&view=described",
         {},
         [200],
         workflowRevisionPageSchema

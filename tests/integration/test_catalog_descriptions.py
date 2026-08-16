@@ -88,9 +88,43 @@ def _publish(client: TestClient, document: bytes) -> str:
 
 
 def _listed(client: TestClient) -> dict[str, dict[str, object]]:
-    response = client.get(API_PREFIX + "/workflow-revisions")
+    response = client.get(API_PREFIX + "/workflow-revisions?view=described")
     assert response.status_code == 200, response.text
     return {str(item["revision_hash"]): item for item in response.json()["items"]}
+
+
+def test_the_default_listing_still_answers_the_shape_it_always_answered(
+    runtime: DbosRuntime,
+) -> None:
+    """Asking without a view returns exactly the summary a client already decodes.
+
+    The described representation was first built as a replacement, which broke
+    the cockpit's strict decoder on every load. This pins the default so that
+    enriching a listing can never again change what an existing caller receives.
+    """
+
+    client = durable_api_client(runtime)
+    revision_hash = _publish(client, V3_DESCRIBED_DOCUMENT)
+
+    default = client.get(API_PREFIX + "/workflow-revisions")
+
+    assert default.status_code == 200
+    assert default.json() == {
+        "items": [{"revision_hash": revision_hash}],
+        "next_after_revision_hash": None,
+    }
+
+
+def test_an_unknown_view_is_refused_rather_than_served_as_the_default(
+    runtime: DbosRuntime,
+) -> None:
+    client = durable_api_client(runtime)
+    _publish(client, V3_DESCRIBED_DOCUMENT)
+
+    refused = client.get(API_PREFIX + "/workflow-revisions?view=descibed")
+
+    assert refused.status_code == 422
+    assert refused.json()["type"].endswith(":invalid-request")
 
 
 @pytest.mark.proves("a-published-revision-is-listed-with-the-name-its-author-wrote")

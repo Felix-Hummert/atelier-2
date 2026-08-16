@@ -148,15 +148,7 @@ def test_the_published_v3_revision_reads_back_naming_its_format_as_unexecutable(
         "description": None,
     }
     assert client.get(API_PREFIX + "/workflow-revisions").json() == {
-        "items": [
-            {
-                "revision_hash": revision_hash,
-                "format_version": 3,
-                "executable": False,
-                "name": V3_DOCUMENT_NAME,
-                "description": None,
-            }
-        ],
+        "items": [{"revision_hash": revision_hash}],
         "next_after_revision_hash": None,
     }
 

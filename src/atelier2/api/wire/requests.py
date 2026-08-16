@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import Field
@@ -12,6 +13,20 @@ from atelier2.api.references import (
     SHA256_HASH_PATTERN,
 )
 from atelier2.api.wire.resources import ApiModel, ReconciliationDeterminationResource
+
+
+class RevisionListingView(StrEnum):
+    """Which representation of a revision listing the caller asked for.
+
+    Two representations exist because they cost differently: the summary reads
+    one column per revision, while the described one reads and parses every
+    document it lists. Making the caller name the one it needs keeps the cheaper
+    answer the default and keeps both of them reachable, rather than serving one
+    shape the document still advertises the other for.
+    """
+
+    SUMMARY = "summary"
+    DESCRIBED = "described"
 
 
 class PublishAuthProfileRevisionRequestResource(ApiModel):

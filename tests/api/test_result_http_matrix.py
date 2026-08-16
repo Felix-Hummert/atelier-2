@@ -89,19 +89,18 @@ from atelier2.ports.run_queries import (
     WaitingReconciliationProjection,
 )
 from atelier2.ports.workflow_revisions import (
-    DescribedWorkflowRevisionPage,
     DurableProjectionLimit,
     DurableRevisionCollision,
     DurableRevisionCreated,
     DurableRevisionExisting,
     DurableRevisionPublicationResult,
-    EnrichedPageBudget,
     GetWorkflowRevisionResult,
-    ListDescribedWorkflowRevisionsResult,
+    ListWorkflowRevisionsResult,
     QueryDurableStateCorrupt,
     ReadUnavailable,
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
+    WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
@@ -201,7 +200,7 @@ SUCCESS_CASES = (
         "revision-list-page",
         "revision-list",
         "revision-list",
-        DescribedWorkflowRevisionPage((), None),
+        WorkflowRevisionPage((), None),
         200,
     ),
     (
@@ -645,16 +644,12 @@ class MatrixQueries:
     case: RouteResultCase
     run_reads: int = 0
 
-    def list_described_workflow_revisions(
-        self,
-        after: WorkflowRevisionHash | None,
-        limit: int,
-        budget: EnrichedPageBudget,
-        projection_limit: DurableProjectionLimit | None = None,
-    ) -> ListDescribedWorkflowRevisionsResult:
-        del after, limit, budget, projection_limit
+    def list_workflow_revisions(
+        self, after: WorkflowRevisionHash | None, limit: int
+    ) -> ListWorkflowRevisionsResult:
+        del after, limit
         assert self.case.source == "revision-list"
-        return cast(ListDescribedWorkflowRevisionsResult, self.case.result)
+        return cast(ListWorkflowRevisionsResult, self.case.result)
 
     def get_workflow_revision(
         self,
