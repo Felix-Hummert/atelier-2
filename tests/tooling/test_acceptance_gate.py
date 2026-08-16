@@ -704,8 +704,13 @@ def test_a_repeated_source_test_identity_is_refused_as_ambiguous(
     )
 
 
-def test_a_unique_python_class_method_matches_its_junit_classname(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "reported_name",
+    ["test_helps", "test_helps@direct-systemd-user-manager"],
+    ids=["plain", "xdist-group"],
+)
+def test_a_unique_python_class_method_matches_its_junit_identity(
+    tmp_path: Path, reported_name: str
 ) -> None:
     project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
     located_in = Path("tests/test_class_claim.py")
@@ -723,7 +728,7 @@ def test_a_unique_python_class_method_matches_its_junit_classname(
         junit_report(
             (
                 ReportedTest(
-                    "test_helps",
+                    reported_name,
                     REPORT_ONLY_SENTENCE,
                     located_in=located_in,
                     class_scope=("TestClaim",),

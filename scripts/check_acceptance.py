@@ -399,9 +399,9 @@ def proof_honours_claim(proof: ReportedProof, claim: ProofClaim) -> bool:
             proof.python_class_name, claim.located_in
         ):
             return False
-        return (
-            proof.proving_test == claim.claiming_test
-            or proof.proving_test.startswith(f"{claim.claiming_test}[")
+        return proof.proving_test == claim.claiming_test or any(
+            proof.proving_test.startswith(f"{claim.claiming_test}{suffix}")
+            for suffix in ("[", "@")
         )
     if proof.located_in != claim.located_in:
         return False
