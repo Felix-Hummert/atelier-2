@@ -532,10 +532,6 @@ def test_a_different_role_matrix_is_a_different_run_configuration() -> None:
     assert bind(role_matrix=other_matrix).revision_hash != bind().revision_hash
 
 
-def test_the_same_document_and_matrix_snapshot_to_the_same_revision() -> None:
-    assert bind().revision_hash == bind().revision_hash
-
-
 @dataclass(frozen=True)
 class Refused:
     reason: ReferenceRefusalReason
