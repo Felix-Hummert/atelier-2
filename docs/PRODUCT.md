@@ -334,11 +334,13 @@ job still travels inside the published document, so one distinct input burns one
 revision, and neither a run-level input, a workflow name, nor an output contract
 that could decide an exit code exists yet.
 
-The canonical store is schema V10. A fresh store is created as exact V10 and
-carries the thin V3 subset: published revisions of the closed kind set, lineage
-membership bound to those revisions, format-3 runs, and `node_receipts_v3`. Alias history, measurements, and policy
-activations are not in this profile. V9 remains the published predecessor
-object `V9_SCHEMA_HANDOFF` — version 9, fingerprint
-`6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38`. Exact V7,
-V8, and V9 files are refused without mutation; there is no runtime migration
-or downgrade. Until a named maturity there is no compatibility promise.
+The canonical store is schema V11. A fresh store is created as exact V11 and
+carries published revisions, lineage membership, format-3 runs, immutable node
+artifact bytes, node receipts, and their ordered output and access bindings. A
+typed in-process writer can commit that exact supervised V3 start as one atomic
+set. It does not enqueue a V3 engine, validate artifact bytes against an output
+schema, write run events, or declare a terminal hash. Alias history,
+measurements, and policy activations are not in this profile. V9 and V10 remain
+published predecessor objects; exact V7 through V10 files are refused without
+mutation, with no runtime migration or downgrade. Until a named maturity there
+is no compatibility promise.
