@@ -16,14 +16,19 @@ number is never reused and never renumbered.
 - [ADR 0003: The HTTP API projects durable workflow truth](0003-http-api.md)
 - [ADR 0004: The local cockpit is a projection and control adapter](0004-local-cockpit.md)
 - [ADR 0005: CI enforces package boundaries](0005-enforced-package-boundaries.md)
-- [ADR 0006: Format V3 is the whole authoring language; capabilities stage execution](0006-node-vocabulary.md) — ACCEPTED, not yet implemented
-- [ADR 0007: Named lineages own catalog identity above hash-true revisions](0007-catalog-identity.md) — PROPOSED, not yet implemented
-- [ADR 0008: Node budgets separate hard limits from reported thresholds](0008-budget-units.md) — ACCEPTED, not yet implemented
-- [ADR 0009: One trust boundary separates the coordinating service from every runner](0009-runner-trust.md) — PROPOSED, not yet implemented
-- [ADR 0010: One GitHub adapter observes, publishes and reads back; the core stays platform-blind](0010-github-platform-adapter.md) — PROPOSED, not yet implemented
-- [ADR 0011: A project is a store root; the root bounds where a project exists, and destroying it is the only removal](0011-project-isolation.md) — PROPOSED, not yet implemented
-- [ADR 0012: Acceptance sentences are declared in the repository and proven by the run reports](0012-acceptance-trace-format.md) — ACCEPTED, implemented
-- [ADR 0013: A bounded `iterate` block repeats a subworkflow until a receipt says green](0013-bounded-iteration.md) — PROPOSED, not yet implemented
+- [ADR 0006: Format V3 is the whole authoring language; capabilities stage execution](0006-node-vocabulary.md)
+- [ADR 0007: Named lineages own catalog identity above hash-true revisions](0007-catalog-identity.md)
+- [ADR 0008: Node budgets separate hard limits from reported thresholds](0008-budget-units.md)
+- [ADR 0009: One trust boundary separates the coordinating service from every runner](0009-runner-trust.md)
+- [ADR 0010: One GitHub adapter observes, publishes and reads back; the core stays platform-blind](0010-github-platform-adapter.md)
+- [ADR 0011: A project is a store root; the root bounds where a project exists, and destroying it is the only removal](0011-project-isolation.md)
+- [ADR 0012: Acceptance sentences are declared in the repository and proven by the run reports](0012-acceptance-trace-format.md)
+- [ADR 0013: A bounded `iterate` block repeats a subworkflow until a receipt says green](0013-bounded-iteration.md)
+
+Each record carries its own status, and this index deliberately does not repeat
+it, because a second copy of a status is the next thing to go stale. How much of
+a record has been built is implementation status and belongs to
+[docs/PRODUCT.md](../PRODUCT.md).
 
 The product stack beyond recorded decisions remains undecided; an ADR is not a
 claim that its product slice already exists.

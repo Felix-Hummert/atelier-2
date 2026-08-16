@@ -380,10 +380,11 @@ and no distiller has to choose between them:
   ```
 
   A Go template writes the field and appends nothing. The recipe
-  `docs/requirements/README.md` currently prescribes, `--jq '.body' | sha256sum`,
-  digests the body plus the newline `gh`'s raw-string output adds — an identity over
-  bytes the object does not contain, and one no reader can re-derive from the object
-  alone. The newline cannot be suppressed inside `--jq`, which takes the filter as
+  `docs/requirements/README.md` carried until this correction landed,
+  `--jq '.body' | sha256sum`, digests the body plus the newline `gh`'s raw-string
+  output adds — an identity over bytes the object does not contain, and one no
+  reader can re-derive from the object alone. The newline cannot be suppressed
+  inside `--jq`, which takes the filter as
   its only argument and rejects a `jq` flag; `gh api … | jq -j '.body'` is the
   equivalent two-tool form.
 - **The divergence, exactly.** All three landed requirement citations were computed
@@ -396,11 +397,11 @@ and no distiller has to choose between them:
   author read under the recipe its document named at the time, and each stays valid
   under that recipe. Restating a provenance record to match a later convention
   destroys the only thing it was for.
-- **The correction is owed, and it is not made here.**
-  `docs/requirements/README.md` corrects its recipe line to the exact form and notes
-  that citations predating the correction carry the appended-newline form. That step
-  belongs to the requirements-document owner and is routed to
-  [#93](https://github.com/FlexOr2/atelier-2/issues/93); this record must not edit
+- **The correction was owed, and it was not made here.**
+  `docs/requirements/README.md` now names the exact form as its recipe and records
+  that citations predating that change carry the appended-newline form. That step
+  belonged to the requirements-document owner and landed through
+  [#93](https://github.com/FlexOr2/atelier-2/issues/93); this record does not edit
   another owner's convention from inside a decision.
 
 ### 6. Readback semantics: what merged, closed and labeled mean

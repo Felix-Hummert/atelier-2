@@ -1,5 +1,8 @@
 # ADR 0004: The local cockpit is a projection and control adapter
 
+- Status: ACCEPTED 2026-08-12 — implemented: the cockpit landed with this record
+  and keeps no durable run state of its own
+
 ## Context
 
 The durable API exposes enough truth to operate the first workflow vertical,

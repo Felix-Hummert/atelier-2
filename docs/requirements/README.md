@@ -147,11 +147,20 @@ the object is routinely rewritten:
 - **An issue body** is rewritten in place with every revision, so a body
   citation carries the SHA-256 of the body as it was read. `Distilled-From`
   records the digest in full; a rule repeats its first eight characters, as
-  `#82 body @ fe6fd31f`. The digest is reproduced with
+  `#82 body @ fe6fd31f`. The digest is taken over the body's exact bytes and is
+  reproduced with
 
   ```console
-  $ gh api repos/FlexOr2/atelier-2/issues/82 --jq '.body' | sha256sum
+  $ gh api repos/FlexOr2/atelier-2/issues/82 --template '{{.body}}' | sha256sum
   ```
+
+  A Go template writes the field and appends nothing; `gh api … | jq -j '.body'`
+  is the two-tool equivalent. Citations taken before this correction used
+  `--jq '.body'`, which appends a newline the object does not carry. They stay
+  valid under the recipe their own document named and are not rewritten —
+  [ADR 0010](../decisions/0010-github-platform-adapter.md) §5 names which landed
+  citations carry that form — and each is recomputed only when its document is
+  refreshed against its source.
 
 A rule with no source object behind it is an invention, and is removed rather
 than sourced afterwards.
