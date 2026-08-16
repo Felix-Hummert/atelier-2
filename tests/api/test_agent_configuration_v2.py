@@ -398,7 +398,7 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
             return DurableRunCreated(run)
 
     class Queries:
-        def get_run(self, _run_id: RunId, _projection_limit: object) -> RunFound:
+        def get_run(self, _run_id: RunId) -> RunFound:
             return RunFound(RunProjection(run, graph, None))
 
     starter = Starter()

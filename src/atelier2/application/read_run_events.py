@@ -28,11 +28,10 @@ from atelier2.ports.run_events import (
     RunEventQueries,
 )
 from atelier2.ports.workflow_revisions import (
-    DurableProjectionLimit,
-    QueryDurableStateCorrupt,
+    ProjectionTooLarge as PortProjectionTooLarge,
 )
 from atelier2.ports.workflow_revisions import (
-    ProjectionTooLarge as PortProjectionTooLarge,
+    QueryDurableStateCorrupt,
 )
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,
@@ -68,13 +67,10 @@ def read_run_events(
     run_id: RunId,
     after_sequence: int,
     page_size: int,
-    projection_limit: DurableProjectionLimit,
     queries: RunEventQueries,
 ) -> ReadRunEventsResult:
     """One page of events after a cursor, or why there is none to hand on."""
-    match queries.read_run_event_page(
-        run_id, after_sequence, page_size, projection_limit
-    ):
+    match queries.read_run_event_page(run_id, after_sequence, page_size):
         case RunEventPage(events, terminal_seen):
             if len(events) > page_size:
                 return RunEventPageOversized()

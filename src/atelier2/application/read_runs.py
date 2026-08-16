@@ -25,11 +25,10 @@ from atelier2.ports.run_queries import (
     RunQueryMissing,
 )
 from atelier2.ports.workflow_revisions import (
-    DurableProjectionLimit,
-    QueryDurableStateCorrupt,
+    ProjectionTooLarge as PortProjectionTooLarge,
 )
 from atelier2.ports.workflow_revisions import (
-    ProjectionTooLarge as PortProjectionTooLarge,
+    QueryDurableStateCorrupt,
 )
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,
@@ -62,10 +61,9 @@ type ListRunsResult = (
 
 def get_run(
     run_id: RunId,
-    projection_limit: DurableProjectionLimit,
     queries: RunQueries,
 ) -> GetRunResult:
-    match queries.get_run(run_id, projection_limit):
+    match queries.get_run(run_id):
         case RunFound(projection):
             return RunRead(projection)
         case RunQueryMissing():
@@ -83,10 +81,9 @@ def get_run(
 def list_runs(
     after: RunId | None,
     limit: int,
-    projection_limit: DurableProjectionLimit,
     queries: RunQueries,
 ) -> ListRunsResult:
-    match queries.list_runs(after, limit, projection_limit):
+    match queries.list_runs(after, limit):
         case RunPage(runs, next_after):
             return RunsListed(runs, next_after)
         case PortReadUnavailable(detail):

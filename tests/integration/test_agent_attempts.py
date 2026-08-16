@@ -12,7 +12,6 @@ from sqlalchemy.exc import DatabaseError, IntegrityError
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -78,6 +77,7 @@ from tests.scenarios.agents import (
     emitting,
     launching,
 )
+from tests.scenarios.api import durable_queries
 
 _DOCUMENT = b"""format_version: 2
 start: build
@@ -379,7 +379,7 @@ def test_current_attempt_projection_maps_armed_and_rejects_broken_id(
         store.prepare(agent_attempt_execution(request))
         store.claim(agent_attempt_execution(request))
 
-        found = DbosQueries(runtime.engine).get_run(request.run_id)
+        found = durable_queries(runtime.engine).get_run(request.run_id)
 
         assert isinstance(found, RunFound)
         attempt = found.projection.current_agent_attempt
@@ -392,7 +392,7 @@ def test_current_attempt_projection_maps_armed_and_rejects_broken_id(
             connection.exec_driver_sql("DROP TRIGGER agent_attempts_state_transition")
             connection.execute(agent_attempts.update().values(attempt_id="f" * 64))
         assert isinstance(
-            DbosQueries(runtime.engine).get_run(request.run_id),
+            durable_queries(runtime.engine).get_run(request.run_id),
             QueryDurableStateCorrupt,
         )
     finally:

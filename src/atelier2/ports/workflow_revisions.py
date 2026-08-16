@@ -194,7 +194,6 @@ class WorkflowRevisionQueries(Protocol):
     def get_workflow_revision(
         self,
         revision_hash: WorkflowRevisionHash,
-        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetWorkflowRevisionResult: ...
 
     def list_workflow_revisions(
@@ -206,5 +205,4 @@ class WorkflowRevisionQueries(Protocol):
         after: WorkflowRevisionHash | None,
         limit: int,
         budget: EnrichedPageBudget,
-        projection_limit: DurableProjectionLimit | None = None,
     ) -> ListDescribedWorkflowRevisionsResult: ...

@@ -9,7 +9,6 @@ from pathlib import Path
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
@@ -61,6 +60,7 @@ from tests.scenarios.agents import (
     launching,
     refusing,
 )
+from tests.scenarios.api import durable_queries
 
 CRASHED = 86
 DOCUMENT = b"""format_version: 2
@@ -325,7 +325,7 @@ def main(root: Path, mode: str) -> None:
                 store,
                 lease.agent_process_supervisor,
             )
-            found = DbosQueries(lease.engine).get_run(exact_request.run_id)
+            found = durable_queries(lease.engine).get_run(exact_request.run_id)
             if isinstance(found, RunFound):
                 attempt = found.projection.current_agent_attempt
                 if attempt is not None:

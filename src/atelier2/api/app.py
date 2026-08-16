@@ -12,7 +12,11 @@ from atelier2.api.context import (
     ApiUseCases,
     install_api_context,
 )
-from atelier2.api.limits import ApiLimits, RequestBodyLimitMiddleware
+from atelier2.api.limits import (
+    ApiLimits,
+    RequestBodyLimitMiddleware,
+    durable_projection_limit,
+)
 from atelier2.api.openapi import API_PREFIX, install_custom_openapi
 from atelier2.api.problems import install_problem_handlers
 from atelier2.api.routes import agents, events, health, revisions, runs
@@ -49,7 +53,7 @@ def bound_use_cases(
     """Spend the ports here, so that nothing below this line can reach one."""
     return ApiUseCases(
         get_workflow_revision=lambda revision_hash: get_workflow_revision(
-            revision_hash, projection_limit, ports.workflow_revision_queries
+            revision_hash, ports.workflow_revision_queries
         ),
         list_workflow_revisions=lambda after, limit: list_workflow_revisions(
             after, limit, ports.workflow_revision_queries
@@ -59,14 +63,11 @@ def bound_use_cases(
                 after,
                 limit,
                 enriched_page_budget,
-                projection_limit,
                 ports.workflow_revision_queries,
             )
         ),
-        get_run=lambda run_id: get_run(run_id, projection_limit, ports.run_queries),
-        list_runs=lambda after, limit: list_runs(
-            after, limit, projection_limit, ports.run_queries
-        ),
+        get_run=lambda run_id: get_run(run_id, ports.run_queries),
+        list_runs=lambda after, limit: list_runs(after, limit, ports.run_queries),
         prepare_run_events=lambda run_id, after_sequence: prepare_run_events(
             run_id, after_sequence, ports.run_event_queries
         ),
@@ -74,7 +75,6 @@ def bound_use_cases(
             run_id,
             after_sequence,
             page_size,
-            projection_limit,
             ports.run_event_queries,
         ),
         publish_workflow_revision=lambda document: publish_workflow_revision(
@@ -114,7 +114,7 @@ def bound_use_cases(
             )
         ),
         reconcile_run=lambda request: reconcile_run(
-            request, ports.run_queries, ports.reconcile_commander, projection_limit
+            request, ports.run_queries, ports.reconcile_commander
         ),
     )
 
@@ -146,18 +146,7 @@ def create_app(
         api_prefix=API_PREFIX,
     )
     admission_timeout_seconds = limits.maximum_query_admission_wait_milliseconds / 1_000
-    workflow_projection_limit = WorkflowPublicationLimits(
-        maximum_document_bytes=min(
-            limits.maximum_request_body_bytes,
-            limits.maximum_base64_decoded_bytes,
-        ),
-        maximum_nodes=limits.maximum_workflow_nodes,
-        maximum_string_characters=limits.maximum_field_characters,
-        maximum_payload_bytes=min(
-            limits.maximum_decoded_payload_bytes,
-            limits.maximum_base64_decoded_bytes,
-        ),
-    )
+    workflow_projection_limit = durable_projection_limit(limits)
     install_api_context(
         app,
         ApiContext(

@@ -23,7 +23,6 @@ from atelier2.ports.workflow_revisions import (
 )
 
 RUN_ID = RunId("run")
-PROJECTION_LIMIT: Any = object()
 EVENT: Any = object()
 
 
@@ -39,9 +38,8 @@ class ScriptedEvents:
         run_id: Any,
         after_sequence: int,
         limit: int,
-        projection_limit: Any = None,
     ) -> Any:
-        self.asked.append((run_id, after_sequence, limit, projection_limit))
+        self.asked.append((run_id, after_sequence, limit))
         return self.answer
 
     def prepare_run_event_stream(self, run_id: Any, after_sequence: int) -> Any:
@@ -51,7 +49,7 @@ class ScriptedEvents:
 def read(answer: Any, page_size: int = 2) -> tuple[ReadRunEventsResult, ScriptedEvents]:
     queries = ScriptedEvents(answer)
     return (
-        read_run_events(RUN_ID, 7, page_size, PROJECTION_LIMIT, queries),
+        read_run_events(RUN_ID, 7, page_size, queries),
         queries,
     )
 
@@ -108,7 +106,7 @@ def test_a_full_page_of_exactly_the_size_asked_for_is_not_oversized() -> None:
 def test_a_page_read_asks_the_store_with_exactly_what_the_caller_named() -> None:
     _, queries = read(RunEventPage((), terminal_seen=True), page_size=5)
 
-    assert queries.asked == [(RUN_ID, 7, 5, PROJECTION_LIMIT)]
+    assert queries.asked == [(RUN_ID, 7, 5)]
 
 
 def test_a_page_hands_its_events_on_by_identity_rather_than_reshaping_them() -> None:

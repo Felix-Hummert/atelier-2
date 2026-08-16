@@ -15,7 +15,6 @@ import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
-from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import workflow_revisions
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
@@ -28,7 +27,7 @@ from atelier2.ports.workflow_revisions import (
     QueryDurableStateCorrupt,
     WorkflowRevisionPage,
 )
-from tests.scenarios.api import api_limits, durable_api_client
+from tests.scenarios.api import api_limits, durable_api_client, durable_queries
 from tests.scenarios.runtime import exact_output_runtime
 from tests.scenarios.workflows import V3_DOCUMENT, V3_NODE_COUNT
 
@@ -203,7 +202,7 @@ def test_an_enriched_page_stops_at_its_derived_bound_and_pages_on(
             _publish(client, V1_DOCUMENT),
         }
     )
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
     budget = EnrichedPageBudget(maximum_nodes=V3_NODE_COUNT, maximum_document_bytes=1)
 
     page = queries.list_described_workflow_revisions(None, 50, budget)
@@ -225,7 +224,7 @@ def test_a_generous_budget_lists_every_revision_and_ends_the_page(
     client = durable_api_client(runtime)
     for document in (V3_DESCRIBED_DOCUMENT, V3_DOCUMENT, V1_DOCUMENT):
         _publish(client, document)
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
 
     page = queries.list_described_workflow_revisions(
         None,
@@ -246,7 +245,7 @@ def test_the_frozen_hash_only_listing_still_answers_beside_the_enriched_one(
     client = durable_api_client(runtime)
     for document in (V1_DOCUMENT, V3_DESCRIBED_DOCUMENT):
         _publish(client, document)
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
 
     frozen = queries.list_workflow_revisions(None, 50)
     enriched = queries.list_described_workflow_revisions(
@@ -263,7 +262,7 @@ def test_the_frozen_hash_only_listing_still_answers_beside_the_enriched_one(
 
 
 def test_a_page_limit_outside_its_range_is_refused(runtime: DbosRuntime) -> None:
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
     budget = EnrichedPageBudget(maximum_nodes=100, maximum_document_bytes=65_536)
 
     with pytest.raises(ValueError):
@@ -293,7 +292,7 @@ def test_a_stored_document_that_denies_its_own_hash_is_named_not_listed(
                 revision_hash="0" * 64, document=V1_DOCUMENT
             )
         )
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
 
     result = queries.list_described_workflow_revisions(
         None,

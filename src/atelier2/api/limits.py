@@ -7,11 +7,34 @@ from typing import cast
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from atelier2.api.references import encode_event_cursor, encode_public_run_reference
+from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.effects import OperatorFoundEffect
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import PersistedRunEvent
 from atelier2.ports.run_queries import RunProjection
+
+
+def durable_projection_limit(limits: ApiLimits) -> WorkflowPublicationLimits:
+    """The bound a durable reader must hold, derived from the API's own limits.
+
+    It has one owner because it has one value: the whole application reads through
+    the same bound, and a reader that could be handed a different one per call is a
+    reader whose answers cannot be compared. Deriving it here rather than inside
+    the application builder is what lets the reader be constructed with it.
+    """
+    return WorkflowPublicationLimits(
+        maximum_document_bytes=min(
+            limits.maximum_request_body_bytes,
+            limits.maximum_base64_decoded_bytes,
+        ),
+        maximum_nodes=limits.maximum_workflow_nodes,
+        maximum_string_characters=limits.maximum_field_characters,
+        maximum_payload_bytes=min(
+            limits.maximum_decoded_payload_bytes,
+            limits.maximum_base64_decoded_bytes,
+        ),
+    )
 
 
 class ApiLimitExceeded(ValueError):

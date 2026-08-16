@@ -8,7 +8,6 @@ from atelier2.contracts.executions import RunEvent
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_queries import RunQueryMissing
 from atelier2.ports.workflow_revisions import (
-    DurableProjectionLimit,
     ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
@@ -76,5 +75,4 @@ class RunEventQueries(Protocol):
         run_id: RunId,
         after_sequence: int,
         limit: int,
-        projection_limit: DurableProjectionLimit | None = None,
     ) -> ReadRunEventPageResult: ...

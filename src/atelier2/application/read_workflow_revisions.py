@@ -19,7 +19,6 @@ from atelier2.application.refusals import (
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.ports.workflow_revisions import (
     DescribedWorkflowRevisionPage,
-    DurableProjectionLimit,
     EnrichedPageBudget,
     QueryDurableStateCorrupt,
     WorkflowRevisionFound,
@@ -80,10 +79,9 @@ type ListDescribedWorkflowRevisionsResult = (
 
 def get_workflow_revision(
     revision_hash: WorkflowRevisionHash,
-    projection_limit: DurableProjectionLimit,
     queries: WorkflowRevisionQueries,
 ) -> GetWorkflowRevisionResult:
-    match queries.get_workflow_revision(revision_hash, projection_limit):
+    match queries.get_workflow_revision(revision_hash):
         case WorkflowRevisionFound(projection):
             return WorkflowRevisionRead(projection)
         case WorkflowRevisionMissing():
@@ -120,7 +118,6 @@ def list_described_workflow_revisions(
     after: WorkflowRevisionHash | None,
     limit: int,
     budget: EnrichedPageBudget,
-    projection_limit: DurableProjectionLimit,
     queries: WorkflowRevisionQueries,
 ) -> ListDescribedWorkflowRevisionsResult:
     """One page of revisions that carries what each document says about itself.
@@ -129,9 +126,7 @@ def list_described_workflow_revisions(
     route can widen what one page is allowed to read from the store.
     """
 
-    match queries.list_described_workflow_revisions(
-        after, limit, budget, projection_limit
-    ):
+    match queries.list_described_workflow_revisions(after, limit, budget):
         case DescribedWorkflowRevisionPage(items, next_after):
             return WorkflowRevisionsDescribed(items, next_after)
         case PortReadUnavailable(detail):

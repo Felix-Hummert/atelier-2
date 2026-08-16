@@ -20,11 +20,11 @@ story = "https://github.com/FlexOr2/atelier-2/issues/87"
 #     `ignore_imports` of the `route-vocabulary` contract and in
 #     ROUTE_CALLS_STILL_HOLDING_PORTS in `scripts/check_architecture.py`. Both are
 #     red on a stale entry in either direction, so neither can claim it is done.
-#   - no fail-open port default. Fourteen `projection_limit: … | None = None`
-#     parameters remain across ports, the DBOS adapter and one use-case, and
-#     `agent_executor_registry` keeps one too. Making them required is a sweep
-#     across the 88 places the limit is handed through, which is its own head — it
-#     is not declared here because this one does not do it.
+#   - one fail-open default is left: `agent_executor_registry` in
+#     `adapters/dbos/starter.py`. The projection bound is no longer among them —
+#     it is not a required parameter but no parameter at all, because the reader
+#     holds it. The registry belongs to the same idea and to whichever head takes
+#     the starter; it is named here so the debt cannot read as paid.
 
 [[sentence]]
 id = "wire-schemas-name-no-port-type"
@@ -33,6 +33,10 @@ text = "The schemas the API accepts and answers with name no durable port type: 
 [[sentence]]
 id = "every-read-decision-belongs-to-a-use-case"
 text = "Every read the API offers is decided by a use-case that translates the store's answer into the application's own outcome, so each way a read can fail is a named member of that outcome rather than a port type a route matches on."
+
+[[sentence]]
+id = "a-durable-reader-holds-the-bound-it-reads-under"
+text = "A durable reader holds the bound it reads under: no caller passes one, a reader cannot be built without one, and the bound it was built with is the one it applies — so there is no unbounded read to reach by leaving an argument out."
 
 [[sentence]]
 id = "a-port-refuses-by-type-and-the-api-words-the-answer"
