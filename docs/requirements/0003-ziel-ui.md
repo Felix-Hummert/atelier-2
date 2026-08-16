@@ -1,17 +1,20 @@
 # Requirement 0003: One workshop, three views, one language — the graph
 
 ```text
-Status:         DRAFT
+Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/9
 Source-Threads: #9, #5
 Distilled-From: 5294009202, 5294316639, 5301898411, 5302066517, 5302109868,
                 5302132001, 5302769095, 5302788411
                 #9 body, sha256
                 36800d6ecd5d3e8922028425835b368b42d163098e5d32da930e40d25f49ce99
-Approved-By:    none
+Approved-By:    5307632332
 ```
 
-`DRAFT`: #9 is a vision, and it says so itself — its body closes "Status:
+`AGREED` as a reading (operator comment 5307632332, 16.08.2026, „ja passt"): the
+operator approved that this document reads its thread faithfully. That
+approval settles no direction beyond what the thread itself settles — the
+paragraph below keeps saying why that caution matters here. #9 is a vision, and it says so itself — its body closes "Status:
 VISION/PROPOSAL — verbindlich erst als eigenes Requirement-Issue nach
 Operator-Abnahme (Konvention siehe #5)". That approval has not happened, so this
 document settles nothing, and the route it names is #5's: the operator's approval
