@@ -38,9 +38,9 @@ from atelier2.contracts.runs import RunState
 from atelier2.contracts.workflows import (
     AgentNode,
     AgentNodeV2,
-    AnyWorkflowGraph,
     AnyWorkflowNode,
 )
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
 
 _NODE_STATES_ENDED_BY_EVENT: Mapping[RunEventKind, NodeState] = {
     RunEventKind.AGENT_COMPLETED: NodeState.SUCCEEDED,
@@ -249,8 +249,20 @@ class _RailDerivation:
         return NodeRailAttempt(from_snapshot.attempt_ordinal, from_snapshot.state)
 
 
-def _walk_from_start(graph: AnyWorkflowGraph) -> tuple[AnyWorkflowNode, ...]:
-    """Every node in graph order; the graph's own validator proved the walk ends."""
+def _walk_from_start(graph: AnyWorkflowDocument) -> tuple[AnyWorkflowNode, ...]:
+    """Every node in graph order; the graph's own validator proved the walk ends.
+
+    The one executable V3 shape is a single node, so its rail is that node and
+    the walk has nothing to follow. A longer V3 graph cannot start yet, and the
+    order its rail would take is the ready set H2 and #86 own -- so this returns
+    what exists rather than inventing an order for a run nobody can begin.
+    """
+    if isinstance(graph, WorkflowGraphV3):
+        # A V3 run has no rail yet. The rail is an ordered walk, and the order a
+        # V3 graph walks in is the ready set H2 and #86 own; the one startable
+        # V3 shape is a single node, so an empty rail says "nothing to show"
+        # rather than inventing a one-entry order the next shape would break.
+        return ()
     walked: list[AnyWorkflowNode] = []
     node: AnyWorkflowNode = graph.node(graph.start)
     while node.next is not None:

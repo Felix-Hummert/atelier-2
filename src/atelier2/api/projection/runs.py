@@ -45,6 +45,7 @@ from atelier2.contracts.workflows import (
     WorkflowNode,
     WorkflowNodeV2,
 )
+from atelier2.contracts.workflows_v3 import WorkflowNodeV3Kinds
 
 
 def node_rail_resources(
@@ -71,6 +72,12 @@ def node_rail_resources(
 def run_resource(projection: RunProjection) -> AnyRunResource:
     run = projection.run
     node = projection.graph.node(run.current_node_id)
+    # A V3 run has no wire resource yet: the V1 and V2 shapes are frozen, and what
+    # a V3 run answers with is #85's to decide. Refused by name so the API says
+    # what is missing instead of rendering a V3 node as a V2 one.
+    serves_a_v3_node = isinstance(node, WorkflowNodeV3Kinds)
+    if serves_a_v3_node:
+        raise ValueError("a V3 run has no API resource yet")
     if isinstance(run, RunV2):
         return _run_resource_v2(projection, run, node)
     if run.state is RunState.WAITING_INPUT:
