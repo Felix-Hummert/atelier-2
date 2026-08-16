@@ -257,6 +257,7 @@ def test_the_public_start_route_refuses_a_v3_revision_with_no_row_and_no_enqueue
             )
             == 0
         )
+        assert connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status")) == 0
 
 
 @pytest.mark.proves("a-public-start-refuses-a-v3-revision-before-any-write")
