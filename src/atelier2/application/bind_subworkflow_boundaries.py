@@ -38,6 +38,7 @@ def bind_subworkflow_boundaries(
     resolver: PublishedWorkflowResolver,
     parser: WorkflowDocumentParser,
     maximum_nesting_depth: int,
+    maximum_iteration_rounds: int,
 ) -> SubworkflowBinding:
     """Bind every subworkflow node of one document against real child content.
 
@@ -46,9 +47,11 @@ def bind_subworkflow_boundaries(
     chain may run deeper than the attested `maximum_nesting_depth`, and any
     deviation raises `SubworkflowBindingRefused` naming the node and the chain.
     """
+    if maximum_iteration_rounds < 1:
+        raise ValueError("a proven round bound admits at least one round")
     if maximum_nesting_depth < 0:
         raise ValueError("the attested nesting depth bound must not be negative")
-    binder = _Binder(resolver, parser, maximum_nesting_depth)
+    binder = _Binder(resolver, parser, maximum_nesting_depth, maximum_iteration_rounds)
     return SubworkflowBinding(binder.bind_nodes(document, _Chain()))
 
 
@@ -70,6 +73,7 @@ class _Binder:
     resolver: PublishedWorkflowResolver
     parser: WorkflowDocumentParser
     maximum_nesting_depth: int
+    maximum_iteration_rounds: int
 
     def bind_nodes(
         self, graph: WorkflowGraphV3, chain: _Chain
@@ -85,6 +89,7 @@ class _Binder:
     ) -> BoundSubworkflow:
         reached_by = chain.reaching(node.workflow)
         self._refuse_excess_depth(node, reached_by)
+        self._refuse_excess_rounds(node, reached_by)
         revision = self._resolve(node, reached_by)
         child = self._parse(node, reached_by, revision.document)
         _refuse_broken_boundary(node, graph, child, reached_by)
@@ -148,6 +153,28 @@ class _Binder:
             )
         return parsed
 
+    def _refuse_excess_rounds(
+        self, node: SubworkflowNodeV3, reached_by: ReachedBy
+    ) -> None:
+        """Whether the composition proved as many rounds as the document asks for.
+
+        The bound is handed to this binding the way the nesting bound already is,
+        not attested on a capability: what a runtime can carry is a property of
+        the composition that assembled it. A document asking for more is refused
+        before any round exists rather than stopped in the middle of one.
+        """
+        if node.iterate is None or (
+            node.iterate.maximum_rounds <= self.maximum_iteration_rounds
+        ):
+            return
+        raise _refuse(
+            SubworkflowBindingRefusalReason.ITERATION_ROUNDS_EXCEEDED,
+            node,
+            reached_by,
+            f"the iteration asks for {node.iterate.maximum_rounds} rounds, past "
+            f"the proven maximum of {self.maximum_iteration_rounds}",
+        )
+
     def _refuse_excess_depth(
         self, node: SubworkflowNodeV3, reached_by: ReachedBy
     ) -> None:
@@ -194,11 +221,12 @@ def _refuse_broken_boundary(
     child: WorkflowGraphV3,
     reached_by: ReachedBy,
 ) -> None:
+    carried = _carried_names(node)
     _refuse_unmatched_names(
         node,
         reached_by,
         "graph input",
-        [entry.name for entry in node.inputs],
+        [entry.name for entry in node.inputs] + sorted(carried),
         [entry.name for entry in child.graph_inputs],
         SubworkflowBindingRefusalReason.MISSING_INPUT_BINDING,
         SubworkflowBindingRefusalReason.EXTRA_INPUT_BINDING,
@@ -213,6 +241,8 @@ def _refuse_broken_boundary(
         SubworkflowBindingRefusalReason.EXTRA_OUTPUT_BINDING,
     )
     for graph_input in child.graph_inputs:
+        if graph_input.name in carried:
+            continue
         bound_input = _named(node.inputs, graph_input.name)
         _refuse_differing_schema(
             node,
@@ -230,6 +260,87 @@ def _refuse_broken_boundary(
             bound_output.schema_reference,
             _sourced_schema(child, graph_output),
         )
+    _refuse_unbound_iteration(node, child, reached_by)
+
+
+def _carried_names(node: SubworkflowNodeV3) -> frozenset[str]:
+    """Every order of the child that a round hands to the round after it.
+
+    A carried order is not missing from the boundary when the node does not bind
+    it: the round before supplies it, and its seed supplies the first. It is the
+    one child order whose value never comes from the parent graph directly.
+    """
+    if node.iterate is None:
+        return frozenset()
+    return frozenset(entry.name for entry in node.iterate.carry)
+
+
+def _refuse_unbound_iteration(
+    node: SubworkflowNodeV3, child: WorkflowGraphV3, reached_by: ReachedBy
+) -> None:
+    """Whether the child can answer the green condition and take the handover.
+
+    The document already refused what it could judge alone. What only the child
+    knows is whether the result the condition reads exists at all, and whether the
+    order a round hands on is one the next round accepts under the schema revision
+    both levels agreed. The refusals stay the boundary's own: "the schema
+    revisions disagree" must not gain a third name.
+    """
+    if node.iterate is None:
+        return
+    green = _child_result(
+        node, child, reached_by, "the green condition", node.iterate.until.output
+    )
+    _refuse_differing_schema(
+        node,
+        reached_by,
+        f"green condition {node.iterate.until.output!r}",
+        node.iterate.until.schema_reference,
+        _sourced_schema(child, green),
+    )
+    for entry in node.iterate.carry:
+        handed_on = _child_result(
+            node, child, reached_by, f"carry {entry.name!r}", entry.from_output
+        )
+        _refuse_differing_schema(
+            node,
+            reached_by,
+            f"carry {entry.name!r}",
+            _sourced_schema(child, handed_on),
+            _child_order(node, child, reached_by, entry.name).schema_reference,
+        )
+
+
+def _child_result(
+    node: SubworkflowNodeV3,
+    child: WorkflowGraphV3,
+    reached_by: ReachedBy,
+    subject: str,
+    name: str,
+) -> GraphOutput:
+    for declared in child.graph_outputs:
+        if declared.name == name:
+            return declared
+    raise _refuse(
+        SubworkflowBindingRefusalReason.MISSING_OUTPUT_BINDING,
+        node,
+        reached_by,
+        f"{subject} reads {name!r}, which the child declares as no result of its own",
+    )
+
+
+def _child_order(
+    node: SubworkflowNodeV3, child: WorkflowGraphV3, reached_by: ReachedBy, name: str
+) -> GraphInput:
+    for declared in child.graph_inputs:
+        if declared.name == name:
+            return declared
+    raise _refuse(
+        SubworkflowBindingRefusalReason.MISSING_INPUT_BINDING,
+        node,
+        reached_by,
+        f"carry {name!r} is handed to the child, which declares no such order",
+    )
 
 
 def _refuse_unmatched_names(

@@ -234,12 +234,14 @@ def bind(
     published: Mapping[tuple[str, str], bytes] = PUBLISHED,
     maximum_nesting_depth: int = 2,
     store: PublishedWorkflows | None = None,
+    maximum_iteration_rounds: int = 8,
 ) -> SubworkflowBinding:
     return bind_subworkflow_boundaries(
         parsed(document),
         store if store is not None else PublishedWorkflows(published),
         parse_workflow_document,
         maximum_nesting_depth,
+        maximum_iteration_rounds,
     )
 
 
@@ -602,3 +604,153 @@ def test_a_child_run_report_naming_a_node_that_is_no_sink_is_refused_loudly() ->
 
     with pytest.raises(ValueError, match="non-sink"):
         decide_parent_disposition(bound_child(), report)
+
+
+ITERATING_PARENT_TEMPLATE = PARENT_TEMPLATE.replace(
+    b"""    outputs:
+      - name: candidate
+        schema: {ref: workspace_candidate, revision: schema-candidate}
+""",
+    b"""    outputs:
+      - name: candidate
+        schema: {ref: workspace_candidate, revision: schema-candidate}
+      - name: first_verdict
+        schema: {ref: review_verdict, revision: schema-verdict}
+""",
+).replace(
+    b"""      - name: verdict
+        schema: {ref: review_verdict, revision: schema-verdict}
+""",
+    b"""      - name: verdict
+        schema: {ref: review_verdict, revision: schema-verdict}
+    iterate:
+      maximum_rounds: 4
+      until:
+        output: verdict
+        schema: {ref: review_verdict, revision: schema-verdict}
+      carry:
+        - name: previous_verdict
+          from_output: verdict
+          seed: {node: implement, output: first_verdict}
+""",
+)
+
+# The child of an iterating node declares one order it is handed every round and
+# one it is handed only from the round before, so the carry is what satisfies the
+# second -- a node input never does.
+ITERATING_CHILD = CHILD.replace(
+    b"""graph_inputs:
+  - name: candidate
+    schema: {ref: workspace_candidate, revision: schema-candidate}""",
+    b"""graph_inputs:
+  - name: candidate
+    schema: {ref: workspace_candidate, revision: schema-candidate}
+  - name: previous_verdict
+    schema: {ref: review_verdict, revision: schema-verdict}""",
+).replace(
+    b"""      - name: candidate
+        from: {graph_input: candidate}""",
+    b"""      - name: candidate
+        from: {graph_input: candidate}
+      - name: previous_verdict
+        from: {graph_input: previous_verdict}""",
+)
+ITERATING_PARENT = pinning(ITERATING_PARENT_TEMPLATE, ITERATING_CHILD)
+ITERATING_PUBLISHED = carrying(review_panel=ITERATING_CHILD)
+
+
+def bind_iterating(
+    document: bytes = ITERATING_PARENT,
+    published: Mapping[tuple[str, str], bytes] | None = None,
+    maximum_iteration_rounds: int = 8,
+) -> SubworkflowBinding:
+    return bind(
+        document=document,
+        published=ITERATING_PUBLISHED if published is None else published,
+        maximum_iteration_rounds=maximum_iteration_rounds,
+    )
+
+
+@pytest.mark.proves("a-round-handover-the-child-cannot-bind-is-refused-by-name")
+def test_a_carried_order_the_node_never_supplies_still_binds_to_the_child() -> None:
+    """The carry is what fills it, so the boundary is whole without a node input.
+
+    Every other child order is matched one to one against the node's inputs. A
+    carried one is supplied by the round before it — and by its seed in the first
+    round — so demanding a node input for it would refuse the very shape the
+    iteration exists to express.
+    """
+    binding = bind_iterating()
+
+    bound = binding.subworkflows[0]
+    assert [entry.name for entry in bound.child.graph_inputs] == [
+        "candidate",
+        "previous_verdict",
+    ]
+
+
+@pytest.mark.proves("a-green-condition-the-child-cannot-answer-is-refused-by-name")
+def test_a_green_condition_naming_no_result_of_the_child_is_refused() -> None:
+    unanswerable = ITERATING_PARENT.replace(
+        b"      until:\n        output: verdict\n",
+        b"      until:\n        output: rumour\n",
+    )
+    assert unanswerable != ITERATING_PARENT
+
+    with pytest.raises(SubworkflowBindingRefused) as raised:
+        bind_iterating(document=unanswerable)
+
+    refusal = raised.value.refusal
+    assert refusal.node == "review_panel"
+    assert "rumour" in str(refusal)
+
+
+@pytest.mark.proves("a-round-handover-the-child-cannot-bind-is-refused-by-name")
+def test_a_handover_reading_a_result_the_child_never_declares_is_refused() -> None:
+    unreadable = ITERATING_PARENT.replace(
+        b"          from_output: verdict\n", b"          from_output: rumour\n"
+    )
+    assert unreadable != ITERATING_PARENT
+
+    with pytest.raises(SubworkflowBindingRefused) as raised:
+        bind_iterating(document=unreadable)
+
+    assert "rumour" in str(raised.value.refusal)
+
+
+@pytest.mark.proves("a-round-handover-the-child-cannot-bind-is-refused-by-name")
+def test_a_handover_the_child_accepts_under_another_schema_is_refused() -> None:
+    """Only the carried order's schema differs, so nothing else can raise this."""
+    disagreeing = ITERATING_CHILD.replace(
+        b"""  - name: previous_verdict
+    schema: {ref: review_verdict, revision: schema-verdict}""",
+        b"""  - name: previous_verdict
+    schema: {ref: review_verdict, revision: schema-other}""",
+    )
+    assert disagreeing != ITERATING_CHILD
+    document = pinning(ITERATING_PARENT_TEMPLATE, disagreeing)
+
+    with pytest.raises(SubworkflowBindingRefused) as raised:
+        bind_iterating(document=document, published=carrying(review_panel=disagreeing))
+
+    assert (
+        raised.value.refusal.reason
+        is SubworkflowBindingRefusalReason.SCHEMA_REVISION_MISMATCH
+    )
+
+
+@pytest.mark.proves("an-iteration-past-the-proven-round-bound-is-refused-by-name")
+def test_an_iteration_declaring_more_rounds_than_were_proven_is_refused() -> None:
+    with pytest.raises(SubworkflowBindingRefused) as raised:
+        bind_iterating(maximum_iteration_rounds=3)
+
+    refusal = raised.value.refusal
+    assert refusal.node == "review_panel"
+    assert "4" in str(refusal) and "3" in str(refusal)
+
+
+@pytest.mark.proves("an-iteration-past-the-proven-round-bound-is-refused-by-name")
+def test_an_iteration_within_the_proven_round_bound_binds() -> None:
+    binding = bind_iterating(maximum_iteration_rounds=4)
+
+    assert binding.subworkflows[0].node_id == "review_panel"

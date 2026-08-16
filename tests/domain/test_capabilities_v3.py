@@ -242,12 +242,16 @@ def parsed(document: bytes) -> WorkflowGraphV3:
     return graph
 
 
+MAXIMUM_ITERATION_ROUNDS = 8
+
+
 def bound_children(document: bytes) -> SubworkflowBinding:
     return bind_subworkflow_boundaries(
         parsed(document),
         PublishedWorkflows({("review_panel", CHILD_REVISION): CHILD}),
         parse_workflow_document,
         2,
+        MAXIMUM_ITERATION_ROUNDS,
     )
 
 

@@ -379,12 +379,16 @@ def parsed(document: bytes = PARENT) -> WorkflowGraphV3:
     return graph
 
 
+MAXIMUM_ITERATION_ROUNDS = 8
+
+
 def bound_children(document: bytes = PARENT) -> SubworkflowBinding:
     return bind_subworkflow_boundaries(
         parsed(document),
         PublishedWorkflows({(CHILD_REFERENCE.ref, CHILD_REFERENCE.revision): CHILD}),
         parse_workflow_document,
         2,
+        MAXIMUM_ITERATION_ROUNDS,
     )
 
 
@@ -972,3 +976,39 @@ def test_a_role_bound_to_no_configuration_stays_the_capability_refusal() -> None
         preview(role_matrix=(BUILDER,))
 
     assert refused.value.refusal.role == "reviewer"
+
+
+_PANEL_TAIL = b"\n  - id: decide\n"
+ITERATING_PARENT = PARENT.replace(
+    _PANEL_TAIL,
+    (
+        "\n    iterate:"
+        "\n      maximum_rounds: 4"
+        "\n      until:"
+        "\n        output: verdict"
+        f"\n        schema: {{ref: review_verdict, revision: "
+        f"{SCHEMA_VERDICT.revision_hash.value}}}"
+    ).encode()
+    + _PANEL_TAIL,
+    1,
+)
+
+
+@pytest.mark.proves("the-preview-names-every-iteration-with-its-bound-and-its-green")
+def test_the_preview_names_each_iteration_with_its_bound_and_its_green() -> None:
+    """An operator reading the preview must see that a node repeats, how often at
+    most, and what would end it — otherwise a bounded loop and a single run draw
+    identically until one of them has already run four times."""
+    composed = preview(document=ITERATING_PARENT)
+
+    iteration = node_of(composed.graph, "panel").iteration
+
+    assert iteration is not None
+    assert iteration.maximum_rounds == 4
+    assert iteration.green_output == "verdict"
+    assert iteration.green_schema.revision == SCHEMA_VERDICT.revision_hash.value
+
+
+@pytest.mark.proves("the-preview-names-every-iteration-with-its-bound-and-its-green")
+def test_a_node_that_does_not_repeat_draws_no_iteration() -> None:
+    assert node_of(preview().graph, "panel").iteration is None
