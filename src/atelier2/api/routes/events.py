@@ -91,11 +91,10 @@ async def event_stream_route(
 ) -> AsyncIterator[ServerSentEvent]:
     async for event in stream_server_events(
         prepared,
-        context.ports.run_event_queries,
+        context.use_cases.read_run_events,
         context.event_runner,
         page_size=context.limits.event_page_size,
         limits=context.limits,
-        projection_limit=context.workflow_projection_limit,
         poll_backoff=context.event_poll_backoff,
     ):
         yield event

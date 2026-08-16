@@ -13,7 +13,7 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_FLOOR = 104
+EXPECTED_SOURCE_MODULE_FLOOR = 105
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
@@ -51,10 +51,6 @@ class _Unreadable:
 
 ROUTE_PACKAGE = "src/atelier2/api/routes"
 ROUTE_CALLS_STILL_HOLDING_PORTS = {
-    "events": {"event_stream_route": ("run_event_queries",)},
-    "revisions": {
-        "publish_revision": ("workflow_document_parser", "workflow_revision_publisher")
-    },
     "runs": {"cancel_agent_attempt_route": ("agent_attempt_canceller",)},
 }
 """Every port a route still reaches, named down to the single access.
@@ -69,6 +65,12 @@ list rather than asking whether the call reaches one at all.
 Read in both directions: an access this map does not name is red, and an access it
 names that no longer happens is red too. A stale entry is a failure rather than a
 comfortable lie. It shrinks to empty, and with the last entry it deletes itself.
+
+One entry is left, and it is left for a reason that is not scope: rewriting
+`cancel_agent_attempt` means rewriting the module a live change (#70) is already
+rewriting, and two heads editing one file is how a rewrite loses. It is the last
+pass-through use-case in the tree — it hands its port union straight to a route —
+so the day #70 lands, this entry and this map go together.
 """
 EXPECTED_LAYER_ROWS = (
     "__main__",

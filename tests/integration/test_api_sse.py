@@ -80,6 +80,7 @@ from tests.scenarios.api import (
     SSE_PUBLIC_RUN_REFERENCE,
     api_limits,
     event_poll_backoff,
+    stream_page_reader,
 )
 from tests.scenarios.runs import (
     prepare_and_launch_graph_action,
@@ -262,7 +263,7 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
             stream = aiter(
                 stream_server_events(
                     PreparedEventStream(request.run_id, 0, 1, False, found.projection),
-                    queries,
+                    stream_page_reader(queries),
                     BoundedQueryRunner(1, admission_timeout_seconds=1),
                     page_size=1,
                     limits=api_limits(),

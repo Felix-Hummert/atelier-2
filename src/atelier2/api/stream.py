@@ -17,20 +17,18 @@ from atelier2.application.project_node_rail import (
     NodeRailUnprojectable,
     project_node_rail,
 )
+from atelier2.application.read_run_events import (
+    ReadRunEventsResult,
+    RunEventPageOversized,
+    RunEventsRead,
+)
+from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import (
-    EventHistoryCorrupt,
     PersistedRunEvent,
-    RunEventPage,
-    RunEventQueries,
 )
 from atelier2.ports.run_queries import RunProjection
-from atelier2.ports.workflow_revisions import (
-    PROJECTION_LIMIT_DETAIL,
-    DurableProjectionLimit,
-    QueryDurableStateCorrupt,
-    ReadUnavailable,
-)
+from atelier2.ports.workflow_revisions import PROJECTION_LIMIT_DETAIL
 
 Result = TypeVar("Result")
 
@@ -162,15 +160,23 @@ def _stream_failure(
 
 async def stream_server_events(
     prepared: PreparedEventStream,
-    queries: RunEventQueries,
+    read_page: Callable[[RunId, int, int], ReadRunEventsResult],
     runner: BoundedQueryRunner,
     *,
     page_size: int,
     limits: ApiLimits,
     poll_backoff: EventPollBackoff,
-    projection_limit: DurableProjectionLimit | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> AsyncIterator[ServerSentEvent]:
+    """Forward one run's events until it ends, is refused, or the client leaves.
+
+    What one page *means* is decided by `read_page`; this loop owns only what is
+    the API's to own — the query budget it is admitted through, how long it waits
+    before asking again, the limits the served projection must fit, and the frame
+    each outcome becomes. Backpressure and transient unavailability end the stream
+    regularly rather than as a failure, because the client's own reconnect is the
+    answer to both.
+    """
     after_sequence = prepared.after_sequence
     next_poll_delay = poll_backoff.initial_delay_seconds
     streamed: list[PersistedRunEvent] = []
@@ -179,32 +185,27 @@ async def stream_server_events(
     while True:
         try:
             result = await runner.run(
-                lambda current_after_sequence=after_sequence: (
-                    queries.read_run_event_page(
-                        prepared.run_id,
-                        current_after_sequence,
-                        page_size,
-                        projection_limit,
-                    )
+                lambda current_after_sequence=after_sequence: read_page(
+                    prepared.run_id, current_after_sequence, page_size
                 )
             )
         except QueryAdmissionTimeout:
             # Backpressure is not a failure: end regularly and let the client reconnect.
             return
         match result:
-            case RunEventPage() as page:
+            case RunEventsRead() as page:
                 pass
             case ReadUnavailable():
                 # Transient unavailability is answered by the client's own reconnect.
                 return
-            case EventHistoryCorrupt() | QueryDurableStateCorrupt():
+            case RunEventPageOversized():
+                yield _stream_failure("internal-error")
+                return
+            case DurableStateCorrupt():
                 yield _stream_failure("durable-state-corrupt")
                 return
             case _ as unreachable:
                 assert_never(unreachable)
-        if len(page.events) > page_size:
-            yield _stream_failure("internal-error")
-            return
         try:
             for persisted in page.events:
                 limits.require_event_projection(persisted)

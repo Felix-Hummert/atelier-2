@@ -22,7 +22,7 @@ from atelier2.ports.run_events import (
 )
 from atelier2.ports.run_queries import RunProjection
 from tests.api.test_agent_attempts import v2_run_projection
-from tests.scenarios.api import api_limits, event_poll_backoff
+from tests.scenarios.api import api_limits, event_poll_backoff, stream_page_reader
 
 
 class OnePageOfEvents:
@@ -76,7 +76,7 @@ def streamed(projection: RunProjection, event: PersistedRunEvent) -> ServerSentE
             frame
             async for frame in stream_server_events(
                 PreparedEventStream(projection.run.run_id, 0, 1, False, projection),
-                OnePageOfEvents((event,)),
+                stream_page_reader(OnePageOfEvents((event,))),
                 BoundedQueryRunner(1, admission_timeout_seconds=1),
                 page_size=10,
                 limits=api_limits(),
