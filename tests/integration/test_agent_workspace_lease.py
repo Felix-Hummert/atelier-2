@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -276,6 +277,7 @@ def open_descriptors() -> set[str]:
     return set(os.listdir("/proc/self/fd"))
 
 
+@pytest.mark.proves("a-lost-claim-leaves-no-directory-behind")
 def test_a_workspace_is_created_only_once_this_call_holds_the_durable_claim(
     tmp_path: Path,
 ) -> None:
@@ -308,6 +310,7 @@ def test_a_workspace_is_created_only_once_this_call_holds_the_durable_claim(
         runtime.close()
 
 
+@pytest.mark.proves("a-lost-claim-leaves-no-directory-behind")
 def test_thirty_two_racing_callers_create_exactly_one_workspace(
     tmp_path: Path,
 ) -> None:
@@ -353,6 +356,7 @@ def test_thirty_two_racing_callers_create_exactly_one_workspace(
         runtime.close()
 
 
+@pytest.mark.proves("every-attempt-runs-in-a-blank-directory-of-its-own")
 def test_an_attempt_and_its_replacement_lease_directories_of_their_own(
     tmp_path: Path,
 ) -> None:
@@ -381,6 +385,7 @@ def test_an_attempt_and_its_replacement_lease_directories_of_their_own(
         owner.acquire(attempt_ids[0])
 
 
+@pytest.mark.proves("a-lost-claim-leaves-no-directory-behind")
 def test_two_callers_acquiring_one_attempt_leave_exactly_one_directory(
     tmp_path: Path,
 ) -> None:
@@ -494,6 +499,7 @@ def absent_root(root: Path) -> Path:
         pytest.param(absent_root, "existing directory", id="no root exists"),
     ],
 )
+@pytest.mark.proves("an-unusable-scratch-root-is-refused-before-the-server-exists")
 def test_an_unusable_scratch_root_is_refused_without_mutating_it(
     tmp_path: Path, build_root: Callable[[Path], Path], refusal: str
 ) -> None:
@@ -506,6 +512,7 @@ def test_an_unusable_scratch_root_is_refused_without_mutating_it(
     assert sorted(str(path) for path in tmp_path.rglob("*")) == before
 
 
+@pytest.mark.proves("an-unusable-scratch-root-is-refused-before-the-server-exists")
 def test_a_scratch_root_owned_by_another_user_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -519,6 +526,7 @@ def test_a_scratch_root_owned_by_another_user_is_refused(
         LocalAgentAttemptWorkspaceOwner(scratch_root)
 
 
+@pytest.mark.proves("an-unusable-scratch-root-is-refused-before-the-server-exists")
 def test_a_refused_scratch_root_leaves_no_descriptor_behind(tmp_path: Path) -> None:
     """A server that keeps serving after a refusal keeps no handle on that root."""
 
@@ -533,6 +541,7 @@ def test_a_refused_scratch_root_leaves_no_descriptor_behind(tmp_path: Path) -> N
     assert open_descriptors() == before
 
 
+@pytest.mark.proves("an-unusable-scratch-root-is-refused-before-the-server-exists")
 def test_a_root_path_replaced_after_binding_refuses_instead_of_leasing(
     tmp_path: Path,
 ) -> None:
@@ -558,6 +567,7 @@ def test_a_root_path_replaced_after_binding_refuses_instead_of_leasing(
     assert workspace_names(tmp_path / "moved-away") == set()
 
 
+@pytest.mark.proves("an-occupied-attempt-path-starts-no-provider-and-survives-everything-after")
 def test_a_preexisting_attempt_path_refuses_the_attempt_and_starts_no_provider(
     tmp_path: Path,
 ) -> None:
@@ -592,6 +602,7 @@ def test_a_preexisting_attempt_path_refuses_the_attempt_and_starts_no_provider(
         runtime.close()
 
 
+@pytest.mark.proves("an-occupied-attempt-path-starts-no-provider-and-survives-everything-after")
 def test_a_refused_attempt_path_survives_the_cancellation_of_its_attempt(
     tmp_path: Path,
 ) -> None:
@@ -647,6 +658,7 @@ def test_a_refused_attempt_path_survives_the_cancellation_of_its_attempt(
         pytest.param(7, AgentAttemptState.FAILED, id="known failure"),
     ],
 )
+@pytest.mark.proves("a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe")
 def test_a_terminal_attempt_leaves_its_workspace_and_nothing_else_removed(
     tmp_path: Path, return_code: int, terminal: AgentAttemptState
 ) -> None:
@@ -676,6 +688,7 @@ def test_a_terminal_attempt_leaves_its_workspace_and_nothing_else_removed(
         runtime.close()
 
 
+@pytest.mark.proves("every-attempt-runs-in-a-blank-directory-of-its-own")
 def test_a_provider_really_materializes_the_observed_write_set(
     tmp_path: Path,
 ) -> None:
@@ -713,6 +726,7 @@ def test_a_provider_really_materializes_the_observed_write_set(
     assert sentinel_survived(sentinel)
 
 
+@pytest.mark.proves("a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe")
 def test_a_workspace_nested_deeper_than_recursion_allows_is_still_removed(
     tmp_path: Path,
 ) -> None:
@@ -741,6 +755,7 @@ def test_a_workspace_nested_deeper_than_recursion_allows_is_still_removed(
     assert sentinel_survived(sentinel)
 
 
+@pytest.mark.proves("a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe")
 def test_a_cancelled_attempt_loses_its_workspace_only_behind_attested_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -891,6 +906,7 @@ class RecordedAttempts:
         AgentAttemptState.INTERRUPTED,
     ],
 )
+@pytest.mark.proves("a-restart-removes-what-terminal-attempts-left-and-nothing-else")
 def test_restart_removes_the_workspace_of_every_terminal_attempt(
     tmp_path: Path, state: AgentAttemptState
 ) -> None:
@@ -914,6 +930,7 @@ def test_restart_removes_the_workspace_of_every_terminal_attempt(
         AgentAttemptState.CANCEL_REQUESTED,
     ],
 )
+@pytest.mark.proves("a-restart-removes-what-terminal-attempts-left-and-nothing-else")
 def test_restart_preserves_the_workspace_of_every_nonterminal_attempt(
     tmp_path: Path, state: AgentAttemptState
 ) -> None:
@@ -928,6 +945,7 @@ def test_restart_preserves_the_workspace_of_every_nonterminal_attempt(
     assert snapshot(workspace) == before
 
 
+@pytest.mark.proves("an-occupied-attempt-path-starts-no-provider-and-survives-everything-after")
 def test_a_refused_attempt_path_survives_the_restart_that_follows(
     tmp_path: Path,
 ) -> None:
@@ -946,6 +964,7 @@ def test_a_refused_attempt_path_survives_the_restart_that_follows(
     assert snapshot(occupied) == before
 
 
+@pytest.mark.proves("a-restart-removes-what-terminal-attempts-left-and-nothing-else")
 def test_restart_refuses_a_workspace_no_durable_attempt_owns(tmp_path: Path) -> None:
     owner = agent_workspace_owner(tmp_path)
     attempt = durable_attempt(AgentAttemptState.SUCCEEDED)
@@ -957,6 +976,7 @@ def test_restart_refuses_a_workspace_no_durable_attempt_owns(tmp_path: Path) -> 
     assert workspace.is_dir()
 
 
+@pytest.mark.proves("a-restart-removes-what-terminal-attempts-left-and-nothing-else")
 def test_restart_refuses_a_name_that_is_no_attempt_workspace(tmp_path: Path) -> None:
     owner = agent_workspace_owner(tmp_path)
     attempt = durable_attempt(AgentAttemptState.SUCCEEDED)
@@ -969,6 +989,7 @@ def test_restart_refuses_a_name_that_is_no_attempt_workspace(tmp_path: Path) -> 
     assert workspace.is_dir()
 
 
+@pytest.mark.proves("a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe")
 def test_a_cleanup_that_cannot_finish_stays_visible_and_removes_nothing_wider(
     tmp_path: Path,
 ) -> None:
@@ -989,6 +1010,7 @@ def test_a_cleanup_that_cannot_finish_stays_visible_and_removes_nothing_wider(
     assert preserved.is_dir()
 
 
+@pytest.mark.proves("no-workspace-path-or-content-becomes-durable-state")
 def test_no_workspace_path_or_content_reaches_any_durable_row_or_event(
     tmp_path: Path,
 ) -> None:
@@ -1101,6 +1123,7 @@ def provider_neutral_conformance(
     [claude_subscription_conformance, provider_neutral_conformance],
     ids=["claude subscription", "another provider"],
 )
+@pytest.mark.proves("every-attempt-runs-in-a-blank-directory-of-its-own")
 def test_every_provider_runs_in_the_workspace_its_own_attempt_leased(
     tmp_path: Path,
     conformance: Callable[
@@ -1140,6 +1163,7 @@ def test_every_provider_runs_in_the_workspace_its_own_attempt_leased(
         "src/atelier2/application/cancel_agent_attempt.py",
     ],
 )
+@pytest.mark.proves("the-lease-and-its-lifecycle-name-no-provider")
 def test_the_workspace_lease_and_its_lifecycle_name_no_provider(module: str) -> None:
     """A lease that named one provider would be that provider's, not an attempt's."""
 
@@ -1149,6 +1173,7 @@ def test_the_workspace_lease_and_its_lifecycle_name_no_provider(module: str) -> 
     assert "anthropic" not in source
 
 
+@pytest.mark.proves("a-restart-removes-what-terminal-attempts-left-and-nothing-else")
 def test_binding_the_durable_database_again_reconciles_what_a_crash_left(
     tmp_path: Path,
 ) -> None:
@@ -1183,3 +1208,125 @@ def test_binding_the_durable_database_again_reconciles_what_a_crash_left(
         assert workspace_names(scratch_root) == set()
     finally:
         restarted.close()
+
+
+@pytest.mark.proves("only-a-directory-this-owner-created-is-ever-removed")
+def test_a_lease_mark_this_owner_never_wrote_removes_nothing_on_cancellation(
+    tmp_path: Path,
+) -> None:
+    """A mark is provenance only if this owner wrote it while creating the ground.
+
+    An attempt path the operator's own files already stand in is refused. If
+    somebody can also place the mark that says "this directory is mine to
+    remove", the refusal buys nothing: the cancellation that follows deletes the
+    operator's directory on the strength of a file it never wrote.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "lease/forged-mark-cancel")
+        )
+        owner = runtime_workspace_owner(runtime)
+        occupied = owner.scratch_root / execution.attempt_id.value
+        occupied.mkdir(mode=SCRATCH_ROOT_MODE)
+        (occupied / ".env").write_text("the operator's own secret", encoding="utf-8")
+        forged = owner.scratch_root / f"{execution.attempt_id.value}.lease"
+        forged.write_bytes(b"")
+        before = snapshot(occupied)
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        with pytest.raises(AgentAttemptWorkspaceRefused):
+            execute_agent_attempt(
+                execution,
+                MaterializingExecutor(sentinel_directory(tmp_path)),
+                store,
+                runtime.agent_process_supervisor,
+                owner,
+            )
+        armed = store.load(execution.attempt_id)
+        request = CancelAgentAttemptRequest(
+            armed.run_id,
+            armed.attempt_id,
+            "cancel-forged",
+            armed.state_version,
+            AgentAttemptReplacement.NONE,
+        )
+        store.request_cancellation(request)
+
+        # A mark nobody here wrote is not a reason to shrug: it means somebody
+        # wrote into this server's own scratch root. The removal is refused and
+        # the refusal is loud, while the operator's files stand untouched.
+        with pytest.raises(AgentAttemptWorkspaceRefused):
+            continue_agent_attempt_cancellation(
+                request, store, runtime.agent_process_supervisor, owner
+            )
+
+        assert snapshot(occupied) == before
+    finally:
+        runtime.close()
+
+
+@pytest.mark.proves("only-a-directory-this-owner-created-is-ever-removed")
+def test_a_directory_replaced_under_its_lease_is_not_removed_by_the_restart(
+    tmp_path: Path,
+) -> None:
+    """The mark names one directory, not one path.
+
+    A workspace this owner leased and then lost -- the directory removed and a
+    different one moved into its place while the process was down -- is not the
+    directory the mark stands for. Reconciliation removes what it leased, and
+    an inode it never created is somebody else's.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        owner = runtime_workspace_owner(runtime)
+        attempt_id = AgentAttemptId.of(b"lease/replaced-under-its-mark")
+        lease = owner.acquire(attempt_id)
+        impostor = tmp_path / "impostor"
+        impostor.mkdir(mode=SCRATCH_ROOT_MODE)
+        (impostor / ".env").write_text("the operator's own secret", encoding="utf-8")
+        shutil.rmtree(lease.working_directory)
+        impostor.rename(lease.working_directory)
+        before = snapshot(lease.working_directory)
+
+        with pytest.raises(AgentAttemptWorkspaceRefused):
+            owner.release(attempt_id)
+
+        assert snapshot(lease.working_directory) == before
+    finally:
+        runtime.close()
+
+
+@pytest.mark.proves("only-a-directory-this-owner-created-is-ever-removed")
+def test_a_lease_mark_standing_without_its_directory_refuses_the_next_acquire(
+    tmp_path: Path,
+) -> None:
+    """A mark this owner did not just write is never adopted as provenance.
+
+    The state is reachable without an impostor: `release` removes the tree and
+    unlinks the mark, so a crash between the two leaves a mark with no
+    directory. Adopting it would let the next lease inherit a provenance it did
+    not create, which is the whole weight the later removal rests on. It is
+    refused by name instead, and nothing is created.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        owner = runtime_workspace_owner(runtime)
+        attempt_id = AgentAttemptId.of(b"lease/mark-without-its-directory")
+        stale = owner.scratch_root / f"{attempt_id.value}.lease"
+        stale.write_bytes(b"")
+
+        with pytest.raises(AgentAttemptWorkspaceRefused, match="already stands"):
+            owner.acquire(attempt_id)
+
+        assert not (owner.scratch_root / attempt_id.value).exists()
+        assert stale.read_bytes() == b""
+    finally:
+        runtime.close()

@@ -1,0 +1,57 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/58"
+
+# What this head does NOT claim, said before the sentences rather than after.
+#
+#   - NO OPERATING-SYSTEM ISOLATION. A lease is a blank directory an attempt
+#     owns. It is not a sandbox, not a namespace and not a container: the
+#     provider still runs as the serving user and can reach anything that user
+#     can. What the lease removes is one specific harm -- a tool-free provider
+#     writing its droppings into a directory shared with every other attempt --
+#     and it claims nothing beyond it.
+#   - NO PROVIDER-SIDE CONTAINMENT CHANGES. The credential boundary, the
+#     environment scrub and the containment attestations belong to each
+#     provider's executor and are untouched here.
+#   - GROK'S JOB DIRECTORIES ARE NOT YET UNDER THE LEASE. PR #185 is open at
+#     this head and carries the Grok executor's own per-execution directories.
+#     One directory regime is the rule, so folding them in belongs to whichever
+#     of the two lands second; it is named here rather than left to be noticed.
+#
+# The sentences below are what an operator would recognise as "every attempt
+# runs in a scratch workspace of its own".
+
+[[sentence]]
+id = "every-attempt-runs-in-a-blank-directory-of-its-own"
+text = "Every provider attempt runs in a blank directory leased to that attempt alone, never in a configured path shared with another attempt, and an attempt and its deliberate replacement never share one."
+
+[[sentence]]
+id = "a-lost-claim-leaves-no-directory-behind"
+text = "The directory is created only once this call's own compare-and-set has won the attempt, so a call that loses the claim -- however many call it at once -- leaves no directory and no inode behind."
+
+[[sentence]]
+id = "an-unusable-scratch-root-is-refused-before-the-server-exists"
+text = "A scratch root that is unusable, shared, owned by somebody else, or replaced after the server bound it is refused by name without mutating anything, and a refusal leaves no descriptor behind."
+
+[[sentence]]
+id = "an-occupied-attempt-path-starts-no-provider-and-survives-everything-after"
+text = "A path where an attempt's directory would go but the operator's own files already stand refuses the attempt and starts no provider, and it survives untouched through the cancellation and the restart that follow."
+
+[[sentence]]
+id = "a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe"
+text = "A workspace is removed only once both facts that make removal safe are in hand -- the completion proving no process or descendant of the attempt is left, and the durably terminal attempt -- and a cleanup that cannot finish stays visible and removes nothing wider."
+
+[[sentence]]
+id = "a-restart-removes-what-terminal-attempts-left-and-nothing-else"
+text = "A process binding the durable database again removes the workspace of every terminal attempt, leaves every nonterminal one exactly as it stands, and refuses the whole reconciliation over a name it cannot account for rather than deleting it on the assumption that it is rubbish."
+
+[[sentence]]
+id = "only-a-directory-this-owner-created-is-ever-removed"
+text = "A removal happens only against the exact directory this owner created: the mark that licenses it is written exclusively while the directory is created and names that directory's own identity, so a mark somebody else placed, and a directory swapped in under a mark, are both refused by name instead of deleted."
+
+[[sentence]]
+id = "no-workspace-path-or-content-becomes-durable-state"
+text = "No workspace path and no byte of its content reaches any durable row or event, so a removed workspace leaves nothing behind that a later read has to explain."
+
+[[sentence]]
+id = "the-lease-and-its-lifecycle-name-no-provider"
+text = "The workspace lease and every step of its lifecycle name no provider, so a second provider inherits the same directory discipline without a line of its own."

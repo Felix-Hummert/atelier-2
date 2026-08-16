@@ -18,6 +18,10 @@ SCRATCH_ROOT_MODE = 0o700
 _GIT_ENTRY = ".git"
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _LEASE_MARKER_SUFFIX = ".lease"
+# The mark holds the device and inode of the directory this owner created, so a
+# later removal can ask whether the directory standing there is still that one.
+_LEASE_MARK_VERSION = "agent-attempt-workspace/v1"
+_LEASE_MARKER_BYTES = 128
 _LEASE_MARKER_MODE = 0o600
 _MAXIMUM_HELD_WORKSPACE_LEVELS = 64
 """How many nested directories one removal pass keeps open at the same time."""
@@ -71,6 +75,26 @@ def _open_scratch_root(scratch_root: Path) -> int:
             f"user owns with mode {SCRATCH_ROOT_MODE:o}, but {scratch_root} "
             f"could not be opened: {error}"
         ) from error
+
+
+def _encode_lease_mark(created: os.stat_result) -> bytes:
+    """Name the exact directory a lease stands for."""
+
+    return f"{_LEASE_MARK_VERSION} {created.st_dev} {created.st_ino}\n".encode("ascii")
+
+
+def _decode_lease_mark(payload: bytes) -> tuple[int, int]:
+    """Read back one directory identity, or refuse a mark this owner never wrote."""
+
+    if len(payload) > _LEASE_MARKER_BYTES:
+        raise ValueError("agent attempt lease mark exceeds its exact bound")
+    fields = payload.decode("ascii", "strict").split()
+    if len(fields) != 3 or fields[0] != _LEASE_MARK_VERSION:
+        raise ValueError("agent attempt lease mark is not this owner's")
+    device, inode = fields[1], fields[2]
+    if not device.isdigit() or not inode.isdigit():
+        raise ValueError("agent attempt lease mark names no directory identity")
+    return int(device), int(inode)
 
 
 def _lease_marker_name(attempt_id: AgentAttemptId) -> str:
@@ -235,36 +259,88 @@ class LocalAgentAttemptWorkspaceOwner:
                 "directory this server bound, so the path handed to a provider "
                 "would not be the workspace that was created"
             )
-        self._mark_leased(attempt_id)
+        try:
+            self._mark_leased(attempt_id, created)
+        except FileExistsError as error:
+            # A mark standing without its directory is reachable without an
+            # impostor: release removes the tree and unlinks the mark, so a
+            # crash between the two leaves one behind. Adopting it would hand
+            # the next lease a provenance it never created, so the directory
+            # just created is taken back and the state is named.
+            _remove_workspace_tree(self._root_fd, name)
+            raise AgentAttemptWorkspaceRefused(
+                f"a lease mark for attempt {name} already stands under "
+                f"{self._scratch_root} without the directory it names: this "
+                "owner writes the mark that licenses a removal, and it never "
+                "adopts one it did not write"
+            ) from error
         return AgentAttemptWorkspaceLease(attempt_id, working_directory)
 
     def release(self, attempt_id: AgentAttemptId) -> None:
         """Remove the directory this owner leased to that attempt, and only that.
 
-        The mark written when the directory was created is what says the
-        directory is this owner's to remove. A path that merely bears an
-        attempt's name -- one an attempt was refused because the operator's own
-        files already stood there -- carries no mark, so neither the
-        cancellation nor the restart that follows the refusal removes it.
+        The mark this owner wrote while creating the directory is what says the
+        directory is its to remove, and the mark names one *directory* rather
+        than one path: it carries the device and inode that were created. A path
+        that merely bears an attempt's name carries no mark, and a directory
+        moved into that path after the fact does not match the one the mark
+        stands for -- so neither the cancellation nor the restart removes
+        somebody else's ground.
         """
 
         marker = _lease_marker_name(attempt_id)
         try:
-            os.stat(marker, dir_fd=self._root_fd, follow_symlinks=False)
+            with open(
+                os.open(
+                    marker,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=self._root_fd,
+                ),
+                "rb",
+            ) as stream:
+                marked = stream.read(_LEASE_MARKER_BYTES + 1)
         except FileNotFoundError:
             return
+        try:
+            leased = _decode_lease_mark(marked)
+        except ValueError as error:
+            raise AgentAttemptWorkspaceRefused(
+                f"the lease mark of attempt {attempt_id.value} under "
+                f"{self._scratch_root} is not one this owner wrote, so the "
+                "directory it names is not this owner's to remove"
+            ) from error
+        try:
+            standing = os.stat(
+                attempt_id.value, dir_fd=self._root_fd, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            os.unlink(marker, dir_fd=self._root_fd)
+            return
+        if (standing.st_dev, standing.st_ino) != leased:
+            raise AgentAttemptWorkspaceRefused(
+                f"the directory at {self._scratch_root / attempt_id.value} is not "
+                "the one this owner leased to that attempt: its identity changed "
+                "under the mark, so removing it would remove somebody else's"
+            )
         _remove_workspace_tree(self._root_fd, attempt_id.value)
         os.unlink(marker, dir_fd=self._root_fd)
 
-    def _mark_leased(self, attempt_id: AgentAttemptId) -> None:
-        os.close(
-            os.open(
-                _lease_marker_name(attempt_id),
-                os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                _LEASE_MARKER_MODE,
-                dir_fd=self._root_fd,
-            )
+    def _mark_leased(self, attempt_id: AgentAttemptId, created: os.stat_result) -> None:
+        """Write the provenance of exactly the directory that was just created.
+
+        The mark is created exclusively: a file somebody else placed under this
+        name is never adopted as provenance, because the whole weight of the
+        later removal rests on who wrote it.
+        """
+
+        descriptor = os.open(
+            _lease_marker_name(attempt_id),
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            _LEASE_MARKER_MODE,
+            dir_fd=self._root_fd,
         )
+        with open(descriptor, "wb") as stream:
+            stream.write(_encode_lease_mark(created))
 
     def reconcile(self, attempts: AgentAttemptReader) -> None:
         """Remove what terminal attempts left behind, and nothing else.
