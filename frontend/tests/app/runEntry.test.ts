@@ -24,7 +24,7 @@ const v2PublicReference = "run1.cnVuLXYy";
 
 beforeEach(() => {
   sessionStorage.clear();
-  window.history.replaceState(null, "", "/atelier/runs");
+  window.history.replaceState(null, "", "/atelier/project");
 });
 
 afterEach(() => {
@@ -54,21 +54,21 @@ describe("mobile run entry", () => {
       props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect((await screen.findByRole("status")).textContent).toBe("Loading durable runs…");
-    expect(screen.queryByText("No runs yet")).toBeNull();
+    expect((await screen.findByRole("status")).textContent).toBe("Looking…");
+    expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
     expect(screen.queryByRole("listitem")).toBeNull();
   });
 
-  it("names an empty durable run list and points at where a run comes from", async () => {
+  it("shows a project with no runs as empty of groups, still naming where a run comes from", async () => {
     const listRuns = vi.fn(async () => ({ items: [], next_after: null }));
     render(App, {
       props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect((await screen.findByRole("heading", { name: "No runs yet" })).isConnected).toBe(true);
-    expect(screen.getByText("Start one from a saved or newly published workflow.").isConnected).toBe(true);
+    expect((await screen.findByText("No runs here yet.")).isConnected).toBe(true);
+    expect(screen.getByRole("link", { name: "Start a run" }).getAttribute("href")).toBe("/atelier/new");
+    expect(screen.queryByRole("listitem")).toBeNull();
     expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.getByRole("link", { name: "New" }).getAttribute("href")).toBe("/atelier/new");
   });
 
   it("new_saved_mobile starts a saved revision with one visible Run ID and stable bytes", async () => {

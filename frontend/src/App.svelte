@@ -10,7 +10,7 @@
   import { cockpitRoute } from "./lib/route";
   import NewRunPage from "./pages/NewRunPage.svelte";
   import RunCockpitPage from "./pages/RunCockpitPage.svelte";
-  import RunsPage from "./pages/RunsPage.svelte";
+  import ProjectPage from "./pages/ProjectPage.svelte";
   import StudioPage from "./pages/StudioPage.svelte";
 
   export let cockpitApi: CockpitApi = createCockpitApi();
@@ -37,8 +37,8 @@
 <main>
   {#if route.page === "studio"}
     <StudioPage {cockpitApi} {navigate} />
-  {:else if route.page === "runs"}
-    <RunsPage {cockpitApi} {navigate} />
+  {:else if route.page === "project"}
+    <ProjectPage {cockpitApi} {navigate} />
   {:else if route.page === "new"}
     <NewRunPage {cockpitApi} {mutationJournal} {navigate} {createRunId} />
   {:else if route.page === "run"}
@@ -50,6 +50,6 @@
       {createReconcileCommandId}
     />
   {:else}
-    <section><p class="eyebrow">Atelier 2</p><h1>Page not found</h1><a class="button" href="/atelier/runs" onclick={(event) => { event.preventDefault(); navigate("/atelier/runs"); }}>Runs</a></section>
+    <section><p class="eyebrow">Atelier 2</p><h1>Page not found</h1><a class="button" href="/atelier" onclick={(event) => { event.preventDefault(); navigate("/atelier"); }}>Studio</a></section>
   {/if}
 </main>

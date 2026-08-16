@@ -777,7 +777,7 @@
 </script>
 
 <section aria-labelledby="run-title">
-  <a class="back-link" href="/atelier/runs" onclick={(event) => { event.preventDefault(); navigate("/atelier/runs"); }}>← Runs</a>
+  <a class="back-link" href="/atelier/project" onclick={(event) => { event.preventDefault(); navigate("/atelier/project"); }}>← Project</a>
 
   {#if snapshot.request.state === "failed"}
     <ProblemNotice problem={snapshot.request.problem} />

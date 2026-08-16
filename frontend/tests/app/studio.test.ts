@@ -5,7 +5,12 @@ import App from "../../src/App.svelte";
 import type { CockpitApi, RunV1 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
-import { startedRun, waitingInputRun } from "../support/workflowV1";
+import {
+  completedRun,
+  startedRun,
+  waitingInputRun,
+  waitingReconciliationRun
+} from "../support/workflowV1";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -15,24 +20,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
 });
-
-const completedRun = (changes: Partial<RunV1> = {}): RunV1 =>
-  startedRun({ state: "COMPLETED", terminal_hash: "b".repeat(64), ...changes });
-
-const waitingReconciliationRun = (changes: Partial<RunV1> = {}): RunV1 =>
-  startedRun({
-    state: "WAITING_RECONCILIATION",
-    waiting: {
-      type: "WAITING_RECONCILIATION",
-      node_id: "act",
-      logical_effect_key: "effect",
-      request_hash: "c".repeat(64),
-      request_base64: "",
-      intent_state_version: 0,
-      pending_command: null
-    },
-    ...changes
-  });
 
 function openStudio(runs: RunV1[] = [], overrides: Partial<CockpitApi> = {}) {
   window.history.replaceState(null, "", "/atelier");
@@ -71,12 +58,15 @@ describe("the studio is the level the workshop opens on", () => {
     expect(within(card).getAllByRole("link")).toHaveLength(1);
   });
 
-  it("leads from the one project card to the runs of this installation", async () => {
+  it("leads from the one project card down into the project level", async () => {
     openStudio([startedRun()]);
+    const card = await screen.findByRole("article", { name: "This workshop" });
 
-    await fireEvent.click(await screen.findByRole("link", { name: /This workshop/ }));
+    await fireEvent.click(within(card).getByRole("link"));
 
-    expect((await screen.findByRole("heading", { name: "Runs" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/project");
+    expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
+    expect(screen.queryByRole("heading", { name: "Studio" })).toBeNull();
   });
 });
 

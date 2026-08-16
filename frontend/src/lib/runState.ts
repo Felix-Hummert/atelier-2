@@ -25,6 +25,16 @@ const humanMoves: Record<Run["state"], string | null> = {
   COMPLETED: null
 };
 
+/** The heading a group of runs carries where the runs are grouped. One owner, one word. */
+export const standingWords: Record<RunStanding, string> = {
+  running: "Running",
+  waiting: "Waiting for you",
+  done: "Done"
+};
+
+/** The order the standings read in: what moves, what needs you, what is behind you. */
+export const standingOrder: readonly RunStanding[] = ["running", "waiting", "done"];
+
 /** The shape that carries the standing without colour, for eyes that read no colour. */
 export const standingMarks: Record<RunStanding, string> = {
   running: "▲",
@@ -40,6 +50,10 @@ export function waitsForAHuman(state: Run["state"]): boolean {
   return standings[state] === "waiting";
 }
 
+export function runsStanding(runs: readonly Run[], standing: RunStanding): Run[] {
+  return runs.filter((run) => standings[run.state] === standing);
+}
+
 export function countStanding(runs: readonly Run[], standing: RunStanding): number {
-  return runs.filter((run) => standings[run.state] === standing).length;
+  return runsStanding(runs, standing).length;
 }

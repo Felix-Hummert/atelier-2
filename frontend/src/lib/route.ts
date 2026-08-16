@@ -2,7 +2,7 @@ import { decodePublicRunReference } from "../api/client";
 
 export type CockpitRoute =
   | { page: "studio" }
-  | { page: "runs" }
+  | { page: "project" }
   | { page: "new" }
   | { page: "run"; publicReference: string }
   | { page: "not-found" };
@@ -11,8 +11,12 @@ export function cockpitRoute(pathname: string): CockpitRoute {
   if (pathname === "/atelier" || pathname === "/atelier/") {
     return { page: "studio" };
   }
-  if (pathname === "/atelier/runs") {
-    return { page: "runs" };
+  // /atelier/runs is where this installation's runs lived before the project
+  // level existed; it names the same set, so old history entries keep landing
+  // on it rather than on a not-found page. #133 owns its fate once a project
+  // has a backend identity and "every run" and "this project" can differ.
+  if (pathname === "/atelier/project" || pathname === "/atelier/runs") {
+    return { page: "project" };
   }
   if (pathname === "/atelier/new") {
     return { page: "new" };

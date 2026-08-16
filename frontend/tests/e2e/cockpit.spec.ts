@@ -81,7 +81,14 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await assertNoSeriousAccessibilityFindings(page);
   await page.screenshot({ path: "test-results/studio-390x844.png", fullPage: true });
   await workshop.click();
-  await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Queue" })).toBeVisible();
+  await page.screenshot({ path: "test-results/project-390x844.png", fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: "test-results/project-desktop.png", fullPage: true });
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.getByRole("link", { name: "← Studio" }).click();
+  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
 });
 
 test("mobile Found and Absent reconcile exact durable runs", async ({ browser }) => {

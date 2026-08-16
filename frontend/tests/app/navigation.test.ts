@@ -22,14 +22,14 @@ function openAt(pathname: string) {
 }
 
 describe("cockpit navigation", () => {
-  it("answers a path that is no route with a not-found page that leads back to Runs", async () => {
+  it("answers a path that is no route with a not-found page that leads home to the Studio", async () => {
     openAt("/atelier/nowhere");
 
     expect(screen.getByRole("heading", { name: "Page not found" }).isConnected).toBe(true);
 
-    await fireEvent.click(screen.getByRole("link", { name: "Runs" }));
+    await fireEvent.click(screen.getByRole("link", { name: "Studio" }));
 
-    expect((await screen.findByRole("heading", { name: "Runs" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Studio" })).isConnected).toBe(true);
     expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
   });
 
@@ -43,28 +43,18 @@ describe("cockpit navigation", () => {
     expect(window.history.length).toBe(historyLength);
   });
 
-  it("leads from the runs of this installation back up to the Studio", async () => {
-    openAt("/atelier/runs");
-    await screen.findByRole("heading", { name: "Runs" });
-
-    await fireEvent.click(screen.getByRole("link", { name: "Studio" }));
-
-    expect((await screen.findByRole("heading", { name: "Studio" })).isConnected).toBe(true);
-    expect(window.location.pathname).toBe("/atelier");
-  });
-
   it("returns to the previously shown page when the operator presses Back", async () => {
-    openAt("/atelier/runs");
-    await screen.findByRole("heading", { name: "Runs" });
+    openAt("/atelier/project");
+    await screen.findByRole("heading", { name: "This workshop" });
 
-    await fireEvent.click(screen.getByRole("link", { name: "New" }));
+    await fireEvent.click(screen.getByRole("link", { name: "Start a run" }));
     expect((await screen.findByRole("heading", { name: "Choose a workflow" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier/new");
 
     window.history.back();
 
-    await waitFor(() => expect(window.location.pathname).toBe("/atelier/runs"));
-    expect((await screen.findByRole("heading", { name: "Runs" })).isConnected).toBe(true);
+    await waitFor(() => expect(window.location.pathname).toBe("/atelier/project"));
+    expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
     expect(screen.queryByRole("heading", { name: "Choose a workflow" })).toBeNull();
   });
 });
