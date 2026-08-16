@@ -539,3 +539,99 @@ def test_a_second_port_read_inside_an_allowlisted_call_fails(tmp_path: Path) -> 
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert "event_stream_route" in result.stderr
+
+
+def reach_a_port_through_an_alias_in_a_translated_call(project: Path) -> None:
+    """Take the port back inside a translated call, through a local name.
+
+    Spelling the access literally is caught; binding the record to a name first
+    and reading the port off that name is the same reach with a different
+    spelling, and a check that reads only the literal form cannot tell them apart.
+    """
+    events = project / "src/atelier2/api/routes/events.py"
+    source = events.read_text(encoding="utf-8")
+    replaced = source.replace(
+        "    async for event in stream_server_events(",
+        "    ports = context.ports\n"
+        "    ports.run_event_queries\n"
+        "    async for event in stream_server_events(",
+    )
+    assert replaced != source
+    events.write_text(replaced, encoding="utf-8")
+
+
+def reach_a_second_port_through_an_alias_in_the_allowlisted_call(project: Path) -> None:
+    """Grow a second port inside the one call the map still allows."""
+    runs = project / "src/atelier2/api/routes/runs.py"
+    source = runs.read_text(encoding="utf-8")
+    marker = "        lambda: cancel_agent_attempt(request, context.ports.agent_attempt_canceller),"
+    assert source.count(marker) == 1
+    # Insert inside the allowlisted call itself, not merely somewhere in the file:
+    # the point of the case is that the *declared* call grows a second port.
+    call = source.index("async def cancel_agent_attempt_route(")
+    body = source.index("    result = await run_control_query(", call)
+    runs.write_text(
+        source[:body]
+        + "    ports = context.ports\n    ports.run_queries\n"
+        + source[body:],
+        encoding="utf-8",
+    )
+
+
+def add_outcome_hiding_a_port_behind_an_unreadable_annotation(project: Path) -> None:
+    """An outcome that really carries a port, behind an annotation nothing resolves."""
+    (project / "src/atelier2/application/hidden_outcome.py").write_text(
+        "from __future__ import annotations\n\n"
+        "from dataclasses import dataclass\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from atelier2.ports.run_queries import RunQueries\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class HiddenOutcome:\n"
+        "    port: 'RunQueries'\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+def test_a_translated_call_that_takes_a_port_back_through_an_alias_fails(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    reach_a_port_through_an_alias_in_a_translated_call(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "event_stream_route" in result.stderr
+
+
+@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+def test_a_second_port_through_an_alias_in_the_allowlisted_call_fails(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    reach_a_second_port_through_an_alias_in_the_allowlisted_call(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "cancel_agent_attempt_route" in result.stderr
+
+
+@pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
+def test_an_outcome_this_check_cannot_read_fails_rather_than_being_reported(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    add_outcome_hiding_a_port_behind_an_unreadable_annotation(project)
+    replace_use_case_field(
+        project,
+        "leaked: Callable[[], HiddenOutcome] = _unbound",
+        "from atelier2.application.hidden_outcome import HiddenOutcome",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "a route can still reach a port" in result.stderr
