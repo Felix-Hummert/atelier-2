@@ -6,13 +6,46 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from atelier2.api.context import ApiContext, ApiPorts, install_api_context
+from atelier2.api.context import (
+    ApiContext,
+    ApiPorts,
+    ApiUseCases,
+    install_api_context,
+)
 from atelier2.api.limits import ApiLimits, RequestBodyLimitMiddleware
 from atelier2.api.openapi import API_PREFIX, install_custom_openapi
 from atelier2.api.problems import install_problem_handlers
 from atelier2.api.routes import agents, events, health, revisions, runs
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
+from atelier2.application.prepare_run_events import prepare_run_events
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
+from atelier2.application.read_runs import get_run, list_runs
+from atelier2.application.read_workflow_revisions import (
+    get_workflow_revision,
+    list_workflow_revisions,
+)
+from atelier2.ports.workflow_revisions import DurableProjectionLimit
+
+
+def bound_use_cases(
+    ports: ApiPorts, projection_limit: DurableProjectionLimit
+) -> ApiUseCases:
+    """Spend the ports here, so that nothing below this line can reach one."""
+    return ApiUseCases(
+        get_workflow_revision=lambda revision_hash: get_workflow_revision(
+            revision_hash, projection_limit, ports.workflow_revision_queries
+        ),
+        list_workflow_revisions=lambda after, limit: list_workflow_revisions(
+            after, limit, ports.workflow_revision_queries
+        ),
+        get_run=lambda run_id: get_run(run_id, projection_limit, ports.run_queries),
+        list_runs=lambda after, limit: list_runs(
+            after, limit, projection_limit, ports.run_queries
+        ),
+        prepare_run_events=lambda run_id, after_sequence: prepare_run_events(
+            run_id, after_sequence, ports.run_event_queries
+        ),
+    )
 
 
 def create_app(
@@ -42,11 +75,24 @@ def create_app(
         api_prefix=API_PREFIX,
     )
     admission_timeout_seconds = limits.maximum_query_admission_wait_milliseconds / 1_000
+    workflow_projection_limit = WorkflowPublicationLimits(
+        maximum_document_bytes=min(
+            limits.maximum_request_body_bytes,
+            limits.maximum_base64_decoded_bytes,
+        ),
+        maximum_nodes=limits.maximum_workflow_nodes,
+        maximum_string_characters=limits.maximum_field_characters,
+        maximum_payload_bytes=min(
+            limits.maximum_decoded_payload_bytes,
+            limits.maximum_base64_decoded_bytes,
+        ),
+    )
     install_api_context(
         app,
         ApiContext(
             source_commit=source_commit,
             source_tree=source_tree,
+            use_cases=bound_use_cases(ports, workflow_projection_limit),
             ports=ports,
             limits=limits,
             control_runner=BoundedQueryRunner(
@@ -57,18 +103,7 @@ def create_app(
                 limits.maximum_event_poll_queries,
                 admission_timeout_seconds=admission_timeout_seconds,
             ),
-            workflow_projection_limit=WorkflowPublicationLimits(
-                maximum_document_bytes=min(
-                    limits.maximum_request_body_bytes,
-                    limits.maximum_base64_decoded_bytes,
-                ),
-                maximum_nodes=limits.maximum_workflow_nodes,
-                maximum_string_characters=limits.maximum_field_characters,
-                maximum_payload_bytes=min(
-                    limits.maximum_decoded_payload_bytes,
-                    limits.maximum_base64_decoded_bytes,
-                ),
-            ),
+            workflow_projection_limit=workflow_projection_limit,
             event_poll_backoff=event_poll_backoff,
         ),
     )

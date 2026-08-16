@@ -23,22 +23,23 @@ from atelier2.api.wire.resources import (
     WorkflowRevisionSummaryResource,
 )
 from atelier2.application.publish_workflow_revision import (
-    DurableStateCorrupt,
     PublicationCollision,
     PublicationCreated,
     PublicationExisting,
     PublicationInvalid,
-    WriteUnavailable,
     publish_workflow_revision,
 )
-from atelier2.contracts.workflow_refusals import WorkflowRefusal
-from atelier2.ports.workflow_revisions import (
-    QueryDurableStateCorrupt,
-    ReadUnavailable,
-    WorkflowRevisionFound,
-    WorkflowRevisionMissing,
-    WorkflowRevisionPage,
+from atelier2.application.read_workflow_revisions import (
+    WorkflowRevisionNotFound,
+    WorkflowRevisionRead,
+    WorkflowRevisionsListed,
 )
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ReadUnavailable,
+    WriteUnavailable,
+)
+from atelier2.contracts.workflow_refusals import WorkflowRefusal
 
 router = APIRouter()
 
@@ -102,12 +103,10 @@ async def list_revisions(
     parsed_limit = parse_limit(limit)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.ports.workflow_revision_queries.list_workflow_revisions(
-            after, parsed_limit
-        ),
+        lambda: context.use_cases.list_workflow_revisions(after, parsed_limit),
     )
     match result:
-        case WorkflowRevisionPage(revision_hashes, next_after):
+        case WorkflowRevisionsListed(revision_hashes, next_after):
             return WorkflowRevisionPageResource(
                 items=tuple(
                     WorkflowRevisionSummaryResource(revision_hash=value.value)
@@ -119,7 +118,7 @@ async def list_revisions(
             )
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
-        case QueryDurableStateCorrupt():
+        case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
@@ -138,18 +137,16 @@ async def get_revision(
         raise ApiProblem("invalid-revision-hash") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.ports.workflow_revision_queries.get_workflow_revision(
-            parsed, context.workflow_projection_limit
-        ),
+        lambda: context.use_cases.get_workflow_revision(parsed),
     )
     match result:
-        case WorkflowRevisionFound(projection):
+        case WorkflowRevisionRead(projection):
             return workflow_revision_detail_resource(projection)
-        case WorkflowRevisionMissing():
+        case WorkflowRevisionNotFound():
             raise ApiProblem("workflow-revision-not-found")
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
-        case QueryDurableStateCorrupt():
+        case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)

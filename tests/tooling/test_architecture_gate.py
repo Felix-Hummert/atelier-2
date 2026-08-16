@@ -245,3 +245,131 @@ def test_gate_runs_with_minimal_environment_and_no_network_or_service(
     result = run_gate(copied_project(tmp_path), environment)
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def replace_use_case_field(project: Path, field: str, imported: str = "") -> None:
+    """Add one field to the record, with the port import a real evasion would need.
+
+    The import matters: the check binds port names from this module's own imports,
+    so a field naming a type nobody imported here is a name that resolves to
+    nothing. Writing the import too is what makes these cases the evasions they
+    claim to be rather than typos the gate would also refuse.
+    """
+    context = project / "src/atelier2/api/context.py"
+    source = context.read_text(encoding="utf-8")
+    marker = "class ApiUseCases:\n"
+    assert source.count(marker) == 1
+    if imported:
+        source = source.replace(
+            "from atelier2.api.limits import ApiLimits\n",
+            f"{imported}\nfrom atelier2.api.limits import ApiLimits\n",
+            1,
+        )
+    body_start = source.index(marker) + len(marker)
+    context.write_text(
+        source[:body_start] + f"    {field}\n" + source[body_start:],
+        encoding="utf-8",
+    )
+
+
+def rename_the_use_case_record(project: Path) -> None:
+    context = project / "src/atelier2/api/context.py"
+    context.write_text(
+        context.read_text(encoding="utf-8").replace("ApiUseCases", "ApiCalls"),
+        encoding="utf-8",
+    )
+
+
+def add_route_reaching_a_port(project: Path) -> None:
+    (project / "src/atelier2/api/routes/health.py").write_text(
+        "from atelier2.api.context import ApiPorts\n\n\n"
+        "def leak(ports: ApiPorts) -> object:\n    return ports\n",
+        encoding="utf-8",
+    )
+
+
+def empty_a_route_module_that_is_declared_to_hold_ports(project: Path) -> None:
+    (project / "src/atelier2/api/routes/events.py").write_text(
+        "router = None\n", encoding="utf-8"
+    )
+
+
+RUN_QUERIES_IMPORT = "from atelier2.ports.run_queries import RunQueries"
+CANCELLATION_IMPORT = (
+    "from atelier2.ports.agent_attempts import AgentAttemptCancellationResult"
+)
+QUARANTINED_IMPORT = (
+    "from typing import TYPE_CHECKING\n"
+    "\nif TYPE_CHECKING:\n"
+    "    from atelier2.ports.run_queries import RunQueries"
+)
+
+
+@pytest.mark.parametrize(
+    ("field", "imported"),
+    [
+        ("run_queries: RunQueries", RUN_QUERIES_IMPORT),
+        ('run_queries: "RunQueries"', RUN_QUERIES_IMPORT),
+        ("run_queries: ports.RunQueries", ""),
+        ("run_queries: RunQueries", QUARANTINED_IMPORT),
+        (
+            "cancel: Callable[[str], AgentAttemptCancellationResult]",
+            CANCELLATION_IMPORT,
+        ),
+        ("run_queries = None", ""),
+    ],
+    ids=[
+        "plain-port-type",
+        "forward-reference",
+        "dotted-port-path",
+        "quarantined-under-type-checking",
+        "port-union-behind-a-bound-call",
+        "unannotated",
+    ],
+)
+@pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
+def test_a_use_case_field_that_resolves_to_a_port_fails(
+    tmp_path: Path, field: str, imported: str
+) -> None:
+    project = copied_project(tmp_path)
+    replace_use_case_field(project, field, imported)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "a route can still reach a port" in result.stderr
+
+
+@pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
+def test_a_use_case_record_that_disappears_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    rename_the_use_case_record(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "declares no ApiUseCases" in result.stderr
+
+
+@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+def test_a_translated_route_module_that_reaches_a_port_again_fails(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    add_route_reaching_a_port(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "health.py reaches a port" in result.stderr
+
+
+@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+def test_a_stale_entry_in_the_untranslated_route_list_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    empty_a_route_module_that_is_declared_to_hold_ports(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "reaches no port any more" in result.stderr

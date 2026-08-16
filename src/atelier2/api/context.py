@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, Request
 
 from atelier2.api.limits import ApiLimits
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
+from atelier2.application.prepare_run_events import PrepareRunEventsResult
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
+from atelier2.application.read_runs import GetRunResult, ListRunsResult
+from atelier2.application.read_workflow_revisions import (
+    GetWorkflowRevisionResult,
+    ListWorkflowRevisionsResult,
+)
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
@@ -38,6 +46,30 @@ class ApiPorts:
 
 
 @dataclass(frozen=True)
+class ApiUseCases:
+    """The application calls, already bound to their ports by the composition.
+
+    Every field is a call, not a protocol: the port is spent at composition time,
+    and what a route holds is the decision, whose result type belongs to
+    `atelier2.application`. A field annotated with anything that resolves to
+    `atelier2.ports` would hand the port straight back through this record — which
+    is the evasion `scripts/check_architecture.py` reads these annotations for.
+
+    The calls stay synchronous because admitting one to the process-wide query
+    budget is the API's decision, not the application's: the route runs them
+    through its own bounded runner and owns the refusal a full budget produces.
+    """
+
+    get_workflow_revision: Callable[[WorkflowRevisionHash], GetWorkflowRevisionResult]
+    list_workflow_revisions: Callable[
+        [WorkflowRevisionHash | None, int], ListWorkflowRevisionsResult
+    ]
+    get_run: Callable[[RunId], GetRunResult]
+    list_runs: Callable[[RunId | None, int], ListRunsResult]
+    prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
+
+
+@dataclass(frozen=True)
 class ApiContext:
     """Everything a route needs that the composition decided once, at startup.
 
@@ -48,6 +80,7 @@ class ApiContext:
 
     source_commit: str
     source_tree: str
+    use_cases: ApiUseCases
     ports: ApiPorts
     limits: ApiLimits
     control_runner: BoundedQueryRunner

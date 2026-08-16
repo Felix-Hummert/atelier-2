@@ -50,10 +50,7 @@ from atelier2.application.answer_wait import (
     answer_wait_result,
 )
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
-from atelier2.application.publish_workflow_revision import (
-    DurableStateCorrupt,
-    WriteUnavailable,
-)
+from atelier2.application.read_runs import RunsListed
 from atelier2.application.reconcile_effect import (
     ReconciliationAcceptedPending,
     ReconciliationCommandConflict,
@@ -65,6 +62,11 @@ from atelier2.application.reconcile_effect import (
     ReconciliationTargetMissing,
 )
 from atelier2.application.reconcile_run import ReconcileRunRequest, reconcile_run
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ReadUnavailable,
+    WriteUnavailable,
+)
 from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
     InvalidAgentBindings,
@@ -121,8 +123,6 @@ from atelier2.ports.durable_runs import (
     StartPublishedRunRequest,
     StartPublishedRunRequestV2,
 )
-from atelier2.ports.run_queries import RunPage
-from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt, ReadUnavailable
 
 router = APIRouter()
 
@@ -204,12 +204,10 @@ async def list_runs(
     parsed_limit = parse_limit(limit)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.ports.run_queries.list_runs(
-            boundary, parsed_limit, context.workflow_projection_limit
-        ),
+        lambda: context.use_cases.list_runs(boundary, parsed_limit),
     )
     match result:
-        case RunPage(runs, next_after):
+        case RunsListed(runs, next_after):
             require_run_projections(runs, context.limits)
             return VersionedRunPageResource(
                 items=tuple(run_resource(run) for run in runs),
@@ -221,7 +219,7 @@ async def list_runs(
             )
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
-        case QueryDurableStateCorrupt():
+        case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
@@ -417,8 +415,7 @@ async def reconcile_run_route(
 async def _run_resource_of(run_id: RunId, context: ApiContext) -> AnyRunResource:
     return await load_run_resource(
         run_id,
-        context.ports.run_queries,
+        context.use_cases.get_run,
         context.control_runner,
         context.limits,
-        context.workflow_projection_limit,
     )
