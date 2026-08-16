@@ -745,8 +745,14 @@ def test_a_unique_python_class_method_matches_its_junit_identity(
 
 @pytest.mark.parametrize(
     ("placeholder", "rendered"),
-    [("%s", "one"), ("%#", "0"), ("%$", "1")],
-    ids=["value", "zero-based-index", "one-based-index"],
+    [("%s", "one"), ("%s", ""), ("%c", ""), ("%#", "0"), ("%$", "1")],
+    ids=[
+        "value",
+        "empty-value",
+        "empty-css-format",
+        "zero-based-index",
+        "one-based-index",
+    ],
 )
 def test_a_parameterized_typescript_title_matches_its_reported_cases(
     tmp_path: Path, placeholder: str, rendered: str

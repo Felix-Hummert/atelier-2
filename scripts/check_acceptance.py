@@ -447,7 +447,7 @@ def vitest_title_pattern(title: str) -> str:
     previous_end = 0
     for parameter in VITEST_TITLE_PARAMETER.finditer(title):
         pattern.append(re.escape(title[previous_end : parameter.start()]))
-        pattern.append(r"\d+" if parameter.group(0) in {"%#", "%$"} else r".+?")
+        pattern.append(r"\d+" if parameter.group(0) in {"%#", "%$"} else r".*?")
         previous_end = parameter.end()
     pattern.append(re.escape(title[previous_end:]))
     return "".join(pattern)
