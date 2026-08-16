@@ -141,8 +141,9 @@ not add features. (5302788411.)
      watcher sees the work; the database never does.
    - **Durable is hash plus bounded output.** The receipt carries hash and
      location, never the transcript bytes. An archive copy — if one ever exists
-     — lies outside the receipt and under the retention decision, which now sits
-     with #23. While that decision is missing, there is no archive copy.
+     — lies outside the receipt and under the retention decision, which
+     [ADR 0011](../decisions/0011-project-isolation.md) decision 3 owns and which
+     is `PROPOSED`, not built. Until it is built, there is no archive copy.
 
    The consequence for the roadmap is explicit: a live view is architecture — a
    streaming mode, a runner channel, redaction — not a UI line.

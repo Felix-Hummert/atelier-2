@@ -209,13 +209,16 @@ star, not a sentence of it.)
 
 ## Open questions
 
-- **Retention has no owner yet, and it is due before a second project.** Foreign
-  work code and foreign issue text land in a store from which they cannot be
-  removed: every durable table carries a `no_delete` trigger, and there is no
-  pruning, no TTL, and no run or project deletion — the only way out is
-  discarding the whole SQLite file. The decision now sits with **#23**, together
-  with isolation, and is due *before* a second — especially a foreign — project
-  is connected. (5302109936 §4b, assigned in 5302131944 §4b.)
+- **Retention has an owner now; what stays open is when it is built.** Foreign work
+  code and foreign issue text land in a store they cannot be removed from again —
+  the only way out is discarding the whole SQLite file. The decision belongs to
+  [ADR 0011](../decisions/0011-project-isolation.md) decision 3, which owns the
+  mechanics and which names this question as pointing at it. That record is
+  `PROPOSED` — decision only, nothing implemented — so what a store does today is
+  what the code does, not what the decision says. The build is due *before* a
+  second, especially a foreign, project is connected. (5302109936 §4b, assigned in
+  5302131944 §4b; ownership passed from #23, closed 2026-08-15, to the record that
+  issue produced.)
 - **Reachability is a named precondition, not a given.** ADR 0009 refuses every
   non-loopback bind without an operator authenticator, and today's situation is
   sharper than that draft: `serve --host 0.0.0.0` without a composed Claude
