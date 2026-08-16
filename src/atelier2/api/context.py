@@ -26,10 +26,13 @@ from atelier2.application.read_workflow_revisions import (
 )
 from atelier2.application.reconcile_effect import ReconcileRunResult
 from atelier2.application.reconcile_run import ReconcileRunRequest
+from atelier2.application.resolve_catalog_name import CatalogNameResult
 from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
     StartPublishedRunResult,
 )
+from atelier2.contracts.catalog_v3 import CatalogLineageQuery
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
@@ -38,6 +41,7 @@ from atelier2.ports.durable_runs import (
     TransactionalWaitAnswerer,
 )
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
+from atelier2.ports.published_revisions import CatalogResolver
 from atelier2.ports.run_events import (
     RunEventQueries,
 )
@@ -63,6 +67,7 @@ class ApiPorts:
     workflow_document_parser: WorkflowDocumentParser
     agent_configuration_catalog: AgentConfigurationCatalog
     agent_attempt_canceller: TransactionalAgentAttemptCanceller
+    catalog_resolver: CatalogResolver
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,9 @@ class ApiUseCases:
     ]
     answer_wait: Callable[[RunId, WorkflowRevisionHash, str, bytes], AnswerWaitResult]
     reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]
+    resolve_catalog_name: Callable[
+        [RevisionKind, CatalogLineageQuery, object], CatalogNameResult
+    ]
 
 
 @dataclass(frozen=True)

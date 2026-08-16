@@ -1,0 +1,34 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/111"
+
+# THIS HEAD ANSWERS A NAME. IT RUNS NOTHING, AND NO SENTENCE BELOW SAYS IT DOES.
+#
+# #111 wants one command to start a named workflow. The measured distance to that
+# (comment 5310231752) is four doors, and this head opens the first: until now the
+# catalog was reachable in-process only, so no name could be asked for over the
+# API at all. What is deliberately absent, and why:
+#
+#   - NO RUN IS STARTED. The record-truth path needs a `NodeExecutionRequest`,
+#     which needs a `context_package_hash` -- and `ContextPackage` is a contract
+#     class no production code constructs or even imports. Filling it here would
+#     author `context-package/v3` from a route, which is the forgery H1c refused
+#     from the store side. That owner is its own head.
+#   - NO CLI. `run --name` is the next head and this route's first caller. A `run`
+#     that resolves without running would be a verb that lies.
+#
+# Related sentences that are NOT duplicated here: #63 owns "a name reaches exactly
+# the bytes it resolved to" for the in-process path; #22 owns how named revisions
+# are listed. This head owns one thing neither does -- the same question asked
+# over HTTP.
+
+[[sentence]]
+id = "a-name-is-answerable-over-the-api"
+text = "A caller who knows a catalog name, and nothing else, learns over the API which revision that name holds -- its lineage, its member number and the exact revision hash -- so a name no longer has to be translated into a hash by hand before the rest of the API can be used."
+
+[[sentence]]
+id = "a-name-the-catalog-cannot-honour-is-refused-by-its-own-reason"
+text = "A name nobody admitted, a member position the lineage does not hold, a position that is not a number or head, and a revision its lineage does not admit are each refused with the reason that names them, and a retired lineage is refused as retired without disclosing the revision it once held."
+
+[[sentence]]
+id = "the-name-path-is-never-read-as-a-revision-hash"
+text = "The path that answers a name is never claimed by the path that answers a revision hash, so a name is answered as a name instead of being refused as a malformed hash."

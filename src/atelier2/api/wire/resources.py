@@ -13,6 +13,7 @@ from atelier2.api.references import (
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
+from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 
 
@@ -135,6 +136,15 @@ class WorkflowRevisionDetailResource(ApiModel):
     revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     document_base64: str
     graph: AnyWorkflowGraphResource
+
+
+class CatalogNameResolutionResource(ApiModel):
+    """Which revision one catalog name resolves to, and nothing about running it."""
+
+    display_name: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    lineage_id: str = Field(pattern=REVISION_HASH_PATTERN)
+    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    revision_number: int = Field(ge=1)
 
 
 class WorkflowRevisionPageResource(ApiModel):

@@ -147,6 +147,26 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
     "not-acceptable": ProblemDefinition(
         406, "Not acceptable", "Accept text/event-stream or */*."
     ),
+    "catalog-name-not-found": ProblemDefinition(
+        404,
+        "Catalog name not found",
+        "No lineage of this kind holds that name at that position.",
+    ),
+    "catalog-lineage-retired": ProblemDefinition(
+        410,
+        "Catalog lineage retired",
+        "This name was retired; it resolves to no revision a run may use.",
+    ),
+    "catalog-revision-not-a-member": ProblemDefinition(
+        409,
+        "Catalog revision is not a member",
+        "The name resolved to a revision its lineage does not admit.",
+    ),
+    "invalid-catalog-position": ProblemDefinition(
+        400,
+        "Invalid catalog position",
+        "Ask for head or an exact positive member number.",
+    ),
     "workflow-revision-not-found": ProblemDefinition(
         404,
         "Workflow revision not found",
