@@ -16,6 +16,14 @@ from atelier2.adapters.claude_subscription import (
     attest_no_managed_policy,
     verify_claude_capability,
 )
+from atelier2.adapters.codex_subscription import (
+    CodexContainmentUnattested,
+    CodexExecutableUnsupported,
+    CodexSandboxMode,
+    CodexSubscriptionSettings,
+    attest_codex_containment,
+    verify_codex_capability,
+)
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
 from atelier2.host.run_command import (
     AgentBindingSource,
@@ -79,6 +87,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             host=parsed.host,
             port=parsed.port,
             claude_subscription=_claude_subscription_settings(parser, parsed),
+            codex_subscription=_codex_subscription_settings(parser, parsed),
         )
     except ValueError as refusal:
         parser.error(str(refusal))
@@ -170,6 +179,50 @@ def _claude_subscription_settings(
     return settings
 
 
+def _codex_subscription_settings(
+    parser: argparse.ArgumentParser, parsed: argparse.Namespace
+) -> CodexSubscriptionSettings | None:
+    """Compose the Codex subscription executor only when fully declared."""
+
+    declared = (
+        parsed.codex_executable,
+        parsed.codex_workspace,
+        parsed.codex_credential_directory,
+    )
+    if all(value is None for value in declared):
+        return None
+    if any(value is None for value in declared):
+        parser.error(
+            "serving Codex subscription agents requires --codex-executable, "
+            "--codex-workspace and --codex-credential-directory together"
+        )
+    search_path = os.environ.get("PATH")
+    if search_path is None:
+        parser.error(
+            "serving Codex subscription agents requires PATH in the server "
+            "environment, because the launched provider inherits nothing else"
+        )
+    try:
+        settings = CodexSubscriptionSettings(
+            parsed.codex_executable,
+            parsed.codex_workspace,
+            parsed.codex_credential_directory,
+            search_path,
+            CodexSandboxMode(parsed.codex_sandbox),
+        )
+    except ValueError as refusal:
+        parser.error(str(refusal))
+    # A sandbox the host cannot actually start, and a profile that would load
+    # the operator's own Codex trust, are both refused before the server exists
+    # rather than at invocation time, where a refusal costs a run.
+    try:
+        verify_codex_capability(settings.executable, settings.search_path)
+        attest_codex_containment(settings)
+    except (CodexExecutableUnsupported, CodexContainmentUnattested) as error:
+        parser.error(str(error))
+    return settings
+
+
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="atelier2")
     commands = parser.add_subparsers(dest="command")
@@ -187,6 +240,14 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--claude-executable", type=Path)
     serve_parser.add_argument("--claude-workspace", type=Path)
     serve_parser.add_argument("--claude-credential-directory", type=Path)
+    serve_parser.add_argument("--codex-executable", type=Path)
+    serve_parser.add_argument("--codex-workspace", type=Path)
+    serve_parser.add_argument("--codex-credential-directory", type=Path)
+    serve_parser.add_argument(
+        "--codex-sandbox",
+        choices=tuple(mode.value for mode in CodexSandboxMode),
+        default=CodexSandboxMode.READ_ONLY.value,
+    )
     run_parser = commands.add_parser(
         "run",
         help="run one workflow document on a served Atelier API",

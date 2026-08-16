@@ -77,7 +77,6 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.workflows import (
     ActionNode,
     AgentNodeV2,
-    SubworkflowNode,
     WaitNode,
     WorkflowGraphV2,
 )
@@ -85,6 +84,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
     WorkflowGraphV3,
+    is_sink_node,
 )
 from atelier2.ports.durable_runs import (
     DurableAnswerBytesConflict,
@@ -321,8 +321,8 @@ def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
         node, ActionNode
     ):
         raise RunTransitionConflict("WAITING_RECONCILIATION must name an Action node")
-    if run.state is RunState.COMPLETED and not isinstance(node, SubworkflowNode):
-        raise RunTransitionConflict("COMPLETED must name the terminal Subworkflow")
+    if run.state is RunState.COMPLETED and not is_sink_node(graph, run.current_node_id):
+        raise RunTransitionConflict("COMPLETED must name the run's sink node")
 
 
 def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
@@ -489,8 +489,8 @@ def _commit_event(
         raise RunTransitionConflict("WAITING_RECONCILIATION target is not an Action")
     if terminal != (target_state is RunState.COMPLETED):
         raise RunTransitionConflict("terminal transition shape disagrees")
-    if terminal and not isinstance(target_node, SubworkflowNode):
-        raise RunTransitionConflict("terminal transition must finish a Subworkflow")
+    if terminal and not is_sink_node(graph, target_node_id):
+        raise RunTransitionConflict("terminal transition must finish the run's sink")
     sequence = current.last_event_sequence + 1
     event = RunEvent(
         run_id,

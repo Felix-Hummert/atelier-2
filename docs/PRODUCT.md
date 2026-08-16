@@ -99,9 +99,24 @@ demanding an interactive one is refused before that run exists at all. An
 unsuccessful exit, an unreadable envelope, an envelope declaring a provider
 error, and an answer larger than the durable output bound all fail the attempt
 instead of recording invented output. Undeclared, the
-host composes no V2 provider factory and behaves exactly as before. Codex remains
-absent, and the isolated read, edit, and test tools an agent needs to change its
-own workspace are not part of this contract.
+host composes no V2 provider factory and behaves exactly as before. The isolated
+read, edit, and test tools an agent needs to change its own workspace are not
+part of this contract.
+
+Codex sits behind the same boundary, declared the same way and composed
+alongside Claude rather than instead of it. Its CLI has no prompt-file flag, so
+the node's job travels on standard input and never on the command line, and its
+durable answer is read from the last-message file the CLI writes rather than
+from an event stream this contract has not measured — an answer that never
+arrives is a failed attempt, not an invented one. What differs is that a Codex
+binding also carries the sandbox policy its attempts run under. That policy is
+part of the prepared command, and the deployment proves at startup that the
+CLI's own sandbox can actually start on this host, because a sandbox that
+cannot start contains nothing and discovering that at the first run costs a
+run. The same startup proves the composed profile resolves the credential
+directory it was given, loads no user configuration, and configures no MCP
+server, so the operator's own Codex trust — including the per-project trust its
+configuration records — is never inherited by a served agent.
 
 The raw frame a provider writes has its own bound, distinct from the durable
 output bound, because the durable answer travels inside a JSON envelope. The

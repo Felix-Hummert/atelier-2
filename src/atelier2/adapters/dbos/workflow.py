@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal, NotRequired, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, assert_never, cast
 
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
@@ -80,6 +80,8 @@ from atelier2.contracts.workflows import (
     ActionNode,
     AgentNode,
     AgentNodeV2,
+    RunCompletes,
+    RunContinues,
     SubworkflowNode,
     WaitNode,
 )
@@ -454,11 +456,17 @@ def register_durable_run_workflow(
             agent_process_supervisor,
         )
         if isinstance(outcome, AgentAttemptSucceeded):
-            start_node(
-                replacement.run_id,
-                replacement.workflow_revision_hash,
-                outcome.successor_node_id,
-            )
+            match outcome.completion:
+                case RunContinues(node_id):
+                    start_node(
+                        replacement.run_id,
+                        replacement.workflow_revision_hash,
+                        node_id,
+                    )
+                case RunCompletes():
+                    pass
+                case _ as unreachable:
+                    assert_never(unreachable)
         return outcome.attempt.state.value
 
     @DBOS.workflow(name=NODE_WORKFLOW_NAME, max_recovery_attempts=None)
@@ -521,8 +529,14 @@ def register_durable_run_workflow(
             )
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value
-            start_node(typed_run_id, typed_revision, outcome.successor_node_id)
-            return RunState.STARTED.value
+            match outcome.completion:
+                case RunContinues(node_id):
+                    start_node(typed_run_id, typed_revision, node_id)
+                    return RunState.STARTED.value
+                case RunCompletes():
+                    return RunState.COMPLETED.value
+                case _ as unreachable:
+                    assert_never(unreachable)
         if binding["type"] == "action":
             from atelier2.adapters.dbos.advancer import (
                 effect_workflow_id_for,

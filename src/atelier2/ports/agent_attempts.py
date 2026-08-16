@@ -13,6 +13,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.workflows import NodeCompletion
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
 
@@ -24,7 +25,7 @@ class AgentAttemptClaimedByThisCall:
 @dataclass(frozen=True)
 class AgentAttemptSucceeded:
     attempt: AgentAttempt
-    successor_node_id: str
+    completion: NodeCompletion
 
 
 @dataclass(frozen=True)
