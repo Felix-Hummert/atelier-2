@@ -1,13 +1,17 @@
 import { decodePublicRunReference } from "../api/client";
 
 export type CockpitRoute =
+  | { page: "studio" }
   | { page: "runs" }
   | { page: "new" }
   | { page: "run"; publicReference: string }
   | { page: "not-found" };
 
 export function cockpitRoute(pathname: string): CockpitRoute {
-  if (pathname === "/atelier" || pathname === "/atelier/" || pathname === "/atelier/runs") {
+  if (pathname === "/atelier" || pathname === "/atelier/") {
+    return { page: "studio" };
+  }
+  if (pathname === "/atelier/runs") {
     return { page: "runs" };
   }
   if (pathname === "/atelier/new") {

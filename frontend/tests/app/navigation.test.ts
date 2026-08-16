@@ -33,14 +33,24 @@ describe("cockpit navigation", () => {
     expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
   });
 
-  it("replaces the bare /atelier entry with /atelier/runs instead of pushing a redirect onto history", async () => {
+  it("answers the bare /atelier entry with the Studio itself, rewriting no path and pushing no history", async () => {
     const historyLength = window.history.length;
 
     openAt("/atelier");
 
-    await waitFor(() => expect(window.location.pathname).toBe("/atelier/runs"));
+    expect((await screen.findByRole("heading", { name: "Studio" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier");
     expect(window.history.length).toBe(historyLength);
-    expect((await screen.findByRole("heading", { name: "Runs" })).isConnected).toBe(true);
+  });
+
+  it("leads from the runs of this installation back up to the Studio", async () => {
+    openAt("/atelier/runs");
+    await screen.findByRole("heading", { name: "Runs" });
+
+    await fireEvent.click(screen.getByRole("link", { name: "Studio" }));
+
+    expect((await screen.findByRole("heading", { name: "Studio" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier");
   });
 
   it("returns to the previously shown page when the operator presses Back", async () => {

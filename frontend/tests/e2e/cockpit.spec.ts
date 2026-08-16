@@ -69,6 +69,19 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Verified output" })).toHaveCount(0);
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/v2-output-mismatch-390x844.png", fullPage: true });
+
+  await page.goto("/atelier");
+  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+  const workshop = page.getByRole("article", { name: "This workshop" }).getByRole("link");
+  await expect(workshop).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: "test-results/studio-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({ path: "test-results/studio-390x844.png", fullPage: true });
+  await workshop.click();
+  await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
 });
 
 test("mobile Found and Absent reconcile exact durable runs", async ({ browser }) => {
