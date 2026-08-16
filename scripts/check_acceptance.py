@@ -65,6 +65,7 @@ HONESTY_BOUND = (
     "proves: a proposed landing states its sentences by identifier, or why it has none",
     "does not prove: that a test carries its sentence in meaning - review judges that",
     "does not prove: that a stated exemption is honest - review judges that",
+    "does not prove: that a body edited after this run still says what it said - review sees the edit",
     "does not measure: any ratio, case count, or coverage target",
     "```",
 )
