@@ -215,13 +215,14 @@ executability verdict with the capability each still-waiting node needs — mark
 proposed or bound, so an
 author's intent is never read as a binding. That preview is a derivation and nothing
 else: no route, no rendering and no stored shape carries it. Behind that, nothing:
-the registries are ports a caller supplies,
-because no durable registry shape and no publication command for one exists yet;
-resolution is lineage-free and a reference's `ref` is carried into that snapshot
-without proving membership, because named lineages, admitted membership and name
-resolution belong to the accepted but unimplemented catalog-identity record, whose
-`resolve_reference` this port gains only when it is implemented; there is no capability
-attestation and no V3 record shape in the store, and no runtime executes a child.
+the registries are ports a caller supplies. A durable catalog adapter now
+publishes exact revision bytes and resolves an admitted lineage member to those
+bytes over the thin V10 tables; run-configuration binding is still lineage-free
+and a reference's `ref` is carried into that snapshot without calling
+`resolve_reference`. Display-name lookup, alias history and retirement are not
+in this profile, so a name query reports missing rather than inventing a
+current name or a retirement state. There is no capability attestation, and no
+runtime executes a child.
 
 A valid V3 document is publishable long before it is executable: it
 becomes an immutable revision under the same exact-bytes hash identity as V1 and V2,
@@ -336,8 +337,13 @@ that could decide an exit code exists yet.
 
 The canonical store is schema V10. A fresh store is created as exact V10 and
 carries the thin V3 subset: published revisions of the closed kind set, lineage
-membership bound to those revisions, format-3 runs, and `node_receipts_v3`. Alias history, measurements, and policy
-activations are not in this profile. V9 remains the published predecessor
+membership bound to those revisions, format-3 runs, and `node_receipts_v3`.
+The catalog adapter reads those three revision/lineage tables: an admitted
+lineage member resolves to the exact published bytes, and a missing founding,
+unpublished member or wrong kind is refused by name. Alias history, retirement,
+measurements, and policy activations are not in this profile, so a display-name
+or lineage-id name query reports missing rather than inventing a current name
+or a retirement state. V9 remains the published predecessor
 object `V9_SCHEMA_HANDOFF` — version 9, fingerprint
 `6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38`. Exact V7,
 V8, and V9 files are refused without mutation; there is no runtime migration
