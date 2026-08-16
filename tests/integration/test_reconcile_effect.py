@@ -151,14 +151,10 @@ def command(
 
 
 def test_reconcile_workflow_id_is_deterministic_from_the_exact_command_id() -> None:
-    command_id = ReconcileCommandId(" command-1 ")
-    first = reconcile_workflow_id_for(command_id)
-    second = reconcile_workflow_id_for(command_id)
-    other = reconcile_workflow_id_for(ReconcileCommandId("command-1"))
-
-    assert first.startswith(RECONCILE_WORKFLOW_ID_PREFIX)
-    assert first == second
-    assert first != other
+    assert reconcile_workflow_id_for(ReconcileCommandId(" command-1 ")) == (
+        RECONCILE_WORKFLOW_ID_PREFIX
+        + "ed130bd4e8308c690a08d2e099d0b5394042153082c760870f9cf3a19cc00483"
+    )
 
 
 def test_command_atomically_owns_the_waiting_intent_and_enqueues_reconciliation(
