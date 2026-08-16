@@ -6,6 +6,7 @@ from atelier2.application.publish_workflow_revision import (
     DurableStateCorrupt,
     WriteUnavailable,
 )
+from atelier2.application.refusals import ProjectionTooLarge
 from atelier2.contracts.effects import (
     ReconcileCommand,
     ReconcileCommandSnapshot,
@@ -78,6 +79,7 @@ type ReconcileRunResult = (
     | ReconciliationCommandConflict
     | ReconciliationDeterminationConflict
     | WriteUnavailable
+    | ProjectionTooLarge
     | DurableStateCorrupt
 )
 

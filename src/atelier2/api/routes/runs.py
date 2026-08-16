@@ -22,7 +22,7 @@ from atelier2.api._support import (
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import API_PREFIX
-from atelier2.api.problems import ApiProblem
+from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, ApiProblem
 from atelier2.api.projection.runs import run_resource
 from atelier2.api.references import encode_public_run_reference, parse_revision_hash
 from atelier2.api.wire.requests import (
@@ -64,6 +64,7 @@ from atelier2.application.reconcile_effect import (
 from atelier2.application.reconcile_run import ReconcileRunRequest
 from atelier2.application.refusals import (
     DurableStateCorrupt,
+    ProjectionTooLarge,
     ReadUnavailable,
     WriteUnavailable,
 )
@@ -194,6 +195,8 @@ async def list_runs(
             )
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
+        case ProjectionTooLarge():
+            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -374,6 +377,8 @@ async def reconcile_run_route(
             raise ApiProblem("reconciliation-rejected")
         case WriteUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
+        case ProjectionTooLarge():
+            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:

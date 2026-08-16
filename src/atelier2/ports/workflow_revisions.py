@@ -7,8 +7,6 @@ from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, VersionedReference
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
-PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."
-
 
 @dataclass(frozen=True)
 class DurableRevisionCreated:
@@ -151,6 +149,22 @@ class ReadUnavailable:
 
 
 @dataclass(frozen=True)
+class ProjectionTooLarge:
+    """What was stored does not fit the bound its reader was configured with.
+
+    Kept apart from `ReadUnavailable` because the two are opposite promises: a
+    store that could not answer may answer the same question later, and this one
+    never will. Waiting is the right response to the first and useless for the
+    second, so a caller that cannot tell them apart tells its own callers to retry
+    forever.
+
+    It carries no sentence. Which bound was configured, and how that is worded to
+    whoever asked, belongs to the layer that set the bound — a port that phrased it
+    would be writing someone else's answer.
+    """
+
+
+@dataclass(frozen=True)
 class QueryDurableStateCorrupt:
     pass
 
@@ -160,12 +174,19 @@ type GetWorkflowRevisionResult = (
     | WorkflowRevisionMissing
     | ReadUnavailable
     | QueryDurableStateCorrupt
+    | ProjectionTooLarge
 )
 type ListWorkflowRevisionsResult = (
-    WorkflowRevisionPage | ReadUnavailable | QueryDurableStateCorrupt
+    WorkflowRevisionPage
+    | ReadUnavailable
+    | QueryDurableStateCorrupt
+    | ProjectionTooLarge
 )
 type ListDescribedWorkflowRevisionsResult = (
-    DescribedWorkflowRevisionPage | ReadUnavailable | QueryDurableStateCorrupt
+    DescribedWorkflowRevisionPage
+    | ReadUnavailable
+    | QueryDurableStateCorrupt
+    | ProjectionTooLarge
 )
 
 

@@ -27,6 +27,16 @@ class ReadUnavailable:
 
 
 @dataclass(frozen=True)
+class ProjectionTooLarge:
+    """What the store holds does not fit the bound its reader was configured with.
+
+    A refusal of its own rather than a flavour of `ReadUnavailable`: retrying is
+    the answer to one and never the answer to the other. It carries no sentence —
+    whoever set the bound words it.
+    """
+
+
+@dataclass(frozen=True)
 class WriteUnavailable:
     """The write could not be attempted, and a later attempt may succeed."""
 

@@ -635,3 +635,29 @@ def test_an_outcome_this_check_cannot_read_fails_rather_than_being_reported(
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert "a route can still reach a port" in result.stderr
+
+
+def make_a_port_word_an_http_answer(project: Path) -> None:
+    """Give a durable port a sentence about the caller's own bound again."""
+    revisions = project / "src/atelier2/ports/workflow_revisions.py"
+    source = revisions.read_text(encoding="utf-8")
+    revisions.write_text(
+        source.replace(
+            "@dataclass(frozen=True)\nclass ProjectionTooLarge:",
+            'PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."\n\n\n'
+            "@dataclass(frozen=True)\nclass ProjectionTooLarge:",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.proves("a-port-refuses-by-type-and-the-api-words-the-answer")
+def test_a_port_that_words_an_http_answer_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    make_a_port_word_an_http_answer(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "words an answer" in result.stderr

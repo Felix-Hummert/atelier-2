@@ -9,6 +9,7 @@ from atelier2.contracts.runs import RunId
 from atelier2.ports.run_queries import RunQueryMissing
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
+    ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
 )
@@ -57,7 +58,11 @@ type PrepareRunEventStreamResult = (
     | QueryDurableStateCorrupt
 )
 type ReadRunEventPageResult = (
-    RunEventPage | EventHistoryCorrupt | ReadUnavailable | QueryDurableStateCorrupt
+    RunEventPage
+    | EventHistoryCorrupt
+    | ReadUnavailable
+    | ProjectionTooLarge
+    | QueryDurableStateCorrupt
 )
 
 

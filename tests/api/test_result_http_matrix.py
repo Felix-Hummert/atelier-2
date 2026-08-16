@@ -96,6 +96,7 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionPublicationResult,
     GetWorkflowRevisionResult,
     ListWorkflowRevisionsResult,
+    ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
     WorkflowRevisionFound,
@@ -851,12 +852,22 @@ def test_every_application_result_branch_has_exact_http_mapping(
         assert response.json() == _success_body(case.operation)
 
 
-def test_reconciliation_retry_preserves_durable_projection_limit_detail() -> None:
+@pytest.mark.proves("a-port-refuses-by-type-and-the-api-words-the-answer")
+def test_a_typed_projection_refusal_answers_exactly_what_the_sentence_answered() -> (
+    None
+):
+    """The port stopped wording this answer; the bytes did not change.
+
+    It used to hand back the sentence itself, which made a durable port explain a
+    bound it does not set. It now answers `ProjectionTooLarge`, and this pins that
+    the caller still receives the same status and the same words — the type moved,
+    the answer did not.
+    """
     case = RouteResultCase(
         "reconcile-retry-projection-limit",
         "reconcile",
         "reconcile-retry",
-        ReadUnavailable("Durable projection exceeds configured API limits."),
+        ProjectionTooLarge(),
         503,
         "temporarily-unavailable",
     )

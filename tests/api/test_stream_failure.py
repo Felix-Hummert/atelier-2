@@ -15,6 +15,7 @@ import pytest
 from fastapi.sse import ServerSentEvent
 
 from atelier2.api.openapi import API_PREFIX, EVENT_PATH
+from atelier2.api.problems import PROJECTION_LIMIT_DETAIL
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
     encode_public_run_reference,
@@ -38,7 +39,6 @@ from atelier2.ports.run_events import (
     StreamReady,
 )
 from atelier2.ports.workflow_revisions import (
-    PROJECTION_LIMIT_DETAIL,
     DurableProjectionLimit,
     QueryDurableStateCorrupt,
     ReadUnavailable,

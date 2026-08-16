@@ -10,6 +10,15 @@ from starlette.exceptions import HTTPException
 
 from atelier2.api.wire.resources import ProblemResource
 
+PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."
+"""How the API words a stored projection that does not fit its configured bound.
+
+The bound is the API's, so the sentence is too. It lived in `ports/` and made a
+durable port speak of "API limits" — a layer explaining a decision it does not
+make. The port now answers `ProjectionTooLarge` and this is what that becomes on
+the wire.
+"""
+
 PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:"
 
 

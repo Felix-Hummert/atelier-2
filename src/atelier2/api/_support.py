@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
-from atelier2.api.problems import ApiProblem
+from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, ApiProblem
 from atelier2.api.projection.runs import run_resource
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
@@ -26,10 +26,13 @@ from atelier2.application.read_runs import (
     RunNotFound,
     RunRead,
 )
-from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ProjectionTooLarge,
+    ReadUnavailable,
+)
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_queries import RunProjection
-from atelier2.ports.workflow_revisions import PROJECTION_LIMIT_DETAIL
 
 
 def resource_response(resource: BaseModel, status: HTTPStatus) -> JSONResponse:
@@ -69,6 +72,8 @@ async def load_run_projection(
             raise ApiProblem("run-not-found")
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
+        case ProjectionTooLarge():
+            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
