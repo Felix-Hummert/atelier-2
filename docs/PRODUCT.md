@@ -99,9 +99,14 @@ demanding an interactive one is refused before that run exists at all. An
 unsuccessful exit, an unreadable envelope, an envelope declaring a provider
 error, and an answer larger than the durable output bound all fail the attempt
 instead of recording invented output. Undeclared, the
-host composes no V2 provider factory and behaves exactly as before. Codex remains
-absent, and the isolated read, edit, and test tools an agent needs to change its
-own workspace are not part of this contract.
+host composes no V2 provider factory and behaves exactly as before. When the
+operator also declares a Grok executable, workspace, and credential directory,
+the host composes one Grok subscription executor beside Claude. It runs the
+bound model headless through `grok -p --output-format json`, hands the job
+through `--prompt-file` rather than the argument vector, and grants the child
+only `GROK_HOME` and the serving host's search path. Codex remains absent, and
+the isolated read, edit, and test tools an agent needs to change its own
+workspace are not part of this contract.
 
 The raw frame a provider writes has its own bound, distinct from the durable
 output bound, because the durable answer travels inside a JSON envelope. The

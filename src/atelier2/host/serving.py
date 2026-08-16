@@ -22,6 +22,10 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.grok_subscription import (
+    GrokSubscriptionExecutorFactory,
+    GrokSubscriptionSettings,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
@@ -113,6 +117,7 @@ class HostSettings:
     limits: ApiLimits = field(default_factory=api_limits)
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
     claude_subscription: ClaudeSubscriptionSettings | None = None
+    grok_subscription: GrokSubscriptionSettings | None = None
 
     def __post_init__(self) -> None:
         database_path = self.database_path.resolve()
@@ -147,6 +152,13 @@ class HostSettings:
                 "on this API, so the billed boundary stays on this machine until "
                 "an authenticated boundary exists"
             )
+        if self.grok_subscription is not None and not _is_loopback(self.host):
+            raise ValueError(
+                f"serving Grok subscription agents requires a loopback bind, "
+                f"not {self.host!r}: starting a billed provider is unauthenticated "
+                "on this API, so the billed boundary stays on this machine until "
+                "an authenticated boundary exists"
+            )
 
 
 def _is_loopback(host: str) -> bool:
@@ -164,6 +176,18 @@ def _is_loopback(host: str) -> bool:
 
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
     claude_subscription = settings.claude_subscription
+    grok_subscription = settings.grok_subscription
+    provider_factories = ()
+    if claude_subscription is not None:
+        provider_factories = (
+            *provider_factories,
+            ClaudeSubscriptionExecutorFactory(claude_subscription),
+        )
+    if grok_subscription is not None:
+        provider_factories = (
+            *provider_factories,
+            GrokSubscriptionExecutorFactory(grok_subscription),
+        )
     runtime = DbosRuntime(
         DbosRuntimeSettings(settings.database_path, settings.application_version),
         LoopbackEffectAdapterFactory(
@@ -172,9 +196,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
             EffectDestination(settings.effect_destination),
         ),
         ExactOutputAgentExecutorFactory(),
-        ()
-        if claude_subscription is None
-        else (ClaudeSubscriptionExecutorFactory(claude_subscription),),
+        provider_factories,
     )
     try:
         # One set of limits configures both the reader's bound and the API's own,
