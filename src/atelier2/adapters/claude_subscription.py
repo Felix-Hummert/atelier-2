@@ -506,8 +506,10 @@ class ClaudeSubscriptionExecutor:
         )
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
+        """The answer travels inside the process result, so the invocation is
+        not consulted: this executor holds no state to correlate."""
         if completion.return_code != 0:
             return _UNUSABLE_PROVIDER_ANSWER
         if len(completion.standard_output) > CLAUDE_SUBSCRIPTION_FRAME_BYTES:

@@ -261,7 +261,7 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         ("CLAUDE_CODE_MAX_RETRIES", "0"),
         ("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1"),
     )
-    result = executor.decode_process_completion(launched(invocation))
+    result = executor.decode_process_completion(invocation, launched(invocation))
     assert isinstance(result, AgentExecutionResult)
     observed = json.loads(result.output_bytes)
     assert observed["arguments"][0] == str(settings.executable)
@@ -284,9 +284,8 @@ def test_a_successful_envelope_becomes_the_exact_output_bytes_of_one_receipt(
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
     request = subscription_request()
 
-    result = executor.decode_process_completion(
-        launched(executor.prepare_process(request))
-    )
+    invocation = executor.prepare_process(request)
+    result = executor.decode_process_completion(invocation, launched(invocation))
 
     assert isinstance(result, AgentExecutionResult)
     assert result.output_bytes == answer.encode("utf-8")
@@ -317,9 +316,8 @@ def test_an_answer_at_the_durable_output_bound_still_completes(tmp_path: Path) -
     )
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
 
-    result = executor.decode_process_completion(
-        launched(executor.prepare_process(subscription_request()))
-    )
+    invocation = executor.prepare_process(subscription_request())
+    result = executor.decode_process_completion(invocation, launched(invocation))
 
     assert result == AgentExecutionResult(answer.encode("utf-8"))
 
@@ -365,9 +363,8 @@ def test_an_unusable_provider_answer_fails_the_attempt(
     )
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
 
-    result = executor.decode_process_completion(
-        launched(executor.prepare_process(subscription_request()))
-    )
+    invocation = executor.prepare_process(subscription_request())
+    result = executor.decode_process_completion(invocation, launched(invocation))
 
     assert result == UNUSABLE_ANSWER
 
@@ -379,9 +376,8 @@ def test_stdout_that_is_not_text_fails_the_attempt(tmp_path: Path) -> None:
     )
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
 
-    result = executor.decode_process_completion(
-        launched(executor.prepare_process(subscription_request()))
-    )
+    invocation = executor.prepare_process(subscription_request())
+    result = executor.decode_process_completion(invocation, launched(invocation))
 
     assert result == UNUSABLE_ANSWER
 
@@ -1399,7 +1395,7 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
         before = credential_directory_state(credential_directory)
         completion = launched(invocation)
         after = credential_directory_state(credential_directory)
-    result = executor.decode_process_completion(completion)
+    result = executor.decode_process_completion(invocation, completion)
 
     assert isinstance(result, AgentExecutionResult)
     # BANANA is the project prompt's answer, so pong proves the workspace's

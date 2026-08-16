@@ -228,7 +228,7 @@ def test_a_headless_run_carries_the_bound_model_and_sandbox_with_the_job_off_arg
     assert b"draw the owl" not in " ".join(invocation.arguments).encode()
     assert invocation.standard_output_frame_bytes == CODEX_SUBSCRIPTION_FRAME_BYTES
 
-    result = executor.decode_process_completion(launched(invocation))
+    result = executor.decode_process_completion(invocation, launched(invocation))
 
     assert isinstance(result, AgentExecutionResult)
     observed = json.loads(result.output_bytes)
@@ -321,7 +321,9 @@ def test_a_broken_provider_answer_is_a_typed_refusal_not_an_invented_result(
     executor = CodexSubscriptionExecutorFactory(settings).open()
     invocation = executor.prepare_process(subscription_request())
 
-    result = executor.decode_process_completion(launched(invocation, **broken))
+    result = executor.decode_process_completion(
+        invocation, launched(invocation, **broken)
+    )
 
     assert result == AgentExecutionFailure(
         AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
@@ -334,26 +336,58 @@ def test_the_answer_is_the_exact_bytes_the_provider_wrote(tmp_path: Path) -> Non
     invocation = executor.prepare_process(subscription_request())
 
     result = executor.decode_process_completion(
-        launched(invocation, FAKE_ANSWER="  pong  \n")
+        invocation, launched(invocation, FAKE_ANSWER="  pong  \n")
     )
 
     assert result == AgentExecutionResult(b"  pong  \n")
+
+
+def _answer_path(invocation: AgentProcessInvocation) -> Path:
+    return Path(
+        invocation.arguments[invocation.arguments.index("--output-last-message") + 1]
+    )
 
 
 def test_job_and_answer_bytes_outlive_no_execution(tmp_path: Path) -> None:
     settings = codex_subscription_deployment(tmp_path)
     executor = CodexSubscriptionExecutorFactory(settings).open()
     invocation = executor.prepare_process(subscription_request())
-    answer_file = Path(
-        invocation.arguments[invocation.arguments.index("--output-last-message") + 1]
-    )
-    launched(invocation)
+    answer_file = _answer_path(invocation)
+    completion = launched(invocation)
 
     assert answer_file.parent.exists()
-    executor.close()
+    executor.decode_process_completion(invocation, completion)
 
+    # The promise is per execution, not per executor: a long-lived server keeps
+    # one executor open for its whole life, so answer bytes that only fall at
+    # close() would lie readable in the workspace beside every later attempt.
     assert not answer_file.parent.exists()
     assert list(settings.workspace.iterdir()) == []
+    executor.close()
+    assert list(settings.workspace.iterdir()) == []
+
+
+def test_two_overlapping_attempts_each_decode_their_own_answer(
+    tmp_path: Path,
+) -> None:
+    # The runtime opens one executor per registry key and hands that same object
+    # to every attempt, so two attempts overlap between prepare and decode. Each
+    # must read the answer its own invocation named.
+    settings = codex_subscription_deployment(tmp_path)
+    executor = CodexSubscriptionExecutorFactory(settings).open()
+    first = executor.prepare_process(subscription_request(job=b"attempt one"))
+    second = executor.prepare_process(subscription_request(job=b"attempt two"))
+    _answer_path(first).write_bytes(b"ANSWER-FOR-ATTEMPT-ONE")
+    _answer_path(second).write_bytes(b"ANSWER-FOR-ATTEMPT-TWO")
+
+    answered = AgentProcessCompletion(0, b"", b"")
+
+    assert executor.decode_process_completion(first, answered) == AgentExecutionResult(
+        b"ANSWER-FOR-ATTEMPT-ONE"
+    )
+    assert executor.decode_process_completion(second, answered) == AgentExecutionResult(
+        b"ANSWER-FOR-ATTEMPT-TWO"
+    )
 
 
 def test_a_contained_profile_attests(tmp_path: Path) -> None:

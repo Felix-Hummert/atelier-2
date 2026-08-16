@@ -12,8 +12,16 @@ The agent's answer is taken from `--output-last-message`, the file the CLI
 documents as carrying the last message. Standard output is framed but not
 parsed: this executor was not permitted a billed `codex exec` call, so the
 `--json` event stream is unmeasured, and decoding an unmeasured envelope would
-be inventing a provider format. The answer file is written into a private
-per-execution directory removed on every lifecycle path.
+be inventing a provider format.
+
+Because that answer arrives beside the process rather than inside it, decoding
+takes the invocation it prepared: the runtime opens one executor per registry
+key and hands that same object to every attempt, so an executor correlating
+through its own state would let overlapping attempts decode each other's
+answers into durable results. This executor therefore holds none. The answer
+file lives in a private per-execution directory that is removed as soon as it
+is read, not when the executor closes -- a server keeps its executors open for
+its whole life.
 
 Flags alone do not bound what the CLI discovers or what it may do. `codex
 doctor --json` reports the config layer, credential home and MCP servers a
@@ -32,7 +40,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
@@ -411,15 +419,16 @@ def _open_answer_directory(settings: CodexSubscriptionSettings) -> Path:
     return directory
 
 
+def _answer_file_of(invocation: AgentProcessInvocation) -> Path:
+    """Recover the answer path this executor wrote into its own command."""
+
+    arguments = invocation.arguments
+    return Path(arguments[arguments.index(_LAST_MESSAGE_FLAG) + 1])
+
+
 @dataclass(frozen=True)
 class CodexSubscriptionExecutor:
     settings: CodexSubscriptionSettings
-    _answer_directories: set[Path] = field(
-        default_factory=set, init=False, compare=False, repr=False
-    )
-    _answer_files: list[Path] = field(
-        default_factory=list, init=False, compare=False, repr=False
-    )
 
     def prepare_process(
         self, request: AgentExecutionRequestV2
@@ -430,10 +439,7 @@ class CodexSubscriptionExecutor:
                 "the Codex subscription executor serves subscription profiles only"
             )
         settings = self.settings
-        directory = _open_answer_directory(settings)
-        answer_file = directory / _ANSWER_FILE_NAME
-        self._answer_directories.add(directory)
-        self._answer_files.append(answer_file)
+        answer_file = _open_answer_directory(settings) / _ANSWER_FILE_NAME
         return AgentProcessInvocation(
             (
                 str(settings.executable),
@@ -460,26 +466,18 @@ class CodexSubscriptionExecutor:
             standard_output_frame_bytes=CODEX_SUBSCRIPTION_FRAME_BYTES,
         )
 
-    def _answer_bytes(self) -> bytes | None:
-        if not self._answer_files:
-            return None
-        try:
-            return self._answer_files[-1].read_bytes()
-        except OSError:
-            return None
-
-    def _discard_answers(self) -> None:
-        """Job and answer bytes outlive no lifecycle path."""
-
-        for directory in tuple(self._answer_directories):
-            shutil.rmtree(directory, ignore_errors=True)
-            self._answer_directories.discard(directory)
-        self._answer_files.clear()
-
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
-        answer = self._answer_bytes()
+        """Read the answer this exact invocation named, then discard it."""
+
+        answer_file = _answer_file_of(invocation)
+        try:
+            answer = answer_file.read_bytes()
+        except OSError:
+            answer = None
+        finally:
+            shutil.rmtree(answer_file.parent, ignore_errors=True)
         if completion.return_code != 0:
             return _UNUSABLE_PROVIDER_ANSWER
         if len(completion.standard_output) > CODEX_SUBSCRIPTION_FRAME_BYTES:
@@ -489,7 +487,7 @@ class CodexSubscriptionExecutor:
         return AgentExecutionResult(answer)
 
     def close(self) -> None:
-        self._discard_answers()
+        """Nothing outlives an execution, so a closing executor owns nothing."""
 
 
 @dataclass(frozen=True)
