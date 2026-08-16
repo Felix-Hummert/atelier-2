@@ -17,6 +17,7 @@ from atelier2.adapters.dbos.schema import (
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V9_SCHEMA_HANDOFF,
+    V10_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -26,6 +27,9 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
     initialize_schema,
+    node_artifacts_v3,
+    node_receipt_access_v3,
+    node_receipt_outputs_v3,
     node_receipts_v3,
     published_revisions,
     reconcile_commands,
@@ -160,7 +164,7 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
-def test_empty_database_creates_exact_v10_and_reopens(tmp_path: Path) -> None:
+def test_empty_database_creates_exact_v11_and_reopens(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
 
@@ -169,12 +173,12 @@ def test_empty_database_creates_exact_v10_and_reopens(tmp_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         assert (
             _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
-            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[10]
+            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[11]
         )
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
-            == 10
+            == 11
         )
         assert set(sa.inspect(connection).get_table_names()) >= {
             effect_intents.name,
@@ -183,7 +187,10 @@ def test_empty_database_creates_exact_v10_and_reopens(tmp_path: Path) -> None:
             published_revisions.name,
             catalog_lineages.name,
             catalog_lineage_members.name,
+            node_artifacts_v3.name,
             node_receipts_v3.name,
+            node_receipt_outputs_v3.name,
+            node_receipt_access_v3.name,
         }
         assert {
             column["name"] for column in sa.inspect(connection).get_columns("runs")
@@ -210,7 +217,7 @@ def test_empty_database_creates_exact_v10_and_reopens(tmp_path: Path) -> None:
     engine.dispose()
 
 
-def test_published_handoffs_pin_v9_predecessor_and_v10_current() -> None:
+def test_published_handoffs_pin_v9_v10_and_v11_current() -> None:
     assert V9_SCHEMA_HANDOFF.version == 9
     assert (
         V9_SCHEMA_HANDOFF.fingerprint_sha256
@@ -218,15 +225,21 @@ def test_published_handoffs_pin_v9_predecessor_and_v10_current() -> None:
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[9]
         == "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 10
+    assert V10_SCHEMA_HANDOFF.version == 10
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V10_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[10]
         == "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7"
     )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 11
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[11]
+        == "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef"
+    )
 
 
-@pytest.mark.parametrize("version", [7, 8, 9])
+@pytest.mark.parametrize("version", [7, 8, 9, 10])
 def test_predecessor_store_is_refused_without_mutation(
     tmp_path: Path, version: int
 ) -> None:
@@ -320,7 +333,7 @@ def _write_thin_vertical_set(
     return lineage
 
 
-def test_thin_v10_store_accepts_revision_lineage_member_run_and_receipt(
+def test_thin_v11_store_accepts_revision_lineage_member_run_and_receipt(
     tmp_path: Path,
 ) -> None:
     engine = create_canonical_engine(tmp_path / "atelier.sqlite")
@@ -354,7 +367,7 @@ def test_thin_v10_store_accepts_revision_lineage_member_run_and_receipt(
     engine.dispose()
 
 
-def test_thin_v10_store_refuses_invented_kind_and_unpublished_membership(
+def test_thin_v11_store_refuses_invented_kind_and_unpublished_membership(
     tmp_path: Path,
 ) -> None:
     engine = create_canonical_engine(tmp_path / "atelier.sqlite")
@@ -431,7 +444,7 @@ def test_thin_v10_store_refuses_invented_kind_and_unpublished_membership(
         "node_receipts_v3",
     ),
 )
-def test_thin_v10_write_failpoint_rolls_back_revision_lineage_run_and_receipt(
+def test_thin_v11_write_failpoint_rolls_back_revision_lineage_run_and_receipt(
     tmp_path: Path, failpoint: str
 ) -> None:
     engine = create_canonical_engine(tmp_path / failpoint)
