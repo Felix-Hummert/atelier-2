@@ -372,7 +372,7 @@ def _seed_every_version_eight_product_table(database_path: Path) -> None:
                 "build",
                 "STARTED",
                 1,
-                1,
+                3,
                 None,
             ),
         )
@@ -452,6 +452,58 @@ def _seed_every_version_eight_product_table(database_path: Path) -> None:
             ),
         )
         connection.execute(
+            "INSERT INTO agent_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "a7" + "0" * 62,
+                "a4" + "0" * 62,
+                "a5" + "0" * 62,
+                "operation-v8-fail",
+                "run-v8",
+                revision_hash,
+                "fail",
+                1,
+                "FAILED",
+                2,
+                "PROCESS_OBSERVED",
+                "owner-v8-fail",
+                "watchdog-v8-fail",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "PROCESS_EXITED_UNSUCCESSFULLY",
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "b7" * 32,
+                "b4" * 32,
+                "b5" * 32,
+                "operation-v8-cancel",
+                "run-v8",
+                revision_hash,
+                "cancel",
+                1,
+                "CANCELLED",
+                2,
+                "CLEANUP_ATTESTED",
+                "owner-v8-cancel",
+                "watchdog-v8-cancel",
+                "cancel-command-v8",
+                1,
+                "NONE",
+                "CLEANUP_ATTESTED",
+                "REAPED_AFTER_TERM",
+                "atelier2-agent-cancel-v8",
+                None,
+                None,
+            ),
+        )
+        connection.execute(
             "INSERT INTO effect_intents VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 "effect-v8",
@@ -524,6 +576,60 @@ def _seed_every_version_eight_product_table(database_path: Path) -> None:
                 None,
                 None,
                 None,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_events("
+            "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+            "event_kind,payload,payload_hash,receipt_logical_key,"
+            "receipt_result_hash,event_hash,agent_attempt_id,attempt_ordinal,"
+            "cancellation_command_id,replacement,cancellation_disposition,"
+            "replacement_attempt_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "run-v8",
+                revision_hash,
+                2,
+                "fail",
+                "a4" + "0" * 62,
+                "AGENT_FAILED",
+                b"failed-v8",
+                hashlib.sha256(b"failed-v8").hexdigest(),
+                None,
+                None,
+                "a8" + "0" * 62,
+                "a7" + "0" * 62,
+                1,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_events("
+            "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+            "event_kind,payload,payload_hash,receipt_logical_key,"
+            "receipt_result_hash,event_hash,agent_attempt_id,attempt_ordinal,"
+            "cancellation_command_id,replacement,cancellation_disposition,"
+            "replacement_attempt_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "run-v8",
+                revision_hash,
+                3,
+                "cancel",
+                "b4" * 32,
+                "AGENT_CANCELLED",
+                b"cancelled-v8",
+                hashlib.sha256(b"cancelled-v8").hexdigest(),
+                None,
+                None,
+                "b8" * 32,
+                "b7" * 32,
+                1,
+                "cancel-command-v8",
+                "NONE",
+                "REAPED_AFTER_TERM",
                 None,
             ),
         )
@@ -902,12 +1008,70 @@ def test_published_v9_handoff_is_the_v8_product_shape() -> None:
     )
 
 
+def _require_populated_v8_process_evidence(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        attempts = {
+            str(state): (
+                command_id,
+                expected_version,
+                replacement,
+                redrive_state,
+                disposition,
+                workflow_id,
+                failure_code,
+            )
+            for (
+                state,
+                command_id,
+                expected_version,
+                replacement,
+                redrive_state,
+                disposition,
+                workflow_id,
+                failure_code,
+            ) in connection.execute(
+                "SELECT state, cancellation_command_id, "
+                "cancellation_expected_state_version, replacement, "
+                "redrive_state, cancellation_disposition, "
+                "cancellation_workflow_id, failure_code FROM agent_attempts"
+            )
+        }
+        event_kinds = {
+            str(kind)
+            for (kind,) in connection.execute("SELECT event_kind FROM run_events")
+        }
+    assert attempts["FAILED"] == (
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "PROCESS_EXITED_UNSUCCESSFULLY",
+    )
+    assert attempts["CANCELLED"] == (
+        "cancel-command-v8",
+        1,
+        "NONE",
+        "CLEANUP_ATTESTED",
+        "REAPED_AFTER_TERM",
+        "atelier2-agent-cancel-v8",
+        None,
+    )
+    assert event_kinds == {
+        "AGENT_COMPLETED",
+        "AGENT_FAILED",
+        "AGENT_CANCELLED",
+    }
+
+
 def test_populated_exact_v8_migrates_once_without_changing_existing_identity(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
     _create_frozen_version_eight_database(database_path)
     _seed_every_version_eight_product_table(database_path)
+    _require_populated_v8_process_evidence(database_path)
     before = _product_rows_snapshot(database_path)
     assert all(before[table_name] for table_name in PRODUCT_TABLE_NAMES)
     engine = create_canonical_engine(database_path)
@@ -935,6 +1099,7 @@ def test_populated_exact_v8_migrates_once_without_changing_existing_identity(
     initialize_schema(engine)
 
     assert _logical_dump(database_path) == first_v9_dump
+    _require_populated_v8_process_evidence(database_path)
     engine.dispose()
 
 
