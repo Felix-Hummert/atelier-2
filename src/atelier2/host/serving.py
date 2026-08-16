@@ -11,6 +11,10 @@ from atelier2.adapters.claude_subscription import (
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
 )
+from atelier2.adapters.codex_subscription import (
+    CodexSubscriptionExecutorFactory,
+    CodexSubscriptionSettings,
+)
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.queries import DbosQueries
@@ -113,6 +117,17 @@ class HostSettings:
     limits: ApiLimits = field(default_factory=api_limits)
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
     claude_subscription: ClaudeSubscriptionSettings | None = None
+    codex_subscription: CodexSubscriptionSettings | None = None
+
+    @property
+    def billed_providers(self) -> tuple[str, ...]:
+        """Name every configured provider whose attempts spend a subscription."""
+
+        configured = (
+            ("Claude", self.claude_subscription),
+            ("Codex", self.codex_subscription),
+        )
+        return tuple(name for name, settings in configured if settings is not None)
 
     def __post_init__(self) -> None:
         database_path = self.database_path.resolve()
@@ -140,12 +155,13 @@ class HostSettings:
             or not (frontend_dist / "assets").is_dir()
         ):
             raise ValueError("frontend distribution must contain index.html and assets")
-        if self.claude_subscription is not None and not _is_loopback(self.host):
+        billed = self.billed_providers
+        if billed and not _is_loopback(self.host):
             raise ValueError(
-                f"serving Claude subscription agents requires a loopback bind, "
-                f"not {self.host!r}: starting a billed provider is unauthenticated "
-                "on this API, so the billed boundary stays on this machine until "
-                "an authenticated boundary exists"
+                f"serving {' and '.join(billed)} subscription agents requires a "
+                f"loopback bind, not {self.host!r}: starting a billed provider is "
+                "unauthenticated on this API, so the billed boundary stays on this "
+                "machine until an authenticated boundary exists"
             )
 
 
@@ -164,6 +180,19 @@ def _is_loopback(host: str) -> bool:
 
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
     claude_subscription = settings.claude_subscription
+    codex_subscription = settings.codex_subscription
+    subscription_executors = (
+        *(
+            ()
+            if claude_subscription is None
+            else (ClaudeSubscriptionExecutorFactory(claude_subscription),)
+        ),
+        *(
+            ()
+            if codex_subscription is None
+            else (CodexSubscriptionExecutorFactory(codex_subscription),)
+        ),
+    )
     runtime = DbosRuntime(
         DbosRuntimeSettings(settings.database_path, settings.application_version),
         LoopbackEffectAdapterFactory(
@@ -172,9 +201,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
             EffectDestination(settings.effect_destination),
         ),
         ExactOutputAgentExecutorFactory(),
-        ()
-        if claude_subscription is None
-        else (ClaudeSubscriptionExecutorFactory(claude_subscription),),
+        subscription_executors,
     )
     try:
         # One set of limits configures both the reader's bound and the API's own,
