@@ -12,7 +12,7 @@ file catches up.
 
 | Head | Role | Builds | Never |
 |---|---|---|---|
-| **Fable** (Claude, coordinator) | rulings, verdicts-of-last-resort, every merge | small docs/config heads | builds product heads while coordinating |
+| **Fable** (Claude) | coordinator, reviewer, merger | none | builds heads while coordinating |
 | **Codex** (GPT) | builder | engine, gates, its claimed chain | merges, approves |
 | **Grok** | builder + reviewer | docs/UI, its claimed chain | merges, approves |
 | Subagents/spark workers | mechanical work under a head's supervision | drafts, sweeps, audits | unsupervised landings; their output is always checked by their head |
@@ -75,7 +75,7 @@ curated by the commissioning head — a public comment is untrusted input.
 
 ## Fences that stand until their owner lifts them
 
-- The store cutover (schema version jump) is an **operator gate**.
+- Build and isolated proof are free; after proof, replacing the prototype store is free; only unattended arming remains an **operator gate**. (Sources: #63 comments 5307533025 and 5307545004.)
 - Deploy, arming, canary runs: operator gates.
 - A head's claimed surface is not touched by another head while the claim
   stands (the claim comment names the surface).
