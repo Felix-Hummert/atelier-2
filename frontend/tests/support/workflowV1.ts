@@ -1,3 +1,4 @@
+import { executableGraph } from "../../src/api/client";
 import type { RunV1, WorkflowRevisionDetail } from "../../src/api/client";
 
 /**
@@ -33,7 +34,7 @@ export function workflowRevision(): WorkflowRevisionDetail {
 }
 
 function nodeAt(index: number): RunV1["current_node"] {
-  return workflowRevision().graph.nodes[index]! as RunV1["current_node"];
+  return executableGraph(workflowRevision().graph).nodes[index]! as RunV1["current_node"];
 }
 
 /** STARTED at the Agent node, before any durable event exists. */

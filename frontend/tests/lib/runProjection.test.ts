@@ -14,6 +14,7 @@ import {
   type AgentAttemptProjection,
   type NodeState
 } from "../../src/lib/runProjection";
+import { executableGraph } from "../../src/api/client";
 import type { RunV1, RunV2 } from "../../src/api/client";
 import {
   actionCompleted as actionEvent,
@@ -127,12 +128,12 @@ describe("contiguous durable SSE projection", () => {
     const wrongNode = await decodeAndApplyDurableEvent(
       projection(),
       JSON.stringify(event(1, { node_id: "missing" })),
-      workflow().graph
+      executableGraph(workflow().graph)
     );
     const wrongKind = await decodeAndApplyDurableEvent(
       projection(),
       JSON.stringify({ ...waitInputEvent(1), node_id: "agent" }),
-      workflow().graph
+      executableGraph(workflow().graph)
     );
 
     expect(wrongNode.protocol_problem).toEqual({ type: "decoder" });
@@ -140,8 +141,8 @@ describe("contiguous durable SSE projection", () => {
   });
 
   it.each([
-    ["V1 event with V2 graph", event(1), v2Scenario().graph],
-    ["V2 event with V1 graph", v2AgentEvent("AGENT_COMPLETED"), workflow().graph]
+    ["V1 event with V2 graph", event(1), executableGraph(v2Scenario().graph)],
+    ["V2 event with V1 graph", v2AgentEvent("AGENT_COMPLETED"), executableGraph(workflow().graph)]
   ] as const)("refuses a workflow/event format mismatch: %s", async (_case, mismatchedEvent, graph) => {
     const rejected = await decodeAndApplyDurableEvent(
       projection(),
@@ -215,7 +216,7 @@ describe("verified V2 Agent output projection", () => {
     const applied = await decodeAndApplyDurableEvent(
       projection(),
       JSON.stringify(completed),
-      v2Scenario().graph
+      executableGraph(v2Scenario().graph)
     );
 
     expect(applied.protocol_problem).toBeNull();
@@ -236,7 +237,7 @@ describe("verified V2 Agent output projection", () => {
     const rejected = await decodeAndApplyDurableEvent(
       projection(),
       JSON.stringify(completed),
-      v2Scenario().graph
+      executableGraph(v2Scenario().graph)
     );
 
     expect(rejected.protocol_problem).toEqual({
@@ -260,7 +261,7 @@ describe("V2 Agent terminal truth", () => {
     const scenario = v2Scenario();
     const rail = projectNodeRail(
       scenario.run,
-      scenario.graph,
+      executableGraph(scenario.graph),
       [v2AgentEvent(eventKind)]
     );
 
@@ -272,7 +273,7 @@ describe("V2 Agent terminal truth", () => {
     (eventKind) => {
       const scenario = v2ReplacementScenario(eventKind);
 
-      const rail = projectNodeRail(scenario.run, scenario.graph, [scenario.event]);
+      const rail = projectNodeRail(scenario.run, executableGraph(scenario.graph), [scenario.event]);
 
       expect(rail.map((node) => node.state)).toEqual(["working", "queued"]);
     }
@@ -289,7 +290,7 @@ describe("a V2 rail the server named", () => {
       ]
     });
 
-    const rail = projectNodeRail(scenario.run, scenario.graph, [served]);
+    const rail = projectNodeRail(scenario.run, executableGraph(scenario.graph), [served]);
 
     expect(rail.map((node) => node.state)).toEqual(["interrupted", "queued"]);
     expect(rail[0]?.attempt).toEqual({ ordinal: 1, state: "INTERRUPTED" });
@@ -298,7 +299,7 @@ describe("a V2 rail the server named", () => {
   it("proves(the-browser-derives-no-durable-state-for-a-v2-run): takes the attempt from the rail, so no reader invents a word for a finished one", () => {
     const scenario = v2Scenario();
 
-    const rail = projectNodeRail(scenario.run, scenario.graph, [
+    const rail = projectNodeRail(scenario.run, executableGraph(scenario.graph), [
       v2AgentEvent("AGENT_COMPLETED")
     ]);
 
@@ -314,7 +315,7 @@ describe("read-only node rail", () => {
       waitInputEvent(3)
     ];
 
-    const rail = projectNodeRail(waitingRun(), workflow().graph, events);
+    const rail = projectNodeRail(waitingRun(), executableGraph(workflow().graph), events);
 
     expect(rail.map(({ node }) => node.node_id)).toEqual(["agent", "action", "wait", "final"]);
     expect(rail.map(({ state }) => state)).toEqual(["succeeded", "succeeded", "needs_you", "queued"]);
@@ -331,7 +332,7 @@ describe("read-only node rail", () => {
     const pending: RunV1 = {
       ...value,
       state: "WAITING_RECONCILIATION",
-      current_node: workflow().graph.nodes[1]! as RunV1["current_node"],
+      current_node: executableGraph(workflow().graph).nodes[1]! as RunV1["current_node"],
       waiting: {
         type: "WAITING_RECONCILIATION",
         node_id: "action",
@@ -349,17 +350,17 @@ describe("read-only node rail", () => {
       }
     };
 
-    expect(projectNodeRail(pending, workflow().graph, [event(1)])[1]?.state).toBe("working");
+    expect(projectNodeRail(pending, executableGraph(workflow().graph), [event(1)])[1]?.state).toBe("working");
   });
 
   it("keeps the authoritative snapshot while replay catches up, then advances from later events", () => {
     const initial = startedRun();
-    const caughtUp = projectNodeRail(initial, workflow().graph, [event(1)]);
-    const newlyWaiting = projectNodeRail(initial, workflow().graph, [
+    const caughtUp = projectNodeRail(initial, executableGraph(workflow().graph), [event(1)]);
+    const newlyWaiting = projectNodeRail(initial, executableGraph(workflow().graph), [
       event(1),
       reconciliationRequiredEvent(2)
     ]);
-    const advanced = projectNodeRail(initial, workflow().graph, [
+    const advanced = projectNodeRail(initial, executableGraph(workflow().graph), [
       event(1),
       reconciliationRequiredEvent(2),
       actionEvent(3)

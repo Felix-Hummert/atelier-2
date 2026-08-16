@@ -100,9 +100,25 @@ const workflowGraphV2Schema = z
   .strict()
   .superRefine(validateWorkflowGraph);
 
+/**
+ * A published V3 revision says what it is and that nothing runs it. It carries
+ * no nodes to walk, so there is no graph to validate here -- only the truth the
+ * operator has to be told instead of a generic wire-contract failure.
+ */
+const workflowGraphV3Schema = z
+  .object({
+    format_version: z.literal(3),
+    executable: z.literal(false),
+    node_count: z.number().int().positive(),
+    name: z.string().min(1),
+    description: z.string().nullable()
+  })
+  .strict();
+
 const workflowGraphSchema = z.discriminatedUnion("format_version", [
   workflowGraphV1Schema,
-  workflowGraphV2Schema
+  workflowGraphV2Schema,
+  workflowGraphV3Schema
 ]);
 
 function validateWorkflowGraph(
@@ -643,6 +659,24 @@ export type WorkflowNode = z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Sch
 export type WorkflowRevisionDetail = z.infer<typeof workflowRevisionDetailSchema>;
 export type RunPage = z.infer<typeof runPageSchema>;
 export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
+export type WorkflowRevisionSummary = z.infer<typeof workflowRevisionSummarySchema>;
+
+/**
+ * The graph of a revision a run can hold. Only an executable format carries
+ * nodes to walk, so everything that walks them asks for this rather than
+ * re-deciding what a published V3 revision does not have.
+ */
+export type ExecutableWorkflowGraph = Extract<
+  WorkflowRevisionDetail["graph"],
+  { start_node_id: string }
+>;
+
+export function executableGraph(graph: WorkflowGraph): ExecutableWorkflowGraph {
+  if (graph.format_version === 3) {
+    throw new Error("a run cannot hold a revision no run can start");
+  }
+  return graph;
+}
 export type AuthProfileInput = z.infer<typeof authProfileInputSchema>;
 export type AuthProfileRevision = z.infer<typeof authProfileRevisionSchema>;
 export type AgentConfigurationInput = z.infer<typeof agentConfigurationInputSchema>;
@@ -655,7 +689,7 @@ export interface HttpResult<T> {
 
 export interface CockpitApi {
   listRuns(after?: string): Promise<RunPage>;
-  listWorkflowRevisions(): Promise<WorkflowRevisionPage>;
+  listWorkflowRevisions(after?: string): Promise<WorkflowRevisionPage>;
   publish(mutation: PublishMutation): Promise<HttpResult<WorkflowRevisionDetail>>;
   publishAuthProfile(input: AuthProfileInput): Promise<HttpResult<AuthProfileRevision>>;
   publishAgentConfiguration(
@@ -710,10 +744,12 @@ export function createCockpitApi(
         [200],
         runPageSchema
       ),
-    listWorkflowRevisions: () =>
+    listWorkflowRevisions: (after?: string) =>
       requestJson(
         fetcher,
-        "/atelier/api/v1/workflow-revisions?limit=50&view=described",
+        after === undefined
+          ? "/atelier/api/v1/workflow-revisions?limit=50&view=described"
+          : `/atelier/api/v1/workflow-revisions?limit=50&view=described&after=${encodeURIComponent(after)}`,
         {},
         [200],
         workflowRevisionPageSchema

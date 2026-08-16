@@ -6,6 +6,7 @@ import NodeRail from "../../src/components/NodeRail.svelte";
 import {
   CockpitRequestError,
   createCockpitApi,
+  executableGraph,
   type CockpitApi,
   type RunEventHandlers,
   type RunPage,
@@ -128,6 +129,43 @@ describe("mobile run entry", () => {
     expect(textBody(mutation)).toBe(exactYaml);
     expect((await screen.findByText("run-published")).isConnected).toBe(true);
     expect(screen.getByRole("button", { name: "Start" }).isConnected).toBe(true);
+  });
+
+  it("proves(a-revision-no-run-can-start-says-so-where-it-was-published): names a published V3 revision and what stops it, instead of offering Start", async () => {
+    window.history.replaceState(null, "", "/atelier/new");
+    const cockpitApi = api({
+      publish: vi.fn(async (mutation) => ({
+        status: 201 as const,
+        value: {
+          revision_hash: mutation.mutation_id.slice("publish:".length),
+          document_base64: mutation.body_base64,
+          graph: {
+            format_version: 3 as const,
+            executable: false as const,
+            node_count: 1,
+            name: "Nightly regression sweep",
+            description: "Runs the sweep and files what it finds."
+          }
+        }
+      }))
+    });
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await fireEvent.click(await screen.findByLabelText("Publish YAML"));
+    await fireEvent.input(screen.getByLabelText("Exact workflow YAML"), {
+      target: { value: "format_version: 3\nname: Nightly regression sweep\n" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Review publication" }));
+    const dialog = screen.getByRole("dialog", { name: "Publish this exact workflow?" });
+    await fireEvent.click(withinRole(dialog, "button", "Publish"));
+
+    await waitFor(() => expect(cockpitApi.publish).toHaveBeenCalledTimes(1));
+    expect((await screen.findByText("Nightly regression sweep")).isConnected).toBe(true);
+    expect(screen.getByText(/format 3 is not executable yet/i).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("publishes each distinct V2 role binding and starts its exact request", async () => {
@@ -266,7 +304,7 @@ describe("mobile run entry", () => {
     };
 
     render(NodeRail, {
-      props: { run: replacementRun, graph: v2Revision(revisionHash).graph, events: [interrupted] }
+      props: { run: replacementRun, graph: executableGraph(v2Revision(revisionHash).graph), events: [interrupted] }
     });
 
     const card = screen.getByRole("article", { name: "build — Working" });
@@ -679,7 +717,7 @@ function v2Run(start: unknown, agentBindings: RunV2["agent_bindings"]): RunV2 {
     agent_bindings: agentBindings,
     state_version: 0,
     state: "STARTED",
-    current_node: v2Revision(workflowRevisionHash).graph.nodes.find((node) => node.node_id === "build")! as RunV2["current_node"],
+    current_node: executableGraph(v2Revision(workflowRevisionHash).graph).nodes.find((node) => node.node_id === "build")! as RunV2["current_node"],
     node_rail: v2Rail("working", { ordinal: 1, state: "PREPARED" }),
     agent_attempts: [{ attempt_id: "1".repeat(64), node_execution_id: "2".repeat(64), request_hash: "3".repeat(64),
       attempt_ordinal: 1, state: "PREPARED", failure_code: null, cancellation: null }],

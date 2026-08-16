@@ -6,6 +6,7 @@ import {
   decodeRun,
   decodeRunEvent,
   decodeWorkflowRevisionDetail,
+  executableGraph,
   problemDefinitions,
   type Problem
 } from "../../src/api/client";
@@ -63,7 +64,7 @@ describe("closed API decoders", () => {
   it("decodes all four graph node variants and refuses unknown fields", () => {
     const decoded = decodeWorkflowRevisionDetail(workflowRevision());
 
-    expect(decoded.graph.nodes.map((node) => node.type)).toEqual([
+    expect(executableGraph(decoded.graph).nodes.map((node) => node.type)).toEqual([
       "agent",
       "action",
       "wait",
@@ -511,3 +512,49 @@ function terminal(node_id: string) {
     next_node_id: null
   };
 }
+
+/**
+ * The listing the cockpit asks for is a different shape from the one the route
+ * answers by default, so the selector that asks for it is production behaviour
+ * and not a detail of the URL. This double answers like the real route: the
+ * enriched shape only when the selector is there, the frozen hash-only shape
+ * otherwise. Drop `view=described` and the strict decoder meets a row without a
+ * name and throws -- which is what an operator would meet.
+ */
+function servingRevisionsByView() {
+  return vi.fn<typeof fetch>().mockImplementation(async (target) => {
+    const described = String(target).includes("view=described");
+    const item = described
+      ? {
+          revision_hash: digest,
+          format_version: 3,
+          executable: false,
+          name: "Nightly regression sweep",
+          description: "Runs the sweep and files what it finds."
+        }
+      : { revision_hash: digest };
+    return new Response(
+      JSON.stringify({ items: [item], next_after_revision_hash: null }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  });
+}
+
+describe("the saved-workflow listing the cockpit asks for", () => {
+  it("asks the route for the described view and decodes a non-empty page of it", async () => {
+    const fetcher = servingRevisionsByView();
+
+    const page = await createCockpitApi(fetcher).listWorkflowRevisions();
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toContain("view=described");
+    expect(page.items).toEqual([
+      {
+        revision_hash: digest,
+        format_version: 3,
+        executable: false,
+        name: "Nightly regression sweep",
+        description: "Runs the sweep and files what it finds."
+      }
+    ]);
+  });
+});

@@ -52,3 +52,11 @@ text = "A listing stops at the bound derived from what one document may cost, st
 [[sentence]]
 id = "a-revision-no-run-can-start-says-so-before-the-operator-tries"
 text = "A revision no run can start says so in the picker, with the reason, before the operator tries to choose it."
+
+[[sentence]]
+id = "a-revision-no-run-can-start-says-so-where-it-was-published"
+text = "A published revision no run can start says so where the operator published it, with its name and the reason, instead of failing as a wire-contract error or offering a Start it cannot honour."
+
+[[sentence]]
+id = "the-picker-offers-every-saved-workflow-not-only-its-first-page"
+text = "The picker offers every saved workflow the store holds, following the listing to its end, so a workflow on a later page is offered rather than absent."
