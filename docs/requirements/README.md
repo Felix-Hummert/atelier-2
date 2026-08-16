@@ -134,7 +134,8 @@ Four sections, in this order, each of which may be empty but not absent:
 - `## Acceptance` — the acceptance sentences this requirement expects, and which
   of them a story has already declared. A document names a declared sentence by
   its identifier; where no story has declared one yet, it says so instead of
-  inventing an identifier.
+  inventing an identifier. Under the sentence template, this section is a
+  reading of the `Beweis` fields — see below.
 
 ### Sentence template
 
@@ -176,6 +177,11 @@ declared that sentence for this requirement; it is not itself the proof — the
 acceptance gate still judges the test. `UNGEBUNDEN` on an `AGREED` sentence is
 named debt. Documents 0001–0004 do not yet carry this field; they keep numbered
 rules until their migration.
+
+`## Acceptance` is a reading of those `Beweis` fields: it lists the identifiers
+already declared and names what is still `UNGEBUNDEN`. It does not bind a
+sentence a second time. Where they disagree, `Beweis` is the owner and the
+section is wrong.
 
 `Offen` is allowed only while the sentence is `DRAFT`, and every entry names an
 owner. An `AGREED` sentence has no open question.
