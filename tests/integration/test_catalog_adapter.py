@@ -13,6 +13,7 @@ from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     catalog_lineage_aliases,
     catalog_lineage_members,
+    catalog_lineage_retirements,
     catalog_lineages,
     initialize_schema,
 )
@@ -38,6 +39,10 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
     RevisionKind,
+)
+from atelier2.ports.durable_runs import (
+    DurableStateCorrupt,
+    DurableWriteUnavailable,
 )
 from atelier2.ports.published_revisions import (
     CatalogAdmissionExisting,
@@ -155,6 +160,22 @@ def _member_count(harness: CatalogHarness) -> int:
         )
 
 
+def _catalog_snapshot(harness: CatalogHarness) -> dict[str, list[str]]:
+    tables = (
+        catalog_lineages,
+        catalog_lineage_members,
+        catalog_lineage_aliases,
+        catalog_lineage_retirements,
+    )
+    with harness.engine.connect() as connection:
+        return {
+            table.name: sorted(
+                repr(tuple(row)) for row in connection.execute(sa.select(table))
+            )
+            for table in tables
+        }
+
+
 def test_name_resolution_returns_the_exact_published_bytes(
     harness: CatalogHarness, scene: CatalogScene
 ) -> None:
@@ -181,21 +202,11 @@ def test_name_resolution_returns_the_exact_published_bytes(
 
     assert by_name == by_id == by_parsed_id
     assert by_name == CatalogNameResolved(
-        lineage.lineage_id, published.revision_hash, 1, display_name
+        lineage.lineage_id, published, 1, display_name
     )
-    assert harness.catalog.resolve(
-        published.kind, published.revision_hash
-    ) == PublishedRevisionFound(published)
-    assert resolve_catalog_reference(
-        published.kind,
-        lineage.lineage_id,
-        published.revision_hash,
-        harness.catalog,
-    ) == CatalogReferenceResolved(published)
-    found = harness.catalog.resolve(published.kind, published.revision_hash)
-    assert isinstance(found, PublishedRevisionFound)
-    assert found.revision.document == exact_document
-    assert found.revision.revision_hash == PublishedRevisionHash.of(exact_document)
+    assert isinstance(by_name, CatalogNameResolved)
+    assert by_name.revision.document == exact_document
+    assert by_name.revision.revision_hash == PublishedRevisionHash.of(exact_document)
 
 
 def test_historical_alias_resolves_to_the_current_name_and_head_bytes(
@@ -213,10 +224,10 @@ def test_historical_alias_resolves_to_the_current_name_and_head_bytes(
     assert admitted.revision_number == 2
     assert resolve_catalog_name(
         founding.kind, historical, "head", harness.catalog
-    ) == CatalogNameResolved(lineage.lineage_id, later.revision_hash, 2, current)
+    ) == CatalogNameResolved(lineage.lineage_id, later, 2, current)
     assert resolve_catalog_name(
         founding.kind, current, 1, harness.catalog
-    ) == CatalogNameResolved(lineage.lineage_id, founding.revision_hash, 1, current)
+    ) == CatalogNameResolved(lineage.lineage_id, founding, 1, current)
 
 
 @pytest.mark.parametrize("query_kind", ["lineage_id", "historical_alias"])
@@ -453,3 +464,92 @@ def test_writer_refuses_bytes_owned_by_another_lineage_and_a_retired_target(
         scene.actor,
         scene.admitted_at,
     ) == CatalogAdmissionRetired(first_lineage.lineage_id)
+
+
+def test_founding_a_retired_lineage_again_is_refused_and_writes_nothing(
+    harness: CatalogHarness, scene: CatalogScene
+) -> None:
+    founding = _workflow(b"name: pasta\n")
+    display_name = CatalogLineageDisplayName("pasta")
+    harness.catalog.publish_revision(founding)
+    lineage = harness.found(founding, display_name, scene)
+    harness.retire(lineage, scene)
+    before = _catalog_snapshot(harness)
+
+    assert harness.catalog.found_lineage(
+        founding, display_name, scene.actor, scene.founded_at
+    ) == CatalogAdmissionRetired(lineage.lineage_id)
+    assert _catalog_snapshot(harness) == before
+
+
+@pytest.mark.parametrize("held_name", ["historical", "current"])
+def test_a_retired_lineage_keeps_holding_every_name_it_ever_carried(
+    harness: CatalogHarness, scene: CatalogScene, held_name: str
+) -> None:
+    founding = _workflow(b"name: pasta\n")
+    later = _workflow(b"name: lasagne\n")
+    historical = CatalogLineageDisplayName("pasta")
+    current = CatalogLineageDisplayName("lasagne")
+    harness.catalog.publish_revision(founding)
+    harness.catalog.publish_revision(later)
+    retired_lineage = harness.found(founding, historical, scene)
+    harness.admit(retired_lineage, later, current, scene)
+    harness.retire(retired_lineage, scene)
+    claimed = historical if held_name == "historical" else current
+    successor = _workflow(b"name: successor\n")
+    harness.catalog.publish_revision(successor)
+    before = _catalog_snapshot(harness)
+
+    assert harness.catalog.found_lineage(
+        successor, claimed, scene.actor, scene.founded_at
+    ) == CatalogAdmissionNameHeld(claimed, retired_lineage.lineage_id)
+    assert _catalog_snapshot(harness) == before
+
+
+def _refuse_every_alias_insert(harness: CatalogHarness) -> None:
+    with harness.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TRIGGER refuse_alias_insert "
+            "BEFORE INSERT ON catalog_lineage_aliases "
+            "BEGIN SELECT RAISE(ABORT, 'injected alias failure'); END"
+        )
+
+
+@pytest.mark.parametrize("write", ["founding", "admission"])
+def test_a_failed_alias_write_leaves_the_whole_catalog_untouched(
+    harness: CatalogHarness, scene: CatalogScene, write: str
+) -> None:
+    standing = _workflow(b"name: pasta\n")
+    open_lineage_founding = _workflow(b"name: lasagne\n")
+    admitted = _workflow(b"name: lasagne two\n")
+    for revision in (standing, open_lineage_founding, admitted):
+        harness.catalog.publish_revision(revision)
+    retired_lineage = harness.found(standing, CatalogLineageDisplayName("pasta"), scene)
+    open_lineage = harness.found(
+        open_lineage_founding, CatalogLineageDisplayName("lasagne"), scene
+    )
+    harness.retire(retired_lineage, scene)
+    _refuse_every_alias_insert(harness)
+    before = _catalog_snapshot(harness)
+    assert all(before[table] for table in before)
+
+    if write == "founding":
+        candidate = _workflow(b"name: carbonara\n")
+        harness.catalog.publish_revision(candidate)
+        result = harness.catalog.found_lineage(
+            candidate,
+            CatalogLineageDisplayName("carbonara"),
+            scene.actor,
+            scene.founded_at,
+        )
+    else:
+        result = harness.catalog.admit_member(
+            open_lineage.lineage_id,
+            admitted,
+            CatalogLineageDisplayName("lasagne-two"),
+            scene.actor,
+            scene.admitted_at,
+        )
+
+    assert isinstance(result, DurableWriteUnavailable | DurableStateCorrupt)
+    assert _catalog_snapshot(harness) == before

@@ -25,12 +25,13 @@ class RunV2:
     terminal_hash: Sha256Hash | None = None
 
     def __post_init__(self) -> None:
-        if self.current_node_id == "":
-            raise ValueError("current_node_id must be nonempty")
-        if self.state_version < 0 or self.last_event_sequence < 0:
-            raise ValueError("run versions and cursors must be nonnegative")
-        if (self.state is RunState.COMPLETED) != (self.terminal_hash is not None):
-            raise ValueError("only a completed run has a terminal hash")
+        Run.validate_head(
+            self.current_node_id,
+            self.state,
+            self.state_version,
+            self.last_event_sequence,
+            self.terminal_hash,
+        )
         ordered = tuple(
             sorted(
                 self.agent_bindings,
