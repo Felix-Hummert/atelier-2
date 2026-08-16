@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import type { CockpitApi, RunV1 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
-import { cockpitApiStub } from "../support/cockpitApi";
+import { cockpitApiStub, pagedListRuns } from "../support/cockpitApi";
 import {
   completedRun,
   startedRun,
@@ -71,13 +71,26 @@ describe("the studio is the level the workshop opens on", () => {
 });
 
 describe("the inbox names what waits for a human", () => {
-  it("proves(the-inbox-names-every-run-that-waits-for-a-human): names every run in a durable waiting state and no run that waits for nobody", async () => {
-    openStudio([
-      startedRun({ public_run_reference: "run1.YQ" }),
-      waitingInputRun({ public_run_reference: "run1.Yg" }),
-      waitingReconciliationRun({ public_run_reference: "run1.Yw" }),
-      completedRun({ public_run_reference: "run1.ZA" })
-    ]);
+  it("proves(the-inbox-names-every-run-that-waits-for-a-human): names every run in a durable waiting state and no run that waits for nobody, across every page the list holds", async () => {
+    // "Across everything" is only true while the reading spans the durable
+    // pages: a run that waits on the second page is exactly the one an inbox
+    // stopping at the first would lose.
+    window.history.replaceState(null, "", "/atelier");
+    render(App, {
+      props: {
+        cockpitApi: cockpitApiStub({
+          listRuns: pagedListRuns([
+            [
+              startedRun({ public_run_reference: "run1.YQ" }),
+              waitingInputRun({ public_run_reference: "run1.Yg" }),
+              completedRun({ public_run_reference: "run1.ZA" })
+            ],
+            [waitingReconciliationRun({ public_run_reference: "run1.Yw" })]
+          ])
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
 
     const inbox = await screen.findByRole("region", { name: "Waiting for you" });
 

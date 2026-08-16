@@ -5,6 +5,7 @@
   import InboxRow from "../components/InboxRow.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ProjectCard from "../components/ProjectCard.svelte";
+  import { readEveryRun } from "../lib/runPages";
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
 
   export let cockpitApi: CockpitApi;
@@ -19,7 +20,11 @@
     runs = startLoading(runs);
     failureMessage = null;
     try {
-      runs = confirmResource(runs, await cockpitApi.listRuns());
+      const reading = await readEveryRun((after) => cockpitApi.listRuns(after));
+      runs = confirmResource(runs, { items: reading.runs, next_after: null });
+      if (!reading.complete) {
+        failureMessage = `Some of this workshop could not be read, so what is below is incomplete: ${reading.unreadable}.`;
+      }
     } catch (error) {
       failureMessage = error instanceof Error ? error.message : "The workshop could not be read.";
       runs = { ...runs, request: { state: "idle" } };

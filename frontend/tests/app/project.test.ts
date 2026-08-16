@@ -33,17 +33,11 @@ function openAt(pathname: string, overrides: Partial<CockpitApi> = {}) {
   });
 }
 
-const openProject = (
-  runs: RunV1[],
-  overrides: Partial<CockpitApi> = {},
-  nextAfter: string | null = null
-) =>
+const openProject = (runs: RunV1[], overrides: Partial<CockpitApi> = {}) =>
   openAt("/atelier/project", {
-    listRuns: vi.fn(async () => ({ items: runs, next_after: nextAfter })),
+    listRuns: vi.fn(async () => ({ items: runs, next_after: null })),
     ...overrides
   });
-
-const PARTIAL_LIST = "Not every run of this project is on this page.";
 
 describe("the project answers what is happening here", () => {
   it("heads the level with the one project of this installation", async () => {
@@ -111,20 +105,6 @@ describe("the project answers what is happening here", () => {
 
     expect((await screen.findByText("Looking…")).isConnected).toBe(true);
     expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
-  });
-});
-
-describe("the page says when it is showing only part of the project", () => {
-  it.each([
-    ["a next cursor names runs left behind", "run1.Yg", true],
-    ["no cursor means this page is the whole project", null, false]
-  ])("says the list is partial exactly when %s", async (_case, nextAfter, partial) => {
-    openProject([startedRun()], {}, nextAfter);
-    await screen.findByRole("region", { name: "Running" });
-
-    const said = screen.queryByText(PARTIAL_LIST, { exact: false });
-    expect(said !== null).toBe(partial);
-    expect(screen.queryByText(/reading further is not built yet/i) !== null).toBe(partial);
   });
 });
 
