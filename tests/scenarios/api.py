@@ -15,12 +15,17 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.adapters.yaml_workflows import (
+    parse_executable_workflow_document,
+    parse_workflow_document,
+)
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimits
 from atelier2.api.stream import EventPollBackoff
+from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import RunEventQueries
+from atelier2.ports.run_queries import RunFound, RunProjection
 
 RECONCILIATION_REVISION_HASH = (
     "c93767cc7790bdb39258bb6d9bdfb3168218705038932119e6628c6312c6e34e"
@@ -205,6 +210,41 @@ class UnusedPort:
         raise AssertionError(f"the route under test reached the {name} port")
 
 
+STREAM_DOCUMENT = b"""format_version: 1
+start: agent
+nodes:
+  - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: agent, type: agent, job: test, output: payload, next: final}
+"""
+
+
+def stream_run_projection(run_id: str) -> RunProjection:
+    """The run an SSE scenario streams, so every frame can say where it stands.
+
+    The event endpoint reads the run once and folds the streamed events onto it.
+    A stream scenario therefore needs a run, not only an event store, and this is
+    the one place that decides which run that is.
+    """
+
+    revision = WorkflowRevision(STREAM_DOCUMENT)
+    return RunProjection(
+        Run(RunId(run_id), revision.revision_hash, RunState.STARTED, "agent", 0, 0),
+        parse_executable_workflow_document(STREAM_DOCUMENT),
+        None,
+    )
+
+
+class OneRunQueries:
+    """A run store that answers with one projection, whichever run is asked for."""
+
+    def __init__(self, projection: RunProjection) -> None:
+        self._projection = projection
+
+    def get_run(self, run_id: object, projection_limit: object = None) -> RunFound:
+        del run_id, projection_limit
+        return RunFound(self._projection)
+
+
 def api_ports(**overrides: object) -> ApiPorts:
     """The full port set with only the ports a test names actually wired."""
     unused = UnusedPort()
@@ -255,7 +295,10 @@ def event_stream_client(queries: RunEventQueries) -> TestClient:
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=api_ports(run_event_queries=queries),
+            ports=api_ports(
+                run_event_queries=queries,
+                run_queries=OneRunQueries(stream_run_projection("sse/run")),
+            ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
         )

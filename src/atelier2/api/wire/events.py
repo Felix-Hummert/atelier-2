@@ -13,7 +13,11 @@ from atelier2.api.references import (
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
-from atelier2.api.wire.resources import ApiModel, EffectReceiptResource
+from atelier2.api.wire.resources import (
+    ApiModel,
+    EffectReceiptResource,
+    NodeRailResource,
+)
 
 
 class RunEventBaseResource(ApiModel):
@@ -86,6 +90,14 @@ class RunEventBaseResourceV2(ApiModel):
     node_id: str = Field(min_length=1)
     node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
     event_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
+    """Where the whole run stands once this event is folded into the snapshot.
+
+    A reader of one event needs the run, not the node: a finished node hands its
+    successor work, and answering that from the event alone is the derivation
+    this rail exists to end. V1 events cannot carry it — their resource is
+    byte-frozen — so a V1 cockpit keeps deriving until the V3 cutover (#63).
+    """
 
 
 class AgentCompletedEventResourceV2(RunEventBaseResourceV2):

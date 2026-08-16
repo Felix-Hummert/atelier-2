@@ -22,7 +22,13 @@ from atelier2.ports.run_events import (
     StreamReady,
 )
 from atelier2.ports.run_queries import RunQueryMissing
-from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
+from tests.scenarios.api import (
+    OneRunQueries,
+    api_limits,
+    api_ports,
+    event_poll_backoff,
+    stream_run_projection,
+)
 
 
 class FakeEventQueries:
@@ -54,7 +60,10 @@ def app_for(queries: FakeEventQueries):
     return create_app(
         source_commit="commit",
         source_tree="tree",
-        ports=api_ports(run_event_queries=queries),
+        ports=api_ports(
+            run_event_queries=queries,
+            run_queries=OneRunQueries(stream_run_projection("preheader/run")),
+        ),
         limits=api_limits(),
         event_poll_backoff=event_poll_backoff(),
     )

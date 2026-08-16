@@ -68,6 +68,7 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.run_events import RunEventPage
+from atelier2.ports.run_queries import RunFound
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,
@@ -254,10 +255,13 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
         store.complete_known_failure(agent_attempt_execution(request))
         queries = DbosQueries(runtime.engine)
 
+        found = queries.get_run(request.run_id)
+        assert isinstance(found, RunFound)
+
         async def first_event() -> ServerSentEvent:
             stream = aiter(
                 stream_server_events(
-                    PreparedEventStream(request.run_id, 0, 1, False),
+                    PreparedEventStream(request.run_id, 0, 1, False, found.projection),
                     queries,
                     BoundedQueryRunner(1, admission_timeout_seconds=1),
                     page_size=1,

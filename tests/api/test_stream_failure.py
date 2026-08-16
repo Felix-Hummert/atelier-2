@@ -43,7 +43,7 @@ from atelier2.ports.workflow_revisions import (
     QueryDurableStateCorrupt,
     ReadUnavailable,
 )
-from tests.scenarios.api import api_limits, event_stream_client
+from tests.scenarios.api import api_limits, event_stream_client, stream_run_projection
 
 READY_NONTERMINAL_HEAD = StreamReady(1, False, 0)
 RUN_ID = RunId("failing-stream")
@@ -147,7 +147,9 @@ def streamed_frames(
         return [
             frame
             async for frame in stream_server_events(
-                PreparedEventStream(RUN_ID, 0, 1, False),
+                PreparedEventStream(
+                    RUN_ID, 0, 1, False, stream_run_projection(RUN_ID.value)
+                ),
                 queries,
                 BoundedQueryRunner(1, admission_timeout_seconds=1),
                 page_size=page_size,

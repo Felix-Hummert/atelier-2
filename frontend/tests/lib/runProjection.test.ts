@@ -10,7 +10,9 @@ import {
   projectNodeRail,
   restartStreamProjection,
   startLoading,
-  streamProjection
+  streamProjection,
+  type AgentAttemptProjection,
+  type NodeState
 } from "../../src/lib/runProjection";
 import type { RunV1, RunV2 } from "../../src/api/client";
 import {
@@ -277,6 +279,33 @@ describe("V2 Agent terminal truth", () => {
   );
 });
 
+describe("a V2 rail the server named", () => {
+  it("proves(the-browser-derives-no-durable-state-for-a-v2-run): renders the state the event carried, not the one the browser would have derived", () => {
+    const scenario = v2Scenario();
+    const served = v2AgentEvent("AGENT_COMPLETED", {
+      node_rail: [
+        { node_id: "agent", state: "interrupted", attempt: { ordinal: 1, state: "INTERRUPTED" } },
+        { node_id: "final", state: "queued", attempt: null }
+      ]
+    });
+
+    const rail = projectNodeRail(scenario.run, scenario.graph, [served]);
+
+    expect(rail.map((node) => node.state)).toEqual(["interrupted", "queued"]);
+    expect(rail[0]?.attempt).toEqual({ ordinal: 1, state: "INTERRUPTED" });
+  });
+
+  it("proves(the-browser-derives-no-durable-state-for-a-v2-run): takes the attempt from the rail, so no reader invents a word for a finished one", () => {
+    const scenario = v2Scenario();
+
+    const rail = projectNodeRail(scenario.run, scenario.graph, [
+      v2AgentEvent("AGENT_COMPLETED")
+    ]);
+
+    expect(rail[0]?.attempt).toEqual({ ordinal: 1, state: null });
+  });
+});
+
 describe("read-only node rail", () => {
   it("orders the graph from its start edge and projects all four durable node states", () => {
     const events = [
@@ -387,8 +416,8 @@ function v2Scenario() {
     state: "STARTED",
     current_node: graph.nodes[0]! as RunV2["current_node"],
     node_rail: [
-      { node_id: "agent", state: "working" },
-      { node_id: "final", state: "queued" }
+      { node_id: "agent", state: "working", attempt: { ordinal: 1, state: "POSSIBLY_RAN" } },
+      { node_id: "final", state: "queued", attempt: null }
     ],
     agent_attempts: [{
       attempt_id: digest, node_execution_id: digest, request_hash: digest,
@@ -399,6 +428,21 @@ function v2Scenario() {
     latest_event_cursor: null
   };
   return { graph, run };
+}
+
+function v2EventRail(
+  eventKind: "AGENT_COMPLETED" | "AGENT_FAILED" | "AGENT_CANCELLED" | "AGENT_INTERRUPTED"
+) {
+  const ended = {
+    AGENT_COMPLETED: ["succeeded", "working", null],
+    AGENT_FAILED: ["failed", "queued", "FAILED"],
+    AGENT_CANCELLED: ["cancelled", "queued", "CANCELLED"],
+    AGENT_INTERRUPTED: ["interrupted", "queued", "INTERRUPTED"]
+  }[eventKind] as [NodeState, NodeState, AgentAttemptProjection["state"]];
+  return [
+    { node_id: "agent", state: ended[0], attempt: { ordinal: 1 as const, state: ended[2] } },
+    { node_id: "final", state: ended[1], attempt: null }
+  ];
 }
 
 function v2AgentEvent(
@@ -415,7 +459,8 @@ function v2AgentEvent(
     node_execution_id: digest,
     event_hash: digest,
     attempt_id: digest,
-    attempt_ordinal: 1 as const
+    attempt_ordinal: 1 as const,
+    node_rail: v2EventRail(eventKind)
   };
   if (eventKind === "AGENT_COMPLETED") {
     return { ...common, event: eventKind, output_base64: "", output_hash: digest, ...changes };

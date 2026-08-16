@@ -49,6 +49,7 @@ from atelier2.ports.durable_runs import (
 )
 from atelier2.ports.run_events import PersistedRunEvent
 from atelier2.ports.run_queries import RunFound, RunProjection
+from tests.api.test_agent_attempts import SERVED_RAIL
 from tests.scenarios.api import (
     SSE_COMPLETE_HISTORY,
     api_limits,
@@ -464,8 +465,8 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
             "next_node_id": "done",
         },
         "node_rail": [
-            {"node_id": "build", "state": "working"},
-            {"node_id": "done", "state": "queued"},
+            {"node_id": "build", "state": "working", "attempt": None},
+            {"node_id": "done", "state": "queued", "attempt": None},
         ],
         "agent_attempts": [],
         "waiting": {"type": "NONE"},
@@ -493,11 +494,15 @@ def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None
         attempt_ordinal=1,
     )
 
-    resource = run_event_resource(PersistedRunEvent(event, None, 2))
+    resource = run_event_resource(PersistedRunEvent(event, None, 2), SERVED_RAIL)
     api_limits().require_event_projection(PersistedRunEvent(event, None, 2))
 
     assert resource.model_dump(mode="json") == {
         "workflow_format_version": 2,
+        "node_rail": [
+            {"node_id": "build", "state": "working", "attempt": None},
+            {"node_id": "done", "state": "queued", "attempt": None},
+        ],
         "cursor": "event1.djIvbm9uLXV0Zjg.1",
         "sequence": 1,
         "public_run_reference": "run1.djIvbm9uLXV0Zjg",
@@ -519,6 +524,7 @@ def test_all_seven_v2_event_dtos_have_the_exact_closed_wire_shape() -> None:
     for envelope in SSE_COMPLETE_HISTORY:
         expected = {**cast(dict[str, object], envelope["data"])}
         expected["workflow_format_version"] = 2
+        expected["node_rail"] = [entry.model_dump(mode="json") for entry in SERVED_RAIL]
         if expected["event"] == "AGENT_COMPLETED":
             output = cast(str, expected.pop("output"))
             expected["output_base64"] = base64.b64encode(output.encode()).decode()
@@ -526,7 +532,7 @@ def test_all_seven_v2_event_dtos_have_the_exact_closed_wire_shape() -> None:
             expected["attempt_id"] = "a" * 64
             expected["attempt_ordinal"] = 1
 
-        resource = adapter.validate_python(expected)
+        resource = adapter.validate_python({**expected, "node_rail": SERVED_RAIL})
 
         assert resource.model_dump(mode="json") == expected
 
@@ -560,6 +566,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_one_of() -> None:
         "node_execution_id",
         "event_hash",
         "event",
+        "node_rail",
     }
     payloads = {
         "AGENT_COMPLETED": {

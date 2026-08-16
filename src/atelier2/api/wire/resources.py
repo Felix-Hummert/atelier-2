@@ -347,11 +347,25 @@ NodeStateName = Literal[
 ]
 
 
+class NodeRailAttemptResource(ApiModel):
+    """The agent attempt one node tells a reader about.
+
+    A succeeded attempt carries no state: the public vocabulary has no word for
+    success, because the same transition that records it moves the run past the
+    attempt. The node's own `succeeded` is what says the work is done — which is
+    why no reader has to invent a word for it any more.
+    """
+
+    ordinal: Literal[1, 2]
+    state: PublicAttemptStateName | None
+
+
 class NodeRailResource(ApiModel):
     """Where one node of a run stands, said by the server rather than guessed."""
 
     node_id: str = Field(min_length=1)
     state: NodeStateName
+    attempt: NodeRailAttemptResource | None
 
 
 class RunResourceV2(ApiModel):

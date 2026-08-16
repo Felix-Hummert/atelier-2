@@ -1,18 +1,17 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/89"
 
-# Two sentences of #89 are deliberately absent, because head B2 does not close
-# them and declaring them here would red this gate for work nobody has built:
+# One sentence of #89 is deliberately absent: "the V1 wire is unchanged" is a
+# standing guard of every head rather than an outcome of one, and
+# tests/api/test_v1_wire_freeze.py already holds it without this gate.
 #
-#   "the browser derives no durable state any more" — the derivation still lives
-#   in frontend/src/lib/runProjection.ts and is deleted by head C, which also
-#   carries the rail on the event stream. B2 replaces only the snapshot half,
-#   and only for V2 runs: the V1 run resource is byte-frozen, so a V1 cockpit
-#   keeps deriving until head C decides how a V1 run reads its rail.
-#
-#   "the V1 wire is unchanged" — it is a standing guard of every head rather
-#   than an outcome of one, and tests/api/test_v1_wire_freeze.py already holds
-#   it without this gate.
+# The last sentence below is the one head C's ruling narrowed in writing
+# (https://github.com/FlexOr2/atelier-2/issues/89#issuecomment-5304710960),
+# quoted as it was ruled. Its named exception is a debt with an owner, not a
+# quiet retreat: `v1SnapshotNodeState` in frontend/src/lib/runProjection.ts is
+# the only place a browser still derives a durable state, it exists because the
+# V1 run resource and the V1 event schema are byte-frozen, and it dies with the
+# V3 cutover in #63. Nobody may read the sentence as covering a V1 run.
 #
 # This file therefore does not list every sentence of #89.
 
@@ -31,6 +30,10 @@ text = "A served V2 run names the state of every node of the revision it is boun
 [[sentence]]
 id = "the-browser-and-the-served-contract-know-the-same-node-states"
 text = "The browser and the served contract know exactly the same set of node states: a member added on one side alone fails a test."
+
+[[sentence]]
+id = "the-browser-derives-no-durable-state-for-a-v2-run"
+text = "Der Browser leitet für V2-Runs keinen durablen Zustand mehr ab; die eine benannte Ausnahme ist `v1SnapshotNodeState` für die eingefrorene V1-Ressource, und sie stirbt mit dem V3-Cutover (#63)."
 
 [[sentence]]
 id = "the-interaction-overlay-lifts-and-stills-under-separate-gates"

@@ -23,6 +23,12 @@
 
   $: rail = applyInteractionOverlay(projectNodeRail(run, graph, events), openFormNodeIds);
 
+  function attemptLabel(attempt: NonNullable<NodeProjection["attempt"]>): string {
+    return attempt.state === null
+      ? stateLabels.succeeded.toLowerCase()
+      : attempt.state.replaceAll("_", " ").toLowerCase();
+  }
+
   function eventLabel(event: RunEvent): string {
     return event.event.replaceAll("_", " ");
   }
@@ -138,7 +144,7 @@
             {#if agent.attempt !== null}
               <p class="latest-event">
                 <span>Attempt {agent.attempt.ordinal}</span>
-                <strong>{agent.attempt.state.replaceAll("_", " ").toLowerCase()}</strong>
+                <strong>{attemptLabel(agent.attempt)}</strong>
               </p>
             {/if}
           {/if}
