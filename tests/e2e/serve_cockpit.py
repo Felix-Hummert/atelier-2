@@ -38,6 +38,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorFactory,
     AgentExecutorFactoryV2,
     AgentProcessCompletion,
+    AgentProcessInvocation,
 )
 from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
 from tests.scenarios.agents import (
@@ -97,11 +98,11 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
         self.release = release
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         if not self.release.wait(TIMEOUT_SECONDS):
             raise RuntimeError("browser did not observe the working attempt")
-        return super().decode_process_completion(completion)
+        return super().decode_process_completion(invocation, completion)
 
 
 class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):

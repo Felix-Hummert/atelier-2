@@ -149,17 +149,23 @@ def test_name_resolution_accepts_only_head_or_an_exact_positive_position(
         display_name,
         retired=False,
     )
-    catalog = ScriptedCatalogResolver(name_answers={(lineage_id, position): answer})
+    catalog = ScriptedCatalogResolver(
+        reference_answer=PublishedRevisionFound(revision),
+        name_answers={(lineage_id, position): answer},
+    )
 
     assert resolve_catalog_name(
         RevisionKind.WORKFLOW, lineage_id, position, catalog
     ) == CatalogNameResolved(
         lineage_id,
-        revision.revision_hash,
+        revision,
         4,
         display_name,
     )
     assert catalog.name_calls == [(RevisionKind.WORKFLOW, lineage_id, position)]
+    assert catalog.reference_calls == [
+        (RevisionKind.WORKFLOW, lineage_id, revision.revision_hash)
+    ]
 
 
 def test_historical_alias_returns_the_current_display_name() -> None:
@@ -174,13 +180,16 @@ def test_historical_alias_returns_the_current_display_name() -> None:
         current_name,
         retired=False,
     )
-    catalog = ScriptedCatalogResolver(name_answers={(historical_name, "head"): answer})
+    catalog = ScriptedCatalogResolver(
+        reference_answer=PublishedRevisionFound(revision),
+        name_answers={(historical_name, "head"): answer},
+    )
 
     assert resolve_catalog_name(
         RevisionKind.WORKFLOW, historical_name, "head", catalog
     ) == CatalogNameResolved(
         lineage_id,
-        revision.revision_hash,
+        revision,
         2,
         current_name,
     )
@@ -209,6 +218,39 @@ def test_retired_lineage_is_refused_through_its_id_or_any_alias(
     assert resolve_catalog_name(
         RevisionKind.WORKFLOW, query, "head", catalog
     ) == CatalogNameLineageRetired(lineage_id, current_name)
+
+
+@pytest.mark.parametrize("stored_answer", ["missing_member", "wrong_bytes"])
+def test_name_resolution_refuses_when_its_named_member_does_not_resolve(
+    stored_answer: str,
+) -> None:
+    revision = _published_workflow()
+    lineage_id = _lineage_id(revision)
+    display_name = CatalogLineageDisplayName("lasagne")
+    reference_answer: ResolvePublishedRevisionResult = (
+        PublishedRevisionMissing()
+        if stored_answer == "missing_member"
+        else PublishedRevisionFound(_published_workflow(b"name: other\n"))
+    )
+    catalog = ScriptedCatalogResolver(
+        reference_answer=reference_answer,
+        name_answers={
+            (display_name, "head"): CatalogNameFound(
+                lineage_id,
+                revision.revision_hash,
+                1,
+                display_name,
+                retired=False,
+            )
+        },
+    )
+
+    assert resolve_catalog_name(
+        RevisionKind.WORKFLOW, display_name, "head", catalog
+    ) == CatalogReferenceNonMember(lineage_id, revision.revision_hash)
+    assert catalog.reference_calls == [
+        (RevisionKind.WORKFLOW, lineage_id, revision.revision_hash)
+    ]
 
 
 def test_missing_name_preserves_the_typed_query_and_position() -> None:

@@ -33,7 +33,11 @@ from atelier2.api.wire.events import (
     WaitingInputEventResourceV2,
 )
 from atelier2.api.wire.resources import NodeRailResource
-from atelier2.contracts.executions import RunEventKind, is_canonical_integer_bytes
+from atelier2.contracts.executions import (
+    KINDS_NO_V1_RUN_CARRIES,
+    RunEventKind,
+    is_canonical_integer_bytes,
+)
 from atelier2.ports.run_events import PersistedRunEvent
 
 
@@ -49,8 +53,8 @@ def run_event_resource(
     if projection.workflow_format_version == 2:
         return _run_event_resource_v2(projection, node_rail)
     event = projection.event
-    if event.event_kind is RunEventKind.AGENT_FAILED:
-        raise ValueError("a V1 run cannot carry AGENT_FAILED")
+    if event.event_kind in KINDS_NO_V1_RUN_CARRIES:
+        raise ValueError(f"a V1 run cannot carry {event.event_kind.value}")
     common = {
         "cursor": encode_event_cursor(event.run_id, event.event_sequence),
         "sequence": event.event_sequence,

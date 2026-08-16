@@ -10,6 +10,12 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_SIGNED_INT64,
+)
+from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+
 
 @dataclass(frozen=True)
 class ProductSchemaHandoff:
@@ -17,20 +23,23 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 _VERSION_NINE = 9
 _VERSION_TEN = 10
+_VERSION_ELEVEN = 11
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V9 product tables equal V8. V10 adds the thin catalog/receipt foundation. V11
 # closes the artifact/output/access store shape that Cut B writes atomically.
+# V12 adds append-only catalog alias and retirement histories.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
     9: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
     10: "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7",
     11: "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef",
+    12: "feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -39,6 +48,10 @@ V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V10_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TEN],
+)
+V11_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_ELEVEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_ELEVEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -123,8 +136,10 @@ auth_profile_revisions = sa.Table(
     sa.CheckConstraint(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(profile_id) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("revision_number BETWEEN 1 AND 9223372036854775807"),
+    sa.CheckConstraint(
+        f"length(profile_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
     sa.CheckConstraint("length(provider_id) BETWEEN 1 AND 64"),
     sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
     sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
@@ -161,12 +176,14 @@ agent_configuration_revisions = sa.Table(
     sa.CheckConstraint(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(model) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(f"length(model) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
     sa.CheckConstraint(
         "length(auth_profile_revision_hash) = 64 "
         "AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(executor_revision) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        f"length(executor_revision) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
     sa.CheckConstraint("revision_format_version IN (1, 2)"),
     sa.CheckConstraint("requested_capability IN ('headless', 'interactive')"),
     sa.CheckConstraint(
@@ -205,7 +222,7 @@ run_agent_bindings = sa.Table(
     sa.CheckConstraint(
         "length(binding_set_hash) = 64 AND binding_set_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(role) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(f"length(role) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
     sa.CheckConstraint(
         "length(agent_configuration_revision_hash) = 64 "
         "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
@@ -492,8 +509,10 @@ agent_receipts_v2 = sa.Table(
         "length(workflow_revision_hash) = 64 "
         "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(node_id) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("length(role) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"length(role) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
     sa.CheckConstraint(
         "length(binding_set_hash) = 64 AND binding_set_hash NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -505,15 +524,21 @@ agent_receipts_v2 = sa.Table(
         "length(auth_profile_revision_hash) = 64 "
         "AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(profile_id) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("revision_number BETWEEN 1 AND 9223372036854775807"),
+    sa.CheckConstraint(
+        f"length(profile_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
     sa.CheckConstraint("length(provider_id) BETWEEN 1 AND 64"),
     sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
     sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
     sa.CheckConstraint("auth_mode IN ('subscription', 'api_key')"),
-    sa.CheckConstraint("length(model) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("length(executor_revision) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("length(executor_operational_identity) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(f"length(model) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
+    sa.CheckConstraint(
+        f"length(executor_revision) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        f"length(executor_operational_identity) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
     sa.CheckConstraint(
         "typeof(output_bytes) = 'blob' AND length(output_bytes) <= 49152"
     ),
@@ -566,13 +591,17 @@ agent_attempts = sa.Table(
     sa.CheckConstraint(
         "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(executor_operational_identity) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        f"length(executor_operational_identity) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
     sa.CheckConstraint("length(run_id) > 0"),
     sa.CheckConstraint(
         "length(workflow_revision_hash) = 64 "
         "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(node_id) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
     sa.CheckConstraint("attempt_ordinal IN (1, 2)"),
     sa.CheckConstraint(
         "process_phase IN ('NONE', 'WATCHDOG_READY', 'LAUNCH_AUTHORIZED', "
@@ -584,15 +613,15 @@ agent_attempts = sa.Table(
         "(process_phase = 'CLEANUP_ATTESTED' "
         "AND cancellation_disposition = 'NEVER_LAUNCHED' "
         "AND process_owner_id IS NULL AND watchdog_generation_id IS NULL) OR "
-        "(process_phase <> 'NONE' AND length(process_owner_id) BETWEEN 1 AND 1024 "
-        "AND length(watchdog_generation_id) BETWEEN 1 AND 1024)"
+        f"(process_phase <> 'NONE' AND length(process_owner_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS} "
+        f"AND length(watchdog_generation_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS})"
     ),
     sa.CheckConstraint(
         "(cancellation_command_id IS NULL "
         "AND cancellation_expected_state_version IS NULL "
         "AND replacement IS NULL AND redrive_state IS NULL "
         "AND cancellation_disposition IS NULL AND cancellation_workflow_id IS NULL) "
-        "OR (length(cancellation_command_id) BETWEEN 1 AND 1024 "
+        f"OR (length(cancellation_command_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS} "
         "AND cancellation_expected_state_version >= 0 "
         "AND replacement IN ('NONE', 'ONE') "
         "AND redrive_state IN ('PENDING', 'OWNER_NOT_LOCAL', 'CLEANUP_ATTESTED') "
@@ -714,11 +743,11 @@ run_events = sa.Table(
         "AND cancellation_command_id IS NULL AND replacement IS NULL "
         "AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) "
         "OR (event_kind = 'AGENT_CANCEL_REQUESTED' "
-        "AND length(cancellation_command_id) BETWEEN 1 AND 1024 "
+        f"AND length(cancellation_command_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS} "
         "AND replacement IN ('NONE', 'ONE') "
         "AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) "
         "OR (event_kind IN ('AGENT_CANCELLED', 'AGENT_INTERRUPTED') "
-        "AND length(cancellation_command_id) BETWEEN 1 AND 1024 "
+        f"AND length(cancellation_command_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS} "
         "AND replacement IN ('NONE', 'ONE') "
         "AND cancellation_disposition IS NOT NULL)))"
     ),
@@ -833,6 +862,48 @@ catalog_lineage_members = sa.Table(
     sa.CheckConstraint(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
+)
+catalog_lineage_aliases = sa.Table(
+    "catalog_lineage_aliases",
+    metadata,
+    sa.Column(
+        "lineage_id",
+        sa.Text,
+        sa.ForeignKey("catalog_lineages.lineage_id"),
+        nullable=False,
+    ),
+    sa.Column("activation_number", sa.Integer, nullable=False),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column("actor", sa.Text, nullable=False),
+    sa.Column("activated_at", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("lineage_id", "activation_number"),
+    sa.CheckConstraint("activation_number >= 1"),
+    sa.CheckConstraint(
+        f"length(name) BETWEEN 1 AND {MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS}"
+    ),
+    sa.CheckConstraint("name GLOB '[a-z]*' AND name NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint("length(name) <> 64 OR name GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint("length(actor) > 0"),
+    sa.CheckConstraint("length(activated_at) > 0"),
+)
+catalog_lineage_retirements = sa.Table(
+    "catalog_lineage_retirements",
+    metadata,
+    sa.Column(
+        "lineage_id",
+        sa.Text,
+        sa.ForeignKey("catalog_lineages.lineage_id"),
+        nullable=False,
+    ),
+    sa.Column("activation_number", sa.Integer, nullable=False),
+    sa.Column("state", sa.Text, nullable=False),
+    sa.Column("actor", sa.Text, nullable=False),
+    sa.Column("activated_at", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("lineage_id", "activation_number"),
+    sa.CheckConstraint("activation_number >= 1"),
+    sa.CheckConstraint("state IN ('retired')"),
+    sa.CheckConstraint("length(actor) > 0"),
+    sa.CheckConstraint("length(activated_at) > 0"),
 )
 node_artifacts_v3 = sa.Table(
     "node_artifacts_v3",
@@ -1260,6 +1331,72 @@ _PRODUCT_TRIGGERS = {
         CREATE TRIGGER catalog_lineage_members_no_delete
         BEFORE DELETE ON catalog_lineage_members BEGIN
           SELECT RAISE(ABORT, 'catalog lineage members are immutable');
+        END
+    """,
+    "catalog_lineage_members_unique_per_kind": """
+        CREATE TRIGGER catalog_lineage_members_unique_per_kind
+        BEFORE INSERT ON catalog_lineage_members
+        WHEN EXISTS (
+          SELECT 1
+          FROM catalog_lineage_members AS existing
+          JOIN catalog_lineages AS existing_lineage
+            ON existing_lineage.lineage_id = existing.lineage_id
+          JOIN catalog_lineages AS new_lineage
+            ON new_lineage.lineage_id = NEW.lineage_id
+          WHERE existing.revision_hash = NEW.revision_hash
+            AND existing_lineage.kind = new_lineage.kind
+            AND existing.lineage_id <> NEW.lineage_id
+        )
+        BEGIN
+          SELECT RAISE(
+            ABORT,
+            'catalog lineage members of one kind cannot share a revision'
+          );
+        END
+    """,
+    "catalog_lineage_aliases_name_unique_per_kind": """
+        CREATE TRIGGER catalog_lineage_aliases_name_unique_per_kind
+        BEFORE INSERT ON catalog_lineage_aliases
+        WHEN EXISTS (
+          SELECT 1
+          FROM catalog_lineage_aliases AS existing
+          JOIN catalog_lineages AS existing_lineage
+            ON existing_lineage.lineage_id = existing.lineage_id
+          JOIN catalog_lineages AS new_lineage
+            ON new_lineage.lineage_id = NEW.lineage_id
+          WHERE existing.name = NEW.name
+            AND existing_lineage.kind = new_lineage.kind
+            AND existing.lineage_id <> NEW.lineage_id
+        )
+        BEGIN
+          SELECT RAISE(
+            ABORT,
+            'catalog lineage names are never reused across lineages of one kind'
+          );
+        END
+    """,
+    "catalog_lineage_aliases_no_update": """
+        CREATE TRIGGER catalog_lineage_aliases_no_update
+        BEFORE UPDATE ON catalog_lineage_aliases BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage aliases are immutable');
+        END
+    """,
+    "catalog_lineage_aliases_no_delete": """
+        CREATE TRIGGER catalog_lineage_aliases_no_delete
+        BEFORE DELETE ON catalog_lineage_aliases BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage aliases are immutable');
+        END
+    """,
+    "catalog_lineage_retirements_no_update": """
+        CREATE TRIGGER catalog_lineage_retirements_no_update
+        BEFORE UPDATE ON catalog_lineage_retirements BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage retirements are immutable');
+        END
+    """,
+    "catalog_lineage_retirements_no_delete": """
+        CREATE TRIGGER catalog_lineage_retirements_no_delete
+        BEFORE DELETE ON catalog_lineage_retirements BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage retirements are immutable');
         END
     """,
     "node_artifacts_v3_no_update": """
