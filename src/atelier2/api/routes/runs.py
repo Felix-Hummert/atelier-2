@@ -47,6 +47,7 @@ from atelier2.application.answer_wait import (
     AnswerStateConflict,
     NodeMissing,
     RunMissing,
+    UnanswerableWait,
 )
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
 from atelier2.application.read_runs import RunsListed
@@ -92,10 +93,6 @@ from atelier2.contracts.effects import (
     OperatorFoundEffect,
     ReconcileActor,
     ReconcileCommandId,
-)
-from atelier2.contracts.executions import (
-    SubmitWaitAnswerRequest,
-    is_canonical_integer_bytes,
 )
 from atelier2.contracts.runs import RunId
 from atelier2.ports.agent_attempts import (
@@ -284,16 +281,15 @@ async def answer_run_route(
     require_field(body.node_id, context.limits)
     revision_hash = parse_revision_hash(body.revision_hash)
     answer_bytes = decode_base64(body.answer_base64, context.limits)
-    if not is_canonical_integer_bytes(answer_bytes):
-        raise ApiProblem("invalid-request")
-    answer_request = SubmitWaitAnswerRequest(
-        run_id, revision_hash, body.node_id, answer_bytes
-    )
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.answer_wait(answer_request),
+        lambda: context.use_cases.answer_wait(
+            run_id, revision_hash, body.node_id, answer_bytes
+        ),
     )
     match result:
+        case UnanswerableWait():
+            raise ApiProblem("invalid-request")
         case AnswerAcceptedPending() | AnswerExistingPending():
             status = HTTPStatus.ACCEPTED
         case AnswerExistingApplied():

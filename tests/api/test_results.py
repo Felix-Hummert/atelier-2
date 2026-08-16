@@ -53,7 +53,6 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import (
     NodeExecutionId,
-    SubmitWaitAnswerRequest,
     WaitAnswer,
     WaitAnswerSnapshot,
     WaitAnswerState,
@@ -266,7 +265,10 @@ def test_answer_maps_every_durable_result(
     port_result: object, application_type: type[object]
 ) -> None:
     result = answer_wait_result(
-        cast(SubmitWaitAnswerRequest, object()),
+        RunId("run"),
+        HASH,
+        "waiting",
+        b"6",
         cast(TransactionalWaitAnswerer, FakePort(port_result)),
     )
 

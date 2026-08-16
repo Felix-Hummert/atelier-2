@@ -136,7 +136,13 @@ def prepare_and_launch_graph_action(
 def submit_wait_answer(
     engine: Engine, application_version: str, request: SubmitWaitAnswerRequest
 ) -> WaitAnswerSnapshot:
-    result = answer_wait_result(request, DbosWaitAnswerer(engine, application_version))
+    result = answer_wait_result(
+        request.run_id,
+        request.revision_hash,
+        request.node_id,
+        request.answer_bytes,
+        DbosWaitAnswerer(engine, application_version),
+    )
     assert isinstance(
         result, (AnswerAcceptedPending, AnswerExistingPending, AnswerExistingApplied)
     ), result

@@ -9,15 +9,19 @@ story = "https://github.com/FlexOr2/atelier-2/issues/87"
 # Head B1 lands the read half of "no route calls a port directly". Still unbuilt,
 # and deliberately absent here:
 #
-#   - the rest of the write half: `publish_revision` and the cancellation still
-#     hold their ports, and the event stream still forwards its pages through one
-#     (B3). Both of the first two are deferred by a live collision rather than by
-#     scope — `publish_revision` with #141 on `routes/revisions.py`, the
-#     cancellation with #70 on `application/cancel_agent_attempt.py` — and both are
-#     named by machine rather than in prose, in the `ignore_imports` of the
-#     `route-vocabulary` contract and in ROUTE_CALLS_STILL_HOLDING_PORTS in
-#     `scripts/check_architecture.py`. Both are red on a stale entry in either
-#     direction, so neither can claim the work is done.
+#   - the write half. Five write calls now decide through use-cases that own
+#     building what the store is asked for, but `publish_revision` and the
+#     cancellation still hold their ports — both deferred by a live collision
+#     rather than by scope (#141 on `routes/revisions.py`, #70 on
+#     `application/cancel_agent_attempt.py`), and the cancellation is still the
+#     pass-through that hands its port union straight to a route. So the sentence
+#     a human would write here — *every* write decides through a use-case — is not
+#     true of this tree, and it is therefore not declared. It joins this file in
+#     the change that finishes the write set, not before.
+#     Until then the remainder is named by machine rather than in prose, in the
+#     `ignore_imports` of the `route-vocabulary` contract and in
+#     ROUTE_CALLS_STILL_HOLDING_PORTS in `scripts/check_architecture.py`. Both are
+#     red on a stale entry in either direction, so neither can claim it is done.
 #   - no fail-open port default, and no port formulating an HTTP phrase (head D).
 
 [[sentence]]
@@ -27,10 +31,6 @@ text = "The schemas the API accepts and answers with name no durable port type: 
 [[sentence]]
 id = "every-read-decision-belongs-to-a-use-case"
 text = "Every read the API offers is decided by a use-case that translates the store's answer into the application's own outcome, so each way a read can fail is a named member of that outcome rather than a port type a route matches on."
-
-[[sentence]]
-id = "every-write-decision-belongs-to-a-use-case"
-text = "Every write the API accepts is decided by a use-case that owns building what the store is asked for and translates the store's answer into the application's own outcome, so authored values that make no request refuse the write before the store is asked."
 
 [[sentence]]
 id = "the-use-case-record-cannot-hand-a-route-a-port"

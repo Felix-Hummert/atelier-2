@@ -25,7 +25,6 @@ from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
     StartPublishedRunResult,
 )
-from atelier2.contracts.executions import SubmitWaitAnswerRequest
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
@@ -89,7 +88,7 @@ class ApiUseCases:
         [RunId, WorkflowRevisionHash, tuple[AuthoredAgentBinding, ...] | None],
         StartPublishedRunResult,
     ]
-    answer_wait: Callable[[SubmitWaitAnswerRequest], AnswerWaitResult]
+    answer_wait: Callable[[RunId, WorkflowRevisionHash, str, bytes], AnswerWaitResult]
     reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]
 
 

@@ -77,7 +77,11 @@ def bound_use_cases(
         start_published_run=lambda run_id, revision_hash, bindings: start_published_run(
             run_id, revision_hash, bindings, ports.published_run_starter
         ),
-        answer_wait=lambda request: answer_wait_result(request, ports.wait_answerer),
+        answer_wait=lambda run_id, revision_hash, node_id, answer_bytes: (
+            answer_wait_result(
+                run_id, revision_hash, node_id, answer_bytes, ports.wait_answerer
+            )
+        ),
         reconcile_run=lambda request: reconcile_run(
             request, ports.run_queries, ports.reconcile_commander, projection_limit
         ),
