@@ -26,6 +26,14 @@ PROOF_MARKER = "proves"
 PYTHON_MARKER_NAMESPACE = "mark"
 TYPESCRIPT_PROOF_CLAIM = re.compile(rf"\b{PROOF_MARKER}\((?P<identifier>[^)]*)\)")
 VITEST_TITLE_PARAMETER = re.compile(r"%(?:s|d|i|f|j|o|O|c|#|\$)")
+TYPESCRIPT_SIMPLE_ESCAPES = {
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+}
 PYTHON_SUFFIX = ".py"
 TYPESCRIPT_SUFFIX = ".ts"
 FRONTEND_DIRECTORY = "frontend"
@@ -381,14 +389,37 @@ def typescript_string_literals(source: str) -> Iterator[str]:
         contents: list[str] = []
         while index < len(source) and source[index] != quote:
             if source[index] == "\\" and index + 1 < len(source):
-                contents.extend(source[index : index + 2])
-                index += 2
+                decoded, index = decode_typescript_escape(source, index)
+                contents.append(decoded)
                 continue
             contents.append(source[index])
             index += 1
         if index < len(source):
             yield "".join(contents)
             index += 1
+
+
+def decode_typescript_escape(source: str, backslash: int) -> tuple[str, int]:
+    escaped = source[backslash + 1]
+    if escaped == "\n":
+        return "", backslash + 2
+    if escaped == "\r":
+        after_line = backslash + 2
+        if after_line < len(source) and source[after_line] == "\n":
+            after_line += 1
+        return "", after_line
+    if escaped == "x" and re.fullmatch(
+        r"[0-9A-Fa-f]{2}", source[backslash + 2 : backslash + 4]
+    ):
+        return chr(int(source[backslash + 2 : backslash + 4], 16)), backslash + 4
+    if escaped == "u":
+        unicode_escape = re.match(
+            r"(?:[0-9A-Fa-f]{4}|\{[0-9A-Fa-f]+\})", source[backslash + 2 :]
+        )
+        if unicode_escape is not None:
+            digits = unicode_escape.group(0).strip("{}")
+            return chr(int(digits, 16)), backslash + 2 + len(unicode_escape.group(0))
+    return TYPESCRIPT_SIMPLE_ESCAPES.get(escaped, escaped), backslash + 2
 
 
 def proof_honours_claim(proof: ReportedProof, claim: ProofClaim) -> bool:
@@ -405,9 +436,21 @@ def proof_honours_claim(proof: ReportedProof, claim: ProofClaim) -> bool:
         )
     if proof.located_in != claim.located_in:
         return False
-    escaped_title = re.escape(claim.claiming_test)
-    parameterized_title = VITEST_TITLE_PARAMETER.sub(".+?", escaped_title)
-    return re.fullmatch(parameterized_title, proof.proving_test) is not None
+    return (
+        re.fullmatch(vitest_title_pattern(claim.claiming_test), proof.proving_test)
+        is not None
+    )
+
+
+def vitest_title_pattern(title: str) -> str:
+    pattern: list[str] = []
+    previous_end = 0
+    for parameter in VITEST_TITLE_PARAMETER.finditer(title):
+        pattern.append(re.escape(title[previous_end : parameter.start()]))
+        pattern.append(r"\d+" if parameter.group(0) in {"%#", "%$"} else r".+?")
+        previous_end = parameter.end()
+    pattern.append(re.escape(title[previous_end:]))
+    return "".join(pattern)
 
 
 def python_class_name_matches_source(class_name: str | None, source: Path) -> bool:
@@ -499,13 +542,14 @@ def acceptance_problems(
             )
             continue
         proven.add(proof.sentence_identifier)
+    unhonoured_claims = set(claims_without_distinct_proofs(claims, proofs))
     for claim in claims:
         unhonoured = (
             "which no story declares"
             if claim.sentence_identifier not in declared
             else "which no run report shows passing"
         )
-        if not any(proof_honours_claim(proof, claim) for proof in proofs):
+        if claim in unhonoured_claims:
             problems.append(
                 f"{claim.located_in}:{claim.claiming_test} claims "
                 f"{claim.sentence_identifier!r}, {unhonoured}"
@@ -517,6 +561,54 @@ def acceptance_problems(
                 f"that ran and passed in this pipeline: {sentence.text}"
             )
     return tuple(problems)
+
+
+def claims_without_distinct_proofs(
+    claims: tuple[ProofClaim, ...], proofs: tuple[ReportedProof, ...]
+) -> tuple[ProofClaim, ...]:
+    reserved_proofs: set[int] = set()
+    honoured_claims: set[int] = set()
+    parameterized_claims: list[int] = []
+    for claim_index, claim in enumerate(claims):
+        if (
+            claim.located_in.suffix == TYPESCRIPT_SUFFIX
+            and VITEST_TITLE_PARAMETER.search(claim.claiming_test) is not None
+        ):
+            parameterized_claims.append(claim_index)
+            continue
+        proof_index = next(
+            (
+                index
+                for index, proof in enumerate(proofs)
+                if index not in reserved_proofs and proof_honours_claim(proof, claim)
+            ),
+            None,
+        )
+        if proof_index is not None:
+            reserved_proofs.add(proof_index)
+            honoured_claims.add(claim_index)
+
+    parameterized_claim_by_proof: dict[int, int] = {}
+
+    def assign_distinct_proof(claim_index: int, visited: set[int]) -> bool:
+        for proof_index, proof in enumerate(proofs):
+            if proof_index in reserved_proofs or proof_index in visited:
+                continue
+            if not proof_honours_claim(proof, claims[claim_index]):
+                continue
+            visited.add(proof_index)
+            previous_claim = parameterized_claim_by_proof.get(proof_index)
+            if previous_claim is None or assign_distinct_proof(previous_claim, visited):
+                parameterized_claim_by_proof[proof_index] = claim_index
+                return True
+        return False
+
+    for claim_index in parameterized_claims:
+        if assign_distinct_proof(claim_index, set()):
+            honoured_claims.add(claim_index)
+    return tuple(
+        claim for index, claim in enumerate(claims) if index not in honoured_claims
+    )
 
 
 def trace_acceptance(
