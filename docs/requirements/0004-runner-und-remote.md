@@ -5,7 +5,8 @@ Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/21
 Source-Threads: #21, #1
 Distilled-From: 5300858953, 5300894378, 5302132060, 5302584358, 5302587068,
-                5302590978, 5302602114, 5302961156, 5302967786, 5302447161
+                5302590978, 5302602114, 5302961156, 5302967786, 5302447161,
+                5307632389
                 #21 body, sha256 over the exact served bytes — 787 bytes, last
                 byte `.`, nothing appended —
                 5c03ceb1d5f1b85f81ec3acc1f6dea1c72d89817929a772432b9b02fbb74a56b
@@ -64,11 +65,13 @@ newline `gh`'s raw-string output adds and yields
 is used here for one reason that is not a preference: the now-landed ADR 0009
 binds #21 as its decision authority by `5c03ceb1…`, and one object cited under
 two digests in two documents is exactly the ambiguity a digest exists to remove.
-The rule making that form canonical is itself in flight — ADR 0010 decision 5,
-PR #81 at head `2ced1ec4`, not landed — and the README's own correction is owed
-and routed to [#93](https://github.com/FlexOr2/atelier-2/issues/93). Named here
-so a reader who reproduces the README recipe and gets the other value knows
-which byte differs, and neither digest is presented as settled convention.
+Die Regel, die diese Form kanonisch macht, ist inzwischen **gelandet** — ADR
+0010 Decision 5, PR #81 gemergt am 2026-08-15 —, und die README trägt die
+Korrektur bereits: sie schreibt `gh api … --template '{{.body}}' | sha256sum`
+und benennt den Zeilenumbruch, den `--jq '.body'` anhängt. Der Absatz bleibt
+stehen, damit ein Leser, der eine ältere Zitation nachrechnet und den anderen
+Wert erhält, weiß, welches Byte sich unterscheidet — nicht mehr als offene
+Konvention.
 
 ## Intent
 
@@ -432,10 +435,9 @@ and these rules do not restate it:
 
 ## Acceptance
 
-No story has declared an acceptance sentence for this requirement, and no
-operator ruling has settled this document, so what follows is a set of
-candidates and not a set of declared sentences; none of them has an identifier
-to name. The rules above already state in testable form, notably:
+No story has declared an acceptance sentence for this requirement, so what
+follows is a set of candidates and not a set of declared sentences; none of
+them has an identifier to name. The rules above already state in testable form, notably:
 
 - a process that reaches the service without an enrolment receives no attempt;
 - a binding that no connected, enrolled runner attests starts nothing — no

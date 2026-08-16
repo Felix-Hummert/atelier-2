@@ -5,7 +5,7 @@ Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/79
 Source-Threads: #79
 Distilled-From: 5302017656, 5302022156, 5302048197, 5302062963, 5302109936,
-                5302131944, 5302732436
+                5302131944, 5302732436, 5307633402, 5307639686
                 #79 body, sha256
                 9d781a3c15d9f392d5dcd6c466584002029f16713f079074b87726e17698d200
 Approved-By:    5307633402+5307639686
@@ -185,12 +185,20 @@ star, not a sentence of it.)
     Bindung, Beweise/Receipts); Lackmustest je Kopf: „Bietet die Plattform das
     schon?" → Adapter, nie Nachbau.
 
-21. `OPERATOR` — **Priorität ist bindend und wohnt im Atelier, nicht im
-    Tracker-Kommentar.** Der Operator wörtlich (an Fable, 16.08., via
+21. `DESK` — **Priorität soll im Atelier sichtbar und bindend sein, nicht im
+    Tracker-Kommentar.** Die zitierte Quelle trägt diesen Satz **nicht positiv**:
+    sie stellt zwei Fragen und weist eine Ablage zurück. `OPERATOR` ist deshalb
+    der falsche Grad, solange kein späteres, direktes Ruling zitiert wird — und
+    das Zitat bleibt genau deshalb stehen, damit ein Leser die Lücke selbst sieht
+    statt sie glauben zu müssen. Der Operator wörtlich (an Fable, 16.08., via
     5307639686 auf #79, ersetzt Punkt 3 von 5307633402):
 
     > „das kann schon auch im atelier sichtbar sein? und es muss so sein dass
-    > es bindend ist? […] im kommentar sicher nciht?"
+    > es bindend ist? […] im kommentar sicher nicht"
+
+    Was die Quelle wirklich entscheidet: **im Kommentar nicht** — das ist die
+    einzige Festlegung, und sie ist negativ. Dass Priorität bindender
+    Orchestrierungszustand *ist*, bleibt Desk-Lesart bis zu einem Ruling.
 
     Desk-Ausarbeitung um diesen Kern (selbe Quelle, Grad DESK): Priorität ist
     typisierter, dauerhafter, ereignis-historisierter Orchestrierungszustand —
@@ -201,13 +209,16 @@ star, not a sentence of it.)
 
 ## Open questions
 
-- **Retention has no owner yet, and it is due before a second project.** Foreign
-  work code and foreign issue text land in a store from which they cannot be
-  removed: every durable table carries a `no_delete` trigger, and there is no
-  pruning, no TTL, and no run or project deletion — the only way out is
-  discarding the whole SQLite file. The decision now sits with **#23**, together
-  with isolation, and is due *before* a second — especially a foreign — project
-  is connected. (5302109936 §4b, assigned in 5302131944 §4b.)
+- **Retention has an owner now; what stays open is when it is built.** Foreign work
+  code and foreign issue text land in a store they cannot be removed from again —
+  the only way out is discarding the whole SQLite file. The decision belongs to
+  [ADR 0011](../decisions/0011-project-isolation.md) decision 3, which owns the
+  mechanics and which names this question as pointing at it. That record is
+  `PROPOSED` — decision only, nothing implemented — so what a store does today is
+  what the code does, not what the decision says. The build is due *before* a
+  second, especially a foreign, project is connected. (5302109936 §4b, assigned in
+  5302131944 §4b; ownership passed from #23, closed 2026-08-15, to the record that
+  issue produced.)
 - **Reachability is a named precondition, not a given.** ADR 0009 refuses every
   non-loopback bind without an operator authenticator, and today's situation is
   sharper than that draft: `serve --host 0.0.0.0` without a composed Claude
@@ -217,9 +228,15 @@ star, not a sentence of it.)
   not a technical question** and no technical item answers it. (5302109936 §4c.)
 - **The stated order is much shorter than the real chain.** This item sits
   behind #15 → #58 → #60 → #38 → the V3 chain → #16 phase 2 + #63 → the #24
-  implementation → #23: eight owners, two of them not schedulable. The vision is
-  not wrong; the sentence "Reihenfolge: nach Funktions-Kette (#60/#38) und #24"
-  is just far shorter than the chain it names. (5302109936 §5.)
+  implementation → #23: eight owners. The vision is not wrong; the sentence
+  "Reihenfolge: nach Funktions-Kette (#60/#38) und #24" is just far shorter than
+  the chain it names. (5302109936 §5.)
+
+  Nachgeführt am heutigen Stand, weil die Quelle von 2026-08 zwei Glieder als
+  *nicht planbar* führte: **#23 und #63 sind geschlossen**, und die V3-Grundlage
+  ist gelandet. Der Satz „zwei davon nicht planbar" galt für den Stand seiner
+  Quelle und gilt nicht mehr; die Kette ist kürzer, nicht anders. Offen in ihr
+  bleibt #16 Phase 2.
 
 ## Acceptance
 
