@@ -1,0 +1,439 @@
+"""Durable V3 node records: request, context package, artifact, and receipt.
+
+ADR 0006 owns the preimage lists and the four persisted dispositions. This module
+is the typed production owner of those hashes. Nested sequences use their own
+frame domain, the same encoding rule as `run-agent-bindings/v1`. Alias history,
+policy activation, supersede markers, and store tables are not this owner.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import StrEnum
+
+from atelier2.contracts.agents import AgentExecutionCapability
+from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.hashing import Sha256Hash, frame
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
+from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+
+MAXIMUM_KIND_TOKEN_CHARACTERS = 64
+
+
+class ContextPackageHash(Sha256Hash):
+    """The immutable identity of one context-package/v3 manifest."""
+
+
+class NodeExecutionRequestHash(Sha256Hash):
+    """The immutable identity of one node-execution-request/v3."""
+
+
+class NodeArtifactHash(Sha256Hash):
+    """The immutable identity of one node-artifact/v3."""
+
+
+class NodeReceiptHash(Sha256Hash):
+    """The immutable identity of one node-receipt/v3."""
+
+
+class NodeKindV3(StrEnum):
+    """The five V3 node kinds a request may bind."""
+
+    AGENT = "agent"
+    DETERMINISTIC = "deterministic"
+    WAIT = "wait"
+    SUBWORKFLOW = "subworkflow"
+    ACTION = "action"
+
+
+class PersistedReceiptDisposition(StrEnum):
+    """The four stored terminal dispositions. `stale` is never one of them."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    BLOCKED = "blocked"
+
+
+class ProjectedDeliveryStatus(StrEnum):
+    """What an input envelope carries, including the projected `stale` status."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    BLOCKED = "blocked"
+    STALE = "stale"
+
+
+def _ascii_hash(value: Sha256Hash) -> bytes:
+    return value.value.encode("ascii")
+
+
+def _optional_ascii_hash(value: PublishedRevisionHash | None) -> bytes:
+    return b"" if value is None else _ascii_hash(value)
+
+
+def _require_node_id(node_id: str) -> None:
+    if node_id == "":
+        raise ValueError("a V3 node record names a nonempty node id")
+
+
+@dataclass(frozen=True)
+class ContextPackage:
+    """Exact manifest bytes under `context-package/v3`."""
+
+    manifest: bytes
+    package_hash: ContextPackageHash = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "package_hash",
+            ContextPackageHash.of(frame("context-package/v3", self.manifest)),
+        )
+
+
+@dataclass(frozen=True)
+class AvailableContextGrant:
+    """One `available_context` grant: name, source, and allowed read operations."""
+
+    name: str
+    source_revision: PublishedRevisionHash
+    read_operation_revisions: tuple[PublishedRevisionHash, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("an available-context grant names a nonempty entry")
+        if not isinstance(self.source_revision, PublishedRevisionHash):
+            raise TypeError("an available-context grant names a typed source revision")
+        if any(
+            not isinstance(revision, PublishedRevisionHash)
+            for revision in self.read_operation_revisions
+        ):
+            raise TypeError("available-context read operations must be typed revisions")
+
+    def framed(self) -> bytes:
+        return frame(
+            "available-context-entry/v3",
+            self.name.encode("utf-8"),
+            _ascii_hash(self.source_revision),
+            frame(
+                "available-context-reads/v3",
+                *(_ascii_hash(revision) for revision in self.read_operation_revisions),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class InputReceiptBinding:
+    """The non-succeeded envelope form: upstream node, disposition, reason, hash."""
+
+    node_id: str
+    disposition: PersistedReceiptDisposition
+    reason: str
+    receipt_hash: NodeReceiptHash
+
+    def __post_init__(self) -> None:
+        _require_node_id(self.node_id)
+        if not isinstance(self.disposition, PersistedReceiptDisposition):
+            raise TypeError("an input receipt names a persisted disposition")
+        if self.reason == "":
+            raise ValueError("an input receipt names a nonempty reason")
+        if not isinstance(self.receipt_hash, NodeReceiptHash):
+            raise TypeError("an input receipt names a typed receipt hash")
+
+    def framed(self) -> bytes:
+        return frame(
+            "input-envelope-receipt/v3",
+            self.node_id.encode("utf-8"),
+            self.disposition.value.encode("ascii"),
+            self.reason.encode("utf-8"),
+            _ascii_hash(self.receipt_hash),
+        )
+
+
+@dataclass(frozen=True)
+class InputEnvelope:
+    """One bound input: succeeded value, or the named non-success receipt."""
+
+    status: ProjectedDeliveryStatus
+    name: str
+    schema_revision: PublishedRevisionHash | None = None
+    value_hash: Sha256Hash | None = None
+    receipt: InputReceiptBinding | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, ProjectedDeliveryStatus):
+            raise TypeError("an input envelope names its status through the contract")
+        if self.name == "":
+            raise ValueError("an input envelope names a nonempty input")
+        if self.status is ProjectedDeliveryStatus.SUCCEEDED:
+            if self.schema_revision is None or self.value_hash is None:
+                raise ValueError("a succeeded input envelope carries schema and value")
+            if self.receipt is not None:
+                raise ValueError("a succeeded input envelope carries no receipt")
+            return
+        if self.receipt is None:
+            raise ValueError(
+                "a non-succeeded input envelope names the upstream receipt"
+            )
+        if self.schema_revision is not None or self.value_hash is not None:
+            raise ValueError(
+                "a non-succeeded input envelope carries no schema or value"
+            )
+        if (
+            self.status is not ProjectedDeliveryStatus.STALE
+            and self.status.value != self.receipt.disposition.value
+        ):
+            raise ValueError(
+                "a non-stale input envelope status matches the persisted disposition"
+            )
+
+    def framed(self) -> bytes:
+        return frame(
+            "input-envelope/v3",
+            self.status.value.encode("ascii"),
+            self.name.encode("utf-8"),
+            _optional_ascii_hash(self.schema_revision),
+            b"" if self.value_hash is None else _ascii_hash(self.value_hash),
+            b"" if self.receipt is None else self.receipt.framed(),
+        )
+
+
+@dataclass(frozen=True)
+class BoundNodeRevisions:
+    """The eight resolved revision ids the request binds in ADR 0006 order."""
+
+    agent_configuration: PublishedRevisionHash | None = None
+    profile: PublishedRevisionHash | None = None
+    skill: PublishedRevisionHash | None = None
+    tool: PublishedRevisionHash | None = None
+    policy: PublishedRevisionHash | None = None
+    budget: PublishedRevisionHash | None = None
+    retry: PublishedRevisionHash | None = None
+    cancellation: PublishedRevisionHash | None = None
+
+    def framed_fields(self) -> tuple[bytes, ...]:
+        return (
+            _optional_ascii_hash(self.agent_configuration),
+            _optional_ascii_hash(self.profile),
+            _optional_ascii_hash(self.skill),
+            _optional_ascii_hash(self.tool),
+            _optional_ascii_hash(self.policy),
+            _optional_ascii_hash(self.budget),
+            _optional_ascii_hash(self.retry),
+            _optional_ascii_hash(self.cancellation),
+        )
+
+
+@dataclass(frozen=True)
+class DeclaredOutput:
+    """One declared output name and the schema revision it must satisfy."""
+
+    name: str
+    schema_revision: PublishedRevisionHash
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("a declared output names a nonempty output")
+        if not isinstance(self.schema_revision, PublishedRevisionHash):
+            raise TypeError("a declared output names a typed schema revision")
+
+    def framed(self) -> bytes:
+        return frame(
+            "declared-output/v3",
+            self.name.encode("utf-8"),
+            _ascii_hash(self.schema_revision),
+        )
+
+
+@dataclass(frozen=True)
+class NodeExecutionRequest:
+    """One exact `node-execution-request/v3` preimage."""
+
+    workflow_revision_hash: WorkflowRevisionHash
+    run_configuration_revision_hash: RunConfigurationRevisionHash
+    run_id: RunId
+    node_id: str
+    context_package_hash: ContextPackageHash
+    available_context: tuple[AvailableContextGrant, ...]
+    kind: NodeKindV3
+    mode: AgentExecutionCapability | None
+    inputs: tuple[InputEnvelope, ...]
+    bound_revisions: BoundNodeRevisions
+    declared_outputs: tuple[DeclaredOutput, ...]
+    request_hash: NodeExecutionRequestHash = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_node_id(self.node_id)
+        if not isinstance(self.workflow_revision_hash, WorkflowRevisionHash):
+            raise TypeError("a node request names a typed workflow revision")
+        if not isinstance(
+            self.run_configuration_revision_hash, RunConfigurationRevisionHash
+        ):
+            raise TypeError("a node request names a typed run-configuration revision")
+        if not isinstance(self.run_id, RunId):
+            raise TypeError("a node request names a typed run id")
+        if not isinstance(self.context_package_hash, ContextPackageHash):
+            raise TypeError("a node request names a typed context-package hash")
+        if not isinstance(self.kind, NodeKindV3):
+            raise TypeError("a node request names its kind through the contract")
+        if self.mode is not None and not isinstance(
+            self.mode, AgentExecutionCapability
+        ):
+            raise TypeError("a node request names its mode through the contract")
+        if self.kind is NodeKindV3.AGENT and self.mode is None:
+            raise ValueError("an agent request binds a mode")
+        if self.kind is not NodeKindV3.AGENT and self.mode is not None:
+            raise ValueError("only an agent request binds a mode")
+        object.__setattr__(
+            self,
+            "request_hash",
+            NodeExecutionRequestHash.of(
+                frame(
+                    "node-execution-request/v3",
+                    _ascii_hash(self.workflow_revision_hash),
+                    _ascii_hash(self.run_configuration_revision_hash),
+                    self.run_id.value.encode("utf-8"),
+                    self.node_id.encode("utf-8"),
+                    _ascii_hash(self.context_package_hash),
+                    frame(
+                        "available-context/v3",
+                        *(grant.framed() for grant in self.available_context),
+                    ),
+                    self.kind.value.encode("ascii"),
+                    b"" if self.mode is None else self.mode.value.encode("ascii"),
+                    frame(
+                        "input-envelopes/v3",
+                        *(envelope.framed() for envelope in self.inputs),
+                    ),
+                    *self.bound_revisions.framed_fields(),
+                    frame(
+                        "declared-outputs/v3",
+                        *(output.framed() for output in self.declared_outputs),
+                    ),
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class NodeArtifact:
+    """One named output value under `node-artifact/v3`."""
+
+    run_id: RunId
+    node_id: str
+    node_execution_id: NodeExecutionId
+    output_name: str
+    schema_revision: PublishedRevisionHash
+    value: bytes
+    value_hash: Sha256Hash = field(init=False)
+    artifact_hash: NodeArtifactHash = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_node_id(self.node_id)
+        if self.output_name == "":
+            raise ValueError("a node artifact names a nonempty output")
+        if not isinstance(self.run_id, RunId):
+            raise TypeError("a node artifact names a typed run id")
+        if not isinstance(self.node_execution_id, NodeExecutionId):
+            raise TypeError("a node artifact names a typed node execution")
+        if not isinstance(self.schema_revision, PublishedRevisionHash):
+            raise TypeError("a node artifact names a typed schema revision")
+        value_hash = Sha256Hash.of(self.value)
+        object.__setattr__(self, "value_hash", value_hash)
+        object.__setattr__(
+            self,
+            "artifact_hash",
+            NodeArtifactHash.of(
+                frame(
+                    "node-artifact/v3",
+                    self.run_id.value.encode("utf-8"),
+                    self.node_id.encode("utf-8"),
+                    _ascii_hash(self.node_execution_id),
+                    self.output_name.encode("utf-8"),
+                    _ascii_hash(self.schema_revision),
+                    self.value,
+                    _ascii_hash(value_hash),
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ReceiptOutput:
+    """One declared output as the receipt records it: name, schema, value hash."""
+
+    name: str
+    schema_revision: PublishedRevisionHash
+    value_hash: Sha256Hash
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("a receipt output names a nonempty output")
+        if not isinstance(self.schema_revision, PublishedRevisionHash):
+            raise TypeError("a receipt output names a typed schema revision")
+        if not isinstance(self.value_hash, Sha256Hash):
+            raise TypeError("a receipt output names a typed value hash")
+
+    def framed(self) -> bytes:
+        return frame(
+            "node-receipt-output/v3",
+            self.name.encode("utf-8"),
+            _ascii_hash(self.schema_revision),
+            _ascii_hash(self.value_hash),
+        )
+
+
+@dataclass(frozen=True)
+class NodeReceipt:
+    """One terminal `node-receipt/v3`. `stale` cannot be written."""
+
+    node_execution_id: NodeExecutionId
+    disposition: PersistedReceiptDisposition
+    reason: str
+    request_hash: NodeExecutionRequestHash
+    context_package_hash: ContextPackageHash
+    outputs: tuple[ReceiptOutput, ...]
+    access_receipt_hashes: tuple[Sha256Hash, ...] = ()
+    receipt_hash: NodeReceiptHash = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.node_execution_id, NodeExecutionId):
+            raise TypeError("a node receipt names a typed node execution")
+        if not isinstance(self.disposition, PersistedReceiptDisposition):
+            raise TypeError("a node receipt names a persisted disposition")
+        if self.reason == "":
+            raise ValueError("a node receipt names a nonempty reason")
+        if not isinstance(self.request_hash, NodeExecutionRequestHash):
+            raise TypeError("a node receipt names a typed request hash")
+        if not isinstance(self.context_package_hash, ContextPackageHash):
+            raise TypeError("a node receipt names a typed context-package hash")
+        if (
+            self.disposition is not PersistedReceiptDisposition.SUCCEEDED
+            and self.outputs
+        ):
+            raise ValueError("a non-succeeded receipt carries no output values")
+        object.__setattr__(
+            self,
+            "receipt_hash",
+            NodeReceiptHash.of(
+                frame(
+                    "node-receipt/v3",
+                    _ascii_hash(self.node_execution_id),
+                    self.disposition.value.encode("ascii"),
+                    self.reason.encode("utf-8"),
+                    _ascii_hash(self.request_hash),
+                    _ascii_hash(self.context_package_hash),
+                    frame(
+                        "node-receipt-outputs/v3",
+                        *(output.framed() for output in self.outputs),
+                    ),
+                    frame(
+                        "node-receipt-access/v3",
+                        *(_ascii_hash(item) for item in self.access_receipt_hashes),
+                    ),
+                )
+            ),
+        )
