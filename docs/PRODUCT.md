@@ -284,8 +284,9 @@ and project one durable run's bound revision, state, nodes, and resumable event
 history. It can answer the exact integer requested by a Wait node and resolve an
 unknown Action outcome as either an exact found effect or an accountable,
 confirmed absence. For a V2 run it renders the node states the API names rather
-than deriving them; what it still derives is named — the V1 half, whose run
-resource is byte-frozen, and the half that arrives on the event stream — and the
+than deriving them — the V2 event stream carries the rail with every event, so
+nothing V2 is derived in the browser; the one named exception is the V1 half,
+whose run resource is byte-frozen and which dies with the V3 cutover — and the
 only state rule left in the browser is a client-owned interaction overlay that
 lifts a node needing the operator while his form is open and stills it by that
 open form alone. Its session-scoped mutation journal preserves exact retry
