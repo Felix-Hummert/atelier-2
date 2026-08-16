@@ -339,16 +339,11 @@ job still travels inside the published document, so one distinct input burns one
 revision, and neither a run-level input, a workflow name, nor an output contract
 that could decide an exit code exists yet.
 
-The canonical store is schema V9. A fresh store is created as exact V9. An exact
-V8 store is upgraded once by a version CAS: the product tables are unchanged
-because the process contract already lives on V8, and every durable row and hash
-survives. An exact V7 store still upgrades through V8 in the same open, adding
-the configuration format and requested-capability fields, then the V9 handoff.
-Malformed, partial, older, future, or fingerprint-mismatched stores are refused
-without a partial upgrade; there is no runtime downgrade. #63 consumes the
-published handoff object `PRODUCT_SCHEMA_HANDOFF` — version 9, product-schema
-fingerprint
-`6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38`, identical to
-V8 — and must not reopen a populated V9 store as a later catalog cutover. Until
-a named maturity there is no compatibility promise: later store work replaces
-the prototype instead of carrying old shapes.
+The canonical store is schema V10. A fresh store is created as exact V10 and
+carries the thin V3 subset: published revisions of the closed kind set, lineage
+membership bound to those revisions, format-3 runs, and `node_receipts_v3`. Alias history, measurements, and policy
+activations are not in this profile. V9 remains the published predecessor
+object `V9_SCHEMA_HANDOFF` — version 9, fingerprint
+`6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38`. Exact V7,
+V8, and V9 files are refused without mutation; there is no runtime migration
+or downgrade. Until a named maturity there is no compatibility promise.
