@@ -267,6 +267,15 @@ class ActionNodeV3(_NodeV3):
     outputs: Annotated[tuple[NodeOutput, ...], DeclaredSequence] = ()
 
 
+WorkflowNodeV3Kinds = (
+    AgentNodeV3,
+    DeterministicNodeV3,
+    WaitNodeV3,
+    SubworkflowNodeV3,
+    ActionNodeV3,
+)
+"""The five V3 node classes, as a runtime tuple for isinstance narrowing."""
+
 WorkflowNodeV3 = Annotated[
     AgentNodeV3 | DeterministicNodeV3 | WaitNodeV3 | SubworkflowNodeV3 | ActionNodeV3,
     Field(discriminator="type"),

@@ -28,6 +28,7 @@ from atelier2.adapters.dbos.run_store import (
     commit_subworkflow_completed,
     commit_wait_answered,
     commit_waiting_input,
+    entry_node_of,
     load_graph,
     load_run,
     load_wait_answer,
@@ -69,7 +70,7 @@ from atelier2.contracts.executions import (
     node_workflow_id_for,
     subworkflow_workflow_id_for,
 )
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -82,6 +83,7 @@ from atelier2.contracts.workflows import (
     SubworkflowNode,
     WaitNode,
 )
+from atelier2.contracts.workflows_v3 import AgentNodeV3
 from atelier2.ports.agent_attempts import AgentAttemptStore, AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
     AgentExecutor,
@@ -171,14 +173,15 @@ def bootstrap_run_binding(
         if run.revision_hash != revision_hash:
             raise RunBindingConflict("bootstrap requires its exact durable run binding")
         graph = load_graph(session, revision_hash)
+        entry = entry_node_of(graph)
         if (
             run.state is not RunState.STARTED
-            or run.current_node_id != graph.start
+            or run.current_node_id != entry
             or run.state_version != 0
             or run.last_event_sequence != 0
         ):
             raise RunBindingConflict("bootstrap requires its exact new durable run")
-        return graph.start
+        return entry
 
     return str(datasource.run_tx_step({"name": BOOTSTRAP_STEP_NAME}, load_binding))
 
@@ -215,9 +218,13 @@ def _node_binding(
         node = load_graph(session, revision_hash).node(node_id)
         if isinstance(node, AgentNode):
             return {"type": "agent", "job": node.job, "output": node.output}
-        if isinstance(node, AgentNodeV2):
-            if not isinstance(run, RunV2):
-                raise RunTransitionConflict("V2 Agent node belongs to a V1 run")
+        if isinstance(node, (AgentNodeV2, AgentNodeV3)):
+            # A V3 Agent binds through the same durable path as a V2 one: same
+            # role matrix, same attempt store, same executor registry. The arm is
+            # shared rather than copied, because a second encoding of the same
+            # binding is how the two would drift apart.
+            if not isinstance(run, (RunV2, RunV3)):
+                raise RunTransitionConflict("Agent node belongs to a V1 run")
             resolved = next(
                 (
                     binding
@@ -233,7 +240,7 @@ def _node_binding(
             return {
                 "type": "agent-v2",
                 "role": resolved.role.value,
-                "job": node.job,
+                "job": node.job if isinstance(node, AgentNodeV2) else node.instruction,
                 "configuration_hash": configuration.revision_hash.value,
                 "auth_hash": auth.revision_hash.value,
                 "profile_id": auth.profile_id,

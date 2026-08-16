@@ -1091,9 +1091,78 @@ def test_a_document_nested_past_the_bound_is_refused_instead_of_exhausting_the_s
     assert refusal.reason is WorkflowRefusalReason.DOCUMENT_TOO_DEEP
 
 
-def test_a_v3_document_parses_but_no_runtime_executes_it() -> None:
+ONE_AGENT_DOCUMENT = b"""format_version: 3
+name: One agent
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+"""
+
+
+@pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
+def test_a_v3_document_whose_kinds_no_runtime_interprets_is_still_refused() -> None:
+    """The pin stays for every kind the runtime does not interpret.
+
+    This is the half of the old sentence that is still true, kept as its own
+    case rather than reinterpreted: the document below carries deterministic,
+    wait, subworkflow and action nodes, and nothing executes any of them.
+    """
     with pytest.raises(InvalidWorkflowDocument, match=FORMAT_V3_NOT_EXECUTABLE):
         parse_executable_workflow_document(DOCUMENT)
+
+
+TWO_AGENT_CHAIN = b"""format_version: 3
+name: Two agents
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the first thing.
+  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: Judge the first thing.
+    depends_on: [implement]
+"""
+
+
+@pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
+def test_the_one_admitted_v3_shape_is_executable() -> None:
+    """One simple Agent node, its own entry and its own sink."""
+    parsed = parse_executable_workflow_document(ONE_AGENT_DOCUMENT)
+
+    assert isinstance(parsed, WorkflowGraphV3)
+    assert parsed.entry_node_ids == ("implement",)
+    assert parsed.sink_node_ids == ("implement",)
+
+
+NOT_YET_EXECUTABLE: dict[str, bytes] = {
+    "a form nothing binds": ONE_AGENT_DOCUMENT
+    + b"    budget: {ref: build_budget, revision: budget-1}\n",
+    "a second node": TWO_AGENT_CHAIN,
+    "two entry nodes": ONE_AGENT_DOCUMENT
+    + b"""  - id: second_entry
+    type: agent
+    role: other
+    mode: headless
+    instruction: Start independently.
+""",
+}
+
+
+@pytest.mark.parametrize(
+    ("document"), NOT_YET_EXECUTABLE.values(), ids=NOT_YET_EXECUTABLE
+)
+@pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
+def test_every_v3_form_no_runtime_binds_is_refused_by_name(document: bytes) -> None:
+    """A shape nothing runs is named, never started and abandoned midway."""
+    with pytest.raises(InvalidWorkflowDocument, match=FORMAT_V3_NOT_EXECUTABLE):
+        parse_executable_workflow_document(document)
 
 
 def test_the_worked_example_of_the_record_parses_unchanged() -> None:

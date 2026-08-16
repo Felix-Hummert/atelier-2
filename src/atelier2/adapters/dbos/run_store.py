@@ -65,7 +65,7 @@ from atelier2.contracts.executions import (
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.run_bindings import AnyRun, RunV2
+from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     Run,
@@ -77,10 +77,14 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.workflows import (
     ActionNode,
     AgentNodeV2,
-    AnyWorkflowGraph,
     SubworkflowNode,
     WaitNode,
     WorkflowGraphV2,
+)
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    AnyWorkflowDocument,
+    WorkflowGraphV3,
 )
 from atelier2.ports.durable_runs import (
     DurableAnswerBytesConflict,
@@ -104,7 +108,9 @@ class AgentReceiptConflict(RunTransitionConflict):
     """One stable node execution contradicts its durable agent receipt."""
 
 
-def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> AnyWorkflowGraph:
+def load_graph(
+    session: Any, revision_hash: WorkflowRevisionHash
+) -> AnyWorkflowDocument:
     document = session.scalar(
         sa.select(workflow_revisions.c.document).where(
             workflow_revisions.c.revision_hash == revision_hash.value
@@ -117,7 +123,7 @@ def load_graph(session: Any, revision_hash: WorkflowRevisionHash) -> AnyWorkflow
 
 def graph_from_document(
     revision_hash: WorkflowRevisionHash, document: bytes
-) -> AnyWorkflowGraph:
+) -> AnyWorkflowDocument:
     revision = WorkflowRevision(bytes(document))
     if revision.revision_hash != revision_hash:
         raise RevisionHashCollision(
@@ -148,7 +154,9 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
     version = int(record["workflow_format_version"])
     if version == 1:
         return run_from_record(record)
-    if version != 2 or record["agent_binding_set_hash"] is None:
+    # A V3 run binds its agent roles exactly as a V2 run does, so the rows below
+    # are read the same way; what differs about V3 lives in the graph, not here.
+    if version not in (2, 3) or record["agent_binding_set_hash"] is None:
         raise RunTransitionConflict("run format version and binding set disagree")
     run_id = RunId(str(record["run_id"]))
     revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
@@ -223,7 +231,11 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
             ResolvedAgentBinding(AgentRole(str(row["role"])), configuration, auth)
         )
     terminal = record["terminal_hash"]
-    return RunV2(
+    # A V3 row is read back as a V3 run, not as a V2 one wearing a new number:
+    # the two are different truths, and a shared shape would mean every V2 reader
+    # had silently been reading V3 rows all along.
+    shape = RunV2 if version == 2 else RunV3
+    return shape(
         run_id,
         revision_hash,
         binding_set_hash,
@@ -250,12 +262,55 @@ def load_run(session: Any, run_id: RunId) -> AnyRun:
     return run
 
 
-def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowGraph) -> None:
-    if isinstance(run, RunV2) != isinstance(graph, WorkflowGraphV2):
+def entry_node_of(graph: AnyWorkflowDocument) -> str:
+    """Where a run of this document begins.
+
+    V1 and V2 name it directly; a V3 graph derives its entry set from the nodes
+    that depend on nothing. Only a single-entry V3 document starts today — a
+    fan-out start needs the ready set ADR 0006 hands the scheduler, and refusing
+    it here is what keeps this head from implying one.
+    """
+    if isinstance(graph, WorkflowGraphV3):
+        entry = graph.entry_node_ids
+        if len(entry) != 1:
+            raise RunTransitionConflict(
+                f"a V3 run starts at exactly one entry node, not {len(entry)}"
+            )
+        return entry[0]
+    return graph.start
+
+
+def successor_of(graph: AnyWorkflowDocument, node_id: str) -> str:
+    """The one node a finished node hands the run to.
+
+    V1 and V2 name it directly. A V3 run cannot reach this at all today: the one
+    executable V3 shape is a single node, and nothing advances it, because
+    advancing needs the ready set over `depends_on` that ADR 0006 hands the
+    scheduler. Refused by name rather than answered by a rule that would be the
+    first inch of that ready set -- H2 and #86 own it, and owning it here would
+    mean deciding fan-out and join semantics in a head about a binding arm.
+    """
+    if isinstance(graph, WorkflowGraphV3):
+        raise RunTransitionConflict(
+            f"a V3 run has no advance path yet, so node {node_id!r} hands on to nothing"
+        )
+    return graph.successor(node_id).id
+
+
+def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
+    # A V3 graph binds roles the way a V2 one does and is carried by the same run
+    # shape, so both are the bound side of this check; only V1 has no bindings.
+    bound_graph = isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3))
+    bound_run = isinstance(run, (RunV2, RunV3))
+    if bound_run != bound_graph:
         raise RunTransitionConflict("run version differs from workflow graph version")
-    if isinstance(run, RunV2):
+    if isinstance(run, RunV3) != isinstance(graph, WorkflowGraphV3):
+        raise RunTransitionConflict("run format differs from workflow graph format")
+    if isinstance(run, (RunV2, RunV3)):
         expected_roles = {
-            node.role for node in graph.nodes if isinstance(node, AgentNodeV2)
+            node.role
+            for node in graph.nodes
+            if isinstance(node, (AgentNodeV2, AgentNodeV3))
         }
         if expected_roles != {binding.role.value for binding in run.agent_bindings}:
             raise RunTransitionConflict("run agent roles differ from workflow graph")
@@ -569,7 +624,7 @@ def commit_agent_completed(
         result.output_bytes,
         RunState.STARTED,
         RunState.STARTED,
-        graph.successor(request.node_id).id,
+        successor_of(graph, request.node_id),
     )
 
 
@@ -743,7 +798,7 @@ def commit_action_completed(
         receipt.result.payload,
         RunState.STARTED,
         RunState.STARTED,
-        graph.successor(action.id).id,
+        successor_of(graph, action.id),
         logical_key,
         receipt.result.payload_hash,
     )
@@ -775,7 +830,7 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
         answer.answer_bytes,
         RunState.WAITING_INPUT,
         RunState.STARTED,
-        graph.successor(answer.node_id).id,
+        successor_of(graph, answer.node_id),
     )
     if durable.state is WaitAnswerState.PENDING:
         updated = session.execute(

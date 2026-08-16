@@ -20,7 +20,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import RunId
-from atelier2.contracts.workflows import AnyWorkflowGraph
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge,
     QueryDurableStateCorrupt,
@@ -56,7 +56,7 @@ class AgentAttemptProjection:
 @dataclass(frozen=True)
 class RunProjection:
     run: AnyRun
-    graph: AnyWorkflowGraph
+    graph: AnyWorkflowDocument
     reconciliation: WaitingReconciliationProjection | None
     agent_attempts: tuple[AgentAttemptProjection, ...] = ()
 

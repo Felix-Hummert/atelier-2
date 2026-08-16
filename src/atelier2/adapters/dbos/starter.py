@@ -14,6 +14,7 @@ from atelier2.adapters.dbos.agent_catalog import (
     auth_profile_from_record,
 )
 from atelier2.adapters.dbos.run_store import (
+    entry_node_of,
     run_from_record,
     run_from_record_with_bindings,
 )
@@ -55,8 +56,15 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevision,
 )
-from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraph, WorkflowGraphV2
-from atelier2.contracts.workflows_v3 import WorkflowGraphV3
+from atelier2.contracts.workflows import (
+    AgentNodeV2,
+    WorkflowGraph,
+    WorkflowGraphV2,
+)
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    WorkflowGraphV3,
+)
 from atelier2.ports.agent_executions import AgentExecutorKey, AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
@@ -374,13 +382,16 @@ class DbosDurableRunStarter:
                         return DurableInvalidAgentBindings()
                     resolved_bindings: tuple[ResolvedAgentBinding, ...] = ()
                     binding_set: AgentBindingSet | None = None
-                elif isinstance(graph, WorkflowGraphV2):
+                elif isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3)):
+                    # V3's Agent kind binds its role exactly as V2's does, so the
+                    # resolution below is shared rather than copied. What differs
+                    # is only where the run starts, which `entry_node_of` answers.
                     if not isinstance(request, StartPublishedRunRequestV2):
                         return DurableInvalidAgentBindings()
                     expected_roles = {
                         node.role
                         for node in graph.nodes
-                        if isinstance(node, AgentNodeV2)
+                        if isinstance(node, (AgentNodeV2, AgentNodeV3))
                     }
                     requested_roles = {
                         binding.role.value
@@ -400,7 +411,8 @@ class DbosDurableRunStarter:
                         if (
                             str(existing_record["revision_hash"])
                             != request.revision_hash.value
-                            or int(existing_record["workflow_format_version"]) != 2
+                            or int(existing_record["workflow_format_version"])
+                            != graph.format_version
                             or str(existing_record["agent_binding_set_hash"])
                             != binding_set.binding_set_hash.value
                         ):
@@ -473,7 +485,7 @@ class DbosDurableRunStarter:
                             if binding_set is None
                             else binding_set.binding_set_hash.value
                         ),
-                        current_node_id=graph.start,
+                        current_node_id=entry_node_of(graph),
                         state=RunState.STARTED.value,
                         state_version=0,
                         last_event_sequence=0,
