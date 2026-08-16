@@ -280,12 +280,21 @@ def test_an_unprojectable_durable_row_ends_the_stream_as_durable_corruption(
     assert problem["type"].endswith(":durable-state-corrupt")
 
 
-def test_a_v1_row_carrying_a_v2_only_kind_ends_the_stream_instead_of_escaping() -> None:
+def test_a_v1_row_carrying_a_v2_only_kind_ends_the_stream_as_durable_corruption() -> (
+    None
+):
+    """The escape became a named refusal, which is what #88 changed here.
+
+    A V1 row carrying a kind no V1 run produces used to leave the closed union
+    through a fall-through assertion, and the stream could only call that an
+    internal error. One owner for the V1 vocabulary makes it what it always was:
+    a durable row the projection refuses by name.
+    """
     page = RunEventPage((persisted_v1_cancellation(),), False)
 
     problem = failed_stream_problem(OnePageQueries(page))
 
-    assert problem["type"].endswith(":internal-error")
+    assert problem["type"].endswith(":durable-state-corrupt")
 
 
 def test_one_corrupt_history_reports_one_problem_before_and_inside_the_stream() -> None:
@@ -325,6 +334,23 @@ def test_the_document_promises_exactly_the_problem_bodies_the_stream_can_emit() 
         problem_identity(
             failed_stream_problem(
                 OnePageQueries(RunEventPage((persisted_v1_cancellation(),), False))
+            )
+        ),
+        # The V1-vocabulary row above now refuses by name, so the internal-error
+        # promise needs the path that still reaches it: a store handing back more
+        # events than the page that was asked for.
+        problem_identity(
+            failed_stream_problem(
+                OnePageQueries(
+                    RunEventPage(
+                        (
+                            persisted_event(1, RunEventKind.AGENT_COMPLETED, b"a"),
+                            persisted_event(2, RunEventKind.AGENT_COMPLETED, b"b"),
+                        ),
+                        False,
+                    )
+                ),
+                limit_changes={"event_page_size": 1},
             )
         ),
     }

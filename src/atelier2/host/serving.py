@@ -36,12 +36,12 @@ from atelier2.api.limits import (
     durable_projection_limit,
 )
 from atelier2.api.stream import EventPollBackoff
-from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
+from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+)
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
-
-MAXIMUM_REQUEST_BODY_BYTES = 65_536
-MAXIMUM_FIELD_CHARACTERS = 1_024
 
 # The edge must admit exactly the largest result the durable agent contract
 # accepts, and nothing larger: a tighter bound refuses work the store would
@@ -52,6 +52,12 @@ MAXIMUM_FIELD_CHARACTERS = 1_024
 # reports the resulting refusal as a clean end of stream.
 MAXIMUM_DECODED_PAYLOAD_BYTES = MAXIMUM_AGENT_OUTPUT_BYTES_V2
 MAXIMUM_BASE64_CHARACTERS = base64_characters_for(MAXIMUM_DECODED_PAYLOAD_BYTES)
+# The HTTP body owns its transport envelope independently of any one field. This
+# deployment default admits the largest supported answer together with its JSON
+# keys, revision, and maximum node id; a behavior test crosses the real middleware
+# seam so envelope growth cannot silently make that legal payload undeliverable.
+MAXIMUM_REQUEST_BODY_BYTES = 68 * 1_024
+MAXIMUM_FIELD_CHARACTERS = MAXIMUM_AGENT_FIELD_CHARACTERS
 MAXIMUM_WORKFLOW_NODES = 100
 
 # A listing that says what its revisions are called has to read and parse their
