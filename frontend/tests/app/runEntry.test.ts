@@ -597,7 +597,15 @@ describe("same-origin API transport", () => {
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return cockpitApiStub({
     listWorkflowRevisions: vi.fn(async () => ({
-      items: [{ revision_hash: revisionHash }],
+      items: [
+        {
+          revision_hash: revisionHash,
+          format_version: 2 as const,
+          executable: true,
+          name: null,
+          description: null
+        }
+      ],
       next_after_revision_hash: null
     })),
     publish: vi.fn(async () => ({ status: 201, value: revision() })),

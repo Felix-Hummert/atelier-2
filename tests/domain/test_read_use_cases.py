@@ -68,6 +68,11 @@ class ScriptedQueries:
     ) -> Any:
         return self._record(revision_hash, projection_limit)
 
+    def list_described_workflow_revisions(
+        self, after: Any, limit: Any, budget: Any, projection_limit: Any = None
+    ) -> Any:
+        return self._record(after, limit, budget, projection_limit)
+
     def list_workflow_revisions(self, after: Any, limit: int) -> Any:
         return self._record(after, limit)
 

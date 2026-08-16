@@ -45,6 +45,19 @@ MAXIMUM_FIELD_CHARACTERS = 1_024
 MAXIMUM_DECODED_PAYLOAD_BYTES = MAXIMUM_AGENT_OUTPUT_BYTES_V2
 MAXIMUM_BASE64_CHARACTERS = base64_characters_for(MAXIMUM_DECODED_PAYLOAD_BYTES)
 MAXIMUM_WORKFLOW_NODES = 100
+
+# A listing that says what its revisions are called has to read and parse their
+# documents, and the measurement says those are two costs in two units: the
+# parse is paid per node -- 0.66 to 1.52 ms per node, holding across a 150x byte
+# range -- and the read is paid per byte. So one page may parse no more nodes,
+# and move no more document bytes, than this edge already admits for a single
+# document. Both are derivations of those two owners rather than second literals,
+# which is what stops a raised document bound from leaving a page bound behind.
+# Neither implies the other: a hundred one-node documents still weigh megabytes,
+# and a page bounded only by bytes still holds hundreds of nodes.
+MAXIMUM_ENRICHED_PAGE_NODES = MAXIMUM_WORKFLOW_NODES
+MAXIMUM_ENRICHED_PAGE_DOCUMENT_BYTES = MAXIMUM_REQUEST_BODY_BYTES
+
 EVENT_PAGE_SIZE = 50
 MAXIMUM_CONTROL_QUERIES = 8
 MAXIMUM_EVENT_POLL_QUERIES = 2
@@ -62,6 +75,8 @@ def api_limits() -> ApiLimits:
         maximum_base64_characters=MAXIMUM_BASE64_CHARACTERS,
         maximum_decoded_payload_bytes=MAXIMUM_DECODED_PAYLOAD_BYTES,
         maximum_workflow_nodes=MAXIMUM_WORKFLOW_NODES,
+        maximum_enriched_page_nodes=MAXIMUM_ENRICHED_PAGE_NODES,
+        maximum_enriched_page_document_bytes=MAXIMUM_ENRICHED_PAGE_DOCUMENT_BYTES,
         event_page_size=EVENT_PAGE_SIZE,
         maximum_control_queries=MAXIMUM_CONTROL_QUERIES,
         maximum_event_poll_queries=MAXIMUM_EVENT_POLL_QUERIES,

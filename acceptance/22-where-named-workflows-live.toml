@@ -1,0 +1,40 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/22"
+
+# Three sentences of #22 are deliberately absent, because this head does not
+# close them and declaring them here would red this gate for work nobody has
+# built:
+#
+#   "the picker offers a name to choose, and shows the exact hash only under
+#   details" and "a revision no run can start says so before the operator tries"
+#   — both are cockpit behaviour proven by component tests, and they belong to
+#   head H-22-C. This head is the API that must answer first: #131's own build
+#   rule is that a UI head builds only against an existing API. They join this
+#   file in the change that proves them.
+#
+#   "the library shows names, never hashes" — requirement 0003 rule 5 in full.
+#   A V1 or V2 revision carries no authored name and never will, so while the
+#   picker lists revisions rather than lineages, a hash stays the only honest
+#   label for one. The rule becomes provable when `catalog_lineages` and
+#   `catalog_lineage_aliases` exist, which ADR 0007's Store dimensions places in
+#   #63's cutover after #16 phase 2. Writing it green before then would narrow
+#   the wish; declaring it now would red this gate for a store nobody has cut
+#   over. It joins this file in the change that proves it.
+#
+# This file therefore does not list every sentence of #22.
+
+[[sentence]]
+id = "a-published-revision-is-listed-with-the-name-its-author-wrote"
+text = "A published workflow revision is listed with the name its author wrote into the document, not with its hash."
+
+[[sentence]]
+id = "a-format-that-declares-no-name-is-listed-as-unnamed"
+text = "A revision whose format declares no name is listed as unnamed, and no name is invented for it."
+
+[[sentence]]
+id = "the-description-is-read-from-the-published-bytes-and-from-nowhere-else"
+text = "A revision's description is read from the exact bytes that were published and from nowhere else, so no second place can disagree with it."
+
+[[sentence]]
+id = "an-enriched-page-stops-at-its-derived-bound-and-pages-on"
+text = "A listing stops at the bound derived from what one document may cost, still answers with at least one revision, and says where the next page starts."

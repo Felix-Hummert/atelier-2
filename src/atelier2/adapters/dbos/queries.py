@@ -93,8 +93,11 @@ from atelier2.ports.run_queries import (
 )
 from atelier2.ports.workflow_revisions import (
     PROJECTION_LIMIT_DETAIL,
+    DescribedWorkflowRevisionPage,
     DurableProjectionLimit,
+    EnrichedPageBudget,
     GetWorkflowRevisionResult,
+    ListDescribedWorkflowRevisionsResult,
     ListWorkflowRevisionsResult,
     ProjectionLimitExceeded,
     QueryDurableStateCorrupt,
@@ -461,6 +464,76 @@ class DbosQueries:
                 return WorkflowRevisionPage(
                     items, items[-1] if has_more and items else None
                 )
+        except (OperationalError, PoolTimeoutError):
+            return ReadUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return QueryDurableStateCorrupt()
+
+    def list_described_workflow_revisions(
+        self,
+        after: WorkflowRevisionHash | None,
+        limit: int,
+        budget: EnrichedPageBudget,
+        projection_limit: DurableProjectionLimit | None = None,
+    ) -> ListDescribedWorkflowRevisionsResult:
+        """One page of revisions with their documents, in one bounded query.
+
+        The rows stream one at a time on purpose: a page that fetched its whole
+        limit before spending its budget would move every document it then
+        refused to use, which is the byte cost the budget exists to bound.
+        """
+
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("revision page limit must be an integer from 1 to 100")
+        try:
+            with self._connection() as connection:
+                statement = sa.select(
+                    workflow_revisions.c.revision_hash, workflow_revisions.c.document
+                )
+                if after is not None:
+                    statement = statement.where(
+                        workflow_revisions.c.revision_hash > after.value
+                    )
+                streamed = connection.execution_options(yield_per=1).execute(
+                    statement.order_by(workflow_revisions.c.revision_hash).limit(
+                        limit + 1
+                    )
+                )
+                items: list[WorkflowRevisionProjection] = []
+                spent_nodes = 0
+                spent_bytes = 0
+                exhausted = False
+                for record in streamed.mappings():
+                    if len(items) == limit:
+                        exhausted = True
+                        break
+                    document = bytes(record["document"])
+                    if items and spent_bytes + len(document) > (
+                        budget.maximum_document_bytes
+                    ):
+                        exhausted = True
+                        break
+                    if projection_limit is not None:
+                        projection_limit.validate_document(document)
+                    revision = WorkflowRevision(document)
+                    if revision.revision_hash.value != str(record["revision_hash"]):
+                        return QueryDurableStateCorrupt()
+                    graph = parse_workflow_document(document)
+                    if projection_limit is not None:
+                        projection_limit.validate_graph(graph)
+                    if items and spent_nodes + len(graph.nodes) > budget.maximum_nodes:
+                        exhausted = True
+                        break
+                    items.append(WorkflowRevisionProjection(revision, graph))
+                    spent_bytes += len(document)
+                    spent_nodes += len(graph.nodes)
+                streamed.close()
+                return DescribedWorkflowRevisionPage(
+                    tuple(items),
+                    items[-1].revision.revision_hash if exhausted and items else None,
+                )
+        except ProjectionLimitExceeded:
+            return ReadUnavailable(PROJECTION_LIMIT_DETAIL)
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):

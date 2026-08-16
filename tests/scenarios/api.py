@@ -271,6 +271,8 @@ def api_limits(**changes: int) -> ApiLimits:
         maximum_base64_characters=65_536,
         maximum_decoded_payload_bytes=49_152,
         maximum_workflow_nodes=100,
+        maximum_enriched_page_nodes=100,
+        maximum_enriched_page_document_bytes=65_536,
         event_page_size=50,
         maximum_control_queries=8,
         maximum_event_poll_queries=2,
@@ -305,7 +307,9 @@ def event_stream_client(queries: RunEventQueries) -> TestClient:
     )
 
 
-def durable_api_client(runtime: DbosRuntime) -> TestClient:
+def durable_api_client(
+    runtime: DbosRuntime, limits: ApiLimits | None = None
+) -> TestClient:
     """The real HTTP boundary in front of one real durable runtime.
 
     Whether a request is refused before anything durable exists is a property
@@ -342,7 +346,7 @@ def durable_api_client(runtime: DbosRuntime) -> TestClient:
                     runtime.engine, runtime.settings.application_version
                 ),
             ),
-            limits=api_limits(),
+            limits=api_limits() if limits is None else limits,
             event_poll_backoff=event_poll_backoff(),
         )
     )

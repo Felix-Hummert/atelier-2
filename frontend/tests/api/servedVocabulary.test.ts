@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { NODE_STATES, PUBLIC_ATTEMPT_STATES } from "../../src/api/client";
+import {
+  NODE_STATES,
+  PUBLIC_ATTEMPT_STATES,
+  workflowRevisionSummarySchema
+} from "../../src/api/client";
 
 /**
  * The frozen OpenAPI document is the one object both sides can read: the server
@@ -11,7 +15,14 @@ import { NODE_STATES, PUBLIC_ATTEMPT_STATES } from "../../src/api/client";
  */
 const servedDocument = JSON.parse(
   readFileSync(resolve(process.cwd(), "..", "tests", "api", "openapi_frozen.json"), "utf8")
-) as { components: { schemas: Record<string, { enum?: string[]; properties?: Record<string, { enum?: string[] }> }> } };
+) as {
+  components: {
+    schemas: Record<
+      string,
+      { enum?: string[]; properties?: Record<string, { enum?: string[] }> }
+    >;
+  };
+};
 
 describe("the served vocabulary", () => {
   it("proves(the-browser-and-the-served-contract-know-the-same-node-states): the browser decodes exactly the node states the document serves", () => {
@@ -24,5 +35,36 @@ describe("the served vocabulary", () => {
     expect([...PUBLIC_ATTEMPT_STATES]).toEqual(
       servedDocument.components.schemas.AgentAttemptResourceV2?.properties?.state?.enum
     );
+  });
+
+  /**
+   * This one exists because it was missing. The described listing was built
+   * server-side while this decoder still refused its fields, and every frontend
+   * test mocked the call away, so nothing red until the page threw in a browser.
+   * Comparing the decoder's own keys against the document's makes a wire
+   * enrichment fail here instead of on the operator's screen.
+   */
+  it("decodes exactly the fields the described revision listing serves", () => {
+    const served = servedDocument.components.schemas.WorkflowRevisionSummaryResourceV2;
+
+    expect(Object.keys(workflowRevisionSummarySchema.shape).sort()).toEqual(
+      Object.keys(served?.properties ?? {}).sort()
+    );
+  });
+
+  it("accepts a described revision built from the document's own field set", () => {
+    const served = servedDocument.components.schemas.WorkflowRevisionSummaryResourceV2;
+    const sample: Record<string, unknown> = {
+      revision_hash: "a".repeat(64),
+      format_version: 3,
+      executable: false,
+      name: "Implement a candidate, then review it for defects",
+      description: null
+    };
+
+    expect(Object.keys(sample).sort()).toEqual(
+      Object.keys(served?.properties ?? {}).sort()
+    );
+    expect(workflowRevisionSummarySchema.parse(sample)).toEqual(sample);
   });
 });

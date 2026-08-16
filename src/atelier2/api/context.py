@@ -17,6 +17,7 @@ from atelier2.application.publish_workflow_revision import WorkflowPublicationLi
 from atelier2.application.read_runs import GetRunResult, ListRunsResult
 from atelier2.application.read_workflow_revisions import (
     GetWorkflowRevisionResult,
+    ListDescribedWorkflowRevisionsResult,
     ListWorkflowRevisionsResult,
 )
 from atelier2.application.reconcile_effect import ReconcileRunResult
@@ -74,6 +75,9 @@ class ApiUseCases:
     get_workflow_revision: Callable[[WorkflowRevisionHash], GetWorkflowRevisionResult]
     list_workflow_revisions: Callable[
         [WorkflowRevisionHash | None, int], ListWorkflowRevisionsResult
+    ]
+    list_described_workflow_revisions: Callable[
+        [WorkflowRevisionHash | None, int], ListDescribedWorkflowRevisionsResult
     ]
     get_run: Callable[[RunId], GetRunResult]
     list_runs: Callable[[RunId | None, int], ListRunsResult]

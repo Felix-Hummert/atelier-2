@@ -19,6 +19,7 @@ from atelier2.api.references import (
     decode_public_run_reference,
 )
 from atelier2.api.stream import BoundedQueryRunner, QueryAdmissionTimeout
+from atelier2.api.wire.requests import RevisionListingView
 from atelier2.api.wire.resources import AnyRunResource
 from atelier2.application.read_runs import (
     GetRunResult,
@@ -142,6 +143,20 @@ def parse_limit(value: str) -> int:
     if re.fullmatch(r"(?:[1-9]|[1-9][0-9]|100)", value) is None:
         raise ApiProblem("invalid-request")
     return int(value)
+
+
+def parse_revision_view(value: str) -> RevisionListingView:
+    """Read which representation a listing was asked for, or refuse by name.
+
+    An unknown view is refused rather than quietly served as the default: a
+    caller that misspells the described representation would otherwise be handed
+    the summary and find the fields it wanted silently absent.
+    """
+
+    try:
+        return RevisionListingView(value)
+    except ValueError as error:
+        raise ApiProblem("invalid-request") from error
 
 
 def require_media_type(request: Request, expected: str) -> None:
