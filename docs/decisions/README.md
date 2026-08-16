@@ -23,6 +23,7 @@ number is never reused and never renumbered.
 - [ADR 0010: One GitHub adapter observes, publishes and reads back; the core stays platform-blind](0010-github-platform-adapter.md) — PROPOSED, not yet implemented
 - [ADR 0011: A project is a store root; the root bounds where a project exists, and destroying it is the only removal](0011-project-isolation.md) — PROPOSED, not yet implemented
 - [ADR 0012: Acceptance sentences are declared in the repository and proven by the run reports](0012-acceptance-trace-format.md) — ACCEPTED, implemented
+- [ADR 0013: A bounded `iterate` block repeats a subworkflow until a receipt says green](0013-bounded-iteration.md) — PROPOSED, not yet implemented
 
 The product stack beyond recorded decisions remains undecided; an ADR is not a
 claim that its product slice already exists.
