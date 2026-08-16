@@ -102,6 +102,7 @@ class ReportedProof:
     sentence_identifier: str
     proving_test: str
     located_in: Path | None
+    python_class_name: str | None
     reported_in: str
 
 
@@ -220,15 +221,10 @@ def read_junit_proofs(report: Path) -> Iterator[ReportedProof]:
                 yield ReportedProof(
                     recorded.get("value", ""),
                     testcase.get("name", ""),
-                    python_test_location(testcase.get("classname")),
+                    None,
+                    testcase.get("classname"),
                     report.name,
                 )
-
-
-def python_test_location(class_name: str | None) -> Path | None:
-    if not class_name:
-        return None
-    return Path(*class_name.split(".")).with_suffix(PYTHON_SUFFIX)
 
 
 def read_vitest_proofs(report: Path) -> Iterator[ReportedProof]:
@@ -252,6 +248,7 @@ def read_vitest_proofs(report: Path) -> Iterator[ReportedProof]:
                 claim.group("identifier"),
                 title,
                 typescript_test_location(file_name),
+                None,
                 report.name,
             )
 
@@ -395,19 +392,29 @@ def typescript_string_literals(source: str) -> Iterator[str]:
 
 
 def proof_honours_claim(proof: ReportedProof, claim: ProofClaim) -> bool:
-    if (
-        proof.sentence_identifier != claim.sentence_identifier
-        or proof.located_in != claim.located_in
-    ):
+    if proof.sentence_identifier != claim.sentence_identifier:
         return False
     if claim.located_in.suffix == PYTHON_SUFFIX:
+        if not python_class_name_matches_source(
+            proof.python_class_name, claim.located_in
+        ):
+            return False
         return (
             proof.proving_test == claim.claiming_test
             or proof.proving_test.startswith(f"{claim.claiming_test}[")
         )
+    if proof.located_in != claim.located_in:
+        return False
     escaped_title = re.escape(claim.claiming_test)
     parameterized_title = VITEST_TITLE_PARAMETER.sub(".+?", escaped_title)
     return re.fullmatch(parameterized_title, proof.proving_test) is not None
+
+
+def python_class_name_matches_source(class_name: str | None, source: Path) -> bool:
+    if class_name is None:
+        return False
+    source_module = ".".join(source.with_suffix("").parts)
+    return class_name == source_module or class_name.startswith(f"{source_module}.")
 
 
 def read_landing_binding(body: Path) -> LandingBinding:

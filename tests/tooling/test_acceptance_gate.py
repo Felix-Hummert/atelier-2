@@ -62,6 +62,7 @@ class ReportedTest:
     claims: str | None = None
     outcome: Outcome = Outcome.PASSED
     located_in: Path | None = None
+    class_scope: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +95,11 @@ def junit_report(reported: Iterable[ReportedTest]) -> str:
         location = (
             ""
             if test.located_in is None
-            else f' classname="{".".join(test.located_in.with_suffix("").parts)}"'
+            else (
+                ' classname="'
+                f"{'.'.join((*test.located_in.with_suffix('').parts, *test.class_scope))}"
+                '"'
+            )
         )
         cases.append(
             f'<testcase{location} name="{test.name}" time="0.001">{body}</testcase>'
@@ -697,6 +702,40 @@ def test_a_repeated_source_test_identity_is_refused_as_ambiguous(
         f"{located_in}:{report_name} declares the same proof identity more than once"
         in result.stderr
     )
+
+
+def test_a_unique_python_class_method_matches_its_junit_classname(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    located_in = Path("tests/test_class_claim.py")
+    write_claim(
+        project,
+        located_in,
+        (
+            "import pytest\n\n\n"
+            "class TestClaim:\n"
+            f'    @pytest.mark.proves("{REPORT_ONLY_SENTENCE}")\n'
+            "    def test_helps(self) -> None:\n        pass\n"
+        ),
+    )
+    (project / REPORTS_DIRECTORY / CRASH_REPORT).write_text(
+        junit_report(
+            (
+                ReportedTest(
+                    "test_helps",
+                    REPORT_ONLY_SENTENCE,
+                    located_in=located_in,
+                    class_scope=("TestClaim",),
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_a_parameterized_typescript_title_matches_its_reported_cases(
