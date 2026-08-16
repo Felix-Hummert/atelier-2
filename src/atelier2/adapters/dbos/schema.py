@@ -17,22 +17,26 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 9
-_VERSION_SEVEN = 7
-_VERSION_EIGHT = 8
-_MIGRATABLE_SCHEMA_VERSIONS = frozenset({_VERSION_SEVEN, _VERSION_EIGHT})
-# V9 product tables equal V8: #15 already landed the process contract on V8.
-# The version bump is the explicit handoff #63 consumes. No catalog tables.
+SCHEMA_VERSION = 10
+_VERSION_NINE = 9
+# Operator ruling 5307892458: no store compatibility until a named maturity.
+# V9 remains the published predecessor; runtime never migrates it.
+_OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
+# V9 product tables equal V8. V10 adds the thin catalog/receipt subset.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
     9: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
+    10: "c96840690c524a38d5074e2174e5b1c944ab6c47b20a535384ded8c146d5e4de",
 }
+V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_NINE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_NINE],
+)
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[SCHEMA_VERSION],
 )
-_VERSION_SEVEN_CONFIGURATION_TABLE = "agent_configuration_revisions_v7"
 
 metadata = sa.MetaData()
 
@@ -72,12 +76,15 @@ runs = sa.Table(
     sa.UniqueConstraint("run_id", "revision_hash", "agent_binding_set_hash"),
     sa.CheckConstraint("length(run_id) > 0"),
     sa.CheckConstraint("length(current_node_id) > 0"),
-    sa.CheckConstraint("workflow_format_version IN (1, 2)"),
+    sa.CheckConstraint("workflow_format_version IN (1, 2, 3)"),
     sa.CheckConstraint(
         "(workflow_format_version = 1 AND agent_binding_set_hash IS NULL) OR "
         "(workflow_format_version = 2 AND agent_binding_set_hash IS NOT NULL "
         "AND length(agent_binding_set_hash) = 64 "
-        "AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*')"
+        "AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*') OR "
+        "(workflow_format_version = 3 AND (agent_binding_set_hash IS NULL OR "
+        "(length(agent_binding_set_hash) = 64 "
+        "AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*')))"
     ),
     sa.CheckConstraint(
         "state IN ('STARTED', 'WAITING_RECONCILIATION', 'WAITING_INPUT', 'COMPLETED')"
@@ -763,6 +770,79 @@ wait_answers = sa.Table(
         "OR (state = 'APPLIED' AND state_version = 1)"
     ),
 )
+published_revisions = sa.Table(
+    "published_revisions",
+    metadata,
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("revision_hash", sa.Text, nullable=False),
+    sa.Column("document", sa.LargeBinary, nullable=False),
+    sa.PrimaryKeyConstraint("kind", "revision_hash"),
+    sa.CheckConstraint("length(kind) BETWEEN 1 AND 64"),
+    sa.CheckConstraint("kind GLOB '[a-z]*' AND kind NOT GLOB '*[^a-z_]*'"),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
+catalog_lineages = sa.Table(
+    "catalog_lineages",
+    metadata,
+    sa.Column("lineage_id", sa.Text, primary_key=True),
+    sa.Column("kind", sa.Text, nullable=False),
+    sa.Column("founding_revision_hash", sa.Text, nullable=False),
+    sa.UniqueConstraint("kind", "founding_revision_hash"),
+    sa.CheckConstraint("length(lineage_id) = 64 AND lineage_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint("length(kind) BETWEEN 1 AND 64"),
+    sa.CheckConstraint("kind GLOB '[a-z]*' AND kind NOT GLOB '*[^a-z_]*'"),
+    sa.CheckConstraint(
+        "length(founding_revision_hash) = 64 "
+        "AND founding_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
+catalog_lineage_members = sa.Table(
+    "catalog_lineage_members",
+    metadata,
+    sa.Column(
+        "lineage_id",
+        sa.Text,
+        sa.ForeignKey("catalog_lineages.lineage_id"),
+        nullable=False,
+    ),
+    sa.Column("revision_number", sa.Integer, nullable=False),
+    sa.Column("revision_hash", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("lineage_id", "revision_number"),
+    sa.UniqueConstraint("lineage_id", "revision_hash"),
+    sa.CheckConstraint("revision_number >= 1"),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
+node_receipts_v3 = sa.Table(
+    "node_receipts_v3",
+    metadata,
+    sa.Column("node_execution_id", sa.Text, primary_key=True),
+    sa.Column("disposition", sa.Text, nullable=False),
+    sa.Column("reason", sa.Text, nullable=False),
+    sa.Column("request_hash", sa.Text, nullable=False),
+    sa.Column("context_package_hash", sa.Text, nullable=False),
+    sa.Column("receipt_hash", sa.Text, unique=True, nullable=False),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "disposition IN ('succeeded', 'failed', 'cancelled', 'blocked')"
+    ),
+    sa.CheckConstraint("length(reason) > 0"),
+    sa.CheckConstraint(
+        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(context_package_hash) = 64 "
+        "AND context_package_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
 
 PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
 
@@ -1012,6 +1092,54 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'wait answers are immutable');
         END
     """,
+    "published_revisions_no_update": """
+        CREATE TRIGGER published_revisions_no_update
+        BEFORE UPDATE ON published_revisions BEGIN
+          SELECT RAISE(ABORT, 'published revisions are immutable');
+        END
+    """,
+    "published_revisions_no_delete": """
+        CREATE TRIGGER published_revisions_no_delete
+        BEFORE DELETE ON published_revisions BEGIN
+          SELECT RAISE(ABORT, 'published revisions are immutable');
+        END
+    """,
+    "catalog_lineages_no_update": """
+        CREATE TRIGGER catalog_lineages_no_update
+        BEFORE UPDATE ON catalog_lineages BEGIN
+          SELECT RAISE(ABORT, 'catalog lineages are immutable');
+        END
+    """,
+    "catalog_lineages_no_delete": """
+        CREATE TRIGGER catalog_lineages_no_delete
+        BEFORE DELETE ON catalog_lineages BEGIN
+          SELECT RAISE(ABORT, 'catalog lineages are immutable');
+        END
+    """,
+    "catalog_lineage_members_no_update": """
+        CREATE TRIGGER catalog_lineage_members_no_update
+        BEFORE UPDATE ON catalog_lineage_members BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage members are immutable');
+        END
+    """,
+    "catalog_lineage_members_no_delete": """
+        CREATE TRIGGER catalog_lineage_members_no_delete
+        BEFORE DELETE ON catalog_lineage_members BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage members are immutable');
+        END
+    """,
+    "node_receipts_v3_no_update": """
+        CREATE TRIGGER node_receipts_v3_no_update
+        BEFORE UPDATE ON node_receipts_v3 BEGIN
+          SELECT RAISE(ABORT, 'v3 node receipts are immutable');
+        END
+    """,
+    "node_receipts_v3_no_delete": """
+        CREATE TRIGGER node_receipts_v3_no_delete
+        BEFORE DELETE ON node_receipts_v3 BEGIN
+          SELECT RAISE(ABORT, 'v3 node receipts are immutable');
+        END
+    """,
 }
 
 
@@ -1033,11 +1161,9 @@ class MigrationRequired(UnsupportedSchemaVersion):
 
 def _require_supported_versions(versions: Sequence[int]) -> int:
     normalized = tuple(versions)
-    if normalized in {(1,), (2,), (3,), (4,), (5,), (6,)}:
+    if len(normalized) == 1 and normalized[0] in _OFFLINE_CUTOVER_VERSIONS:
         raise MigrationRequired(normalized[0])
-    if len(normalized) != 1 or normalized[0] not in (
-        _MIGRATABLE_SCHEMA_VERSIONS | {SCHEMA_VERSION}
-    ):
+    if len(normalized) != 1 or normalized[0] != SCHEMA_VERSION:
         raise UnsupportedSchemaVersion(normalized)
     return normalized[0]
 
@@ -1265,140 +1391,34 @@ def _schema_version_from_connection(connection: sa.Connection) -> int | None:
     return _require_supported_versions(normalized)
 
 
-def _migrate_version_seven_to_eight(connection: sa.Connection) -> None:
-    raw_connection = _sqlite_connection(connection)
-    _require_product_shape(raw_connection, _VERSION_SEVEN)
-    existing_tables = set(sa.inspect(connection).get_table_names())
-    if _VERSION_SEVEN_CONFIGURATION_TABLE in existing_tables:
-        raise UnsupportedSchemaVersion(
-            f"migration predecessor {_VERSION_SEVEN_CONFIGURATION_TABLE!r} exists"
-        )
-    connection.exec_driver_sql(
-        "ALTER TABLE agent_configuration_revisions "
-        f"RENAME TO {_VERSION_SEVEN_CONFIGURATION_TABLE}"
-    )
-    agent_configuration_revisions.create(connection)
-    connection.exec_driver_sql(
-        "INSERT INTO agent_configuration_revisions("
-        "revision_hash,model,auth_profile_revision_hash,executor_revision,"
-        "revision_format_version,requested_capability) "
-        "SELECT revision_hash,model,auth_profile_revision_hash,executor_revision,"
-        "1,'headless' FROM agent_configuration_revisions_v7"
-    )
-    old_count = int(
-        connection.scalar(
-            sa.text("SELECT COUNT(*) FROM agent_configuration_revisions_v7")
-        )
-        or 0
-    )
-    new_count = int(
-        connection.scalar(
-            sa.select(sa.func.count()).select_from(agent_configuration_revisions)
-        )
-        or 0
-    )
-    missing_rows = int(
-        connection.scalar(
-            sa.text(
-                "SELECT COUNT(*) FROM ("
-                "SELECT revision_hash,model,auth_profile_revision_hash,"
-                "executor_revision FROM agent_configuration_revisions_v7 "
-                "EXCEPT SELECT revision_hash,model,auth_profile_revision_hash,"
-                "executor_revision FROM agent_configuration_revisions)"
-            )
-        )
-        or 0
-    )
-    if old_count != new_count or missing_rows != 0:
-        raise RuntimeError("V7 agent configuration copy changed durable identity")
-    connection.exec_driver_sql(f"DROP TABLE {_VERSION_SEVEN_CONFIGURATION_TABLE}")
-    _create_triggers(
-        connection,
-        (
-            _PRODUCT_TRIGGERS["agent_configuration_revisions_no_update"],
-            _PRODUCT_TRIGGERS["agent_configuration_revisions_no_delete"],
-        ),
-    )
-    foreign_key_failures = tuple(connection.exec_driver_sql("PRAGMA foreign_key_check"))
-    if foreign_key_failures:
-        raise RuntimeError("V7 to V8 migration broke a durable foreign key")
-    _require_product_shape(raw_connection, _VERSION_EIGHT)
-    updated = connection.execute(
-        atelier_schema_versions.update()
-        .where(atelier_schema_versions.c.version == _VERSION_SEVEN)
-        .values(version=_VERSION_EIGHT)
-    )
-    if updated.rowcount != 1:
-        raise RuntimeError("V7 to V8 migration lost its schema-version CAS")
-
-
-def _migrate_version_eight_to_nine(connection: sa.Connection) -> None:
-    raw_connection = _sqlite_connection(connection)
-    _require_product_shape(raw_connection, _VERSION_EIGHT)
-    _require_product_shape(raw_connection, SCHEMA_VERSION)
-    updated = connection.execute(
-        atelier_schema_versions.update()
-        .where(atelier_schema_versions.c.version == _VERSION_EIGHT)
-        .values(version=SCHEMA_VERSION)
-    )
-    if updated.rowcount != 1:
-        raise RuntimeError("V8 to V9 migration lost its schema-version CAS")
-
-
 def initialize_schema(engine: Engine) -> None:
     if engine.url.get_backend_name() != "sqlite":
         raise UnsupportedSchemaVersion(f"Atelier v{SCHEMA_VERSION} requires SQLite")
     _preflight_existing_schema(engine)
     with engine.connect() as connection:
-        version_before_lock = _schema_version_from_connection(connection)
+        _schema_version_from_connection(connection)
         connection.commit()
-        needs_table_rebuild = version_before_lock == _VERSION_SEVEN
-        if needs_table_rebuild:
-            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
-            connection.exec_driver_sql("PRAGMA legacy_alter_table=ON")
-            connection.commit()
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
         try:
-            connection.exec_driver_sql("BEGIN IMMEDIATE")
-            try:
-                inspector = sa.inspect(connection)
-                if not inspector.has_table(atelier_schema_versions.name):
-                    existing_tables = set(inspector.get_table_names())
-                    if existing_tables:
-                        raise UnsupportedSchemaVersion(
-                            "missing version owner beside tables "
-                            f"{tuple(sorted(existing_tables))!r}"
-                        )
-                    metadata.create_all(connection)
-                    connection.execute(
-                        atelier_schema_versions.insert().values(version=SCHEMA_VERSION)
+            inspector = sa.inspect(connection)
+            if not inspector.has_table(atelier_schema_versions.name):
+                existing_tables = set(inspector.get_table_names())
+                if existing_tables:
+                    raise UnsupportedSchemaVersion(
+                        "missing version owner beside tables "
+                        f"{tuple(sorted(existing_tables))!r}"
                     )
-                    _create_triggers(connection, _PRODUCT_TRIGGERS.values())
+                metadata.create_all(connection)
+                connection.execute(
+                    atelier_schema_versions.insert().values(version=SCHEMA_VERSION)
+                )
+                _create_triggers(connection, _PRODUCT_TRIGGERS.values())
 
-                locked_version = _schema_version_from_connection(connection)
-                if locked_version == _VERSION_SEVEN:
-                    if not needs_table_rebuild:
-                        raise UnsupportedSchemaVersion(
-                            "V7 migration requires foreign keys disabled before lock"
-                        )
-                    _migrate_version_seven_to_eight(connection)
-                    locked_version = _VERSION_EIGHT
-                if locked_version == _VERSION_EIGHT:
-                    _migrate_version_eight_to_nine(connection)
-                    locked_version = SCHEMA_VERSION
-                if locked_version != SCHEMA_VERSION:
-                    raise UnsupportedSchemaVersion(locked_version)
-                _require_product_shape(_sqlite_connection(connection), SCHEMA_VERSION)
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
-        finally:
-            if needs_table_rebuild:
-                connection.exec_driver_sql("PRAGMA legacy_alter_table=OFF")
-                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
-                connection.commit()
-                if connection.exec_driver_sql("PRAGMA foreign_keys").scalar() != 1:
-                    connection.invalidate()
-                    raise RuntimeError(
-                        "SQLite foreign-key enforcement was not restored"
-                    )
+            locked_version = _schema_version_from_connection(connection)
+            if locked_version != SCHEMA_VERSION:
+                raise UnsupportedSchemaVersion(locked_version)
+            _require_product_shape(_sqlite_connection(connection), SCHEMA_VERSION)
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise

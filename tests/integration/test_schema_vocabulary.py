@@ -36,6 +36,10 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import RunEventKind, WaitAnswerState
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.node_records_v3 import (
+    MAXIMUM_KIND_TOKEN_CHARACTERS,
+    PersistedReceiptDisposition,
+)
 from atelier2.contracts.runs import RunState
 
 _DECLARATION = re.compile(r"^([a-z_][a-z_0-9]*) IN \(([^()]*)\)$")
@@ -191,6 +195,7 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "run_events.replacement": _values(AgentAttemptReplacement),
     "runs.state": _values(RunState),
     "wait_answers.state": _values(WaitAnswerState),
+    "node_receipts_v3.disposition": _values(PersistedReceiptDisposition),
 }
 
 UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(
@@ -265,6 +270,14 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "wait_answers.answer_hash",
         "wait_answers.node_execution_id",
         "workflow_revisions.revision_hash",
+        "published_revisions.revision_hash",
+        "catalog_lineages.lineage_id",
+        "catalog_lineages.founding_revision_hash",
+        "catalog_lineage_members.revision_hash",
+        "node_receipts_v3.node_execution_id",
+        "node_receipts_v3.request_hash",
+        "node_receipts_v3.context_package_hash",
+        "node_receipts_v3.receipt_hash",
     }
 )
 
@@ -288,6 +301,8 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "auth_profile_revisions.provider_id": PROVIDER_ID_BOUND,
     "run_agent_bindings.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "run_events.cancellation_command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "catalog_lineages.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
+    "published_revisions.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
 }
 
 
