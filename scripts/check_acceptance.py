@@ -24,6 +24,7 @@ SENTENCE_IDENTIFIER = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 PROOF_MARKER = "proves"
 PYTHON_MARKER_NAMESPACE = "mark"
 TYPESCRIPT_PROOF_CLAIM = re.compile(rf"\b{PROOF_MARKER}\((?P<identifier>[^)]*)\)")
+VITEST_TITLE_PARAMETER = re.compile(r"%(?:s|d|i|f|j|o|O|c|#|\$)")
 PYTHON_SUFFIX = ".py"
 TYPESCRIPT_SUFFIX = ".ts"
 CLAIMABLE_SUFFIXES = (PYTHON_SUFFIX, TYPESCRIPT_SUFFIX)
@@ -326,8 +327,53 @@ def python_marker_identifier(
 
 
 def read_typescript_claims(source: str, location: Path) -> Iterator[ProofClaim]:
-    for claim in TYPESCRIPT_PROOF_CLAIM.finditer(source):
-        yield ProofClaim(claim.group("identifier"), claim.group(0), location)
+    for title in typescript_string_literals(source):
+        for claim in TYPESCRIPT_PROOF_CLAIM.finditer(title):
+            yield ProofClaim(claim.group("identifier"), title, location)
+
+
+def typescript_string_literals(source: str) -> Iterator[str]:
+    """Read static string contents without mistaking a closing quote for an opener."""
+
+    index = 0
+    while index < len(source):
+        if source.startswith("//", index):
+            line_end = source.find("\n", index + 2)
+            index = len(source) if line_end == -1 else line_end + 1
+            continue
+        if source.startswith("/*", index):
+            comment_end = source.find("*/", index + 2)
+            index = len(source) if comment_end == -1 else comment_end + 2
+            continue
+        quote = source[index]
+        if quote not in {'"', "'", "`"}:
+            index += 1
+            continue
+        index += 1
+        contents: list[str] = []
+        while index < len(source) and source[index] != quote:
+            if source[index] == "\\" and index + 1 < len(source):
+                contents.extend(source[index : index + 2])
+                index += 2
+                continue
+            contents.append(source[index])
+            index += 1
+        if index < len(source):
+            yield "".join(contents)
+            index += 1
+
+
+def proof_honours_claim(proof: ReportedProof, claim: ProofClaim) -> bool:
+    if proof.sentence_identifier != claim.sentence_identifier:
+        return False
+    if claim.located_in.suffix == PYTHON_SUFFIX:
+        return (
+            proof.proving_test == claim.claiming_test
+            or proof.proving_test.startswith(f"{claim.claiming_test}[")
+        )
+    escaped_title = re.escape(claim.claiming_test)
+    parameterized_title = VITEST_TITLE_PARAMETER.sub(".+?", escaped_title)
+    return re.fullmatch(parameterized_title, proof.proving_test) is not None
 
 
 def read_landing_binding(body: Path) -> LandingBinding:
@@ -405,7 +451,7 @@ def acceptance_problems(
             if claim.sentence_identifier not in declared
             else "which no run report shows passing"
         )
-        if claim.sentence_identifier not in proven:
+        if not any(proof_honours_claim(proof, claim) for proof in proofs):
             problems.append(
                 f"{claim.located_in}:{claim.claiming_test} claims "
                 f"{claim.sentence_identifier!r}, {unhonoured}"
