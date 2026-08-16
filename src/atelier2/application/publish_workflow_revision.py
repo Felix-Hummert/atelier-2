@@ -130,13 +130,12 @@ def publish_workflow_revision(
     document: bytes,
     publisher: WorkflowRevisionPublisher,
     parser: WorkflowDocumentParser,
-    limits: WorkflowPublicationLimits | None = None,
+    limits: WorkflowPublicationLimits,
 ) -> PublishWorkflowRevisionResult:
     try:
         revision = WorkflowRevision(document)
         graph = parser(document)
-        if limits is not None:
-            limits.validate(document, graph)
+        limits.validate(document, graph)
     except WorkflowDocumentInvalid as refused:
         return PublicationInvalid(str(refused), refused.refusal)
     except (TypeError, ValueError) as error:

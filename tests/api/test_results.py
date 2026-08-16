@@ -24,6 +24,7 @@ from atelier2.application.publish_workflow_revision import (
     PublicationCreated,
     PublicationExisting,
     PublicationInvalid,
+    WorkflowPublicationLimits,
     publish_workflow_revision,
 )
 from atelier2.application.reconcile_effect import (
@@ -100,6 +101,7 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionExisting,
     WorkflowRevisionPublisher,
 )
+from tests.scenarios.api import permissive_projection_limit
 from tests.scenarios.workflows import V3_CONTROL_EDGE_LINE, V3_DOCUMENT
 
 
@@ -117,6 +119,7 @@ class FakePort:
         return self.result
 
 
+V1_DOCUMENT = b"format_version: 1\nstart: final\nnodes:\n  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n"
 REVISION = WorkflowRevision(b"format_version: nope")
 HASH = WorkflowRevisionHash("0" * 64)
 RUN = cast(Run, object())
@@ -148,6 +151,7 @@ def test_publication_maps_every_durable_result(
         b"format_version: 1\nstart: final\nnodes:\n  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n",
         cast(WorkflowRevisionPublisher, FakePort(port_result)),
         parse_workflow_document,
+        permissive_projection_limit(),
     )
 
     assert isinstance(result, application_type)
@@ -158,6 +162,7 @@ def test_publication_rejects_invalid_yaml_before_the_write_port() -> None:
         b"!!python/object:unsafe {}",
         cast(WorkflowRevisionPublisher, FakePort(None)),
         parse_workflow_document,
+        permissive_projection_limit(),
     )
 
     assert isinstance(result, PublicationInvalid)
@@ -172,6 +177,7 @@ def test_publication_projects_a_valid_v3_document_it_reached_the_write_port_with
         V3_DOCUMENT,
         cast(WorkflowRevisionPublisher, FakePort(DurableRevisionCreated(revision))),
         parse_workflow_document,
+        permissive_projection_limit(),
     )
 
     assert isinstance(result, PublicationCreated)
@@ -186,6 +192,7 @@ def test_publication_refuses_an_invalid_v3_document_carrying_its_named_refusal()
         V3_DOCUMENT.replace(V3_CONTROL_EDGE_LINE, b""),
         cast(WorkflowRevisionPublisher, FakePort(None)),
         parse_workflow_document,
+        permissive_projection_limit(),
     )
 
     assert isinstance(result, PublicationInvalid)
@@ -210,12 +217,54 @@ def test_publication_returns_the_graph_validated_before_the_write() -> None:
             FakePort(DurableRevisionCreated(revision)),
         ),
         parse_workflow_document,
+        permissive_projection_limit(),
     )
 
     assert isinstance(result, PublicationCreated)
     assert result.projection.revision == revision
     assert isinstance(result.projection.graph, WorkflowGraph)
     assert result.projection.graph.start == "final"
+
+
+@pytest.mark.proves("no-write-path-can-be-reached-with-a-dependency-left-out")
+def test_a_publication_cannot_be_made_without_the_bound_it_applies() -> None:
+    """There is no unbounded publication to reach any more.
+
+    The bound used to be optional on the one call that writes a revision, so a
+    caller could leave it out and the write would accept what a bound refuses.
+    Leaving it out is not a permissive publication now — it is not a call.
+    """
+    with pytest.raises(TypeError):
+        publish_workflow_revision(  # type: ignore[call-arg]
+            V1_DOCUMENT,
+            cast(WorkflowRevisionPublisher, FakePort(None)),
+            parse_workflow_document,
+        )
+
+
+@pytest.mark.proves("no-write-path-can-be-reached-with-a-dependency-left-out")
+def test_the_bound_a_publication_is_handed_is_the_bound_it_applies() -> None:
+    """Making the bound required would be empty if it were not the one enforced."""
+    revision = WorkflowRevision(V1_DOCUMENT)
+    publisher = cast(
+        WorkflowRevisionPublisher, FakePort(DurableRevisionCreated(revision))
+    )
+    tighter_than_the_document = WorkflowPublicationLimits(
+        maximum_document_bytes=len(V1_DOCUMENT) - 1,
+        maximum_nodes=100,
+        maximum_string_characters=1_024,
+        maximum_payload_bytes=49_152,
+    )
+
+    published = publish_workflow_revision(
+        V1_DOCUMENT, publisher, parse_workflow_document, permissive_projection_limit()
+    )
+    refused = publish_workflow_revision(
+        V1_DOCUMENT, publisher, parse_workflow_document, tighter_than_the_document
+    )
+
+    assert isinstance(published, PublicationCreated)
+    assert isinstance(refused, PublicationInvalid)
 
 
 @pytest.mark.parametrize(

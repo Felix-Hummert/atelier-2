@@ -20,11 +20,15 @@ story = "https://github.com/FlexOr2/atelier-2/issues/87"
 #     `ignore_imports` of the `route-vocabulary` contract and in
 #     ROUTE_CALLS_STILL_HOLDING_PORTS in `scripts/check_architecture.py`. Both are
 #     red on a stale entry in either direction, so neither can claim it is done.
-#   - one fail-open default is left: `agent_executor_registry` in
-#     `adapters/dbos/starter.py`. The projection bound is no longer among them —
-#     it is not a required parameter but no parameter at all, because the reader
-#     holds it. The registry belongs to the same idea and to whichever head takes
-#     the starter; it is named here so the debt cannot read as paid.
+#   - the fail-open defaults are gone. `agent_executor_registry` in
+#     `adapters/dbos/starter.py` and the publication bound in
+#     `application/publish_workflow_revision.py` are both required now, and the
+#     sentence below is what pins it. The projection bound is not among them: it
+#     is no parameter at all, because the reader holds it.
+#     What the sentence deliberately does NOT claim is that no optional
+#     dependency exists anywhere — `tests/scenarios/` keeps named defaults on
+#     purpose, so a scenario says what it binds instead of a production owner
+#     inventing one.
 
 [[sentence]]
 id = "wire-schemas-name-no-port-type"
@@ -37,6 +41,10 @@ text = "Every read the API offers is decided by a use-case that translates the s
 [[sentence]]
 id = "a-durable-reader-holds-the-bound-it-reads-under"
 text = "A durable reader holds the bound it reads under: no caller passes one, a reader cannot be built without one, and the bound it was built with is the one it applies — so there is no unbounded read to reach by leaving an argument out."
+
+[[sentence]]
+id = "no-write-path-can-be-reached-with-a-dependency-left-out"
+text = "No durable write can be reached with the dependency it enforces left out: the publication use-case takes its bound and the run starter takes its executor registry as required arguments, the value handed over is the value applied, and omitting one is a type error rather than a permissive write."
 
 [[sentence]]
 id = "a-port-refuses-by-type-and-the-api-words-the-answer"
