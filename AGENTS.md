@@ -35,6 +35,13 @@ Do not duplicate guidance. Update the owner.
   decision.
 - Do not add architecture, extension points, compatibility layers, or options
   without a current caller.
+- Build vertically first: shapes early, surfaces thin, hardening after use. A
+  capability's first slice is the thinnest honest end-to-end proof; edge cases
+  are mandatory before that first run only where their absence corrupts durable
+  state, loses data, or lets the system lie. Every other edge is deferred by
+  naming it — an open sentence or named gap on the owning item — and waits for
+  usage evidence. A review judges the slice against its declared sentences, not
+  against all conceivable hardness. (Operator + coordinator ruling, 16.08.2026.)
 - Match existing style unless it conflicts with this file or preserves a known
   defect.
 - Use readable, fully written names. Avoid abbreviations unless established.
