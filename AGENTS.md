@@ -1,7 +1,8 @@
 This file is reusable AI policy. Keep project facts, provider glue, architecture
 state, tool commands, and plans outside it.
 
-Entry points (pointers only; the facts live there): `docs/PRODUCT.md` owns
+Entry points (pointers only; the facts live there): `docs/README.md` maps
+which layer answers which question; `docs/PRODUCT.md` owns
 implementation status and carries product intent only as a derived view;
 `docs/requirements/README.md` points to the editable human requirement, owns the
 numbered documents that read the requirement threads as derived views, and owns

@@ -4,12 +4,14 @@ Atelier 2 is intended to become a lean agentic orchestrator for versioned,
 configurable workflows. What it should become is stated in
 [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1) and read into
 [docs/requirements/](docs/requirements/README.md); what it currently is, in
-[docs/PRODUCT.md](docs/PRODUCT.md).
+[docs/PRODUCT.md](docs/PRODUCT.md). Which documentation layer answers which
+question is mapped in [docs/README.md](docs/README.md).
 
 ## Fact owners
 
 | Durable fact | Authoritative owner |
 | --- | --- |
+| Which documentation layer answers which question | [docs/README.md](docs/README.md) |
 | Implementation status, and product intent as a derived view | [docs/PRODUCT.md](docs/PRODUCT.md) |
 | The settled reading of a requirement thread (derived; the thread wins) | Documents indexed by [docs/requirements/README.md](docs/requirements/README.md) |
 | Editable human requirement | [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1), with revision rules in [docs/requirements/README.md](docs/requirements/README.md) |
