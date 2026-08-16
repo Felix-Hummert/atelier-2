@@ -5,9 +5,13 @@ from typing import cast
 import pytest
 
 from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
     CatalogLineage,
     CatalogLineageDisplayName,
     CatalogLineageId,
+    CatalogRetirementState,
+    catalog_lineage_query,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 
@@ -162,3 +166,30 @@ def test_catalog_lineage_requires_the_typed_kind_and_founding_hash() -> None:
             RevisionKind.WORKFLOW,
             cast(PublishedRevisionHash, FOUNDING_REVISION_HASH.value),
         )
+
+
+def test_a_64_hex_query_is_a_lineage_id_and_anything_else_is_a_display_name() -> None:
+    lineage_id = CatalogLineage(
+        RevisionKind.WORKFLOW, FOUNDING_REVISION_HASH
+    ).lineage_id
+
+    assert catalog_lineage_query(lineage_id.value) == lineage_id
+    assert catalog_lineage_query("a" * 64) == CatalogLineageId("a" * 64)
+    assert catalog_lineage_query("lasagne") == CatalogLineageDisplayName("lasagne")
+    assert catalog_lineage_query("g" * 64) == CatalogLineageDisplayName("g" * 64)
+    with pytest.raises(ValueError):
+        catalog_lineage_query("Lasagne")
+
+
+def test_catalog_actor_and_activation_time_refuse_invalid_text() -> None:
+    assert CatalogActor("operator").value == "operator"
+    assert CatalogActivatedAt("2026-08-16T12:00:00Z").value == "2026-08-16T12:00:00Z"
+    assert CatalogRetirementState.RETIRED == "retired"
+    with pytest.raises(ValueError):
+        CatalogActor("")
+    with pytest.raises(TypeError):
+        CatalogActor(cast(str, None))
+    with pytest.raises(ValueError):
+        CatalogActivatedAt("2026-08-16T12:00:00+00:00")
+    with pytest.raises(ValueError):
+        CatalogActivatedAt("2026-13-01T00:00:00Z")

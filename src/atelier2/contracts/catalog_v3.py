@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from atelier2.contracts.hashing import SHA256_HEX_DIGEST, Sha256Hash, frame
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 
 MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS = 128
 _LINEAGE_DISPLAY_NAME = re.compile(r"[a-z][a-z0-9._-]*")
+_CATALOG_ACTIVATED_AT = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z"
+)
 
 
 class CatalogLineageId(Sha256Hash):
@@ -36,6 +41,72 @@ class CatalogLineageDisplayName:
             raise ValueError(
                 "a catalog lineage display name cannot look like a lineage id"
             )
+
+
+@dataclass(frozen=True)
+class CatalogActor:
+    """The attributed actor on one catalog alias or retirement event."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str):
+            raise TypeError("a catalog actor must be text")
+        if self.value == "":
+            raise ValueError("a catalog actor must be nonempty")
+
+
+@dataclass(frozen=True)
+class CatalogActivatedAt:
+    """The attributed activation instant of one catalog event, RFC 3339 UTC."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str):
+            raise TypeError("a catalog event time must be text")
+        matched = _CATALOG_ACTIVATED_AT.fullmatch(self.value)
+        if matched is None:
+            raise ValueError(
+                "a catalog event time must be RFC 3339 UTC at second precision"
+            )
+        try:
+            datetime(
+                int(matched[1]),
+                int(matched[2]),
+                int(matched[3]),
+                int(matched[4]),
+                int(matched[5]),
+                int(matched[6]),
+                tzinfo=UTC,
+            )
+        except ValueError:
+            raise ValueError(
+                "a catalog event time must be RFC 3339 UTC at second precision"
+            ) from None
+
+
+class CatalogRetirementState(StrEnum):
+    """The closed set of retirement-history tokens. `retired` is today's only one."""
+
+    RETIRED = "retired"
+
+
+def catalog_lineage_query(
+    value: str,
+) -> CatalogLineageId | CatalogLineageDisplayName:
+    """Split an authoring query by the ADR 0007 syntactic rule.
+
+    A 64-hex input is a lineage id and can be nothing else; every other input is
+    a display name. The name type itself refuses a 64-hex string, so the two
+    readings cannot collide.
+    """
+
+    if not isinstance(value, str):
+        raise TypeError("a catalog name query must be text")
+    if SHA256_HEX_DIGEST.fullmatch(value) is not None:
+        return CatalogLineageId(value)
+    return CatalogLineageDisplayName(value)
 
 
 @dataclass(frozen=True)
