@@ -18,11 +18,12 @@ from typing import cast
 
 import pytest
 import sqlalchemy as sa
+from dbos import DBOSClient
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.schema import run_agent_bindings, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -51,6 +52,8 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.durable_runs import (
     DurableRunCreated,
+    DurableRunExisting,
+    DurableRunFormatNotExecutable,
     StartPublishedRunRequestV2,
 )
 from tests.scenarios.agents import failing_agent_executor_factory
@@ -121,7 +124,9 @@ def test_a_v3_agent_document_of_the_admitted_shape_starts(
 
     result = DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    ).start_v3_foundation(
+        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+    )
 
     assert isinstance(result, DurableRunCreated)
     with runtime.engine.connect() as connection:
@@ -142,7 +147,9 @@ def test_a_started_v3_run_reads_back_as_its_own_shape(runtime: DbosRuntime) -> N
     workflow, bindings = publish(runtime)
     DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    ).start_v3_foundation(
+        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+    )
 
     with runtime.engine.connect() as connection:
         record = (
@@ -165,7 +172,9 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
     workflow, bindings = publish(runtime)
     DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    ).start_v3_foundation(
+        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+    )
 
     encoded = _node_binding(
         runtime.datasource, RUN, workflow.revision_hash, "implement"
@@ -184,3 +193,55 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
         binding["configuration_hash"]
         == bindings.bindings[0].agent_configuration_revision_hash.value
     )
+
+
+@pytest.mark.proves("a-public-start-refuses-a-v3-revision-before-any-write")
+def test_the_public_start_refuses_a_v3_revision_with_no_row_and_no_enqueue(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route that starts runs must not half-start one it cannot finish.
+
+    Admitting a V3 revision here wrote the run and enqueued its bootstrap, and
+    only then failed on the missing wire resource -- a public 500 *after* durable
+    state existed, with the run left poisoning every later projection.
+    """
+    workflow, bindings = publish(runtime)
+
+    def unexpected_enqueue(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a refused start reached the durable queue")
+
+    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
+    result = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+
+    assert isinstance(result, DurableRunFormatNotExecutable)
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(run_agent_bindings)
+            )
+            == 0
+        )
+
+
+@pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
+def test_the_first_start_and_its_retry_answer_the_same_run_shape(
+    runtime: DbosRuntime,
+) -> None:
+    """A first start used to answer RunV2 while its retry answered RunV3."""
+    workflow, bindings = publish(runtime)
+    starter = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    )
+    request = StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+
+    created = starter.start_v3_foundation(request)
+    existing = starter.start_v3_foundation(request)
+
+    assert isinstance(created, DurableRunCreated)
+    assert isinstance(existing, DurableRunExisting)
+    assert isinstance(created.run, RunV3)
+    assert isinstance(existing.run, RunV3)
+    assert created.run == existing.run

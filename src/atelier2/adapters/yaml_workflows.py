@@ -303,12 +303,16 @@ def _what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
             f"{len(graph.nodes)} nodes, and advancing between them needs the "
             "ready set no runtime has yet"
         )
+    # Authored, not truthy. `skills: []` and `depends_on: []` are things the
+    # author wrote, and a run that ignored them would ignore a statement rather
+    # than an absence -- so presence in the parsed document decides, and an empty
+    # authored form is refused exactly like a filled one.
     declared = sorted(
         {
             form
             for node in graph.nodes
             for form in V3_UNBOUND_AGENT_FORMS
-            if getattr(node, form, None)
+            if form in node.model_fields_set
         }
     )
     if declared:

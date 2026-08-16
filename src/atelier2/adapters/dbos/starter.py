@@ -50,7 +50,7 @@ from atelier2.contracts.node_records_v3 import (
     ReceiptOutput,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -331,6 +331,36 @@ class DbosDurableRunStarter:
     def start_published(
         self, request: AnyStartPublishedRunRequest
     ) -> DurablePublishedRunResult:
+        """Start one published revision the runtime can execute end to end.
+
+        A V3 revision is refused here even though the document parses, because
+        nothing executes it yet: no advance path, no wire resource, no attempt
+        arm. Admitting it would write a run and enqueue a bootstrap for work that
+        cannot proceed, and the caller would learn about it as a 500 after the
+        state already existed. The foundation seam below is how a V3 revision is
+        reached instead, and it enqueues nothing.
+        """
+        return self._start(request, admits_v3=False, enqueues_bootstrap=True)
+
+    def start_v3_foundation(
+        self, request: AnyStartPublishedRunRequest
+    ) -> DurablePublishedRunResult:
+        """Persist one V3 run's foundation, and start nothing.
+
+        Internal on purpose: it exists so #194 H1a can prove that the admitted V3
+        shape becomes a durable run of its own format, and it deliberately does
+        not enqueue a bootstrap, because no runtime owns the execution until
+        H1c. No public route reaches it.
+        """
+        return self._start(request, admits_v3=True, enqueues_bootstrap=False)
+
+    def _start(
+        self,
+        request: AnyStartPublishedRunRequest,
+        *,
+        admits_v3: bool,
+        enqueues_bootstrap: bool,
+    ) -> DurablePublishedRunResult:
         try:
             with self._engine.connect() as read_connection:
                 document = read_connection.scalar(
@@ -346,6 +376,8 @@ class DbosDurableRunStarter:
             if revision.revision_hash != request.revision_hash:
                 return DurableStateCorrupt()
             graph = parse_executable_workflow_document(revision.document)
+            if isinstance(graph, WorkflowGraphV3) and not admits_v3:
+                return DurableRunFormatNotExecutable()
         except WorkflowFormatNotExecutable:
             return DurableRunFormatNotExecutable()
         except (OperationalError, PoolTimeoutError):
@@ -504,9 +536,16 @@ class DbosDurableRunStarter:
                 if isinstance(graph, WorkflowGraph):
                     run = run_from_record(existing_record)
                 else:
+                    # The shape follows the exact graph version, the same rule
+                    # `run_from_record_with_bindings` applies when a retry reads
+                    # this row back. Constructing `RunV2` for every bound graph
+                    # meant a first start answered V2 while a retry answered V3
+                    # for one row. It is built here rather than read back because
+                    # the binding rows below are not written yet.
                     assert binding_set is not None
                     terminal_hash = existing_record["terminal_hash"]
-                    run = RunV2(
+                    shape = RunV2 if isinstance(graph, WorkflowGraphV2) else RunV3
+                    run = shape(
                         request.run_id,
                         request.revision_hash,
                         binding_set.binding_set_hash,
@@ -558,12 +597,13 @@ class DbosDurableRunStarter:
                     "workflow_id": workflow_id,
                     "app_version": self._settings.application_version,
                 }
-                client.enqueue_in_transaction(
-                    connection,
-                    options,
-                    request.run_id.value,
-                    request.revision_hash.value,
-                )
+                if enqueues_bootstrap:
+                    client.enqueue_in_transaction(
+                        connection,
+                        options,
+                        request.run_id.value,
+                        request.revision_hash.value,
+                    )
                 return DurableRunCreated(run)
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()

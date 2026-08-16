@@ -1145,6 +1145,13 @@ NOT_YET_EXECUTABLE: dict[str, bytes] = {
     "a form nothing binds": ONE_AGENT_DOCUMENT
     + b"    budget: {ref: build_budget, revision: budget-1}\n",
     "a second node": TWO_AGENT_CHAIN,
+    # An empty authored form is a statement, not an absence: the author wrote it,
+    # and a start that ignored it would ignore what they wrote.
+    "an empty authored skills list": ONE_AGENT_DOCUMENT + b"    skills: []\n",
+    "an empty authored depends_on": ONE_AGENT_DOCUMENT + b"    depends_on: []\n",
+    "an empty authored inputs list": ONE_AGENT_DOCUMENT + b"    inputs: []\n",
+    "an empty authored context list": ONE_AGENT_DOCUMENT
+    + b"    required_context: []\n",
     "two entry nodes": ONE_AGENT_DOCUMENT
     + b"""  - id: second_entry
     type: agent

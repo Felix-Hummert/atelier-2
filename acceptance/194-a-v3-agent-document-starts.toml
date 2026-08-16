@@ -22,6 +22,14 @@ story = "https://github.com/FlexOr2/atelier-2/issues/194"
 #     that rule is the ready set ADR 0006 hands the scheduler (H2, #86). The
 #     shape stops before it rather than deciding fan-out and join in passing.
 #
+#   - TWO PIECES OF THE REQUEST TRUTH ARE NOT BUILT, and the binding below must
+#     not be read as though they were. A provider launch needs the context
+#     package and the node execution request persisted before it runs, and
+#     `RunV3.run_configuration_revision_hash` stays unreconstructed until the
+#     resolver and persistence owner for it lands. `_node_binding` answers the
+#     role and configuration a node was started with -- it is not the whole
+#     request a launch will need.
+#
 # The one admitted shape is therefore small on purpose: a single Agent node that
 # is its own entry and its own sink, declaring nothing optional. It is checked as
 # a FORM, not as a list of kinds -- a kind check would admit a document whose
@@ -34,3 +42,7 @@ text = "A V3 document of the one admitted shape -- a single agent node that is i
 [[sentence]]
 id = "every-v3-shape-no-runtime-binds-is-refused-by-name"
 text = "Every V3 document outside that shape is refused by name before anything starts, and the refusal says what it is waiting for -- a node kind nothing interprets, a second node nothing advances to, or an authored form nothing binds -- rather than saying that version 3 is unsupported."
+
+[[sentence]]
+id = "a-public-start-refuses-a-v3-revision-before-any-write"
+text = "The public start route refuses a V3 revision before it writes anything: no run row, no agent binding row and no enqueued bootstrap, so a revision no runtime can execute never becomes durable state that a later read has to explain."

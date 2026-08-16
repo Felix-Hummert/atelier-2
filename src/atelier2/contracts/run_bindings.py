@@ -63,6 +63,13 @@ class RunV3:
     Until a resolver exists the field is honestly absent rather than invented --
     but the type is separate from the day it exists, because widening `RunV2`
     later would mean every V2 reader had silently been reading V3 rows.
+
+    `run_configuration_revision_hash` is therefore **unreconstructed today**: no
+    owner resolves or persists it yet, and a run that reads back without it is
+    telling the truth about what was stored rather than filling a gap. Anything
+    that needs the whole bound request -- a provider launch above all, which also
+    needs the context package and the node execution request persisted first --
+    is waiting on that owner, not on this field's absence.
     """
 
     run_id: RunId
