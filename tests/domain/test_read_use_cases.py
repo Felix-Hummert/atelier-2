@@ -26,14 +26,26 @@ from atelier2.application.read_workflow_revisions import (
     list_workflow_revisions,
 )
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
+from atelier2.contracts.run_projections import (
+    RunPage,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
-from atelier2.ports.run_events import CursorAhead, EventHistoryCorrupt, StreamReady
-from atelier2.ports.run_queries import RunFound, RunPage, RunQueryMissing
+from atelier2.contracts.workflow_projections import (
+    WorkflowRevisionPage,
+)
+from atelier2.ports.run_events import (
+    CursorAhead,
+    EventHistoryCorrupt,
+    StreamReady,
+)
+from atelier2.ports.run_queries import (
+    RunFound,
+    RunQueryMissing,
+)
 from atelier2.ports.workflow_revisions import (
     QueryDurableStateCorrupt,
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
-    WorkflowRevisionPage,
 )
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,

@@ -39,15 +39,25 @@ from atelier2.contracts.executions import (
     RunEventKind,
     logical_effect_key_for,
 )
+from atelier2.contracts.run_projections import (
+    RunPage,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from atelier2.ports.run_events import EventHistoryCorrupt, StreamReady
-from atelier2.ports.run_queries import RunFound, RunPage
+from atelier2.contracts.workflow_projections import (
+    WorkflowRevisionPage,
+)
+from atelier2.ports.run_events import (
+    EventHistoryCorrupt,
+    StreamReady,
+)
+from atelier2.ports.run_queries import (
+    RunFound,
+)
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
     WorkflowRevisionFound,
-    WorkflowRevisionPage,
 )
 from tests.scenarios.agents import agent_attempt_execution, commit_configured_agent
 from tests.scenarios.api import durable_queries, permissive_projection_limit

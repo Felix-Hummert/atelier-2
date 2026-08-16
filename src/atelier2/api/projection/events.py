@@ -38,7 +38,7 @@ from atelier2.contracts.executions import (
     RunEventKind,
     is_canonical_integer_bytes,
 )
-from atelier2.ports.run_events import PersistedRunEvent
+from atelier2.contracts.run_events import PersistedRunEvent
 
 
 def run_event_resource(

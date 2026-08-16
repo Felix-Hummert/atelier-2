@@ -20,11 +20,13 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
+from atelier2.contracts.run_events import (
+    PersistedRunEvent,
+    RunEventPage,
+)
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
-    PersistedRunEvent,
-    RunEventPage,
     RunEventQueries,
 )
 from atelier2.ports.workflow_revisions import (

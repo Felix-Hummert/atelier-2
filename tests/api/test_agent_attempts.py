@@ -26,13 +26,16 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_events import (
+    PersistedRunEvent,
+)
 from atelier2.contracts.run_projections import (
+    AgentAttemptProjection,
     NodeState,
     PublicAgentAttemptState,
+    RunProjection,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from atelier2.ports.run_events import PersistedRunEvent
-from atelier2.ports.run_queries import AgentAttemptProjection, RunProjection
 from tests.scenarios.api import api_limits
 
 SERVED_RAIL = (

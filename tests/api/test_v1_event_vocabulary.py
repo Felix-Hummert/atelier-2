@@ -18,8 +18,10 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
 )
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.run_events import (
+    PersistedRunEvent,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
-from atelier2.ports.run_events import PersistedRunEvent
 
 RUN_ID = RunId("v1-event-vocabulary")
 REVISION_HASH = WorkflowRevisionHash("0" * 64)

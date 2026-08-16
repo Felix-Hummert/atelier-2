@@ -35,6 +35,9 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.application.project_node_rail import NodeRailEntry, project_node_rail
 from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_projections import (
+    RunProjection,
+)
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.workflows import (
     WaitNode,
@@ -42,7 +45,6 @@ from atelier2.contracts.workflows import (
     WorkflowNode,
     WorkflowNodeV2,
 )
-from atelier2.ports.run_queries import RunProjection
 
 
 def node_rail_resources(

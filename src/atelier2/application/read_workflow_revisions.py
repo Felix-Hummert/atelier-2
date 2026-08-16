@@ -17,18 +17,20 @@ from atelier2.application.refusals import (
     ReadUnavailable,
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
-from atelier2.ports.workflow_revisions import (
+from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
-    QueryDurableStateCorrupt,
-    WorkflowRevisionFound,
-    WorkflowRevisionMissing,
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
-    WorkflowRevisionQueries,
 )
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge as PortProjectionTooLarge,
+)
+from atelier2.ports.workflow_revisions import (
+    QueryDurableStateCorrupt,
+    WorkflowRevisionFound,
+    WorkflowRevisionMissing,
+    WorkflowRevisionQueries,
 )
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,

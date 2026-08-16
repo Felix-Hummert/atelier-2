@@ -5,6 +5,9 @@ from typing import assert_never
 
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.runs import WorkflowRevision
+from atelier2.contracts.workflow_projections import (
+    WorkflowRevisionProjection,
+)
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentInvalid,
     WorkflowRefusal,
@@ -23,7 +26,6 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionExisting,
     ProjectionLimitExceeded,
     WorkflowDocumentParser,
-    WorkflowRevisionProjection,
     WorkflowRevisionPublisher,
 )
 
