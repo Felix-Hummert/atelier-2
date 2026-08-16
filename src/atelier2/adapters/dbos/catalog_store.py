@@ -400,6 +400,8 @@ class DbosCatalogStore:
                     stored = _derived_lineage_or_mismatch(existing)
                     if isinstance(stored, CatalogLineageIdMismatch):
                         return stored
+                    if _is_retired(connection, stored.lineage_id):
+                        return CatalogAdmissionRetired(stored.lineage_id)
                     member = _member(
                         connection, lineage.lineage_id, revision.revision_hash
                     )

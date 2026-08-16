@@ -171,6 +171,7 @@ type FoundCatalogLineageResult = (
     | CatalogAdmissionUnpublished
     | CatalogAdmissionNameHeld
     | CatalogAdmissionRevisionOwned
+    | CatalogAdmissionRetired
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )
