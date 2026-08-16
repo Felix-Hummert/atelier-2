@@ -486,6 +486,12 @@ class CodexSubscriptionExecutor:
             return _UNUSABLE_PROVIDER_ANSWER
         return AgentExecutionResult(answer)
 
+    def release_process(self, invocation: AgentProcessInvocation) -> None:
+        try:
+            shutil.rmtree(_answer_file_of(invocation).parent)
+        except FileNotFoundError:
+            pass
+
     def close(self) -> None:
         """Nothing outlives an execution, so a closing executor owns nothing."""
 

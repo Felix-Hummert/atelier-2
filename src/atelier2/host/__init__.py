@@ -24,6 +24,11 @@ from atelier2.adapters.codex_subscription import (
     attest_codex_containment,
     verify_codex_capability,
 )
+from atelier2.adapters.grok_subscription import (
+    GrokExecutableUnsupported,
+    GrokSubscriptionSettings,
+    verify_grok_capability,
+)
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
 from atelier2.host.run_command import (
     AgentBindingSource,
@@ -87,6 +92,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             host=parsed.host,
             port=parsed.port,
             claude_subscription=_claude_subscription_settings(parser, parsed),
+            grok_subscription=_grok_subscription_settings(parser, parsed),
             codex_subscription=_codex_subscription_settings(parser, parsed),
         )
     except ValueError as refusal:
@@ -179,6 +185,42 @@ def _claude_subscription_settings(
     return settings
 
 
+def _grok_subscription_settings(
+    parser: argparse.ArgumentParser, parsed: argparse.Namespace
+) -> GrokSubscriptionSettings | None:
+    """Compose the Grok subscription executor only when fully declared."""
+
+    declared = (
+        parsed.grok_executable,
+        parsed.grok_workspace,
+        parsed.grok_credential_directory,
+    )
+    if all(value is None for value in declared):
+        return None
+    if any(value is None for value in declared):
+        parser.error(
+            "serving Grok subscription agents requires --grok-executable, "
+            "--grok-workspace and --grok-credential-directory together"
+        )
+    search_path = os.environ.get("PATH")
+    if search_path is None:
+        parser.error(
+            "serving Grok subscription agents requires PATH in the server "
+            "environment, because the launched provider inherits nothing else"
+        )
+    settings = GrokSubscriptionSettings(
+        parsed.grok_executable,
+        parsed.grok_workspace,
+        parsed.grok_credential_directory,
+        search_path,
+    )
+    try:
+        verify_grok_capability(settings.executable)
+    except GrokExecutableUnsupported as error:
+        parser.error(str(error))
+    return settings
+
+
 def _codex_subscription_settings(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
 ) -> CodexSubscriptionSettings | None:
@@ -240,6 +282,9 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--claude-executable", type=Path)
     serve_parser.add_argument("--claude-workspace", type=Path)
     serve_parser.add_argument("--claude-credential-directory", type=Path)
+    serve_parser.add_argument("--grok-executable", type=Path)
+    serve_parser.add_argument("--grok-workspace", type=Path)
+    serve_parser.add_argument("--grok-credential-directory", type=Path)
     serve_parser.add_argument("--codex-executable", type=Path)
     serve_parser.add_argument("--codex-workspace", type=Path)
     serve_parser.add_argument("--codex-credential-directory", type=Path)

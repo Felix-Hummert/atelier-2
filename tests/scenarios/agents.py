@@ -404,6 +404,7 @@ class RecordingAgentExecutorV2:
     results: list[AgentExecutionResult | AgentExecutionFailure] = field(
         default_factory=list
     )
+    released_invocations: list[AgentProcessInvocation] = field(default_factory=list)
 
     def prepare_process(
         self, request: AgentExecutionRequestV2
@@ -419,6 +420,9 @@ class RecordingAgentExecutorV2:
         result = self.decoder(completion)
         self.results.append(result)
         return result
+
+    def release_process(self, invocation: AgentProcessInvocation) -> None:
+        self.released_invocations.append(invocation)
 
     def close(self) -> None:
         self.closes += 1
