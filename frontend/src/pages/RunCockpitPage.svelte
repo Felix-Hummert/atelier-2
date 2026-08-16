@@ -3,6 +3,7 @@
 
   import {
     CockpitRequestError,
+    executableGraph,
     type CockpitApi,
     type Run,
     type RunEvent,
@@ -135,7 +136,7 @@
   }
 
   function requireBoundRevision(run: Run, revision: WorkflowRevisionDetail): void {
-    const currentNode = revision.graph.nodes.find(
+    const currentNode = executableGraph(revision.graph).nodes.find(
       (node) => node.node_id === run.current_node.node_id
     );
     if (
@@ -190,7 +191,8 @@
   async function applyEventInOrder(rawData: string): Promise<void> {
     if (projection === null) return;
     const priorSequence = projection.last_sequence;
-    const graph = snapshot.confirmed?.revision.graph;
+    const confirmed = snapshot.confirmed;
+    const graph = confirmed === null ? undefined : executableGraph(confirmed.revision.graph);
     const next = await decodeAndApplyDurableEvent(projection, rawData, graph);
     projection = next;
     if (next.protocol_problem !== null || next.connection === "failed") {
@@ -856,7 +858,7 @@
 
     <NodeRail
       run={snapshot.confirmed.run}
-      graph={snapshot.confirmed.revision.graph}
+      graph={executableGraph(snapshot.confirmed.revision.graph)}
       events={projection?.events ?? []}
       agentOutputs={projection?.agent_outputs_by_cursor ?? new Map()}
       {openFormNodeIds}

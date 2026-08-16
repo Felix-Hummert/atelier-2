@@ -121,3 +121,56 @@ describe("the saved-workflow picker", () => {
     expect(screen.queryByText(/cannot be started/i)).toBeNull();
   });
 });
+
+/** A picker driven by pages, exactly as the route serves them. */
+function pagedApi(pages: ReturnType<typeof decodedRow>[][]): CockpitApi {
+  return cockpitApiStub({
+    listWorkflowRevisions: vi.fn(async (after?: string) => {
+      const index = after === undefined ? 0 : pages.findIndex((page) => page.at(-1)?.revision_hash === after) + 1;
+      const items = pages[index] ?? [];
+      const last = index + 1 < pages.length ? items.at(-1)?.revision_hash ?? null : null;
+      return { items, next_after_revision_hash: last };
+    })
+  });
+}
+
+describe("the picker reads past its first page", () => {
+  it("proves(the-picker-offers-every-saved-workflow-not-only-its-first-page): offers a named workflow that only exists on a later page", async () => {
+    const cockpitApi = pagedApi([[unnamedRevision()], [namedRevision()]]);
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    expect(
+      (await screen.findByRole("radio", {
+        name: /Implement a candidate, then review it for defects/
+      })).isConnected
+    ).toBe(true);
+    expect(vi.mocked(cockpitApi.listWorkflowRevisions).mock.calls.map(([after]) => after)).toEqual([
+      undefined,
+      unnamedHash
+    ]);
+  });
+
+  it("names each disclosure by the workflow it belongs to", async () => {
+    const second = decodedRow({
+      revision_hash: "c".repeat(64),
+      format_version: 3,
+      executable: false,
+      name: "Sweep the suite and file what broke",
+      description: null
+    });
+    renderPicker([namedRevision(), second]);
+    await screen.findByRole("radio", { name: /Implement a candidate/ });
+
+    const names = screen
+      .getAllByText("Details")
+      .map((summary) => summary.getAttribute("aria-label"));
+
+    expect(names).toEqual([
+      "Details for Implement a candidate, then review it for defects",
+      "Details for Sweep the suite and file what broke"
+    ]);
+    expect(new Set(names).size).toBe(names.length);
+  });
+});

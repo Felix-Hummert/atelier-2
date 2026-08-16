@@ -218,6 +218,51 @@ def test_an_enriched_page_stops_at_its_derived_bound_and_pages_on(
     assert rest.items[0].revision.revision_hash.value == published[1]
 
 
+@pytest.mark.parametrize(
+    ("budget", "guard"),
+    [
+        (EnrichedPageBudget(maximum_nodes=1, maximum_document_bytes=1 << 20), "nodes"),
+        (EnrichedPageBudget(maximum_nodes=1_000, maximum_document_bytes=1), "bytes"),
+    ],
+    ids=["node-tight-byte-generous", "byte-tight-node-generous"],
+)
+def test_each_bound_stops_a_page_on_its_own_and_pages_through_to_the_end(
+    runtime: DbosRuntime, budget: EnrichedPageBudget, guard: str
+) -> None:
+    """Each bound is proven where the other cannot reach it.
+
+    A budget that is tight in both dimensions proves only the guard that runs
+    first: with one byte allowed, every later row leaves at the byte guard and
+    the node condition can be deleted without a test noticing. So each case here
+    leaves one dimension generous, and the row that ends the page can only have
+    been ended by the other.
+    """
+
+    del guard
+    client = durable_api_client(runtime)
+    published = sorted(
+        {
+            _publish(client, V3_DESCRIBED_DOCUMENT),
+            _publish(client, V3_DOCUMENT),
+            _publish(client, V1_DOCUMENT),
+        }
+    )
+    queries = durable_queries(runtime.engine)
+
+    walked: list[str] = []
+    after = None
+    while True:
+        page = queries.list_described_workflow_revisions(after, 50, budget)
+        assert isinstance(page, DescribedWorkflowRevisionPage)
+        assert len(page.items) == 1, "the tight bound admits exactly one row a page"
+        walked.append(page.items[0].revision.revision_hash.value)
+        if page.next_after is None:
+            break
+        after = page.next_after
+
+    assert walked == published
+
+
 def test_a_generous_budget_lists_every_revision_and_ends_the_page(
     runtime: DbosRuntime,
 ) -> None:

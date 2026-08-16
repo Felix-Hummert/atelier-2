@@ -2,7 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/sv
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import { CockpitRequestError, type CockpitApi, type Run } from "../../src/api/client";
+import {
+  CockpitRequestError,
+  executableGraph,
+  type CockpitApi,
+  type Run
+} from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
@@ -178,11 +183,12 @@ describe("read-only run cockpit", () => {
   it("does not open event history for a run whose current node disagrees with its revision", async () => {
     const feed = new FakeRunEventFeed();
     const mismatchedRevision = revision();
-    const firstNode = mismatchedRevision.graph.nodes[0];
+    const mismatchedGraph = executableGraph(mismatchedRevision.graph);
+    const firstNode = mismatchedGraph.nodes[0];
     if (firstNode?.type !== "agent") {
       throw new Error("Expected the fixture to start with an Agent node.");
     }
-    mismatchedRevision.graph.nodes[0] = {
+    mismatchedGraph.nodes[0] = {
       ...firstNode,
       job: "Different work"
     };

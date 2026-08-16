@@ -21,6 +21,7 @@
     type PublishMutation,
     type StartMutation
   } from "../lib/mutationJournal";
+  import { readEveryRevision } from "../lib/runPages";
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
 
   export let cockpitApi: CockpitApi;
@@ -89,7 +90,17 @@
   async function loadRevisions(): Promise<void> {
     revisions = startLoading(revisions);
     try {
-      revisions = confirmResource(revisions, await cockpitApi.listWorkflowRevisions());
+      const reading = await readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after));
+      revisions = confirmResource(revisions, {
+        items: reading.revisions,
+        next_after_revision_hash: null
+      });
+      if (!reading.complete) {
+        showFailure(
+          new Error(`Some saved workflows could not be read: ${reading.unreadable}.`),
+          "The workflow list is incomplete."
+        );
+      }
     } catch (error) {
       showFailure(error, "The workflow list could not be loaded.");
       revisions = { ...revisions, request: { state: "idle" } };
@@ -406,7 +417,7 @@
           </span>
         </label>
         {#if revision.name !== null}
-          <details class="revision-details"><summary>Details</summary><code class="revision-hash">{revision.revision_hash}</code></details>
+          <details class="revision-details"><summary aria-label={`Details for ${revision.name}`}>Details</summary><code class="revision-hash">{revision.revision_hash}</code></details>
         {/if}
       {/each}
       {#if revisions.request.state === "loading"}<p class="status" role="status">Loading saved workflows…</p>{/if}
@@ -447,10 +458,21 @@
         {/each}
       </section>
     {/if}
-    <section class="start-card" aria-labelledby="start-title">
-      <div><p class="eyebrow">{operation === "start" ? "Starting" : "Ready"}</p><h2 id="start-title">Run ID</h2><code>{draft.runId}</code></div>
-      <button class="primary" type="button" disabled={busy} onclick={startDraft}>Start</button>
-    </section>
+    {#if draft.revision.graph.format_version === 3}
+      <section class="start-card unstartable" aria-labelledby="start-title">
+        <div>
+          <p class="eyebrow">Published</p>
+          <h2 id="start-title">{draft.revision.graph.name}</h2>
+          {#if draft.revision.graph.description !== null}<p class="muted">{draft.revision.graph.description}</p>{/if}
+          <p class="revision-refusal">Cannot be started: format 3 is not executable yet.</p>
+        </div>
+      </section>
+    {:else}
+      <section class="start-card" aria-labelledby="start-title">
+        <div><p class="eyebrow">{operation === "start" ? "Starting" : "Ready"}</p><h2 id="start-title">Run ID</h2><code>{draft.runId}</code></div>
+        <button class="primary" type="button" disabled={busy} onclick={startDraft}>Start</button>
+      </section>
+    {/if}
     {#if operation === "start"}<p class="status" role="status">Starting the exact run…</p>{/if}
   {/if}
 </section>

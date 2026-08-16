@@ -8,7 +8,7 @@ import {
   type RunV1,
   type RunV2,
   type StreamFrame,
-  type WorkflowGraph,
+  type ExecutableWorkflowGraph,
   type WorkflowNode
 } from "../api/client";
 import { sha256Hex } from "./exactBytes";
@@ -145,7 +145,7 @@ export function markFailed(
 export async function decodeAndApplyDurableEvent(
   projection: StreamProjection,
   rawData: string,
-  graph?: WorkflowGraph
+  graph?: ExecutableWorkflowGraph
 ): Promise<StreamProjection> {
   if (projection.protocol_problem !== null) return projection;
   let frame: StreamFrame;
@@ -248,7 +248,7 @@ export function applyDurableEvent(
 
 export function projectNodeRail(
   run: Run,
-  graph: WorkflowGraph,
+  graph: ExecutableWorkflowGraph,
   events: readonly RunEvent[]
 ): readonly NodeProjection[] {
   const nodes = orderedNodes(graph);
@@ -307,7 +307,7 @@ function servedEntry(rail: NodeRail, nodeId: string): NodeRail[number] {
   return served;
 }
 
-function orderedNodes(graph: WorkflowGraph): WorkflowNode[] {
+function orderedNodes(graph: ExecutableWorkflowGraph): WorkflowNode[] {
   const byId = new Map(graph.nodes.map((node) => [node.node_id, node]));
   const ordered: WorkflowNode[] = [];
   const visited = new Set<string>();
@@ -432,7 +432,7 @@ function terminalNodeState(event: RunEvent): NodeState | null {
   return isTerminalNodeEvent(event) ? "succeeded" : null;
 }
 
-function eventMatchesGraph(event: RunEvent, graph: WorkflowGraph): boolean {
+function eventMatchesGraph(event: RunEvent, graph: ExecutableWorkflowGraph): boolean {
   const eventFormat = "workflow_format_version" in event ? 2 : 1;
   if (eventFormat !== graph.format_version) return false;
   const node = graph.nodes.find((candidate) => candidate.node_id === event.node_id);

@@ -1,4 +1,9 @@
-import type { Run, RunPage } from "../api/client";
+import type {
+  Run,
+  RunPage,
+  WorkflowRevisionPage,
+  WorkflowRevisionSummary
+} from "../api/client";
 
 /**
  * Every run the durable list holds, read page by page.
@@ -22,41 +27,82 @@ export type RunReading =
   | { complete: true; runs: Run[] }
   | { complete: false; runs: Run[]; unreadable: string };
 
+export type RevisionReading =
+  | { complete: true; revisions: WorkflowRevisionSummary[] }
+  | { complete: false; revisions: WorkflowRevisionSummary[]; unreadable: string };
+
 export async function readEveryRun(
   listRuns: (after?: string) => Promise<RunPage>
 ): Promise<RunReading> {
-  const runs: Run[] = [];
+  const read = await readEveryPage(
+    async (after) => {
+      const page = await listRuns(after);
+      return { items: page.items, next: page.next_after };
+    },
+    (run) => run.public_run_reference
+  );
+  return read.complete
+    ? { complete: true, runs: read.items }
+    : { complete: false, runs: read.items, unreadable: read.unreadable };
+}
+
+/** The saved workflows a picker may offer, read the same way and for the same reason. */
+export async function readEveryRevision(
+  listRevisions: (after?: string) => Promise<WorkflowRevisionPage>
+): Promise<RevisionReading> {
+  const read = await readEveryPage(
+    async (after) => {
+      const page = await listRevisions(after);
+      return { items: page.items, next: page.next_after_revision_hash };
+    },
+    (revision) => revision.revision_hash
+  );
+  return read.complete
+    ? { complete: true, revisions: read.items }
+    : { complete: false, revisions: read.items, unreadable: read.unreadable };
+}
+
+type PageReading<Item> =
+  | { complete: true; items: Item[] }
+  | { complete: false; items: Item[]; unreadable: string };
+
+async function readEveryPage<Item>(
+  readPage: (after?: string) => Promise<{ items: readonly Item[]; next: string | null }>,
+  identityOf: (item: Item) => string
+): Promise<PageReading<Item>> {
+  const items: Item[] = [];
   const collected = new Set<string>();
   const followed = new Set<string>();
   let after: string | undefined;
   for (;;) {
-    let page: RunPage;
+    let page: { items: readonly Item[]; next: string | null };
     try {
-      page = await listRuns(after);
+      page = await readPage(after);
     } catch (error) {
       if (after === undefined) {
         throw error;
       }
-      return { complete: false, runs, unreadable: failureText(error) };
+      return { complete: false, items, unreadable: failureText(error) };
     }
-    for (const run of page.items) {
-      if (!collected.has(run.public_run_reference)) {
-        collected.add(run.public_run_reference);
-        runs.push(run);
+    for (const item of page.items) {
+      const identity = identityOf(item);
+      if (!collected.has(identity)) {
+        collected.add(identity);
+        items.push(item);
       }
     }
-    if (page.next_after === null) {
-      return { complete: true, runs };
+    if (page.next === null) {
+      return { complete: true, items };
     }
-    if (followed.has(page.next_after)) {
+    if (followed.has(page.next)) {
       return {
         complete: false,
-        runs,
+        items,
         unreadable: "the durable list answered with a cursor it had already given"
       };
     }
-    followed.add(page.next_after);
-    after = page.next_after;
+    followed.add(page.next);
+    after = page.next;
   }
 }
 

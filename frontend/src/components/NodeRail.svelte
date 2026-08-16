@@ -4,7 +4,7 @@
     type Run,
     type RunV2,
     type RunEvent,
-    type WorkflowGraph
+    type ExecutableWorkflowGraph
   } from "../api/client";
   import { applyInteractionOverlay, isStilled } from "../lib/interactionOverlay";
   import {
@@ -16,7 +16,7 @@
   import StateMark, { stateLabels } from "./StateMark.svelte";
 
   export let run: Run;
-  export let graph: WorkflowGraph;
+  export let graph: ExecutableWorkflowGraph;
   export let events: readonly RunEvent[];
   export let agentOutputs: ReadonlyMap<string, AgentOutputProjection> = new Map();
   export let openFormNodeIds: ReadonlySet<string> = new Set();
