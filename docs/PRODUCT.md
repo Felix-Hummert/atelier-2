@@ -143,10 +143,12 @@ tool-free premise true.
 Workflow format V3 is authored truth, not executable truth. The parser accepts a
 format-3 document into its own closed model — the five node kinds with the field
 matrix each requires, refuses, or accepts, `depends_on` as the only control edge,
-the join rule in its three arities, the four input sources, the two context-edge
-kinds, and graph-level inputs and outputs — and refuses every forbidden form naming
-the node and the field it concerns, including each retired V1 or V2 key with its
-replacement. Unsafe YAML is refused by name too, before any vocabulary is read: an
+the join rule in its three arities, the input sources a node may read — another
+node's output, that node's terminal receipt, a context entry, and the order the
+graph itself was started with — the two context-edge kinds, and graph-level inputs
+and outputs — and refuses every forbidden form naming the node and the field it
+concerns, including each retired V1 or V2 key with its replacement. Unsafe YAML is
+refused by name too, before any vocabulary is read: an
 anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
 a document that is not UTF-8 without a byte order mark, and one nested past the
 bound that keeps the refusal a refusal instead of an exhausted stack.
@@ -155,9 +157,15 @@ Every reference behind that surface now binds. A subworkflow node's declared inp
 and outputs match the graph boundary of the published child revision it names one to
 one, by name and schema revision, read against that child's real content, and a chain
 nesting deeper than the depth its caller attests is refused before that depth resolves
-or reads anything. An input that proves no schema revision cannot bind a typed graph
-input, and recursion is impossible rather than checked: no revision can carry its own
-hash. Every other versioned reference — schema, deterministic and adapter
+or reads anything. The order a graph declares is readable by name: a node of any kind
+binds it as an input, and a parent's own order reaches a child through that boundary
+under the schema revision both levels agreed on, a differing one refused by name.
+That boundary is checked from both sides — a node reading an order its graph never
+declared, and a declared order no node reads, are each refused naming what they
+concern. An input whose source proves no schema revision — a terminal receipt, a
+context entry, an authored value — still cannot bind a typed graph input, and
+recursion is impossible rather than checked: no revision can carry its own hash.
+Every other versioned reference — schema, deterministic and adapter
 operation, context source, read operation, profile, skill, tool, and the policy,
 budget, retry and cancellation policies — resolves against the registry of the kind
 its authored position puts it in, by the exact revision hash it pins, and so does
@@ -165,11 +173,19 @@ every reference of every child the document reuses. A reference whose revision i
 pinned hash, that no publication of that kind carries, or that a registry answers
 with a revision of another kind or another hash is refused naming the node, the
 field, the declared entry, the chain it was reached through, and the reference
-itself. A subworkflow's own `workflow` reference is one of them and resolves
-through the binder that already read that child, so one question keeps one answer.
-What resolves is
-frozen into one run-configuration revision — the role matrix by its existing binding
-identity and every resolved reference, the child revisions among them —
+itself. A `schema` reference proves more than its hash: the revision it pins must be
+a schema, under one closed profile of JSON Schema Draft 2020-12 whose every bound
+keeps evaluation decidable, local and cheap — bounded bytes, container depth and
+value count, UTF-8 without a byte order mark, no duplicate keys and no non-canonical
+numbers, `$id`, `$anchor`, `$dynamicAnchor` and `$dynamicRef` refused, every `$ref`
+local, and `format` left the draft's annotation instead of an assertion. Retrieval is
+off by construction rather than by trust. Bytes published under that name which are
+not such a schema are refused by name, so the whole snapshot fails rather than
+binding a type nobody can evaluate, and the preview says so instead of drawing it.
+A subworkflow's own `workflow` reference is one of them and resolves through the
+binder that already read that child, so one question keeps one answer. What resolves
+is frozen into one run-configuration revision — the role matrix by its existing
+binding identity and every resolved reference, the child revisions among them —
 hash-framed as one immutable snapshot whose identity does not depend on the order it
 was assembled in. From those parts one composed preview is derived, so what a
 revision will do is readable before anything of it runs: every node under the kind
@@ -179,10 +195,12 @@ really applies, the capabilities each node demands including the grants its skil
 carry in transitively, the published revision every reference lands in or the named
 reason it lands nowhere — a withdrawn skill among them, named rather than ending the
 drawing — every published skill whose contents nobody read, whose carried grants the
-preview says are unknown instead of answering that it carries none, the child every
-subworkflow node binds, by the reference it authored and the exact revision that
-resolved to, with that child's own preview under it, and the executability verdict
-with the capability each still-waiting node needs — marked proposed or bound, so an
+preview says are unknown instead of answering that it carries none, every order a
+graph declares with its name and schema revision at the graph that declared it, the
+child every subworkflow node binds, by the reference it authored and the exact
+revision that resolved to, with that child's own preview under it, and the
+executability verdict with the capability each still-waiting node needs — marked
+proposed or bound, so an
 author's intent is never read as a binding. That preview is a derivation and nothing
 else: no route, no rendering and no stored shape carries it. Behind that, nothing:
 the registries are ports a caller supplies,
@@ -248,7 +266,12 @@ publish secret-free auth-profile and agent-configuration revisions; publish and
 inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs;
 answer a waiting node; cancel the current V2 Agent attempt with an optional
 single replacement; submit an accountable reconciliation; and follow the
-closed durable event history as a resumable server-sent event stream. Existing
+closed durable event history as a resumable server-sent event stream. A served V2
+run also names the state of every node of the revision it is bound to, so a reader
+is told where each node stands instead of computing it: one pure function in the
+core derives that rail from the run snapshot, that revision, and the events since,
+with the snapshot authoritative only until an event overtakes it, and success
+carries exactly one name on the wire. Existing
 V1 JSON and OpenAPI component bytes remain frozen while exact V2 unions expose
 the run's safe binding matrix and byte-safe Agent output. Public references are
 transport identifiers, not new domain identities, and retries report whether a
@@ -260,7 +283,12 @@ A narrow local cockpit can list runs, publish and start a workflow from `/new`,
 and project one durable run's bound revision, state, nodes, and resumable event
 history. It can answer the exact integer requested by a Wait node and resolve an
 unknown Action outcome as either an exact found effect or an accountable,
-confirmed absence. Its session-scoped mutation journal preserves exact retry
+confirmed absence. For a V2 run it renders the node states the API names rather
+than deriving them; what it still derives is named — the V1 half, whose run
+resource is byte-frozen, and the half that arrives on the event stream — and the
+only state rule left in the browser is a client-owned interaction overlay that
+lifts a node needing the operator while his form is open and stills it by that
+open form alone. Its session-scoped mutation journal preserves exact retry
 bytes without becoming a second durable truth. [ADR 0004](decisions/0004-local-cockpit.md)
 owns this browser boundary. The cockpit still provides no provider or platform
 integration, authentication boundary, public deployment, or general-purpose
