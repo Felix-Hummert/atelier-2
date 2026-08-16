@@ -277,6 +277,7 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
         assert isinstance(first, AgentAttemptSucceeded)
         assert recovered == first
         assert len(executor.results) == 1
+        assert len(executor.released_invocations) == 2
     finally:
         runtime.close()
 
@@ -296,15 +297,17 @@ def test_a_claim_replayed_from_a_lost_incarnation_never_authorizes_invocation(
         )
 
         counter = tmp_path / "invocations"
+        executor = counting_executor(counter)
         outcome = execute_agent_attempt(
             execution,
-            counting_executor(counter),
+            executor,
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
         )
 
         assert isinstance(outcome, AgentAttemptPossiblyRan)
         assert not counter.exists()
+        assert len(executor.released_invocations) == 1
     finally:
         runtime.close()
 
@@ -426,6 +429,7 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
             store,
             runtime.agent_process_supervisor,
         )
+        assert len(terminal.released_invocations) == 1
         with runtime.engine.connect() as connection:
             attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
             event = connection.execute(sa.select(run_events)).mappings().one()

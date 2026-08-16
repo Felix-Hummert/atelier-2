@@ -6,16 +6,17 @@ vector; standard input is empty. The child environment is only `HOME`,
 `GROK_HOME` and `PATH` -- and `HOME` is containment, not convenience: without
 it the CLI resolves the invoking account's own profile.
 
-The prompt file is the one thing this seam writes, so it is written into a
-private per-execution directory and opened `O_EXCL | O_NOFOLLOW` at mode 0600:
-a preplaced symlink at a predictable name cannot redirect job bytes into
-another writable target, and the directory is removed on every lifecycle path.
+Every invocation gets one private disposable `HOME`/`GROK_HOME`. The seam
+copies only `auth.json` into it, writes an inert compatibility configuration
+and the prompt with exclusive no-follow opens, then removes the whole home on
+every lifecycle path. Provider-created sessions therefore never enter the
+source credential directory or outlive their invocation.
 
 Flags alone do not bound what the CLI discovers. `grok inspect --json` reports
 the plugins, hooks, MCP servers, skills, marketplaces, LSP servers, permission
-sources and project instructions a directory would load, so the host attests
-that exact profile with this executor's own environment and refuses to serve
-when anything but built-in agents is discoverable.
+sources, project instructions and external compatibility cells a directory
+would load. Each prepared invocation attests its own exact home, configuration
+and working directory before the supervisor may launch it.
 """
 
 from __future__ import annotations
@@ -23,8 +24,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -98,7 +101,6 @@ _DISCOVERY_SURFACES = (
     "marketplaces",
     "lspServers",
     "projectInstructions",
-    "configSources",
 )
 _CONFIG_LAYERS_FIELD = "layers"
 _AGENTS_FIELD = "agents"
@@ -108,11 +110,43 @@ _BUILTIN_AGENT_SOURCE = "builtin"
 _PERMISSIONS_FIELD = "permissions"
 _PERMISSION_SOURCES_FIELD = "sources"
 
+_EXTERNAL_COMPATIBILITY_CELLS = (
+    ("cursor", "skills"),
+    ("cursor", "rules"),
+    ("cursor", "agents"),
+    ("cursor", "mcps"),
+    ("cursor", "hooks"),
+    ("cursor", "sessions"),
+    ("claude", "skills"),
+    ("claude", "rules"),
+    ("claude", "agents"),
+    ("claude", "mcps"),
+    ("claude", "hooks"),
+    ("claude", "sessions"),
+    ("codex", "sessions"),
+)
+_EXTERNAL_COMPATIBILITY_FIELD = "externalCompat"
+_REMOTE_SETTINGS_LOADED_FIELD = "remoteSettingsLoaded"
+_COMPATIBILITY_CELLS_FIELD = "cells"
+_COMPATIBILITY_VENDOR_FIELD = "vendor"
+_COMPATIBILITY_SURFACE_FIELD = "surface"
+_COMPATIBILITY_ENABLED_FIELD = "enabled"
+_COMPATIBILITY_SOURCE_FIELD = "source"
+_CONFIG_SOURCE_ROLE_FIELD = "role"
+_CONFIG_SOURCE_PATH_FIELD = "path"
+_USER_CONFIG_SOURCE_ROLE = "user"
+_CONFIG_SOURCE = "config"
+
 _JOB_DIRECTORY_PREFIX = "atelier2-grok-job-"
 _JOB_FILE_NAME = "job"
+_CONFIG_FILE_NAME = "config.toml"
+_AUTHENTICATION_FILE_NAME = "auth.json"
 _JOB_DIRECTORY_MODE = 0o700
 _JOB_FILE_MODE = 0o600
+_CONFIG_FILE_MODE = 0o600
+_AUTHENTICATION_FILE_MODE = 0o400
 _JOB_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+_MAXIMUM_AUTHENTICATION_FILE_BYTES = 1_048_576
 
 _HOME_VARIABLE = "HOME"
 _CREDENTIAL_DIRECTORY_VARIABLE = "GROK_HOME"
@@ -233,12 +267,24 @@ class GrokSubscriptionSettings:
             raise ValueError(
                 "the Grok credential directory must be an existing directory"
             )
+        authentication = credential_directory / _AUTHENTICATION_FILE_NAME
+        try:
+            authentication_status = authentication.stat(follow_symlinks=False)
+        except OSError as error:
+            raise ValueError(
+                "the Grok credential directory must contain a regular auth.json"
+            ) from error
+        if (
+            not stat.S_ISREG(authentication_status.st_mode)
+            or stat.S_IMODE(authentication_status.st_mode) & 0o077
+        ):
+            raise ValueError("the Grok auth.json must be a private regular file")
         if not self.search_path.strip():
             raise ValueError("the Grok executable search path must be nonempty")
 
 
 def _child_environment(
-    settings: GrokSubscriptionSettings,
+    settings: GrokSubscriptionSettings, state_directory: Path
 ) -> tuple[tuple[str, str], ...]:
     """The complete environment a launched Grok inherits, and nothing else."""
 
@@ -249,13 +295,28 @@ def _child_environment(
     # -- it resolves the invoking account's home and loads that profile. Naming
     # `HOME` as the same private directory is what empties every surface.
     return (
-        (_HOME_VARIABLE, str(settings.credential_directory)),
-        (_CREDENTIAL_DIRECTORY_VARIABLE, str(settings.credential_directory)),
+        (_HOME_VARIABLE, str(state_directory)),
+        (_CREDENTIAL_DIRECTORY_VARIABLE, str(state_directory)),
         (_SEARCH_PATH_VARIABLE, settings.search_path),
     )
 
 
-def _discovered_surfaces(inspected: dict[str, object]) -> tuple[str, ...]:
+def _configuration_bytes() -> bytes:
+    sections: list[str] = []
+    for vendor in ("cursor", "claude", "codex"):
+        lines = [f"[compat.{vendor}]"]
+        lines.extend(
+            f"{surface} = false"
+            for candidate, surface in _EXTERNAL_COMPATIBILITY_CELLS
+            if candidate == vendor
+        )
+        sections.append("\n".join(lines))
+    return ("\n\n".join(sections) + "\n").encode("ascii")
+
+
+def _discovered_surfaces(
+    inspected: dict[str, object], state_directory: Path
+) -> tuple[str, ...]:
     """Name every surface the reported configuration would load."""
 
     discovered: list[str] = []
@@ -270,6 +331,34 @@ def _discovered_surfaces(inspected: dict[str, object]) -> tuple[str, ...]:
         sources = permissions.get(_PERMISSION_SOURCES_FIELD)
         if isinstance(sources, list) and sources:
             discovered.append(f"{_PERMISSIONS_FIELD}.{_PERMISSION_SOURCES_FIELD}")
+    config_sources = inspected.get("configSources")
+    expected_layers = [
+        {
+            _CONFIG_SOURCE_ROLE_FIELD: _USER_CONFIG_SOURCE_ROLE,
+            _CONFIG_SOURCE_PATH_FIELD: str(state_directory / _CONFIG_FILE_NAME),
+        }
+    ]
+    if (
+        not isinstance(config_sources, dict)
+        or config_sources.get(_CONFIG_LAYERS_FIELD) != expected_layers
+    ):
+        discovered.append("configSources")
+    compatibility = inspected.get(_EXTERNAL_COMPATIBILITY_FIELD)
+    expected_cells = [
+        {
+            _COMPATIBILITY_VENDOR_FIELD: vendor,
+            _COMPATIBILITY_SURFACE_FIELD: surface,
+            _COMPATIBILITY_ENABLED_FIELD: False,
+            _COMPATIBILITY_SOURCE_FIELD: _CONFIG_SOURCE,
+        }
+        for vendor, surface in _EXTERNAL_COMPATIBILITY_CELLS
+    ]
+    if (
+        not isinstance(compatibility, dict)
+        or compatibility.get(_REMOTE_SETTINGS_LOADED_FIELD) is not False
+        or compatibility.get(_COMPATIBILITY_CELLS_FIELD) != expected_cells
+    ):
+        discovered.append(_EXTERNAL_COMPATIBILITY_FIELD)
     agents = inspected.get(_AGENTS_FIELD)
     if isinstance(agents, list):
         for agent in agents:
@@ -289,6 +378,7 @@ def _discovered_surfaces(inspected: dict[str, object]) -> tuple[str, ...]:
 
 def attest_grok_containment(
     settings: GrokSubscriptionSettings,
+    state_directory: Path,
     timeout_seconds: float = _VERSION_PROBE_TIMEOUT_SECONDS,
 ) -> None:
     """Refuse to serve when the composed profile discovers a trusted surface.
@@ -307,8 +397,8 @@ def attest_grok_containment(
                 _INSPECT_COMMAND,
                 _INSPECT_JSON_FLAG,
             ),
-            cwd=settings.workspace,
-            env=dict(_child_environment(settings)),
+            cwd=state_directory,
+            env=dict(_child_environment(settings, state_directory)),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -341,41 +431,95 @@ def attest_grok_containment(
         raise GrokContainmentUnattested(
             f"the Grok executable did not report {_INSPECT_COMMAND} as an object"
         )
-    discovered = _discovered_surfaces(inspected)
+    discovered = _discovered_surfaces(inspected, state_directory)
     if discovered:
         raise GrokContainmentUnattested(
             "serving Grok subscription agents requires a profile that discovers "
             "no plugin, hook, MCP server, skill, marketplace, LSP server, "
-            "permission source, project instruction or non-built-in agent; this "
-            f"workspace and credential directory discover {', '.join(discovered)}"
+            "permission source, project instruction, external compatibility cell "
+            "or non-built-in agent; this exact invocation discovers "
+            f"{', '.join(discovered)}"
         )
 
 
-def _open_job_file(settings: GrokSubscriptionSettings, job_bytes: bytes) -> Path:
-    """Write one job into a private file no symlink can redirect."""
+def _write_private_file(path: Path, payload: bytes, mode: int) -> None:
+    descriptor = os.open(path, _JOB_FILE_FLAGS, mode)
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written < 1:
+                raise OSError("private Grok file write made no progress")
+            remaining = remaining[written:]
+    finally:
+        os.close(descriptor)
+
+
+def _authentication_bytes(settings: GrokSubscriptionSettings) -> bytes:
+    path = settings.credential_directory / _AUTHENTICATION_FILE_NAME
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or stat.S_IMODE(status.st_mode) & 0o077:
+            raise ValueError("the Grok auth.json must be a private regular file")
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = os.read(descriptor, 65_536)
+            if not chunk:
+                return b"".join(chunks)
+            size += len(chunk)
+            if size > _MAXIMUM_AUTHENTICATION_FILE_BYTES:
+                raise ValueError("the Grok auth.json exceeds its private copy bound")
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+
+
+def _open_job_directory(
+    settings: GrokSubscriptionSettings, job_bytes: bytes
+) -> tuple[Path, Path]:
+    """Prepare one private, disposable Grok home and prompt."""
 
     directory = Path(
         tempfile.mkdtemp(prefix=_JOB_DIRECTORY_PREFIX, dir=settings.workspace)
     )
     os.chmod(directory, _JOB_DIRECTORY_MODE)
-    path = directory / _JOB_FILE_NAME
+    prepared = False
     try:
-        descriptor = os.open(path, _JOB_FILE_FLAGS, _JOB_FILE_MODE)
-        try:
-            os.write(descriptor, job_bytes)
-        finally:
-            os.close(descriptor)
-    except OSError:
-        shutil.rmtree(directory, ignore_errors=True)
-        raise
-    return path
+        _write_private_file(
+            directory / _AUTHENTICATION_FILE_NAME,
+            _authentication_bytes(settings),
+            _AUTHENTICATION_FILE_MODE,
+        )
+        _write_private_file(
+            directory / _CONFIG_FILE_NAME,
+            _configuration_bytes(),
+            _CONFIG_FILE_MODE,
+        )
+        job_file = directory / _JOB_FILE_NAME
+        _write_private_file(job_file, job_bytes, _JOB_FILE_MODE)
+        prepared = True
+        return directory, job_file
+    finally:
+        if not prepared:
+            try:
+                shutil.rmtree(directory)
+            except FileNotFoundError:
+                pass
 
 
 @dataclass(frozen=True)
 class GrokSubscriptionExecutor:
     settings: GrokSubscriptionSettings
-    _job_directories: set[Path] = field(
+    _invocation_directories: set[Path] = field(
         default_factory=set, init=False, compare=False, repr=False
+    )
+    _lifecycle_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, compare=False, repr=False
+    )
+    _closed: threading.Event = field(
+        default_factory=threading.Event, init=False, compare=False, repr=False
     )
 
     def prepare_process(
@@ -387,44 +531,50 @@ class GrokSubscriptionExecutor:
                 "the Grok subscription executor serves subscription profiles only"
             )
         settings = self.settings
-        job_file = _open_job_file(settings, request.job_bytes)
-        self._job_directories.add(job_file.parent)
-        return AgentProcessInvocation(
-            (
-                str(settings.executable),
-                _PRINT_FLAG,
-                _OUTPUT_FORMAT_FLAG,
-                _JSON_OUTPUT_FORMAT,
-                _MODEL_FLAG,
-                binding.configuration.model,
-                _PROMPT_FILE_FLAG,
-                str(job_file),
-                _TOOLS_FLAG,
-                _PERMISSION_MODE_FLAG,
-                _DONT_ASK,
-                _NO_MEMORY_FLAG,
-                _NO_SUBAGENTS_FLAG,
-                _NO_WEB_SEARCH_FLAG,
-                _MAXIMUM_TURNS_FLAG,
-                _HEARTBEAT_MAXIMUM_TURNS,
-            ),
-            settings.workspace,
-            _child_environment(settings),
-            b"",
-            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-        )
-
-    def _discard_jobs(self) -> None:
-        """Job bytes outlive no lifecycle path: success, failure, cancel, close."""
-
-        for directory in tuple(self._job_directories):
-            shutil.rmtree(directory, ignore_errors=True)
-            self._job_directories.discard(directory)
+        state_directory, job_file = _open_job_directory(settings, request.job_bytes)
+        registered = False
+        try:
+            attest_grok_containment(settings, state_directory)
+            invocation = AgentProcessInvocation(
+                (
+                    str(settings.executable),
+                    _PRINT_FLAG,
+                    _OUTPUT_FORMAT_FLAG,
+                    _JSON_OUTPUT_FORMAT,
+                    _MODEL_FLAG,
+                    binding.configuration.model,
+                    _PROMPT_FILE_FLAG,
+                    str(job_file),
+                    _TOOLS_FLAG,
+                    _PERMISSION_MODE_FLAG,
+                    _DONT_ASK,
+                    _NO_MEMORY_FLAG,
+                    _NO_SUBAGENTS_FLAG,
+                    _NO_WEB_SEARCH_FLAG,
+                    _MAXIMUM_TURNS_FLAG,
+                    _HEARTBEAT_MAXIMUM_TURNS,
+                ),
+                state_directory,
+                _child_environment(settings, state_directory),
+                b"",
+                standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+            )
+            with self._lifecycle_lock:
+                if self._closed.is_set():
+                    raise RuntimeError("the Grok executor is closed")
+                self._invocation_directories.add(state_directory)
+                registered = True
+            return invocation
+        finally:
+            if not registered:
+                try:
+                    shutil.rmtree(state_directory)
+                except FileNotFoundError:
+                    pass
 
     def decode_process_completion(
         self, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
-        self._discard_jobs()
         if completion.return_code != 0:
             return _UNUSABLE_PROVIDER_ANSWER
         if len(completion.standard_output) > GROK_SUBSCRIPTION_FRAME_BYTES:
@@ -443,8 +593,40 @@ class GrokSubscriptionExecutor:
             return _UNUSABLE_PROVIDER_ANSWER
         return AgentExecutionResult(output_bytes)
 
+    def release_process(self, invocation: AgentProcessInvocation) -> None:
+        environment = dict(invocation.environment)
+        home = environment.get(_HOME_VARIABLE)
+        grok_home = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
+        if home is None or home != grok_home:
+            raise ValueError("Grok invocation state binding is missing")
+        directory = Path(home)
+        with self._lifecycle_lock:
+            if directory not in self._invocation_directories:
+                return
+            try:
+                shutil.rmtree(directory)
+            except FileNotFoundError:
+                pass
+            self._invocation_directories.remove(directory)
+
     def close(self) -> None:
-        self._discard_jobs()
+        with self._lifecycle_lock:
+            self._closed.set()
+            directories = tuple(self._invocation_directories)
+            errors: list[Exception] = []
+            for directory in directories:
+                try:
+                    shutil.rmtree(directory)
+                except FileNotFoundError:
+                    self._invocation_directories.remove(directory)
+                except OSError as error:
+                    errors.append(error)
+                else:
+                    self._invocation_directories.remove(directory)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("Grok invocation cleanup failed", errors)
 
 
 @dataclass(frozen=True)

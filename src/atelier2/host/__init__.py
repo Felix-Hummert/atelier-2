@@ -17,10 +17,8 @@ from atelier2.adapters.claude_subscription import (
     verify_claude_capability,
 )
 from atelier2.adapters.grok_subscription import (
-    GrokContainmentUnattested,
     GrokExecutableUnsupported,
     GrokSubscriptionSettings,
-    attest_grok_containment,
     verify_grok_capability,
 )
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
@@ -210,10 +208,6 @@ def _grok_subscription_settings(
     try:
         verify_grok_capability(settings.executable)
     except GrokExecutableUnsupported as error:
-        parser.error(str(error))
-    try:
-        attest_grok_containment(settings)
-    except GrokContainmentUnattested as error:
         parser.error(str(error))
     return settings
 

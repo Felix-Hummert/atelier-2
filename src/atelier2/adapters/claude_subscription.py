@@ -530,6 +530,9 @@ class ClaudeSubscriptionExecutor:
             return _UNUSABLE_PROVIDER_ANSWER
         return AgentExecutionResult(output_bytes)
 
+    def release_process(self, invocation: AgentProcessInvocation) -> None:
+        del invocation
+
     def close(self) -> None:
         return
 

@@ -104,9 +104,15 @@ operator also declares a Grok executable, workspace, and credential directory,
 the host composes one Grok subscription executor beside Claude. It runs the
 bound model headless through `grok -p --output-format json`, hands the job
 through `--prompt-file` rather than the argument vector, and grants the child
-only `GROK_HOME` and the serving host's search path. Codex remains absent, and
-the isolated read, edit, and test tools an agent needs to change its own
-workspace are not part of this contract.
+only the serving host's search path plus one disposable invocation-private
+`HOME`/`GROK_HOME`. That home receives a private copy of the source
+`auth.json`; provider sessions and responses stay there and the entire home is
+removed after success, known failure, cancellation, retry refusal, or process
+error without touching another invocation. Before launch, `grok inspect`
+must report that exact home/configuration as its only configuration source,
+all external-compatibility imports disabled, and no ambient trust surface.
+Codex remains absent, and the isolated read, edit, and test tools an agent
+needs to change its own workspace are not part of this contract.
 
 The raw frame a provider writes has its own bound, distinct from the durable
 output bound, because the durable answer travels inside a JSON envelope. The
@@ -118,8 +124,9 @@ contract accepts can be refused as a frame.
 
 The call itself is deliberately the barest one its authentication allows: no
 tools, no hooks, no MCP servers, no plugins or skills, no project configuration
-discovery, no persisted session, no prompt history, no retries, and a bounded
-turn count, so the credentials it is handed answer text and do nothing else.
+discovery, no session or prompt history surviving the invocation, no retries,
+and a bounded turn count, so the credentials it is handed answer text and do
+nothing else.
 It also asks the CLI to strip provider credentials from every subprocess
 environment, as defence in depth against a child this invocation does not
 expect to have; that hardening needs bubblewrap on the search path the launched
