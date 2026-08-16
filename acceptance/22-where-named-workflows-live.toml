@@ -13,11 +13,23 @@ story = "https://github.com/FlexOr2/atelier-2/issues/22"
 #   the wish; declaring it now would red this gate for a store nobody has cut
 #   over. It joins this file in the change that proves it.
 #
-# The two picker sentences below were withheld until the cockpit head that
-# proves them, and it is this one. The first is declared in the form the head
-# actually honours: a revision that *declares* a name is offered by it. The
-# unqualified wish — every row a name — is the rule-5 sentence above and stays
-# withheld, which is what keeps this sharpening from being a narrowing.
+#   "the picker offers a name to choose, and shows the exact hash only under
+#   details" — declared by the cockpit head and withdrawn again here, because it
+#   is not true of this tree. The listing projection decides both halves from one
+#   predicate (`api/projection/workflows.py`): `described = isinstance(graph,
+#   WorkflowGraphV3)`, then `executable=not described` and `name=graph.name if
+#   described else None`. Named and startable are therefore exact negations of
+#   the same test — every named row is V3 and disabled in the picker, every
+#   choosable row is V1/V2 and labelled by its hash. No operator can choose a
+#   named workflow, so the sentence cannot be honoured by any tree that has no
+#   named executable lineage. It joins this file when #63 cuts over
+#   `catalog_lineages` and one exists; rewording it to what today's picker can do
+#   would narrow a separately approved wish, which is the one repair the review
+#   forbids.
+#
+# The second picker sentence below stays declared, because it is true as written:
+# a revision no run can start says so before the operator tries. Its proof is
+# untouched.
 #
 # This file therefore does not list every sentence of #22.
 
@@ -36,10 +48,6 @@ text = "A revision's description is read from the exact bytes that were publishe
 [[sentence]]
 id = "an-enriched-page-stops-at-its-derived-bound-and-pages-on"
 text = "A listing stops at the bound derived from what one document may cost, still answers with at least one revision, and says where the next page starts."
-
-[[sentence]]
-id = "the-picker-offers-a-name-and-keeps-the-hash-under-details"
-text = "A saved workflow that declares a name is offered to the operator by that name, with its description beneath it, and its exact hash only under details."
 
 [[sentence]]
 id = "a-revision-no-run-can-start-says-so-before-the-operator-tries"
