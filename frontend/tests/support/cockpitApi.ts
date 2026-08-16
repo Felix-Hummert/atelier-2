@@ -1,6 +1,6 @@
-import { vi } from "vitest";
+import { vi, type Mock } from "vitest";
 
-import type { CockpitApi, RunEventHandlers } from "../../src/api/client";
+import type { CockpitApi, RunEventHandlers, RunPage, RunV1 } from "../../src/api/client";
 
 /**
  * One owner for the CockpitApi test double: when the port grows a method, the
@@ -35,4 +35,38 @@ export class FakeRunEventFeed {
     this.handlers = handlers;
     return { close: this.close };
   });
+}
+
+/** The cursors the paged doubles below hand out, one per page boundary. */
+export const PAGE_CURSORS = ["run1.cDE", "run1.cDI", "run1.cDM"];
+
+type ListRunsDouble = Mock<(after?: string) => Promise<RunPage>>;
+
+/**
+ * A listRuns double that serves the given pages, each answering the cursor
+ * before it, exactly as the durable route does: the last page carries a null
+ * cursor. `failFrom` makes that page index unreadable instead.
+ */
+export function pagedListRuns(
+  pages: readonly (readonly RunV1[])[],
+  failFrom = -1
+): ListRunsDouble {
+  return vi.fn(async (after?: string) => {
+    const index = after === undefined ? 0 : PAGE_CURSORS.indexOf(after) + 1;
+    if (index === failFrom) {
+      throw new Error(`page ${index + 1} is unreadable`);
+    }
+    const page = pages[index] ?? [];
+    const next = PAGE_CURSORS[index];
+    return {
+      items: [...page],
+      next_after: index + 1 < pages.length && next !== undefined ? next : null
+    };
+  });
+}
+
+/** A listRuns double whose cursor never advances -- the durable defect a client must not spin on. */
+export function repeatingCursorListRuns(page: readonly RunV1[]): ListRunsDouble {
+  const repeated = PAGE_CURSORS[0] ?? null;
+  return vi.fn(async () => ({ items: [...page], next_after: repeated }));
 }

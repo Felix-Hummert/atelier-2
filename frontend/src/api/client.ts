@@ -654,7 +654,7 @@ export interface HttpResult<T> {
 }
 
 export interface CockpitApi {
-  listRuns(): Promise<RunPage>;
+  listRuns(after?: string): Promise<RunPage>;
   listWorkflowRevisions(): Promise<WorkflowRevisionPage>;
   publish(mutation: PublishMutation): Promise<HttpResult<WorkflowRevisionDetail>>;
   publishAuthProfile(input: AuthProfileInput): Promise<HttpResult<AuthProfileRevision>>;
@@ -700,7 +700,16 @@ export function createCockpitApi(
   eventSourceFactory: EventSourceFactory = (target) => new EventSource(target)
 ): CockpitApi {
   return {
-    listRuns: () => requestJson(fetcher, "/atelier/api/v1/runs?limit=50", {}, [200], runPageSchema),
+    listRuns: (after?: string) =>
+      requestJson(
+        fetcher,
+        after === undefined
+          ? "/atelier/api/v1/runs?limit=50"
+          : `/atelier/api/v1/runs?limit=50&after=${encodeURIComponent(after)}`,
+        {},
+        [200],
+        runPageSchema
+      ),
     listWorkflowRevisions: () =>
       requestJson(
         fetcher,

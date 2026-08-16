@@ -41,3 +41,7 @@ text = "An area with nothing in it names the one next action that is possible to
 [[sentence]]
 id = "every-level-names-the-way-back-up"
 text = "From every level a named way leads exactly one level up: from the run to the project, and from the project into the studio — a way the operator can read, never the browser's back button."
+
+[[sentence]]
+id = "the-workshop-reads-every-page-or-says-it-could-not"
+text = "The workshop reads the durable run list to its end instead of stopping at the first page, and when a page cannot be read it says that what is shown is incomplete rather than presenting a part as the whole."
