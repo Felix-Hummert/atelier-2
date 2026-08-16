@@ -1,16 +1,8 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/22"
 
-# Three sentences of #22 are deliberately absent, because this head does not
-# close them and declaring them here would red this gate for work nobody has
-# built:
-#
-#   "the picker offers a name to choose, and shows the exact hash only under
-#   details" and "a revision no run can start says so before the operator tries"
-#   — both are cockpit behaviour proven by component tests, and they belong to
-#   head H-22-C. This head is the API that must answer first: #131's own build
-#   rule is that a UI head builds only against an existing API. They join this
-#   file in the change that proves them.
+# One sentence of #22 is deliberately absent, because nothing has closed it and
+# declaring it would red this gate for work nobody has built:
 #
 #   "the library shows names, never hashes" — requirement 0003 rule 5 in full.
 #   A V1 or V2 revision carries no authored name and never will, so while the
@@ -20,6 +12,12 @@ story = "https://github.com/FlexOr2/atelier-2/issues/22"
 #   #63's cutover after #16 phase 2. Writing it green before then would narrow
 #   the wish; declaring it now would red this gate for a store nobody has cut
 #   over. It joins this file in the change that proves it.
+#
+# The two picker sentences below were withheld until the cockpit head that
+# proves them, and it is this one. The first is declared in the form the head
+# actually honours: a revision that *declares* a name is offered by it. The
+# unqualified wish — every row a name — is the rule-5 sentence above and stays
+# withheld, which is what keeps this sharpening from being a narrowing.
 #
 # This file therefore does not list every sentence of #22.
 
@@ -38,3 +36,11 @@ text = "A revision's description is read from the exact bytes that were publishe
 [[sentence]]
 id = "an-enriched-page-stops-at-its-derived-bound-and-pages-on"
 text = "A listing stops at the bound derived from what one document may cost, still answers with at least one revision, and says where the next page starts."
+
+[[sentence]]
+id = "the-picker-offers-a-name-and-keeps-the-hash-under-details"
+text = "A saved workflow that declares a name is offered to the operator by that name, with its description beneath it, and its exact hash only under details."
+
+[[sentence]]
+id = "a-revision-no-run-can-start-says-so-before-the-operator-tries"
+text = "A revision no run can start says so in the picker, with the reason, before the operator tries to choose it."

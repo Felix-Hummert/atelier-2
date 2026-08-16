@@ -390,10 +390,24 @@
     <fieldset class="revision-picker">
       <legend>Saved workflow</legend>
       {#each revisions.confirmed?.items ?? [] as revision (revision.revision_hash)}
-        <label>
-          <input type="radio" name="saved-revision" value={revision.revision_hash} disabled={busy} onchange={() => { void chooseSaved(revision.revision_hash); }} />
-          <code>{revision.revision_hash}</code>
+        <label class="revision-option" class:unstartable={!revision.executable}>
+          <input type="radio" name="saved-revision" value={revision.revision_hash} disabled={busy || !revision.executable} onchange={() => { void chooseSaved(revision.revision_hash); }} />
+          <span class="revision-label">
+            {#if revision.name === null}
+              <code class="revision-hash">{revision.revision_hash}</code>
+              <span class="muted">unnamed — format {revision.format_version} declares no name</span>
+            {:else}
+              <strong class="revision-name">{revision.name}</strong>
+              {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
+            {/if}
+            {#if !revision.executable}
+              <span class="revision-refusal">Cannot be started: format {revision.format_version} is not executable yet.</span>
+            {/if}
+          </span>
         </label>
+        {#if revision.name !== null}
+          <details class="revision-details"><summary>Details</summary><code class="revision-hash">{revision.revision_hash}</code></details>
+        {/if}
       {/each}
       {#if revisions.request.state === "loading"}<p class="status" role="status">Loading saved workflows…</p>{/if}
       {#if operation === "load"}<p class="status" role="status">Loading workflow…</p>{/if}
