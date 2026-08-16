@@ -892,6 +892,19 @@ not so that they ship together. The slice belongs to #22, which is why this reco
 close it, and the decisions it consumes are 1, 3, 4 and 9 — sources (decision 2), the
 ledger (5), transport (6) and precedence (8) wait for callers of their own.
 
+**Three preconditions, so that nobody grasps into the void.** The paragraph above names one
+slice, but its parts do not become buildable at the same moment, and the section a builder
+reads is this one. The **lineage name** — a picker listing saved workflows rather than
+revisions, with renaming and its alias history — waits on `catalog_lineages` and
+`catalog_lineage_aliases`, and therefore on #63's cutover after #16 phase 2, as *Store
+dimensions* above requires. The **authored name and description of a revision** wait on
+nothing: decision 4 puts them in the bytes, and the bytes are already stored, so they are
+parsed at read time and no column is added. A **run's** authored description waits in
+addition on a V3 document becoming executable, because every run today binds a V1 or V2
+document and those formats declare neither a name nor a description; until then the absence
+there is real and is shown as absence. That last wait belongs to #63 and to the interpreter
+owner, not to this slice.
+
 ## Supersedes
 
 None. This record extends [ADR 0002](0002-exact-yaml-graph.md), still the owner of
