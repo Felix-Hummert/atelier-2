@@ -643,6 +643,62 @@ def test_same_titled_typescript_tests_in_different_files_are_distinct_claims(
     assert f"{reported_claim}:{title} claims" not in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("located_in", "source"),
+    [
+        (
+            Path("tests/test_duplicate.py"),
+            (
+                "import pytest\n\n\n"
+                f'@pytest.mark.proves("{REPORT_ONLY_SENTENCE}")\n'
+                "def test_duplicate() -> None:\n    pass\n\n\n"
+                "class TestNested:\n"
+                f'    @pytest.mark.proves("{REPORT_ONLY_SENTENCE}")\n'
+                "    def test_duplicate(self) -> None:\n        pass\n"
+            ),
+        ),
+        (
+            Path("frontend/tests/lib/duplicate.test.ts"),
+            (
+                f'describe("one", () => it("proves({REPORT_ONLY_SENTENCE}): duplicate", () => {{}}));\n'
+                f'describe("two", () => it("proves({REPORT_ONLY_SENTENCE}): duplicate", () => {{}}));\n'
+            ),
+        ),
+    ],
+    ids=["python-class-scope", "vitest-suite-scope"],
+)
+def test_a_repeated_source_test_identity_is_refused_as_ambiguous(
+    tmp_path: Path, located_in: Path, source: str
+) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    write_claim(project, located_in, source)
+    if located_in.suffix == ".py":
+        report_name = "test_duplicate"
+        report = junit_report(
+            (
+                ReportedTest(
+                    report_name,
+                    REPORT_ONLY_SENTENCE,
+                    located_in=located_in,
+                ),
+            )
+        )
+        report_file = CRASH_REPORT
+    else:
+        report_name = f"proves({REPORT_ONLY_SENTENCE}): duplicate"
+        report = vitest_report((ReportedTest(report_name),), located_in=located_in)
+        report_file = FRONTEND_REPORT
+    (project / REPORTS_DIRECTORY / report_file).write_text(report, encoding="utf-8")
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (
+        f"{located_in}:{report_name} declares the same proof identity more than once"
+        in result.stderr
+    )
+
+
 def test_a_parameterized_typescript_title_matches_its_reported_cases(
     tmp_path: Path,
 ) -> None:

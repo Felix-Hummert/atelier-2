@@ -37,7 +37,8 @@ verification jobs emit — and nothing else. The gate derives nothing from
 workflow text, and a required report it cannot read is a refusal, never a
 smaller proof surface. The passing report entry must name the same source file
 and test that made the claim; another test proving the same sentence cannot
-honour it.
+honour it. A repeated source-file, test, and sentence identity is ambiguous and
+therefore refused instead of letting one report entry stand for both.
 
 ## Consequences
 

@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import tomllib
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
@@ -469,6 +470,19 @@ def acceptance_problems(
 ) -> tuple[str, ...]:
     problems: list[str] = []
     declared = {sentence.identifier for sentence in sentences}
+    claim_counts = Counter(
+        (claim.located_in, claim.claiming_test, claim.sentence_identifier)
+        for claim in claims
+    )
+    for (located_in, claiming_test, sentence_identifier), count in sorted(
+        claim_counts.items()
+    ):
+        if count > 1:
+            problems.append(
+                f"{located_in}:{claiming_test} declares the same proof identity "
+                f"more than once ({count} claims for {sentence_identifier!r}); each "
+                "source claim must name one distinct test"
+            )
     proven: set[str] = set()
     for proof in proofs:
         if proof.sentence_identifier not in declared:
