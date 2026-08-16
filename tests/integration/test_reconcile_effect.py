@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -15,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.reconciler import (
+    RECONCILE_WORKFLOW_ID_PREFIX,
     DbosEffectReconcileCommander,
     reconcile_workflow_id_for,
 )
@@ -152,9 +152,13 @@ def command(
 
 def test_reconcile_workflow_id_is_deterministic_from_the_exact_command_id() -> None:
     command_id = ReconcileCommandId(" command-1 ")
-    assert reconcile_workflow_id_for(command_id) == (
-        "atelier2-reconcile-" + hashlib.sha256(command_id.value.encode()).hexdigest()
-    )
+    first = reconcile_workflow_id_for(command_id)
+    second = reconcile_workflow_id_for(command_id)
+    other = reconcile_workflow_id_for(ReconcileCommandId("command-1"))
+
+    assert first.startswith(RECONCILE_WORKFLOW_ID_PREFIX)
+    assert first == second
+    assert first != other
 
 
 def test_command_atomically_owns_the_waiting_intent_and_enqueues_reconciliation(

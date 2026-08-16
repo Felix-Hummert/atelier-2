@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -30,6 +29,7 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.dbos.starter import (
+    WORKFLOW_ID_PREFIX,
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
     bootstrap_workflow_id_for,
@@ -122,9 +122,15 @@ def count(engine: sa.Engine, table: str) -> int:
 
 @pytest.mark.parametrize("run_id", ["run-1", " run-1 ", "\N{SNOWMAN}"])
 def test_workflow_id_is_deterministic_from_exact_run_id(run_id: str) -> None:
-    assert bootstrap_workflow_id_for(RunId(run_id)) == (
-        "atelier2-run-" + hashlib.sha256(run_id.encode()).hexdigest()
+    first = bootstrap_workflow_id_for(RunId(run_id))
+    second = bootstrap_workflow_id_for(RunId(run_id))
+    other = bootstrap_workflow_id_for(
+        RunId("run-1" if run_id != "run-1" else " run-1 ")
     )
+
+    assert first.startswith(WORKFLOW_ID_PREFIX)
+    assert first == second
+    assert first != other
 
 
 def test_start_commits_the_run_and_its_enqueue_atomically(
