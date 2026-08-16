@@ -271,6 +271,7 @@ the document.
 - [0002: Access is an invitation, and the installation is the team's workshop](0002-teams-und-zugang.md)
 - [0003: One workshop, three views, one language — the graph](0003-ziel-ui.md)
 - [0004: Execution happens anywhere, and one trust boundary is what makes that safe](0004-runner-und-remote.md)
+- [0005: Named lineages, not hashes, are what the operator picks](0005-katalog-und-benannte-workflows.md)
 
 Each document carries its own status; this index deliberately does not repeat
 it, because a second copy of a status is the next thing to go stale.
