@@ -103,6 +103,28 @@ forbidden_modules = ["atelier2.ports", "atelier2.ports.**"]
 allow_indirect_imports = true
 as_packages = true
 
+# The vocabulary guard, not the proof: it keeps the port types from seeping back
+# into a route that has already been translated. What proves that no route calls
+# a port is that the context hands it none — see `ApiUseCases` and the two AST
+# checks in `scripts/check_architecture.py`. Every entry below names a route that
+# still holds its ports, and each one goes when its use-cases land; a stale entry
+# is red, because `unmatched_ignore_imports_alerting` is an error here.
+[[tool.importlinter.contracts]]
+id = "route-vocabulary"
+name = "Routes name no port type"
+type = "forbidden"
+source_modules = ["atelier2.api.routes"]
+forbidden_modules = ["atelier2.ports", "atelier2.ports.**"]
+allow_indirect_imports = true
+as_packages = true
+ignore_imports = [
+    "atelier2.api.routes.agents -> atelier2.ports.agent_configurations",
+    "atelier2.api.routes.agents -> atelier2.ports.durable_runs",
+    "atelier2.api.routes.runs -> atelier2.ports.agent_attempts",
+    "atelier2.api.routes.runs -> atelier2.ports.durable_runs",
+]
+unmatched_ignore_imports_alerting = "error"
+
 # One profile, one owner: the closed Draft 2020-12 subset a published `schema`
 # revision must satisfy is decided in exactly one module, so a second consumer
 # cannot quietly evaluate against a second dialect.

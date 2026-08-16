@@ -1,12 +1,35 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/87"
 
-# Issue #87 is built as six serial heads, and its remaining sentences — no route
-# calling a port, no fail-open port default, no port formulating an HTTP phrase —
-# are unbuilt. Declaring them here would red this gate on main for a capability
-# nobody has built, so each joins this file in the change that proves it. This
-# file therefore does not list every sentence of #87.
+# Issue #87 is built as six serial heads, and each sentence joins this file in the
+# change that proves it. Declaring one earlier would red this gate on main for a
+# capability nobody has built. This file therefore does not list every sentence
+# of #87.
+#
+# Head B1 lands the read half of "no route calls a port directly". Still unbuilt,
+# and deliberately absent here:
+#
+#   - the write half: the two publish routes, the cancellation, the answer, the
+#     reconciliation and the start still hold their ports (B2), and the event
+#     stream still forwards its pages through one (B3). Until then that remainder
+#     is named by machine in two places rather than in prose — the `ignore_imports`
+#     of the `route-vocabulary` contract, and ROUTE_MODULES_STILL_HOLDING_PORTS in
+#     `scripts/check_architecture.py`. Both are red on a stale entry, so neither
+#     can claim the work is done.
+#   - no fail-open port default, and no port formulating an HTTP phrase (head D).
 
 [[sentence]]
 id = "wire-schemas-name-no-port-type"
 text = "The schemas the API accepts and answers with name no durable port type: the wire and the projection that fills it are separate modules, and a schema module that reaches for a port fails verification instead of being noticed in review."
+
+[[sentence]]
+id = "every-read-decision-belongs-to-a-use-case"
+text = "Every read the API offers is decided by a use-case that translates the store's answer into the application's own outcome, so each way a read can fail is a named member of that outcome rather than a port type a route matches on."
+
+[[sentence]]
+id = "the-use-case-record-cannot-hand-a-route-a-port"
+text = "The record of use-cases a route holds cannot carry a port back to it: a field annotated with anything that resolves to a durable port, including behind a bound call, a forward reference or a type-checking-only import, fails verification."
+
+[[sentence]]
+id = "an-untranslated-route-is-named-in-both-directions"
+text = "A route that still reaches a port is named by the verification rather than by prose, and the list that names them cannot lie in either direction: an undeclared route that reaches a port fails, and a declared route that no longer reaches one fails too."

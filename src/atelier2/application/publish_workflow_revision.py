@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
+from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentInvalid,
@@ -123,16 +124,6 @@ type PublishWorkflowRevisionResult = (
     | WriteUnavailable
     | DurableStateCorrupt
 )
-
-
-@dataclass(frozen=True)
-class WriteUnavailable:
-    detail: str | None = None
-
-
-@dataclass(frozen=True)
-class DurableStateCorrupt:
-    pass
 
 
 def publish_workflow_revision(

@@ -18,9 +18,12 @@ from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import ApiProblem
 from atelier2.api.references import InvalidEventCursor, parse_event_cursor
 from atelier2.api.stream import PreparedEventStream, stream_server_events
-from atelier2.ports.run_events import CursorAhead, EventHistoryCorrupt, StreamReady
-from atelier2.ports.run_queries import RunQueryMissing
-from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt, ReadUnavailable
+from atelier2.application.prepare_run_events import (
+    EventCursorAhead,
+    RunEventStreamPrepared,
+    RunNotFound,
+)
+from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 
 router = APIRouter()
 
@@ -47,30 +50,27 @@ async def prepare_events(
         after_sequence = cursor.sequence
     result = await run_control_query(
         context.control_runner,
-        lambda: context.ports.run_event_queries.prepare_run_event_stream(
-            run_id, after_sequence
-        ),
+        lambda: context.use_cases.prepare_run_events(run_id, after_sequence),
     )
     match result:
-        case StreamReady(head_sequence, terminal, first_after):
+        case RunEventStreamPrepared(prepared_run_id, first_after, head, terminal):
             return PreparedEventStream(
-                run_id,
+                prepared_run_id,
                 first_after,
-                head_sequence,
+                head,
                 terminal,
                 await load_run_projection(
-                    run_id,
-                    context.ports.run_queries,
+                    prepared_run_id,
+                    context.use_cases.get_run,
                     context.control_runner,
                     context.limits,
-                    context.workflow_projection_limit,
                 ),
             )
-        case RunQueryMissing():
+        case RunNotFound():
             raise ApiProblem("run-not-found")
-        case CursorAhead():
+        case EventCursorAhead():
             raise ApiProblem("event-cursor-ahead")
-        case EventHistoryCorrupt() | QueryDurableStateCorrupt():
+        case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)

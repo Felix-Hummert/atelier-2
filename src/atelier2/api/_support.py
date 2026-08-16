@@ -20,19 +20,15 @@ from atelier2.api.references import (
 )
 from atelier2.api.stream import BoundedQueryRunner, QueryAdmissionTimeout
 from atelier2.api.wire.resources import AnyRunResource
+from atelier2.application.read_runs import (
+    GetRunResult,
+    RunNotFound,
+    RunRead,
+)
+from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.contracts.runs import RunId
-from atelier2.ports.run_queries import (
-    RunFound,
-    RunProjection,
-    RunQueries,
-    RunQueryMissing,
-)
-from atelier2.ports.workflow_revisions import (
-    PROJECTION_LIMIT_DETAIL,
-    DurableProjectionLimit,
-    QueryDurableStateCorrupt,
-    ReadUnavailable,
-)
+from atelier2.ports.run_queries import RunProjection
+from atelier2.ports.workflow_revisions import PROJECTION_LIMIT_DETAIL
 
 
 def resource_response(resource: BaseModel, status: HTTPStatus) -> JSONResponse:
@@ -41,35 +37,38 @@ def resource_response(resource: BaseModel, status: HTTPStatus) -> JSONResponse:
 
 async def load_run_resource(
     run_id: RunId,
-    queries: RunQueries,
+    read_run: Callable[[RunId], GetRunResult],
     runner: BoundedQueryRunner,
     limits: ApiLimits,
-    projection_limit: DurableProjectionLimit,
 ) -> AnyRunResource:
-    return run_resource(
-        await load_run_projection(run_id, queries, runner, limits, projection_limit)
-    )
+    """Render the run a command just changed, through the one read use-case."""
+    return run_resource(await load_run_projection(run_id, read_run, runner, limits))
 
 
 async def load_run_projection(
     run_id: RunId,
-    queries: RunQueries,
+    read_run: Callable[[RunId], GetRunResult],
     runner: BoundedQueryRunner,
     limits: ApiLimits,
-    projection_limit: DurableProjectionLimit,
 ) -> RunProjection:
-    result = await run_control_query(
-        runner, lambda: queries.get_run(run_id, projection_limit)
-    )
+    """The run behind a command's answer and behind a stream's first frame.
+
+    Both callers need the same decision — several command routes answer with the
+    run's current resource, and a stream opens with where the run stands — so it is
+    read once here and rendered by whoever asked. `get_run` owns the decision; this
+    is the admission to the API's query budget and the refusal that a full budget
+    or an oversized projection produces, neither of which the application decides.
+    """
+    result = await run_control_query(runner, lambda: read_run(run_id))
     match result:
-        case RunFound(projection):
+        case RunRead(projection):
             require_run_projections((projection,), limits)
             return projection
-        case RunQueryMissing():
+        case RunNotFound():
             raise ApiProblem("run-not-found")
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
-        case QueryDurableStateCorrupt():
+        case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
