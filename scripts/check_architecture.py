@@ -38,6 +38,8 @@ class _UnresolvedOutcome:
 _UNRESOLVED_OUTCOME = _UnresolvedOutcome()
 
 
+PORT_PACKAGE_DIRECTORY = "src/atelier2/ports"
+HTTP_SENTENCE_MARKERS = ("API limits", "HTTP", "status code")
 ROUTE_PACKAGE = "src/atelier2/api/routes"
 ROUTE_CALLS_STILL_HOLDING_PORTS = {
     "runs": {"cancel_agent_attempt_route": ("agent_attempt_canceller",)},
@@ -491,6 +493,28 @@ def _calls_reaching_ports(module: ast.Module) -> dict[str, tuple[str, ...]]:
     return reaching
 
 
+def port_sentence_problems(project_root: Path) -> tuple[str, ...]:
+    """Any durable port that words an answer for the layer above it.
+
+    A port names what happened; whoever set the bound says what that means to a
+    caller. A sentence about "API limits" living under `ports` is a layer
+    explaining a decision it does not make, and the reader downstream then has to
+    keep that wording alive forever.
+    """
+    problems: list[str] = []
+    for module_path in sorted((project_root / PORT_PACKAGE_DIRECTORY).rglob("*.py")):
+        module = _parsed(module_path)
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if any(marker in node.value for marker in HTTP_SENTENCE_MARKERS):
+                problems.append(
+                    f"{PORT_PACKAGE_DIRECTORY}/{module_path.name} words an answer "
+                    f"for the layer above it: {node.value!r}"
+                )
+    return tuple(problems)
+
+
 def route_port_problems(project_root: Path) -> tuple[str, ...]:
     """Which calls still reach a port, read against the declared map."""
     problems: list[str] = []
@@ -517,8 +541,10 @@ def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
         raise ArchitecturePreflightError(
             f"found {source_count} source modules; expected at least {EXPECTED_SOURCE_MODULE_FLOOR}"
         )
-    problems = use_case_record_problems(project_root) + route_port_problems(
-        project_root
+    problems = (
+        port_sentence_problems(project_root)
+        + use_case_record_problems(project_root)
+        + route_port_problems(project_root)
     )
     if problems:
         raise ArchitecturePreflightError(

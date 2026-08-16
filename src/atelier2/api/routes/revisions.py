@@ -15,7 +15,7 @@ from atelier2.api._support import (
 )
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import API_PREFIX
-from atelier2.api.problems import ApiProblem
+from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, ApiProblem
 from atelier2.api.projection.workflows import (
     workflow_revision_detail_resource,
     workflow_revision_page_resource,
@@ -43,6 +43,7 @@ from atelier2.application.read_workflow_revisions import (
 )
 from atelier2.application.refusals import (
     DurableStateCorrupt,
+    ProjectionTooLarge,
     ReadUnavailable,
     WriteUnavailable,
 )
@@ -137,6 +138,8 @@ async def _summary_page(
             )
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
+        case ProjectionTooLarge():
+            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -155,6 +158,8 @@ async def _described_page(
             return workflow_revision_page_resource(result)
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
+        case ProjectionTooLarge():
+            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -183,6 +188,8 @@ async def get_revision(
             raise ApiProblem("workflow-revision-not-found")
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
+        case ProjectionTooLarge():
+            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:

@@ -23,6 +23,7 @@ from atelier2.contracts.runs import RunId
 from atelier2.contracts.workflows import AnyWorkflowGraph
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
+    ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
 )
@@ -97,15 +98,22 @@ class ReconciliationRetryCommandConflict:
 
 
 type GetRunResult = (
-    RunFound | RunQueryMissing | ReadUnavailable | QueryDurableStateCorrupt
+    RunFound
+    | RunQueryMissing
+    | ReadUnavailable
+    | ProjectionTooLarge
+    | QueryDurableStateCorrupt
 )
-type ListRunsResult = RunPage | ReadUnavailable | QueryDurableStateCorrupt
+type ListRunsResult = (
+    RunPage | ReadUnavailable | ProjectionTooLarge | QueryDurableStateCorrupt
+)
 type GetReconciliationRetryTargetResult = (
     ReconciliationRetryTargetFound
     | ReconciliationRetryTargetMissing
     | ReconciliationRetryCommandConflict
     | RunQueryMissing
     | ReadUnavailable
+    | ProjectionTooLarge
     | QueryDurableStateCorrupt
 )
 

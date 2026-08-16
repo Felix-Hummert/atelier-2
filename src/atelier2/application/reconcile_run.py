@@ -14,6 +14,7 @@ from atelier2.application.reconcile_effect import (
     ReconciliationTargetMissing,
     reconcile_effect_result,
 )
+from atelier2.application.refusals import ProjectionTooLarge
 from atelier2.contracts.effects import (
     EffectIntentStateVersion,
     ReconcileActor,
@@ -35,6 +36,9 @@ from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
     QueryDurableStateCorrupt,
     ReadUnavailable,
+)
+from atelier2.ports.workflow_revisions import (
+    ProjectionTooLarge as PortProjectionTooLarge,
 )
 
 
@@ -80,6 +84,8 @@ def reconcile_run(
                         return RunMissing()
                     case ReadUnavailable(detail):
                         return WriteUnavailable(detail)
+                    case PortProjectionTooLarge():
+                        return ProjectionTooLarge()
                     case QueryDurableStateCorrupt():
                         return DurableStateCorrupt()
                     case _ as unreachable:
@@ -93,5 +99,7 @@ def reconcile_run(
                 request.determination,
             )
             return reconcile_effect_result(command, commander)
+        case PortProjectionTooLarge():
+            return ProjectionTooLarge()
         case _ as unreachable:
             assert_never(unreachable)

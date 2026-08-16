@@ -43,7 +43,7 @@ from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import EventHistoryCorrupt, StreamReady
 from atelier2.ports.run_queries import RunFound, RunPage
 from atelier2.ports.workflow_revisions import (
-    PROJECTION_LIMIT_DETAIL,
+    ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
     WorkflowRevisionFound,
@@ -215,7 +215,7 @@ def test_projection_document_limit_refuses_before_workflow_parse(
         ),
     )
 
-    assert result == ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+    assert result == ProjectionTooLarge()
 
 
 def test_event_payload_limit_refuses_before_event_materialization(
@@ -240,7 +240,7 @@ def test_event_payload_limit_refuses_before_event_materialization(
         ),
     )
 
-    assert result == ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+    assert result == ProjectionTooLarge()
 
 
 def test_query_connection_restores_pooled_busy_timeout(engine: Engine) -> None:
@@ -740,7 +740,7 @@ def test_run_core_text_limits_refuse_before_mapper_without_selecting_bootstrap_i
     )
     event.listen(engine, "before_cursor_execute", capture_run_select)
     try:
-        detail = ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+        detail = ProjectionTooLarge()
         assert (
             DbosQueries(engine).get_run(RunId(run_id_value), projection_limit) == detail
         )
@@ -1086,5 +1086,5 @@ nodes:
         with monkeypatch.context() as context:
             context.setattr(queries_module, mapper_name, unexpected_materialization)
             assert DbosQueries(engine).get_run(bounded_run_id, limits) == (
-                ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+                ProjectionTooLarge()
             ), mapper_name

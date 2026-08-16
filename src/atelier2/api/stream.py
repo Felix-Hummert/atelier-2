@@ -9,7 +9,7 @@ from typing import Final, Literal, TypeVar, assert_never, get_args
 from fastapi.sse import ServerSentEvent
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
-from atelier2.api.problems import problem_resource
+from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, problem_resource
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.projection.runs import node_rail_resources
 from atelier2.api.wire.resources import StreamFailureResource
@@ -22,13 +22,16 @@ from atelier2.application.read_run_events import (
     RunEventPageOversized,
     RunEventsRead,
 )
-from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ProjectionTooLarge,
+    ReadUnavailable,
+)
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import (
     PersistedRunEvent,
 )
 from atelier2.ports.run_queries import RunProjection
-from atelier2.ports.workflow_revisions import PROJECTION_LIMIT_DETAIL
 
 Result = TypeVar("Result")
 
@@ -197,6 +200,11 @@ async def stream_server_events(
                 pass
             case ReadUnavailable():
                 # Transient unavailability is answered by the client's own reconnect.
+                return
+            case ProjectionTooLarge():
+                yield _stream_failure(
+                    "temporarily-unavailable", PROJECTION_LIMIT_DETAIL
+                )
                 return
             case RunEventPageOversized():
                 yield _stream_failure("internal-error")

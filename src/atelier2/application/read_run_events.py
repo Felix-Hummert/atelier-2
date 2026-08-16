@@ -15,7 +15,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
-from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ProjectionTooLarge,
+    ReadUnavailable,
+)
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
@@ -26,6 +30,9 @@ from atelier2.ports.run_events import (
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
     QueryDurableStateCorrupt,
+)
+from atelier2.ports.workflow_revisions import (
+    ProjectionTooLarge as PortProjectionTooLarge,
 )
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,
@@ -49,7 +56,11 @@ class RunEventPageOversized:
 
 
 type ReadRunEventsResult = (
-    RunEventsRead | RunEventPageOversized | ReadUnavailable | DurableStateCorrupt
+    RunEventsRead
+    | RunEventPageOversized
+    | ReadUnavailable
+    | ProjectionTooLarge
+    | DurableStateCorrupt
 )
 
 
@@ -70,6 +81,8 @@ def read_run_events(
             return RunEventsRead(events, terminal_seen)
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
+        case PortProjectionTooLarge():
+            return ProjectionTooLarge()
         case EventHistoryCorrupt() | QueryDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:

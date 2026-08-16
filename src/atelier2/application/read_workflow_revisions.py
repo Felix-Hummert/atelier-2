@@ -11,7 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
-from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ProjectionTooLarge,
+    ReadUnavailable,
+)
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.ports.workflow_revisions import (
     DescribedWorkflowRevisionPage,
@@ -23,6 +27,9 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
     WorkflowRevisionQueries,
+)
+from atelier2.ports.workflow_revisions import (
+    ProjectionTooLarge as PortProjectionTooLarge,
 )
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,
@@ -57,13 +64,17 @@ type GetWorkflowRevisionResult = (
     WorkflowRevisionRead
     | WorkflowRevisionNotFound
     | ReadUnavailable
+    | ProjectionTooLarge
     | DurableStateCorrupt
 )
 type ListWorkflowRevisionsResult = (
-    WorkflowRevisionsListed | ReadUnavailable | DurableStateCorrupt
+    WorkflowRevisionsListed | ReadUnavailable | DurableStateCorrupt | ProjectionTooLarge
 )
 type ListDescribedWorkflowRevisionsResult = (
-    WorkflowRevisionsDescribed | ReadUnavailable | DurableStateCorrupt
+    WorkflowRevisionsDescribed
+    | ReadUnavailable
+    | DurableStateCorrupt
+    | ProjectionTooLarge
 )
 
 
@@ -79,6 +90,8 @@ def get_workflow_revision(
             return WorkflowRevisionNotFound()
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
+        case PortProjectionTooLarge():
+            return ProjectionTooLarge()
         case QueryDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:
@@ -95,6 +108,8 @@ def list_workflow_revisions(
             return WorkflowRevisionsListed(revision_hashes, next_after)
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
+        case PortProjectionTooLarge():
+            return ProjectionTooLarge()
         case QueryDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:
@@ -121,6 +136,8 @@ def list_described_workflow_revisions(
             return WorkflowRevisionsDescribed(items, next_after)
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
+        case PortProjectionTooLarge():
+            return ProjectionTooLarge()
         case QueryDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:

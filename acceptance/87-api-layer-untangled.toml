@@ -20,7 +20,11 @@ story = "https://github.com/FlexOr2/atelier-2/issues/87"
 #     `ignore_imports` of the `route-vocabulary` contract and in
 #     ROUTE_CALLS_STILL_HOLDING_PORTS in `scripts/check_architecture.py`. Both are
 #     red on a stale entry in either direction, so neither can claim it is done.
-#   - no fail-open port default, and no port formulating an HTTP phrase (head D).
+#   - no fail-open port default. Fourteen `projection_limit: … | None = None`
+#     parameters remain across ports, the DBOS adapter and one use-case, and
+#     `agent_executor_registry` keeps one too. Making them required is a sweep
+#     across the 88 places the limit is handed through, which is its own head — it
+#     is not declared here because this one does not do it.
 
 [[sentence]]
 id = "wire-schemas-name-no-port-type"
@@ -29,6 +33,10 @@ text = "The schemas the API accepts and answers with name no durable port type: 
 [[sentence]]
 id = "every-read-decision-belongs-to-a-use-case"
 text = "Every read the API offers is decided by a use-case that translates the store's answer into the application's own outcome, so each way a read can fail is a named member of that outcome rather than a port type a route matches on."
+
+[[sentence]]
+id = "a-port-refuses-by-type-and-the-api-words-the-answer"
+text = "A durable port refuses a projection that exceeds its reader's bound by naming what happened, not by wording the answer: it carries no sentence about the caller's limits, the layer that set the bound says what it means, and the caller receives exactly the status and words it received before."
 
 [[sentence]]
 id = "one-page-of-a-stream-is-decided-before-any-frame-is-written"

@@ -11,7 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
-from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ProjectionTooLarge,
+    ReadUnavailable,
+)
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_queries import (
     RunFound,
@@ -23,6 +27,9 @@ from atelier2.ports.run_queries import (
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
     QueryDurableStateCorrupt,
+)
+from atelier2.ports.workflow_revisions import (
+    ProjectionTooLarge as PortProjectionTooLarge,
 )
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,
@@ -45,8 +52,12 @@ class RunsListed:
     next_after: RunId | None
 
 
-type GetRunResult = RunRead | RunNotFound | ReadUnavailable | DurableStateCorrupt
-type ListRunsResult = RunsListed | ReadUnavailable | DurableStateCorrupt
+type GetRunResult = (
+    RunRead | RunNotFound | ReadUnavailable | ProjectionTooLarge | DurableStateCorrupt
+)
+type ListRunsResult = (
+    RunsListed | ReadUnavailable | ProjectionTooLarge | DurableStateCorrupt
+)
 
 
 def get_run(
@@ -61,6 +72,8 @@ def get_run(
             return RunNotFound()
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
+        case PortProjectionTooLarge():
+            return ProjectionTooLarge()
         case QueryDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:
@@ -78,6 +91,8 @@ def list_runs(
             return RunsListed(runs, next_after)
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
+        case PortProjectionTooLarge():
+            return ProjectionTooLarge()
         case QueryDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:

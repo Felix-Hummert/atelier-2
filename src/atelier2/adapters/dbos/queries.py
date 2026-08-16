@@ -92,7 +92,6 @@ from atelier2.ports.run_queries import (
     WaitingReconciliationProjection,
 )
 from atelier2.ports.workflow_revisions import (
-    PROJECTION_LIMIT_DETAIL,
     DescribedWorkflowRevisionPage,
     DurableProjectionLimit,
     EnrichedPageBudget,
@@ -100,6 +99,7 @@ from atelier2.ports.workflow_revisions import (
     ListDescribedWorkflowRevisionsResult,
     ListWorkflowRevisionsResult,
     ProjectionLimitExceeded,
+    ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
     WorkflowRevisionFound,
@@ -433,7 +433,7 @@ class DbosQueries:
                     WorkflowRevisionProjection(revision, graph)
                 )
         except ProjectionLimitExceeded:
-            return ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+            return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
@@ -533,7 +533,7 @@ class DbosQueries:
                     items[-1].revision.revision_hash if exhausted and items else None,
                 )
         except ProjectionLimitExceeded:
-            return ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+            return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
@@ -569,7 +569,7 @@ class DbosQueries:
                     self._run_projections(connection, (record,), projection_limit)[0]
                 )
         except ProjectionLimitExceeded:
-            return ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+            return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
@@ -626,7 +626,7 @@ class DbosQueries:
                     (projections[-1].run.run_id if has_more and projections else None),
                 )
         except ProjectionLimitExceeded:
-            return ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+            return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (UnicodeEncodeError, ValueError, RuntimeError, DatabaseError):
@@ -693,7 +693,7 @@ class DbosQueries:
                     return ReconciliationRetryCommandConflict()
                 return ReconciliationRetryTargetFound(intent)
         except ProjectionLimitExceeded:
-            return ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+            return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
@@ -1076,7 +1076,7 @@ class DbosQueries:
                     terminal_sequences == (head,),
                 )
         except ProjectionLimitExceeded:
-            return ReadUnavailable(PROJECTION_LIMIT_DETAIL)
+            return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (
