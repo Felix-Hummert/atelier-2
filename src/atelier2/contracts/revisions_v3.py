@@ -9,13 +9,10 @@ from atelier2.contracts.hashing import Sha256Hash
 class RevisionKind(StrEnum):
     """The closed registry a versioned reference of a V3 document lands in.
 
-    These are ADR 0006's registry list, which is exactly the part of the proposed
-    ADR 0007 kind set a workflow document can author. That record's remaining
-    tokens — `scorecard_policy`, `selection_policy`, `admission_policy` and
-    `agent_definition` — name registries no V3 reference points at, so they belong
-    to the catalog when it lands rather than here. Adding a token is an amendment
-    to those records, not a local choice: the kind is what tells two identical
-    documents published as different things apart.
+    ADR 0006 owns the first thirteen kinds a workflow document may reference.
+    ADR 0007 adds `scorecard_policy`, `selection_policy`, `admission_policy`, and
+    `agent_definition` as catalog-published kinds that a workflow does not reference.
+    Together they form the one closed published-kind owner.
     """
 
     WORKFLOW = "workflow"
@@ -31,6 +28,10 @@ class RevisionKind(StrEnum):
     BUDGET_POLICY = "budget_policy"
     RETRY_POLICY = "retry_policy"
     CANCELLATION_POLICY = "cancellation_policy"
+    SCORECARD_POLICY = "scorecard_policy"
+    SELECTION_POLICY = "selection_policy"
+    ADMISSION_POLICY = "admission_policy"
+    AGENT_DEFINITION = "agent_definition"
 
 
 class PublishedRevisionHash(Sha256Hash):
