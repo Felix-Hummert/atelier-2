@@ -5,7 +5,8 @@ Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/21
 Source-Threads: #21, #1
 Distilled-From: 5300858953, 5300894378, 5302132060, 5302584358, 5302587068,
-                5302590978, 5302602114, 5302961156, 5302967786, 5302447161
+                5302590978, 5302602114, 5302961156, 5302967786, 5302447161,
+                5307632389
                 #21 body, sha256 over the exact served bytes — 787 bytes, last
                 byte `.`, nothing appended —
                 5c03ceb1d5f1b85f81ec3acc1f6dea1c72d89817929a772432b9b02fbb74a56b
@@ -432,10 +433,9 @@ and these rules do not restate it:
 
 ## Acceptance
 
-No story has declared an acceptance sentence for this requirement, and no
-operator ruling has settled this document, so what follows is a set of
-candidates and not a set of declared sentences; none of them has an identifier
-to name. The rules above already state in testable form, notably:
+No story has declared an acceptance sentence for this requirement, so what
+follows is a set of candidates and not a set of declared sentences; none of
+them has an identifier to name. The rules above already state in testable form, notably:
 
 - a process that reaches the service without an enrolment receives no attempt;
 - a binding that no connected, enrolled runner attests starts nothing — no

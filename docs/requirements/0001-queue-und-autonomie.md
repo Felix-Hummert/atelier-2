@@ -5,7 +5,7 @@ Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/79
 Source-Threads: #79
 Distilled-From: 5302017656, 5302022156, 5302048197, 5302062963, 5302109936,
-                5302131944, 5302732436
+                5302131944, 5302732436, 5307633402, 5307639686
                 #79 body, sha256
                 9d781a3c15d9f392d5dcd6c466584002029f16713f079074b87726e17698d200
 Approved-By:    5307633402+5307639686
@@ -190,7 +190,7 @@ star, not a sentence of it.)
     5307639686 auf #79, ersetzt Punkt 3 von 5307633402):
 
     > „das kann schon auch im atelier sichtbar sein? und es muss so sein dass
-    > es bindend ist? […] im kommentar sicher nciht?"
+    > es bindend ist? […] im kommentar sicher nicht"
 
     Desk-Ausarbeitung um diesen Kern (selbe Quelle, Grad DESK): Priorität ist
     typisierter, dauerhafter, ereignis-historisierter Orchestrierungszustand —

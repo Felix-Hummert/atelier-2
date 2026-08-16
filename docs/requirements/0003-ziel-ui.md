@@ -5,7 +5,7 @@ Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/9
 Source-Threads: #9, #5
 Distilled-From: 5294009202, 5294316639, 5301898411, 5302066517, 5302109868,
-                5302132001, 5302769095, 5302788411
+                5302132001, 5302769095, 5302788411, 5307632332
                 #9 body, sha256
                 36800d6ecd5d3e8922028425835b368b42d163098e5d32da930e40d25f49ce99
 Approved-By:    5307632332
@@ -275,9 +275,8 @@ not add features. (5302788411.)
 
 ## Acceptance
 
-No story has declared an acceptance sentence for this requirement yet, and no
-operator ruling has settled this document, so the list below is a set of
-candidates and not a set of sentences. What the rules above already state in
+No story has declared an acceptance sentence for this requirement yet, so the
+list below is a set of candidates and not a set of sentences. What the rules above already state in
 testable form is, notably: a node demanding an undeclared interactive mode is
 refused at validation; an opened tile without input leaves the run out of the
 operator-influenced set; no raw provider frame is readable from any event or
