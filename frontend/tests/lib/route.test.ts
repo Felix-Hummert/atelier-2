@@ -33,9 +33,12 @@ describe("the paths the server is asked to serve", () => {
    * serves exactly this file, a level is either reachable cold from both sides
    * or red on one of them.
    */
-  it.each([...SERVED_PATHS])("%s opens a page rather than nothing", (servedPath) => {
-    expect(coldLoad(servedPath).page).not.toBe("not-found");
-  });
+  it.each([...SERVED_PATHS])(
+    "proves(a-level-opens-from-a-pasted-link-and-survives-a-reload): %s opens a page rather than nothing",
+    (servedPath) => {
+      expect(coldLoad(servedPath).page).not.toBe("not-found");
+    }
+  );
 
   it("declares a path for every page this router can open", () => {
     const opened = new Set(SERVED_PATHS.map((servedPath) => coldLoad(servedPath).page));

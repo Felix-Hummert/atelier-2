@@ -49,3 +49,7 @@ text = "The workshop reads the durable run list to its end instead of stopping a
 [[sentence]]
 id = "the-deepest-level-shows-the-whole-way-it-sits-on"
 text = "Standing in a run, the operator sees the whole way it sits on -- studio, project, run -- and can walk any step of it by name, while the level being looked at is named without being offered as somewhere to go."
+
+[[sentence]]
+id = "a-level-opens-from-a-pasted-link-and-survives-a-reload"
+text = "A level of the workshop opens from a pasted link and survives a reload: it is an address, not only something to click."
