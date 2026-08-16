@@ -32,6 +32,21 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 # The first sentence declared below is 1a, and 1a is EXPRESSLY NOT a substitute
 # for 1b: 1a proves the bound contract is a contract, 1b proves the core holds an
 # output to it. #57 is not verified and not retired while any of the six is open.
+#
+# SHARPENED, not narrowed, by head 1b. The closed profile the first sentence
+# names grew three rules after Codex found that head 1 checked a reference's
+# LOCALITY but never its RESOLVABILITY: `{"$ref": "#missing"}`,
+# `{"$ref": "#/$defs/missing"}` and `{"$ref": "#"}` were all accepted, and the
+# configured evaluator then raised NoSuchAnchor, PointerToNowhere and
+# RecursionError. The sentence's wording did not change and did not need to --
+# those bytes were always outside the profile in spirit -- but its proof now
+# covers resolvability, reference-cycle termination, and a pinned dialect.
+#
+# One standing guard carries no sentence of its own, in the manner of
+# 89-…toml's "the V1 wire is unchanged": nothing this profile accepts may break
+# the evaluator. `test_no_accepted_schema_can_break_the_evaluator` holds it over
+# the three cases that could, because a published revision that passes the
+# profile and then blows the stack is not a refusal, it is an outage.
 
 [[sentence]]
 id = "a-schema-revision-outside-the-profile-is-refused-by-name"

@@ -177,17 +177,23 @@ itself. A `schema` reference proves more than its hash: the revision it pins mus
 a schema, under one closed profile of JSON Schema Draft 2020-12 whose bounds keep a
 published schema cheap to read — bounded bytes, container depth and value count,
 UTF-8 without a byte order mark, no duplicate keys and no non-canonical numbers,
-`$id`, `$anchor`, `$dynamicAnchor` and `$dynamicRef` refused, every `$ref` local, and
-`format` left the draft's annotation instead of an assertion. Retrieval is off by
-construction rather than by trust: evaluation runs against a registry whose only
-retrieval path raises. What the profile checks of a reference is its form and not
-its target, and that limit is real — a local `$ref` naming an anchor or a pointer
-the document does not carry, or pointing at the document itself, is accepted today
-and fails when a schema is first evaluated instead of when it is published. Closing
-that gap belongs to the owner that first evaluates an instance against a schema
-(#57). Bytes that fall outside the profile are refused by name, so the whole
-snapshot fails rather than binding a type nobody can read, and the preview says so
-instead of drawing it.
+`$id`, `$anchor`, `$dynamicAnchor` and `$dynamicRef` refused, every `$ref` local and
+resolvable, `$schema` absent or exactly Draft 2020-12, and `format` left the draft's
+annotation instead of an assertion. Retrieval is off by construction rather than by
+trust: evaluation runs against a registry whose only retrieval path raises. The
+profile checks a reference's target and not only its form: a local `$ref` naming an
+anchor or a pointer the document does not carry is refused where the bytes are read,
+over the whole document rather than only where an evaluator would trip. A reference
+cycle no instance can break is refused too — the rule is whether the cycle passes
+through an applicator that descends into the instance, so `{"$ref": "#"}` alone is
+refused while a tree whose child is `{"$ref": "#"}` under `properties` stays legal,
+because that recursion ends on any finite instance. So nothing this profile accepts
+can fail at first evaluation for want of a target, which would be an outage rather
+than a refusal. What still waits for the owner that first evaluates an instance
+against a schema (#57) is that evaluation itself: whether an agent's output
+satisfies the schema its node declared. Bytes that fall outside the profile are
+refused by name, so the whole snapshot fails rather than binding a type nobody can
+read, and the preview says so instead of drawing it.
 A subworkflow's own `workflow` reference is one of them and resolves through the
 binder that already read that child, so one question keeps one answer. What resolves
 is frozen into one run-configuration revision — the role matrix by its existing
