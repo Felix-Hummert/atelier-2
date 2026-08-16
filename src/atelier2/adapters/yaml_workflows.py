@@ -32,19 +32,42 @@ from atelier2.contracts.workflow_refusals import (
     WorkflowRefusalReason,
 )
 from atelier2.contracts.workflows import (
-    AnyWorkflowGraph,
     WorkflowGraph,
     WorkflowGraphV2,
 )
 from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
     AnyWorkflowDocument,
     WorkflowGraphV3,
     validate_workflow_graph_v3,
 )
 
 FORMAT_V3_NOT_EXECUTABLE = (
-    "workflow format version 3 parses, but no runtime executes it yet"
+    "workflow format version 3 parses, but no runtime executes these node kinds"
 )
+
+V3_UNBOUND_AGENT_FORMS = (
+    "depends_on",
+    "join",
+    "profile",
+    "skills",
+    "tools",
+    "policy",
+    "budget",
+    "retry",
+    "cancellation",
+    "required_context",
+    "available_context",
+    "inputs",
+    "outputs",
+)
+"""Every authored form of a V3 Agent node that nothing binds at run start yet.
+
+Naming the forms rather than the kinds is the point. "Only Agent nodes" would
+still admit a document declaring skills, tools or a budget, and the run would
+start having silently ignored what its author wrote. A document is executable
+only when nothing in it is waiting for an owner.
+"""
 
 MAXIMUM_DOCUMENT_DEPTH = 32
 """How deep a workflow document may nest, well above the deepest authored form.
@@ -240,9 +263,58 @@ def _refuse_unsafe_yaml_form(tokens: Iterable[Token]) -> None:
             depth -= 1
 
 
-def parse_executable_workflow_document(document: bytes) -> AnyWorkflowGraph:
-    """Parse one document the current runtime can execute, refusing later formats."""
+def parse_executable_workflow_document(document: bytes) -> AnyWorkflowDocument:
+    """Parse one document the current runtime can execute, refusing what it cannot.
+
+    A V3 document is executable exactly as far as its node kinds are interpreted.
+    Today that is the Agent kind alone, on the attempt path V2 already owns; every
+    other kind is refused by name rather than started and abandoned at the first
+    node no runtime can run. The refusal names the kind, so an author learns which
+    one is waiting rather than that "version 3" is.
+    """
     graph = parse_workflow_document(document)
     if isinstance(graph, WorkflowGraphV3):
-        raise WorkflowFormatNotExecutable(FORMAT_V3_NOT_EXECUTABLE)
+        waiting = _what_a_v3_document_still_waits_for(graph)
+        if waiting is not None:
+            raise WorkflowFormatNotExecutable(f"{FORMAT_V3_NOT_EXECUTABLE}: {waiting}")
     return graph
+
+
+def _what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
+    """What this document declares that no runtime binds yet, or None if nothing.
+
+    The executable shape is one shape, and a small one: a single Agent node that
+    is its own entry and its own sink, declaring nothing optional. It is checked
+    as a form rather than as a list of kinds, because a kind check would admit a
+    document whose skills, tools or budget the run start then ignores in silence.
+
+    A second node is refused on purpose. Two nodes need an advance rule, and an
+    advance rule over `depends_on` is the ready set ADR 0006 hands the scheduler
+    -- fan-out and join semantics decided in passing. H2 and #86 own that, so
+    this shape stops before it.
+    """
+    foreign = sorted(
+        {node.type for node in graph.nodes if not isinstance(node, AgentNodeV3)}
+    )
+    if foreign:
+        return f"node kinds no runtime interprets: {', '.join(foreign)}"
+    if len(graph.nodes) != 1:
+        return (
+            f"{len(graph.nodes)} nodes, and advancing between them needs the "
+            "ready set no runtime has yet"
+        )
+    # Authored, not truthy. `skills: []` and `depends_on: []` are things the
+    # author wrote, and a run that ignored them would ignore a statement rather
+    # than an absence -- so presence in the parsed document decides, and an empty
+    # authored form is refused exactly like a filled one.
+    declared = sorted(
+        {
+            form
+            for node in graph.nodes
+            for form in V3_UNBOUND_AGENT_FORMS
+            if form in node.model_fields_set
+        }
+    )
+    if declared:
+        return f"agent forms nothing binds yet: {', '.join(declared)}"
+    return None
