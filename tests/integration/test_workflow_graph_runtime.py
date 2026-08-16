@@ -20,8 +20,8 @@ from atelier2.application.answer_wait import (
     AnswerBytesConflict,
     AnswerExistingApplied,
     AnswerExistingPending,
-    AnswerStateConflict,
     AnswerWaitResult,
+    UnanswerableWait,
     answer_wait_result,
 )
 from atelier2.contracts.effects import (
@@ -48,6 +48,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.ports.durable_runs import DurableAnswerStateConflict
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.runs import (
     start_published_v1_run,
@@ -422,12 +423,10 @@ def test_answer_submission_is_exact_and_concurrent(
         def submit(answer_bytes: bytes) -> AnswerWaitResult:
             barrier.wait(timeout=5)
             return answer_wait_result(
-                SubmitWaitAnswerRequest(
-                    RunId("run-1"),
-                    revision.revision_hash,
-                    "waiting",
-                    answer_bytes,
-                ),
+                RunId("run-1"),
+                revision.revision_hash,
+                "waiting",
+                answer_bytes,
                 DbosWaitAnswerer(lease.engine, lease.settings.application_version),
             )
 
@@ -492,14 +491,28 @@ def test_invalid_integer_answer_writes_no_product_or_dbos_state(
     idle = runtime(tmp_path)
     try:
         before = all_durable_rows(tmp_path)
+        answerer = DbosWaitAnswerer(idle.engine, idle.settings.application_version)
         assert (
             answer_wait_result(
+                RunId("run-1"),
+                revision.revision_hash,
+                "waiting",
+                answer_bytes,
+                answerer,
+            )
+            == UnanswerableWait()
+        )
+        assert all_durable_rows(tmp_path) == before
+        # The use-case now refuses these bytes before the store is asked, so the
+        # store's own guard is exercised here directly: it has to keep refusing
+        # them for every caller, not only for the one that asks through a use-case.
+        assert (
+            answerer.submit_result(
                 SubmitWaitAnswerRequest(
                     RunId("run-1"), revision.revision_hash, "waiting", answer_bytes
-                ),
-                DbosWaitAnswerer(idle.engine, idle.settings.application_version),
+                )
             )
-            == AnswerStateConflict()
+            == DurableAnswerStateConflict()
         )
         assert all_durable_rows(tmp_path) == before
     finally:
@@ -533,7 +546,13 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
         request = SubmitWaitAnswerRequest(
             RunId("run-1"), revision.revision_hash, "waiting", b"5"
         )
-        first = answer_wait_result(request, answerer)
+        first = answer_wait_result(
+            request.run_id,
+            request.revision_hash,
+            request.node_id,
+            request.answer_bytes,
+            answerer,
+        )
         assert isinstance(first, AnswerAcceptedPending)
         assert first.snapshot.state.value == "PENDING"
         assert answer_counts(tmp_path) == (1, 1, 0)
@@ -544,14 +563,19 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
         assert workflow_identity_rows(tmp_path, subworkflow_id) == ()
         pending_rows = all_durable_rows(tmp_path)
 
-        assert answer_wait_result(request, answerer) == AnswerExistingPending(
-            first.snapshot
-        )
+        assert answer_wait_result(
+            request.run_id,
+            request.revision_hash,
+            request.node_id,
+            request.answer_bytes,
+            answerer,
+        ) == AnswerExistingPending(first.snapshot)
         assert (
             answer_wait_result(
-                SubmitWaitAnswerRequest(
-                    RunId("run-1"), revision.revision_hash, "waiting", b"6"
-                ),
+                RunId("run-1"),
+                revision.revision_hash,
+                "waiting",
+                b"6",
                 answerer,
             )
             == AnswerBytesConflict()
@@ -574,14 +598,21 @@ def test_pending_and_applied_answer_retries_are_exact_without_reenqueue(
             applied.engine, applied.settings.application_version
         )
         applied_rows = all_durable_rows(tmp_path)
-        retried = answer_wait_result(request, answerer)
+        retried = answer_wait_result(
+            request.run_id,
+            request.revision_hash,
+            request.node_id,
+            request.answer_bytes,
+            answerer,
+        )
         assert isinstance(retried, AnswerExistingApplied)
         assert retried.snapshot.state.value == "APPLIED"
         assert (
             answer_wait_result(
-                SubmitWaitAnswerRequest(
-                    RunId("run-1"), revision.revision_hash, "waiting", b"6"
-                ),
+                RunId("run-1"),
+                revision.revision_hash,
+                "waiting",
+                b"6",
                 answerer,
             )
             == AnswerBytesConflict()

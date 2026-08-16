@@ -1,3 +1,13 @@
+"""What each write use-case decides, one case per outcome.
+
+These carry no `proves` mark on purpose. The sentence they would claim — every
+write decides through a use-case that owns building what the store is asked for —
+is not true of this tree while the cancellation is still a pass-through, and a
+mark here would make the gate agree with a sentence the code does not keep. They
+earn their keep as behavioural cover either way, and the mark joins them when the
+write set is finished.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -5,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from atelier2.application.answer_wait import UnanswerableWait, answer_wait_result
 from atelier2.application.publish_agent_configurations import (
     PUBLISHED_CONFIGURATION_FORMAT,
     AgentConfigurationRevisionCollision,
@@ -57,7 +68,11 @@ from atelier2.ports.agent_configurations import (
 from atelier2.ports.agent_configurations import (
     AuthProfileRevisionMissing as PortProfileMissing,
 )
-from atelier2.ports.durable_runs import DurableRunCreated, DurableWriteUnavailable
+from atelier2.ports.durable_runs import (
+    DurableAnswerCreated,
+    DurableRunCreated,
+    DurableWriteUnavailable,
+)
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
@@ -67,6 +82,7 @@ RUN_ID = RunId("run")
 STORED: Any = object()
 AUTH_PROFILE: Any = object()
 RUN: Any = object()
+SNAPSHOT: Any = object()
 
 
 class ScriptedCatalog:
@@ -156,7 +172,6 @@ PUBLICATIONS: list[
 ]
 
 
-@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
 @pytest.mark.parametrize(
     ("publish", "port_answer", "expected"),
     [
@@ -176,7 +191,6 @@ def test_every_port_answer_of_a_publication_becomes_this_layers_own_outcome(
     assert len(catalog.published) == 1
 
 
-@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
 @pytest.mark.parametrize(
     ("publish", "authored"),
     [
@@ -200,7 +214,6 @@ def test_authored_values_that_make_no_revision_refuse_before_the_catalog_is_aske
     assert catalog.published == []
 
 
-@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
 def test_a_configuration_is_recorded_under_the_format_this_publication_decides() -> (
     None
 ):
@@ -215,7 +228,6 @@ def test_a_configuration_is_recorded_under_the_format_this_publication_decides()
     assert PUBLISHED_CONFIGURATION_FORMAT is AgentConfigurationRevisionFormatVersion.V2
 
 
-@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
 def test_a_start_that_binds_no_agent_asks_for_the_run_without_a_binding_set() -> None:
     starter = ScriptedStarter(DurableRunCreated(RUN))
 
@@ -223,7 +235,6 @@ def test_a_start_that_binds_no_agent_asks_for_the_run_without_a_binding_set() ->
     assert not hasattr(starter.started[0], "agent_bindings")
 
 
-@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
 def test_a_start_whose_authored_binding_is_no_binding_refuses_before_the_store() -> (
     None
 ):
@@ -240,7 +251,6 @@ def test_a_start_whose_authored_binding_is_no_binding_refuses_before_the_store()
     assert starter.started == []
 
 
-@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
 def test_a_start_that_binds_an_agent_carries_the_authored_roles_to_the_store() -> None:
     starter = ScriptedStarter(DurableRunCreated(RUN))
 
@@ -253,3 +263,44 @@ def test_a_start_that_binds_an_agent_carries_the_authored_roles_to_the_store() -
 
     bound = starter.started[0].agent_bindings
     assert [binding.role.value for binding in bound.bindings] == ["builder"]
+
+
+class ScriptedAnswerer:
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+        self.submitted: list[Any] = []
+
+    def submit_result(self, request: Any) -> Any:
+        self.submitted.append(request)
+        return self.answer
+
+
+@pytest.mark.parametrize(
+    ("node_id", "answer_bytes"),
+    [("", b"6"), ("waiting", b"06"), ("waiting", b"")],
+    ids=["unnamed-node", "non-canonical-integer", "no-answer"],
+)
+def test_an_answer_that_makes_no_submission_refuses_before_the_store_is_asked(
+    node_id: str, answer_bytes: bytes
+) -> None:
+    """Building the submission belongs to the decision, so a value that makes none
+    is an outcome of it — and the store is never asked."""
+    answerer = ScriptedAnswerer(DurableAnswerCreated(SNAPSHOT))
+
+    result = answer_wait_result(RUN_ID, REVISION_HASH, node_id, answer_bytes, answerer)
+
+    assert isinstance(result, UnanswerableWait)
+    assert answerer.submitted == []
+
+
+def test_an_answer_carries_the_authored_values_into_the_submission() -> None:
+    answerer = ScriptedAnswerer(DurableAnswerCreated(SNAPSHOT))
+
+    answer_wait_result(RUN_ID, REVISION_HASH, "waiting", b"6", answerer)
+
+    submitted = answerer.submitted[0]
+    assert (submitted.run_id, submitted.node_id, submitted.answer_bytes) == (
+        RUN_ID,
+        "waiting",
+        b"6",
+    )
