@@ -286,6 +286,171 @@ def test_the_binding_refuses_the_snapshot_the_preview_keeps_drawing() -> None:
     assert [node.id for node in composed.graph.nodes] == ["decide"]
 
 
+THE_THREE_THAT_EVALUATION_CANNOT_SURVIVE: tuple[
+    tuple[str, bytes, SchemaDocumentRefusal], ...
+] = (
+    (
+        "an anchor no document declares",
+        b'{"$ref": "#missing"}',
+        SchemaDocumentRefusal.UNRESOLVABLE_REFERENCE,
+    ),
+    (
+        "a pointer into nothing",
+        b'{"$ref": "#/$defs/missing"}',
+        SchemaDocumentRefusal.UNRESOLVABLE_REFERENCE,
+    ),
+    (
+        "a cycle no instance can break",
+        b'{"$ref": "#"}',
+        SchemaDocumentRefusal.NON_TERMINATING_REFERENCE_CYCLE,
+    ),
+)
+
+
+@pytest.mark.proves("a-schema-revision-outside-the-profile-is-refused-by-name")
+@pytest.mark.parametrize(
+    ("label", "document", "expected"),
+    THE_THREE_THAT_EVALUATION_CANNOT_SURVIVE,
+    ids=[label for label, _, _ in THE_THREE_THAT_EVALUATION_CANNOT_SURVIVE],
+)
+def test_a_local_reference_that_leads_nowhere_is_refused_by_name(
+    label: str, document: bytes, expected: SchemaDocumentRefusal
+) -> None:
+    """Locality was never enough: a ref reaching nothing is unusable, by its own name."""
+    verdict = read_schema_document(document)
+
+    assert isinstance(verdict, SchemaRefused)
+    assert verdict.refusal is expected
+
+    refusal = resolution_of(document)
+
+    assert isinstance(refusal, ReferenceRefusal)
+    assert refusal.reason is ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT
+
+
+@pytest.mark.parametrize(
+    ("label", "document", "expected"),
+    THE_THREE_THAT_EVALUATION_CANNOT_SURVIVE,
+    ids=[label for label, _, _ in THE_THREE_THAT_EVALUATION_CANNOT_SURVIVE],
+)
+def test_no_accepted_schema_can_break_the_evaluator(
+    label: str, document: bytes, expected: SchemaDocumentRefusal
+) -> None:
+    """The liveness half: nothing this profile accepts may blow the stack.
+
+    A published revision that passes the profile and then raises RecursionError
+    is not a refusal, it is an outage, so the accepted set is proven safe to
+    build a validator over rather than merely well-formed.
+    """
+    verdict = read_schema_document(document)
+
+    assert isinstance(verdict, SchemaRefused)
+
+
+A_RECURSIVE_TREE = b'{"type": "object", "properties": {"child": {"$ref": "#"}}}'
+
+
+@pytest.mark.parametrize(
+    ("label", "document"),
+    (
+        ("a self-referencing tree", A_RECURSIVE_TREE),
+        (
+            "a recursion through items",
+            b'{"type": "array", "items": {"$ref": "#"}}',
+        ),
+        (
+            "a resolvable pointer into $defs",
+            b'{"$defs": {"leaf": {"type": "string"}}, "$ref": "#/$defs/leaf"}',
+        ),
+        (
+            "a pointer through an escaped key",
+            b'{"$defs": {"a/b": {"type": "string"}}, "$ref": "#/$defs/a~1b"}',
+        ),
+    ),
+    ids=("tree", "items", "defs pointer", "escaped key"),
+)
+def test_a_recursion_an_instance_can_break_stays_legal(
+    label: str, document: bytes
+) -> None:
+    """The ruling's positive half, and the reason it is not simply `refuse $ref: "#"`.
+
+    A tree is the shape this workshop's own outputs most want to declare, and it
+    terminates because every application of the reference descends into a
+    strictly smaller instance. Refusing it would buy the liveness fix by making
+    recursion inexpressible, which is a narrower profile than the defect needs.
+    """
+    assert isinstance(read_schema_document(document), SchemaAccepted)
+
+
+@pytest.mark.parametrize(
+    ("label", "document", "expected"),
+    (
+        (
+            "a cycle through an in-place applicator",
+            b'{"allOf": [{"$ref": "#"}]}',
+            SchemaDocumentRefusal.NON_TERMINATING_REFERENCE_CYCLE,
+        ),
+        (
+            "two definitions referring to each other",
+            (
+                b'{"$defs": {"a": {"$ref": "#/$defs/b"}, "b": {"$ref": "#/$defs/a"}},'
+                b' "type": "object"}'
+            ),
+            SchemaDocumentRefusal.NON_TERMINATING_REFERENCE_CYCLE,
+        ),
+        (
+            "an unresolvable reference below a property",
+            b'{"properties": {"child": {"$ref": "#/$defs/absent"}}}',
+            SchemaDocumentRefusal.UNRESOLVABLE_REFERENCE,
+        ),
+    ),
+    ids=("in-place cycle", "mutual cycle", "unresolvable below a property"),
+)
+def test_the_reference_graph_is_judged_over_the_whole_document(
+    label: str, document: bytes, expected: SchemaDocumentRefusal
+) -> None:
+    """Resolvability holds everywhere; termination holds wherever evaluation may land."""
+    verdict = read_schema_document(document)
+
+    assert isinstance(verdict, SchemaRefused)
+    assert verdict.refusal is expected
+
+
+@pytest.mark.parametrize(
+    ("label", "document", "accepted"),
+    (
+        ("no dialect declared", b'{"type": "string"}', True),
+        (
+            "exactly 2020-12",
+            (
+                b'{"$schema": "https://json-schema.org/draft/2020-12/schema",'
+                b' "type": "string"}'
+            ),
+            True,
+        ),
+        (
+            "draft-07",
+            b'{"$schema": "http://json-schema.org/draft-07/schema#", "type": "string"}',
+            False,
+        ),
+        ("nonsense", b'{"$schema": "not a dialect", "type": "string"}', False),
+        ("not even a string", b'{"$schema": 7, "type": "string"}', False),
+    ),
+    ids=("absent", "2020-12", "draft-07", "nonsense", "not a string"),
+)
+def test_the_dialect_is_pinned_rather_than_reinterpreted(
+    label: str, document: bytes, accepted: bool
+) -> None:
+    """A document announcing another dialect is refused, never read as 2020-12."""
+    verdict = read_schema_document(document)
+
+    if accepted:
+        assert isinstance(verdict, SchemaAccepted)
+        return
+    assert isinstance(verdict, SchemaRefused)
+    assert verdict.refusal is SchemaDocumentRefusal.UNSUPPORTED_DIALECT
+
+
 @pytest.fixture
 def counted_retrievals(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     """Every retrieval the production path attempts, in order."""

@@ -15,11 +15,24 @@ it exists to keep evaluation decidable, local and cheap:
 - `$id`, `$anchor`, `$dynamicAnchor` and `$dynamicRef` are refused, because each
   one moves the meaning of a reference somewhere the pinned revision hash does
   not cover;
-- a `$ref` is local or it is refused, so what a schema means travels with its
-  own bytes and never over the network;
+- a `$ref` is local **and resolvable**, or it is refused: what a schema means
+  travels with its own bytes, never over the network, and never to a target the
+  document does not carry;
+- a reference cycle no instance can break is refused, while an ordinary
+  recursive schema is not — the rule is whether the cycle passes through an
+  applicator that descends into the instance, because that is what makes the
+  recursion end. `{"$ref": "#"}` alone never ends; a tree whose child is
+  `{"$ref": "#"}` under `properties` always does;
+- `$schema` is absent or exactly Draft 2020-12, so a document announcing another
+  dialect is refused rather than silently read under rules it never asked for;
 - `format` stays the draft's annotation and is never an assertion, so a schema
   that needs format validation for safety is not expressible here rather than
   silently unenforced.
+
+Resolvability and termination are decided **here, over the published bytes**,
+and never left to the evaluator: a document that passes this profile and then
+raises `NoSuchAnchor`, `PointerToNowhere` or `RecursionError` would not be a
+refusal but an outage, which is the defect this profile's first version carried.
 
 Retrieval is off by construction rather than by trust: every evaluation runs
 against a registry whose only retrieval path is `refuse_retrieval`, which raises.
@@ -31,6 +44,7 @@ reaches that seam.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import NoReturn
@@ -45,8 +59,17 @@ MAXIMUM_SCHEMA_CONTAINER_DEPTH = 32
 MAXIMUM_SCHEMA_VALUES = 4_096
 
 FORBIDDEN_KEYWORDS = ("$id", "$anchor", "$dynamicAnchor", "$dynamicRef")
+SUPPORTED_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 _LOCAL_REFERENCE_PREFIX = "#"
 _BYTE_ORDER_MARK = "﻿"
+
+# Keywords whose subschemas are applied to the *same* instance the parent saw.
+# A reference cycle made only of these never consumes input, so it cannot end;
+# every other applicator descends into a strictly smaller instance and is what
+# makes an ordinary recursive schema terminate.
+_IN_PLACE_SUBSCHEMAS = ("not", "if", "then", "else")
+_IN_PLACE_SUBSCHEMA_LISTS = ("allOf", "anyOf", "oneOf")
+_IN_PLACE_SUBSCHEMA_MAPS = ("dependentSchemas",)
 
 
 class SchemaDocumentRefusal(StrEnum):
@@ -62,6 +85,9 @@ class SchemaDocumentRefusal(StrEnum):
     TOO_MANY_VALUES = "too-many-values"
     FORBIDDEN_KEYWORD = "forbidden-keyword"
     NONLOCAL_REFERENCE = "nonlocal-reference"
+    UNRESOLVABLE_REFERENCE = "unresolvable-reference"
+    NON_TERMINATING_REFERENCE_CYCLE = "non-terminating-reference-cycle"
+    UNSUPPORTED_DIALECT = "unsupported-dialect"
     NOT_A_SCHEMA = "not-a-schema"
 
 
@@ -128,7 +154,34 @@ def read_schema_document(document: bytes) -> SchemaDocumentVerdict:
             SchemaDocumentRefusal.NOT_A_SCHEMA,
             f"a schema is an object or a boolean, not {type(decoded.value).__name__}",
         )
+    unsupported = _refused_dialect(decoded.value)
+    if unsupported is not None:
+        return unsupported
+    unusable = _refused_reference_graph(decoded.value)
+    if unusable is not None:
+        return unusable
     return _validated_against_the_draft(decoded.value)
+
+
+def _refused_dialect(schema: Schema) -> SchemaRefused | None:
+    """A document declaring another dialect is refused rather than reinterpreted.
+
+    The evaluator is pinned to Draft 2020-12, so a document announcing draft-07
+    would be read under rules it never asked for — the divergence is silent
+    exactly where `$ref` siblings behave differently between the drafts. An
+    absent `$schema` is the draft's own default and stays accepted.
+    """
+    if not isinstance(schema, dict):
+        return None
+    declared = schema.get("$schema")
+    if declared is None:
+        return None
+    if declared == SUPPORTED_DIALECT or declared == f"{SUPPORTED_DIALECT}#":
+        return None
+    return SchemaRefused(
+        SchemaDocumentRefusal.UNSUPPORTED_DIALECT,
+        declared if isinstance(declared, str) else type(declared).__name__,
+    )
 
 
 class _NonCanonicalNumber(Exception):
@@ -217,6 +270,122 @@ def _refused_keyword(value: dict[str, object]) -> SchemaRefused | None:
     reference = value.get("$ref")
     if isinstance(reference, str) and not reference.startswith(_LOCAL_REFERENCE_PREFIX):
         return SchemaRefused(SchemaDocumentRefusal.NONLOCAL_REFERENCE, reference)
+    return None
+
+
+def _resolved_pointer(root: object, fragment: str) -> object | None:
+    """The value one local JSON pointer names, or `None` when it names nothing."""
+    if fragment == "":
+        return root
+    if not fragment.startswith("/"):
+        # A plain-name fragment addresses an `$anchor`, and this profile forbids
+        # declaring one, so no document can ever carry the target.
+        return None
+    current: object = root
+    for raw in fragment[1:].split("/"):
+        token = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict):
+            mapping: dict[str, object] = current
+            if token not in mapping:
+                return None
+            current = mapping[token]
+        elif isinstance(current, list):
+            entries: list[object] = current
+            if not token.isdigit() or int(token) >= len(entries):
+                return None
+            current = entries[int(token)]
+        else:
+            return None
+    return current
+
+
+def _in_place_subschemas(schema: object) -> Iterator[tuple[str, object]]:
+    """Every subschema applied to the same instance, with the path that reaches it."""
+    if not isinstance(schema, dict):
+        return
+    for keyword in _IN_PLACE_SUBSCHEMAS:
+        if keyword in schema:
+            yield f"/{keyword}", schema[keyword]
+    for keyword in _IN_PLACE_SUBSCHEMA_LISTS:
+        entries = schema.get(keyword)
+        if isinstance(entries, list):
+            for index, entry in enumerate(entries):
+                yield f"/{keyword}/{index}", entry
+    for keyword in _IN_PLACE_SUBSCHEMA_MAPS:
+        entries = schema.get(keyword)
+        if isinstance(entries, dict):
+            for name, entry in entries.items():
+                yield f"/{keyword}/{name}", entry
+
+
+def _every_position(value: object, pointer: str = "") -> Iterator[str]:
+    """The JSON pointer of every object and array position in the document."""
+    yield pointer
+    if isinstance(value, dict):
+        for key, entry in value.items():
+            token = key.replace("~", "~0").replace("/", "~1")
+            yield from _every_position(entry, f"{pointer}/{token}")
+    elif isinstance(value, list):
+        for index, entry in enumerate(value):
+            yield from _every_position(entry, f"{pointer}/{index}")
+
+
+def _refused_reference_graph(root: Schema) -> SchemaRefused | None:
+    """Every local reference resolves, and no cycle of them can outlast an instance.
+
+    Two different faults, two different names. A reference resolving to nothing
+    is unusable bytes, refused where the bytes are read rather than where an
+    evaluator would trip over it. A cycle whose every edge stays on the same
+    instance never terminates whatever it is given -- `{"$ref": "#"}` is exactly
+    that -- while the ordinary recursive schema, whose cycle passes through
+    `properties` or `items`, descends into a smaller instance each time and is
+    deliberately left legal, because a tree is the shape this workshop's own
+    outputs most want to declare.
+    """
+    for pointer in _every_position(root):
+        node = _resolved_pointer(root, pointer)
+        if not isinstance(node, dict):
+            continue
+        reference = node.get("$ref")
+        if (
+            isinstance(reference, str)
+            and _resolved_pointer(root, reference[len(_LOCAL_REFERENCE_PREFIX) :])
+            is None
+        ):
+            return SchemaRefused(
+                SchemaDocumentRefusal.UNRESOLVABLE_REFERENCE, reference
+            )
+
+    settled: set[str] = set()
+
+    def walk(pointer: str, on_path: frozenset[str]) -> SchemaRefused | None:
+        if pointer in on_path:
+            return SchemaRefused(
+                SchemaDocumentRefusal.NON_TERMINATING_REFERENCE_CYCLE,
+                f"#{pointer}" if pointer else "#",
+            )
+        if pointer in settled:
+            return None
+        node = _resolved_pointer(root, pointer)
+        reached = on_path | {pointer}
+        for step, _ in _in_place_subschemas(node):
+            refused = walk(pointer + step, reached)
+            if refused is not None:
+                return refused
+        if isinstance(node, dict):
+            reference = node.get("$ref")
+            if isinstance(reference, str):
+                refused = walk(reference[len(_LOCAL_REFERENCE_PREFIX) :], reached)
+                if refused is not None:
+                    return refused
+        settled.add(pointer)
+        return None
+
+    for pointer in _every_position(root):
+        if isinstance(_resolved_pointer(root, pointer), dict):
+            refused = walk(pointer, frozenset())
+            if refused is not None:
+                return refused
     return None
 
 
