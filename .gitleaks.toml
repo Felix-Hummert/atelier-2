@@ -7,6 +7,7 @@ useDefault = true
 
 [allowlist]
 description = "Identifier constants that name credential channels or storage keys but carry no secret value"
+regexTarget = "match"
 regexes = [
   # systemd credential *name* (the channel label, not its content)
   '''DIRECT_SYSTEMD_LAUNCH_CREDENTIAL_NAME = "atelier2-launch"''',
