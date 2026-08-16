@@ -27,6 +27,7 @@ TYPESCRIPT_PROOF_CLAIM = re.compile(rf"\b{PROOF_MARKER}\((?P<identifier>[^)]*)\)
 VITEST_TITLE_PARAMETER = re.compile(r"%(?:s|d|i|f|j|o|O|c|#|\$)")
 PYTHON_SUFFIX = ".py"
 TYPESCRIPT_SUFFIX = ".ts"
+FRONTEND_DIRECTORY = "frontend"
 CLAIMABLE_SUFFIXES = (PYTHON_SUFFIX, TYPESCRIPT_SUFFIX)
 UNSCANNED_DIRECTORIES = frozenset(
     {".git", ".venv", "__pycache__", "node_modules", "dist"}
@@ -99,6 +100,7 @@ class AcceptanceSentence:
 class ReportedProof:
     sentence_identifier: str
     proving_test: str
+    located_in: Path | None
     reported_in: str
 
 
@@ -215,15 +217,24 @@ def read_junit_proofs(report: Path) -> Iterator[ReportedProof]:
         for recorded in testcase.iterfind(JUNIT_PROPERTY):
             if recorded.get("name") == PROOF_MARKER:
                 yield ReportedProof(
-                    recorded.get("value", ""), testcase.get("name", ""), report.name
+                    recorded.get("value", ""),
+                    testcase.get("name", ""),
+                    python_test_location(testcase.get("classname")),
+                    report.name,
                 )
+
+
+def python_test_location(class_name: str | None) -> Path | None:
+    if not class_name:
+        return None
+    return Path(*class_name.split(".")).with_suffix(PYTHON_SUFFIX)
 
 
 def read_vitest_proofs(report: Path) -> Iterator[ReportedProof]:
     try:
         run = json.loads(report.read_text(encoding="utf-8"))
         reported = [
-            assertion
+            (file_run.get("name"), assertion)
             for file_run in run["testResults"]
             for assertion in file_run["assertionResults"]
         ]
@@ -231,12 +242,31 @@ def read_vitest_proofs(report: Path) -> Iterator[ReportedProof]:
         raise AcceptanceGateError(
             f"{report.name} is not readable as a run report: {error}"
         ) from error
-    for assertion in reported:
+    for file_name, assertion in reported:
         if assertion.get("status") != VITEST_PASSED_STATUS:
             continue
         title = str(assertion.get("title", ""))
         for claim in TYPESCRIPT_PROOF_CLAIM.finditer(title):
-            yield ReportedProof(claim.group("identifier"), title, report.name)
+            yield ReportedProof(
+                claim.group("identifier"),
+                title,
+                typescript_test_location(file_name),
+                report.name,
+            )
+
+
+def typescript_test_location(file_name: Any) -> Path | None:
+    if not isinstance(file_name, str) or not file_name:
+        return None
+    parts = Path(file_name.replace("\\", "/")).parts
+    if FRONTEND_DIRECTORY in parts:
+        frontend_index = max(
+            index for index, part in enumerate(parts) if part == FRONTEND_DIRECTORY
+        )
+        return Path(*parts[frontend_index:])
+    if parts and parts[0] == "tests":
+        return Path(FRONTEND_DIRECTORY, *parts)
+    return None
 
 
 REPORT_READERS: dict[ReportFormat, Callable[[Path], Iterator[ReportedProof]]] = {
@@ -364,7 +394,10 @@ def typescript_string_literals(source: str) -> Iterator[str]:
 
 
 def proof_honours_claim(proof: ReportedProof, claim: ProofClaim) -> bool:
-    if proof.sentence_identifier != claim.sentence_identifier:
+    if (
+        proof.sentence_identifier != claim.sentence_identifier
+        or proof.located_in != claim.located_in
+    ):
         return False
     if claim.located_in.suffix == PYTHON_SUFFIX:
         return (
