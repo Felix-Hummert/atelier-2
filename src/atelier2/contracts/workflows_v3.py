@@ -357,6 +357,17 @@ class WorkflowGraphV3(_ClosedV3Model):
 type AnyWorkflowDocument = AnyWorkflowGraph | WorkflowGraphV3
 
 
+class MultipleSinkCompletionUnsupported(ValueError):
+    """V3 needs all-sinks state before one of several sinks can complete a run."""
+
+    def __init__(self, sink_node_ids: tuple[str, ...]) -> None:
+        super().__init__(
+            "V3 run completion currently requires exactly one sink node, "
+            f"not {len(sink_node_ids)}"
+        )
+        self.sink_node_ids = sink_node_ids
+
+
 def is_sink_node(graph: AnyWorkflowDocument, node_id: str) -> bool:
     """Whether this node's completion completes the run, in any executable format.
 
@@ -371,7 +382,11 @@ def is_sink_node(graph: AnyWorkflowDocument, node_id: str) -> bool:
 
     match graph:
         case WorkflowGraphV3():
-            return node_id in graph.sink_node_ids
+            graph.node(node_id)
+            sink_node_ids = graph.sink_node_ids
+            if len(sink_node_ids) != 1:
+                raise MultipleSinkCompletionUnsupported(sink_node_ids)
+            return node_id == sink_node_ids[0]
         case WorkflowGraph() | WorkflowGraphV2():
             return graph.is_sink(node_id)
         case _ as unreachable:

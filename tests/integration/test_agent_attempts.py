@@ -48,6 +48,7 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.contracts.workflows import RunContinues
 from atelier2.ports.agent_attempts import (
     AgentAttemptClaimedByThisCall,
     AgentAttemptFailed,
@@ -215,6 +216,7 @@ def test_attempt_is_prepared_before_controlled_executor_invocation(
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
+        assert outcome.completion == RunContinues("done")
         assert len(executor.results) == 1
     finally:
         runtime.close()
@@ -270,11 +272,12 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
         recovered = execute_agent_attempt(
             agent_attempt_execution(request),
             executor,
-            store,
+            DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
         )
 
         assert isinstance(first, AgentAttemptSucceeded)
+        assert first.completion == RunContinues("done")
         assert recovered == first
         assert len(executor.results) == 1
     finally:

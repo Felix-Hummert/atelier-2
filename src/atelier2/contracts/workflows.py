@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -295,3 +296,30 @@ class WorkflowGraphV2(_StrictWorkflowModel):
 
 type AnyWorkflowNode = WorkflowNode | WorkflowNodeV2
 type AnyWorkflowGraph = WorkflowGraph | WorkflowGraphV2
+
+
+@dataclass(frozen=True)
+class RunContinues:
+    """A completed node advances the run to this exact successor."""
+
+    node_id: str
+
+    def __post_init__(self) -> None:
+        if not self.node_id:
+            raise ValueError("a run successor node id must not be empty")
+
+
+@dataclass(frozen=True)
+class RunCompletes:
+    """A completed node is the run's terminal node."""
+
+
+type NodeCompletion = RunContinues | RunCompletes
+
+
+def completion_after_node(graph: AnyWorkflowGraph, node_id: str) -> NodeCompletion:
+    """Decide continuation once, without inventing a successor for the sink."""
+
+    if graph.is_sink(node_id):
+        return RunCompletes()
+    return RunContinues(graph.successor(node_id).id)

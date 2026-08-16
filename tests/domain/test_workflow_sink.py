@@ -17,10 +17,16 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.workflows import (
     AnyWorkflowGraph,
+    RunCompletes,
+    RunContinues,
     WorkflowGraph,
     WorkflowGraphV2,
+    completion_after_node,
 )
-from atelier2.contracts.workflows_v3 import is_sink_node
+from atelier2.contracts.workflows_v3 import (
+    MultipleSinkCompletionUnsupported,
+    is_sink_node,
+)
 from tests.domain.test_workflow_v3 import graph as v3_graph
 
 _V1_DOCUMENT = b"""format_version: 1
@@ -42,6 +48,21 @@ _SINGLE_NODE_DOCUMENT = b"""format_version: 1
 start: only
 nodes:
   - {id: only, type: subworkflow, operation: add, operands: [2, 3], next: null}
+"""
+
+_MULTI_SINK_V3_DOCUMENT = b"""format_version: 3
+name: two independent exits
+nodes:
+  - id: first
+    type: agent
+    role: builder
+    mode: headless
+    instruction: build
+  - id: second
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: review
 """
 
 
@@ -93,6 +114,13 @@ def test_the_sink_is_exactly_the_node_that_has_no_successor_to_advance_to(
         if node.id == graph.sink_node_id:
             continue
         assert graph.successor(node.id).id == node.next
+
+
+def test_node_completion_names_the_exact_successor_or_the_end_of_the_run() -> None:
+    graph = _graph(_V2_DOCUMENT)
+
+    assert completion_after_node(graph, "build") == RunContinues("done")
+    assert completion_after_node(graph, "done") == RunCompletes()
 
 
 def test_asking_whether_an_unknown_node_is_the_sink_is_refused() -> None:
@@ -154,3 +182,12 @@ def test_one_decider_answers_both_graph_families_by_their_own_spelling() -> None
     assert not any(
         is_sink_node(v3, node.id) for node in v3.nodes if node.id not in sinks
     )
+
+
+def test_v3_multi_sink_completion_is_refused_until_all_sinks_have_an_owner() -> None:
+    graph = parse_workflow_document(_MULTI_SINK_V3_DOCUMENT)
+
+    with pytest.raises(MultipleSinkCompletionUnsupported) as refused:
+        is_sink_node(graph, "first")
+
+    assert refused.value.sink_node_ids == ("first", "second")
