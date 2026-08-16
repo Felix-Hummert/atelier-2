@@ -35,3 +35,8 @@ export function cockpitRoute(pathname: string): CockpitRoute {
   }
   return { page: "not-found" };
 }
+
+/** The one place the path of a run is built. */
+export function runPath(publicReference: string): string {
+  return `/atelier/runs/${publicReference}`;
+}

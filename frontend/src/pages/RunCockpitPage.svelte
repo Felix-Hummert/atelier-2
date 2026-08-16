@@ -9,6 +9,7 @@
     type RunEventSubscription,
     type WorkflowRevisionDetail
   } from "../api/client";
+  import Breadcrumb from "../components/Breadcrumb.svelte";
   import HumanActionCard from "../components/HumanActionCard.svelte";
   import NodeRail from "../components/NodeRail.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
@@ -26,6 +27,7 @@
     type ReconciliationMutation,
     type WaitMutation
   } from "../lib/mutationJournal";
+  import { THE_ONE_PROJECT } from "../lib/project";
   import {
     confirmResource,
     decodeAndApplyDurableEvent,
@@ -774,10 +776,17 @@
     const bytes = projection?.payload_bytes_by_cursor.get(event.cursor);
     return bytes === undefined ? JSON.stringify(event) : new globalThis.TextDecoder().decode(bytes);
   }
+
+  $: trailHere =
+    snapshot.confirmed === null ? "Run" : `Run ${snapshot.confirmed.run.run_id}`;
 </script>
 
 <section aria-labelledby="run-title">
-  <a class="back-link" href="/atelier/project" onclick={(event) => { event.preventDefault(); navigate("/atelier/project"); }}>← Project</a>
+  <Breadcrumb
+    steps={[{ label: "Studio", path: "/atelier" }, { label: THE_ONE_PROJECT, path: "/atelier/project" }]}
+    current={trailHere}
+    {navigate}
+  />
 
   {#if snapshot.request.state === "failed"}
     <ProblemNotice problem={snapshot.request.problem} />

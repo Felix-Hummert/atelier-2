@@ -1162,3 +1162,28 @@ textarea {
 .run-group {
   margin-top: 0.5rem;
 }
+
+.trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.trail a {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.trail-step {
+  color: var(--line);
+}
+
+.trail-here {
+  color: var(--muted);
+}

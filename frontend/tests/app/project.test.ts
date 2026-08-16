@@ -145,12 +145,12 @@ describe("every level names the way back up", () => {
     });
     await screen.findByRole("heading", { name: "Run run" });
 
-    await fireEvent.click(screen.getByRole("link", { name: "← Project" }));
+    await fireEvent.click(screen.getByRole("link", { name: "This workshop" }));
 
     expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier/project");
 
-    await fireEvent.click(screen.getByRole("link", { name: "← Studio" }));
+    await fireEvent.click(screen.getByRole("link", { name: "Studio" }));
 
     expect((await screen.findByRole("heading", { name: "Studio" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier");
