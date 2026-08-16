@@ -4,6 +4,7 @@
   import type { CockpitApi, RunPage } from "../api/client";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
+  import { waitsForAHuman } from "../lib/runState";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
@@ -26,6 +27,8 @@
 </script>
 
 <section aria-labelledby="runs-title">
+  <a class="back-link" href="/atelier" onclick={(event) => { event.preventDefault(); navigate("/atelier"); }}>Studio</a>
+
   <header class="page-header">
     <div>
       <p class="eyebrow">Durable work</p>
@@ -50,7 +53,7 @@
           <li>
             <a class="run-card" href={`/atelier/runs/${run.public_run_reference}`} onclick={(event) => { event.preventDefault(); navigate(`/atelier/runs/${run.public_run_reference}`); }}>
               <strong>{run.run_id}</strong>
-              <span class:state-done={run.state === "COMPLETED"} class:state-waiting={run.state.startsWith("WAITING")} class="state-label"><span aria-hidden="true">{run.state === "COMPLETED" ? "●" : run.state.startsWith("WAITING") ? "⬢" : "▲"}</span>{run.state.replaceAll("_", " ").toLowerCase()}</span>
+              <span class:state-done={run.state === "COMPLETED"} class:state-waiting={waitsForAHuman(run.state)} class="state-label"><span aria-hidden="true">{run.state === "COMPLETED" ? "●" : waitsForAHuman(run.state) ? "⬢" : "▲"}</span>{run.state.replaceAll("_", " ").toLowerCase()}</span>
             </a>
           </li>
         {/each}

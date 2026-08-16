@@ -1,0 +1,40 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/131"
+
+# This is the first acceptance declaration for requirement 0003, whose own text
+# records that no story had declared a sentence for it yet.
+#
+# Head A of the plan declares the three sentences below. A fourth the plan
+# names — "from every level a named way leads exactly one level up" — is
+# deliberately absent: it promises the way from the run through the project into
+# the studio, and head A builds neither the project level nor the run's
+# breadcrumb. Declaring it here and passing it with half the way would be the
+# narrowed acceptance this repository refuses. It joins this file in the head
+# that proves it whole.
+#
+# Three further sentences of #131 stay open with their owners named, and #131 is
+# neither verified nor retired while one of them is open: "no screen offers a
+# hash as a choice" (#22 — the wire serves no name field anywhere), "the project
+# carries its queue: ready, running, waiting" (#79 — head B proves only the
+# honest empty state, which is expressly no substitute), and "a running node
+# opens its ephemeral tile with live output" (#9 part 2 and ADR 0009 —
+# architecture, not a UI line).
+#
+# Desk reading, marked so a later operator ruling can change it without looking
+# like a narrowed promise: requirement 0003 grades exactly one rule OPERATOR —
+# rule 1, the three levels. The inbox row and the teaching empty state come from
+# DESK rules (1.1's card detail and 16.3) and were taken up only because they
+# meet the document's own admission criterion: they remove work rather than add
+# a feature.
+
+[[sentence]]
+id = "the-workshop-opens-in-the-studio"
+text = "The atelier opens in the Studio — the level that shows what is happening across the whole workshop — and not in a list of runs."
+
+[[sentence]]
+id = "the-inbox-names-every-run-that-waits-for-a-human"
+text = "The inbox row names, across everything, every run that waits for a human — the durable states WAITING_INPUT and WAITING_RECONCILIATION — and leads there with one click."
+
+[[sentence]]
+id = "an-empty-area-names-the-one-next-action"
+text = "An area with nothing in it names the one next action that is possible today, instead of staying blank or hinting at a capability that does not exist."

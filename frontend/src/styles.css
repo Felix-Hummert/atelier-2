@@ -198,7 +198,10 @@ small {
 .pending,
 .start-card,
 .notice,
-.run-summary {
+.run-summary,
+.inbox,
+.project-card,
+.chat-door {
   border: 1px solid var(--line);
   border-radius: 0.75rem;
   padding: 1rem;
@@ -1012,4 +1015,89 @@ textarea {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.section-title {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.inbox {
+  margin-top: 1rem;
+  border-color: var(--warning);
+}
+
+.inbox h2,
+.chat-door h2 {
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+}
+
+.inbox .run-card code {
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.project-card {
+  display: grid;
+  gap: 0.35rem;
+  border-left: 4px solid var(--accent);
+  padding: 1.05rem 1.25rem 1.15rem;
+}
+
+.project-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.project-open {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 44px;
+  color: var(--ink);
+  font-size: 1.3rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.project-enter {
+  color: var(--accent);
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.project-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.25rem;
+  margin: 0;
+  color: var(--muted);
+}
+
+.project-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.project-count-waiting {
+  color: var(--warning);
+  font-weight: 700;
+}
+
+.chat-door {
+  margin-top: 1.75rem;
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.chat-door p {
+  margin: 0;
 }

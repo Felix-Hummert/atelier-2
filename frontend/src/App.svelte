@@ -11,6 +11,7 @@
   import NewRunPage from "./pages/NewRunPage.svelte";
   import RunCockpitPage from "./pages/RunCockpitPage.svelte";
   import RunsPage from "./pages/RunsPage.svelte";
+  import StudioPage from "./pages/StudioPage.svelte";
 
   export let cockpitApi: CockpitApi = createCockpitApi();
   export let mutationJournal: MutationJournal = new MutationJournal(sessionStorage);
@@ -20,10 +21,6 @@
   let route = cockpitRoute(window.location.pathname);
 
   onMount(() => {
-    if (window.location.pathname === "/atelier" || window.location.pathname === "/atelier/") {
-      window.history.replaceState(null, "", "/atelier/runs");
-      route = cockpitRoute(window.location.pathname);
-    }
     const readRoute = () => { route = cockpitRoute(window.location.pathname); };
     window.addEventListener("popstate", readRoute);
     return () => window.removeEventListener("popstate", readRoute);
@@ -38,7 +35,9 @@
 <svelte:head><meta name="theme-color" content="#f4f1e8" /><title>Atelier 2</title></svelte:head>
 
 <main>
-  {#if route.page === "runs"}
+  {#if route.page === "studio"}
+    <StudioPage {cockpitApi} {navigate} />
+  {:else if route.page === "runs"}
     <RunsPage {cockpitApi} {navigate} />
   {:else if route.page === "new"}
     <NewRunPage {cockpitApi} {mutationJournal} {navigate} {createRunId} />
