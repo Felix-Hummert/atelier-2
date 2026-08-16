@@ -278,6 +278,47 @@ small {
   background: var(--paper);
 }
 
+.revision-label {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.revision-name,
+.revision-description,
+.revision-hash {
+  overflow-wrap: anywhere;
+}
+
+.revision-description,
+.revision-refusal {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.revision-hash {
+  font-size: 0.85rem;
+}
+
+/* A row that cannot start is drawn as unavailable rather than merely inert, so
+   the reason is read where the choice is made instead of after it. */
+.revision-option.unstartable {
+  border-style: dashed;
+}
+
+.revision-details {
+  margin: -0.25rem 0 0 0.65rem;
+  font-size: 0.85rem;
+}
+
+.revision-details summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
 .mode-picker legend {
   grid-column: 1 / -1;
   margin-bottom: 0.25rem;

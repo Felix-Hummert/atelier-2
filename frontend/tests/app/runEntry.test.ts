@@ -83,7 +83,7 @@ describe("mobile run entry", () => {
       }
     });
 
-    await fireEvent.click(await screen.findByLabelText(revisionHash));
+    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
     expect(screen.getByText("run-draft").isConnected).toBe(true);
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
@@ -411,7 +411,7 @@ describe("mobile run entry", () => {
     render(App, {
       props: { cockpitApi: api({ getWorkflowRevision: vi.fn(() => deferred) }), mutationJournal: new MutationJournal(sessionStorage) }
     });
-    await fireEvent.click(await screen.findByLabelText(revisionHash));
+    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
     expect(screen.getByText("Loading workflow…")).toBeTruthy();
     await fireEvent.click(screen.getByLabelText("Publish YAML"));
     resolveRevision(revision());
@@ -426,7 +426,7 @@ describe("mobile run entry", () => {
     const first = render(App, {
       props: { cockpitApi, mutationJournal: journal, createRunId: () => "run-draft" }
     });
-    await fireEvent.click(await screen.findByLabelText(revisionHash));
+    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("connection closed"));
     const firstBytes = vi.mocked(cockpitApi.start).mock.calls[0]?.[0].body_base64;
@@ -474,7 +474,7 @@ describe("mobile run entry", () => {
     render(App, {
       props: { cockpitApi, mutationJournal: journal, createRunId: () => "run-draft" }
     });
-    await fireEvent.click(await screen.findByLabelText(revisionHash));
+    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("Run not found"));
@@ -499,7 +499,7 @@ describe("mobile run entry", () => {
     render(App, {
       props: { cockpitApi, mutationJournal: journal, createRunId: () => "run-draft" }
     });
-    await fireEvent.click(await screen.findByLabelText(revisionHash));
+    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     await screen.findByRole("alert");
@@ -517,7 +517,7 @@ describe("mobile run entry", () => {
         createRunId: () => "run-draft"
       }
     });
-    await fireEvent.click(await screen.findByLabelText(revisionHash));
+    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`));
 
