@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
+from atelier2.contracts.node_records_v3 import (
+    NodeArtifact,
+    NodeExecutionRequest,
+    NodeReceipt,
+    NodeReceiptHash,
+)
+from atelier2.contracts.revisions_v3 import PublishedRevision, PublishedRevisionHash
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
@@ -99,6 +107,60 @@ class DurablePublishedRunStarter(Protocol):
     def start_published(
         self, request: AnyStartPublishedRunRequest
     ) -> DurablePublishedRunResult: ...
+
+
+@dataclass(frozen=True)
+class StartV3RunWithReceiptRequest:
+    """One supervised V3 start and its already-decided terminal node truth."""
+
+    revision: PublishedRevision
+    node_request: NodeExecutionRequest
+    artifacts: tuple[NodeArtifact, ...]
+    receipt: NodeReceipt
+
+
+@dataclass(frozen=True)
+class DurableV3RunCreated:
+    run_id: RunId
+    revision_hash: PublishedRevisionHash
+    receipt_hash: NodeReceiptHash
+
+
+@dataclass(frozen=True)
+class DurableV3RunExisting:
+    run_id: RunId
+    revision_hash: PublishedRevisionHash
+    receipt_hash: NodeReceiptHash
+
+
+@dataclass(frozen=True)
+class DurableV3StartBindingInvalid:
+    """The typed request objects do not describe one exact node execution."""
+
+
+class V3StartRecord(StrEnum):
+    PUBLISHED_REVISION = "published_revision"
+    WORKFLOW_BACKING = "workflow_backing"
+    RUN = "run"
+    ARTIFACT = "artifact"
+    RECEIPT = "receipt"
+
+
+@dataclass(frozen=True)
+class DurableV3StartConflict:
+    """Durable identity exists with different bytes or bindings."""
+
+    record: V3StartRecord
+
+
+type DurableV3StartWithReceiptResult = (
+    DurableV3RunCreated
+    | DurableV3RunExisting
+    | DurableV3StartBindingInvalid
+    | DurableV3StartConflict
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
+)
 
 
 @dataclass(frozen=True)
