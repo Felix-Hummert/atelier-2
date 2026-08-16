@@ -59,6 +59,7 @@ from atelier2.ports.durable_runs import (
 )
 
 SCHEMA_REVISION = PublishedRevisionHash.of(b"the bound meal schema")
+SAUCE_SCHEMA_REVISION = PublishedRevisionHash.of(b"the bound sauce schema")
 WORKFLOW_DOCUMENT = f"""format_version: 3
 name: Lasagne
 description: Cook one supervised proof.
@@ -73,6 +74,10 @@ nodes:
         schema:
           ref: meal-schema
           revision: {SCHEMA_REVISION.value}
+      - name: sauce
+        schema:
+          ref: sauce-schema
+          revision: {SAUCE_SCHEMA_REVISION.value}
 """.encode()
 
 
@@ -116,7 +121,10 @@ def request(
         mode=None,
         inputs=(),
         bound_revisions=BoundNodeRevisions(),
-        declared_outputs=(DeclaredOutput("meal", SCHEMA_REVISION),),
+        declared_outputs=(
+            DeclaredOutput("meal", SCHEMA_REVISION),
+            DeclaredOutput("sauce", SAUCE_SCHEMA_REVISION),
+        ),
     )
     artifact = NodeArtifact(
         run_id=run_id,
@@ -126,6 +134,14 @@ def request(
         schema_revision=SCHEMA_REVISION,
         value=b"lasagne",
     )
+    sauce_artifact = NodeArtifact(
+        run_id=run_id,
+        node_id="cook",
+        node_execution_id=NodeExecutionId.for_node(run_id, workflow_hash, "cook"),
+        output_name="sauce",
+        schema_revision=SAUCE_SCHEMA_REVISION,
+        value=b"tomato",
+    )
     receipt = NodeReceipt(
         node_execution_id=receipt_execution_id
         or NodeExecutionId.for_node(run_id, workflow_hash, "cook"),
@@ -133,13 +149,18 @@ def request(
         reason="completed",
         request_hash=node_request.request_hash,
         context_package_hash=context.package_hash,
-        outputs=(ReceiptOutput("meal", SCHEMA_REVISION, artifact.value_hash),),
+        outputs=(
+            ReceiptOutput("meal", SCHEMA_REVISION, artifact.value_hash),
+            ReceiptOutput("sauce", SAUCE_SCHEMA_REVISION, sauce_artifact.value_hash),
+        ),
         access_receipt_hashes=(
             Sha256Hash.of(b"ingredients access"),
             Sha256Hash.of(b"oven access"),
         ),
     )
-    return StartV3RunWithReceiptRequest(published, node_request, (artifact,), receipt)
+    return StartV3RunWithReceiptRequest(
+        published, node_request, (artifact, sauce_artifact), receipt
+    )
 
 
 def table_count(engine: Engine, table: sa.Table) -> int:
@@ -210,17 +231,29 @@ def test_v3_start_writes_exact_revision_run_and_receipt_atomically(
                 node_artifacts_v3.c.value,
                 node_artifacts_v3.c.value_hash,
                 node_artifacts_v3.c.artifact_hash,
-            )
-        ).one() == (
-            "run-lasagne",
-            "cook",
-            exact.receipt.node_execution_id.value,
-            "meal",
-            SCHEMA_REVISION.value,
-            b"lasagne",
-            exact.artifacts[0].value_hash.value,
-            exact.artifacts[0].artifact_hash.value,
-        )
+            ).order_by(node_artifacts_v3.c.output_name)
+        ).all() == [
+            (
+                "run-lasagne",
+                "cook",
+                exact.receipt.node_execution_id.value,
+                "meal",
+                SCHEMA_REVISION.value,
+                b"lasagne",
+                exact.artifacts[0].value_hash.value,
+                exact.artifacts[0].artifact_hash.value,
+            ),
+            (
+                "run-lasagne",
+                "cook",
+                exact.receipt.node_execution_id.value,
+                "sauce",
+                SAUCE_SCHEMA_REVISION.value,
+                b"tomato",
+                exact.artifacts[1].value_hash.value,
+                exact.artifacts[1].artifact_hash.value,
+            ),
+        ]
         assert connection.execute(
             sa.select(
                 node_receipts_v3.c.node_execution_id,
@@ -245,14 +278,23 @@ def test_v3_start_writes_exact_revision_run_and_receipt_atomically(
                 node_receipt_outputs_v3.c.output_name,
                 node_receipt_outputs_v3.c.schema_revision_hash,
                 node_receipt_outputs_v3.c.value_hash,
-            )
-        ).one() == (
-            exact.receipt.node_execution_id.value,
-            0,
-            "meal",
-            SCHEMA_REVISION.value,
-            exact.artifacts[0].value_hash.value,
-        )
+            ).order_by(node_receipt_outputs_v3.c.position)
+        ).all() == [
+            (
+                exact.receipt.node_execution_id.value,
+                0,
+                "meal",
+                SCHEMA_REVISION.value,
+                exact.artifacts[0].value_hash.value,
+            ),
+            (
+                exact.receipt.node_execution_id.value,
+                1,
+                "sauce",
+                SAUCE_SCHEMA_REVISION.value,
+                exact.artifacts[1].value_hash.value,
+            ),
+        ]
         assert connection.execute(
             sa.select(
                 node_receipt_access_v3.c.position,
@@ -284,9 +326,9 @@ def test_identical_v3_start_retry_returns_the_same_exact_binding(
     assert table_count(engine, published_revisions) == 1
     assert table_count(engine, workflow_revisions) == 1
     assert table_count(engine, runs) == 1
-    assert table_count(engine, node_artifacts_v3) == 1
+    assert table_count(engine, node_artifacts_v3) == 2
     assert table_count(engine, node_receipts_v3) == 1
-    assert table_count(engine, node_receipt_outputs_v3) == 1
+    assert table_count(engine, node_receipt_outputs_v3) == 2
     assert table_count(engine, node_receipt_access_v3) == 2
 
 
@@ -332,6 +374,47 @@ def test_non_success_receipt_cannot_bind_artifacts_or_write_partial_state(
     assert table_count(engine, node_receipts_v3) == 0
 
 
+@pytest.mark.parametrize(
+    "disposition",
+    (
+        PersistedReceiptDisposition.FAILED,
+        PersistedReceiptDisposition.CANCELLED,
+        PersistedReceiptDisposition.BLOCKED,
+    ),
+)
+def test_non_success_receipt_without_artifacts_is_stored_atomically(
+    storage: tuple[Engine, DbosDurableRunStarter],
+    disposition: PersistedReceiptDisposition,
+) -> None:
+    engine, starter = storage
+    exact = request()
+    terminal_receipt = NodeReceipt(
+        node_execution_id=exact.receipt.node_execution_id,
+        disposition=disposition,
+        reason=f"supervised operation {disposition.value}",
+        request_hash=exact.receipt.request_hash,
+        context_package_hash=exact.receipt.context_package_hash,
+        outputs=(),
+        access_receipt_hashes=exact.receipt.access_receipt_hashes,
+    )
+    terminal = replace(exact, artifacts=(), receipt=terminal_receipt)
+
+    assert starter.start_v3_with_receipt(terminal) == DurableV3RunCreated(
+        terminal.node_request.run_id,
+        terminal.revision.revision_hash,
+        terminal.receipt.receipt_hash,
+    )
+    with engine.connect() as connection:
+        assert connection.scalar(sa.select(node_receipts_v3.c.disposition)) == (
+            disposition.value
+        )
+    assert table_count(engine, runs) == 1
+    assert table_count(engine, node_artifacts_v3) == 0
+    assert table_count(engine, node_receipts_v3) == 1
+    assert table_count(engine, node_receipt_outputs_v3) == 0
+    assert table_count(engine, node_receipt_access_v3) == 2
+
+
 def test_artifact_schema_must_match_the_authored_and_requested_output(
     storage: tuple[Engine, DbosDurableRunStarter],
 ) -> None:
@@ -348,6 +431,30 @@ def test_artifact_schema_must_match_the_authored_and_requested_output(
 
     assert isinstance(
         starter.start_v3_with_receipt(replace(exact, artifacts=(mismatched,))),
+        DurableV3StartBindingInvalid,
+    )
+    assert table_count(engine, runs) == 0
+    assert table_count(engine, node_artifacts_v3) == 0
+    assert table_count(engine, node_receipts_v3) == 0
+
+
+def test_receipt_output_order_must_match_the_authored_artifact_order(
+    storage: tuple[Engine, DbosDurableRunStarter],
+) -> None:
+    engine, starter = storage
+    exact = request()
+    reordered_receipt = NodeReceipt(
+        node_execution_id=exact.receipt.node_execution_id,
+        disposition=exact.receipt.disposition,
+        reason=exact.receipt.reason,
+        request_hash=exact.receipt.request_hash,
+        context_package_hash=exact.receipt.context_package_hash,
+        outputs=tuple(reversed(exact.receipt.outputs)),
+        access_receipt_hashes=exact.receipt.access_receipt_hashes,
+    )
+
+    assert isinstance(
+        starter.start_v3_with_receipt(replace(exact, receipt=reordered_receipt)),
         DurableV3StartBindingInvalid,
     )
     assert table_count(engine, runs) == 0
@@ -374,6 +481,47 @@ def test_published_revision_identity_collision_is_a_typed_conflict(
     )
     assert table_count(engine, workflow_revisions) == 0
     assert table_count(engine, runs) == 0
+    assert table_count(engine, node_artifacts_v3) == 0
+    assert table_count(engine, node_receipts_v3) == 0
+
+
+def test_existing_run_under_another_revision_is_a_run_conflict(
+    storage: tuple[Engine, DbosDurableRunStarter],
+) -> None:
+    engine, starter = storage
+    exact = request()
+    other_revision = PublishedRevision(
+        RevisionKind.WORKFLOW,
+        exact.revision.document.replace(b"Lasagne", b"Moussaka"),
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=other_revision.revision_hash.value,
+                document=other_revision.document,
+            )
+        )
+        connection.execute(
+            runs.insert().values(
+                run_id=exact.node_request.run_id.value,
+                bootstrap_workflow_id=bootstrap_workflow_id_for(
+                    exact.node_request.run_id
+                ),
+                revision_hash=other_revision.revision_hash.value,
+                workflow_format_version=3,
+                agent_binding_set_hash=None,
+                current_node_id=exact.node_request.node_id,
+                state=RunState.STARTED.value,
+                state_version=0,
+                last_event_sequence=0,
+                terminal_hash=None,
+            )
+        )
+
+    assert starter.start_v3_with_receipt(exact) == DurableV3StartConflict(
+        V3StartRecord.RUN
+    )
+    assert table_count(engine, published_revisions) == 0
     assert table_count(engine, node_artifacts_v3) == 0
     assert table_count(engine, node_receipts_v3) == 0
 

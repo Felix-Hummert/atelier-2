@@ -5,7 +5,7 @@ from typing import assert_never
 
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Connection, Engine, RowMapping
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -151,10 +151,6 @@ def _v3_start_is_bound(request: StartV3RunWithReceiptRequest) -> bool:
         (name, schema.value) for name, schema in declared_outputs
     ):
         return False
-    if declared_outputs != tuple(
-        (artifact.output_name, artifact.schema_revision) for artifact in artifacts
-    ):
-        return False
     expected_receipt_outputs = tuple(
         ReceiptOutput(
             artifact.output_name,
@@ -163,10 +159,34 @@ def _v3_start_is_bound(request: StartV3RunWithReceiptRequest) -> bool:
         )
         for artifact in artifacts
     )
-    if receipt.outputs != expected_receipt_outputs:
-        return False
-    return not (
-        receipt.disposition is not PersistedReceiptDisposition.SUCCEEDED and artifacts
+    if receipt.disposition is PersistedReceiptDisposition.SUCCEEDED:
+        return (
+            declared_outputs
+            == tuple(
+                (artifact.output_name, artifact.schema_revision)
+                for artifact in artifacts
+            )
+            and receipt.outputs == expected_receipt_outputs
+        )
+    return not artifacts and not receipt.outputs
+
+
+def _v3_run_record_matches(
+    run_record: RowMapping, request: StartV3RunWithReceiptRequest
+) -> bool:
+    node_request = request.node_request
+    return (
+        str(run_record["run_id"]) == node_request.run_id.value
+        and str(run_record["bootstrap_workflow_id"])
+        == bootstrap_workflow_id_for(node_request.run_id)
+        and str(run_record["revision_hash"]) == request.revision.revision_hash.value
+        and int(str(run_record["workflow_format_version"])) == 3
+        and run_record["agent_binding_set_hash"] is None
+        and str(run_record["current_node_id"]) == node_request.node_id
+        and str(run_record["state"]) == RunState.STARTED.value
+        and int(str(run_record["state_version"])) == 0
+        and int(str(run_record["last_event_sequence"])) == 0
+        and run_record["terminal_hash"] is None
     )
 
 
@@ -194,18 +214,7 @@ def _stored_v3_start_matches(
     )
     if run_record is None or receipt_record is None:
         return False
-    if (
-        str(run_record["bootstrap_workflow_id"])
-        != bootstrap_workflow_id_for(node_request.run_id)
-        or str(run_record["revision_hash"]) != request.revision.revision_hash.value
-        or int(run_record["workflow_format_version"]) != 3
-        or run_record["agent_binding_set_hash"] is not None
-        or str(run_record["current_node_id"]) != node_request.node_id
-        or str(run_record["state"]) != RunState.STARTED.value
-        or int(run_record["state_version"]) != 0
-        or int(run_record["last_event_sequence"]) != 0
-        or run_record["terminal_hash"] is not None
-    ):
+    if not _v3_run_record_matches(run_record, request):
         return False
     if (
         str(receipt_record["disposition"]) != receipt.disposition.value
@@ -580,6 +589,8 @@ class DbosDurableRunStarter:
                     raise _V3StartConflictError(V3StartRecord.RUN)
                 existing_run = matching_runs[0] if matching_runs else None
                 if existing_run is not None:
+                    if not _v3_run_record_matches(existing_run, request):
+                        raise _V3StartConflictError(V3StartRecord.RUN)
                     stored_revision = (
                         connection.execute(
                             sa.select(published_revisions).where(
