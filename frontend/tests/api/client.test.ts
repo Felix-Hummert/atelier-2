@@ -558,3 +558,26 @@ describe("the saved-workflow listing the cockpit asks for", () => {
     ]);
   });
 });
+
+describe("the graph a run is allowed to hold", () => {
+  it("refuses a published V3 graph by name instead of reading it as an empty workflow", () => {
+    const published = {
+      format_version: 3 as const,
+      executable: false as const,
+      node_count: 1,
+      name: "Nightly regression sweep",
+      description: null
+    };
+
+    expect(() => executableGraph(published)).toThrow(
+      "a run cannot hold a revision no run can start"
+    );
+  });
+
+  it("hands back an executable graph unchanged", () => {
+    const graph = executableGraph(workflowRevision().graph);
+
+    expect(graph.format_version).toBe(1);
+    expect(executableGraph(graph)).toBe(graph);
+  });
+});

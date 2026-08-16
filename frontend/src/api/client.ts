@@ -671,6 +671,22 @@ export type ExecutableWorkflowGraph = Extract<
   { start_node_id: string }
 >;
 
+/**
+ * Narrow a revision's graph to the one a run can hold.
+ *
+ * The refusal is an impossibility guard, not a reason an operator is meant to
+ * read. A run cannot exist on a non-executable revision: the durable starter
+ * parses the named revision with the executable parser and answers
+ * `DurableRunFormatNotExecutable` before any run is written, so by the time a
+ * cockpit holds a run, its revision is V1 or V2. The guard exists so this
+ * narrowing is a checked fact rather than a cast, and so a store that ever
+ * contradicted that contract would say which contract it broke instead of
+ * rendering a workflow with no nodes as an empty one.
+ *
+ * That is also why the call site in the run cockpit's markup needs no fallback:
+ * it narrows the revision of an existing run, and an existing run has already
+ * passed the refusal above.
+ */
 export function executableGraph(graph: WorkflowGraph): ExecutableWorkflowGraph {
   if (graph.format_version === 3) {
     throw new Error("a run cannot hold a revision no run can start");
