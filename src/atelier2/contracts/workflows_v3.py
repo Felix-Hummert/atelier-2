@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentRefused,
     WorkflowRefusal,
@@ -160,6 +161,43 @@ class GraphOutput(_ClosedV3Model):
     source: NodeOutputSource = Field(alias="from")
 
 
+class IterationGreenCondition(_ClosedV3Model):
+    """The child result whose arrival ends the loop, under the revision it agreed.
+
+    It names a result the child declares, never an agent's word for being done.
+    """
+
+    output: NonemptyString
+    schema_reference: VersionedReference = Field(alias="schema")
+
+
+class IterationCarry(_ClosedV3Model):
+    """One round's result, handed to the next round as part of its order.
+
+    This is a binding the runtime applies between two child runs, deliberately
+    not a fourth input source: a source form pointing at the previous round
+    would be a document edge onto itself, and the cycle refusal of ADR 0002
+    would need an exception it must never have.
+    """
+
+    name: NonemptyString
+    from_output: NonemptyString
+    seed: InputSource
+
+
+class IterateBlock(_ClosedV3Model):
+    """Repeat one child until its declared result says green, at most so often.
+
+    `maximum_rounds` has no default: an unbounded loop must not be reachable by
+    omission. Rounds are counted by the atelier itself, so the bound carries no
+    meter revision and never becomes a sum across providers (ADR 0013).
+    """
+
+    maximum_rounds: int
+    until: IterationGreenCondition
+    carry: Annotated[tuple[IterationCarry, ...], DeclaredSequence] = ()
+
+
 class _NodeV3(_ClosedV3Model):
     id: NonemptyString
     depends_on: Annotated[tuple[NonemptyString, ...], DeclaredSequence] = ()
@@ -218,6 +256,7 @@ class SubworkflowNodeV3(_NodeV3):
     inputs: Annotated[tuple[NodeInput, ...], DeclaredSequence] = ()
     outputs: Annotated[tuple[NodeOutput, ...], DeclaredSequence] = ()
     budget: VersionedReference | None = None
+    iterate: IterateBlock | None = None
 
 
 class ActionNodeV3(_NodeV3):
@@ -268,6 +307,7 @@ class WorkflowGraphV3(_ClosedV3Model):
             _refuse_wrong_join_arity(node)
             _refuse_colliding_declared_names(node)
             _refuse_unbound_inputs(node, self)
+            _refuse_broken_iteration(node, self)
             _refuse_unconfirmed_operator_outputs(node)
         _refuse_broken_graph_boundary(self)
         return self
@@ -434,38 +474,54 @@ def _refuse_colliding_declared_names(node: WorkflowNodeV3) -> None:
 
 def _refuse_unbound_inputs(node: WorkflowNodeV3, graph: WorkflowGraphV3) -> None:
     closure = graph.dependency_closure(node.id)
-    context_names = _declared_context_names(node)
-    graph_input_names = {entry.name for entry in graph.graph_inputs}
     for entry in node.inputs:
-        source = entry.source
-        if isinstance(source, ContextEntrySource):
-            if source.context not in context_names:
-                raise _refuse(
-                    WorkflowRefusalReason.UNDECLARED_CONTEXT,
-                    "inputs",
-                    f"input {entry.name!r} reads context {source.context!r}, "
-                    "which this node does not require",
-                    node.id,
-                )
-            continue
-        if isinstance(source, GraphInputSource):
-            if source.graph_input not in graph_input_names:
-                raise _refuse(
-                    WorkflowRefusalReason.UNDECLARED_GRAPH_INPUT,
-                    "inputs",
-                    f"input {entry.name!r} reads graph input "
-                    f"{source.graph_input!r}, which this graph does not declare",
-                    node.id,
-                )
-            continue
-        if source is None:
-            continue
-        _refuse_unordered_data_edge(node.id, entry.name, source, closure, graph)
+        if entry.source is not None:
+            _refuse_unbound_source(
+                node, graph, "inputs", f"input {entry.name!r}", entry.source, closure
+            )
+
+
+def _refuse_unbound_source(
+    node: WorkflowNodeV3,
+    graph: WorkflowGraphV3,
+    field: str,
+    subject: str,
+    source: InputSource,
+    closure: frozenset[str],
+) -> None:
+    """Hold one declared read to the boundary of the node that declared it.
+
+    Every source form a document may write is bound here, so a reader that
+    arrives later — a round's handover seed, say — obeys the rules an input
+    already obeys instead of growing a second, weaker owner.
+    """
+    if isinstance(source, ContextEntrySource):
+        if source.context not in _declared_context_names(node):
+            raise _refuse(
+                WorkflowRefusalReason.UNDECLARED_CONTEXT,
+                field,
+                f"{subject} reads context {source.context!r}, "
+                "which this node does not require",
+                node.id,
+            )
+        return
+    if isinstance(source, GraphInputSource):
+        if source.graph_input not in {entry.name for entry in graph.graph_inputs}:
+            raise _refuse(
+                WorkflowRefusalReason.UNDECLARED_GRAPH_INPUT,
+                field,
+                f"{subject} reads graph input "
+                f"{source.graph_input!r}, which this graph does not declare",
+                node.id,
+            )
+        return
+    _refuse_unordered_data_edge(node.id, field, subject, source, closure, graph)
 
 
 def _refuse_unordered_data_edge(
     node_id: str,
-    input_name: str,
+    field: str,
+    subject: str,
     source: NodeOutputSource | NodeReceiptSource,
     closure: frozenset[str],
     graph: WorkflowGraphV3,
@@ -473,25 +529,25 @@ def _refuse_unordered_data_edge(
     if source.node not in {node.id for node in graph.nodes}:
         raise _refuse(
             WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE,
-            "inputs",
-            f"input {input_name!r} reads node {source.node!r}, which is not declared",
+            field,
+            f"{subject} reads node {source.node!r}, which is not declared",
             node_id,
         )
     if source.node not in closure:
         raise _refuse(
             WorkflowRefusalReason.DATA_EDGE_OUTSIDE_CLOSURE,
-            "inputs",
-            f"input {input_name!r} reads node {source.node!r}, which no "
+            field,
+            f"{subject} reads node {source.node!r}, which no "
             "depends_on edge orders before this node",
             node_id,
         )
     if isinstance(source, NodeOutputSource):
         _refuse_undeclared_output(
             node_id,
-            "inputs",
+            field,
             source,
             graph,
-            f"input {input_name!r} reads",
+            f"{subject} reads",
         )
 
 
@@ -510,6 +566,67 @@ def _refuse_undeclared_output(
             f"{subject} output {source.output!r}, which node "
             f"{source.node!r} does not declare",
             node_id,
+        )
+
+
+def _declared_reads(node: WorkflowNodeV3) -> tuple[InputSource, ...]:
+    """Every source this node reads, whichever field declared it.
+
+    A round's handover seed is as much a read of the graph as an input is, so
+    the boundary rules count it instead of calling its order unread.
+    """
+    seeds = (
+        tuple(entry.seed for entry in node.iterate.carry)
+        if isinstance(node, SubworkflowNodeV3) and node.iterate is not None
+        else ()
+    )
+    return (
+        tuple(entry.source for entry in node.inputs if entry.source is not None) + seeds
+    )
+
+
+def _refuse_broken_iteration(node: WorkflowNodeV3, graph: WorkflowGraphV3) -> None:
+    """Bound one declared iteration, as far as the document alone can judge it.
+
+    The child's own boundary is not readable here, so what this refuses is what
+    the document contradicts by itself. Whether the child declares the result
+    the green condition reads is the binding step's refusal, not this one.
+    """
+    if not isinstance(node, SubworkflowNodeV3) or node.iterate is None:
+        return
+    iterate = node.iterate
+    if not 1 <= iterate.maximum_rounds <= MAXIMUM_SIGNED_INT64:
+        raise _refuse(
+            WorkflowRefusalReason.UNBOUNDED_ITERATION,
+            "maximum_rounds",
+            f"{iterate.maximum_rounds} is no round count; a bounded iteration "
+            f"declares 1..{MAXIMUM_SIGNED_INT64} rounds",
+            node.id,
+        )
+    for output in node.outputs:
+        if (
+            output.name == iterate.until.output
+            and output.schema_reference != iterate.until.schema_reference
+        ):
+            raise _refuse(
+                WorkflowRefusalReason.ITERATION_GREEN_CONDITION_UNPROVABLE,
+                "iterate",
+                f"the green condition reads {iterate.until.output!r} under another "
+                "schema revision than this node declares for it",
+                node.id,
+            )
+    duplicate = _first_duplicate(entry.name for entry in iterate.carry)
+    if duplicate is not None:
+        raise _refuse(
+            WorkflowRefusalReason.ITERATION_CARRY_UNBOUND,
+            "iterate",
+            f"{duplicate!r} is carried into the next round twice",
+            node.id,
+        )
+    closure = graph.dependency_closure(node.id)
+    for entry in iterate.carry:
+        _refuse_unbound_source(
+            node, graph, "iterate", f"carry {entry.name!r}", entry.seed, closure
         )
 
 
@@ -547,10 +664,10 @@ def _refuse_broken_graph_boundary(graph: WorkflowGraphV3) -> None:
                 f"{duplicate!r} is declared twice",
             )
     read_graph_inputs = {
-        entry.source.graph_input
+        source.graph_input
         for node in graph.nodes
-        for entry in node.inputs
-        if isinstance(entry.source, GraphInputSource)
+        for source in _declared_reads(node)
+        if isinstance(source, GraphInputSource)
     }
     for graph_input in graph.graph_inputs:
         if graph_input.name not in read_graph_inputs:
@@ -586,6 +703,11 @@ def _refuse_broken_graph_boundary(graph: WorkflowGraphV3) -> None:
         )
 
 
+_ITERATION_FIELD_REFUSALS: Mapping[str, WorkflowRefusalReason] = {
+    "maximum_rounds": WorkflowRefusalReason.UNBOUNDED_ITERATION,
+    "seed": WorkflowRefusalReason.ITERATION_CARRY_UNBOUND,
+}
+
 _VOCABULARY_FIELDS = frozenset(
     field.alias or name
     for model in (
@@ -599,6 +721,9 @@ _VOCABULARY_FIELDS = frozenset(
         NodeOutput,
         GraphInput,
         GraphOutput,
+        IterateBlock,
+        IterationGreenCondition,
+        IterationCarry,
         RequiredContextEntry,
         AvailableContextEntry,
         VersionedReference,
@@ -698,6 +823,12 @@ def _field_name(location: Sequence[str | int]) -> str:
 
 
 def _reason_for(error_type: str, field: str) -> WorkflowRefusalReason:
+    # An iteration field that never parses is refused under the token that names
+    # what it costs — an unbounded loop, an unbound handover — rather than under
+    # the shape it happened to break, which no author can act on.
+    named = _ITERATION_FIELD_REFUSALS.get(field)
+    if named is not None:
+        return named
     if error_type == "missing":
         return WorkflowRefusalReason.MISSING_FIELD
     if error_type != "extra_forbidden":

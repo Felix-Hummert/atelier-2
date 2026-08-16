@@ -1,9 +1,13 @@
 # ADR 0013: A bounded `iterate` block repeats a subworkflow until a receipt says green
 
-- Status: PROPOSED 2026-08-16 — decision only, nothing implemented
+- Status: ACCEPTED 2026-08-16 — the document surface below is implemented; binding,
+  executability and the durable rounds are not
 - Date: 2026-08-16, written with the three corrections of the independent deputy
   review bound into the record before its first line rather than after it, because
-  a record is the one text the next reader does not re-derive
+  a record is the one text the next reader does not re-derive; amended 2026-08-16
+  while the document surface was being built, with the refusal vocabulary reduced
+  from four minted tokens to three — the build showed the fourth was already owned
+  (see "Refusal vocabulary")
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   whose "Nodes sind konfigurierbar" and "Nach einem terminalen Node-Receipt startet
   der konfigurierte Folgeknoten automatisch" this record expresses and never
@@ -244,15 +248,30 @@ last round's disposition. No hang, no retry, no reinterpretation as succeeded.
 
 ### Refusal vocabulary
 
-Four parse- and binding-level tokens are minted by this construct, because document
-validity is its own:
+Three parse- and binding-level tokens are minted by this construct, because
+document validity is its own:
 
 | Token | Refused when |
 | --- | --- |
 | `unbounded_iteration` | `iterate` carries no `maximum_rounds`, or a value that is not a canonical positive integer in ADR 0008's range |
-| `iteration_green_condition_unprovable` | `until` names an output the child does not declare as a `graph_output`, or under a differing schema revision |
-| `iteration_carry_unbound` | a `carry` without `seed`, or whose names miss the child's declared boundary, or whose schema revisions disagree |
-| `iteration_on_non_subworkflow_node` | `iterate` appears on an `agent`, `deterministic`, `wait` or `action` node |
+| `iteration_green_condition_unprovable` | `until` names an output the child does not declare as a `graph_output`, or under a differing schema revision — including a revision the declaring node itself contradicts |
+| `iteration_carry_unbound` | a `carry` without `seed`, declared twice, or whose names miss the child's declared boundary, or whose schema revisions disagree |
+
+**A fourth token is deliberately not minted, and this paragraph is the amendment
+that removed it.** An earlier revision of this record named
+`iteration_on_non_subworkflow_node` for `iterate` appearing on an `agent`,
+`deterministic`, `wait` or `action` node. Building the document surface showed the
+refusal was already owned: `_VOCABULARY_FIELDS` is *derived* from the declared
+models, so a field belonging to one kind and written on another is refused as
+`refused_field`, naming the node and the field — exactly as `budget`,
+`retry`, `available_context` and `description` already are. A bespoke token would
+have refused one shape two ways and made `iterate` the odd field out. The rule the
+record wanted is unchanged and enforced; only the second name for it is gone.
+
+A carry's seed is held to the rules an input is held to — the same owner, not a
+second one — so a seed reading an unordered node, an undeclared output or an
+undeclared graph input is refused under the tokens that already name those
+failures. For the same reason a graph input read only by a seed counts as read.
 
 `maximum_rounds` has no default and no central cap. An absent bound is refused
 before storage, in the same spirit ADR 0008 applies to budgets: an absent field is
@@ -274,7 +293,7 @@ declarer".
 
 1. **This record:** the author surface, the denomination, the green definition and
    the refusal vocabulary. No runtime, no format change yet, no API change.
-2. **Document surface:** `iterate` parses as a closed model, the four tokens bite,
+2. **Document surface:** `iterate` parses as a closed model, the three tokens bite,
    and the preview names each iteration node with its bound and its green condition.
    No durable write, no provider, no run.
 3. **Binding and executability:** the `until` and `carry` schema revisions resolve

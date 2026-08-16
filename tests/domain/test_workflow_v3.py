@@ -14,7 +14,7 @@ from atelier2.adapters.yaml_workflows import (
     parse_workflow_document,
 )
 from atelier2.contracts.runs import WorkflowRevision
-from atelier2.contracts.workflow_refusals import WorkflowRefusalReason
+from atelier2.contracts.workflow_refusals import WorkflowRefusal, WorkflowRefusalReason
 from atelier2.contracts.workflows_v3 import (
     MAXIMUM_DOCUMENT_DESCRIPTION_BYTES,
     MAXIMUM_DOCUMENT_NAME_BYTES,
@@ -168,6 +168,25 @@ def without_line(line: str, document: bytes = DOCUMENT) -> bytes:
     return document.replace(f"{line}\n".encode(), b"", 1)
 
 
+GREEN_CONDITION = (
+    "{output: rehearsal, schema: {ref: review_verdict, revision: schema-verdict}}"
+)
+CARRY = (
+    "[{name: prior_verdict, from_output: rehearsal, "
+    "seed: {node: implement, output: candidate}}]"
+)
+
+
+def iterate_line(
+    bound: str = "maximum_rounds: 4",
+    until: str = GREEN_CONDITION,
+    carry: str = CARRY,
+) -> str:
+    """One `iterate` block as a flow mapping, so a case differs only in its data."""
+    declared = [part for part in (bound, f"until: {until}", f"carry: {carry}") if part]
+    return "iterate: {" + ", ".join(declared) + "}"
+
+
 def test_every_node_kind_of_the_record_parses_into_its_own_closed_model() -> None:
     parsed = graph()
 
@@ -195,6 +214,33 @@ def test_every_node_kind_of_the_record_parses_into_its_own_closed_model() -> Non
         operation.ref for operation in builder.available_context[0].read_operations
     ] == ["search"]
     assert builder.outputs[0].schema_reference.revision == "schema-candidate"
+
+
+@pytest.mark.proves("a-bounded-iteration-is-declarable-and-reads-back-as-authored")
+def test_a_bounded_iteration_reads_back_with_its_bound_green_condition_and_handover() -> (
+    None
+):
+    parsed = graph(with_node_line("rehearse", iterate_line()))
+
+    looping = parsed.node("rehearse")
+    assert isinstance(looping, SubworkflowNodeV3)
+    iterate = looping.iterate
+    assert iterate is not None
+    assert iterate.maximum_rounds == 4
+    assert iterate.until.output == "rehearsal"
+    assert iterate.until.schema_reference.revision == "schema-verdict"
+    handover = iterate.carry[0]
+    assert (handover.name, handover.from_output) == ("prior_verdict", "rehearsal")
+    assert isinstance(handover.seed, NodeOutputSource)
+    assert (handover.seed.node, handover.seed.output) == ("implement", "candidate")
+
+
+@pytest.mark.proves("a-bounded-iteration-is-declarable-and-reads-back-as-authored")
+def test_a_subworkflow_that_declares_no_iteration_stays_a_single_child_run() -> None:
+    looping = graph().node("rehearse")
+
+    assert isinstance(looping, SubworkflowNodeV3)
+    assert looping.iterate is None
 
 
 def test_the_five_input_sources_carry_their_declared_shape() -> None:
@@ -759,6 +805,141 @@ REFUSALS: dict[str, tuple[bytes, WorkflowRefusalReason, str | None, str]] = {
         "outputs",
     ),
 }
+
+
+def refusal_of(document: bytes) -> WorkflowRefusal:
+    with pytest.raises(InvalidWorkflowDocument) as raised:
+        parse_workflow_document(document)
+    refusal = raised.value.refusal
+    assert refusal is not None
+    return refusal
+
+
+@pytest.mark.proves("an-iteration-without-a-bound-is-refused-by-name")
+@pytest.mark.parametrize(
+    "bound",
+    (
+        "",
+        "maximum_rounds: 0",
+        "maximum_rounds: -1",
+        "maximum_rounds: 9223372036854775808",
+        "maximum_rounds: four",
+        "maximum_rounds: 4.0",
+        "maximum_rounds: true",
+    ),
+    ids=(
+        "absent",
+        "no round at all",
+        "negative",
+        "above the declared range",
+        "a word",
+        "a fraction",
+        "a boolean",
+    ),
+)
+def test_an_iteration_that_declares_no_honest_round_bound_is_refused(
+    bound: str,
+) -> None:
+    refusal = refusal_of(with_node_line("rehearse", iterate_line(bound=bound)))
+
+    assert refusal.reason is WorkflowRefusalReason.UNBOUNDED_ITERATION
+    assert (refusal.node, refusal.field) == ("rehearse", "maximum_rounds")
+
+
+@pytest.mark.proves("a-green-condition-the-document-contradicts-is-refused-by-name")
+def test_a_green_condition_under_another_schema_revision_than_the_node_declares_is_refused() -> (
+    None
+):
+    contradicted = with_node_line(
+        "rehearse",
+        iterate_line(
+            until=(
+                "{output: rehearsal, "
+                "schema: {ref: review_verdict, revision: schema-other}}"
+            )
+        ),
+    )
+
+    refusal = refusal_of(contradicted)
+
+    assert refusal.reason is WorkflowRefusalReason.ITERATION_GREEN_CONDITION_UNPROVABLE
+    assert (refusal.node, refusal.field) == ("rehearse", "iterate")
+
+
+@pytest.mark.proves("a-round-handover-unbound-in-the-document-is-refused-by-name")
+@pytest.mark.parametrize(
+    ("carry", "reason", "field"),
+    (
+        (
+            "[{name: prior_verdict, from_output: rehearsal}]",
+            WorkflowRefusalReason.ITERATION_CARRY_UNBOUND,
+            "seed",
+        ),
+        (
+            (
+                "[{name: prior_verdict, from_output: rehearsal, "
+                "seed: {node: implement, output: candidate}}, "
+                "{name: prior_verdict, from_output: rehearsal, "
+                "seed: {node: implement, output: candidate}}]"
+            ),
+            WorkflowRefusalReason.ITERATION_CARRY_UNBOUND,
+            "iterate",
+        ),
+        (
+            (
+                "[{name: prior_verdict, from_output: rehearsal, "
+                "seed: {node: code_review, output: findings}}]"
+            ),
+            WorkflowRefusalReason.DATA_EDGE_OUTSIDE_CLOSURE,
+            "iterate",
+        ),
+        (
+            (
+                "[{name: prior_verdict, from_output: rehearsal, "
+                "seed: {node: implement, output: absent}}]"
+            ),
+            WorkflowRefusalReason.UNDECLARED_OUTPUT,
+            "iterate",
+        ),
+        (
+            (
+                "[{name: prior_verdict, from_output: rehearsal, "
+                "seed: {graph_input: rumour}}]"
+            ),
+            WorkflowRefusalReason.UNDECLARED_GRAPH_INPUT,
+            "iterate",
+        ),
+    ),
+    ids=(
+        "no seed for the first round",
+        "the same handover twice",
+        "seeded outside the closure",
+        "seeded from an undeclared output",
+        "seeded from an undeclared graph input",
+    ),
+)
+def test_a_round_handover_the_document_cannot_bind_is_refused(
+    carry: str, reason: WorkflowRefusalReason, field: str
+) -> None:
+    refusal = refusal_of(with_node_line("rehearse", iterate_line(carry=carry)))
+
+    assert refusal.reason is reason
+    assert (refusal.node, refusal.field) == ("rehearse", field)
+
+
+@pytest.mark.proves("iteration-is-refused-on-a-node-kind-that-cannot-carry-it")
+@pytest.mark.parametrize(
+    "node_id",
+    ("implement", "approve", "merge_findings", "publish_report"),
+    ids=("agent", "wait", "deterministic", "action"),
+)
+def test_iteration_is_refused_on_every_node_kind_that_runs_no_child(
+    node_id: str,
+) -> None:
+    refusal = refusal_of(with_node_line(node_id, iterate_line()))
+
+    assert refusal.reason is WorkflowRefusalReason.REFUSED_FIELD
+    assert (refusal.node, refusal.field) == (node_id, "iterate")
 
 
 @pytest.mark.parametrize(
