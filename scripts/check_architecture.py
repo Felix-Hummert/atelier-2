@@ -13,7 +13,7 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_FLOOR = 107
+EXPECTED_SOURCE_MODULE_FLOOR = 109
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
@@ -494,12 +494,12 @@ def _calls_reaching_ports(module: ast.Module) -> dict[str, tuple[str, ...]]:
 
 
 def port_sentence_problems(project_root: Path) -> tuple[str, ...]:
-    """Any durable port that words an answer for the layer above it.
+    """Ports that mention one of HTTP_SENTENCE_MARKERS: API limits, HTTP, status code.
 
-    A port names what happened; whoever set the bound says what that means to a
-    caller. A sentence about "API limits" living under `ports` is a layer
-    explaining a decision it does not make, and the reader downstream then has to
-    keep that wording alive forever.
+    The check is that three-marker heuristic, not every sentence a port could
+    write. A plain-English refusal without those markers is outside this gate.
+    A port still must not explain a decision it does not make; review catches
+    what the markers miss.
     """
     problems: list[str] = []
     for module_path in sorted((project_root / PORT_PACKAGE_DIRECTORY).rglob("*.py")):
