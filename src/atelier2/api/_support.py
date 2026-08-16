@@ -31,8 +31,10 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
+from atelier2.contracts.run_projections import (
+    RunProjection,
+)
 from atelier2.contracts.runs import RunId
-from atelier2.ports.run_queries import RunProjection
 
 
 def resource_response(resource: BaseModel, status: HTTPStatus) -> JSONResponse:

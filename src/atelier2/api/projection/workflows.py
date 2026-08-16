@@ -32,6 +32,9 @@ from atelier2.contracts.effects import (
     OperatorFoundEffect,
     ReconcileCommand,
 )
+from atelier2.contracts.workflow_projections import (
+    WorkflowRevisionProjection,
+)
 from atelier2.contracts.workflows import (
     ActionNode,
     AgentNode,
@@ -43,7 +46,6 @@ from atelier2.contracts.workflows import (
     WorkflowNodeV2,
 )
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
-from atelier2.ports.workflow_revisions import WorkflowRevisionProjection
 
 
 def node_resource(node: WorkflowNode | WorkflowNodeV2) -> NodeResource | NodeResourceV2:

@@ -25,9 +25,13 @@ from dataclasses import dataclass
 from atelier2.contracts.agent_attempts import AgentAttemptState
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_events import (
+    PersistedRunEvent,
+)
 from atelier2.contracts.run_projections import (
     NodeState,
     PublicAgentAttemptState,
+    RunProjection,
     public_agent_attempt_state,
 )
 from atelier2.contracts.runs import RunState
@@ -37,8 +41,6 @@ from atelier2.contracts.workflows import (
     AnyWorkflowGraph,
     AnyWorkflowNode,
 )
-from atelier2.ports.run_events import PersistedRunEvent
-from atelier2.ports.run_queries import RunProjection
 
 _NODE_STATES_ENDED_BY_EVENT: Mapping[RunEventKind, NodeState] = {
     RunEventKind.AGENT_COMPLETED: NodeState.SUCCEEDED,

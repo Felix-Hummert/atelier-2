@@ -19,9 +19,13 @@ from atelier2.api.wire.resources import (
     WorkflowRevisionPageResource,
     WorkflowRevisionSummaryResource,
 )
+from atelier2.contracts.run_projections import (
+    RunProjection,
+)
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
-from atelier2.ports.run_queries import RunProjection
-from atelier2.ports.workflow_revisions import WorkflowRevisionProjection
+from atelier2.contracts.workflow_projections import (
+    WorkflowRevisionProjection,
+)
 from tests.api.test_openapi import empty_ports
 from tests.scenarios.api import SSE_COMPLETE_HISTORY, api_limits, event_poll_backoff
 

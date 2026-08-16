@@ -3,26 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from atelier2.contracts.effects import EffectReceipt
-from atelier2.contracts.executions import RunEvent
+from atelier2.contracts.run_events import RunEventPage
 from atelier2.contracts.runs import RunId
-from atelier2.ports.run_queries import RunQueryMissing
+from atelier2.ports.run_queries import (
+    RunQueryMissing,
+)
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
 )
-
-
-@dataclass(frozen=True)
-class PersistedRunEvent:
-    event: RunEvent
-    receipt: EffectReceipt | None
-    workflow_format_version: int = 1
-
-    def __post_init__(self) -> None:
-        if self.workflow_format_version not in (1, 2):
-            raise ValueError("persisted event workflow format must be V1 or V2")
 
 
 @dataclass(frozen=True)
@@ -40,12 +30,6 @@ class CursorAhead:
 @dataclass(frozen=True)
 class EventHistoryCorrupt:
     pass
-
-
-@dataclass(frozen=True)
-class RunEventPage:
-    events: tuple[PersistedRunEvent, ...]
-    terminal_seen: bool
 
 
 type PrepareRunEventStreamResult = (

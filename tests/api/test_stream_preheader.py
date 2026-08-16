@@ -21,7 +21,9 @@ from atelier2.ports.run_events import (
     ReadRunEventPageResult,
     StreamReady,
 )
-from atelier2.ports.run_queries import RunQueryMissing
+from atelier2.ports.run_queries import (
+    RunQueryMissing,
+)
 from tests.scenarios.api import (
     OneRunQueries,
     api_limits,

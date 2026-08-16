@@ -10,9 +10,13 @@ from atelier2.api.references import encode_event_cursor, encode_public_run_refer
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.effects import OperatorFoundEffect
 from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.run_events import (
+    PersistedRunEvent,
+)
+from atelier2.contracts.run_projections import (
+    RunProjection,
+)
 from atelier2.contracts.runs import RunId
-from atelier2.ports.run_events import PersistedRunEvent
-from atelier2.ports.run_queries import RunProjection
 
 
 def durable_projection_limit(limits: ApiLimits) -> WorkflowPublicationLimits:

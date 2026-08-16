@@ -61,6 +61,9 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_projections import (
+    RunPage,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
@@ -71,7 +74,9 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
-from atelier2.ports.run_queries import RunFound, RunPage
+from atelier2.ports.run_queries import (
+    RunFound,
+)
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,

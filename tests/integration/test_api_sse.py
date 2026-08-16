@@ -64,9 +64,13 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
+from atelier2.contracts.run_events import (
+    RunEventPage,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevision
-from atelier2.ports.run_events import RunEventPage
-from atelier2.ports.run_queries import RunFound
+from atelier2.ports.run_queries import (
+    RunFound,
+)
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,

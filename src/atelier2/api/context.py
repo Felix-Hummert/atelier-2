@@ -38,8 +38,12 @@ from atelier2.ports.durable_runs import (
     TransactionalWaitAnswerer,
 )
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
-from atelier2.ports.run_events import RunEventQueries
-from atelier2.ports.run_queries import RunQueries
+from atelier2.ports.run_events import (
+    RunEventQueries,
+)
+from atelier2.ports.run_queries import (
+    RunQueries,
+)
 from atelier2.ports.workflow_revisions import (
     WorkflowDocumentParser,
     WorkflowRevisionPublisher,

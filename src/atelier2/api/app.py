@@ -40,7 +40,7 @@ from atelier2.application.read_workflow_revisions import (
 )
 from atelier2.application.reconcile_run import reconcile_run
 from atelier2.application.start_published_run import start_published_run
-from atelier2.ports.workflow_revisions import (
+from atelier2.contracts.workflow_projections import (
     EnrichedPageBudget,
 )
 
