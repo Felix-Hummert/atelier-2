@@ -8,7 +8,8 @@ Distilled-From: 5301973340 — the quoted operator sentence (rule 01)
                 #22 body, sha256
                 9cf109a2f2915116a8c32f6d74b46579a96513932ca2d03af1814a36cbac43e7
                 #6 — named, versioned, proven chains (Intent)
-                ADR 0007 Decisions 1, 3 and 4 and section 9 (rules 02-05)
+                ADR 0007 Decisions 1, 2, 3 and 4 and section 9 (rules 02-05,
+                open questions)
                 #63 — owner of resolver, admission and picker (Offen)
 Approved-By:    none
 ```
@@ -44,8 +45,8 @@ Status:     DRAFT
 Quelle:     DESK — [ADR 0007](../decisions/0007-catalog-identity.md) Decision 1 und Abschnitt 9
 Begründung: Zwei Dinge zu zwei Zeitpunkten, und das Trennen ist der ganze Satz. Gewählt wird, was den Namen über ein Neu-Publizieren hinweg behält — die Lineage. Aufgelöst wird der Name nach Abschnitt 9 **genau einmal, zur Autorenzeit, bevor die Run-Konfigurations-Revision publiziert wird**; danach existieren nur noch Ids und Hashes. Gebunden ist deshalb der exakte Revisions-Hash, nie der Name — sonst bindet ein bewegter Head einen laufenden Auftrag still um.
 Journeys:
-Beweis:     UNGEBUNDEN
-Offen:      - Der Auflöser (`resolve_name`, `resolve_reference`) ist als Port deklariert, im Store aber nicht implementiert (Eigentümer: #63, Ziel: Bahn B)
+Beweis:     a-name-reaches-exactly-the-bytes-it-resolved-to
+Offen:
 
 ### REQ-KATALOG-03: Ein Anzeigename aus genau 64 hexadezimalen Kleinbuchstaben wird beim Namen verweigert.
 Status:     DRAFT
@@ -53,7 +54,7 @@ Quelle:     DESK — [ADR 0007](../decisions/0007-catalog-identity.md) Decision 
 Begründung: Otherwise a typed name and a lineage id cannot be told apart. The refusal is at the name, not after a second discriminator.
 Journeys:
 Beweis:     UNGEBUNDEN
-Offen:      - Gleicher Eigentümer wie REQ-KATALOG-02: die Verweigerung sitzt im noch nicht implementierten Namensweg (Eigentümer: #63, Ziel: Bahn B)
+Offen:      - Die Verweigerung ist implementiert (der Anzeigename-Vertrag verweigert 64 Hex), aber kein Akzeptanz-Satz spricht sie aus; er wird in dem Zug deklariert, der ihn beweist (Eigentümer: #22, Ziel: Akzeptanz-Deklaration)
 
 ### REQ-KATALOG-04: Name und Beschreibung einer **publizierten** Revision kommen aus ihren authored Bytes, oder sie fehlen ehrlich.
 Status:     DRAFT
@@ -71,7 +72,7 @@ Quelle:     DESK — [ADR 0007](../decisions/0007-catalog-identity.md) Decision 
 Begründung: Publication and admission are two acts. The operator must not be offered a name that the catalog has not admitted.
 Journeys:
 Beweis:     UNGEBUNDEN
-Offen:      - Aufnahme-Befehl und Picker-Mitgliedschaft fehlen; die Tabellen dafür stehen seit #182 (Eigentümer: #63, Ziel: Bahn B)
+Offen:      - Aufnahme-Befehl und Picker-Mitgliedschaft fehlen; der Store kann die Aufnahme (`admit_member`), aber keine Route oder ein Befehl bietet sie an (Eigentümer: #63, Ziel: Bahn B)
 
 ## Open questions
 
@@ -81,12 +82,14 @@ Wann eine Quelländerung zu einer neuen aufgenommenen Revision wird, steht hier
 nicht mehr als offene Frage: [ADR 0007](../decisions/0007-catalog-identity.md)
 Decision 2 entscheidet Scan, Intake und Aufnahme und besitzt sie allein.
 
-Der Rest der Schuld, an `bd4883d2` nachgemessen statt aus der Erinnerung
+Der Rest der Schuld, an main `17976531` nachgemessen statt aus der Erinnerung
 geschrieben: die Lineage-Tabellen `catalog_lineages` und
-`catalog_lineage_members` **stehen** (mit #182 gelandet). Offen sind der
-Auflöser im Store — `resolve_name` und `resolve_reference` sind als Port
-deklariert und haben keine Implementierung —, der Aufnahme-Befehl und der
-Picker, der eine Mitgliedschaft und einen Namen anbietet.
+`catalog_lineage_members` **stehen** (mit #182 gelandet), und der Auflöser
+**steht** ebenfalls — der Store implementiert `resolve`, `resolve_reference`,
+`resolve_name` und `admit_member`, und die 64-Hex-Verweigerung sitzt im
+Anzeigename-Vertrag (mit #187/#190 gelandet). Offen bleiben der
+Aufnahme-Befehl — keine Route bietet die Aufnahme an — und der Picker, der
+eine Mitgliedschaft und einen Namen anbietet.
 
 ## Acceptance
 
@@ -94,5 +97,7 @@ REQ-KATALOG-04 is bound to three sentences declared in
 `acceptance/22-where-named-workflows-live.toml`:
 `a-published-revision-is-listed-with-the-name-its-author-wrote`,
 `a-format-that-declares-no-name-is-listed-as-unnamed` and
-`the-description-is-read-from-the-published-bytes-and-from-nowhere-else`. It is
-the only bound rule; REQ-KATALOG-01, 02, 03 and 05 are `UNGEBUNDEN`.
+`the-description-is-read-from-the-published-bytes-and-from-nowhere-else`.
+REQ-KATALOG-02 is bound to `a-name-reaches-exactly-the-bytes-it-resolved-to`,
+declared in `acceptance/63-a-named-workflow-starts-in-process.toml`.
+REQ-KATALOG-01, 03 and 05 are `UNGEBUNDEN`.
