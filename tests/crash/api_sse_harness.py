@@ -28,7 +28,7 @@ app = create_app(
     source_tree=os.environ["ATELIER2_TEST_SOURCE_TREE"],
     ports=ApiPorts(
         DbosWorkflowRevisionPublisher(engine),
-        DbosDurableRunStarter(engine, settings),
+        DbosDurableRunStarter(engine, settings, AgentExecutorRegistry()),
         DbosWaitAnswerer(engine, settings.application_version),
         DbosEffectReconcileCommander(engine, settings),
         queries,

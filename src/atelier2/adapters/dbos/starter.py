@@ -80,15 +80,11 @@ class DbosDurableRunStarter:
         self,
         engine: Engine,
         settings: DbosRuntimeSettings,
-        agent_executor_registry: AgentExecutorRegistry | None = None,
+        agent_executor_registry: AgentExecutorRegistry,
     ) -> None:
         self._engine = engine
         self._settings = settings
-        self._agent_executor_registry = (
-            AgentExecutorRegistry()
-            if agent_executor_registry is None
-            else agent_executor_registry
-        )
+        self._agent_executor_registry = agent_executor_registry
 
     def start_published(
         self, request: AnyStartPublishedRunRequest

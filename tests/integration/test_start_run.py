@@ -50,7 +50,12 @@ from atelier2.application.start_published_run import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from tests.scenarios.runs import publish_revision, start_published_v1_run
+from tests.scenarios.api import permissive_projection_limit
+from tests.scenarios.runs import (
+    NO_AGENT_EXECUTORS,
+    publish_revision,
+    start_published_v1_run,
+)
 from tests.scenarios.runtime import exact_output_runtime
 
 WORKFLOW_DOCUMENT = b"""format_version: 1
@@ -75,7 +80,10 @@ def storage(tmp_path: Path) -> Iterator[tuple[DbosRuntime, DbosDurableRunStarter
     )
     runtime.initialize_storage()
     try:
-        yield runtime, DbosDurableRunStarter(runtime.engine, runtime.settings)
+        yield (
+            runtime,
+            DbosDurableRunStarter(runtime.engine, runtime.settings, NO_AGENT_EXECUTORS),
+        )
     finally:
         runtime.close()
 
@@ -174,6 +182,22 @@ def test_raise_after_real_enqueue_rolls_back_the_run_and_its_workflow(
     assert count(runtime.engine, "workflow_status") == 0
 
 
+@pytest.mark.proves("no-write-path-can-be-reached-with-a-dependency-left-out")
+def test_a_starter_cannot_be_built_without_the_registry_it_binds_against(
+    storage: tuple[DbosRuntime, DbosDurableRunStarter],
+) -> None:
+    """There is no starter with an empty registry to construct by accident.
+
+    Leaving the registry out used to build one that attested nothing, so a bound
+    executor was missing rather than refused. It is now what a starter is made
+    of, and omitting it is not a permissive start — it is not a starter.
+    """
+    runtime, _starter = storage
+
+    with pytest.raises(TypeError):
+        DbosDurableRunStarter(runtime.engine, runtime.settings)  # type: ignore[call-arg]
+
+
 def test_invalid_graph_writes_no_revision_run_event_answer_or_dbos_workflow(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
@@ -184,6 +208,7 @@ def test_invalid_graph_writes_no_revision_run_event_answer_or_dbos_workflow(
         invalid,
         DbosWorkflowRevisionPublisher(runtime.engine),
         parse_workflow_document,
+        permissive_projection_limit(),
     )
 
     assert isinstance(result, PublicationInvalid)
