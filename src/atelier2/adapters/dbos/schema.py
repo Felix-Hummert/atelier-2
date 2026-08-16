@@ -10,13 +10,29 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-SCHEMA_VERSION = 8
-_MIGRATABLE_SCHEMA_VERSION = 7
-_VERSION_SEVEN_CONFIGURATION_TABLE = "agent_configuration_revisions_v7"
+
+@dataclass(frozen=True)
+class ProductSchemaHandoff:
+    version: int
+    fingerprint_sha256: str
+
+
+SCHEMA_VERSION = 9
+_VERSION_SEVEN = 7
+_VERSION_EIGHT = 8
+_MIGRATABLE_SCHEMA_VERSIONS = frozenset({_VERSION_SEVEN, _VERSION_EIGHT})
+# V9 product tables equal V8: #15 already landed the process contract on V8.
+# The version bump is the explicit handoff #63 consumes. No catalog tables.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
+    9: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
 }
+PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    SCHEMA_VERSION,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[SCHEMA_VERSION],
+)
+_VERSION_SEVEN_CONFIGURATION_TABLE = "agent_configuration_revisions_v7"
 
 metadata = sa.MetaData()
 
@@ -1019,7 +1035,9 @@ def _require_supported_versions(versions: Sequence[int]) -> int:
     normalized = tuple(versions)
     if normalized in {(1,), (2,), (3,), (4,), (5,), (6,)}:
         raise MigrationRequired(normalized[0])
-    if normalized not in {(_MIGRATABLE_SCHEMA_VERSION,), (SCHEMA_VERSION,)}:
+    if len(normalized) != 1 or normalized[0] not in (
+        _MIGRATABLE_SCHEMA_VERSIONS | {SCHEMA_VERSION}
+    ):
         raise UnsupportedSchemaVersion(normalized)
     return normalized[0]
 
@@ -1249,7 +1267,7 @@ def _schema_version_from_connection(connection: sa.Connection) -> int | None:
 
 def _migrate_version_seven_to_eight(connection: sa.Connection) -> None:
     raw_connection = _sqlite_connection(connection)
-    _require_product_shape(raw_connection, _MIGRATABLE_SCHEMA_VERSION)
+    _require_product_shape(raw_connection, _VERSION_SEVEN)
     existing_tables = set(sa.inspect(connection).get_table_names())
     if _VERSION_SEVEN_CONFIGURATION_TABLE in existing_tables:
         raise UnsupportedSchemaVersion(
@@ -1304,14 +1322,27 @@ def _migrate_version_seven_to_eight(connection: sa.Connection) -> None:
     foreign_key_failures = tuple(connection.exec_driver_sql("PRAGMA foreign_key_check"))
     if foreign_key_failures:
         raise RuntimeError("V7 to V8 migration broke a durable foreign key")
-    _require_product_shape(raw_connection, SCHEMA_VERSION)
+    _require_product_shape(raw_connection, _VERSION_EIGHT)
     updated = connection.execute(
         atelier_schema_versions.update()
-        .where(atelier_schema_versions.c.version == _MIGRATABLE_SCHEMA_VERSION)
-        .values(version=SCHEMA_VERSION)
+        .where(atelier_schema_versions.c.version == _VERSION_SEVEN)
+        .values(version=_VERSION_EIGHT)
     )
     if updated.rowcount != 1:
         raise RuntimeError("V7 to V8 migration lost its schema-version CAS")
+
+
+def _migrate_version_eight_to_nine(connection: sa.Connection) -> None:
+    raw_connection = _sqlite_connection(connection)
+    _require_product_shape(raw_connection, _VERSION_EIGHT)
+    _require_product_shape(raw_connection, SCHEMA_VERSION)
+    updated = connection.execute(
+        atelier_schema_versions.update()
+        .where(atelier_schema_versions.c.version == _VERSION_EIGHT)
+        .values(version=SCHEMA_VERSION)
+    )
+    if updated.rowcount != 1:
+        raise RuntimeError("V8 to V9 migration lost its schema-version CAS")
 
 
 def initialize_schema(engine: Engine) -> None:
@@ -1321,8 +1352,8 @@ def initialize_schema(engine: Engine) -> None:
     with engine.connect() as connection:
         version_before_lock = _schema_version_from_connection(connection)
         connection.commit()
-        migration_candidate = version_before_lock == _MIGRATABLE_SCHEMA_VERSION
-        if migration_candidate:
+        needs_table_rebuild = version_before_lock == _VERSION_SEVEN
+        if needs_table_rebuild:
             connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
             connection.exec_driver_sql("PRAGMA legacy_alter_table=ON")
             connection.commit()
@@ -1344,12 +1375,15 @@ def initialize_schema(engine: Engine) -> None:
                     _create_triggers(connection, _PRODUCT_TRIGGERS.values())
 
                 locked_version = _schema_version_from_connection(connection)
-                if locked_version == _MIGRATABLE_SCHEMA_VERSION:
-                    if not migration_candidate:
+                if locked_version == _VERSION_SEVEN:
+                    if not needs_table_rebuild:
                         raise UnsupportedSchemaVersion(
                             "V7 migration requires foreign keys disabled before lock"
                         )
                     _migrate_version_seven_to_eight(connection)
+                    locked_version = _VERSION_EIGHT
+                if locked_version == _VERSION_EIGHT:
+                    _migrate_version_eight_to_nine(connection)
                     locked_version = SCHEMA_VERSION
                 if locked_version != SCHEMA_VERSION:
                     raise UnsupportedSchemaVersion(locked_version)
@@ -1359,7 +1393,7 @@ def initialize_schema(engine: Engine) -> None:
                 connection.rollback()
                 raise
         finally:
-            if migration_candidate:
+            if needs_table_rebuild:
                 connection.exec_driver_sql("PRAGMA legacy_alter_table=OFF")
                 connection.exec_driver_sql("PRAGMA foreign_keys=ON")
                 connection.commit()
