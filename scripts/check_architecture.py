@@ -5,7 +5,7 @@ import importlib
 import sys
 import typing
 from collections import abc
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,44 +22,62 @@ EXPECTED_CONTRACT_NAMES = {
     "route-vocabulary": "Routes name no port type",
     "schema-owner": "JSON Schema evaluation stays inside one profile owner",
 }
+ROOT_PACKAGE = "atelier2"
 PORT_PACKAGE = "atelier2.ports"
 APPLICATION_PACKAGE = "atelier2.application"
 USE_CASE_RECORD_IMPORT = "atelier2.api.context"
 USE_CASE_RECORD_MODULE = "src/atelier2/api/context.py"
 USE_CASE_RECORD_NAME = "ApiUseCases"
 PORTS_RECORD_NAME = "ApiPorts"
+_UNREADABLE_OUTCOME_TYPES: set[str] = set()
+
+
+class _UnresolvedOutcome:
+    """A port whose fields could not be read, so nothing about it is proven."""
+
+
+_UNRESOLVED_OUTCOME = _UnresolvedOutcome()
+
+
+@dataclass(frozen=True, slots=True)
+class _Unreadable:
+    """A type outside `ports` whose fields this closure could not read."""
+
+    subject: Any
+
+    def __str__(self) -> str:
+        return f"{getattr(self.subject, '__module__', '?')}.{getattr(self.subject, '__qualname__', self.subject)}"
+
+
 ROUTE_PACKAGE = "src/atelier2/api/routes"
 ROUTE_CALLS_STILL_HOLDING_PORTS = {
-    "agents": frozenset(
-        {
-            "publish_auth_profile_revision_route",
-            "publish_agent_configuration_revision_route",
-        }
-    ),
-    "events": frozenset({"event_stream_route"}),
-    "revisions": frozenset({"publish_revision"}),
-    "runs": frozenset(
-        {
-            "start_run_route",
-            "cancel_agent_attempt_route",
-            "answer_run_route",
-            "reconcile_run_route",
-        }
-    ),
+    "agents": {
+        "publish_auth_profile_revision_route": ("agent_configuration_catalog",),
+        "publish_agent_configuration_revision_route": ("agent_configuration_catalog",),
+    },
+    "events": {"event_stream_route": ("run_event_queries",)},
+    "revisions": {
+        "publish_revision": ("workflow_document_parser", "workflow_revision_publisher")
+    },
+    "runs": {
+        "start_run_route": ("published_run_starter",),
+        "cancel_agent_attempt_route": ("agent_attempt_canceller",),
+        "answer_run_route": ("wait_answerer",),
+        "reconcile_run_route": ("reconcile_commander", "run_queries"),
+    },
 }
-"""The exact calls that have not been translated into use-cases yet.
+"""Every port a route still reaches, named down to the single access.
 
-Named per call rather than per module, because a module is not translated all at
-once: `events` legitimately keeps a port for the stream its B3 head still owns,
-and a whole-module exception would let the *read* beside it quietly take its port
-back while every proof stayed green. The unit of the exception is the unit of the
-work.
+The unit of the exception is the unit of the work, and the work is one access at a
+time. A module is not translated at once — `events` keeps the stream's port until
+its own head lands — and neither is a call: an allowlisted call that grows a
+*second* port read has taken back a decision it had already given up. So the
+declaration names which ports each call reaches, and the check compares the whole
+list rather than asking whether the call reaches one at all.
 
-Read in both directions: a call outside this map that reaches a port is red, and a
-call named here that reaches none is red too. A stale entry is a failure rather
-than a comfortable lie, exactly as `unmatched_ignore_imports_alerting = "error"`
-already reads the import contract. It shrinks to empty, and with the last entry it
-deletes itself.
+Read in both directions: an access this map does not name is red, and an access it
+names that no longer happens is red too. A stale entry is a failure rather than a
+comfortable lie. It shrinks to empty, and with the last entry it deletes itself.
 """
 EXPECTED_LAYER_ROWS = (
     "__main__",
@@ -215,6 +233,67 @@ def _owned_by(module: str, package: str) -> bool:
     return module == package or module.startswith(f"{package}.")
 
 
+def _is_a_port_capability(candidate: Any) -> bool:
+    """Whether this type is a store a holder could call, rather than data it read.
+
+    The two live side by side under `atelier2.ports`, and only one of them is the
+    danger. `RunQueries` is a protocol: whoever holds it can ask the store
+    anything. `RunProjection` is a frozen record the store already answered with —
+    a route is *supposed* to hold that, because rendering it is the route's job.
+
+    So the discriminator is the protocol, not the package. This is the reading the
+    sentence always had — a port is a capability — and not a narrowing to make a
+    finding go away: the mutation this rule exists for hands over `RunQueries`.
+    That two kinds of thing share one package is a real smell, reported to #87
+    rather than fixed here.
+    """
+    return getattr(candidate, "_is_protocol", False) and _owned_by(
+        getattr(candidate, "__module__", ""), PORT_PACKAGE
+    )
+
+
+def _carried_by(outcome: Any, seen: set[int]) -> Iterator[Any]:
+    """Every type a value of this outcome could carry, however deep it sits.
+
+    Naming an outcome of this application is not enough: the application layer may
+    read the ports, so an outcome is free to carry one as a payload and hand it on
+    unread by any rule that stops at the outer type. The closure is walked instead
+    — union members, generic arguments and the annotated fields of every type
+    reached — so a port inside the answer is a port the route was handed.
+    """
+    if id(outcome) in seen:
+        return
+    seen.add(id(outcome))
+    yield outcome
+    for argument in typing.get_args(outcome):
+        if isinstance(argument, list):
+            for element in argument:
+                yield from _carried_by(element, seen)
+        else:
+            yield from _carried_by(argument, seen)
+    value = getattr(outcome, "__value__", None)
+    if value is not None:
+        yield from _carried_by(value, seen)
+    if isinstance(outcome, type) and _owned_by(
+        getattr(outcome, "__module__", ""), ROOT_PACKAGE
+    ):
+        try:
+            fields = typing.get_type_hints(outcome)
+        except (NameError, TypeError, AttributeError):
+            # A type whose own fields cannot be read stops the walk here. Under
+            # `ports` that is refused outright — the danger lives there. Elsewhere
+            # it is carried out as a named residual instead of a silent gap, so
+            # every run prints what this closure could not see.
+            yield (
+                _UNRESOLVED_OUTCOME
+                if _owned_by(getattr(outcome, "__module__", ""), PORT_PACKAGE)
+                else _Unreadable(outcome)
+            )
+            return
+        for field in fields.values():
+            yield from _carried_by(field, seen)
+
+
 def use_case_record_problems(project_root: Path) -> tuple[str, ...]:
     """Every way the use-case record could hand a port back to a route.
 
@@ -230,6 +309,7 @@ def use_case_record_problems(project_root: Path) -> tuple[str, ...]:
     """
     record = _record_under_test(project_root)
     problems = list(_unannotated_fields(project_root))
+    unreadable = _UNREADABLE_OUTCOME_TYPES
     try:
         resolved = typing.get_type_hints(record)
     except (NameError, TypeError, AttributeError) as error:
@@ -264,6 +344,24 @@ def use_case_record_problems(project_root: Path) -> tuple[str, ...]:
                 f"{stated}, whose outcome was not declared in "
                 f"{APPLICATION_PACKAGE}; a route reads this layer's own answer"
             )
+            continue
+        carried = tuple(_carried_by(outcome, set()))
+        capabilities = [
+            carrier for carrier in carried if _is_a_port_capability(carrier)
+        ]
+        if capabilities:
+            problems.append(
+                f"{stated}, whose outcome carries {capabilities[0]} inside it; an "
+                "answer that hands a port on is the port the route was handed"
+            )
+        elif any(carrier is _UNRESOLVED_OUTCOME for carrier in carried):
+            problems.append(
+                f"{stated}, whose outcome carries a port this check could not "
+                "read, so it cannot be shown to be free of ports"
+            )
+        unreadable.update(
+            str(carrier) for carrier in carried if isinstance(carrier, _Unreadable)
+        )
     return tuple(problems)
 
 
@@ -287,18 +385,39 @@ def _unannotated_fields(project_root: Path) -> Iterator[str]:
                 )
 
 
-def _reaches_a_port(node: ast.AST) -> bool:
-    for child in ast.walk(node):
-        if isinstance(child, ast.Name) and child.id == PORTS_RECORD_NAME:
-            return True
-        if isinstance(child, ast.Attribute) and child.attr == "ports":
-            return True
-    return False
+def _port_reached_at(node: ast.AST) -> str | None:
+    """The port this one node reaches, if it is the access itself.
+
+    One node, never its subtree: an access nested inside another expression must
+    count once, not once per level it sits under.
+    """
+    if isinstance(node, ast.Name) and node.id == PORTS_RECORD_NAME:
+        return PORTS_RECORD_NAME
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "ports"
+    ):
+        return node.attr
+    return None
 
 
-def _calls_reaching_ports(module: ast.Module) -> frozenset[str]:
-    """Which named call of one route module reaches a port, innermost one wins."""
-    reaching: set[str] = set()
+def _ports_reached_in(nodes: Iterable[ast.AST]) -> tuple[str, ...]:
+    """Every port these nodes reach, one entry per access.
+
+    A repeated access is a repeated entry: two reads of the same port are two
+    decisions, and collapsing them would let one hide behind the other.
+    """
+    return tuple(
+        sorted(
+            reached for node in nodes if (reached := _port_reached_at(node)) is not None
+        )
+    )
+
+
+def _calls_reaching_ports(module: ast.Module) -> dict[str, tuple[str, ...]]:
+    """Which ports each named call of one route module reaches, innermost one wins."""
+    reaching: dict[str, tuple[str, ...]] = {}
     definitions = [
         node
         for node in ast.walk(module)
@@ -317,16 +436,20 @@ def _calls_reaching_ports(module: ast.Module) -> frozenset[str]:
             for child in ast.walk(definition)
             if child is not definition and id(child) not in nested
         ]
-        if any(_reaches_a_port(child) for child in own):
-            reaching.add(definition.name)
+        reached = _ports_reached_in(own)
+        if reached:
+            reaching[definition.name] = reached
     outside = [
         statement
         for statement in module.body
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
-    if any(_reaches_a_port(statement) for statement in outside):
-        reaching.add("<module>")
-    return frozenset(reaching)
+    outer = _ports_reached_in(
+        child for statement in outside for child in ast.walk(statement)
+    )
+    if outer:
+        reaching["<module>"] = outer
+    return reaching
 
 
 def route_port_problems(project_root: Path) -> tuple[str, ...]:
@@ -335,16 +458,16 @@ def route_port_problems(project_root: Path) -> tuple[str, ...]:
     for module_path in sorted((project_root / ROUTE_PACKAGE).glob("*.py")):
         name = module_path.stem
         reaching = _calls_reaching_ports(_parsed(module_path))
-        declared = ROUTE_CALLS_STILL_HOLDING_PORTS.get(name, frozenset())
-        for call in sorted(reaching - declared):
+        declared = ROUTE_CALLS_STILL_HOLDING_PORTS.get(name, {})
+        for call in sorted(set(reaching) | set(declared)):
+            reached = reaching.get(call, ())
+            allowed = tuple(sorted(declared.get(call, ())))
+            if reached == allowed:
+                continue
             problems.append(
-                f"{ROUTE_PACKAGE}/{name}.py: {call} reaches a port; a route reads "
-                "the use-case record the composition bound for it"
-            )
-        for call in sorted(declared - reaching):
-            problems.append(
-                f"{ROUTE_PACKAGE}/{name}.py: {call} reaches no port any more; "
-                "remove it from ROUTE_CALLS_STILL_HOLDING_PORTS"
+                f"{ROUTE_PACKAGE}/{name}.py: {call} reaches {reached or 'no port'}, "
+                f"and this head declares {allowed or 'none'}; a route reads the "
+                "use-case record the composition bound for it"
             )
     return tuple(problems)
 
@@ -367,9 +490,15 @@ def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
         "Architecture preflight: "
         f"{source_count} source modules, {len(configuration.contracts)} contracts, "
         f"{len(configuration.layer_members)} layer members, "
-        f"{sum(len(calls) for calls in ROUTE_CALLS_STILL_HOLDING_PORTS.values())} route calls still holding ports",
+        f"{sum(len(ports) for calls in ROUTE_CALLS_STILL_HOLDING_PORTS.values() for ports in calls.values())} route port reaches still declared",
         flush=True,
     )
+    if _UNREADABLE_OUTCOME_TYPES:
+        print(
+            "Outcome types this closure could not read, so no port inside them "
+            "could be ruled out: " + ", ".join(sorted(_UNREADABLE_OUTCOME_TYPES)),
+            flush=True,
+        )
     return configuration
 
 
