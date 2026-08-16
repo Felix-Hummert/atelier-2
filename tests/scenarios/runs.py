@@ -58,6 +58,10 @@ from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSna
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.ports.agent_executions import AgentExecutorRegistry
+from tests.scenarios.api import permissive_projection_limit
+
+NO_AGENT_EXECUTORS = AgentExecutorRegistry()
+"""What a V1 run binds: no executor at all, said rather than defaulted into."""
 
 
 def publish_revision(engine: Engine, revision: WorkflowRevision) -> None:
@@ -65,6 +69,7 @@ def publish_revision(engine: Engine, revision: WorkflowRevision) -> None:
         revision.document,
         DbosWorkflowRevisionPublisher(engine),
         parse_workflow_document,
+        permissive_projection_limit(),
     )
     assert isinstance(result, (PublicationCreated, PublicationExisting)), result
 
@@ -74,7 +79,7 @@ def start_published_v1_run(
     settings: DbosRuntimeSettings,
     run_id: RunId,
     revision: WorkflowRevision,
-    agent_executor_registry: AgentExecutorRegistry | None = None,
+    agent_executor_registry: AgentExecutorRegistry = NO_AGENT_EXECUTORS,
 ) -> AnyRun:
     publish_revision(engine, revision)
     result = start_published_run(
