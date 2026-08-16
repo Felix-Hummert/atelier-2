@@ -262,7 +262,9 @@ def replace_use_case_field(project: Path, field: str, imported: str = "") -> Non
     if imported:
         source = source.replace(
             "from atelier2.api.limits import ApiLimits\n",
-            f"{imported}\nfrom atelier2.api.limits import ApiLimits\n",
+            f"{imported}\n"
+            "def _unbound() -> object:\n    raise NotImplementedError\n\n"
+            "from atelier2.api.limits import ApiLimits\n",
             1,
         )
     body_start = source.index(marker) + len(marker)
@@ -362,7 +364,7 @@ def test_a_translated_route_module_that_reaches_a_port_again_fails(
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "health.py: leak reaches a port" in result.stderr
+    assert "health.py: leak reaches ('ApiPorts',)" in result.stderr
 
 
 @pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
@@ -373,7 +375,7 @@ def test_a_stale_entry_in_the_untranslated_route_list_fails(tmp_path: Path) -> N
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "event_stream_route reaches no port any more" in result.stderr
+    assert "event_stream_route reaches no port" in result.stderr
 
 
 ALIAS_IMPORT = (
@@ -462,3 +464,72 @@ def test_a_read_that_reaches_a_port_inside_an_allowlisted_module_fails(
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert "prepare_events" in result.stderr
+
+
+LEAKING_OUTCOME_MODULE = "src/atelier2/application/leaked_outcome.py"
+LEAKING_OUTCOME_IMPORT = "from atelier2.application.leaked_outcome import LeakedOutcome"
+
+
+def add_outcome_carrying_a_port(project: Path) -> None:
+    """An outcome of the application layer whose payload is a durable port.
+
+    The field is a bound call and its result was declared where the rule demands,
+    so the shape is legal in every way the rule can see from the outside. Only
+    reading what the outcome carries shows the port travelling inside it.
+    """
+    (project / LEAKING_OUTCOME_MODULE).write_text(
+        "from __future__ import annotations\n\n"
+        "from dataclasses import dataclass\n\n"
+        "from atelier2.ports.run_queries import RunQueries\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class LeakedOutcome:\n"
+        "    port: RunQueries\n",
+        encoding="utf-8",
+    )
+
+
+def reach_a_port_twice_inside_one_allowlisted_call(project: Path) -> None:
+    """A second, undeclared port read inside a call allowlisted for its first.
+
+    `event_stream_route` legitimately carries the stream's port until B3 lands, so
+    a check that answers only *whether* the call reaches one cannot see a second
+    reach appear beside it.
+    """
+    events = project / "src/atelier2/api/routes/events.py"
+    source = events.read_text(encoding="utf-8")
+    replaced = source.replace(
+        "    async for event in stream_server_events(",
+        "    context.ports.run_event_queries.prepare_run_event_stream(prepared.run_id, 0)\n"
+        "    async for event in stream_server_events(",
+    )
+    assert replaced != source
+    events.write_text(replaced, encoding="utf-8")
+
+
+@pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
+def test_a_use_case_outcome_that_carries_a_port_inside_it_fails(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    add_outcome_carrying_a_port(project)
+    replace_use_case_field(
+        project,
+        "leaked: Callable[[], LeakedOutcome] = _unbound",
+        LEAKING_OUTCOME_IMPORT,
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "a route can still reach a port" in result.stderr
+
+
+@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+def test_a_second_port_read_inside_an_allowlisted_call_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    reach_a_port_twice_inside_one_allowlisted_call(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "event_stream_route" in result.stderr
