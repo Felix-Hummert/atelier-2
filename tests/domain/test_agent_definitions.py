@@ -8,6 +8,9 @@ from atelier2.adapters.markdown_agent_definitions import (
     parse_agent_definition,
     render_agent_definition,
 )
+from atelier2.application.reconstruct_agent_definition import (
+    reconstruct_agent_definition,
+)
 from atelier2.contracts.agent_definitions import (
     AgentCatalogDeployment,
     AgentDefinition,
@@ -20,11 +23,34 @@ from atelier2.contracts.agent_definitions import (
     agent_configuration_revision_for,
 )
 from atelier2.contracts.agents import AgentExecutorRevision, AuthProfileRevisionHash
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 
 AUTHORED_NAME = "stage-name-witness"
 AUTHORED_DESCRIPTION = "Watches the stage and names what it sees."
 AUTHORED_MODEL = "sonnet"
 AUTHORED_PROMPT = "\nYou watch the stage and name what you see.\n"
+
+
+def test_published_revision_kinds_are_the_closed_catalog_set() -> None:
+    assert tuple(kind.value for kind in RevisionKind) == (
+        "workflow",
+        "schema",
+        "deterministic_operation",
+        "adapter_operation",
+        "context_source",
+        "read_operation",
+        "profile",
+        "skill",
+        "tool",
+        "policy",
+        "budget_policy",
+        "retry_policy",
+        "cancellation_policy",
+        "scorecard_policy",
+        "selection_policy",
+        "admission_policy",
+        "agent_definition",
+    )
 
 
 def authored_document(
@@ -471,3 +497,63 @@ def test_todays_catalog_revision_cannot_tell_two_prompts_apart() -> None:
     )
 
     assert watching.revision_hash == idling.revision_hash
+
+
+def test_an_reconstructed_agent_definition_preserves_name_description_prompt_and_tools() -> (
+    None
+):
+    reconstructed = reconstruct_agent_definition(
+        authored_document(
+            frontmatter=f"name: {AUTHORED_NAME}\n"
+            f"description: {AUTHORED_DESCRIPTION}\n"
+            f"model: {AUTHORED_MODEL}\n"
+            "tools: Read, Grep\n",
+            body="\nReview the prompt as authored.\n",
+        ),
+        parse_agent_definition,
+        render_agent_definition,
+    )
+    reparsed = parse_agent_definition(reconstructed.revision.document)
+
+    assert reparsed.name == AUTHORED_NAME
+    assert reparsed.description == AUTHORED_DESCRIPTION
+    assert reparsed.system_prompt == "\nReview the prompt as authored.\n"
+    assert reparsed.tools == DeclaredTools(
+        (AgentToolName("Grep"), AgentToolName("Read"))
+    )
+    assert reparsed == reconstructed.definition
+    assert reconstructed.revision.kind is RevisionKind.AGENT_DEFINITION
+
+
+def test_reconstructing_noncanonical_frontmatter_keeps_exact_input_bytes() -> None:
+    original = authored_document(
+        frontmatter=f"name: {AUTHORED_NAME}\n"
+        f"description: {AUTHORED_DESCRIPTION}\n"
+        f"model: {AUTHORED_MODEL}\n"
+        "tools: Read, Bash\n",
+        body="\nReview the prompt as authored.\n",
+    )
+    reconstructed = reconstruct_agent_definition(
+        original,
+        parse_agent_definition,
+        render_agent_definition,
+    )
+
+    assert reconstructed.revision.document == original
+    assert reconstructed.revision.revision_hash == PublishedRevisionHash.of(original)
+
+
+def test_agent_definition_revisions_differ_when_only_the_prompt_differs() -> None:
+    watching = reconstruct_agent_definition(
+        authored_document(),
+        parse_agent_definition,
+        render_agent_definition,
+    )
+    idling = reconstruct_agent_definition(
+        authored_document(body="\nYou watch nothing.\n"),
+        parse_agent_definition,
+        render_agent_definition,
+    )
+
+    assert watching.revision.document != idling.revision.document
+    assert watching.revision.revision_hash != idling.revision.revision_hash

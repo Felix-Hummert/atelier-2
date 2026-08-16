@@ -160,7 +160,9 @@ class RunEvent:
         extra_fields = (
             (
                 (self.agent_attempt_id or "").encode("ascii"),
-                str(self.attempt_ordinal or "").encode("ascii"),
+                str(self.attempt_ordinal or "").encode(
+                    "ascii"
+                ),  # persisted event-hash family
                 (self.cancellation_command_id or "").encode("utf-8"),
                 (self.replacement or "").encode("ascii"),
                 (self.cancellation_disposition or "").encode("ascii"),
@@ -177,7 +179,9 @@ class RunEvent:
                     hash_domain,
                     self.run_id.value.encode("utf-8"),
                     self.revision_hash.value.encode("ascii"),
-                    str(self.event_sequence).encode("ascii"),
+                    str(self.event_sequence).encode(
+                        "ascii"
+                    ),  # persisted event-hash family
                     self.node_execution_id.value.encode("ascii"),
                     self.event_kind.value.encode("ascii"),
                     self.payload,
