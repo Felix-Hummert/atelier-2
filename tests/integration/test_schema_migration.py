@@ -19,14 +19,20 @@ from sqlalchemy.exc import IntegrityError
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256,
+    _PRODUCT_TRIGGERS,
+    PRODUCT_SCHEMA_HANDOFF,
     PRODUCT_TABLE_NAMES,
+    SCHEMA_VERSION,
     MigrationRequired,
     UnsupportedSchemaVersion,
+    _create_triggers,
     _product_schema_fingerprint,
     _product_schema_fingerprint_sha256,
+    atelier_schema_versions,
     effect_intents,
     effect_receipts,
     initialize_schema,
+    metadata,
     reconcile_commands,
     runs,
     workflow_revisions,
@@ -62,33 +68,47 @@ END;
 """
 
 
-def _create_frozen_version_seven_database(database_path: Path) -> None:
+def _create_frozen_version_eight_database(database_path: Path) -> None:
     engine = create_canonical_engine(database_path)
-    initialize_schema(engine)
+    with engine.begin() as connection:
+        metadata.create_all(connection)
+        connection.execute(atelier_schema_versions.insert().values(version=8))
+        _create_triggers(connection, _PRODUCT_TRIGGERS.values())
     engine.dispose()
-    with sqlite3.connect(database_path, isolation_level=None) as connection:
-        version = int(
-            connection.execute(
-                "SELECT version FROM atelier_schema_versions"
-            ).fetchone()[0]
-        )
-        if version == 8:
-            connection.execute("PRAGMA foreign_keys=OFF")
-            connection.execute("PRAGMA legacy_alter_table=ON")
-            connection.execute("BEGIN IMMEDIATE")
-            try:
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            int(
                 connection.execute(
-                    "ALTER TABLE agent_configuration_revisions "
-                    "RENAME TO agent_configuration_revisions_v8"
-                )
-                connection.execute(_V7_AGENT_CONFIGURATION_TABLE)
-                connection.execute("DROP TABLE agent_configuration_revisions_v8")
-                connection.executescript(_V7_AGENT_CONFIGURATION_TRIGGERS)
-                connection.execute("UPDATE atelier_schema_versions SET version=7")
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
+                    "SELECT version FROM atelier_schema_versions"
+                ).fetchone()[0]
+            )
+            == 8
+        )
+        assert (
+            _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
+            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[8]
+        )
+
+
+def _create_frozen_version_seven_database(database_path: Path) -> None:
+    _create_frozen_version_eight_database(database_path)
+    with sqlite3.connect(database_path, isolation_level=None) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("PRAGMA legacy_alter_table=ON")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute(
+                "ALTER TABLE agent_configuration_revisions "
+                "RENAME TO agent_configuration_revisions_v8"
+            )
+            connection.execute(_V7_AGENT_CONFIGURATION_TABLE)
+            connection.execute("DROP TABLE agent_configuration_revisions_v8")
+            connection.executescript(_V7_AGENT_CONFIGURATION_TRIGGERS)
+            connection.execute("UPDATE atelier_schema_versions SET version=7")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
     with sqlite3.connect(database_path) as connection:
         assert (
             _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
@@ -306,6 +326,329 @@ def _seed_every_version_seven_product_table(database_path: Path) -> None:
         )
 
 
+def _seed_every_version_eight_product_table(database_path: Path) -> None:
+    revision_hash = "c" * 64
+    auth_hash = "a" * 64
+    configuration_hash = "b" * 64
+    binding_hash = "d" * 64
+    v2_output = b"v8-output\x00\xff"
+    v2_output_hash = hashlib.sha256(v2_output).hexdigest()
+    legacy_output = b"legacy-v8-output\x00\xff"
+    legacy_output_hash = hashlib.sha256(legacy_output).hexdigest()
+    effect_request = b"effect-request-v8\x00\xff"
+    effect_request_hash = hashlib.sha256(effect_request).hexdigest()
+    effect_result = b"effect-result-v8\x00\xff"
+    effect_result_hash = hashlib.sha256(effect_result).hexdigest()
+    answer = b"answer-v8\x00\xff"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO workflow_revisions VALUES(?, ?)",
+            (revision_hash, b"populated-v8-workflow"),
+        )
+        connection.execute(
+            "INSERT INTO auth_profile_revisions VALUES(?, ?, ?, ?, ?)",
+            (auth_hash, "max-primary", 8, "anthropic", "subscription"),
+        )
+        connection.execute(
+            "INSERT INTO agent_configuration_revisions VALUES(?, ?, ?, ?, ?, ?)",
+            (
+                configuration_hash,
+                "claude-opus",
+                auth_hash,
+                "claude-cli/v1",
+                2,
+                "headless",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO runs VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "run-v8",
+                "bootstrap-v8",
+                revision_hash,
+                2,
+                binding_hash,
+                "build",
+                "STARTED",
+                1,
+                3,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_agent_bindings VALUES(?, ?, ?, ?, ?)",
+            (
+                "run-v8",
+                revision_hash,
+                binding_hash,
+                "builder",
+                configuration_hash,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_receipts VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "1" * 64,
+                "2" * 64,
+                "run-v8",
+                revision_hash,
+                "legacy",
+                "exact-output/v1",
+                "legacy-operation",
+                legacy_output,
+                legacy_output_hash,
+                "3" * 64,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_receipts_v2 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "4" * 64,
+                "5" * 64,
+                "run-v8",
+                revision_hash,
+                "build",
+                "builder",
+                binding_hash,
+                configuration_hash,
+                auth_hash,
+                "max-primary",
+                8,
+                "anthropic",
+                "subscription",
+                "claude-opus",
+                "claude-cli/v1",
+                "operation-v8",
+                v2_output,
+                v2_output_hash,
+                "6" * 64,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "7" * 64,
+                "4" * 64,
+                "5" * 64,
+                "operation-v8",
+                "run-v8",
+                revision_hash,
+                "build",
+                1,
+                "SUCCEEDED",
+                2,
+                "PROCESS_OBSERVED",
+                "owner-v8",
+                "watchdog-v8",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "6" * 64,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "a7" + "0" * 62,
+                "a4" + "0" * 62,
+                "a5" + "0" * 62,
+                "operation-v8-fail",
+                "run-v8",
+                revision_hash,
+                "fail",
+                1,
+                "FAILED",
+                2,
+                "PROCESS_OBSERVED",
+                "owner-v8-fail",
+                "watchdog-v8-fail",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "PROCESS_EXITED_UNSUCCESSFULLY",
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "b7" * 32,
+                "b4" * 32,
+                "b5" * 32,
+                "operation-v8-cancel",
+                "run-v8",
+                revision_hash,
+                "cancel",
+                1,
+                "CANCELLED",
+                2,
+                "CLEANUP_ATTESTED",
+                "owner-v8-cancel",
+                "watchdog-v8-cancel",
+                "cancel-command-v8",
+                1,
+                "NONE",
+                "CLEANUP_ATTESTED",
+                "REAPED_AFTER_TERM",
+                "atelier2-agent-cancel-v8",
+                None,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO effect_intents VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "effect-v8",
+                "run-v8",
+                effect_request,
+                effect_request_hash,
+                revision_hash,
+                "loopback/v1",
+                "destination-v8",
+                "operation-v8",
+                "CONFIRMED",
+                1,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO reconcile_commands VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                "command-v8",
+                "effect-v8",
+                1,
+                "AUTHORITATIVE_NOT_FOUND",
+                "operator",
+                "preserved v8 evidence",
+                None,
+                None,
+                None,
+                "APPLIED",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO effect_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "effect-v8",
+                "run-v8",
+                effect_request,
+                effect_request_hash,
+                revision_hash,
+                "loopback/v1",
+                "destination-v8",
+                "operation-v8",
+                "external-effect-v8",
+                effect_result,
+                effect_result_hash,
+                "ADAPTER_EXECUTION",
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_events("
+            "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+            "event_kind,payload,payload_hash,receipt_logical_key,"
+            "receipt_result_hash,event_hash,agent_attempt_id,attempt_ordinal,"
+            "cancellation_command_id,replacement,cancellation_disposition,"
+            "replacement_attempt_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "run-v8",
+                revision_hash,
+                1,
+                "build",
+                "4" * 64,
+                "AGENT_COMPLETED",
+                v2_output,
+                v2_output_hash,
+                None,
+                None,
+                "8" * 64,
+                "7" * 64,
+                1,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_events("
+            "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+            "event_kind,payload,payload_hash,receipt_logical_key,"
+            "receipt_result_hash,event_hash,agent_attempt_id,attempt_ordinal,"
+            "cancellation_command_id,replacement,cancellation_disposition,"
+            "replacement_attempt_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "run-v8",
+                revision_hash,
+                2,
+                "fail",
+                "a4" + "0" * 62,
+                "AGENT_FAILED",
+                b"failed-v8",
+                hashlib.sha256(b"failed-v8").hexdigest(),
+                None,
+                None,
+                "a8" + "0" * 62,
+                "a7" + "0" * 62,
+                1,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO run_events("
+            "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
+            "event_kind,payload,payload_hash,receipt_logical_key,"
+            "receipt_result_hash,event_hash,agent_attempt_id,attempt_ordinal,"
+            "cancellation_command_id,replacement,cancellation_disposition,"
+            "replacement_attempt_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "run-v8",
+                revision_hash,
+                3,
+                "cancel",
+                "b4" * 32,
+                "AGENT_CANCELLED",
+                b"cancelled-v8",
+                hashlib.sha256(b"cancelled-v8").hexdigest(),
+                None,
+                None,
+                "b8" * 32,
+                "b7" * 32,
+                1,
+                "cancel-command-v8",
+                "NONE",
+                "REAPED_AFTER_TERM",
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO wait_answers VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                "run-v8",
+                revision_hash,
+                "wait",
+                "9" * 64,
+                answer,
+                hashlib.sha256(answer).hexdigest(),
+                "answer-workflow-v8",
+                "PENDING",
+                0,
+            ),
+        )
+
+
 def _product_rows_snapshot(
     database_path: Path,
 ) -> dict[str, tuple[tuple[object, ...], ...]]:
@@ -440,7 +783,7 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
-def test_empty_database_creates_exact_v8_and_reopens(tmp_path: Path) -> None:
+def test_empty_database_creates_exact_v9_and_reopens(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
 
@@ -449,12 +792,12 @@ def test_empty_database_creates_exact_v8_and_reopens(tmp_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         assert (
             _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
-            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[8]
+            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[9]
         )
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
-            == 8
+            == 9
         )
         assert set(sa.inspect(connection).get_table_names()) >= {
             effect_intents.name,
@@ -499,7 +842,7 @@ def test_populated_exact_v7_migrates_once_without_changing_existing_identity(
     initialize_schema(engine)
 
     after = _product_rows_snapshot(database_path)
-    assert after["atelier_schema_versions"] == ((8,),)
+    assert after["atelier_schema_versions"] == ((9,),)
     assert (
         tuple(row[:4] for row in after["agent_configuration_revisions"])
         == (before["agent_configuration_revisions"])
@@ -521,13 +864,13 @@ def test_populated_exact_v7_migrates_once_without_changing_existing_identity(
     with sqlite3.connect(database_path) as connection:
         assert (
             _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
-            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[8]
+            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[9]
         )
-    first_v8_dump = _logical_dump(database_path)
+    first_v9_dump = _logical_dump(database_path)
 
     initialize_schema(engine)
 
-    assert _logical_dump(database_path) == first_v8_dump
+    assert _logical_dump(database_path) == first_v9_dump
     engine.dispose()
 
 
@@ -595,12 +938,12 @@ def test_process_death_during_v7_migration_restores_exact_v7_then_upgrades_once(
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT version FROM atelier_schema_versions"))
-            == 8
+            == 9
         )
     engine.dispose()
 
 
-def test_concurrent_v7_openers_run_one_migration_and_converge_on_exact_v8(
+def test_concurrent_v7_openers_run_one_migration_and_converge_on_exact_v9(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -651,8 +994,266 @@ def test_concurrent_v7_openers_run_one_migration_and_converge_on_exact_v8(
             )
         )
 
-    assert versions == [8] * participants
+    assert versions == [9] * participants
     assert migration_count == 1
+
+
+def test_published_v9_handoff_is_the_v8_product_shape() -> None:
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 9
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[8]
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[9]
+        == "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38"
+    )
+
+
+def _require_populated_v8_process_evidence(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        attempts = {
+            str(state): (
+                command_id,
+                expected_version,
+                replacement,
+                redrive_state,
+                disposition,
+                workflow_id,
+                failure_code,
+            )
+            for (
+                state,
+                command_id,
+                expected_version,
+                replacement,
+                redrive_state,
+                disposition,
+                workflow_id,
+                failure_code,
+            ) in connection.execute(
+                "SELECT state, cancellation_command_id, "
+                "cancellation_expected_state_version, replacement, "
+                "redrive_state, cancellation_disposition, "
+                "cancellation_workflow_id, failure_code FROM agent_attempts"
+            )
+        }
+        event_kinds = {
+            str(kind)
+            for (kind,) in connection.execute("SELECT event_kind FROM run_events")
+        }
+    assert attempts["FAILED"] == (
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "PROCESS_EXITED_UNSUCCESSFULLY",
+    )
+    assert attempts["CANCELLED"] == (
+        "cancel-command-v8",
+        1,
+        "NONE",
+        "CLEANUP_ATTESTED",
+        "REAPED_AFTER_TERM",
+        "atelier2-agent-cancel-v8",
+        None,
+    )
+    assert event_kinds == {
+        "AGENT_COMPLETED",
+        "AGENT_FAILED",
+        "AGENT_CANCELLED",
+    }
+
+
+def test_populated_exact_v8_migrates_once_without_changing_existing_identity(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_frozen_version_eight_database(database_path)
+    _seed_every_version_eight_product_table(database_path)
+    _require_populated_v8_process_evidence(database_path)
+    before = _product_rows_snapshot(database_path)
+    assert all(before[table_name] for table_name in PRODUCT_TABLE_NAMES)
+    engine = create_canonical_engine(database_path)
+
+    initialize_schema(engine)
+
+    after = _product_rows_snapshot(database_path)
+    assert after["atelier_schema_versions"] == ((9,),)
+    assert {
+        table_name: rows
+        for table_name, rows in after.items()
+        if table_name != "atelier_schema_versions"
+    } == {
+        table_name: rows
+        for table_name, rows in before.items()
+        if table_name != "atelier_schema_versions"
+    }
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
+            == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        )
+    first_v9_dump = _logical_dump(database_path)
+
+    initialize_schema(engine)
+
+    assert _logical_dump(database_path) == first_v9_dump
+    _require_populated_v8_process_evidence(database_path)
+    engine.dispose()
+
+
+def _crash_v8_handoff_process(database_path: str) -> None:
+    engine = create_canonical_engine(Path(database_path))
+
+    def exit_after_cas(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: object,
+    ) -> None:
+        if " ".join(statement.split()).startswith("UPDATE atelier_schema_versions"):
+            os._exit(86)
+
+    event.listen(engine, "after_cursor_execute", exit_after_cas)
+    initialize_schema(engine)
+    os._exit(87)
+
+
+def test_process_death_during_v8_handoff_restores_exact_v8_then_upgrades_once(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_frozen_version_eight_database(database_path)
+    _seed_every_version_eight_product_table(database_path)
+    before = _logical_dump(database_path)
+    before_rows = _product_rows_snapshot(database_path)
+    process = multiprocessing.get_context("spawn").Process(
+        target=_crash_v8_handoff_process,
+        args=(str(database_path),),
+    )
+    process.start()
+    process.join(timeout=10)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=5)
+        pytest.fail("handoff child did not reach schema-version CAS")
+    exit_code = process.exitcode
+    process.close()
+
+    assert exit_code == 86
+    assert _logical_dump(database_path) == before
+    assert _product_rows_snapshot(database_path) == before_rows
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            int(
+                connection.execute(
+                    "SELECT version FROM atelier_schema_versions"
+                ).fetchone()[0]
+            )
+            == 8
+        )
+        assert (
+            _product_schema_fingerprint_sha256(_product_schema_fingerprint(connection))
+            == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[8]
+        )
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    after = _product_rows_snapshot(database_path)
+    assert after["atelier_schema_versions"] == ((9,),)
+    assert {
+        table_name: rows
+        for table_name, rows in after.items()
+        if table_name != "atelier_schema_versions"
+    } == {
+        table_name: rows
+        for table_name, rows in before_rows.items()
+        if table_name != "atelier_schema_versions"
+    }
+    engine.dispose()
+
+
+def test_concurrent_v8_openers_run_one_handoff_and_converge_on_exact_v9(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_frozen_version_eight_database(database_path)
+    _seed_every_version_eight_product_table(database_path)
+    before_rows = _product_rows_snapshot(database_path)
+    participants = 4
+    barrier = Barrier(participants)
+    count_lock = Lock()
+    handoff_count = 0
+
+    def migrate(path: Path, rendezvous: Barrier) -> int:
+        nonlocal handoff_count
+        engine = create_canonical_engine(path)
+
+        def count_handoff(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: object,
+        ) -> None:
+            nonlocal handoff_count
+            if statement.strip().startswith("UPDATE atelier_schema_versions"):
+                with count_lock:
+                    handoff_count += 1
+
+        event.listen(engine, "before_cursor_execute", count_handoff)
+        try:
+            rendezvous.wait(timeout=5)
+            initialize_schema(engine)
+            with engine.connect() as connection:
+                return int(
+                    connection.scalar(
+                        sa.text("SELECT version FROM atelier_schema_versions")
+                    )
+                )
+        finally:
+            engine.dispose()
+
+    with ThreadPoolExecutor(max_workers=participants) as pool:
+        versions = list(
+            pool.map(
+                migrate,
+                repeat(database_path, participants),
+                repeat(barrier, participants),
+            )
+        )
+
+    assert versions == [9] * participants
+    assert handoff_count == 1
+    after = _product_rows_snapshot(database_path)
+    assert {
+        table_name: rows
+        for table_name, rows in after.items()
+        if table_name != "atelier_schema_versions"
+    } == {
+        table_name: rows
+        for table_name, rows in before_rows.items()
+        if table_name != "atelier_schema_versions"
+    }
+
+
+def test_malformed_v8_refuses_without_mutation(tmp_path: Path) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_frozen_version_eight_database(database_path)
+    _seed_every_version_eight_product_table(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TRIGGER agent_configuration_revisions_no_update")
+    before = _logical_dump(database_path)
+    engine = create_canonical_engine(database_path)
+
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v8"):
+        initialize_schema(engine)
+
+    engine.dispose()
+    assert _logical_dump(database_path) == before
 
 
 @pytest.mark.parametrize(
