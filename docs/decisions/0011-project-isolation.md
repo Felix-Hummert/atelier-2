@@ -37,11 +37,10 @@
   [ADR 0009](0009-runner-trust.md) (the one trust boundary, credentials by
   reference, and the bound on the same-UID acceptance this record consumes) — on
   `main` since PR #78 merged as `1a88dbdd`,
-  [ADR 0007](https://github.com/FlexOr2/atelier-2/pull/45) (definition sources,
+  [ADR 0007](0007-catalog-identity.md) (definition sources,
   store-stable lineage and measurement identity, and the catalog export this
-  record's decision 6 builds on) — still PROPOSED in PR #45 at head `1e304c7f`,
-  so the parts of
-  decisions 4 and 6 that rest on it are conditional on its acceptance,
+  record's decision 6 builds on) — ACCEPTED 2026-08-16, document only and not
+  implemented,
   [ADR 0008](0008-budget-units.md) (which sums are legal),
   [ADR 0010](0010-github-platform-adapter.md) (the tracker connection a project
   configures) — on `main` since PR #81 merged as `87cd5700`
@@ -455,8 +454,8 @@ Durable failure tokens, where any of these must become one, are minted by #16.
 - An active project costs a process. The service becomes a supervisor of project
   runtimes, which is real work that did not exist before and has no owner yet.
 - No cross-project SQL exists. Every cross-project view is N reads and a merge, and it
-  is only affordable because ADR 0007 made lineage and measurement identity
-  store-stable; if that record is not accepted, this consequence must be re-examined.
+  depends on ADR 0007's accepted store-stable lineage and measurement identities,
+  which are not implemented yet.
 - Per-project growth is unbounded and the only lever is coarse. An operator who wants
   one item's text gone must delete its project.
 - The atelier gains no undo. A destroyed project is gone and the operator's own backup
