@@ -4,7 +4,8 @@
 Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/82
 Source-Threads: #82
-Distilled-From: 5302604615, 5302806812, 5302820772, 5302849696, 5302855908
+Distilled-From: 5302604615, 5302806812, 5302820772, 5302849696, 5302855908,
+                5307632273
                 #82 body, sha256
                 fe6fd31f2f8c0aa0866054dc91a3c9ef48843956d508105e414940bff8376868
 Approved-By:    5307632273
@@ -163,9 +164,8 @@ ruling:
 
 ## Acceptance
 
-No story has declared an acceptance sentence for this requirement yet, and no
-operator ruling has settled this document, so the list below is a set of
-candidates and not a set of sentences. The subject is deliberately seam-now,
+No story has declared an acceptance sentence for this requirement yet, so the
+list below is a set of candidates and not a set of sentences. The subject is deliberately seam-now,
 build-later. What the rules above already state in testable form is, notably:
 an installed client without an invitation reaches nothing; a non-loopback bind
 without a configured authenticator is refused rather than served; a one-time
