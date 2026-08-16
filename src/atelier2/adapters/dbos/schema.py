@@ -10,6 +10,10 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_SIGNED_INT64,
+)
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
 
 
@@ -132,8 +136,10 @@ auth_profile_revisions = sa.Table(
     sa.CheckConstraint(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(profile_id) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("revision_number BETWEEN 1 AND 9223372036854775807"),
+    sa.CheckConstraint(
+        f"length(profile_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
     sa.CheckConstraint("length(provider_id) BETWEEN 1 AND 64"),
     sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
     sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
@@ -170,12 +176,14 @@ agent_configuration_revisions = sa.Table(
     sa.CheckConstraint(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(model) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(f"length(model) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
     sa.CheckConstraint(
         "length(auth_profile_revision_hash) = 64 "
         "AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(executor_revision) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        f"length(executor_revision) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
     sa.CheckConstraint("revision_format_version IN (1, 2)"),
     sa.CheckConstraint("requested_capability IN ('headless', 'interactive')"),
     sa.CheckConstraint(
@@ -214,7 +222,7 @@ run_agent_bindings = sa.Table(
     sa.CheckConstraint(
         "length(binding_set_hash) = 64 AND binding_set_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(role) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(f"length(role) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
     sa.CheckConstraint(
         "length(agent_configuration_revision_hash) = 64 "
         "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
@@ -501,8 +509,10 @@ agent_receipts_v2 = sa.Table(
         "length(workflow_revision_hash) = 64 "
         "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(node_id) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("length(role) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"length(role) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
     sa.CheckConstraint(
         "length(binding_set_hash) = 64 AND binding_set_hash NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -514,15 +524,21 @@ agent_receipts_v2 = sa.Table(
         "length(auth_profile_revision_hash) = 64 "
         "AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(profile_id) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("revision_number BETWEEN 1 AND 9223372036854775807"),
+    sa.CheckConstraint(
+        f"length(profile_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
     sa.CheckConstraint("length(provider_id) BETWEEN 1 AND 64"),
     sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
     sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
     sa.CheckConstraint("auth_mode IN ('subscription', 'api_key')"),
-    sa.CheckConstraint("length(model) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("length(executor_revision) BETWEEN 1 AND 1024"),
-    sa.CheckConstraint("length(executor_operational_identity) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(f"length(model) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
+    sa.CheckConstraint(
+        f"length(executor_revision) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        f"length(executor_operational_identity) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
     sa.CheckConstraint(
         "typeof(output_bytes) = 'blob' AND length(output_bytes) <= 49152"
     ),
@@ -575,13 +591,17 @@ agent_attempts = sa.Table(
     sa.CheckConstraint(
         "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(executor_operational_identity) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        f"length(executor_operational_identity) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
     sa.CheckConstraint("length(run_id) > 0"),
     sa.CheckConstraint(
         "length(workflow_revision_hash) = 64 "
         "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint("length(node_id) BETWEEN 1 AND 1024"),
+    sa.CheckConstraint(
+        f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
     sa.CheckConstraint("attempt_ordinal IN (1, 2)"),
     sa.CheckConstraint(
         "process_phase IN ('NONE', 'WATCHDOG_READY', 'LAUNCH_AUTHORIZED', "
@@ -593,15 +613,15 @@ agent_attempts = sa.Table(
         "(process_phase = 'CLEANUP_ATTESTED' "
         "AND cancellation_disposition = 'NEVER_LAUNCHED' "
         "AND process_owner_id IS NULL AND watchdog_generation_id IS NULL) OR "
-        "(process_phase <> 'NONE' AND length(process_owner_id) BETWEEN 1 AND 1024 "
-        "AND length(watchdog_generation_id) BETWEEN 1 AND 1024)"
+        f"(process_phase <> 'NONE' AND length(process_owner_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS} "
+        f"AND length(watchdog_generation_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS})"
     ),
     sa.CheckConstraint(
         "(cancellation_command_id IS NULL "
         "AND cancellation_expected_state_version IS NULL "
         "AND replacement IS NULL AND redrive_state IS NULL "
         "AND cancellation_disposition IS NULL AND cancellation_workflow_id IS NULL) "
-        "OR (length(cancellation_command_id) BETWEEN 1 AND 1024 "
+        f"OR (length(cancellation_command_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS} "
         "AND cancellation_expected_state_version >= 0 "
         "AND replacement IN ('NONE', 'ONE') "
         "AND redrive_state IN ('PENDING', 'OWNER_NOT_LOCAL', 'CLEANUP_ATTESTED') "
@@ -723,11 +743,11 @@ run_events = sa.Table(
         "AND cancellation_command_id IS NULL AND replacement IS NULL "
         "AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) "
         "OR (event_kind = 'AGENT_CANCEL_REQUESTED' "
-        "AND length(cancellation_command_id) BETWEEN 1 AND 1024 "
+        f"AND length(cancellation_command_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS} "
         "AND replacement IN ('NONE', 'ONE') "
         "AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) "
         "OR (event_kind IN ('AGENT_CANCELLED', 'AGENT_INTERRUPTED') "
-        "AND length(cancellation_command_id) BETWEEN 1 AND 1024 "
+        f"AND length(cancellation_command_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS} "
         "AND replacement IN ('NONE', 'ONE') "
         "AND cancellation_disposition IS NOT NULL)))"
     ),

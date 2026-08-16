@@ -37,7 +37,10 @@ from atelier2.api.wire.events import (
     WaitingInputEventResourceV2,
 )
 from atelier2.api.wire.resources import StreamFailureResource
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import (
+    KINDS_NO_V1_RUN_CARRIES,
+    RunEventKind,
+)
 
 API_PREFIX = "/atelier/api/v1"
 EVENT_PATH = API_PREFIX + "/runs/{public_ref}/events"
@@ -68,15 +71,7 @@ EVENT_MODELS_V2 = (
     SubworkflowCompletedEventResourceV2,
 )
 EVENT_NAMES = tuple(
-    kind.value
-    for kind in RunEventKind
-    if kind
-    not in {
-        RunEventKind.AGENT_FAILED,
-        RunEventKind.AGENT_CANCEL_REQUESTED,
-        RunEventKind.AGENT_CANCELLED,
-        RunEventKind.AGENT_INTERRUPTED,
-    }
+    kind.value for kind in RunEventKind if kind not in KINDS_NO_V1_RUN_CARRIES
 )
 EVENT_NAMES_V2 = tuple(kind.value for kind in RunEventKind)
 
