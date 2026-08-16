@@ -45,7 +45,7 @@ type CatalogReferenceResult = CatalogReferenceResolved | CatalogReferenceNonMemb
 @dataclass(frozen=True)
 class CatalogNameResolved:
     lineage_id: CatalogLineageId
-    revision_hash: PublishedRevisionHash
+    revision: PublishedRevision
     revision_number: int
     current_display_name: CatalogLineageDisplayName
 
@@ -72,6 +72,7 @@ type CatalogNameResult = (
     | CatalogNameLineageRetired
     | CatalogNameMissing
     | CatalogNameInvalidPosition
+    | CatalogReferenceNonMember
 )
 
 
@@ -99,7 +100,7 @@ def resolve_catalog_name(
     position: object,
     catalog: CatalogResolver,
 ) -> CatalogNameResult:
-    """Resolve one authoring query without allowing a retired lineage to bind."""
+    """Resolve one authoring query to the exact bytes its lineage admits."""
     if not is_catalog_revision_position(position):
         return CatalogNameInvalidPosition(position)
 
@@ -113,12 +114,18 @@ def resolve_catalog_name(
         ):
             if retired:
                 return CatalogNameLineageRetired(lineage_id, current_display_name)
-            return CatalogNameResolved(
-                lineage_id,
-                revision_hash,
-                revision_number,
-                current_display_name,
-            )
+            match resolve_catalog_reference(kind, lineage_id, revision_hash, catalog):
+                case CatalogReferenceResolved(revision):
+                    return CatalogNameResolved(
+                        lineage_id,
+                        revision,
+                        revision_number,
+                        current_display_name,
+                    )
+                case CatalogReferenceNonMember() as not_admitted:
+                    return not_admitted
+                case _ as unreachable:
+                    assert_never(unreachable)
         case PortCatalogNameMissing(query=query, position=missing_position):
             return CatalogNameMissing(query, missing_position)
         case _ as unreachable:

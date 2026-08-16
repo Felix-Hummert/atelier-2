@@ -28,6 +28,10 @@ from atelier2.contracts.agents import (
     AuthMode,
     ProviderId,
 )
+from atelier2.contracts.catalog_v3 import (
+    MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+    CatalogRetirementState,
+)
 from atelier2.contracts.effects import (
     ConfirmationSource,
     EffectIntentState,
@@ -199,6 +203,7 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "node_receipts_v3.disposition": _values(PersistedReceiptDisposition),
     "published_revisions.kind": _values(RevisionKind),
     "catalog_lineages.kind": _values(RevisionKind),
+    "catalog_lineage_retirements.state": _values(CatalogRetirementState),
 }
 
 UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(
@@ -315,6 +320,7 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "run_events.cancellation_command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "catalog_lineages.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
     "published_revisions.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
+    "catalog_lineage_aliases.name": MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 }
 
 
