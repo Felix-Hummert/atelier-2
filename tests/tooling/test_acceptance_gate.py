@@ -31,6 +31,7 @@ QUALITY_REPORT = "quality.junit.xml"
 CRASH_REPORT = "crash.junit.xml"
 FRONTEND_REPORT = "frontend.vitest.json"
 MOVABLE_SENTENCE = "an-unproven-sentence-fails-the-gate"
+REPORT_ONLY_SENTENCE = "one-page-of-a-stream-is-decided-before-any-frame-is-written"
 UNDECLARED_SENTENCE = "a-sentence-no-story-declares"
 UNPROVEN_REFUSAL = "with no test that ran and passed in this pipeline"
 UNCOLLECTED_PYTHON_CLAIM = Path("scripts/proof_helper.py")
@@ -60,6 +61,8 @@ class ReportedTest:
     name: str
     claims: str | None = None
     outcome: Outcome = Outcome.PASSED
+    located_in: Path | None = None
+    class_scope: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,19 +92,33 @@ def junit_report(reported: Iterable[ReportedTest]) -> str:
             body += '<failure message="AssertionError: deliberate" />'
         elif test.outcome is Outcome.SKIPPED:
             body += '<skipped type="pytest.skip" message="deliberate" />'
-        cases.append(f'<testcase name="{test.name}" time="0.001">{body}</testcase>')
+        location = (
+            ""
+            if test.located_in is None
+            else (
+                ' classname="'
+                f"{'.'.join((*test.located_in.with_suffix('').parts, *test.class_scope))}"
+                '"'
+            )
+        )
+        cases.append(
+            f'<testcase{location} name="{test.name}" time="0.001">{body}</testcase>'
+        )
     return (
         '<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests">'
         f'<testsuite name="pytest">{"".join(cases)}</testsuite></testsuites>'
     )
 
 
-def vitest_report(reported: Iterable[ReportedTest]) -> str:
+def vitest_report(
+    reported: Iterable[ReportedTest],
+    located_in: Path = Path("frontend/tests/lib/proof.test.ts"),
+) -> str:
     return json.dumps(
         {
             "testResults": [
                 {
-                    "name": "/workspace/frontend/tests/lib/proof.test.ts",
+                    "name": f"/workspace/{located_in}",
                     "assertionResults": [
                         {
                             "title": test.name,
@@ -131,13 +148,37 @@ def load_acceptance_script() -> ModuleType:
 def a_pytest_run_proving_every_sentence(
     project: Path, *, without: str | None = None
 ) -> str:
-    return junit_report(
-        ReportedTest(
-            f"test_proves_{sentence.identifier.replace('-', '_')}", sentence.identifier
+    script = load_acceptance_script()
+    claims = script.read_source_claims(project)
+    claims_by_sentence = {
+        sentence.identifier: tuple(
+            claim
+            for claim in claims
+            if claim.sentence_identifier == sentence.identifier
+            and claim.located_in.suffix == ".py"
         )
-        for sentence in load_acceptance_script().read_declared_sentences(project)
-        if sentence.identifier != without
-    )
+        for sentence in script.read_declared_sentences(project)
+    }
+    reported: list[ReportedTest] = []
+    for sentence_identifier, sentence_claims in claims_by_sentence.items():
+        if sentence_identifier == without:
+            continue
+        reported.extend(
+            ReportedTest(
+                claim.claiming_test,
+                sentence_identifier,
+                located_in=claim.located_in,
+            )
+            for claim in sentence_claims
+        )
+        if not sentence_claims:
+            reported.append(
+                ReportedTest(
+                    f"test_proves_{sentence_identifier.replace('-', '_')}",
+                    sentence_identifier,
+                )
+            )
+    return junit_report(reported)
 
 
 def copied_project(
@@ -314,12 +355,12 @@ def test_the_gate_and_the_documentation_state_the_same_bound(tmp_path: Path) -> 
     [
         {
             CRASH_REPORT: junit_report(
-                (ReportedTest("test_recovers_after_a_crash", MOVABLE_SENTENCE),)
+                (ReportedTest("test_recovers_after_a_crash", REPORT_ONLY_SENTENCE),)
             )
         },
         {
             FRONTEND_REPORT: vitest_report(
-                (ReportedTest(f"proves({MOVABLE_SENTENCE}): the title carries it"),)
+                (ReportedTest(f"proves({REPORT_ONLY_SENTENCE}): the title carries it"),)
             )
         },
     ],
@@ -328,7 +369,7 @@ def test_the_gate_and_the_documentation_state_the_same_bound(tmp_path: Path) -> 
 def test_a_sentence_any_required_report_proves_counts(
     tmp_path: Path, run: Mapping[str, str]
 ) -> None:
-    result = run_gate(copied_project(tmp_path, run, unproven=MOVABLE_SENTENCE))
+    result = run_gate(copied_project(tmp_path, run, unproven=REPORT_ONLY_SENTENCE))
 
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -472,7 +513,7 @@ def a_python_claim_no_runner_collects(identifier: str) -> str:
         (
             f'it("proves({MOVABLE_SENTENCE}): nothing runs this file", () => {{}});\n',
             UNCOLLECTED_TYPESCRIPT_CLAIM,
-            f"proves({MOVABLE_SENTENCE})",
+            f"proves({MOVABLE_SENTENCE}): nothing runs this file",
             f"claims {MOVABLE_SENTENCE!r}, which no run report shows passing",
         ),
     ],
@@ -488,6 +529,253 @@ def test_a_claim_no_run_report_carries_is_named_wherever_it_sits(
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert f"{located_in}:{claiming} {problem}" in result.stderr
+
+
+def test_each_claiming_test_must_appear_in_a_required_report(tmp_path: Path) -> None:
+    project = copied_project(tmp_path, unproven=MOVABLE_SENTENCE)
+    missing_claim = Path("tests/test_missing_claim.py")
+    reported_claim = Path("tests/test_reported_claim.py")
+    write_claim(
+        project,
+        missing_claim,
+        a_python_claim_no_runner_collects(MOVABLE_SENTENCE).replace(
+            "test_helps", "test_missing_claim"
+        ),
+    )
+    write_claim(
+        project,
+        reported_claim,
+        a_python_claim_no_runner_collects(MOVABLE_SENTENCE).replace(
+            "test_helps", "test_reported_claim"
+        ),
+    )
+    (project / REPORTS_DIRECTORY / CRASH_REPORT).write_text(
+        junit_report(
+            (
+                ReportedTest(
+                    "test_reported_claim",
+                    MOVABLE_SENTENCE,
+                    located_in=reported_claim,
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (
+        f"{missing_claim}:test_missing_claim claims {MOVABLE_SENTENCE!r}, "
+        "which no run report shows passing"
+    ) in result.stderr
+    assert f"{reported_claim}:test_reported_claim claims" not in result.stderr
+
+
+def test_each_typescript_title_must_appear_in_a_required_report(tmp_path: Path) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    missing_title = f"proves({REPORT_ONLY_SENTENCE}): the browser-only flow"
+    reported_title = f"proves({REPORT_ONLY_SENTENCE}): the unit flow"
+    missing_claim = Path("frontend/tests/e2e/missing.spec.ts")
+    reported_claim = Path("frontend/tests/lib/reported.test.ts")
+    write_claim(project, missing_claim, f'it("{missing_title}", () => {{}});\n')
+    write_claim(project, reported_claim, f'it("{reported_title}", () => {{}});\n')
+    (project / REPORTS_DIRECTORY / FRONTEND_REPORT).write_text(
+        vitest_report((ReportedTest(reported_title),), located_in=reported_claim),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (
+        f"{missing_claim}:{missing_title} claims {REPORT_ONLY_SENTENCE!r}, "
+        "which no run report shows passing"
+    ) in result.stderr
+    assert f"{reported_claim}:{reported_title} claims" not in result.stderr
+
+
+def test_same_named_python_tests_in_different_files_are_distinct_claims(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    missing_claim = Path("tests/test_missing_duplicate.py")
+    reported_claim = Path("tests/test_reported_duplicate.py")
+    claim = a_python_claim_no_runner_collects(REPORT_ONLY_SENTENCE).replace(
+        "test_helps", "test_duplicate"
+    )
+    write_claim(project, missing_claim, claim)
+    write_claim(project, reported_claim, claim)
+    (project / REPORTS_DIRECTORY / CRASH_REPORT).write_text(
+        junit_report(
+            (
+                ReportedTest(
+                    "test_duplicate",
+                    REPORT_ONLY_SENTENCE,
+                    located_in=reported_claim,
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert f"{missing_claim}:test_duplicate claims" in result.stderr
+    assert f"{reported_claim}:test_duplicate claims" not in result.stderr
+
+
+def test_same_titled_typescript_tests_in_different_files_are_distinct_claims(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    title = f"proves({REPORT_ONLY_SENTENCE}): the duplicate title"
+    missing_claim = Path("frontend/tests/e2e/missing.spec.ts")
+    reported_claim = Path("frontend/tests/lib/reported.test.ts")
+    claim = f'it("{title}", () => {{}});\n'
+    write_claim(project, missing_claim, claim)
+    write_claim(project, reported_claim, claim)
+    (project / REPORTS_DIRECTORY / FRONTEND_REPORT).write_text(
+        vitest_report((ReportedTest(title),), located_in=reported_claim),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert f"{missing_claim}:{title} claims" in result.stderr
+    assert f"{reported_claim}:{title} claims" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("located_in", "source"),
+    [
+        (
+            Path("tests/test_duplicate.py"),
+            (
+                "import pytest\n\n\n"
+                f'@pytest.mark.proves("{REPORT_ONLY_SENTENCE}")\n'
+                "def test_duplicate() -> None:\n    pass\n\n\n"
+                "class TestNested:\n"
+                f'    @pytest.mark.proves("{REPORT_ONLY_SENTENCE}")\n'
+                "    def test_duplicate(self) -> None:\n        pass\n"
+            ),
+        ),
+        (
+            Path("frontend/tests/lib/duplicate.test.ts"),
+            (
+                f'describe("one", () => it("proves({REPORT_ONLY_SENTENCE}): duplicate", () => {{}}));\n'
+                f'describe("two", () => it("proves({REPORT_ONLY_SENTENCE}): duplicate", () => {{}}));\n'
+            ),
+        ),
+    ],
+    ids=["python-class-scope", "vitest-suite-scope"],
+)
+def test_a_repeated_source_test_identity_is_refused_as_ambiguous(
+    tmp_path: Path, located_in: Path, source: str
+) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    write_claim(project, located_in, source)
+    if located_in.suffix == ".py":
+        report_name = "test_duplicate"
+        report = junit_report(
+            (
+                ReportedTest(
+                    report_name,
+                    REPORT_ONLY_SENTENCE,
+                    located_in=located_in,
+                ),
+            )
+        )
+        report_file = CRASH_REPORT
+    else:
+        report_name = f"proves({REPORT_ONLY_SENTENCE}): duplicate"
+        report = vitest_report((ReportedTest(report_name),), located_in=located_in)
+        report_file = FRONTEND_REPORT
+    (project / REPORTS_DIRECTORY / report_file).write_text(report, encoding="utf-8")
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (
+        f"{located_in}:{report_name} declares the same proof identity more than once"
+        in result.stderr
+    )
+
+
+@pytest.mark.parametrize(
+    "reported_name",
+    ["test_helps", "test_helps@direct-systemd-user-manager"],
+    ids=["plain", "xdist-group"],
+)
+def test_a_unique_python_class_method_matches_its_junit_identity(
+    tmp_path: Path, reported_name: str
+) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    located_in = Path("tests/test_class_claim.py")
+    write_claim(
+        project,
+        located_in,
+        (
+            "import pytest\n\n\n"
+            "class TestClaim:\n"
+            f'    @pytest.mark.proves("{REPORT_ONLY_SENTENCE}")\n'
+            "    def test_helps(self) -> None:\n        pass\n"
+        ),
+    )
+    (project / REPORTS_DIRECTORY / CRASH_REPORT).write_text(
+        junit_report(
+            (
+                ReportedTest(
+                    reported_name,
+                    REPORT_ONLY_SENTENCE,
+                    located_in=located_in,
+                    class_scope=("TestClaim",),
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_parameterized_typescript_title_matches_its_reported_cases(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    claim = Path("frontend/tests/lib/parameterized.test.ts")
+    title = f"proves({REPORT_ONLY_SENTENCE}): %s remains named"
+    write_claim(project, claim, f'it.each(["one"])("{title}", () => {{}});\n')
+    (project / REPORTS_DIRECTORY / FRONTEND_REPORT).write_text(
+        vitest_report(
+            (ReportedTest(f"proves({REPORT_ONLY_SENTENCE}): one remains named"),),
+            located_in=claim,
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_typescript_claim_is_its_whole_title_and_not_a_comment() -> None:
+    script = load_acceptance_script()
+    title = f"context proves({REPORT_ONLY_SENTENCE}): remains one test"
+    source = (
+        f'// "proves({MOVABLE_SENTENCE}): comments make no claim"\n'
+        f'it("{title}", () => {{}});\n'
+    )
+
+    claims = tuple(script.read_typescript_claims(source, Path("a.test.ts")))
+
+    assert [(claim.sentence_identifier, claim.claiming_test) for claim in claims] == [
+        (REPORT_ONLY_SENTENCE, title)
+    ]
 
 
 def test_every_sentence_this_repository_declares_is_claimed_by_one_of_its_tests() -> (

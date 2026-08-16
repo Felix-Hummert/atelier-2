@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import tomllib
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
@@ -24,8 +25,10 @@ SENTENCE_IDENTIFIER = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 PROOF_MARKER = "proves"
 PYTHON_MARKER_NAMESPACE = "mark"
 TYPESCRIPT_PROOF_CLAIM = re.compile(rf"\b{PROOF_MARKER}\((?P<identifier>[^)]*)\)")
+VITEST_TITLE_PARAMETER = re.compile(r"%(?:s|d|i|f|j|o|O|c|#|\$)")
 PYTHON_SUFFIX = ".py"
 TYPESCRIPT_SUFFIX = ".ts"
+FRONTEND_DIRECTORY = "frontend"
 CLAIMABLE_SUFFIXES = (PYTHON_SUFFIX, TYPESCRIPT_SUFFIX)
 UNSCANNED_DIRECTORIES = frozenset(
     {".git", ".venv", "__pycache__", "node_modules", "dist"}
@@ -98,6 +101,8 @@ class AcceptanceSentence:
 class ReportedProof:
     sentence_identifier: str
     proving_test: str
+    located_in: Path | None
+    python_class_name: str | None
     reported_in: str
 
 
@@ -214,7 +219,11 @@ def read_junit_proofs(report: Path) -> Iterator[ReportedProof]:
         for recorded in testcase.iterfind(JUNIT_PROPERTY):
             if recorded.get("name") == PROOF_MARKER:
                 yield ReportedProof(
-                    recorded.get("value", ""), testcase.get("name", ""), report.name
+                    recorded.get("value", ""),
+                    testcase.get("name", ""),
+                    None,
+                    testcase.get("classname"),
+                    report.name,
                 )
 
 
@@ -222,7 +231,7 @@ def read_vitest_proofs(report: Path) -> Iterator[ReportedProof]:
     try:
         run = json.loads(report.read_text(encoding="utf-8"))
         reported = [
-            assertion
+            (file_run.get("name"), assertion)
             for file_run in run["testResults"]
             for assertion in file_run["assertionResults"]
         ]
@@ -230,12 +239,32 @@ def read_vitest_proofs(report: Path) -> Iterator[ReportedProof]:
         raise AcceptanceGateError(
             f"{report.name} is not readable as a run report: {error}"
         ) from error
-    for assertion in reported:
+    for file_name, assertion in reported:
         if assertion.get("status") != VITEST_PASSED_STATUS:
             continue
         title = str(assertion.get("title", ""))
         for claim in TYPESCRIPT_PROOF_CLAIM.finditer(title):
-            yield ReportedProof(claim.group("identifier"), title, report.name)
+            yield ReportedProof(
+                claim.group("identifier"),
+                title,
+                typescript_test_location(file_name),
+                None,
+                report.name,
+            )
+
+
+def typescript_test_location(file_name: Any) -> Path | None:
+    if not isinstance(file_name, str) or not file_name:
+        return None
+    parts = Path(file_name.replace("\\", "/")).parts
+    if FRONTEND_DIRECTORY in parts:
+        frontend_index = max(
+            index for index, part in enumerate(parts) if part == FRONTEND_DIRECTORY
+        )
+        return Path(*parts[frontend_index:])
+    if parts and parts[0] == "tests":
+        return Path(FRONTEND_DIRECTORY, *parts)
+    return None
 
 
 REPORT_READERS: dict[ReportFormat, Callable[[Path], Iterator[ReportedProof]]] = {
@@ -326,8 +355,66 @@ def python_marker_identifier(
 
 
 def read_typescript_claims(source: str, location: Path) -> Iterator[ProofClaim]:
-    for claim in TYPESCRIPT_PROOF_CLAIM.finditer(source):
-        yield ProofClaim(claim.group("identifier"), claim.group(0), location)
+    for title in typescript_string_literals(source):
+        for claim in TYPESCRIPT_PROOF_CLAIM.finditer(title):
+            yield ProofClaim(claim.group("identifier"), title, location)
+
+
+def typescript_string_literals(source: str) -> Iterator[str]:
+    """Read static string contents without mistaking a closing quote for an opener."""
+
+    index = 0
+    while index < len(source):
+        if source.startswith("//", index):
+            line_end = source.find("\n", index + 2)
+            index = len(source) if line_end == -1 else line_end + 1
+            continue
+        if source.startswith("/*", index):
+            comment_end = source.find("*/", index + 2)
+            index = len(source) if comment_end == -1 else comment_end + 2
+            continue
+        quote = source[index]
+        if quote not in {'"', "'", "`"}:
+            index += 1
+            continue
+        index += 1
+        contents: list[str] = []
+        while index < len(source) and source[index] != quote:
+            if source[index] == "\\" and index + 1 < len(source):
+                contents.extend(source[index : index + 2])
+                index += 2
+                continue
+            contents.append(source[index])
+            index += 1
+        if index < len(source):
+            yield "".join(contents)
+            index += 1
+
+
+def proof_honours_claim(proof: ReportedProof, claim: ProofClaim) -> bool:
+    if proof.sentence_identifier != claim.sentence_identifier:
+        return False
+    if claim.located_in.suffix == PYTHON_SUFFIX:
+        if not python_class_name_matches_source(
+            proof.python_class_name, claim.located_in
+        ):
+            return False
+        return proof.proving_test == claim.claiming_test or any(
+            proof.proving_test.startswith(f"{claim.claiming_test}{suffix}")
+            for suffix in ("[", "@")
+        )
+    if proof.located_in != claim.located_in:
+        return False
+    escaped_title = re.escape(claim.claiming_test)
+    parameterized_title = VITEST_TITLE_PARAMETER.sub(".+?", escaped_title)
+    return re.fullmatch(parameterized_title, proof.proving_test) is not None
+
+
+def python_class_name_matches_source(class_name: str | None, source: Path) -> bool:
+    if class_name is None:
+        return False
+    source_module = ".".join(source.with_suffix("").parts)
+    return class_name == source_module or class_name.startswith(f"{source_module}.")
 
 
 def read_landing_binding(body: Path) -> LandingBinding:
@@ -390,6 +477,19 @@ def acceptance_problems(
 ) -> tuple[str, ...]:
     problems: list[str] = []
     declared = {sentence.identifier for sentence in sentences}
+    claim_counts = Counter(
+        (claim.located_in, claim.claiming_test, claim.sentence_identifier)
+        for claim in claims
+    )
+    for (located_in, claiming_test, sentence_identifier), count in sorted(
+        claim_counts.items()
+    ):
+        if count > 1:
+            problems.append(
+                f"{located_in}:{claiming_test} declares the same proof identity "
+                f"more than once ({count} claims for {sentence_identifier!r}); each "
+                "source claim must name one distinct test"
+            )
     proven: set[str] = set()
     for proof in proofs:
         if proof.sentence_identifier not in declared:
@@ -405,7 +505,7 @@ def acceptance_problems(
             if claim.sentence_identifier not in declared
             else "which no run report shows passing"
         )
-        if claim.sentence_identifier not in proven:
+        if not any(proof_honours_claim(proof, claim) for proof in proofs):
             problems.append(
                 f"{claim.located_in}:{claim.claiming_test} claims "
                 f"{claim.sentence_identifier!r}, {unhonoured}"
