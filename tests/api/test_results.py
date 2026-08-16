@@ -239,7 +239,9 @@ def test_start_maps_every_durable_result(
     port_result: object, application_type: type[object]
 ) -> None:
     result = start_published_run(
-        StartPublishedRunRequest(RunId("run"), HASH),
+        RunId("run"),
+        HASH,
+        None,
         cast(DurablePublishedRunStarter, FakePort(port_result)),
     )
 

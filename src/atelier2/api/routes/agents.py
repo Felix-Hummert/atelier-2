@@ -26,31 +26,20 @@ from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
     AuthProfileRevisionResource,
 )
-from atelier2.contracts.agents import (
-    AgentConfigurationRevision,
-    AgentConfigurationRevisionFormatVersion,
-    AgentExecutionCapability,
-    AgentExecutorRevision,
-    AuthMode,
-    AuthProfileRevision,
-    AuthProfileRevisionHash,
-    ProviderId,
-)
-from atelier2.ports.agent_configurations import (
+from atelier2.application.publish_agent_configurations import (
     AgentConfigurationRevisionCollision,
-    AgentConfigurationRevisionCreated,
-    AgentConfigurationRevisionExisting,
+    AgentConfigurationRevisionPublished,
+    AgentConfigurationRevisionUnchanged,
     AgentExecutorBindingUnavailable,
     AuthProfileRevisionCollision,
     AuthProfileRevisionConflict,
-    AuthProfileRevisionCreated,
-    AuthProfileRevisionExisting,
-    AuthProfileRevisionMissing,
+    AuthProfileRevisionNotFound,
+    AuthProfileRevisionPublished,
+    AuthProfileRevisionUnchanged,
+    UnpublishableAgentConfiguration,
+    UnpublishableAuthProfile,
 )
-from atelier2.ports.durable_runs import (
-    DurableStateCorrupt as PortDurableStateCorrupt,
-)
-from atelier2.ports.durable_runs import DurableWriteUnavailable
+from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 
 router = APIRouter()
 
@@ -66,32 +55,26 @@ async def publish_auth_profile_revision_route(
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
 ) -> JSONResponse:
-    try:
-        revision = AuthProfileRevision(
-            body.profile_id,
-            body.revision_number,
-            ProviderId(body.provider_id),
-            AuthMode(body.auth_mode),
-        )
-    except (TypeError, ValueError) as error:
-        raise ApiProblem("invalid-request") from error
-    catalog = context.ports.agent_configuration_catalog
     result = await run_control_query(
         context.control_runner,
-        lambda: catalog.publish_auth_profile_revision(revision),
+        lambda: context.use_cases.publish_auth_profile_revision(
+            body.profile_id, body.revision_number, body.provider_id, body.auth_mode
+        ),
     )
     match result:
-        case AuthProfileRevisionCreated(stored):
+        case AuthProfileRevisionPublished(stored):
             status = HTTPStatus.CREATED
-        case AuthProfileRevisionExisting(stored):
+        case AuthProfileRevisionUnchanged(stored):
             status = HTTPStatus.OK
+        case UnpublishableAuthProfile():
+            raise ApiProblem("invalid-request")
         case AuthProfileRevisionConflict():
             raise ApiProblem("auth-profile-revision-conflict")
         case AuthProfileRevisionCollision():
             raise ApiProblem("auth-profile-revision-collision")
-        case DurableWriteUnavailable():
+        case WriteUnavailable():
             raise ApiProblem("temporarily-unavailable")
-        case PortDurableStateCorrupt():
+        case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
@@ -109,35 +92,31 @@ async def publish_agent_configuration_revision_route(
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
 ) -> JSONResponse:
-    try:
-        revision = AgentConfigurationRevision(
-            body.model,
-            AuthProfileRevisionHash(body.auth_profile_revision_hash),
-            AgentExecutorRevision(body.executor_revision),
-            AgentExecutionCapability(body.requested_capability),
-            AgentConfigurationRevisionFormatVersion.V2,
-        )
-    except (TypeError, ValueError) as error:
-        raise ApiProblem("invalid-request") from error
-    catalog = context.ports.agent_configuration_catalog
     result = await run_control_query(
         context.control_runner,
-        lambda: catalog.publish_agent_configuration_revision(revision),
+        lambda: context.use_cases.publish_agent_configuration_revision(
+            body.model,
+            body.auth_profile_revision_hash,
+            body.executor_revision,
+            body.requested_capability,
+        ),
     )
     match result:
-        case AgentConfigurationRevisionCreated(stored, auth_profile):
+        case AgentConfigurationRevisionPublished(stored, auth_profile):
             status = HTTPStatus.CREATED
-        case AgentConfigurationRevisionExisting(stored, auth_profile):
+        case AgentConfigurationRevisionUnchanged(stored, auth_profile):
             status = HTTPStatus.OK
-        case AuthProfileRevisionMissing():
+        case UnpublishableAgentConfiguration():
+            raise ApiProblem("invalid-request")
+        case AuthProfileRevisionNotFound():
             raise ApiProblem("auth-profile-revision-not-found")
         case AgentExecutorBindingUnavailable():
             raise ApiProblem("agent-executor-binding-unavailable")
         case AgentConfigurationRevisionCollision():
             raise ApiProblem("agent-configuration-revision-collision")
-        case DurableWriteUnavailable():
+        case WriteUnavailable():
             raise ApiProblem("temporarily-unavailable")
-        case PortDurableStateCorrupt():
+        case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)

@@ -17,13 +17,20 @@ from atelier2.api.openapi import API_PREFIX, install_custom_openapi
 from atelier2.api.problems import install_problem_handlers
 from atelier2.api.routes import agents, events, health, revisions, runs
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
+from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.prepare_run_events import prepare_run_events
+from atelier2.application.publish_agent_configurations import (
+    publish_agent_configuration_revision,
+    publish_auth_profile_revision,
+)
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.application.read_runs import get_run, list_runs
 from atelier2.application.read_workflow_revisions import (
     get_workflow_revision,
     list_workflow_revisions,
 )
+from atelier2.application.reconcile_run import reconcile_run
+from atelier2.application.start_published_run import start_published_run
 from atelier2.ports.workflow_revisions import DurableProjectionLimit
 
 
@@ -44,6 +51,35 @@ def bound_use_cases(
         ),
         prepare_run_events=lambda run_id, after_sequence: prepare_run_events(
             run_id, after_sequence, ports.run_event_queries
+        ),
+        publish_auth_profile_revision=(
+            lambda profile_id, revision_number, provider_id, auth_mode: (
+                publish_auth_profile_revision(
+                    profile_id,
+                    revision_number,
+                    provider_id,
+                    auth_mode,
+                    ports.agent_configuration_catalog,
+                )
+            )
+        ),
+        publish_agent_configuration_revision=(
+            lambda model, auth_profile_hash, executor_revision, capability: (
+                publish_agent_configuration_revision(
+                    model,
+                    auth_profile_hash,
+                    executor_revision,
+                    capability,
+                    ports.agent_configuration_catalog,
+                )
+            )
+        ),
+        start_published_run=lambda run_id, revision_hash, bindings: start_published_run(
+            run_id, revision_hash, bindings, ports.published_run_starter
+        ),
+        answer_wait=lambda request: answer_wait_result(request, ports.wait_answerer),
+        reconcile_run=lambda request: reconcile_run(
+            request, ports.run_queries, ports.reconcile_commander, projection_limit
         ),
     )
 

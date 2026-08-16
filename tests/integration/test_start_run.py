@@ -50,7 +50,6 @@ from atelier2.application.start_published_run import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from atelier2.ports.durable_runs import StartPublishedRunRequest
 from tests.scenarios.runs import publish_revision, start_published_v1_run
 from tests.scenarios.runtime import exact_output_runtime
 
@@ -104,8 +103,7 @@ def start_result(
 ):
     publish_revision(runtime.engine, revision(document))
     return start_published_run(
-        StartPublishedRunRequest(RunId(run_id), revision(document).revision_hash),
-        starter,
+        RunId(run_id), revision(document).revision_hash, None, starter
     )
 
 
@@ -311,7 +309,7 @@ def test_durable_hash_collision_fails_without_run_or_enqueue(
         )
 
     result = start_published_run(
-        StartPublishedRunRequest(RunId("run-1"), revision().revision_hash), starter
+        RunId("run-1"), revision().revision_hash, None, starter
     )
 
     assert isinstance(result, DurableStateCorrupt)
