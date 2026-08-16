@@ -203,6 +203,22 @@ def create_app(
     return app
 
 
+# Every path the browser can be given cold — reloaded, pasted, bookmarked — must
+# hand back the application instead of a route refusal, and which paths those are
+# is the client router's decision, not this server's. The browser declares them in
+# `frontend/src/lib/servedPaths.json`; `tests/host/test_local_host.py` reads that
+# declaration and fails when this tuple does not serve exactly it, because the two
+# runtimes cannot import one list.
+COCKPIT_INDEX_PATHS: tuple[str, ...] = (
+    "/atelier",
+    "/atelier/",
+    "/atelier/project",
+    "/atelier/runs",
+    "/atelier/new",
+    "/atelier/runs/{public_ref}",
+)
+
+
 def _mount_frontend(app: FastAPI, frontend_dist: Path) -> None:
     index_file, assets_directory = _frontend_distribution(frontend_dist)
     app.mount(
@@ -214,13 +230,7 @@ def _mount_frontend(app: FastAPI, frontend_dist: Path) -> None:
     async def frontend_index() -> FileResponse:
         return FileResponse(index_file, media_type="text/html")
 
-    for path in (
-        "/atelier",
-        "/atelier/",
-        "/atelier/runs",
-        "/atelier/new",
-        "/atelier/runs/{public_ref}",
-    ):
+    for path in COCKPIT_INDEX_PATHS:
         app.add_api_route(
             path,
             frontend_index,
