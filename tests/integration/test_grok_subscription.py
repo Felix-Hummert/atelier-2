@@ -241,7 +241,7 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert invocation.standard_input == b""
     assert invocation.standard_output_frame_bytes == GROK_SUBSCRIPTION_FRAME_BYTES
     assert b"draw the owl" not in " ".join(invocation.arguments).encode()
-    result = executor.decode_process_completion(launched(invocation))
+    result = executor.decode_process_completion(invocation, launched(invocation))
     assert isinstance(result, AgentExecutionResult)
     observed = json.loads(result.output_bytes)
     assert observed["arguments"][0] == str(settings.executable)
@@ -271,15 +271,18 @@ def test_a_non_subscription_profile_is_refused_before_any_invocation(
 def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = AgentProcessInvocation(
+        ("grok",), tmp_path, standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES
+    )
 
     assert executor.decode_process_completion(
-        AgentProcessCompletion(1, b'{"text":"no"}', b"")
+        invocation, AgentProcessCompletion(1, b'{"text":"no"}', b"")
     ) == AgentExecutionFailure(AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY)
     assert executor.decode_process_completion(
-        AgentProcessCompletion(0, b"not-json", b"")
+        invocation, AgentProcessCompletion(0, b"not-json", b"")
     ) == AgentExecutionFailure(AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY)
     assert executor.decode_process_completion(
-        AgentProcessCompletion(0, b'{"result":"wrong field"}', b"")
+        invocation, AgentProcessCompletion(0, b'{"result":"wrong field"}', b"")
     ) == AgentExecutionFailure(AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY)
 
 
@@ -396,7 +399,7 @@ def test_job_bytes_outlive_neither_a_completion_nor_a_close(tmp_path: Path) -> N
     )
     assert job_file.exists()
 
-    executor.decode_process_completion(AgentProcessCompletion(1, b"", b""))
+    executor.decode_process_completion(invocation, AgentProcessCompletion(1, b"", b""))
     executor.release_process(invocation)
 
     assert not job_file.exists()

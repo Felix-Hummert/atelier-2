@@ -37,7 +37,7 @@ def execute_agent_attempt(
             outcome = claim
         else:
             completion = supervisor.launch_and_wait(execution, invocation)
-            result = executor.decode_process_completion(completion)
+            result = executor.decode_process_completion(invocation, completion)
             if isinstance(result, AgentExecutionFailure):
                 if (
                     result.code

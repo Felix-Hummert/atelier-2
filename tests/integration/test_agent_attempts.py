@@ -10,8 +10,11 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
+import atelier2.adapters.dbos.agent_attempt_store as agent_attempt_store_module
+import atelier2.adapters.dbos.run_store as run_store_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.run_store import RunTransitionConflict
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -47,7 +50,13 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import RunV2
-from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.workflows import (
+    AgentNodeV2,
+    RunCompletes,
+    RunContinues,
+    WorkflowGraphV2,
+)
 from atelier2.ports.agent_attempts import (
     AgentAttemptClaimedByThisCall,
     AgentAttemptFailed,
@@ -215,6 +224,7 @@ def test_attempt_is_prepared_before_controlled_executor_invocation(
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
+        assert outcome.completion == RunContinues("done")
         assert len(executor.results) == 1
     finally:
         runtime.close()
@@ -270,14 +280,113 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
         recovered = execute_agent_attempt(
             agent_attempt_execution(request),
             executor,
-            store,
+            DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
         )
 
         assert isinstance(first, AgentAttemptSucceeded)
+        assert first.completion == RunContinues("done")
         assert recovered == first
         assert len(executor.results) == 1
         assert len(executor.released_invocations) == 2
+    finally:
+        runtime.close()
+
+
+def _stage_agent_sink_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stage the one graph shape that drives a terminal agent completion.
+
+    V1 and V2 deliberately cannot publish an Agent sink -- their agent nodes
+    always carry a successor -- and V3 is not executable yet, so no document
+    reaches this branch today. Keep that product boundary closed while
+    exercising the real store transaction at the exact graph seam H1a opens.
+    """
+
+    terminal_graph = WorkflowGraphV2.model_construct(
+        format_version=2,
+        start="build",
+        nodes=(
+            AgentNodeV2.model_construct(
+                id="build", type="agent", role="builder", job="build", next=None
+            ),
+        ),
+    )
+    for module in (agent_attempt_store_module, run_store_module):
+        monkeypatch.setattr(
+            module, "load_graph", lambda _session, _revision_hash: terminal_graph
+        )
+
+
+def test_terminal_agent_success_is_one_durable_write_and_exact_reentry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/terminal-agent")
+        execution = agent_attempt_execution(request)
+        _stage_agent_sink_graph(monkeypatch)
+        executor = inspecting_executor(runtime)
+
+        first = execute_agent_attempt(
+            execution,
+            executor,
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+        )
+        recovered = execute_agent_attempt(
+            execution,
+            executor,
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+        )
+
+        with runtime.engine.connect() as connection:
+            attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
+            event = connection.execute(sa.select(run_events)).mappings().one()
+            run = connection.execute(sa.select(runs)).mappings().one()
+            receipt_count = connection.scalar(
+                sa.select(sa.func.count()).select_from(agent_receipts_v2)
+            )
+
+        assert isinstance(first, AgentAttemptSucceeded)
+        assert first.completion == RunCompletes()
+        assert first.attempt.receipt_hash is not None
+        assert recovered == first
+        assert len(executor.results) == 1
+        assert (
+            attempt["state"],
+            attempt["state_version"],
+            attempt["process_phase"],
+            attempt["receipt_hash"],
+            event["event_sequence"],
+            event["event_kind"],
+            event["node_id"],
+            event["agent_attempt_id"],
+            event["attempt_ordinal"],
+            event["payload"],
+            run["state"],
+            run["current_node_id"],
+            run["state_version"],
+            run["last_event_sequence"],
+            receipt_count,
+        ) == (
+            "SUCCEEDED",
+            4,
+            "PROCESS_OBSERVED",
+            first.attempt.receipt_hash.value,
+            1,
+            "AGENT_COMPLETED",
+            "build",
+            execution.attempt_id.value,
+            1,
+            b"done",
+            "COMPLETED",
+            "build",
+            1,
+            1,
+            1,
+        )
     finally:
         runtime.close()
 
@@ -639,5 +748,45 @@ def test_attempt_trigger_rejects_terminal_rewrite_and_mismatched_receipt(
                     receipt_hash=completed.attempt.receipt_hash.value,
                 )
             )
+    finally:
+        runtime.close()
+
+
+def test_reentry_after_a_terminal_success_refuses_a_run_head_that_disagrees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A terminal agent success is one durable write: the attempt CAS, the
+    # AGENT_COMPLETED event and the completed run head land together. If a run
+    # head ever disagreed with a SUCCEEDED attempt, the torn half must surface
+    # rather than be reconstructed into a success nobody durably made.
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/terminal-reentry")
+        execution = agent_attempt_execution(request)
+        _stage_agent_sink_graph(monkeypatch)
+        executor = inspecting_executor(runtime)
+        store = DbosAgentAttemptStore(runtime.engine)
+
+        first = execute_agent_attempt(
+            execution, executor, store, runtime.agent_process_supervisor
+        )
+        assert isinstance(first, AgentAttemptSucceeded)
+        assert first.completion == RunCompletes()
+
+        with runtime.engine.begin() as connection:
+            connection.execute(
+                runs.update().values(state=RunState.STARTED.value, terminal_hash=None)
+            )
+
+        with pytest.raises(RunTransitionConflict):
+            execute_agent_attempt(
+                execution,
+                executor,
+                DbosAgentAttemptStore(runtime.engine),
+                runtime.agent_process_supervisor,
+            )
+
+        assert len(executor.results) == 1
     finally:
         runtime.close()

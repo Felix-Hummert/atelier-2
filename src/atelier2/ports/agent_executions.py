@@ -132,8 +132,18 @@ class AgentExecutorV2(Protocol):
         ...
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
-    ) -> AgentExecutionResult | AgentExecutionFailure: ...
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        """Decode the answer of exactly this invocation.
+
+        The invocation travels back with the process result because a provider
+        may deliver its answer beside the process rather than inside it, and a
+        completion carries no identity. Without it such an executor could only
+        correlate through its own mutable state -- and one executor object
+        serves every attempt on its key, so overlapping attempts would decode
+        each other's answers into durable results.
+        """
+        ...
 
     def release_process(self, invocation: AgentProcessInvocation) -> None:
         """Release live-only resources owned by this exact invocation."""

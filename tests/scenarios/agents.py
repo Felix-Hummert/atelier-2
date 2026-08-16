@@ -414,7 +414,7 @@ class RecordingAgentExecutorV2:
         return (self.command or emitting(self.output))(request)
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         self.completions.append(completion)
         result = self.decoder(completion)

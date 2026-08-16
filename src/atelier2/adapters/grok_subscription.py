@@ -573,8 +573,9 @@ class GrokSubscriptionExecutor:
                     pass
 
     def decode_process_completion(
-        self, completion: AgentProcessCompletion
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
+        del invocation
         if completion.return_code != 0:
             return _UNUSABLE_PROVIDER_ANSWER
         if len(completion.standard_output) > GROK_SUBSCRIPTION_FRAME_BYTES:
