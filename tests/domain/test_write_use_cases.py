@@ -80,13 +80,16 @@ class ScriptedCatalog:
         self.published.append(revision)
         return self.answer
 
-    publish_auth_profile_revision = _record
-    publish_agent_configuration_revision = _record
+    def publish_auth_profile_revision(self, revision: Any) -> Any:
+        return self._record(revision)
 
-    def auth_profile_revision(self, *arguments: Any) -> Any:
+    def publish_agent_configuration_revision(self, revision: Any) -> Any:
+        return self._record(revision)
+
+    def auth_profile_revision(self, revision_hash: Any) -> Any:
         raise AssertionError("a publication under test read the catalog back")
 
-    def agent_configuration_revision(self, *arguments: Any) -> Any:
+    def agent_configuration_revision(self, revision_hash: Any) -> Any:
         raise AssertionError("a publication under test read the catalog back")
 
 
