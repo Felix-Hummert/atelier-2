@@ -68,6 +68,7 @@ def declared_cockpit_paths() -> tuple[str, ...]:
     return tuple(paths)
 
 
+@pytest.mark.proves("a-level-opens-from-a-pasted-link-and-survives-a-reload")
 def test_the_server_serves_exactly_the_paths_the_browser_declares(
     runtime, frontend_dist: Path
 ) -> None:
