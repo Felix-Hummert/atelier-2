@@ -1,7 +1,7 @@
 # Requirement 0004: Execution happens anywhere, and one trust boundary is what makes that safe
 
 ```text
-Status:         DRAFT
+Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/21
 Source-Threads: #21, #1
 Distilled-From: 5300858953, 5300894378, 5302132060, 5302584358, 5302587068,
@@ -9,10 +9,13 @@ Distilled-From: 5300858953, 5300894378, 5302132060, 5302584358, 5302587068,
                 #21 body, sha256 over the exact served bytes — 787 bytes, last
                 byte `.`, nothing appended —
                 5c03ceb1d5f1b85f81ec3acc1f6dea1c72d89817929a772432b9b02fbb74a56b
-Approved-By:    none
+Approved-By:    5307632389
 ```
 
-`DRAFT`, and on this subject the status carries more weight than usual, for two
+`AGREED` as a reading (operator comment 5307632389, 16.08.2026, „ja passt"): the
+operator approved that this document reads its thread faithfully. That
+approval settles no direction beyond what the thread itself settles — the
+paragraph below keeps saying why that caution matters here. And on this subject the status carries more weight than usual, for two
 reasons.
 
 The first is the thread's voice. #21 is an **ADR mandate**, not a wish: its body
