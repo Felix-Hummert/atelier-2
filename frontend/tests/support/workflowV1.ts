@@ -74,6 +74,34 @@ export function waitingInputRun(changes: Partial<RunV1> = {}): RunV1 {
   });
 }
 
+/** WAITING_RECONCILIATION at the Action node: the operator owns the decision. */
+export function waitingReconciliationRun(changes: Partial<RunV1> = {}): RunV1 {
+  return startedRun({
+    state: "WAITING_RECONCILIATION",
+    current_node: nodeAt(1),
+    waiting: {
+      type: "WAITING_RECONCILIATION",
+      node_id: "act",
+      logical_effect_key: "effect",
+      request_hash: revisionHash,
+      request_base64: "",
+      intent_state_version: 0,
+      pending_command: null
+    },
+    ...changes
+  });
+}
+
+/** COMPLETED at the terminal node: nothing waits for anybody. */
+export function completedRun(changes: Partial<RunV1> = {}): RunV1 {
+  return startedRun({
+    state: "COMPLETED",
+    current_node: nodeAt(3),
+    terminal_hash: revisionHash,
+    ...changes
+  });
+}
+
 /** STARTED at the final node, after the Wait answer was durable. */
 export function answeredRun(changes: Partial<RunV1> = {}): RunV1 {
   return startedRun({

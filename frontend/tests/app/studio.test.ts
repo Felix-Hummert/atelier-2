@@ -5,7 +5,12 @@ import App from "../../src/App.svelte";
 import type { CockpitApi, RunV1 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
-import { startedRun, waitingInputRun } from "../support/workflowV1";
+import {
+  completedRun,
+  startedRun,
+  waitingInputRun,
+  waitingReconciliationRun
+} from "../support/workflowV1";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -15,24 +20,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
 });
-
-const completedRun = (changes: Partial<RunV1> = {}): RunV1 =>
-  startedRun({ state: "COMPLETED", terminal_hash: "b".repeat(64), ...changes });
-
-const waitingReconciliationRun = (changes: Partial<RunV1> = {}): RunV1 =>
-  startedRun({
-    state: "WAITING_RECONCILIATION",
-    waiting: {
-      type: "WAITING_RECONCILIATION",
-      node_id: "act",
-      logical_effect_key: "effect",
-      request_hash: "c".repeat(64),
-      request_base64: "",
-      intent_state_version: 0,
-      pending_command: null
-    },
-    ...changes
-  });
 
 function openStudio(runs: RunV1[] = [], overrides: Partial<CockpitApi> = {}) {
   window.history.replaceState(null, "", "/atelier");

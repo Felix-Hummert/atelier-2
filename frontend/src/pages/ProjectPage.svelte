@@ -27,6 +27,10 @@
   }
 
   $: items = runs.confirmed?.items ?? [];
+  // A next cursor means the durable page left runs behind it: the adapter reads
+  // one row past the limit to decide it. Following those pages is not built, so
+  // the level says so rather than presenting a part as the whole.
+  $: partial = runs.confirmed?.next_after != null;
   $: groups = standingOrder
     .map((standing) => ({ standing, runs: runsStanding(items, standing) }))
     .filter((group) => group.runs.length > 0);
@@ -57,6 +61,9 @@
   </section>
 
   {#if runs.confirmed !== null}
+    {#if partial}
+      <p class="muted">Not every run of this project is on this page. Reading further is not built yet.</p>
+    {/if}
     {#if groups.length === 0}
       <p class="muted">No runs here yet.</p>
     {/if}
