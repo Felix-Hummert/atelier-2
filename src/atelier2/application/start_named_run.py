@@ -1,15 +1,18 @@
-"""Start one named workflow in this process, against this engine's own truth.
+"""Record one named workflow's supervised start, against this engine's own truth.
 
-**Why a host function and not a CLI subcommand.** The existing `atelier2` run
-command is an HTTP client: `RunOrder` carries a `service_url` and a document, and
-the run write happens inside the server's transaction, on the far side of a
-boundary this caller does not own. A subcommand built on it would prove that some
-server wrote something — never that *this* name resolved to *these* bytes and that
-the revision, the run and the receipt arrived together. The atomicity sentence is
-what forces the entry point, so the entry is in-process and takes its ports.
+**Why this is an application use-case and not a host entry.** It decides one
+thing over ports and touches no process, socket or terminal, which is the
+application layer's own shape; the host wiring that will call it is #111's, and
+until that exists a host module would be a layer boundary with nothing on the
+other side.
 
-The CLI is deliberately deferred, not forgotten: once this path is trusted, a
-subcommand is a thin caller of it in the #114 pattern, and it belongs to #111.
+**Why it is in-process at all.** The existing `atelier2` run command is an HTTP
+client: `RunOrder` carries a `service_url` and a document, so the write lands
+inside the server's transaction, on the far side of a boundary this caller does
+not own. A path built on it could prove that some server wrote something — never
+that *this* name reached *these* bytes and that the whole record arrived
+together. The atomicity sentence is what forces the seam, so the seam takes its
+ports and stays on this side of them.
 
 What this composes, and nothing else:
 
@@ -17,12 +20,15 @@ What this composes, and nothing else:
    lineage member -- one call, because the membership proof lives inside it,
 2. the caller's already-decided terminal truth is checked to be about *those*
    bytes,
-3. Cut B's supervised start persists revision, run, artifacts and receipt in one
-   transaction, or persists nothing.
+3. Cut B's supervised start records the published revision, its workflow
+   backing, the run, its artifacts and its terminal receipt across all seven
+   durable tables in one transaction, or records none of them.
 
-It executes no graph. Cut B's starter takes a decided truth rather than producing
-one, so this door does not claim an engine either — what it guarantees is which
-bytes were started and that the record of them is whole.
+**No graph is interpreted here, and none is claimed.** Cut B's starter takes an
+already-decided truth rather than producing one — it says so itself, "without
+claiming an executable engine" — so this seam does not run a workflow either.
+What it guarantees is which bytes a name reached and that the record of them is
+whole. V3 execution is open and belongs to #194 H1.
 """
 
 from __future__ import annotations
@@ -54,7 +60,7 @@ from atelier2.ports.published_revisions import CatalogLineageQuery, CatalogResol
 
 @dataclass(frozen=True)
 class NamedRunStarted:
-    """One named workflow's exact bytes are started and their record is whole."""
+    """The name reached these exact bytes, and their whole record was written."""
 
     run_id: RunId
     revision_hash: PublishedRevisionHash
