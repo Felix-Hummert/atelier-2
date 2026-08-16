@@ -33,7 +33,9 @@ from atelier2.ports.run_queries import (
     ListRunsResult,
     RunFound,
 )
-from atelier2.ports.workflow_revisions import DurableProjectionLimit
+from atelier2.ports.workflow_revisions import (
+    DurableProjectionLimit,
+)
 from tests.api.test_agent_attempts import v2_run_projection
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 

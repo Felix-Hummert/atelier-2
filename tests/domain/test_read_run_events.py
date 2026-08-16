@@ -11,13 +11,17 @@ from atelier2.application.read_run_events import (
     read_run_events,
 )
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
-from atelier2.contracts.runs import RunId
-from atelier2.ports.run_events import (
-    EventHistoryCorrupt,
+from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
 )
-from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
+from atelier2.contracts.runs import RunId
+from atelier2.ports.run_events import (
+    EventHistoryCorrupt,
+)
+from atelier2.ports.workflow_revisions import (
+    QueryDurableStateCorrupt,
+)
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,
 )

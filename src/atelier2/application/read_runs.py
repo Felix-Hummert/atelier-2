@@ -16,11 +16,13 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
+from atelier2.contracts.run_projections import (
+    RunPage,
+    RunProjection,
+)
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_queries import (
     RunFound,
-    RunPage,
-    RunProjection,
     RunQueries,
     RunQueryMissing,
 )

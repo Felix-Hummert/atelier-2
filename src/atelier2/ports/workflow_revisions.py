@@ -4,6 +4,12 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.runs import WorkflowRevision, WorkflowRevisionHash
+from atelier2.contracts.workflow_projections import (
+    DescribedWorkflowRevisionPage,
+    EnrichedPageBudget,
+    WorkflowRevisionPage,
+    WorkflowRevisionProjection,
+)
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, VersionedReference
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
@@ -89,12 +95,6 @@ class ProjectionLimitExceeded(ValueError):
 
 
 @dataclass(frozen=True)
-class WorkflowRevisionProjection:
-    revision: WorkflowRevision
-    graph: AnyWorkflowDocument
-
-
-@dataclass(frozen=True)
 class WorkflowRevisionFound:
     projection: WorkflowRevisionProjection
 
@@ -102,45 +102,6 @@ class WorkflowRevisionFound:
 @dataclass(frozen=True)
 class WorkflowRevisionMissing:
     pass
-
-
-@dataclass(frozen=True)
-class WorkflowRevisionPage:
-    revision_hashes: tuple[WorkflowRevisionHash, ...]
-    next_after: WorkflowRevisionHash | None
-
-
-@dataclass(frozen=True)
-class EnrichedPageBudget:
-    """What one page may spend before it stops and reports where to resume.
-
-    A page that says what its revisions are called has to read and parse their
-    documents, and those are two different costs: measured against this parser
-    the parse is paid per node -- 0.66 to 1.52 ms per node, holding across a 150x
-    byte range -- while the read is paid per byte. Bounding one of them leaves
-    the other free, so a page spends both and stops at whichever runs out first.
-    """
-
-    maximum_nodes: int
-    maximum_document_bytes: int
-
-    def __post_init__(self) -> None:
-        for name, value in self.__dict__.items():
-            if type(value) is not int or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
-
-
-@dataclass(frozen=True)
-class DescribedWorkflowRevisionPage:
-    """Revisions together with the documents they were published as, parsed.
-
-    `next_after` is set whenever further revisions follow, whether the page ended
-    on its caller's limit or on its budget, so a caller resumes the same way in
-    both cases and never has to learn which bound stopped it.
-    """
-
-    items: tuple[WorkflowRevisionProjection, ...]
-    next_after: WorkflowRevisionHash | None
 
 
 @dataclass(frozen=True)

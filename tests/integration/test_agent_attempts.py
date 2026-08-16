@@ -74,8 +74,12 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
-from atelier2.ports.run_queries import RunFound
-from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
+from atelier2.ports.run_queries import (
+    RunFound,
+)
+from atelier2.ports.workflow_revisions import (
+    QueryDurableStateCorrupt,
+)
 from tests.scenarios.agents import (
     AgentCompletionDecoder,
     RecordingAgentExecutorFactoryV2,

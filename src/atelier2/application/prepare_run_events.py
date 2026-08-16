@@ -23,8 +23,12 @@ from atelier2.ports.run_events import (
     RunEventQueries,
     StreamReady,
 )
-from atelier2.ports.run_queries import RunQueryMissing
-from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
+from atelier2.ports.run_queries import (
+    RunQueryMissing,
+)
+from atelier2.ports.workflow_revisions import (
+    QueryDurableStateCorrupt,
+)
 from atelier2.ports.workflow_revisions import (
     ReadUnavailable as PortReadUnavailable,
 )

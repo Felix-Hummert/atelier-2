@@ -13,14 +13,19 @@ from atelier2.api.stream import (
 from atelier2.api.wire.events import AgentCompletedEventResourceV2
 from atelier2.api.wire.resources import NodeRailAttemptResource, NodeRailResource
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
-from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
-from atelier2.contracts.runs import RunId
-from atelier2.ports.run_events import (
+from atelier2.contracts.run_events import (
     PersistedRunEvent,
-    PrepareRunEventStreamResult,
     RunEventPage,
 )
-from atelier2.ports.run_queries import RunProjection
+from atelier2.contracts.run_projections import (
+    NodeState,
+    PublicAgentAttemptState,
+    RunProjection,
+)
+from atelier2.contracts.runs import RunId
+from atelier2.ports.run_events import (
+    PrepareRunEventStreamResult,
+)
 from tests.api.test_agent_attempts import v2_run_projection
 from tests.scenarios.api import api_limits, event_poll_backoff, stream_page_reader
 
