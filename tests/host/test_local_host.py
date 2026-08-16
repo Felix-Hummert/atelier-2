@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.request import urlopen
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from atelier2.adapters.claude_subscription import (
@@ -49,20 +50,50 @@ from tests.scenarios.runtime import exact_output_runtime
 
 INERT_CLAUDE = "raise SystemExit(0)\n"
 
+SAMPLE_PUBLIC_REFERENCE = "run1.cnVu"
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/atelier",
-        "/atelier/",
-        "/atelier/runs",
-        "/atelier/new",
-        "/atelier/runs/run1.cnVu",
-    ],
-)
+
+def declared_cockpit_paths() -> tuple[str, ...]:
+    """The address space the browser declares, read from the browser's own file.
+
+    The client router decides which paths are pages; the server only has to hand
+    the application to each of them on a cold load. Repeating that list here is
+    what let `/atelier/project` ship unserved: a copied list can only confirm the
+    paths someone already thought of.
+    """
+    declaration = (
+        Path(__file__).resolve().parents[2] / "frontend/src/lib/servedPaths.json"
+    )
+    paths = json.loads(declaration.read_text(encoding="utf-8"))
+    return tuple(paths)
+
+
+def test_the_server_serves_exactly_the_paths_the_browser_declares(
+    runtime, frontend_dist: Path
+) -> None:
+    app = create_app(
+        source_commit="commit",
+        source_tree="tree",
+        ports=api_ports(runtime),
+        limits=scenario_api_limits(),
+        event_poll_backoff=scenario_event_poll_backoff(),
+        frontend_dist=frontend_dist,
+    )
+
+    served = {
+        route.path
+        for route in app.routes
+        if isinstance(route, APIRoute) and not route.path.startswith("/atelier/api")
+    }
+
+    assert served == set(declared_cockpit_paths())
+
+
+@pytest.mark.parametrize("path", declared_cockpit_paths())
 def test_frontend_routes_serve_one_fixed_index_without_catching_api(
     runtime, frontend_dist: Path, path: str
 ) -> None:
+    path = path.replace("{public_ref}", SAMPLE_PUBLIC_REFERENCE)
     app = create_app(
         source_commit="commit",
         source_tree="tree",

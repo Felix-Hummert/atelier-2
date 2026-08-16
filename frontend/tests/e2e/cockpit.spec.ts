@@ -92,6 +92,20 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
 });
 
 
+/**
+ * A click never asks the server for a page, so the project level looked right
+ * while a reload of it answered 404. This walks the way an operator arrives from
+ * outside — the pasted link — and then reloads the level he is standing on.
+ */
+test("opens the project level from a cold link and survives a reload", async ({ page }) => {
+  await page.goto("/atelier/project");
+  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier\/project$/);
+});
+
 test("walks the whole workshop: studio into the project, project into the run, and the trail back up", async ({ page }) => {
   await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
