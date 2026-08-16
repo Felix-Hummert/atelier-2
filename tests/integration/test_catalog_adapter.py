@@ -40,6 +40,10 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
+from atelier2.ports.durable_runs import (
+    DurableStateCorrupt,
+    DurableWriteUnavailable,
+)
 from atelier2.ports.published_revisions import (
     CatalogAdmissionExisting,
     CatalogAdmissionNameHeld,
@@ -475,4 +479,77 @@ def test_founding_a_retired_lineage_again_is_refused_and_writes_nothing(
     assert harness.catalog.found_lineage(
         founding, display_name, scene.actor, scene.founded_at
     ) == CatalogAdmissionRetired(lineage.lineage_id)
+    assert _catalog_snapshot(harness) == before
+
+
+@pytest.mark.parametrize("held_name", ["historical", "current"])
+def test_a_retired_lineage_keeps_holding_every_name_it_ever_carried(
+    harness: CatalogHarness, scene: CatalogScene, held_name: str
+) -> None:
+    founding = _workflow(b"name: pasta\n")
+    later = _workflow(b"name: lasagne\n")
+    historical = CatalogLineageDisplayName("pasta")
+    current = CatalogLineageDisplayName("lasagne")
+    harness.catalog.publish_revision(founding)
+    harness.catalog.publish_revision(later)
+    retired_lineage = harness.found(founding, historical, scene)
+    harness.admit(retired_lineage, later, current, scene)
+    harness.retire(retired_lineage, scene)
+    claimed = historical if held_name == "historical" else current
+    successor = _workflow(b"name: successor\n")
+    harness.catalog.publish_revision(successor)
+    before = _catalog_snapshot(harness)
+
+    assert harness.catalog.found_lineage(
+        successor, claimed, scene.actor, scene.founded_at
+    ) == CatalogAdmissionNameHeld(claimed, retired_lineage.lineage_id)
+    assert _catalog_snapshot(harness) == before
+
+
+def _refuse_every_alias_insert(harness: CatalogHarness) -> None:
+    with harness.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TRIGGER refuse_alias_insert "
+            "BEFORE INSERT ON catalog_lineage_aliases "
+            "BEGIN SELECT RAISE(ABORT, 'injected alias failure'); END"
+        )
+
+
+@pytest.mark.parametrize("write", ["founding", "admission"])
+def test_a_failed_alias_write_leaves_the_whole_catalog_untouched(
+    harness: CatalogHarness, scene: CatalogScene, write: str
+) -> None:
+    standing = _workflow(b"name: pasta\n")
+    open_lineage_founding = _workflow(b"name: lasagne\n")
+    admitted = _workflow(b"name: lasagne two\n")
+    for revision in (standing, open_lineage_founding, admitted):
+        harness.catalog.publish_revision(revision)
+    retired_lineage = harness.found(standing, CatalogLineageDisplayName("pasta"), scene)
+    open_lineage = harness.found(
+        open_lineage_founding, CatalogLineageDisplayName("lasagne"), scene
+    )
+    harness.retire(retired_lineage, scene)
+    _refuse_every_alias_insert(harness)
+    before = _catalog_snapshot(harness)
+    assert all(before[table] for table in before)
+
+    if write == "founding":
+        candidate = _workflow(b"name: carbonara\n")
+        harness.catalog.publish_revision(candidate)
+        result = harness.catalog.found_lineage(
+            candidate,
+            CatalogLineageDisplayName("carbonara"),
+            scene.actor,
+            scene.founded_at,
+        )
+    else:
+        result = harness.catalog.admit_member(
+            open_lineage.lineage_id,
+            admitted,
+            CatalogLineageDisplayName("lasagne-two"),
+            scene.actor,
+            scene.admitted_at,
+        )
+
+    assert isinstance(result, DurableWriteUnavailable | DurableStateCorrupt)
     assert _catalog_snapshot(harness) == before
