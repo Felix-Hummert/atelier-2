@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import struct
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -58,7 +57,6 @@ def test_attempt_id_has_fixed_canonical_vector() -> None:
         attempt_id.value
         == "6ea67ad4ac9b01be7a7eddef32e44a8b3bd7391fe69f89eb8407bd05a7dc1129"
     )
-    assert struct.pack(">Q", 1) != str(1).encode("ascii")
 
 
 def test_attempt_identity_accepts_exactly_two_ordinals() -> None:

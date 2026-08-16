@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import struct
 from typing import cast
 
 import pytest
@@ -91,15 +90,29 @@ def test_event_terminal_and_answer_hash_vectors_are_frozen() -> None:
     )
 
 
-def test_decimal_ascii_and_packed_integers_are_distinct_hash_fields() -> None:
-    """#93 L5: the two integer encodings must not be treated as interchangeable.
+def test_v2_cancellation_event_hash_vector_pins_attempt_ordinal() -> None:
+    revision = WorkflowRevision(b"format_version: 1\nstart: agent\nnodes: []\n")
+    run_id = RunId("r\N{LATIN SMALL LETTER U WITH ACUTE}n-1")
+    node_id = "n\N{LATIN SMALL LETTER O WITH ACUTE}de"
+    execution = NodeExecutionId.for_node(run_id, revision.revision_hash, node_id)
+    event = RunEvent(
+        run_id,
+        revision.revision_hash,
+        7,
+        node_id,
+        execution,
+        RunEventKind.AGENT_CANCELLED,
+        b"5",
+        agent_attempt_id="b" * 64,
+        attempt_ordinal=1,
+        cancellation_command_id="cancel",
+        replacement="NONE",
+        cancellation_disposition="REAPED_AFTER_TERM",
+    )
 
-    `node-event-hash` persists `str(n).encode("ascii")`; minted ids persist
-    `struct.pack(">Q", n)`. The frozen vectors in this file and in
-    `test_agent_attempts.py` go red if either family is silently switched.
-    """
-    assert str(1).encode("ascii") != struct.pack(">Q", 1)
-    assert str(7).encode("ascii") != struct.pack(">Q", 7)
+    assert event.event_hash.value == (
+        "3114df5be5f3b9b80558d0f37b6faa64a96e47eb1fc827fae8c6eeddf8c53943"
+    )
 
 
 def test_event_hash_vector_with_receipt_fields_is_frozen() -> None:

@@ -18,9 +18,11 @@ def frame(domain: str, *fields: bytes) -> bytes:
 
     Integers are not a frame concern. An identity owner encodes them as bytes
     before calling: decimal ASCII (`str(n).encode("ascii")`) for the persisted
-    `node-event-hash` family, and `struct.pack(">Q", n)` for minted ids
-    (`agent-attempt-id`, agent-configuration revisions). The two encodings of
-    the same integer are different bytes. Switching a landed family rewrites
+    `node-event-hash` family (`event_sequence` and V2 `attempt_ordinal`), and
+    `struct.pack(">Q", n)` for minted ids (`AgentAttemptId.attempt_ordinal`,
+    `AuthProfileRevision.revision_number`, and the same revision number inside
+    the agent-execution-request and agent-receipt preimages). The two encodings
+    of the same integer are different bytes. Switching a landed family rewrites
     every stored hash of that family, so new identities use pack and the
     event-hash family stays decimal ASCII.
     """
