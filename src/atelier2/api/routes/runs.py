@@ -47,7 +47,6 @@ from atelier2.application.answer_wait import (
     AnswerStateConflict,
     NodeMissing,
     RunMissing,
-    answer_wait_result,
 )
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
 from atelier2.application.read_runs import RunsListed
@@ -61,7 +60,7 @@ from atelier2.application.reconcile_effect import (
     ReconciliationStale,
     ReconciliationTargetMissing,
 )
-from atelier2.application.reconcile_run import ReconcileRunRequest, reconcile_run
+from atelier2.application.reconcile_run import ReconcileRunRequest
 from atelier2.application.refusals import (
     DurableStateCorrupt,
     ReadUnavailable,
@@ -69,13 +68,13 @@ from atelier2.application.refusals import (
 )
 from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
+    AuthoredAgentBinding,
     InvalidAgentBindings,
     RevisionMissing,
     RunCreated,
     RunExisting,
     RunFormatNotExecutable,
     RunIdentityConflict,
-    start_published_run,
 )
 from atelier2.application.start_published_run import (
     AgentExecutorBindingUnavailable as StartAgentExecutorBindingUnavailable,
@@ -84,12 +83,6 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
-)
-from atelier2.contracts.agents import (
-    AgentBinding,
-    AgentBindingSet,
-    AgentConfigurationRevisionHash,
-    AgentRole,
 )
 from atelier2.contracts.effects import (
     EffectId,
@@ -120,8 +113,6 @@ from atelier2.ports.durable_runs import (
 )
 from atelier2.ports.durable_runs import (
     DurableWriteUnavailable,
-    StartPublishedRunRequest,
-    StartPublishedRunRequestV2,
 )
 
 router = APIRouter()
@@ -141,30 +132,17 @@ async def start_run_route(
     run_id = RunId(body.run_id)
     require_new_run_identity(run_id, context.limits)
     revision_hash = parse_revision_hash(body.workflow_revision_hash)
+    bindings = None
     if isinstance(body, StartRunRequestResourceV2):
-        try:
-            request = StartPublishedRunRequestV2(
-                run_id,
-                revision_hash,
-                AgentBindingSet(
-                    tuple(
-                        AgentBinding(
-                            AgentRole(binding.role),
-                            AgentConfigurationRevisionHash(
-                                binding.agent_configuration_revision_hash
-                            ),
-                        )
-                        for binding in body.agent_bindings
-                    )
-                ),
+        bindings = tuple(
+            AuthoredAgentBinding(
+                binding.role, binding.agent_configuration_revision_hash
             )
-        except (TypeError, ValueError) as error:
-            raise ApiProblem("invalid-agent-bindings") from error
-    else:
-        request = StartPublishedRunRequest(run_id, revision_hash)
+            for binding in body.agent_bindings
+        )
     result = await run_control_query(
         context.control_runner,
-        lambda: start_published_run(request, context.ports.published_run_starter),
+        lambda: context.use_cases.start_published_run(run_id, revision_hash, bindings),
     )
     match result:
         case RunCreated():
@@ -189,7 +167,7 @@ async def start_run_route(
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
-    return resource_response(await _run_resource_of(request.run_id, context), status)
+    return resource_response(await _run_resource_of(run_id, context), status)
 
 
 @router.get(API_PREFIX + "/runs", response_model=AnyRunPageResource)
@@ -313,7 +291,7 @@ async def answer_run_route(
     )
     result = await run_control_query(
         context.control_runner,
-        lambda: answer_wait_result(answer_request, context.ports.wait_answerer),
+        lambda: context.use_cases.answer_wait(answer_request),
     )
     match result:
         case AnswerAcceptedPending() | AnswerExistingPending():
@@ -379,12 +357,7 @@ async def reconcile_run_route(
     )
     result = await run_control_query(
         context.control_runner,
-        lambda: reconcile_run(
-            reconciliation_request,
-            context.ports.run_queries,
-            context.ports.reconcile_commander,
-            context.workflow_projection_limit,
-        ),
+        lambda: context.use_cases.reconcile_run(reconciliation_request),
     )
     match result:
         case ReconciliationAcceptedPending() | ReconciliationExistingPending():

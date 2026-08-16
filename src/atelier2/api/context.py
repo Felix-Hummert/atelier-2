@@ -7,13 +7,25 @@ from fastapi import Depends, FastAPI, Request
 
 from atelier2.api.limits import ApiLimits
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
+from atelier2.application.answer_wait import AnswerWaitResult
 from atelier2.application.prepare_run_events import PrepareRunEventsResult
+from atelier2.application.publish_agent_configurations import (
+    PublishAgentConfigurationRevisionResult,
+    PublishAuthProfileRevisionResult,
+)
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.application.read_runs import GetRunResult, ListRunsResult
 from atelier2.application.read_workflow_revisions import (
     GetWorkflowRevisionResult,
     ListWorkflowRevisionsResult,
 )
+from atelier2.application.reconcile_effect import ReconcileRunResult
+from atelier2.application.reconcile_run import ReconcileRunRequest
+from atelier2.application.start_published_run import (
+    AuthoredAgentBinding,
+    StartPublishedRunResult,
+)
+from atelier2.contracts.executions import SubmitWaitAnswerRequest
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
@@ -67,6 +79,18 @@ class ApiUseCases:
     get_run: Callable[[RunId], GetRunResult]
     list_runs: Callable[[RunId | None, int], ListRunsResult]
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
+    publish_auth_profile_revision: Callable[
+        [str, int, str, str], PublishAuthProfileRevisionResult
+    ]
+    publish_agent_configuration_revision: Callable[
+        [str, str, str, str], PublishAgentConfigurationRevisionResult
+    ]
+    start_published_run: Callable[
+        [RunId, WorkflowRevisionHash, tuple[AuthoredAgentBinding, ...] | None],
+        StartPublishedRunResult,
+    ]
+    answer_wait: Callable[[SubmitWaitAnswerRequest], AnswerWaitResult]
+    reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]
 
 
 @dataclass(frozen=True)

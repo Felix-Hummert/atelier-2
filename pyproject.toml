@@ -118,8 +118,6 @@ forbidden_modules = ["atelier2.ports", "atelier2.ports.**"]
 allow_indirect_imports = true
 as_packages = true
 ignore_imports = [
-    "atelier2.api.routes.agents -> atelier2.ports.agent_configurations",
-    "atelier2.api.routes.agents -> atelier2.ports.durable_runs",
     "atelier2.api.routes.runs -> atelier2.ports.agent_attempts",
     "atelier2.api.routes.runs -> atelier2.ports.durable_runs",
 ]

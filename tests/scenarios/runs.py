@@ -58,7 +58,6 @@ from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSna
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.ports.agent_executions import AgentExecutorRegistry
-from atelier2.ports.durable_runs import StartPublishedRunRequest
 
 
 def publish_revision(engine: Engine, revision: WorkflowRevision) -> None:
@@ -79,7 +78,9 @@ def start_published_v1_run(
 ) -> AnyRun:
     publish_revision(engine, revision)
     result = start_published_run(
-        StartPublishedRunRequest(run_id, revision.revision_hash),
+        run_id,
+        revision.revision_hash,
+        None,
         DbosDurableRunStarter(engine, settings, agent_executor_registry),
     )
     assert isinstance(result, (RunCreated, RunExisting)), result

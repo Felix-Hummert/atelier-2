@@ -13,7 +13,7 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_FLOOR = 103
+EXPECTED_SOURCE_MODULE_FLOOR = 104
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
@@ -51,20 +51,11 @@ class _Unreadable:
 
 ROUTE_PACKAGE = "src/atelier2/api/routes"
 ROUTE_CALLS_STILL_HOLDING_PORTS = {
-    "agents": {
-        "publish_auth_profile_revision_route": ("agent_configuration_catalog",),
-        "publish_agent_configuration_revision_route": ("agent_configuration_catalog",),
-    },
     "events": {"event_stream_route": ("run_event_queries",)},
     "revisions": {
         "publish_revision": ("workflow_document_parser", "workflow_revision_publisher")
     },
-    "runs": {
-        "start_run_route": ("published_run_starter",),
-        "cancel_agent_attempt_route": ("agent_attempt_canceller",),
-        "answer_run_route": ("wait_answerer",),
-        "reconcile_run_route": ("reconcile_commander", "run_queries"),
-    },
+    "runs": {"cancel_agent_attempt_route": ("agent_attempt_canceller",)},
 }
 """Every port a route still reaches, named down to the single access.
 
