@@ -96,7 +96,7 @@ def engine_snapshot(
     return schema, rows
 
 
-def test_fresh_v9_has_the_closed_product_tables_and_reopens_idempotently(
+def test_fresh_v10_has_the_closed_product_tables_and_reopens_idempotently(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -107,7 +107,7 @@ def test_fresh_v9_has_the_closed_product_tables_and_reopens_idempotently(
         with engine.connect() as connection:
             assert connection.execute(
                 sa.text("SELECT version FROM atelier_schema_versions")
-            ).all() == [(9,)]
+            ).all() == [(10,)]
             assert PRODUCT_TABLE_NAMES.issubset(
                 sa.inspect(connection).get_table_names()
             )
@@ -347,7 +347,7 @@ def test_malformed_v7_is_refused_without_mutation(tmp_path: Path) -> None:
     before = snapshot(database)
     engine = sa.create_engine(f"sqlite:///{database}")
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v7"):
+    with pytest.raises(UnsupportedSchemaVersion, match="schema version 7"):
         initialize_schema(engine)
 
     engine.dispose()
@@ -364,7 +364,7 @@ def test_malformed_v7_is_refused_without_mutation(tmp_path: Path) -> None:
         "changed-nullability",
     ],
 )
-def test_existing_v9_rejects_every_product_schema_drift_without_mutation(
+def test_existing_v10_rejects_every_product_schema_drift_without_mutation(
     tmp_path: Path, malformation: str
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -413,7 +413,7 @@ def test_existing_v9_rejects_every_product_schema_drift_without_mutation(
     before_schema = snapshot(database)
     before_rows = rows_snapshot(database)
     reopened = sa.create_engine(f"sqlite:///{database}")
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v9"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v10"):
         initialize_schema(reopened)
     reopened.dispose()
 
@@ -421,7 +421,7 @@ def test_existing_v9_rejects_every_product_schema_drift_without_mutation(
     assert rows_snapshot(database) == before_rows
 
 
-def test_existing_malformed_in_memory_v9_is_refused() -> None:
+def test_existing_malformed_in_memory_v10_is_refused() -> None:
     engine = sa.create_engine("sqlite://")
     initialize_schema(engine)
     with engine.begin() as connection:
@@ -433,7 +433,7 @@ def test_existing_malformed_in_memory_v9_is_refused() -> None:
             )
         )
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v9"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v10"):
         initialize_schema(engine)
     engine.dispose()
 
@@ -459,7 +459,7 @@ def test_nonempty_dbos_only_in_memory_database_is_not_treated_as_fresh() -> None
     engine.dispose()
 
 
-def test_dbos_owned_tables_are_allowed_and_unchanged_by_v9_preflight(
+def test_dbos_owned_tables_are_allowed_and_unchanged_by_v10_preflight(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
