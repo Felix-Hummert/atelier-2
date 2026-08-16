@@ -77,7 +77,7 @@ afterEach(() => {
 });
 
 describe("the saved-workflow picker", () => {
-  it("proves(the-picker-offers-a-name-and-keeps-the-hash-under-details): offers a named workflow by its name and keeps the exact hash under details", async () => {
+  it("offers a named workflow by its name and keeps the exact hash under details", async () => {
     renderPicker([namedRevision()]);
 
     const option = await screen.findByRole("radio", {
