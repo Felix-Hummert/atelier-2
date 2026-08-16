@@ -1,0 +1,16 @@
+# Secret-scan policy for the CI "Secret scan" job.
+# Extends the default gitleaks rules; entries here are reviewed false
+# positives only — a real credential value must never be allowlisted.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Identifier constants that name credential channels or storage keys but carry no secret value"
+regexTarget = "match"
+regexes = [
+  # systemd credential *name* (the channel label, not its content)
+  '''DIRECT_SYSTEMD_LAUNCH_CREDENTIAL_NAME = "atelier2-launch"''',
+  # browser localStorage key name
+  '''storageKey = "atelier2\.mutation-journal\.v1"''',
+]
