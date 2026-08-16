@@ -86,8 +86,10 @@ Four sections, in this order, each of which may be empty but not absent:
 
 - `## Intent` — the sentences that say what the human wants. Short, plain, and
   attributed.
-- `## Rules` — numbered rules a builder is expected to satisfy. Every rule
-  carries its **authority grade** and its source:
+- `## Rules` — the sentences a builder is expected to satisfy. Existing
+  documents 0001–0004 write them as numbered rules. New documents write them
+  as `REQ-<bereich>-<nn>` blocks under the sentence template below. Every
+  rule carries its **authority grade** and its source:
   - **`OPERATOR`** — the cited object reproduces the operator's **own sentence**,
     verbatim and in the language he wrote it, and that sentence says what the
     rule says. The document repeats the quote at the rule, so the human intent
@@ -126,11 +128,73 @@ Four sections, in this order, each of which may be empty but not absent:
   sentence cannot be revived by someone who read only the older comment.
 - `## Open questions` — what the thread left undecided, and who owns deciding
   it. An open question is honest debt; a silently resolved one is a fabricated
-  requirement.
+  requirement. New questions name an owner. The four existing documents still
+  carry questions without one (Issue #163 Phase-1 inventory); that is named
+  debt for their migration, not a licence to add more ownerless ones.
 - `## Acceptance` — the acceptance sentences this requirement expects, and which
   of them a story has already declared. A document names a declared sentence by
   its identifier; where no story has declared one yet, it says so instead of
-  inventing an identifier.
+  inventing an identifier. Under the sentence template, this section is a
+  reading of the `Beweis` fields — see below.
+
+### Sentence template
+
+A new requirement document writes each rule as a stable sentence with its own
+identifier. The shape is the one
+[Issue #163](https://github.com/FlexOr2/atelier-2/issues/163) published; the
+field names stay in that language so a later gate can find them:
+
+```markdown
+### REQ-<bereich>-<nn>: <ein kurzer, testbarer, implementierungsfreier Satz>
+Status:     DRAFT | AGREED | SUPERSEDED (AGREED nur durch Operator-Kommentar)
+Quelle:     <Issue/Kommentar-IDs, Operator-Sätze wörtlich zitiert>
+Begründung: <warum es dieses Requirement gibt, 1-3 Sätze>
+Journeys:   <Verweise, optional>
+Beweis:     <acceptance-Identifier ...> | UNGEBUNDEN (ehrlich benannt)
+Offen:      - <Frage> (Eigentümer: <wer>, Ziel: <Runde/Item>)  [nur DRAFT]
+```
+
+This sits **under** the document header and the four body sections. It does not
+replace them. `## Rules` is the section that contains the blocks. `Quelle`
+opens with the authority grade (`OPERATOR` or `DESK`) and then the source
+objects. The grade is still decided by the operator's voice in those objects,
+by the same four refusals listed under Body.
+
+The identifier is the sentence's identity. `<bereich>` is a short uppercase
+token naming the subject, chosen when the document is created and never
+renamed. `<nn>` is a two-digit number. An identifier is never reused and never
+renumbered. A superseded sentence keeps its identifier and points at its
+successor.
+
+`AGREED` on a sentence is not `AGREED` on the document. The document status
+still means the operator approved this exact reading of the thread. A sentence
+becomes `AGREED` only in an operator comment that names that identifier. The
+desk cannot grant either status.
+
+`Beweis` is an identifier that exists in `acceptance/`, or the word
+`UNGEBUNDEN`. Nothing in between. A bound identifier is a claim that a story
+declared that sentence for this requirement; it is not itself the proof — the
+acceptance gate still judges the test. `UNGEBUNDEN` on an `AGREED` sentence is
+named debt. Documents 0001–0004 do not yet carry this field; they keep numbered
+rules until their migration.
+
+`## Acceptance` is a reading of those `Beweis` fields: it lists the identifiers
+already declared and names what is still `UNGEBUNDEN`. It does not bind a
+sentence a second time. Where they disagree, `Beweis` is the owner and the
+section is wrong.
+
+`Offen` is allowed only while the sentence is `DRAFT`, and every entry names an
+owner. An `AGREED` sentence has no open question.
+
+`Journeys` may be empty. `docs/journeys/` does not exist yet; a pointer there
+today would be a dead link.
+
+The existing provenance convention is not relaxed: every sentence still names
+its source object, in `Distilled-From` and again at `Quelle`. A sentence with
+no source is removed, not sourced afterwards.
+
+This change does not add a machine check over the template. The shape is
+written so one can be added later without inventing the fields.
 
 ### Provenance
 
