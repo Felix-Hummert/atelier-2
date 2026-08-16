@@ -4,13 +4,12 @@ story = "https://github.com/FlexOr2/atelier-2/issues/131"
 # This is the first acceptance declaration for requirement 0003, whose own text
 # records that no story had declared a sentence for it yet.
 #
-# Head A of the plan declares the three sentences below. A fourth the plan
-# names — "from every level a named way leads exactly one level up" — is
-# deliberately absent: it promises the way from the run through the project into
-# the studio, and head A builds neither the project level nor the run's
-# breadcrumb. Declaring it here and passing it with half the way would be the
-# narrowed acceptance this repository refuses. It joins this file in the head
-# that proves it whole.
+# Head A declared the first three sentences below and withheld the fourth,
+# because it built neither the project level nor a way up out of the run and
+# would have passed the promise with half the path. Head B builds the project
+# level, and the run's existing way up now leads to it, so the fourth sentence
+# is declared here and proven by one test that walks the whole path in one go —
+# never by two tests of which either could carry the claim alone.
 #
 # Three further sentences of #131 stay open with their owners named, and #131 is
 # neither verified nor retired while one of them is open: "no screen offers a
@@ -38,3 +37,7 @@ text = "The inbox row names, across everything, every run that waits for a human
 [[sentence]]
 id = "an-empty-area-names-the-one-next-action"
 text = "An area with nothing in it names the one next action that is possible today, instead of staying blank or hinting at a capability that does not exist."
+
+[[sentence]]
+id = "every-level-names-the-way-back-up"
+text = "From every level a named way leads exactly one level up: from the run to the project, and from the project into the studio — a way the operator can read, never the browser's back button."

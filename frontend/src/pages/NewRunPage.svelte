@@ -362,7 +362,7 @@
 <svelte:window onkeydown={handleEscape} />
 
 <section aria-labelledby="new-title">
-  <a class="back-link" href="/atelier/runs" onclick={(event) => { event.preventDefault(); navigate("/atelier/runs"); }}>← Runs</a>
+  <a class="back-link" href="/atelier/project" onclick={(event) => { event.preventDefault(); navigate("/atelier/project"); }}>← Project</a>
   <p class="eyebrow">New durable work</p>
   <h1 id="new-title">Choose a workflow</h1>
 

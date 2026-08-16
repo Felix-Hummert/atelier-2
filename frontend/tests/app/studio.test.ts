@@ -71,12 +71,15 @@ describe("the studio is the level the workshop opens on", () => {
     expect(within(card).getAllByRole("link")).toHaveLength(1);
   });
 
-  it("leads from the one project card to the runs of this installation", async () => {
+  it("leads from the one project card down into the project level", async () => {
     openStudio([startedRun()]);
+    const card = await screen.findByRole("article", { name: "This workshop" });
 
-    await fireEvent.click(await screen.findByRole("link", { name: /This workshop/ }));
+    await fireEvent.click(within(card).getByRole("link"));
 
-    expect((await screen.findByRole("heading", { name: "Runs" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/project");
+    expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
+    expect(screen.queryByRole("heading", { name: "Studio" })).toBeNull();
   });
 });
 
