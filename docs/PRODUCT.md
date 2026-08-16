@@ -334,9 +334,14 @@ job still travels inside the published document, so one distinct input burns one
 revision, and neither a run-level input, a workflow name, nor an output contract
 that could decide an exit code exists yet.
 
-The canonical store is schema V8. A fresh store is created as exact V8; an exact
-V7 store is upgraded once in one SQLite transaction by adding the configuration
-format and requested-capability fields. Existing rows and hashes remain
-byte-identical and reopen as legacy V1/headless configurations. Malformed,
-partial, older, future, or fingerprint-mismatched stores are refused without a
-partial upgrade; there is no runtime downgrade.
+The canonical store is schema V9. A fresh store is created as exact V9. An exact
+V8 store is upgraded once by a version CAS: the product tables are unchanged
+because the process contract already lives on V8, and every durable row and hash
+survives. An exact V7 store still upgrades through V8 in the same open, adding
+the configuration format and requested-capability fields, then the V9 handoff.
+Malformed, partial, older, future, or fingerprint-mismatched stores are refused
+without a partial upgrade; there is no runtime downgrade. #63 consumes the
+published handoff object `PRODUCT_SCHEMA_HANDOFF` — version 9, product-schema
+fingerprint
+`6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38`, identical to
+V8 — and must not reopen a populated V9 store as a later catalog cutover.

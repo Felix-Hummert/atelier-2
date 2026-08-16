@@ -30,14 +30,19 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V8 only in a truly empty canonical store and reopens
-only an exact V8 product schema. An exact V7 store is the sole migratable
-predecessor: one `BEGIN IMMEDIATE` transaction rebuilds only the immutable agent
-configuration table, labels existing rows revision-format V1 with `headless`
-capability, preserves their stored hashes and references, and advances the
-schema version last. Failure before commit leaves exact V7; concurrent openers
-serialize and migrate once. Older, future, malformed, or nonempty unowned stores
-are rejected without mutation. There is no runtime downgrade.
+The runtime creates schema V9 only in a truly empty canonical store and reopens
+only an exact V9 product schema. An exact V8 store is migratable by one version
+CAS: the product tables already carry the process contract, so every durable
+row and hash survives unchanged. An exact V7 store remains migratable: one
+`BEGIN IMMEDIATE` transaction rebuilds only the immutable agent configuration
+table, labels existing rows revision-format V1 with `headless` capability,
+preserves their stored hashes and references, advances the schema version to V8,
+then applies the V8→V9 handoff in the same transaction. Failure before commit
+leaves the predecessor; concurrent openers serialize and migrate once. Older,
+future, malformed, or nonempty unowned stores are rejected without mutation.
+There is no runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version
+9 with product-schema fingerprint
+`6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -82,7 +87,8 @@ not process authority. Success atomically commits attempt, receipt, event, and
 successor. A typed, authoritatively reaped unsuccessful child atomically commits
 `FAILED`, `AGENT_FAILED`, and the same current run node. Ambiguous exceptions
 stay `LAUNCH_ARMED` until an exact cancellation owns their cleanup. Schema V8
-makes cancellation durable before any signal. A live supervisor binds a Unix
+already makes cancellation durable before any signal; V9 is the version handoff
+of that same product shape. A live supervisor binds a Unix
 control endpoint, watchdog generation, and delegated cgroup; an exec guard joins
 the provider child to that cgroup and dies if the watchdog parent disappears.
 The cancellation workflow sends `TERM`, waits the configured finite grace,
@@ -146,7 +152,8 @@ provider contract.
 | Reconciliation | FOUND and authorized-absence commands preserve operator provenance; concurrent opposing commands commit one CAS winner and one rejected loser. |
 | Atomic product events | Reconciliation state and its required/resolved event, plus receipt, intent, run, and owning command, commit or roll back together under injected database failures. |
 | Runtime lifecycle | Equivalent leases share one engine, Agent executor, and effect adapter; conflicts, failed initialization, concurrent close, durable binding drift, and two-process recovery preserve one binding and result. |
-| V7→V8 migration | Populated V7 rows and legacy hashes survive one transactional table rebuild; fresh, reopened, concurrent, malformed, SQL-CHECK, and injected rollback cases establish exact V8 or unchanged V7. |
+| V7→V8→V9 migration | Populated V7 rows and legacy hashes survive one transactional table rebuild, then the V8→V9 version CAS; fresh, reopened, concurrent, malformed, SQL-CHECK, and injected rollback cases establish exact V9 or the unchanged predecessor. |
+| V8→V9 handoff | A populated exact V8 store advances only the schema-version row; every product row and hash survives; crash before CAS restores exact V8; concurrent openers converge on one V9. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 | V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |
@@ -171,6 +178,10 @@ bytes so a later review can identify documentation drift.
 
 Production crash tests replace the H0 effect, unknown, C1, C2, C3, and
 concurrency simulations, so the exploratory probe is no longer retained.
+
+A preserving version hop that does not change product tables exists so a later
+non-preserving cutover has a frozen predecessor. Do not add another such hop
+while the store remains a replaceable prototype.
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the
