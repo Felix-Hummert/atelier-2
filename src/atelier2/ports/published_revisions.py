@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol, TypeGuard
 
+from atelier2.contracts.catalog_v3 import (
+    CatalogLineageDisplayName,
+    CatalogLineageId,
+)
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -48,28 +52,93 @@ class PublishedRevisionMissing:
 type ResolvePublishedRevisionResult = PublishedRevisionFound | PublishedRevisionMissing
 
 
-class PublishedRevisionRegistry(Protocol):
-    """The registries a versioned reference of a V3 document resolves against.
+type CatalogLineageQuery = CatalogLineageId | CatalogLineageDisplayName
+type CatalogRevisionPosition = int | Literal["head"]
 
-    Resolution is lineage-free, and that is a named decision rather than an
-    oversight. ADR 0007 is PROPOSED, not accepted: under it a reference reads
-    `{ref: <lineage id>, revision: <revision hash>}` and binding calls
-    `resolve_reference(kind, lineage_id, revision_hash)`, which proves the revision
-    is an admitted member of that lineage. No lineage, membership or admission
-    exists in this repository yet, so building against that operation would be
-    building against a record nobody has accepted.
 
-    Until it exists, a reference binds by the kind it is read under and the exact
-    revision hash it pins, and the authored `ref` travels into the run
-    configuration's hashed identity without proving membership. That is a visible
-    debt with one successor: when lineages land, this port gains
-    `resolve_reference` and this is the single call site that moves.
+def is_catalog_revision_position(
+    position: object,
+) -> TypeGuard[CatalogRevisionPosition]:
+    return (type(position) is str and position == "head") or (
+        type(position) is int and position >= 1
+    )
+
+
+@dataclass(frozen=True)
+class CatalogNameFound:
+    lineage_id: CatalogLineageId
+    revision_hash: PublishedRevisionHash
+    revision_number: int
+    current_display_name: CatalogLineageDisplayName
+    retired: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.lineage_id, CatalogLineageId):
+            raise TypeError("a catalog name result requires a typed lineage id")
+        if not isinstance(self.revision_hash, PublishedRevisionHash):
+            raise TypeError("a catalog name result requires a typed revision hash")
+        if type(self.revision_number) is not int or self.revision_number < 1:
+            raise ValueError("a catalog revision number must be a positive integer")
+        if not isinstance(self.current_display_name, CatalogLineageDisplayName):
+            raise TypeError("a catalog name result requires a typed display name")
+        if type(self.retired) is not bool:
+            raise TypeError("catalog retirement state must be true or false")
+
+
+@dataclass(frozen=True)
+class CatalogNameMissing:
+    query: CatalogLineageQuery
+    position: CatalogRevisionPosition
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.query, CatalogLineageId | CatalogLineageDisplayName):
+            raise TypeError("a catalog name query must be a lineage id or display name")
+        if not is_catalog_revision_position(self.position):
+            raise ValueError("a catalog position must be head or a positive integer")
+
+
+type ResolveCatalogNameResult = CatalogNameFound | CatalogNameMissing
+
+
+class PublishedRevisionResolver(Protocol):
+    """Lineage-free lookup of exact immutable published bytes."""
+
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult: ...
+
+
+class PublishedRevisionRegistry(PublishedRevisionResolver, Protocol):
+    """Publication and lineage-free lookup of exact immutable revisions.
+
+    ADR 0007 keeps this lookup for callers whose immutable input already pins a
+    revision without claiming lineage membership. A declared V3 reference instead
+    uses `CatalogResolver.resolve_reference` once the catalog store implements it.
     """
 
     def publish_revision(
         self, revision: PublishedRevision
     ) -> PublishRevisionResult: ...
 
-    def resolve(
-        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+
+class CatalogResolver(PublishedRevisionResolver, Protocol):
+    """The three catalog reads fixed by ADR 0007's resolution contract.
+
+    Exact reference binding proves admitted membership and returns immutable
+    revision bytes. Name lookup is authoring-only and may project mutable current
+    display and retirement state; neither enters the reference result.
+    """
+
+    def resolve_reference(
+        self,
+        kind: RevisionKind,
+        lineage_id: CatalogLineageId,
+        revision_hash: PublishedRevisionHash,
     ) -> ResolvePublishedRevisionResult: ...
+
+    def resolve_name(
+        self,
+        kind: RevisionKind,
+        lineage_id_or_name: CatalogLineageQuery,
+        position: CatalogRevisionPosition,
+    ) -> ResolveCatalogNameResult: ...
