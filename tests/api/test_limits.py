@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -19,9 +20,11 @@ from atelier2.api.references import (
     encode_public_run_reference,
 )
 from atelier2.api.wire.resources import AgentAttemptResourceV2
+from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
+from atelier2.host.serving import api_limits as deployed_api_limits
 from atelier2.ports.durable_runs import (
     DurableAnswerRunMissing,
     DurableRunRevisionMissing,
@@ -500,4 +503,36 @@ def test_base64_and_decoded_payload_limits_reject_before_answer_write() -> None:
     assert exact.status_code == 404
     assert_problem(decoded_oversized, 422, "invalid-request")
     assert_problem(encoded_oversized, 422, "invalid-request")
+    assert len(mutations.answers) == 1
+
+
+@pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
+def test_the_deployed_body_policy_admits_the_largest_answer_envelope() -> None:
+    """The HTTP body cap owns the envelope, not the payload's base64 length."""
+    mutations = RecordingMutationPorts()
+    limits = deployed_api_limits()
+    body = json.dumps(
+        {
+            "revision_hash": "0" * 64,
+            "node_id": "n" * limits.maximum_field_characters,
+            "answer_base64": encode_canonical_base64(
+                b"1" + b"0" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 - 1)
+            ),
+        },
+        separators=(",", ":"),
+    ).encode("ascii")
+    client = client_for(mutations, limits)
+    path = (
+        "/atelier/api/v1/runs/" + encode_public_run_reference(RunId("run")) + "/answers"
+    )
+
+    response = client.post(
+        path,
+        content=body,
+        headers={"content-type": "application/json"},
+    )
+
+    assert len(body) > limits.maximum_base64_characters
+    assert len(body) <= limits.maximum_request_body_bytes
+    assert_problem(response, 404, "run-not-found")
     assert len(mutations.answers) == 1

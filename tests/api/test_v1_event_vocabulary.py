@@ -86,21 +86,12 @@ def v1_projection(kind: RunEventKind) -> PersistedRunEvent:
 UNPUBLISHED_KINDS = tuple(
     sorted(kind for kind in RunEventKind if kind.value not in EVENT_NAMES)
 )
-ESCAPES_THE_CLOSED_UNION = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the V1 event vocabulary is spelled twice and the copies disagree: "
-        "openapi.EVENT_NAMES excludes this kind while models.run_event_resource "
-        "refuses only AGENT_FAILED, so this kind leaves the closed union through "
-        "the fall-through assertion instead of a refusal. #88 gives the set one "
-        "owner; this marker comes off with the fix."
-    ),
-)
 
 
 @pytest.mark.parametrize(
     "kind", sorted(kind for kind in RunEventKind if kind.value in EVENT_NAMES)
 )
+@pytest.mark.proves("the-v1-event-vocabulary-is-spelled-once-and-refuses-by-name")
 def test_every_kind_the_v1_wire_publishes_renders_under_its_own_name(
     kind: RunEventKind,
 ) -> None:
@@ -115,30 +106,13 @@ def test_every_kind_the_v1_wire_publishes_renders_under_its_own_name(
         pytest.param(
             kind,
             id=kind.value,
-            marks=[ESCAPES_THE_CLOSED_UNION] if kind in CANCELLATION_KINDS else [],
         )
         for kind in UNPUBLISHED_KINDS
     ],
 )
+@pytest.mark.proves("the-v1-event-vocabulary-is-spelled-once-and-refuses-by-name")
 def test_every_kind_the_v1_wire_does_not_publish_is_refused_as_durable_drift(
     kind: RunEventKind,
 ) -> None:
     with pytest.raises(ValueError):
-        run_event_resource(v1_projection(kind), ())
-
-
-@pytest.mark.parametrize(
-    "kind", sorted(CANCELLATION_KINDS), ids=lambda kind: str(kind.value)
-)
-def test_a_v1_cancellation_kind_escapes_the_closed_union_instead_of_being_refused(
-    kind: RunEventKind,
-) -> None:
-    """What the refusal above is expected to fail on, named rather than assumed.
-
-    A strict xfail is satisfied by any failure, so this pins the exact exception
-    that ends the projection today. #88 makes both tests speak at once: this one
-    must be deleted when the fall-through becomes a refusal.
-    """
-
-    with pytest.raises(AssertionError, match="closed event union"):
         run_event_resource(v1_projection(kind), ())
