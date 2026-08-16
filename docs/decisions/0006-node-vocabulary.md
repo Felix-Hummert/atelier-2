@@ -3,8 +3,9 @@
 - Status: ACCEPTED 2026-08-14 (Codex fifth exact-head review PASS, PR #30) — document
   surface implemented by PR #41
 - Date: 2026-08-14, amended 2026-08-15 with "The document names itself" (the
-  document-level `name` and `description`), decided while PR #41 was still draft
-  because a field added to a closed hashed model after it lands is a format change
+  document-level `name` and `description`, decided while PR #41 was still draft
+  because a field added to a closed hashed model after it lands is a format change),
+  amended 2026-08-16 with the reference-form clarification below
 - Depends on: [ADR 0002](0002-exact-yaml-graph.md), [ADR 0001](0001-durable-runtime.md)
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   whose "Deklaratives Kontext- und Artefaktrouting", "Parallele DAG-Ausführung"
@@ -573,6 +574,10 @@ budget, retry and cancellation — because those change the meaning of the work 
 is judged and published; **who performs it** is deployment configuration bound at
 run start. Anything reusable is a versioned reference, never copied inline; #22 owns
 their naming, lineage and storage, this record only the reference form.
+
+> `ref` is the stable derived lineage id of ADR 0007. The readable tokens in this
+> record's examples are illustrative lineage ids, never display names; a display
+> name never appears in document bytes.
 
 ### Context edges
 
