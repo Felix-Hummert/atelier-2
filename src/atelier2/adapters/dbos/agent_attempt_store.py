@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, assert_never
 
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
@@ -53,7 +53,14 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
-from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2
+from atelier2.contracts.workflows import (
+    AgentNodeV2,
+    NodeCompletion,
+    RunCompletes,
+    RunContinues,
+    WorkflowGraphV2,
+    completion_after_node,
+)
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
@@ -258,6 +265,29 @@ def _require_attempt_binding(
         raise RunTransitionConflict("durable agent attempt differs from exact retry")
 
 
+def _require_completed_attempt_head(
+    run: RunV2,
+    request: AgentExecutionRequestV2,
+    completion: NodeCompletion,
+) -> None:
+    match completion:
+        case RunContinues(node_id):
+            if run.state is not RunState.STARTED or run.current_node_id != node_id:
+                raise RunTransitionConflict(
+                    "successful attempt has no exact successor transition"
+                )
+        case RunCompletes():
+            if (
+                run.state is not RunState.COMPLETED
+                or run.current_node_id != request.node_id
+            ):
+                raise RunTransitionConflict(
+                    "successful terminal attempt has no exact completed transition"
+                )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _insert_attempt_event(
     connection: Any,
     attempt: AgentAttempt,
@@ -430,15 +460,9 @@ class DbosAgentAttemptStore:
             }:
                 return AgentAttemptPossiblyRan(durable)
             if durable.state is AgentAttemptState.SUCCEEDED:
-                successor = graph.successor(request.node_id).id
-                if (
-                    run.state is not RunState.STARTED
-                    or run.current_node_id != successor
-                ):
-                    raise RunTransitionConflict(
-                        "successful attempt has no exact successor transition"
-                    )
-                return AgentAttemptSucceeded(durable, successor)
+                completion = completion_after_node(graph, request.node_id)
+                _require_completed_attempt_head(run, request, completion)
+                return AgentAttemptSucceeded(durable, completion)
             raise AssertionError("closed agent attempt state was not exhaustive")
 
     def observe_process(
@@ -540,7 +564,18 @@ class DbosAgentAttemptStore:
             if updated.rowcount != 1:
                 raise RunTransitionConflict("agent success lost its attempt CAS")
             durable_success = _load_attempt(connection, attempt_id)
-            successor = graph.successor(request.node_id).id
+            completion = completion_after_node(graph, request.node_id)
+            match completion:
+                case RunContinues(node_id):
+                    target_state = RunState.STARTED
+                    target_node_id = node_id
+                    terminal = False
+                case RunCompletes():
+                    target_state = RunState.COMPLETED
+                    target_node_id = request.node_id
+                    terminal = True
+                case _ as unreachable:
+                    assert_never(unreachable)
             _commit_event(
                 connection,
                 request.run_id,
@@ -549,12 +584,13 @@ class DbosAgentAttemptStore:
                 RunEventKind.AGENT_COMPLETED,
                 result.output_bytes,
                 RunState.STARTED,
-                RunState.STARTED,
-                successor,
+                target_state,
+                target_node_id,
+                terminal=terminal,
                 agent_attempt_id=attempt_id,
                 attempt_ordinal=execution.ordinal,
             )
-            return AgentAttemptSucceeded(durable_success, successor)
+            return AgentAttemptSucceeded(durable_success, completion)
 
     def complete_known_failure(
         self, execution: AgentAttemptExecution
