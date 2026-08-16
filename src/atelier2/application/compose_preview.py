@@ -44,6 +44,7 @@ from atelier2.contracts.composed_preview_v3 import (
     PreviewChild,
     PreviewEdge,
     PreviewGraphInput,
+    PreviewIteration,
     PreviewNode,
     PreviewNodeKind,
     PreviewRole,
@@ -224,6 +225,7 @@ def _preview_node(
             if refusal.requirement in demanded
         ),
         _preview_child(node, children, chain, derivation),
+        _preview_iteration(node),
     )
 
 
@@ -237,6 +239,17 @@ def _distinct[Entry: Hashable](entries: Iterable[Entry]) -> tuple[Entry, ...]:
     drawn twice on each node of the child.
     """
     return tuple(dict.fromkeys(entries))
+
+
+def _preview_iteration(node: WorkflowNodeV3) -> PreviewIteration | None:
+    """What a surface must say about a node that repeats, or nothing if it does not."""
+    if not isinstance(node, SubworkflowNodeV3) or node.iterate is None:
+        return None
+    return PreviewIteration(
+        node.iterate.maximum_rounds,
+        node.iterate.until.output,
+        node.iterate.until.schema_reference,
+    )
 
 
 def _preview_child(

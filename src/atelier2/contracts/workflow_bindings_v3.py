@@ -22,6 +22,7 @@ class SubworkflowBindingRefusalReason(StrEnum):
     UNPROVEN_INPUT_SCHEMA = "unproven_input_schema"
     SCHEMA_REVISION_MISMATCH = "schema_revision_mismatch"
     NESTING_DEPTH_EXCEEDED = "nesting_depth_exceeded"
+    ITERATION_ROUNDS_EXCEEDED = "iteration_rounds_exceeded"
 
 
 @dataclass(frozen=True, slots=True)

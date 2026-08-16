@@ -129,6 +129,21 @@ class PreviewChild:
             raise ValueError("a previewed child names the revision it resolved to")
 
 
+@dataclass(frozen=True, slots=True)
+class PreviewIteration:
+    """That a node repeats, how often at most, and what would end it early.
+
+    Without this a bounded loop and a single run draw identically, and the
+    difference only becomes visible once one of them has already run four times.
+    An operator reading a preview is entitled to see it before the start, not
+    after.
+    """
+
+    maximum_rounds: int
+    green_output: str
+    green_schema: VersionedReference
+
+
 @dataclass(frozen=True)
 class PreviewNode:
     """One node as a surface draws it, with what it demands and what it waits for.
@@ -147,6 +162,7 @@ class PreviewNode:
     demands: tuple[CapabilityRequirement, ...]
     unproven: tuple[ExecutabilityRefusal, ...]
     child: PreviewChild | None
+    iteration: PreviewIteration | None
 
 
 @dataclass(frozen=True, slots=True)

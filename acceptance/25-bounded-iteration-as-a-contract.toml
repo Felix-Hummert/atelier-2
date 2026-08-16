@@ -13,13 +13,6 @@ story = "https://github.com/FlexOr2/atelier-2/issues/25"
 # Six sentences of #25 therefore have no proof of any kind here and are named
 # rather than quietly dropped:
 #
-#   2b. The green condition names a result the CHILD declares, under the schema
-#       revision both levels agreed. Only the child's own document can answer
-#       that, so it is the binding head's refusal.
-#   3b. The handover binds to the child's declared boundary on both sides, by
-#       name and schema revision. Same reason.
-#   4.  Before any start, the preview names every iteration node with its bound
-#       and its green condition.
 #   5.  Green is read from the round's own receipt and its declared artifact,
 #       never from an agent's claim. Needs #63's artifact row and the instance
 #       evaluator ADR 0013 names as #57's -- none exists in `src` today.
@@ -30,11 +23,19 @@ story = "https://github.com/FlexOr2/atelier-2/issues/25"
 #       stage of the durable truth. Needs #63 and the V3 Join/Ready/Scheduler
 #       owner ADR 0008 names.
 #
-# Sentence 2 was split into 2a (declared below) and 2b; sentence 3 into 3a
-# (declared below) and 3b. 2a and 3a are DOCUMENT-level refusals and are
-# EXPLICITLY NOT substitutes for 2b and 3b, which are binding-level refusals
+# Sentence 2 was split into 2a and 2b, sentence 3 into 3a and 3b; the binding
+# head declares 2b, 3b and 4 below, so all four halves and the preview are now
+# proven. 2a and 3a remain DOCUMENT-level refusals and 2b/3b binding-level ones
 # against the child: no review may count one for the other. #25 is not verified
-# and not retired while any of the six above is open.
+# and not retired while any of the three above is open.
+#
+# What the binding head found and did NOT invent a test for: the green
+# condition's *schema* half needs no binding-level refusal of its own. The node's
+# outputs are already bound one to one to the child's results by name and schema
+# revision, and the document already refuses a condition that reads one of its
+# own outputs under another revision — so the two compose to prove it. Only the
+# condition's *existence* against the child was genuinely unproven, and that is
+# what `a-green-condition-the-child-cannot-answer-is-refused-by-name` pins.
 #
 # Declaring them now would red this gate on main for a capability nobody has
 # built, and inventing a proof to make it green is the one thing ADR 0012
@@ -55,6 +56,22 @@ text = "A green condition that reads a result under a different schema revision 
 [[sentence]]
 id = "a-round-handover-unbound-in-the-document-is-refused-by-name"
 text = "A round handover without a seed for the first round, declared twice, or seeded from something the document does not order before this node and declare, is refused by name."
+
+[[sentence]]
+id = "a-green-condition-the-child-cannot-answer-is-refused-by-name"
+text = "A green condition that reads a result the child declares nowhere is refused by name at the boundary, before any round exists."
+
+[[sentence]]
+id = "a-round-handover-the-child-cannot-bind-is-refused-by-name"
+text = "A round handover is bound against the child on every side it has: the result it reads, the order it hands on, and the seed that fills that same order in the first round are each held to the schema revision both levels agreed, and a carried order is supplied by the round before it rather than demanded from the parent."
+
+[[sentence]]
+id = "an-iteration-past-the-proven-round-bound-is-refused-by-name"
+text = "An iteration that asks for more rounds than the composition proved is refused by name for the whole run, before any round exists."
+
+[[sentence]]
+id = "the-preview-names-every-iteration-with-its-bound-and-its-green"
+text = "Before any start, the preview names every iteration node with its maximum number of rounds and the condition that would end it early."
 
 [[sentence]]
 id = "iteration-is-refused-on-a-node-kind-that-cannot-carry-it"
