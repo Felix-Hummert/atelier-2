@@ -743,18 +743,78 @@ def test_a_unique_python_class_method_matches_its_junit_identity(
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.parametrize(
+    ("placeholder", "rendered"),
+    [("%s", "one"), ("%s", ""), ("%c", ""), ("%#", "0"), ("%$", "1")],
+    ids=[
+        "value",
+        "empty-value",
+        "empty-css-format",
+        "zero-based-index",
+        "one-based-index",
+    ],
+)
 def test_a_parameterized_typescript_title_matches_its_reported_cases(
-    tmp_path: Path,
+    tmp_path: Path, placeholder: str, rendered: str
 ) -> None:
     project = copied_project(tmp_path)
     claim = Path("frontend/tests/lib/parameterized.test.ts")
-    title = f"proves({REPORT_ONLY_SENTENCE}): %s remains named"
+    title = f"proves({REPORT_ONLY_SENTENCE}): {placeholder} remains named"
     write_claim(project, claim, f'it.each(["one"])("{title}", () => {{}});\n')
     (project / REPORTS_DIRECTORY / FRONTEND_REPORT).write_text(
         vitest_report(
-            (ReportedTest(f"proves({REPORT_ONLY_SENTENCE}): one remains named"),),
+            (
+                ReportedTest(
+                    f"proves({REPORT_ONLY_SENTENCE}): {rendered} remains named"
+                ),
+            ),
             located_in=claim,
         ),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_parameterized_typescript_claim_cannot_borrow_a_static_tests_proof(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    claim = Path("frontend/tests/lib/parameterized.test.ts")
+    parameterized_title = f"proves({REPORT_ONLY_SENTENCE}): %s remains named"
+    static_title = f"proves({REPORT_ONLY_SENTENCE}): one remains named"
+    write_claim(
+        project,
+        claim,
+        (
+            f'it.each(["one"])("{parameterized_title}", () => {{}});\n'
+            f'it("{static_title}", () => {{}});\n'
+        ),
+    )
+    (project / REPORTS_DIRECTORY / FRONTEND_REPORT).write_text(
+        vitest_report((ReportedTest(static_title),), located_in=claim),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert f"{claim}:{parameterized_title} claims" in result.stderr
+    assert f"{claim}:{static_title} claims" not in result.stderr
+
+
+def test_an_escaped_typescript_title_matches_its_decoded_reported_title(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    claim = Path("frontend/tests/lib/escaped.test.ts")
+    reported_title = f'proves({REPORT_ONLY_SENTENCE}): "one" remains named'
+    source_title = reported_title.replace('"', '\\"')
+    write_claim(project, claim, f'it("{source_title}", () => {{}});\n')
+    (project / REPORTS_DIRECTORY / FRONTEND_REPORT).write_text(
+        vitest_report((ReportedTest(reported_title),), located_in=claim),
         encoding="utf-8",
     )
 
