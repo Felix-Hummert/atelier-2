@@ -271,6 +271,7 @@ the document.
 - [0002: Access is an invitation, and the installation is the team's workshop](0002-teams-und-zugang.md)
 - [0003: One workshop, three views, one language — the graph](0003-ziel-ui.md)
 - [0004: Execution happens anywhere, and one trust boundary is what makes that safe](0004-runner-und-remote.md)
+- [0005: Named lineages, not hashes, are what the operator picks](0005-katalog-und-benannte-workflows.md)
 
 Each document carries its own status; this index deliberately does not repeat
 it, because a second copy of a status is the next thing to go stale.
@@ -367,6 +368,7 @@ proves: every claim was honoured by a passing test in this pipeline's reports
 proves: a proposed landing states its sentences by identifier, or why it has none
 does not prove: that a test carries its sentence in meaning - review judges that
 does not prove: that a stated exemption is honest - review judges that
+does not prove: that a body edited after this run still says what it said - review sees the edit
 does not measure: any ratio, case count, or coverage target
 ```
 <!-- acceptance-gate-bound:end -->

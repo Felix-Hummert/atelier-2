@@ -29,13 +29,15 @@ from atelier2.api.stream import (
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.run_events import (
+    PersistedRunEvent,
+    RunEventPage,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
-    PersistedRunEvent,
     PrepareRunEventStreamResult,
     ReadRunEventPageResult,
-    RunEventPage,
     StreamReady,
 )
 from atelier2.ports.workflow_revisions import (

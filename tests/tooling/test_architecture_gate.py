@@ -661,3 +661,48 @@ def test_a_port_that_words_an_http_answer_fails(tmp_path: Path) -> None:
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert "words an answer" in result.stderr
+
+
+def make_an_api_module_name_a_port_record(project: Path) -> None:
+    """Put a read model back where this head took it from."""
+
+    port = project / "src/atelier2/ports/run_queries.py"
+    port.write_text(
+        port.read_text(encoding="utf-8")
+        + "\n\n@dataclass(frozen=True)\nclass RunShapeForReaders:\n    run: object\n",
+        encoding="utf-8",
+    )
+    module = project / "src/atelier2/api/projection/runs.py"
+    module.write_text(
+        module.read_text(encoding="utf-8")
+        + "\n\nfrom atelier2.ports.run_queries import RunShapeForReaders\n"
+        "\nSHAPE = RunShapeForReaders\n",
+        encoding="utf-8",
+    )
+
+
+def test_an_api_module_that_names_a_port_record_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    make_an_api_module_name_a_port_record(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "belongs with the other shared values" in result.stderr
+
+
+def test_an_api_module_that_names_a_port_protocol_stays_green(tmp_path: Path) -> None:
+    """Holding the seam is what a composition does; only the shape moved."""
+
+    project = copied_project(tmp_path)
+    module = project / "src/atelier2/api/projection/runs.py"
+    module.write_text(
+        module.read_text(encoding="utf-8")
+        + "\n\nfrom atelier2.ports.run_queries import RunQueries\n"
+        "\nSEAM = RunQueries\n",
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr

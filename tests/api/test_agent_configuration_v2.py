@@ -31,6 +31,12 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_events import (
+    PersistedRunEvent,
+)
+from atelier2.contracts.run_projections import (
+    RunProjection,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCollision,
@@ -47,8 +53,9 @@ from atelier2.ports.durable_runs import (
     DurableWriteUnavailable,
     StartPublishedRunRequestV2,
 )
-from atelier2.ports.run_events import PersistedRunEvent
-from atelier2.ports.run_queries import RunFound, RunProjection
+from atelier2.ports.run_queries import (
+    RunFound,
+)
 from tests.api.test_agent_attempts import SERVED_RAIL
 from tests.scenarios.api import (
     SSE_COMPLETE_HISTORY,

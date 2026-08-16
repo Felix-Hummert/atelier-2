@@ -350,6 +350,27 @@ def test_the_gate_and_the_documentation_state_the_same_bound(tmp_path: Path) -> 
     assert stated_bound.strip() in result.stdout
 
 
+@pytest.mark.proves("the-gate-states-the-bound-of-what-it-proves")
+def test_the_bound_names_that_the_body_is_read_as_the_run_received_it() -> None:
+    """The landing binding is a snapshot, and the bound has to say so.
+
+    The gate reads the pull-request body the event handed it, so a body edited
+    after a green run is never re-checked. That is an accepted limit rather than
+    a defect -- re-firing CI on every edit would cancel running work, and reading
+    the tracker live would put back the derivation this gate exists without. What
+    is not acceptable is leaving it unsaid in the one place that lists what this
+    gate does not prove.
+    """
+    stated_bound = load_acceptance_script().render_honesty_bound()
+
+    unproven = [line for line in stated_bound.splitlines() if "does not prove" in line]
+
+    assert any("edited after this run" in line for line in unproven), (
+        "the bound lists what the gate cannot judge, and the body snapshot is "
+        f"one of those things; it names only: {unproven}"
+    )
+
+
 @pytest.mark.parametrize(
     "run",
     [

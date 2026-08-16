@@ -13,7 +13,7 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_FLOOR = 113
+EXPECTED_SOURCE_MODULE_FLOOR = 115
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
@@ -40,7 +40,13 @@ _UNRESOLVED_OUTCOME = _UnresolvedOutcome()
 
 PORT_PACKAGE_DIRECTORY = "src/atelier2/ports"
 HTTP_SENTENCE_MARKERS = ("API limits", "HTTP", "status code")
+API_PACKAGE_DIRECTORY = "src/atelier2/api"
 ROUTE_PACKAGE = "src/atelier2/api/routes"
+# The cancellation answers a route still matches on, fenced with the route
+# exception below and released with it.
+PORT_ANSWERS_THE_API_MATCHES = frozenset(
+    {"DurableWriteUnavailable", "DurableStateCorrupt"}
+)
 ROUTE_CALLS_STILL_HOLDING_PORTS = {
     "runs": {"cancel_agent_attempt_route": ("agent_attempt_canceller",)},
 }
@@ -515,6 +521,62 @@ def port_sentence_problems(project_root: Path) -> tuple[str, ...]:
     return tuple(problems)
 
 
+def _port_record_names(project_root: Path) -> dict[str, str]:
+    """Every value a port module defines, read from the ports themselves.
+
+    A record is a class a port defines that is not a Protocol: the shape an
+    answer carries rather than the seam that answers. The set is derived, not
+    listed, so a record added to a port tomorrow is covered without an edit
+    here -- a hand-kept list is what let read models settle in the ports.
+    """
+    records: dict[str, str] = {}
+    for module_path in sorted((project_root / PORT_PACKAGE_DIRECTORY).rglob("*.py")):
+        for node in _parsed(module_path).body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            protocol = any(
+                (isinstance(base, ast.Name) and base.id == "Protocol")
+                or (isinstance(base, ast.Attribute) and base.attr == "Protocol")
+                for base in node.bases
+            )
+            if not protocol:
+                records[node.name] = module_path.name
+    return records
+
+
+def api_port_record_problems(project_root: Path) -> tuple[str, ...]:
+    """API modules that name a value a port defines rather than the seam itself.
+
+    The API may hold a port -- that is what a composition does -- and it may
+    match on the answers a port gives. What it must not do is read a port for
+    the shape of the answer: a projection the adapter builds and the use cases
+    carry is a shared value, so it lives with the other values and the port
+    keeps only its protocol and its outcomes. Declared exceptions are the route
+    answers already fenced by ROUTE_CALLS_STILL_HOLDING_PORTS.
+    """
+    records = _port_record_names(project_root)
+    problems: list[str] = []
+    for module_path in sorted((project_root / API_PACKAGE_DIRECTORY).rglob("*.py")):
+        if module_path.match(f"{ROUTE_PACKAGE}/*"):
+            continue
+        for node in ast.walk(_parsed(module_path)):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if not node.module or not node.module.startswith(PORT_PACKAGE):
+                continue
+            for alias in node.names:
+                owner = records.get(alias.name)
+                if owner is None or alias.name in PORT_ANSWERS_THE_API_MATCHES:
+                    continue
+                problems.append(
+                    f"{module_path.relative_to(project_root)} names {alias.name} from "
+                    f"{PORT_PACKAGE_DIRECTORY}/{owner}: a value the adapter builds and "
+                    "the use cases carry belongs with the other shared values, not in "
+                    "the seam that returns it"
+                )
+    return tuple(problems)
+
+
 def route_port_problems(project_root: Path) -> tuple[str, ...]:
     """Which calls still reach a port, read against the declared map."""
     problems: list[str] = []
@@ -543,6 +605,7 @@ def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
         )
     problems = (
         port_sentence_problems(project_root)
+        + api_port_record_problems(project_root)
         + use_case_record_problems(project_root)
         + route_port_problems(project_root)
     )

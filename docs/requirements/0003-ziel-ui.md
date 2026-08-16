@@ -5,7 +5,7 @@ Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/9
 Source-Threads: #9, #5
 Distilled-From: 5294009202, 5294316639, 5301898411, 5302066517, 5302109868,
-                5302132001, 5302769095, 5302788411
+                5302132001, 5302769095, 5302788411, 5307632332
                 #9 body, sha256
                 36800d6ecd5d3e8922028425835b368b42d163098e5d32da930e40d25f49ce99
 Approved-By:    5307632332
@@ -141,8 +141,9 @@ not add features. (5302788411.)
      watcher sees the work; the database never does.
    - **Durable is hash plus bounded output.** The receipt carries hash and
      location, never the transcript bytes. An archive copy — if one ever exists
-     — lies outside the receipt and under the retention decision, which now sits
-     with #23. While that decision is missing, there is no archive copy.
+     — lies outside the receipt and under the retention decision, which
+     [ADR 0011](../decisions/0011-project-isolation.md) decision 3 owns and which
+     is `PROPOSED`, not built. Until it is built, there is no archive copy.
 
    The consequence for the roadmap is explicit: a live view is architecture — a
    streaming mode, a runner channel, redaction — not a UI line.
@@ -261,9 +262,13 @@ not add features. (5302788411.)
 - **`MAXIMUM_WORKFLOW_NODES = 100` is a hard ceiling** a drawing board will make
   visible quickly. (5302109868 §4.)
 - **A graph composed on the canvas has no home under ADR 0007** ("atelier-2
-  never writes a source"). The ruling for it is the kind `unsourced` with export
-  as the way *to* a source, never as writing *into* the source; it goes into the
-  next revision of PR #45 (see #22). (5302132001 closing.)
+  never writes a source"). **Ungelöst**, und hier nicht als kommende Ergänzung
+  eines angenommenen Records geführt: die gelandete ADR 0007 enthält den Token
+  `unsourced` nicht, und ein Requirement darf einem akzeptierten Record keine
+  Regel zuschreiben, die er nicht trägt. Die Desk-Lesart aus der Quelle — eine
+  Art `unsourced`, mit Export als Weg *zu* einer Quelle und nie als Schreiben
+  *in* sie — bleibt zitiert als das, was sie ist: ein Vorschlag ohne Eigentümer.
+  (5302132001 closing.)
 - **Deferred, as named successors:** the ⌘K command palette and the multi-run
   tile wall — weight without carrying power while there is one kind of run and a
   handful of objects. Bringing them back later costs nothing. (5302132001.)
@@ -275,9 +280,8 @@ not add features. (5302788411.)
 
 ## Acceptance
 
-No story has declared an acceptance sentence for this requirement yet, and no
-operator ruling has settled this document, so the list below is a set of
-candidates and not a set of sentences. What the rules above already state in
+No story has declared an acceptance sentence for this requirement yet, so the
+list below is a set of candidates and not a set of sentences. What the rules above already state in
 testable form is, notably: a node demanding an undeclared interactive mode is
 refused at validation; an opened tile without input leaves the run out of the
 operator-influenced set; no raw provider frame is readable from any event or

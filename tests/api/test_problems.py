@@ -15,7 +15,10 @@ from atelier2.api.problems import (
     problem_resource,
 )
 from atelier2.contracts.runs import RunId
-from atelier2.ports.run_queries import GetRunResult, ListRunsResult
+from atelier2.ports.run_queries import (
+    GetRunResult,
+    ListRunsResult,
+)
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 URN_SAFE_PROBLEM_CODE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")

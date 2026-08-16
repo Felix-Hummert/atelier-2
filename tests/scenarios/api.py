@@ -27,10 +27,19 @@ from atelier2.api.limits import ApiLimits
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.application.read_run_events import ReadRunEventsResult, read_run_events
+from atelier2.contracts.run_projections import (
+    RunProjection,
+)
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
-from atelier2.ports.run_events import RunEventQueries
-from atelier2.ports.run_queries import RunFound, RunProjection
-from atelier2.ports.workflow_revisions import DurableProjectionLimit
+from atelier2.ports.run_events import (
+    RunEventQueries,
+)
+from atelier2.ports.run_queries import (
+    RunFound,
+)
+from atelier2.ports.workflow_revisions import (
+    DurableProjectionLimit,
+)
 
 RECONCILIATION_REVISION_HASH = (
     "c93767cc7790bdb39258bb6d9bdfb3168218705038932119e6628c6312c6e34e"

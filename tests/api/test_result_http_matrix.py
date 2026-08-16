@@ -36,12 +36,21 @@ from atelier2.contracts.executions import (
     WaitAnswerSnapshot,
     WaitAnswerState,
 )
+from atelier2.contracts.run_projections import (
+    RunPage,
+    RunProjection,
+    WaitingReconciliationProjection,
+)
 from atelier2.contracts.runs import (
     Run,
     RunId,
     RunState,
     WorkflowRevision,
     WorkflowRevisionHash,
+)
+from atelier2.contracts.workflow_projections import (
+    WorkflowRevisionPage,
+    WorkflowRevisionProjection,
 )
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
@@ -83,10 +92,7 @@ from atelier2.ports.run_queries import (
     ReconciliationRetryCommandConflict,
     ReconciliationRetryTargetMissing,
     RunFound,
-    RunPage,
-    RunProjection,
     RunQueryMissing,
-    WaitingReconciliationProjection,
 )
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
@@ -101,8 +107,6 @@ from atelier2.ports.workflow_revisions import (
     ReadUnavailable,
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
-    WorkflowRevisionPage,
-    WorkflowRevisionProjection,
 )
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 

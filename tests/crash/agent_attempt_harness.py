@@ -50,7 +50,9 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
 )
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
-from atelier2.ports.run_queries import RunFound
+from atelier2.ports.run_queries import (
+    RunFound,
+)
 from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
     RecordingAgentExecutorFactoryV2,

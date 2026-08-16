@@ -21,11 +21,13 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.runs import WorkflowRevisionHash
-from atelier2.ports.workflow_revisions import (
+from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
-    QueryDurableStateCorrupt,
     WorkflowRevisionPage,
+)
+from atelier2.ports.workflow_revisions import (
+    QueryDurableStateCorrupt,
 )
 from tests.scenarios.api import api_limits, durable_api_client, durable_queries
 from tests.scenarios.runtime import exact_output_runtime

@@ -1,9 +1,23 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 
-from atelier2.contracts.agent_attempts import AgentAttemptState
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptFailureCode,
+    AgentAttemptId,
+    AgentAttemptRedriveState,
+    AgentAttemptReplacement,
+    AgentAttemptState,
+)
+from atelier2.contracts.agents import AgentExecutionRequestHash
+from atelier2.contracts.effects import EffectIntentSnapshot, ReconcileCommandSnapshot
+from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.run_bindings import AnyRun
+from atelier2.contracts.runs import RunId
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 
 
 class NodeState(StrEnum):
@@ -63,3 +77,46 @@ def public_agent_attempt_state(
     success also moves the run past it, so a reader is told about its successor.
     """
     return _PUBLIC_ATTEMPT_STATES[durable_state]
+
+
+@dataclass(frozen=True)
+class WaitingReconciliationProjection:
+    intent: EffectIntentSnapshot
+    pending_command: ReconcileCommandSnapshot | None
+
+
+@dataclass(frozen=True)
+class AgentAttemptCancellationProjection:
+    command_id: str
+    replacement: AgentAttemptReplacement
+    redrive_state: AgentAttemptRedriveState
+    disposition: AgentAttemptCancellationDisposition | None
+
+
+@dataclass(frozen=True)
+class AgentAttemptProjection:
+    attempt_id: AgentAttemptId
+    node_execution_id: NodeExecutionId
+    request_hash: AgentExecutionRequestHash
+    attempt_ordinal: int
+    state: PublicAgentAttemptState
+    failure_code: AgentAttemptFailureCode | None
+    cancellation: AgentAttemptCancellationProjection | None = None
+
+
+@dataclass(frozen=True)
+class RunProjection:
+    run: AnyRun
+    graph: AnyWorkflowDocument
+    reconciliation: WaitingReconciliationProjection | None
+    agent_attempts: tuple[AgentAttemptProjection, ...] = ()
+
+    @property
+    def current_agent_attempt(self) -> AgentAttemptProjection | None:
+        return self.agent_attempts[-1] if self.agent_attempts else None
+
+
+@dataclass(frozen=True)
+class RunPage:
+    runs: tuple[RunProjection, ...]
+    next_after: RunId | None
