@@ -1,0 +1,40 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/63"
+
+# Cut C of the start-by-name vertical: the door that joins Cut A's name
+# resolution to Cut B's atomic supervised start. Every sentence below is about
+# IN-PROCESS truth — one engine, one transaction discipline, no server and no
+# HTTP boundary. That is not a convenience: a round-trip through a running API
+# would prove that some server wrote something, never that this caller's name
+# reached these exact bytes and that the record of them arrived whole. The STOP
+# measurement on #63 (comment 5308224405) is what forced the entry point, and
+# these sentences inherit its bound.
+#
+# What this file deliberately does NOT declare, so no reader mistakes the scope:
+#
+#   - EXECUTION. Cut B's starter persists an already-decided terminal truth and
+#     explicitly does not claim an executable engine, so this door does not
+#     either. It guarantees WHICH bytes were started and that their record is
+#     whole — never that a graph was interpreted. The advancing engine has no
+#     owner in this cut.
+#   - THE CLI. #111's `atelier2 run <name>` is a thin caller of this function in
+#     the #114 pattern, and it belongs there. Building it here would have proven
+#     a server round-trip, which is the one thing these sentences refuse.
+#   - AUTHORED-NAME DERIVATION AND ACTOR ATTRIBUTION. Both stay open on the
+#     parent cut (#187) by its reviewer's explicit note; this cut consumes the
+#     name the catalog holds and attributes nothing of its own.
+#
+# The three sentences below are the ones the operator would recognise as "a
+# named workflow ran": the right bytes, a whole record, and never a wrong one.
+
+[[sentence]]
+id = "a-name-starts-exactly-the-bytes-it-resolved-to"
+text = "A workflow started by the name the catalog holds runs exactly the bytes that name resolves to, in this process and against this engine; a retired lineage and a name nobody admitted each start nothing and refuse in the catalog's own words."
+
+[[sentence]]
+id = "a-named-start-writes-revision-run-and-receipt-or-nothing"
+text = "A start reached through a name writes the published revision, the run, its artifacts and its terminal receipt in one transaction or writes none of them, so a refused start leaves the store exactly as it found it."
+
+[[sentence]]
+id = "a-named-start-never-writes-a-result-for-other-bytes"
+text = "A terminal truth decided for another revision than the name resolved to is refused by name and writes nothing, rather than being corrected onto the resolved revision and recorded as its result."
