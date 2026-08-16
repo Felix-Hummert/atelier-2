@@ -174,14 +174,20 @@ pinned hash, that no publication of that kind carries, or that a registry answer
 with a revision of another kind or another hash is refused naming the node, the
 field, the declared entry, the chain it was reached through, and the reference
 itself. A `schema` reference proves more than its hash: the revision it pins must be
-a schema, under one closed profile of JSON Schema Draft 2020-12 whose every bound
-keeps evaluation decidable, local and cheap — bounded bytes, container depth and
-value count, UTF-8 without a byte order mark, no duplicate keys and no non-canonical
-numbers, `$id`, `$anchor`, `$dynamicAnchor` and `$dynamicRef` refused, every `$ref`
-local, and `format` left the draft's annotation instead of an assertion. Retrieval is
-off by construction rather than by trust. Bytes published under that name which are
-not such a schema are refused by name, so the whole snapshot fails rather than
-binding a type nobody can evaluate, and the preview says so instead of drawing it.
+a schema, under one closed profile of JSON Schema Draft 2020-12 whose bounds keep a
+published schema cheap to read — bounded bytes, container depth and value count,
+UTF-8 without a byte order mark, no duplicate keys and no non-canonical numbers,
+`$id`, `$anchor`, `$dynamicAnchor` and `$dynamicRef` refused, every `$ref` local, and
+`format` left the draft's annotation instead of an assertion. Retrieval is off by
+construction rather than by trust: evaluation runs against a registry whose only
+retrieval path raises. What the profile checks of a reference is its form and not
+its target, and that limit is real — a local `$ref` naming an anchor or a pointer
+the document does not carry, or pointing at the document itself, is accepted today
+and fails when a schema is first evaluated instead of when it is published. Closing
+that gap belongs to the owner that first evaluates an instance against a schema
+(#57). Bytes that fall outside the profile are refused by name, so the whole
+snapshot fails rather than binding a type nobody can read, and the preview says so
+instead of drawing it.
 A subworkflow's own `workflow` reference is one of them and resolves through the
 binder that already read that child, so one question keeps one answer. What resolves
 is frozen into one run-configuration revision — the role matrix by its existing
@@ -281,7 +287,12 @@ contract.
 
 A narrow local cockpit can list runs, publish and start a workflow from `/new`,
 and project one durable run's bound revision, state, nodes, and resumable event
-history. It can answer the exact integer requested by a Wait node and resolve an
+history. It opens in the Studio rather than in that list: one screen across the
+whole workshop naming every run that waits for a human — the durable states
+`WAITING_INPUT` and `WAITING_RECONCILIATION` — beside the one project of this
+installation, where an area with nothing in it names the next action that is
+possible today and the door to a conductor nobody has built yet says exactly
+that. It can answer the exact integer requested by a Wait node and resolve an
 unknown Action outcome as either an exact found effect or an accountable,
 confirmed absence. For a V2 run it renders the node states the API names rather
 than deriving them — the V2 event stream carries the rail with every event, so

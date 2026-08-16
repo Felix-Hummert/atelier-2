@@ -1,5 +1,8 @@
 # ADR 0005: CI enforces package boundaries
 
+- Status: ACCEPTED 2026-08-13 — implemented: the gate landed with this record and
+  runs in the quality lane on every pull request
+
 ## Context
 
 Atelier 2 has distinct host, API, adapter, application, port, and contract

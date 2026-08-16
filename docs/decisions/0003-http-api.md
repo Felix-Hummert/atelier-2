@@ -1,5 +1,8 @@
 # ADR 0003: The HTTP API projects durable workflow truth
 
+- Status: ACCEPTED 2026-08-11 — implemented: the projecting API landed with this
+  record and serves under `/atelier/api/v1`
+
 ## Context
 
 The durable runtime can recover a workflow after process loss, but callers need
