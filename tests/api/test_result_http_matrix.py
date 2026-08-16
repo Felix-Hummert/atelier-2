@@ -406,6 +406,14 @@ PROBLEM_CASES = (
         "durable-state-corrupt",
     ),
     (
+        "wait-unanswerable",
+        "wait",
+        "unanswerable-wait",
+        None,
+        422,
+        "invalid-request",
+    ),
+    (
         "wait-run-missing",
         "wait",
         "answerer",
@@ -762,12 +770,15 @@ def _request(client: TestClient, case: RouteResultCase):
     if case.operation == "run-get":
         return client.get("/atelier/api/v1/runs/run1.cnVu")
     if case.operation == "wait":
+        # Non-canonical integer text refuses before the store is asked at all, so
+        # the answerer below asserts it was never reached.
+        answer = "MDM=" if case.source == "unanswerable-wait" else "Mw=="
         return client.post(
             "/atelier/api/v1/runs/run1.cnVu/answers",
             json={
                 "revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
-                "answer_base64": "Mw==",
+                "answer_base64": answer,
             },
         )
     if case.operation == "reconcile":

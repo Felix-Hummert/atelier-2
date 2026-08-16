@@ -6,7 +6,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/89"
 # tests/api/test_v1_wire_freeze.py already holds it without this gate.
 #
 # The last sentence below is the one head C's ruling narrowed in writing
-# (https://github.com/FlexOr2/atelier-2/issues/89#issuecomment-5304710960),
+# (https://github.com/FlexOr2/atelier-2/issues/89#issuecomment-5304715493),
 # quoted as it was ruled. Its named exception is a debt with an owner, not a
 # quiet retreat: `v1SnapshotNodeState` in frontend/src/lib/runProjection.ts is
 # the only place a browser still derives a durable state, it exists because the

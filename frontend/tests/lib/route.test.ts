@@ -8,6 +8,20 @@ import {
 
 const SAMPLE_PUBLIC_REFERENCE = "run1.cnVu";
 
+/**
+ * Every page this router can open, and whether a served path must reach it on a
+ * cold load. Total over the router's own union, so a page added there without a
+ * decision here is a type error rather than a level that survives a click and
+ * dies on a reload -- the defect this file exists for, one edge further out.
+ */
+const REACHED_COLD: Record<CockpitRoute["page"], boolean> = {
+  studio: true,
+  project: true,
+  new: true,
+  run: true,
+  "not-found": false
+};
+
 function coldLoad(servedPath: string): CockpitRoute {
   return cockpitRoute(servedPath.replace(PUBLIC_REFERENCE_PLACEHOLDER, SAMPLE_PUBLIC_REFERENCE));
 }
@@ -26,7 +40,12 @@ describe("the paths the server is asked to serve", () => {
   it("declares a path for every page this router can open", () => {
     const opened = new Set(SERVED_PATHS.map((servedPath) => coldLoad(servedPath).page));
 
-    expect([...opened].sort()).toEqual(["new", "project", "run", "studio"]);
+    expect([...opened].sort()).toEqual(
+      Object.entries(REACHED_COLD)
+        .filter(([, reached]) => reached)
+        .map(([page]) => page)
+        .sort()
+    );
   });
 
   /**

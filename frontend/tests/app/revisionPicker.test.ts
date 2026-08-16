@@ -85,7 +85,7 @@ describe("the saved-workflow picker", () => {
     });
 
     expect(option).toBeTruthy();
-    expect(option.getAttribute("aria-label") ?? option.textContent).not.toContain(namedHash);
+    expect(option.closest("label")?.textContent).not.toContain(namedHash);
     expect(screen.getByText("Builds the candidate, then reviews it for defects.")).toBeTruthy();
     const details = screen.getByText("Details").closest("details");
     expect(details?.textContent).toContain(namedHash);
