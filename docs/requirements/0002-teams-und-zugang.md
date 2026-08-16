@@ -1,16 +1,19 @@
 # Requirement 0002: Access is an invitation, and the installation is the team's workshop
 
 ```text
-Status:         DRAFT
+Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/82
 Source-Threads: #82
 Distilled-From: 5302604615, 5302806812, 5302820772, 5302849696, 5302855908
                 #82 body, sha256
                 fe6fd31f2f8c0aa0866054dc91a3c9ef48843956d508105e414940bff8376868
-Approved-By:    none
+Approved-By:    5307632273
 ```
 
-`DRAFT`, and this subject is the clearest case for why the status exists. The
+`AGREED` as a reading (operator comment 5307632273, 16.08.2026, „ja passt"): the
+operator approved that this document reads its thread faithfully. That
+approval settles no direction beyond what the thread itself settles — the
+paragraph below keeps saying why that caution matters here. And this subject is the clearest case for why the status exists. The
 operator's wish is on the record and quoted verbatim below; almost everything
 under it is the desk's answer to his questions, and #82 itself heads that answer
 "Engineering-Richtung (zu prüfen im späteren ADR, nicht vorentschieden)".

@@ -1,29 +1,20 @@
 # Requirement 0001: Items are prioritised, get their workflow, and run from a queue
 
 ```text
-Status:         DRAFT
+Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/79
 Source-Threads: #79
 Distilled-From: 5302017656, 5302022156, 5302048197, 5302062963, 5302109936,
                 5302131944, 5302732436
                 #79 body, sha256
                 9d781a3c15d9f392d5dcd6c466584002029f16713f079074b87726e17698d200
-Approved-By:    none
+Approved-By:    5307633402+5307639686
 ```
 
-`DRAFT`: the operator has approved no reading of this thread, and #79 itself
-heads its acceptance direction "zu verfeinern vor Bau". **No rule below is
-graded `OPERATOR`**, because no comment in this thread quotes an operator
-sentence that states a rule. The two passages carrying his words at length — the
-north star and the canonical acceptance scenario — are both marked *wörtlich
-sinngemäß* by the thread itself, so they are carried under `Intent` and
-`Acceptance` with that qualifier rather than promoted to a graded rule; the one
-sentence quoted from him verbatim is a question, „gut oder Push-back?", and the
-answer to it under rule 1 is the desk's. Several
-comments are headed "ERGÄNZUNG (Operator)"; under the grade rule of the
-convention that header is the desk's attribution and not the operator's voice.
-Everything below is therefore the engineering reading of the thread and binds
-nothing until an operator rules it.
+`AGREED`: the operator approved this reading on 16.08.2026 — 0002/0003/0004
+plainly („ja passt"), 0001 conditional on rules 20/21 being incorporated,
+which this revision does; the approval objects are named in `Approved-By`.
+The thread still wins where they disagree.
 
 ## Intent
 
@@ -177,6 +168,36 @@ star, not a sentence of it.)
     4. the **inbox gate** (#9) — everything that needs the human (question,
        gate, red after bounded retries) arrives as a card *at* him, with pause ↔
        resume per project (#23) as the emergency stop and restart.
+
+20. `OPERATOR` — **Kein Tracker-Nachbau; Items leben im angebundenen
+    Tracker.** Der Operator wörtlich (an Fable, 16.08., via 5307633402 auf #79):
+
+    > „ich will arbeit priorisieren stimmt, aber wir müssen aufpassen das wir
+    > nicht etwas bauen was github oder andere plattformen bieten […] ich will
+    > kein work-item tracker nachbauen! sondern wiederverwenden können
+    > (github/gitlab oder jira oder was auch immer anbinden)"
+
+    Desk-Ausarbeitung um diesen Kern (selbe Quelle, Grad DESK): der Tracker
+    (GitHub zuerst, andere hinter demselben Port) ist die Quelle der Wahrheit
+    für Items — Anlegen, Beschreiben, Kommentieren, Schließen passieren dort;
+    das Atelier besitzt ausschließlich Orchestrierungszustand per Referenz auf
+    die Tracker-ID (Workflow-Zuordnung, Claim/Queue-Zulassung, Run↔Item-
+    Bindung, Beweise/Receipts); Lackmustest je Kopf: „Bietet die Plattform das
+    schon?" → Adapter, nie Nachbau.
+
+21. `OPERATOR` — **Priorität ist bindend und wohnt im Atelier, nicht im
+    Tracker-Kommentar.** Der Operator wörtlich (an Fable, 16.08., via
+    5307639686 auf #79, ersetzt Punkt 3 von 5307633402):
+
+    > „das kann schon auch im atelier sichtbar sein? und es muss so sein dass
+    > es bindend ist? […] im kommentar sicher nciht?"
+
+    Desk-Ausarbeitung um diesen Kern (selbe Quelle, Grad DESK): Priorität ist
+    typisierter, dauerhafter, ereignis-historisierter Orchestrierungszustand —
+    Triage-Vorschlag → Operator-Bestätigung (ein Klick in der Atelier-Queue-
+    Sicht) → gebundene Queue-Reihenfolge; der Tracker erhält höchstens eine
+    abgeleitete, nicht-bindende Spiegelung (z. B. Label), klar als Projektion
+    markiert.
 
 ## Open questions
 
