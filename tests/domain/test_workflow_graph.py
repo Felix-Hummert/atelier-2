@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 from typing import cast
 
 import pytest
@@ -88,6 +89,17 @@ def test_event_terminal_and_answer_hash_vectors_are_frozen() -> None:
     assert answer.answer_workflow_id == (
         "atelier2-answer-1cf339c00cc0026bb17df09896739a7e48e675fe16523a430a687438d62a8ad6"
     )
+
+
+def test_decimal_ascii_and_packed_integers_are_distinct_hash_fields() -> None:
+    """#93 L5: the two integer encodings must not be treated as interchangeable.
+
+    `node-event-hash` persists `str(n).encode("ascii")`; minted ids persist
+    `struct.pack(">Q", n)`. The frozen vectors in this file and in
+    `test_agent_attempts.py` go red if either family is silently switched.
+    """
+    assert str(1).encode("ascii") != struct.pack(">Q", 1)
+    assert str(7).encode("ascii") != struct.pack(">Q", 7)
 
 
 def test_event_hash_vector_with_receipt_fields_is_frozen() -> None:

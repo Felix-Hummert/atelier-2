@@ -36,7 +36,9 @@ class AgentAttemptId(Sha256Hash):
                 "agent-attempt-id/v1",
                 node_execution_id.value.encode("ascii"),
                 request_hash.value.encode("ascii"),
-                struct.pack(">Q", attempt_ordinal),
+                struct.pack(
+                    ">Q", attempt_ordinal
+                ),  # minted-id family; see hashing.frame
             )
         )
 

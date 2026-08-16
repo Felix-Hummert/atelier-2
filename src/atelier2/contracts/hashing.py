@@ -15,6 +15,14 @@ def frame(domain: str, *fields: bytes) -> bytes:
 
     Domain names are UTF-8 and length-prefixed with an unsigned 32-bit integer;
     each exact field is length-prefixed with an unsigned 64-bit integer.
+
+    Integers are not a frame concern. An identity owner encodes them as bytes
+    before calling: decimal ASCII (`str(n).encode("ascii")`) for the persisted
+    `node-event-hash` family, and `struct.pack(">Q", n)` for minted ids
+    (`agent-attempt-id`, agent-configuration revisions). The two encodings of
+    the same integer are different bytes. Switching a landed family rewrites
+    every stored hash of that family, so new identities use pack and the
+    event-hash family stays decimal ASCII.
     """
 
     domain_bytes = domain.encode("utf-8")
