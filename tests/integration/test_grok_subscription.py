@@ -13,10 +13,12 @@ from atelier2.adapters.grok_subscription import (
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_SUBSCRIPTION_FRAME_BYTES,
     GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
+    GrokContainmentUnattested,
     GrokExecutableUnsupported,
     GrokSubscriptionAuthModeUnsupported,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
+    attest_grok_containment,
     verify_grok_capability,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
@@ -137,10 +139,13 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     request = subscription_request(model="grok-4", job=b"draw the owl")
 
     invocation = executor.prepare_process(request)
-    job_file = (
-        settings.workspace / f"atelier2-grok-job-{request.node_execution_id.value}"
+    # The job path is private per execution, so it is read back from the vector
+    # rather than recomputed: a predictable name is what a symlink preys on.
+    job_file = Path(
+        invocation.arguments[invocation.arguments.index("--prompt-file") + 1]
     )
 
+    assert job_file.parent.parent == settings.workspace
     assert invocation.arguments == (
         str(settings.executable),
         "-p",
@@ -153,11 +158,18 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         "--tools=",
         "--permission-mode",
         "dontAsk",
+        "--no-memory",
+        "--no-subagents",
+        "--disable-web-search",
         "--max-turns",
         "1",
     )
     assert invocation.working_directory == settings.workspace
     assert invocation.environment == (
+        # HOME is named on purpose: measured on grok 1.0.4, a child without it
+        # resolves the invoking account's home and loads that profile's
+        # plugins, hooks and skills.
+        ("HOME", str(settings.credential_directory)),
         ("GROK_HOME", str(settings.credential_directory)),
         ("PATH", settings.search_path),
     )
@@ -172,7 +184,7 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert observed["stdin"] == ""
     assert observed["environment"]["GROK_HOME"] == str(settings.credential_directory)
     assert observed["environment"]["PATH"] == settings.search_path
-    assert "HOME" not in observed["environment"]
+    assert observed["environment"]["HOME"] == str(settings.credential_directory)
     assert "XAI_API_KEY" not in observed["environment"]
 
 
@@ -210,3 +222,155 @@ def test_only_the_measured_grok_release_is_admitted(tmp_path: Path) -> None:
     )
     with pytest.raises(GrokExecutableUnsupported, match="1.0.4"):
         verify_grok_capability(other.executable)
+
+
+ATTESTING_GROK = """
+import json, sys
+if "--version" in sys.argv:
+    print("grok 1.0.4 (d846eb93d9) [stable]")
+    raise SystemExit(0)
+if "inspect" in sys.argv:
+    print(json.dumps(INSPECTED))
+    raise SystemExit(0)
+raise SystemExit(3)
+"""
+
+INERT_PROFILE = {
+    "grokVersion": MEASURED_GROK_VERSION,
+    "plugins": [],
+    "hooks": [],
+    "mcpServers": [],
+    "skills": [],
+    "marketplaces": [],
+    "lspServers": [],
+    "projectInstructions": [],
+    "configSources": [],
+    "permissions": {"sources": []},
+    "agents": [{"name": "general-purpose", "source": {"type": "builtin"}}],
+}
+
+
+def attesting_deployment(
+    tmp_path: Path, profile: dict[str, object]
+) -> GrokSubscriptionSettings:
+    source = f"INSPECTED = {profile!r}\n" + ATTESTING_GROK
+    return grok_subscription_deployment(tmp_path, source)
+
+
+def test_a_preplaced_symlink_at_the_job_path_receives_no_job_bytes(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"the operator's bytes")
+    request = subscription_request(job=b"attacker payload")
+    predictable = (
+        settings.workspace / f"atelier2-grok-job-{request.node_execution_id.value}"
+    )
+    predictable.symlink_to(victim)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+
+    invocation = executor.prepare_process(request)
+
+    assert victim.read_bytes() == b"the operator's bytes"
+    job_file = Path(
+        invocation.arguments[invocation.arguments.index("--prompt-file") + 1]
+    )
+    assert job_file.read_bytes() == b"attacker payload"
+    assert not job_file.is_symlink()
+    assert stat.S_IMODE(job_file.stat().st_mode) == 0o600
+    assert stat.S_IMODE(job_file.parent.stat().st_mode) == 0o700
+    executor.close()
+
+
+def test_job_bytes_outlive_neither_a_completion_nor_a_close(tmp_path: Path) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+
+    invocation = executor.prepare_process(subscription_request())
+    job_file = Path(
+        invocation.arguments[invocation.arguments.index("--prompt-file") + 1]
+    )
+    assert job_file.exists()
+
+    executor.decode_process_completion(AgentProcessCompletion(1, b"", b""))
+
+    assert not job_file.exists()
+    assert not job_file.parent.exists()
+
+    second = executor.prepare_process(subscription_request())
+    abandoned = Path(second.arguments[second.arguments.index("--prompt-file") + 1])
+    assert abandoned.exists()
+
+    executor.close()
+
+    assert not abandoned.exists()
+    assert list(settings.workspace.iterdir()) == []
+
+
+def test_a_headless_run_leaves_memory_subagents_and_web_search_disabled(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+
+    invocation = executor.prepare_process(subscription_request())
+
+    assert "--no-memory" in invocation.arguments
+    assert "--no-subagents" in invocation.arguments
+    assert "--disable-web-search" in invocation.arguments
+    executor.close()
+
+
+def test_an_inert_profile_is_attested(tmp_path: Path) -> None:
+    attest_grok_containment(attesting_deployment(tmp_path, INERT_PROFILE))
+
+
+@pytest.mark.parametrize(
+    ("surface", "discovered"),
+    [
+        ("plugins", [{"name": "marketplace-plugin"}]),
+        ("hooks", [{"event": "PreToolUse"}]),
+        ("mcpServers", [{"name": "filesystem"}]),
+        ("skills", [{"name": "deploy"}]),
+        ("marketplaces", [{"name": "community"}]),
+        ("lspServers", [{"name": "pyright"}]),
+        ("projectInstructions", [{"path": "AGENTS.md"}]),
+        ("configSources", [{"path": "/home/operator/.grok/config.toml"}]),
+    ],
+)
+def test_a_discovered_trust_surface_refuses_to_serve(
+    tmp_path: Path, surface: str, discovered: list[object]
+) -> None:
+    profile = dict(INERT_PROFILE)
+    profile[surface] = discovered
+
+    with pytest.raises(GrokContainmentUnattested, match=surface):
+        attest_grok_containment(attesting_deployment(tmp_path, profile))
+
+
+def test_a_discovered_permission_source_refuses_to_serve(tmp_path: Path) -> None:
+    profile = dict(INERT_PROFILE)
+    profile["permissions"] = {"sources": ["/etc/claude-code/managed-settings.json"]}
+
+    with pytest.raises(GrokContainmentUnattested, match="permissions.sources"):
+        attest_grok_containment(attesting_deployment(tmp_path, profile))
+
+
+def test_a_non_builtin_agent_refuses_to_serve(tmp_path: Path) -> None:
+    profile = dict(INERT_PROFILE)
+    profile["agents"] = [{"name": "deployer", "source": {"type": "project"}}]
+
+    with pytest.raises(GrokContainmentUnattested, match="agents"):
+        attest_grok_containment(attesting_deployment(tmp_path, profile))
+
+
+def test_an_unreadable_attestation_refuses_rather_than_assuming_containment(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(
+        tmp_path, "import sys\nsys.exit(0 if '--version' in sys.argv else 9)\n"
+    )
+
+    with pytest.raises(GrokContainmentUnattested):
+        attest_grok_containment(settings)
