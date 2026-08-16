@@ -23,7 +23,11 @@ from atelier2.application.publish_agent_configurations import (
     publish_agent_configuration_revision,
     publish_auth_profile_revision,
 )
-from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
+from atelier2.application.publish_workflow_revision import (
+    WorkflowPublicationLimits,
+    publish_workflow_revision,
+)
+from atelier2.application.read_run_events import read_run_events
 from atelier2.application.read_runs import get_run, list_runs
 from atelier2.application.read_workflow_revisions import (
     get_workflow_revision,
@@ -33,14 +37,13 @@ from atelier2.application.read_workflow_revisions import (
 from atelier2.application.reconcile_run import reconcile_run
 from atelier2.application.start_published_run import start_published_run
 from atelier2.ports.workflow_revisions import (
-    DurableProjectionLimit,
     EnrichedPageBudget,
 )
 
 
 def bound_use_cases(
     ports: ApiPorts,
-    projection_limit: DurableProjectionLimit,
+    projection_limit: WorkflowPublicationLimits,
     enriched_page_budget: EnrichedPageBudget,
 ) -> ApiUseCases:
     """Spend the ports here, so that nothing below this line can reach one."""
@@ -66,6 +69,19 @@ def bound_use_cases(
         ),
         prepare_run_events=lambda run_id, after_sequence: prepare_run_events(
             run_id, after_sequence, ports.run_event_queries
+        ),
+        read_run_events=lambda run_id, after_sequence, page_size: read_run_events(
+            run_id,
+            after_sequence,
+            page_size,
+            projection_limit,
+            ports.run_event_queries,
+        ),
+        publish_workflow_revision=lambda document: publish_workflow_revision(
+            document,
+            ports.workflow_revision_publisher,
+            ports.workflow_document_parser,
+            projection_limit,
         ),
         publish_auth_profile_revision=(
             lambda profile_id, revision_number, provider_id, auth_mode: (

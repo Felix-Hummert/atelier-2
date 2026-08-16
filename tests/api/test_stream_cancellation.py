@@ -32,6 +32,7 @@ from tests.scenarios.api import (
     api_limits,
     api_ports,
     event_poll_backoff,
+    stream_page_reader,
     stream_run_projection,
 )
 
@@ -161,7 +162,7 @@ def test_empty_stream_uses_capped_adaptive_backoff_with_injected_sleep() -> None
             PreparedEventStream(
                 RUN_ID, 0, 0, False, stream_run_projection(RUN_ID.value)
             ),
-            queries,
+            stream_page_reader(queries),
             BoundedQueryRunner(1, admission_timeout_seconds=1),
             page_size=1,
             limits=api_limits(),
@@ -227,7 +228,7 @@ def test_poll_backoff_resets_to_initial_delay_immediately_after_progress() -> No
             PreparedEventStream(
                 RUN_ID, 0, 0, False, stream_run_projection(RUN_ID.value)
             ),
-            queries,
+            stream_page_reader(queries),
             BoundedQueryRunner(1, admission_timeout_seconds=1),
             page_size=1,
             limits=api_limits(),
@@ -413,7 +414,7 @@ def test_event_poll_admission_timeout_mid_stream_closes_without_starting_query()
                 PreparedEventStream(
                     RUN_ID, 1, 2, False, stream_run_projection(RUN_ID.value)
                 ),
-                cast(RunEventQueries, queries),
+                stream_page_reader(cast(RunEventQueries, queries)),
                 runner,
                 page_size=1,
                 limits=api_limits(),
@@ -515,7 +516,7 @@ def test_stream_does_not_read_the_next_bounded_page_before_yielding_the_current_
             PreparedEventStream(
                 RUN_ID, 0, 3, True, stream_run_projection(RUN_ID.value)
             ),
-            queries,
+            stream_page_reader(queries),
             BoundedQueryRunner(1, admission_timeout_seconds=1),
             page_size=2,
             limits=api_limits(),
@@ -583,7 +584,7 @@ def test_cancelled_stream_starts_no_next_query_and_blocked_query_closes_once() -
             PreparedEventStream(
                 RUN_ID, 0, 0, False, stream_run_projection(RUN_ID.value)
             ),
-            queries,
+            stream_page_reader(queries),
             runner,
             page_size=2,
             limits=api_limits(),

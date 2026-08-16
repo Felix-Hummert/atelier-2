@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, Never
 
@@ -23,9 +24,12 @@ from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimits
 from atelier2.api.stream import EventPollBackoff
+from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
+from atelier2.application.read_run_events import ReadRunEventsResult, read_run_events
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import RunEventQueries
 from atelier2.ports.run_queries import RunFound, RunProjection
+from atelier2.ports.workflow_revisions import DurableProjectionLimit
 
 RECONCILIATION_REVISION_HASH = (
     "c93767cc7790bdb39258bb6d9bdfb3168218705038932119e6628c6312c6e34e"
@@ -350,3 +354,35 @@ def durable_api_client(
             event_poll_backoff=event_poll_backoff(),
         )
     )
+
+
+def stream_projection_limit() -> WorkflowPublicationLimits:
+    """A limit wide enough not to be what a stream test is about."""
+    return WorkflowPublicationLimits(
+        maximum_document_bytes=65_536,
+        maximum_nodes=100,
+        maximum_string_characters=1_024,
+        maximum_payload_bytes=49_152,
+    )
+
+
+def stream_page_reader(
+    queries: RunEventQueries,
+    projection_limit: DurableProjectionLimit | None = None,
+) -> Callable[[RunId, int, int], ReadRunEventsResult]:
+    """The page decision a stream drives, bound to one store.
+
+    Tests hand this to `stream_server_events` rather than the store itself, so the
+    real `read_run_events` decision stays on the path they exercise instead of
+    being stepped over by a fake shaped like the port. The limit is a real one
+    rather than `None`: the use-case takes no fail-open default, which is the
+    direction head D is moving the ports in anyway.
+    """
+    limit = projection_limit or stream_projection_limit()
+
+    def read_page(
+        run_id: RunId, after_sequence: int, page_size: int
+    ) -> ReadRunEventsResult:
+        return read_run_events(run_id, after_sequence, page_size, limit, queries)
+
+    return read_page

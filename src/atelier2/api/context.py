@@ -13,7 +13,11 @@ from atelier2.application.publish_agent_configurations import (
     PublishAgentConfigurationRevisionResult,
     PublishAuthProfileRevisionResult,
 )
-from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
+from atelier2.application.publish_workflow_revision import (
+    PublishWorkflowRevisionResult,
+    WorkflowPublicationLimits,
+)
+from atelier2.application.read_run_events import ReadRunEventsResult
 from atelier2.application.read_runs import GetRunResult, ListRunsResult
 from atelier2.application.read_workflow_revisions import (
     GetWorkflowRevisionResult,
@@ -82,6 +86,8 @@ class ApiUseCases:
     get_run: Callable[[RunId], GetRunResult]
     list_runs: Callable[[RunId | None, int], ListRunsResult]
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
+    read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
+    publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
     publish_auth_profile_revision: Callable[
         [str, int, str, str], PublishAuthProfileRevisionResult
     ]

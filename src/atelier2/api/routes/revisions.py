@@ -34,7 +34,6 @@ from atelier2.application.publish_workflow_revision import (
     PublicationCreated,
     PublicationExisting,
     PublicationInvalid,
-    publish_workflow_revision,
 )
 from atelier2.application.read_workflow_revisions import (
     WorkflowRevisionNotFound,
@@ -66,12 +65,7 @@ async def publish_revision(
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: publish_workflow_revision(
-            document,
-            context.ports.workflow_revision_publisher,
-            context.ports.workflow_document_parser,
-            context.workflow_projection_limit,
-        ),
+        lambda: context.use_cases.publish_workflow_revision(document),
     )
     match result:
         case PublicationCreated(projection):

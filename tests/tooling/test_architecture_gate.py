@@ -292,7 +292,13 @@ def add_route_reaching_a_port(project: Path) -> None:
 
 
 def empty_a_route_module_that_is_declared_to_hold_ports(project: Path) -> None:
-    (project / "src/atelier2/api/routes/events.py").write_text(
+    """Take the port away from the one call still declared to reach one.
+
+    The module is whichever one the list still names — the list shrinks head by
+    head, and this mutation follows it rather than pinning a module that has since
+    been translated.
+    """
+    (project / "src/atelier2/api/routes/runs.py").write_text(
         "router = None\n", encoding="utf-8"
     )
 
@@ -375,7 +381,7 @@ def test_a_stale_entry_in_the_untranslated_route_list_fails(tmp_path: Path) -> N
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "event_stream_route reaches no port" in result.stderr
+    assert "cancel_agent_attempt_route reaches no port" in result.stderr
 
 
 ALIAS_IMPORT = (
