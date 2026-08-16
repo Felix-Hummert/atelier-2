@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -30,6 +29,7 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.dbos.starter import (
+    WORKFLOW_ID_PREFIX,
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
     bootstrap_workflow_id_for,
@@ -120,11 +120,21 @@ def count(engine: sa.Engine, table: str) -> int:
         return int(connection.scalar(sa.text(f"SELECT COUNT(*) FROM {table}")) or 0)
 
 
-@pytest.mark.parametrize("run_id", ["run-1", " run-1 ", "\N{SNOWMAN}"])
-def test_workflow_id_is_deterministic_from_exact_run_id(run_id: str) -> None:
-    assert bootstrap_workflow_id_for(RunId(run_id)) == (
-        "atelier2-run-" + hashlib.sha256(run_id.encode()).hexdigest()
-    )
+@pytest.mark.parametrize(
+    ("run_id", "digest"),
+    [
+        ("run-1", "4e65d3fbe8ad6535681b021b30785b12b6c0e3f8878859a4148b3f58b8835db0"),
+        (" run-1 ", "2dab30c2369645f3034a977f79499de4115eb9680bef84680f4cecc981e67ee7"),
+        (
+            "\N{SNOWMAN}",
+            "51643361c79ecaef25a8de802de24f570ba25d9c2df1d22d94fade11b4f466cc",
+        ),
+    ],
+)
+def test_workflow_id_is_deterministic_from_exact_run_id(
+    run_id: str, digest: str
+) -> None:
+    assert bootstrap_workflow_id_for(RunId(run_id)) == WORKFLOW_ID_PREFIX + digest
 
 
 def test_start_commits_the_run_and_its_enqueue_atomically(
