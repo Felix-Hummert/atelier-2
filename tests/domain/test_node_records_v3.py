@@ -13,10 +13,12 @@ from atelier2.contracts.node_records_v3 import (
     ContextPackage,
     DeclaredOutput,
     InputEnvelope,
+    InputReceiptBinding,
     NodeArtifact,
     NodeExecutionRequest,
     NodeKindV3,
     NodeReceipt,
+    NodeReceiptHash,
     PersistedReceiptDisposition,
     ProjectedDeliveryStatus,
     ReceiptOutput,
@@ -35,9 +37,9 @@ RUN = RunId("run-v3")
 NODE = "build"
 MANIFEST = b"context-manifest\x00"
 PACKAGE_HASH = "6876523ded4e24ff8cd5a8b6a7adc591aab480fdb1e2ea231369bc56e24d9c31"
-REQUEST_HASH = "9aa2193b57878473d03e616430a8b70da18063db4d51f25fc7ef034b0eb3a701"
+REQUEST_HASH = "0d6cc5fb3793364b040038326c54068794e1cb2daf288d6e235ccd910b2be296"
 ARTIFACT_HASH = "6dfc8742c2ea8d216481dafb31294010c0586c4cbcb87a6641ee4f73e816cd10"
-RECEIPT_HASH = "083f44422e23ceb43188464c4327e580dd77454716a21636972de556e7f760ec"
+RECEIPT_HASH = "054ab05dc7c929f7d56f3ec692e1fd513c8c4e2bccb3ed7490cfbcde3747db32"
 RESULT_BYTES = b"result-bytes"
 RESULT_VALUE_HASH = "4796ef914c847f1124994597d49d513b96882c4176bf1ccb0bc4f4c5b18ee95a"
 
@@ -120,9 +122,22 @@ def test_agent_request_requires_a_mode_and_other_kinds_refuse_one() -> None:
         _request(kind=NodeKindV3.WAIT, mode=AgentExecutionCapability.HEADLESS)
 
 
+def _upstream_receipt(
+    disposition: PersistedReceiptDisposition = PersistedReceiptDisposition.SUCCEEDED,
+    reason: str = "completed",
+) -> InputReceiptBinding:
+    return InputReceiptBinding(
+        "implement", disposition, reason, NodeReceiptHash("00" * 32)
+    )
+
+
 def test_stale_is_a_delivery_status_and_not_a_persisted_disposition() -> None:
-    envelope = InputEnvelope(ProjectedDeliveryStatus.STALE, "draft", SCHEMA, None)
+    envelope = InputEnvelope(
+        ProjectedDeliveryStatus.STALE, "draft", receipt=_upstream_receipt()
+    )
     assert envelope.status is ProjectedDeliveryStatus.STALE
+    assert envelope.receipt is not None
+    assert envelope.receipt.disposition is PersistedReceiptDisposition.SUCCEEDED
     assert "stale" not in {item.value for item in PersistedReceiptDisposition}
     with pytest.raises(TypeError):
         NodeReceipt(
@@ -132,6 +147,46 @@ def test_stale_is_a_delivery_status_and_not_a_persisted_disposition() -> None:
             _request().request_hash,
             _package().package_hash,
             (),
+        )
+
+
+def test_non_succeeded_envelope_names_the_upstream_receipt_and_refuses_a_value() -> (
+    None
+):
+    failed = InputEnvelope(
+        ProjectedDeliveryStatus.FAILED,
+        "draft",
+        receipt=_upstream_receipt(
+            PersistedReceiptDisposition.FAILED, "schema_violation"
+        ),
+    )
+    assert failed.receipt is not None
+    assert failed.schema_revision is None
+    with pytest.raises(ValueError, match="receipt"):
+        InputEnvelope(ProjectedDeliveryStatus.STALE, "draft", SCHEMA, None)
+    with pytest.raises(ValueError, match="schema or value"):
+        InputEnvelope(
+            ProjectedDeliveryStatus.FAILED,
+            "draft",
+            SCHEMA,
+            None,
+            _upstream_receipt(PersistedReceiptDisposition.FAILED, "schema_violation"),
+        )
+    with pytest.raises(ValueError, match="matches the persisted disposition"):
+        InputEnvelope(
+            ProjectedDeliveryStatus.FAILED,
+            "draft",
+            receipt=_upstream_receipt(
+                PersistedReceiptDisposition.CANCELLED, "cancelled"
+            ),
+        )
+    with pytest.raises(ValueError, match="no receipt"):
+        InputEnvelope(
+            ProjectedDeliveryStatus.SUCCEEDED,
+            "draft",
+            SCHEMA,
+            VALUE,
+            _upstream_receipt(),
         )
 
 

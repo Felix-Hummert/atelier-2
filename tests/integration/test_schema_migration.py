@@ -32,6 +32,8 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
+from atelier2.contracts.catalog_v3 import CatalogLineage
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 
 
 def _create_populated_version_one_database(database_path: Path) -> None:
@@ -220,7 +222,7 @@ def test_published_handoffs_pin_v9_predecessor_and_v10_current() -> None:
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[10]
-        == "c96840690c524a38d5074e2174e5b1c944ab6c47b20a535384ded8c146d5e4de"
+        == "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7"
     )
 
 
@@ -250,69 +252,85 @@ def test_predecessor_store_is_refused_without_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
+def _published_workflow(document: bytes = b"name: lasagne\n") -> PublishedRevision:
+    return PublishedRevision(RevisionKind.WORKFLOW, document)
+
+
+def _write_thin_vertical_set(
+    connection: Connection,
+    published: PublishedRevision,
+    *,
+    run_id: str = "run-lasagne",
+    execution: str = "11" * 32,
+    request: str = "22" * 32,
+    package: str = "33" * 32,
+    receipt: str = "ef" * 32,
+) -> CatalogLineage:
+    lineage = CatalogLineage(published.kind, published.revision_hash)
+    connection.execute(
+        published_revisions.insert().values(
+            kind=published.kind.value,
+            revision_hash=published.revision_hash.value,
+            document=published.document,
+        )
+    )
+    connection.execute(
+        catalog_lineages.insert().values(
+            lineage_id=lineage.lineage_id.value,
+            kind=published.kind.value,
+            founding_revision_hash=published.revision_hash.value,
+        )
+    )
+    connection.execute(
+        catalog_lineage_members.insert().values(
+            lineage_id=lineage.lineage_id.value,
+            revision_number=1,
+            revision_hash=published.revision_hash.value,
+        )
+    )
+    connection.execute(
+        workflow_revisions.insert().values(
+            revision_hash=published.revision_hash.value, document=published.document
+        )
+    )
+    connection.execute(
+        runs.insert().values(
+            run_id=run_id,
+            bootstrap_workflow_id="bootstrap-lasagne",
+            revision_hash=published.revision_hash.value,
+            workflow_format_version=3,
+            agent_binding_set_hash=None,
+            current_node_id="cook",
+            state="STARTED",
+            state_version=0,
+            last_event_sequence=0,
+            terminal_hash=None,
+        )
+    )
+    connection.execute(
+        node_receipts_v3.insert().values(
+            node_execution_id=execution,
+            disposition="succeeded",
+            reason="completed",
+            request_hash=request,
+            context_package_hash=package,
+            receipt_hash=receipt,
+        )
+    )
+    return lineage
+
+
 def test_thin_v10_store_accepts_revision_lineage_member_run_and_receipt(
     tmp_path: Path,
 ) -> None:
     engine = create_canonical_engine(tmp_path / "atelier.sqlite")
     initialize_schema(engine)
-    revision = "ab" * 32
-    lineage = "cd" * 32
-    receipt = "ef" * 32
-    execution = "11" * 32
-    request = "22" * 32
-    package = "33" * 32
+    published = _published_workflow()
     with engine.begin() as connection:
-        connection.execute(
-            published_revisions.insert().values(
-                kind="workflow",
-                revision_hash=revision,
-                document=b"name: lasagne\n",
-            )
-        )
-        connection.execute(
-            catalog_lineages.insert().values(
-                lineage_id=lineage,
-                kind="workflow",
-                founding_revision_hash=revision,
-            )
-        )
-        connection.execute(
-            catalog_lineage_members.insert().values(
-                lineage_id=lineage,
-                revision_number=1,
-                revision_hash=revision,
-            )
-        )
-        connection.execute(
-            workflow_revisions.insert().values(
-                revision_hash=revision, document=b"name: lasagne\n"
-            )
-        )
-        connection.execute(
-            runs.insert().values(
-                run_id="run-lasagne",
-                bootstrap_workflow_id="bootstrap-lasagne",
-                revision_hash=revision,
-                workflow_format_version=3,
-                agent_binding_set_hash=None,
-                current_node_id="cook",
-                state="STARTED",
-                state_version=0,
-                last_event_sequence=0,
-                terminal_hash=None,
-            )
-        )
-        connection.execute(
-            node_receipts_v3.insert().values(
-                node_execution_id=execution,
-                disposition="succeeded",
-                reason="completed",
-                request_hash=request,
-                context_package_hash=package,
-                receipt_hash=receipt,
-            )
-        )
+        _write_thin_vertical_set(connection, published)
     with engine.connect() as connection:
+        stored_hash = connection.scalar(sa.select(published_revisions.c.revision_hash))
+        assert stored_hash == published.revision_hash.value
         assert (
             connection.scalar(
                 sa.select(sa.func.count()).select_from(catalog_lineage_members)
@@ -328,10 +346,134 @@ def test_thin_v10_store_accepts_revision_lineage_member_run_and_receipt(
                 node_execution_id="44" * 32,
                 disposition="stale",
                 reason="projected",
-                request_hash=request,
-                context_package_hash=package,
+                request_hash="22" * 32,
+                context_package_hash="33" * 32,
                 receipt_hash="55" * 32,
             )
+        )
+    engine.dispose()
+
+
+def test_thin_v10_store_refuses_invented_kind_and_unpublished_membership(
+    tmp_path: Path,
+) -> None:
+    engine = create_canonical_engine(tmp_path / "atelier.sqlite")
+    initialize_schema(engine)
+    published = _published_workflow()
+    schema_revision = PublishedRevision(RevisionKind.SCHEMA, b"type: object\n")
+    missing = "ab" * 32
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            published_revisions.insert().values(
+                kind="invented_kind",
+                revision_hash=published.revision_hash.value,
+                document=published.document,
+            )
+        )
+    with engine.begin() as connection:
+        connection.execute(
+            published_revisions.insert().values(
+                kind=published.kind.value,
+                revision_hash=published.revision_hash.value,
+                document=published.document,
+            )
+        )
+        connection.execute(
+            published_revisions.insert().values(
+                kind=schema_revision.kind.value,
+                revision_hash=schema_revision.revision_hash.value,
+                document=schema_revision.document,
+            )
+        )
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            catalog_lineages.insert().values(
+                lineage_id="cd" * 32,
+                kind=published.kind.value,
+                founding_revision_hash=missing,
+            )
+        )
+    lineage = CatalogLineage(published.kind, published.revision_hash)
+    with engine.begin() as connection:
+        connection.execute(
+            catalog_lineages.insert().values(
+                lineage_id=lineage.lineage_id.value,
+                kind=published.kind.value,
+                founding_revision_hash=published.revision_hash.value,
+            )
+        )
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            catalog_lineage_members.insert().values(
+                lineage_id=lineage.lineage_id.value,
+                revision_number=1,
+                revision_hash=missing,
+            )
+        )
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            catalog_lineage_members.insert().values(
+                lineage_id=lineage.lineage_id.value,
+                revision_number=1,
+                revision_hash=schema_revision.revision_hash.value,
+            )
+        )
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "failpoint",
+    (
+        "published_revisions",
+        "catalog_lineages",
+        "catalog_lineage_members",
+        "runs",
+        "node_receipts_v3",
+    ),
+)
+def test_thin_v10_write_failpoint_rolls_back_revision_lineage_run_and_receipt(
+    tmp_path: Path, failpoint: str
+) -> None:
+    engine = create_canonical_engine(tmp_path / failpoint)
+    initialize_schema(engine)
+    published = _published_workflow()
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            f"CREATE TRIGGER fail_{failpoint} BEFORE INSERT ON {failpoint} "
+            "BEGIN SELECT RAISE(ABORT, 'failpoint'); END"
+        )
+    with (
+        pytest.raises(exc.DatabaseError, match="failpoint"),
+        engine.begin() as connection,
+    ):
+        _write_thin_vertical_set(connection, published)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(published_revisions)
+            )
+            == 0
+        )
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(catalog_lineages))
+            == 0
+        )
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(catalog_lineage_members)
+            )
+            == 0
+        )
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(node_receipts_v3))
+            == 0
+        )
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(workflow_revisions)
+            )
+            == 0
         )
     engine.dispose()
 

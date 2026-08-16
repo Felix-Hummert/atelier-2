@@ -40,6 +40,7 @@ from atelier2.contracts.node_records_v3 import (
     MAXIMUM_KIND_TOKEN_CHARACTERS,
     PersistedReceiptDisposition,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
 
 _DECLARATION = re.compile(r"^([a-z_][a-z_0-9]*) IN \(([^()]*)\)$")
@@ -196,6 +197,8 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "runs.state": _values(RunState),
     "wait_answers.state": _values(WaitAnswerState),
     "node_receipts_v3.disposition": _values(PersistedReceiptDisposition),
+    "published_revisions.kind": _values(RevisionKind),
+    "catalog_lineages.kind": _values(RevisionKind),
 }
 
 UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(

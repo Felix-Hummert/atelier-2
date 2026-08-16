@@ -126,13 +126,42 @@ class AvailableContextGrant:
 
 
 @dataclass(frozen=True)
+class InputReceiptBinding:
+    """The non-succeeded envelope form: upstream node, disposition, reason, hash."""
+
+    node_id: str
+    disposition: PersistedReceiptDisposition
+    reason: str
+    receipt_hash: NodeReceiptHash
+
+    def __post_init__(self) -> None:
+        _require_node_id(self.node_id)
+        if not isinstance(self.disposition, PersistedReceiptDisposition):
+            raise TypeError("an input receipt names a persisted disposition")
+        if self.reason == "":
+            raise ValueError("an input receipt names a nonempty reason")
+        if not isinstance(self.receipt_hash, NodeReceiptHash):
+            raise TypeError("an input receipt names a typed receipt hash")
+
+    def framed(self) -> bytes:
+        return frame(
+            "input-envelope-receipt/v3",
+            self.node_id.encode("utf-8"),
+            self.disposition.value.encode("ascii"),
+            self.reason.encode("utf-8"),
+            _ascii_hash(self.receipt_hash),
+        )
+
+
+@dataclass(frozen=True)
 class InputEnvelope:
-    """One bound input: delivery status, name, schema revision, and value hash."""
+    """One bound input: succeeded value, or the named non-success receipt."""
 
     status: ProjectedDeliveryStatus
     name: str
-    schema_revision: PublishedRevisionHash | None
-    value_hash: Sha256Hash | None
+    schema_revision: PublishedRevisionHash | None = None
+    value_hash: Sha256Hash | None = None
+    receipt: InputReceiptBinding | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, ProjectedDeliveryStatus):
@@ -142,8 +171,24 @@ class InputEnvelope:
         if self.status is ProjectedDeliveryStatus.SUCCEEDED:
             if self.schema_revision is None or self.value_hash is None:
                 raise ValueError("a succeeded input envelope carries schema and value")
-        elif self.value_hash is not None:
-            raise ValueError("a non-succeeded input envelope carries no value hash")
+            if self.receipt is not None:
+                raise ValueError("a succeeded input envelope carries no receipt")
+            return
+        if self.receipt is None:
+            raise ValueError(
+                "a non-succeeded input envelope names the upstream receipt"
+            )
+        if self.schema_revision is not None or self.value_hash is not None:
+            raise ValueError(
+                "a non-succeeded input envelope carries no schema or value"
+            )
+        if (
+            self.status is not ProjectedDeliveryStatus.STALE
+            and self.status.value != self.receipt.disposition.value
+        ):
+            raise ValueError(
+                "a non-stale input envelope status matches the persisted disposition"
+            )
 
     def framed(self) -> bytes:
         return frame(
@@ -152,6 +197,7 @@ class InputEnvelope:
             self.name.encode("utf-8"),
             _optional_ascii_hash(self.schema_revision),
             b"" if self.value_hash is None else _ascii_hash(self.value_hash),
+            b"" if self.receipt is None else self.receipt.framed(),
         )
 
 

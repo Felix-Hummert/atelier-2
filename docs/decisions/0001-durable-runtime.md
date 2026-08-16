@@ -36,7 +36,7 @@ only an exact V10 product schema. V9 is the published predecessor
 or nonempty unowned stores are rejected without mutation. There is no runtime
 downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 10 with
 product-schema fingerprint
-`c96840690c524a38d5074e2174e5b1c944ab6c47b20a535384ded8c146d5e4de`.
+`4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -148,7 +148,7 @@ provider contract.
 | Runtime lifecycle | Equivalent leases share one engine, Agent executor, and effect adapter; conflicts, failed initialization, concurrent close, durable binding drift, and two-process recovery preserve one binding and result. |
 | V7→V8→V9 migration | Populated V7 rows and legacy hashes survive one transactional table rebuild, then the V8→V9 version CAS; fresh, reopened, concurrent, malformed, SQL-CHECK, and injected rollback cases establish exact V9 or the unchanged predecessor. |
 | V8→V9 handoff | A populated exact V8 store advances only the schema-version row; every product row and hash survives, including failed and cancelled process evidence; crash after CAS SQL and before commit restores exact V8; concurrent openers converge on one V9. |
-| V10 thin store | A fresh store is exact V10 with published revisions, lineage membership, format-3 runs, and v3 receipts; V7/V8/V9 files are refused unmutated. There is no runtime compatibility after the published V9 predecessor. |
+| V10 thin store | A fresh store is exact V10 with published revisions of the closed kind set, lineage membership bound to those revisions, format-3 runs, and v3 receipts; invented kinds and unpublished member hashes are refused; an injected write failpoint rolls the thin set back; V7/V8/V9 files are refused unmutated. There is no runtime compatibility after the published V9 predecessor. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 | V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |

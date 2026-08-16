@@ -335,8 +335,8 @@ revision, and neither a run-level input, a workflow name, nor an output contract
 that could decide an exit code exists yet.
 
 The canonical store is schema V10. A fresh store is created as exact V10 and
-carries the thin V3 subset: published revisions, lineage membership, format-3
-runs, and `node_receipts_v3`. Alias history, measurements, and policy
+carries the thin V3 subset: published revisions of the closed kind set, lineage
+membership bound to those revisions, format-3 runs, and `node_receipts_v3`. Alias history, measurements, and policy
 activations are not in this profile. V9 remains the published predecessor
 object `V9_SCHEMA_HANDOFF` — version 9, fingerprint
 `6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38`. Exact V7,

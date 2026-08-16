@@ -27,7 +27,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
     9: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
-    10: "c96840690c524a38d5074e2174e5b1c944ab6c47b20a535384ded8c146d5e4de",
+    10: "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -770,6 +770,13 @@ wait_answers = sa.Table(
         "OR (state = 'APPLIED' AND state_version = 1)"
     ),
 )
+_PUBLISHED_REVISION_KIND_SQL = (
+    "kind IN ('workflow', 'schema', 'deterministic_operation', "
+    "'adapter_operation', 'context_source', 'read_operation', 'profile', "
+    "'skill', 'tool', 'policy', 'budget_policy', 'retry_policy', "
+    "'cancellation_policy', 'scorecard_policy', 'selection_policy', "
+    "'admission_policy', 'agent_definition')"
+)
 published_revisions = sa.Table(
     "published_revisions",
     metadata,
@@ -778,7 +785,7 @@ published_revisions = sa.Table(
     sa.Column("document", sa.LargeBinary, nullable=False),
     sa.PrimaryKeyConstraint("kind", "revision_hash"),
     sa.CheckConstraint("length(kind) BETWEEN 1 AND 64"),
-    sa.CheckConstraint("kind GLOB '[a-z]*' AND kind NOT GLOB '*[^a-z_]*'"),
+    sa.CheckConstraint(_PUBLISHED_REVISION_KIND_SQL),
     sa.CheckConstraint(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -790,9 +797,13 @@ catalog_lineages = sa.Table(
     sa.Column("kind", sa.Text, nullable=False),
     sa.Column("founding_revision_hash", sa.Text, nullable=False),
     sa.UniqueConstraint("kind", "founding_revision_hash"),
+    sa.ForeignKeyConstraint(
+        ("kind", "founding_revision_hash"),
+        ("published_revisions.kind", "published_revisions.revision_hash"),
+    ),
     sa.CheckConstraint("length(lineage_id) = 64 AND lineage_id NOT GLOB '*[^0-9a-f]*'"),
     sa.CheckConstraint("length(kind) BETWEEN 1 AND 64"),
-    sa.CheckConstraint("kind GLOB '[a-z]*' AND kind NOT GLOB '*[^a-z_]*'"),
+    sa.CheckConstraint(_PUBLISHED_REVISION_KIND_SQL),
     sa.CheckConstraint(
         "length(founding_revision_hash) = 64 "
         "AND founding_revision_hash NOT GLOB '*[^0-9a-f]*'"
@@ -1114,6 +1125,24 @@ _PRODUCT_TRIGGERS = {
         CREATE TRIGGER catalog_lineages_no_delete
         BEFORE DELETE ON catalog_lineages BEGIN
           SELECT RAISE(ABORT, 'catalog lineages are immutable');
+        END
+    """,
+    "catalog_lineage_members_must_be_published": """
+        CREATE TRIGGER catalog_lineage_members_must_be_published
+        BEFORE INSERT ON catalog_lineage_members
+        WHEN NOT EXISTS (
+          SELECT 1
+          FROM catalog_lineages AS lineage
+          JOIN published_revisions AS revision
+            ON revision.kind = lineage.kind
+           AND revision.revision_hash = NEW.revision_hash
+          WHERE lineage.lineage_id = NEW.lineage_id
+        )
+        BEGIN
+          SELECT RAISE(
+            ABORT,
+            'catalog lineage members must name a published revision of the lineage kind'
+          );
         END
     """,
     "catalog_lineage_members_no_update": """
