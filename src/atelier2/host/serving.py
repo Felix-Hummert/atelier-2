@@ -48,9 +48,11 @@ from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 # reports the resulting refusal as a clean end of stream.
 MAXIMUM_DECODED_PAYLOAD_BYTES = MAXIMUM_AGENT_OUTPUT_BYTES_V2
 MAXIMUM_BASE64_CHARACTERS = base64_characters_for(MAXIMUM_DECODED_PAYLOAD_BYTES)
-# A body carries that same result in transport form, so the edge admits exactly
-# the encoded bound and not a second number that merely agreed with it today.
-MAXIMUM_REQUEST_BODY_BYTES = MAXIMUM_BASE64_CHARACTERS
+# The HTTP body owns its transport envelope independently of any one field. This
+# deployment default admits the largest supported answer together with its JSON
+# keys, revision, and maximum node id; a behavior test crosses the real middleware
+# seam so envelope growth cannot silently make that legal payload undeliverable.
+MAXIMUM_REQUEST_BODY_BYTES = 68 * 1_024
 MAXIMUM_FIELD_CHARACTERS = MAXIMUM_AGENT_FIELD_CHARACTERS
 MAXIMUM_WORKFLOW_NODES = 100
 

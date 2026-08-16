@@ -14,6 +14,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_SIGNED_INT64,
 )
+from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
 
 
 @dataclass(frozen=True)
@@ -22,20 +23,23 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 _VERSION_NINE = 9
 _VERSION_TEN = 10
+_VERSION_ELEVEN = 11
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V9 product tables equal V8. V10 adds the thin catalog/receipt foundation. V11
 # closes the artifact/output/access store shape that Cut B writes atomically.
+# V12 adds append-only catalog alias and retirement histories.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
     9: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
     10: "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7",
     11: "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef",
+    12: "feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -44,6 +48,10 @@ V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V10_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TEN],
+)
+V11_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_ELEVEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_ELEVEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -855,6 +863,48 @@ catalog_lineage_members = sa.Table(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
+catalog_lineage_aliases = sa.Table(
+    "catalog_lineage_aliases",
+    metadata,
+    sa.Column(
+        "lineage_id",
+        sa.Text,
+        sa.ForeignKey("catalog_lineages.lineage_id"),
+        nullable=False,
+    ),
+    sa.Column("activation_number", sa.Integer, nullable=False),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column("actor", sa.Text, nullable=False),
+    sa.Column("activated_at", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("lineage_id", "activation_number"),
+    sa.CheckConstraint("activation_number >= 1"),
+    sa.CheckConstraint(
+        f"length(name) BETWEEN 1 AND {MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS}"
+    ),
+    sa.CheckConstraint("name GLOB '[a-z]*' AND name NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint("length(name) <> 64 OR name GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint("length(actor) > 0"),
+    sa.CheckConstraint("length(activated_at) > 0"),
+)
+catalog_lineage_retirements = sa.Table(
+    "catalog_lineage_retirements",
+    metadata,
+    sa.Column(
+        "lineage_id",
+        sa.Text,
+        sa.ForeignKey("catalog_lineages.lineage_id"),
+        nullable=False,
+    ),
+    sa.Column("activation_number", sa.Integer, nullable=False),
+    sa.Column("state", sa.Text, nullable=False),
+    sa.Column("actor", sa.Text, nullable=False),
+    sa.Column("activated_at", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("lineage_id", "activation_number"),
+    sa.CheckConstraint("activation_number >= 1"),
+    sa.CheckConstraint("state IN ('retired')"),
+    sa.CheckConstraint("length(actor) > 0"),
+    sa.CheckConstraint("length(activated_at) > 0"),
+)
 node_artifacts_v3 = sa.Table(
     "node_artifacts_v3",
     metadata,
@@ -1281,6 +1331,72 @@ _PRODUCT_TRIGGERS = {
         CREATE TRIGGER catalog_lineage_members_no_delete
         BEFORE DELETE ON catalog_lineage_members BEGIN
           SELECT RAISE(ABORT, 'catalog lineage members are immutable');
+        END
+    """,
+    "catalog_lineage_members_unique_per_kind": """
+        CREATE TRIGGER catalog_lineage_members_unique_per_kind
+        BEFORE INSERT ON catalog_lineage_members
+        WHEN EXISTS (
+          SELECT 1
+          FROM catalog_lineage_members AS existing
+          JOIN catalog_lineages AS existing_lineage
+            ON existing_lineage.lineage_id = existing.lineage_id
+          JOIN catalog_lineages AS new_lineage
+            ON new_lineage.lineage_id = NEW.lineage_id
+          WHERE existing.revision_hash = NEW.revision_hash
+            AND existing_lineage.kind = new_lineage.kind
+            AND existing.lineage_id <> NEW.lineage_id
+        )
+        BEGIN
+          SELECT RAISE(
+            ABORT,
+            'catalog lineage members of one kind cannot share a revision'
+          );
+        END
+    """,
+    "catalog_lineage_aliases_name_unique_per_kind": """
+        CREATE TRIGGER catalog_lineage_aliases_name_unique_per_kind
+        BEFORE INSERT ON catalog_lineage_aliases
+        WHEN EXISTS (
+          SELECT 1
+          FROM catalog_lineage_aliases AS existing
+          JOIN catalog_lineages AS existing_lineage
+            ON existing_lineage.lineage_id = existing.lineage_id
+          JOIN catalog_lineages AS new_lineage
+            ON new_lineage.lineage_id = NEW.lineage_id
+          WHERE existing.name = NEW.name
+            AND existing_lineage.kind = new_lineage.kind
+            AND existing.lineage_id <> NEW.lineage_id
+        )
+        BEGIN
+          SELECT RAISE(
+            ABORT,
+            'catalog lineage names are never reused across lineages of one kind'
+          );
+        END
+    """,
+    "catalog_lineage_aliases_no_update": """
+        CREATE TRIGGER catalog_lineage_aliases_no_update
+        BEFORE UPDATE ON catalog_lineage_aliases BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage aliases are immutable');
+        END
+    """,
+    "catalog_lineage_aliases_no_delete": """
+        CREATE TRIGGER catalog_lineage_aliases_no_delete
+        BEFORE DELETE ON catalog_lineage_aliases BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage aliases are immutable');
+        END
+    """,
+    "catalog_lineage_retirements_no_update": """
+        CREATE TRIGGER catalog_lineage_retirements_no_update
+        BEFORE UPDATE ON catalog_lineage_retirements BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage retirements are immutable');
+        END
+    """,
+    "catalog_lineage_retirements_no_delete": """
+        CREATE TRIGGER catalog_lineage_retirements_no_delete
+        BEFORE DELETE ON catalog_lineage_retirements BEGIN
+          SELECT RAISE(ABORT, 'catalog lineage retirements are immutable');
         END
     """,
     "node_artifacts_v3_no_update": """

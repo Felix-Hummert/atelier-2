@@ -1,14 +1,14 @@
-"""The exact form of every durable id a prefix owner mints.
+"""The exact form of the four durable identities this #88 slice audits.
 
 A prefix constant proves only that a name starts a certain way. What the store,
 the engine and every operator tool key on is the whole string, and its shape is
 a durable fact: change the digest, the separator or the encoding and identical
 work becomes a second identity — silently, with nothing red.
 
-So these pin whole vectors rather than prefixes. A prefix test stays green while
-the tail drifts; a vector test cannot. Every value below was computed from the
-production owner and pasted, never hand-derived here: a test that recomputes the
-form it is checking would agree with any form at all.
+These four owners pin whole vectors rather than prefixes. A prefix test stays
+green while the tail drifts; a vector test cannot. Every value below was computed
+from the production owner and pasted, never hand-derived here: a test that
+recomputes the form it is checking would agree with any form at all.
 """
 
 from __future__ import annotations

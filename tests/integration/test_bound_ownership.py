@@ -73,16 +73,11 @@ def test_the_edge_field_bound_is_the_contracts_own_bound() -> None:
 
 
 @pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
-def test_the_edge_body_bound_is_the_transport_form_of_the_durable_output_bound() -> (
-    None
-):
-    """The body the edge admits is exactly the largest durable result, encoded.
-
-    Both numbers were literals that happened to agree; the encoding is what makes
-    one a derivation of the other, so a raised output bound carries the edge with
-    it instead of silently refusing what the store would have kept.
-    """
-    assert MAXIMUM_REQUEST_BODY_BYTES == base64_characters_for(
+def test_the_edge_body_bound_owns_the_envelope_around_an_encoded_payload() -> None:
+    assert MAXIMUM_REQUEST_BODY_BYTES > base64_characters_for(
         MAXIMUM_AGENT_OUTPUT_BYTES_V2
     )
     assert "MAXIMUM_REQUEST_BODY_BYTES = 65_536" not in source_of("host/serving.py")
+    assert "MAXIMUM_REQUEST_BODY_BYTES = MAXIMUM_BASE64_CHARACTERS" not in source_of(
+        "host/serving.py"
+    )

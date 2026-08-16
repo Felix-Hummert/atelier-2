@@ -15,16 +15,15 @@ story = "https://github.com/FlexOr2/atelier-2/issues/88"
 #     handful of columns with no Python owner at all (`runs.workflow_format_version`
 #     among them), and minting those owners is a contract decision, not a
 #     hygiene edit.
-#   - M5, the control-frame strings. Measured and found OUTSIDE the manager fence
-#     (#15 declares `systemd_agent_processes.py` and `bounded_processes.py`; the
-#     frames live in `agent_process_watchdog.py` and `agent_processes.py`), so it
-#     is buildable — it is deferred for size, not for ownership, and the unlanded
-#     manager module is the reason to give the enum an owner before a third
-#     speaker copies the strings again.
+#   - M5, the predecessor control-frame strings. The direct-systemd Manager
+#     foundation landed in PR #165, and #15 Slice 2 owns deletion of
+#     `agent_process_watchdog.py`, `agent_processes.py`, their protocol, and their
+#     proof. Giving condemned frames a new enum would preserve the predecessor;
+#     the direct-systemd proofs rescued before deletion remain with #15.
 #   - The cancel-token proof over query and SSE. Test-only, and it wants the
 #     live-stream harness rather than the projection seam this head worked in.
 #
-# What the two sentences below share is the shape of the defect: a number or a
+# What the sentences below share is the shape of the defect: a number or a
 # name written twice, agreeing today, with nothing red on the day they stop.
 
 [[sentence]]
@@ -33,7 +32,7 @@ text = "A bound the product persists or admits at its edge is written once at th
 
 [[sentence]]
 id = "a-durable-id-keeps-the-exact-form-it-was-minted-in"
-text = "Every durable workflow and effect identity is pinned as a whole literal string rather than as its prefix, so a changed digest, separator or encoding turns identical work into a second identity loudly instead of silently."
+text = "The audited bootstrap, logical-effect, effect-workflow and reconcile-workflow identities are pinned as whole literal strings rather than only by their prefixes, so a changed digest, separator or encoding turns identical work into a second identity loudly instead of silently."
 
 [[sentence]]
 id = "the-v1-event-vocabulary-is-spelled-once-and-refuses-by-name"
