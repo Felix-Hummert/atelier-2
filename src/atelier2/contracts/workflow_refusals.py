@@ -31,6 +31,9 @@ class WorkflowRefusalReason(StrEnum):
     GRAPH_INPUT_UNREAD = "graph_input_unread"
     UNCONFIRMED_INTERACTIVE_OUTPUT = "unconfirmed_interactive_output"
     CONFIRMATION_WITHOUT_INTERACTIVE_MODE = "confirmation_without_interactive_mode"
+    UNBOUNDED_ITERATION = "unbounded_iteration"
+    ITERATION_GREEN_CONDITION_UNPROVABLE = "iteration_green_condition_unprovable"
+    ITERATION_CARRY_UNBOUND = "iteration_carry_unbound"
 
 
 @dataclass(frozen=True, slots=True)

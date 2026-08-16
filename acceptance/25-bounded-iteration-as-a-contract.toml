@@ -1,0 +1,61 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/25"
+
+# This file does not list every sentence of #25, and that is deliberate.
+#
+# This head is the document surface of ADR 0013: the `iterate` block parses as a
+# closed model, and every rule the document can judge *by itself* refuses by
+# name. It makes bounded iteration declarable. It does not make it run: no V3
+# document can become a run yet (`parse_executable_workflow_document` refuses
+# format 3, and `runs.workflow_format_version IN (1, 2)` refuses the row), and
+# that gate belongs to #63.
+#
+# Six sentences of #25 therefore have no proof of any kind here and are named
+# rather than quietly dropped:
+#
+#   2b. The green condition names a result the CHILD declares, under the schema
+#       revision both levels agreed. Only the child's own document can answer
+#       that, so it is the binding head's refusal.
+#   3b. The handover binds to the child's declared boundary on both sides, by
+#       name and schema revision. Same reason.
+#   4.  Before any start, the preview names every iteration node with its bound
+#       and its green condition.
+#   5.  Green is read from the round's own receipt and its declared artifact,
+#       never from an agent's claim. Needs #63's artifact row and the instance
+#       evaluator ADR 0013 names as #57's -- none exists in `src` today.
+#   6.  An iteration that reaches its bound without green ends in exactly one
+#       terminal receipt naming the node, the bound and the last round's
+#       disposition. The durable token is #16's to mint.
+#   7.  Round K+1 reads round K's result, and every round is its own unrolled
+#       stage of the durable truth. Needs #63 and the V3 Join/Ready/Scheduler
+#       owner ADR 0008 names.
+#
+# Sentence 2 was split into 2a (declared below) and 2b; sentence 3 into 3a
+# (declared below) and 3b. 2a and 3a are DOCUMENT-level refusals and are
+# EXPLICITLY NOT substitutes for 2b and 3b, which are binding-level refusals
+# against the child: no review may count one for the other. #25 is not verified
+# and not retired while any of the six above is open.
+#
+# Declaring them now would red this gate on main for a capability nobody has
+# built, and inventing a proof to make it green is the one thing ADR 0012
+# forbids. They join this file in the change that proves them.
+
+[[sentence]]
+id = "a-bounded-iteration-is-declarable-and-reads-back-as-authored"
+text = "A subworkflow node may declare a bounded iteration, and the parsed document reads back its round bound, its green condition and its round handover exactly as authored; a subworkflow that declares none stays a single child run."
+
+[[sentence]]
+id = "an-iteration-without-a-bound-is-refused-by-name"
+text = "A declared iteration whose maximum number of rounds is absent, or is anything other than a whole positive count within the declared range, is refused by name before the document can be stored, published or started."
+
+[[sentence]]
+id = "a-green-condition-the-document-contradicts-is-refused-by-name"
+text = "A green condition that reads a result under a different schema revision than the same node declares for it is refused by name."
+
+[[sentence]]
+id = "a-round-handover-unbound-in-the-document-is-refused-by-name"
+text = "A round handover without a seed for the first round, declared twice, or seeded from something the document does not order before this node and declare, is refused by name."
+
+[[sentence]]
+id = "iteration-is-refused-on-a-node-kind-that-cannot-carry-it"
+text = "A node kind that runs no child of its own is refused by name when it declares an iteration, rather than carrying a field it could never honour."
