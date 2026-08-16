@@ -17,12 +17,15 @@ from atelier2.api.wire.resources import (
     ReconciliationCommandResource,
     ReconciliationDeterminationResource,
     SubworkflowNodeResource,
+    VersionedWorkflowRevisionPageResource,
     WaitNodeResource,
     WorkflowGraphResource,
     WorkflowGraphResourceV2,
     WorkflowGraphResourceV3,
     WorkflowRevisionDetailResource,
+    WorkflowRevisionSummaryResourceV2,
 )
+from atelier2.application.read_workflow_revisions import WorkflowRevisionsDescribed
 from atelier2.contracts.effects import (
     EffectReceipt,
     OperatorAuthoritativeAbsence,
@@ -87,7 +90,11 @@ def graph_resource(
 ) -> WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3:
     if isinstance(graph, WorkflowGraphV3):
         return WorkflowGraphResourceV3(
-            format_version=3, executable=False, node_count=len(graph.nodes)
+            format_version=3,
+            executable=False,
+            node_count=len(graph.nodes),
+            name=graph.name,
+            description=graph.description,
         )
     ordered = sorted(graph.nodes, key=lambda item: item.id.encode("utf-8"))
     if isinstance(graph, WorkflowGraph):
@@ -103,6 +110,38 @@ def graph_resource(
         start_node_id=graph.start,
         nodes=cast(
             tuple[NodeResourceV2, ...], tuple(node_resource(item) for item in ordered)
+        ),
+    )
+
+
+def workflow_revision_summary_resource(
+    projection: WorkflowRevisionProjection,
+) -> WorkflowRevisionSummaryResourceV2:
+    """What a listing may say about one revision, and no more than that.
+
+    Only a V3 document declares a name or a description, so for every other
+    format both are absent here. That absence is the record's own answer, not a
+    gap this projection fills in (ADR 0007 decision 4).
+    """
+
+    graph = projection.graph
+    described = isinstance(graph, WorkflowGraphV3)
+    return WorkflowRevisionSummaryResourceV2(
+        revision_hash=projection.revision.revision_hash.value,
+        format_version=graph.format_version,
+        executable=not described,
+        name=graph.name if described else None,
+        description=graph.description if described else None,
+    )
+
+
+def workflow_revision_page_resource(
+    page: WorkflowRevisionsDescribed,
+) -> VersionedWorkflowRevisionPageResource:
+    return VersionedWorkflowRevisionPageResource(
+        items=tuple(workflow_revision_summary_resource(item) for item in page.items),
+        next_after_revision_hash=(
+            None if page.next_after is None else page.next_after.value
         ),
     )
 

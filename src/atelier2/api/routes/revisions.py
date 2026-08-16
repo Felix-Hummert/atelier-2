@@ -15,12 +15,15 @@ from atelier2.api._support import (
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import ApiProblem
-from atelier2.api.projection.workflows import workflow_revision_detail_resource
+from atelier2.api.projection.workflows import (
+    workflow_revision_detail_resource,
+    workflow_revision_page_resource,
+)
 from atelier2.api.references import InvalidRevisionHash, parse_revision_hash
 from atelier2.api.wire.resources import (
+    AnyWorkflowRevisionPageResource,
+    VersionedWorkflowRevisionPageResource,
     WorkflowRevisionDetailResource,
-    WorkflowRevisionPageResource,
-    WorkflowRevisionSummaryResource,
 )
 from atelier2.application.publish_workflow_revision import (
     PublicationCollision,
@@ -32,7 +35,7 @@ from atelier2.application.publish_workflow_revision import (
 from atelier2.application.read_workflow_revisions import (
     WorkflowRevisionNotFound,
     WorkflowRevisionRead,
-    WorkflowRevisionsListed,
+    WorkflowRevisionsDescribed,
 )
 from atelier2.application.refusals import (
     DurableStateCorrupt,
@@ -87,13 +90,13 @@ async def publish_revision(
 
 @router.get(
     API_PREFIX + "/workflow-revisions",
-    response_model=WorkflowRevisionPageResource,
+    response_model=AnyWorkflowRevisionPageResource,
 )
 async def list_revisions(
     after_revision_hash: str | None = None,
     limit: str = "50",
     context: ApiContext = api_context_dependency,
-) -> WorkflowRevisionPageResource:
+) -> VersionedWorkflowRevisionPageResource:
     after = None
     if after_revision_hash is not None:
         try:
@@ -103,19 +106,13 @@ async def list_revisions(
     parsed_limit = parse_limit(limit)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_workflow_revisions(after, parsed_limit),
+        lambda: context.use_cases.list_described_workflow_revisions(
+            after, parsed_limit
+        ),
     )
     match result:
-        case WorkflowRevisionsListed(revision_hashes, next_after):
-            return WorkflowRevisionPageResource(
-                items=tuple(
-                    WorkflowRevisionSummaryResource(revision_hash=value.value)
-                    for value in revision_hashes
-                ),
-                next_after_revision_hash=(
-                    None if next_after is None else next_after.value
-                ),
-            )
+        case WorkflowRevisionsDescribed():
+            return workflow_revision_page_resource(result)
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():

@@ -27,15 +27,21 @@ from atelier2.application.publish_workflow_revision import WorkflowPublicationLi
 from atelier2.application.read_runs import get_run, list_runs
 from atelier2.application.read_workflow_revisions import (
     get_workflow_revision,
+    list_described_workflow_revisions,
     list_workflow_revisions,
 )
 from atelier2.application.reconcile_run import reconcile_run
 from atelier2.application.start_published_run import start_published_run
-from atelier2.ports.workflow_revisions import DurableProjectionLimit
+from atelier2.ports.workflow_revisions import (
+    DurableProjectionLimit,
+    EnrichedPageBudget,
+)
 
 
 def bound_use_cases(
-    ports: ApiPorts, projection_limit: DurableProjectionLimit
+    ports: ApiPorts,
+    projection_limit: DurableProjectionLimit,
+    enriched_page_budget: EnrichedPageBudget,
 ) -> ApiUseCases:
     """Spend the ports here, so that nothing below this line can reach one."""
     return ApiUseCases(
@@ -44,6 +50,15 @@ def bound_use_cases(
         ),
         list_workflow_revisions=lambda after, limit: list_workflow_revisions(
             after, limit, ports.workflow_revision_queries
+        ),
+        list_described_workflow_revisions=(
+            lambda after, limit: list_described_workflow_revisions(
+                after,
+                limit,
+                enriched_page_budget,
+                projection_limit,
+                ports.workflow_revision_queries,
+            )
         ),
         get_run=lambda run_id: get_run(run_id, projection_limit, ports.run_queries),
         list_runs=lambda after, limit: list_runs(
@@ -128,7 +143,16 @@ def create_app(
         ApiContext(
             source_commit=source_commit,
             source_tree=source_tree,
-            use_cases=bound_use_cases(ports, workflow_projection_limit),
+            use_cases=bound_use_cases(
+                ports,
+                workflow_projection_limit,
+                EnrichedPageBudget(
+                    maximum_nodes=limits.maximum_enriched_page_nodes,
+                    maximum_document_bytes=(
+                        limits.maximum_enriched_page_document_bytes
+                    ),
+                ),
+            ),
             ports=ports,
             limits=limits,
             control_runner=BoundedQueryRunner(

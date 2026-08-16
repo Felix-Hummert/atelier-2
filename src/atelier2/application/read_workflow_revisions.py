@@ -14,7 +14,9 @@ from typing import assert_never
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.ports.workflow_revisions import (
+    DescribedWorkflowRevisionPage,
     DurableProjectionLimit,
+    EnrichedPageBudget,
     QueryDurableStateCorrupt,
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
@@ -38,6 +40,14 @@ class WorkflowRevisionNotFound:
 
 
 @dataclass(frozen=True)
+class WorkflowRevisionsDescribed:
+    """One page of revisions, each with the document it was published as."""
+
+    items: tuple[WorkflowRevisionProjection, ...]
+    next_after: WorkflowRevisionHash | None
+
+
+@dataclass(frozen=True)
 class WorkflowRevisionsListed:
     revision_hashes: tuple[WorkflowRevisionHash, ...]
     next_after: WorkflowRevisionHash | None
@@ -51,6 +61,9 @@ type GetWorkflowRevisionResult = (
 )
 type ListWorkflowRevisionsResult = (
     WorkflowRevisionsListed | ReadUnavailable | DurableStateCorrupt
+)
+type ListDescribedWorkflowRevisionsResult = (
+    WorkflowRevisionsDescribed | ReadUnavailable | DurableStateCorrupt
 )
 
 
@@ -80,6 +93,32 @@ def list_workflow_revisions(
     match queries.list_workflow_revisions(after, limit):
         case WorkflowRevisionPage(revision_hashes, next_after):
             return WorkflowRevisionsListed(revision_hashes, next_after)
+        case PortReadUnavailable(detail):
+            return ReadUnavailable(detail)
+        case QueryDurableStateCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def list_described_workflow_revisions(
+    after: WorkflowRevisionHash | None,
+    limit: int,
+    budget: EnrichedPageBudget,
+    projection_limit: DurableProjectionLimit,
+    queries: WorkflowRevisionQueries,
+) -> ListDescribedWorkflowRevisionsResult:
+    """One page of revisions that carries what each document says about itself.
+
+    The budget is the composition's decision rather than the caller's, so no
+    route can widen what one page is allowed to read from the store.
+    """
+
+    match queries.list_described_workflow_revisions(
+        after, limit, budget, projection_limit
+    ):
+        case DescribedWorkflowRevisionPage(items, next_after):
+            return WorkflowRevisionsDescribed(items, next_after)
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
         case QueryDurableStateCorrupt():

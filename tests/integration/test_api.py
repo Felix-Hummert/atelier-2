@@ -897,6 +897,18 @@ def test_http_start_identity_conflict_changes_no_durable_state_or_workflow(
     assert _durable_snapshot(runtime) == before
 
 
+def _listed(revision_hash: str) -> dict[str, object]:
+    """How the listing renders a V1 revision: named by nothing it does not carry."""
+
+    return {
+        "revision_hash": revision_hash,
+        "format_version": 1,
+        "executable": True,
+        "name": None,
+        "description": None,
+    }
+
+
 def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
     runtime: DbosRuntime,
 ) -> None:
@@ -928,7 +940,7 @@ def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
         == published.json()
     )
     assert client.get("/atelier/api/v1/workflow-revisions").json() == {
-        "items": [{"revision_hash": revision_hash}],
+        "items": [_listed(revision_hash)],
         "next_after_revision_hash": None,
     }
 
@@ -984,7 +996,7 @@ def test_http_workflow_revision_pages_follow_every_exclusive_cursor(
         response = client.get("/atelier/api/v1/workflow-revisions", params=parameters)
         assert response.status_code == 200
         page = response.json()
-        assert page["items"] == [{"revision_hash": expected_hash}]
+        assert page["items"] == [_listed(expected_hash)]
         expected_next = expected_hash if index < len(expected) - 1 else None
         assert page["next_after_revision_hash"] == expected_next
         found.append(page["items"][0]["revision_hash"])
@@ -1004,7 +1016,7 @@ def test_http_workflow_revision_pages_follow_every_exclusive_cursor(
     assert boundary_page.status_code == 200
     assert boundary_page.json() == {
         "items": [
-            {"revision_hash": revision_hash}
+            _listed(revision_hash)
             for revision_hash in expected
             if revision_hash > missing_boundary
         ],

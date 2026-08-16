@@ -108,11 +108,19 @@ class WorkflowGraphResourceV2(ApiModel):
 
 
 class WorkflowGraphResourceV3(ApiModel):
-    """A published V3 revision: its format, its size, and that nothing runs it."""
+    """A published V3 revision: what it calls itself, its size, and that nothing
+    runs it.
+
+    The name and the description are parsed out of the published bytes on the way
+    to the wire and are stored beside them nowhere, so this resource can only
+    repeat what the author wrote (ADR 0007 decision 4).
+    """
 
     format_version: Literal[3]
     executable: Literal[False]
     node_count: int = Field(ge=1)
+    name: str = Field(min_length=1)
+    description: str | None
 
 
 AnyWorkflowGraphResource = Annotated[
@@ -134,6 +142,37 @@ class WorkflowRevisionDetailResource(ApiModel):
 class WorkflowRevisionPageResource(ApiModel):
     items: tuple[WorkflowRevisionSummaryResource, ...]
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
+
+
+class WorkflowRevisionSummaryResourceV2(ApiModel):
+    """A listed revision: its hash, its format, and what its own bytes call it.
+
+    `name` and `description` are absent where the authoring format declares
+    neither, which is the truthful answer for a V1 or V2 document rather than a
+    line invented to fill the column.
+    """
+
+    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    format_version: Literal[1, 2, 3]
+    executable: bool
+    name: str | None
+    description: str | None
+
+
+class VersionedWorkflowRevisionPageResource(ApiModel):
+    """One page of listed revisions, ended by the caller's limit or by its budget.
+
+    `next_after_revision_hash` is present in both cases, so a caller resumes the
+    same way whichever bound stopped the page.
+    """
+
+    items: tuple[WorkflowRevisionSummaryResourceV2, ...]
+    next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
+
+
+AnyWorkflowRevisionPageResource = (
+    WorkflowRevisionPageResource | VersionedWorkflowRevisionPageResource
+)
 
 
 class OperatorFoundDeterminationResource(ApiModel):

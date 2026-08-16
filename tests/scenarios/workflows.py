@@ -27,5 +27,6 @@ nodes:
       - name: findings
         schema: {ref: review_verdict, revision: schema-verdict}
 """
+V3_DOCUMENT_NAME = "Implement a candidate, then review it for defects"
 V3_NODE_COUNT = 2
 V3_CONTROL_EDGE_LINE = b"    depends_on: [implement]\n"

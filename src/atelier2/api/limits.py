@@ -36,6 +36,8 @@ class ApiLimits:
     maximum_base64_characters: int
     maximum_decoded_payload_bytes: int
     maximum_workflow_nodes: int
+    maximum_enriched_page_nodes: int
+    maximum_enriched_page_document_bytes: int
     event_page_size: int
     maximum_control_queries: int
     maximum_event_poll_queries: int

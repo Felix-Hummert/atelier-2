@@ -32,6 +32,7 @@ from tests.scenarios.runtime import exact_output_runtime
 from tests.scenarios.workflows import (
     V3_CONTROL_EDGE_LINE,
     V3_DOCUMENT,
+    V3_DOCUMENT_NAME,
     V3_NODE_COUNT,
 )
 
@@ -143,9 +144,19 @@ def test_the_published_v3_revision_reads_back_naming_its_format_as_unexecutable(
         "format_version": 3,
         "executable": False,
         "node_count": V3_NODE_COUNT,
+        "name": V3_DOCUMENT_NAME,
+        "description": None,
     }
     assert client.get(API_PREFIX + "/workflow-revisions").json() == {
-        "items": [{"revision_hash": revision_hash}],
+        "items": [
+            {
+                "revision_hash": revision_hash,
+                "format_version": 3,
+                "executable": False,
+                "name": V3_DOCUMENT_NAME,
+                "description": None,
+            }
+        ],
         "next_after_revision_hash": None,
     }
 
