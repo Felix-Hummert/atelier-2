@@ -22,7 +22,6 @@ from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.workflows import AnyWorkflowGraph
 from atelier2.ports.workflow_revisions import (
-    DurableProjectionLimit,
     ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
@@ -122,19 +121,16 @@ class RunQueries(Protocol):
     def get_run(
         self,
         run_id: RunId,
-        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetRunResult: ...
 
     def list_runs(
         self,
         after: RunId | None,
         limit: int,
-        projection_limit: DurableProjectionLimit | None = None,
     ) -> ListRunsResult: ...
 
     def get_reconciliation_retry_target(
         self,
         run_id: RunId,
         command_id: ReconcileCommandId,
-        projection_limit: DurableProjectionLimit | None = None,
     ) -> GetReconciliationRetryTargetResult: ...

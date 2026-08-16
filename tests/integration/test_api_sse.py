@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
-from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
@@ -50,7 +49,6 @@ from atelier2.api.stream import (
     PreparedEventStream,
     stream_server_events,
 )
-from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -79,6 +77,7 @@ from tests.scenarios.api import (
     SSE_CURSOR_AFTER_THREE,
     SSE_PUBLIC_RUN_REFERENCE,
     api_limits,
+    durable_queries,
     event_poll_backoff,
     stream_page_reader,
 )
@@ -186,7 +185,7 @@ def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
 
 
 def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
     app = create_app(
         source_commit="commit",
         source_tree="tree",
@@ -254,7 +253,7 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
         store.prepare(agent_attempt_execution(request))
         store.claim(agent_attempt_execution(request))
         store.complete_known_failure(agent_attempt_execution(request))
-        queries = DbosQueries(runtime.engine)
+        queries = durable_queries(runtime.engine)
 
         found = queries.get_run(request.run_id)
         assert isinstance(found, RunFound)
@@ -357,7 +356,7 @@ def test_receipt_result_limit_stays_in_each_indexed_snapshot_query(
     tmp_path: Path,
 ) -> None:
     for runtime in _runtime(tmp_path):
-        run_id, revision = _complete_history(runtime)
+        run_id, _revision = _complete_history(runtime)
         receipt_selects: list[tuple[str, tuple[Any, ...]]] = []
         connection_ids: set[int] = set()
         transaction_states: list[bool] = []
@@ -384,17 +383,7 @@ def test_receipt_result_limit_stays_in_each_indexed_snapshot_query(
 
         event.listen(runtime.engine, "before_cursor_execute", capture_receipt_select)
         try:
-            page = DbosQueries(runtime.engine).read_run_event_page(
-                run_id,
-                2,
-                2,
-                WorkflowPublicationLimits(
-                    maximum_document_bytes=len(revision.document),
-                    maximum_nodes=10,
-                    maximum_string_characters=100,
-                    maximum_payload_bytes=100,
-                ),
-            )
+            page = durable_queries(runtime.engine).read_run_event_page(run_id, 2, 2)
         finally:
             event.remove(
                 runtime.engine, "before_cursor_execute", capture_receipt_select

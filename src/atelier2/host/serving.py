@@ -26,7 +26,11 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
-from atelier2.api.limits import ApiLimits, base64_characters_for
+from atelier2.api.limits import (
+    ApiLimits,
+    base64_characters_for,
+    durable_projection_limit,
+)
 from atelier2.api.stream import EventPollBackoff
 from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
@@ -173,7 +177,10 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         else (ClaudeSubscriptionExecutorFactory(claude_subscription),),
     )
     try:
-        queries = DbosQueries(runtime.engine)
+        # One set of limits configures both the reader's bound and the API's own,
+        # so the two cannot describe different numbers for the same deployment.
+        limits = api_limits()
+        queries = DbosQueries(runtime.engine, durable_projection_limit(limits))
         app = create_app(
             source_commit=settings.source_commit,
             source_tree=settings.source_tree,

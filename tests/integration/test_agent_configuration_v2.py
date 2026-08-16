@@ -13,7 +13,6 @@ from httpx import Response
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import (
@@ -77,7 +76,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,
 )
-from tests.scenarios.api import api_limits, event_poll_backoff
+from tests.scenarios.api import api_limits, durable_queries, event_poll_backoff
 
 _DOCUMENT = b"""format_version: 2
 start: build
@@ -108,7 +107,7 @@ def _runtime(
 
 
 def _api_client(runtime: DbosRuntime) -> TestClient:
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
     return TestClient(
         create_app(
             source_commit="commit",
@@ -470,7 +469,7 @@ def test_restart_refuses_unattested_nonterminal_capability_before_factory_open(
 def _wait_completed(runtime: DbosRuntime, run_id: RunId) -> RunV2:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        result = DbosQueries(runtime.engine).get_run(run_id)
+        result = durable_queries(runtime.engine).get_run(run_id)
         if (
             isinstance(result, RunFound)
             and result.projection.run.state is RunState.COMPLETED
@@ -516,7 +515,7 @@ def test_two_provider_configs_survive_restart_and_drive_their_exact_executors(
     try:
         restarted.launch()
         completed = _wait_completed(restarted, run_id)
-        queried = DbosQueries(restarted.engine)
+        queried = durable_queries(restarted.engine)
         found = queried.get_run(run_id)
         page = queried.list_runs(None, 100)
         assert isinstance(found, RunFound)

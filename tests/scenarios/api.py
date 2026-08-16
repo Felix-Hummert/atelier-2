@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Any, Never
 
 from fastapi.testclient import TestClient
+from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
@@ -321,7 +322,7 @@ def durable_api_client(
     claims an HTTP answer asks for it here.
     """
 
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
     return TestClient(
         create_app(
             source_commit="commit",
@@ -378,11 +379,32 @@ def stream_page_reader(
     rather than `None`: the use-case takes no fail-open default, which is the
     direction head D is moving the ports in anyway.
     """
-    limit = projection_limit or stream_projection_limit()
 
     def read_page(
         run_id: RunId, after_sequence: int, page_size: int
     ) -> ReadRunEventsResult:
-        return read_run_events(run_id, after_sequence, page_size, limit, queries)
+        return read_run_events(run_id, after_sequence, page_size, queries)
 
     return read_page
+
+
+def permissive_projection_limit() -> WorkflowPublicationLimits:
+    """A bound wide enough not to be what a test is about."""
+    return WorkflowPublicationLimits(
+        maximum_document_bytes=1_000_000,
+        maximum_nodes=1_000,
+        maximum_string_characters=100_000,
+        maximum_payload_bytes=1_000_000,
+    )
+
+
+def durable_queries(
+    engine: Engine, projection_limit: WorkflowPublicationLimits | None = None
+) -> DbosQueries:
+    """A durable reader holding a bound, because every reader now holds one.
+
+    A test that is not about the bound takes a permissive one; a test that is
+    about it passes its own. Neither can build a reader without one, which is the
+    point of the change this helper follows.
+    """
+    return DbosQueries(engine, projection_limit or permissive_projection_limit())

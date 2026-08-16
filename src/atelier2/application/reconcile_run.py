@@ -33,12 +33,11 @@ from atelier2.ports.run_queries import (
     RunQueryMissing,
 )
 from atelier2.ports.workflow_revisions import (
-    DurableProjectionLimit,
-    QueryDurableStateCorrupt,
-    ReadUnavailable,
+    ProjectionTooLarge as PortProjectionTooLarge,
 )
 from atelier2.ports.workflow_revisions import (
-    ProjectionTooLarge as PortProjectionTooLarge,
+    QueryDurableStateCorrupt,
+    ReadUnavailable,
 )
 
 
@@ -56,9 +55,8 @@ def reconcile_run(
     request: ReconcileRunRequest,
     queries: RunQueries,
     commander: TransactionalEffectReconcileCommander,
-    projection_limit: DurableProjectionLimit | None = None,
 ) -> ReconcileRunResult:
-    found = queries.get_run(request.run_id, projection_limit)
+    found = queries.get_run(request.run_id)
     match found:
         case RunQueryMissing():
             return RunMissing()
@@ -71,7 +69,7 @@ def reconcile_run(
                 intent = projection.reconciliation.intent
             else:
                 retry_target = queries.get_reconciliation_retry_target(
-                    request.run_id, request.command_id, projection_limit
+                    request.run_id, request.command_id
                 )
                 match retry_target:
                     case ReconciliationRetryTargetFound(intent):

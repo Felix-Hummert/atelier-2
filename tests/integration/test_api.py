@@ -51,7 +51,7 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
-from atelier2.api.limits import ApiLimits
+from atelier2.api.limits import ApiLimits, durable_projection_limit
 from atelier2.api.references import encode_canonical_base64, encode_public_run_reference
 from atelier2.contracts.effects import (
     AdapterRevision,
@@ -732,8 +732,11 @@ def test_run_projection_over_response_limit_is_temporarily_unavailable(
 def _client(
     runtime: DbosRuntime, configured_limits: ApiLimits | None = None
 ) -> TestClient:
-    queries = DbosQueries(runtime.engine)
     active_limits = api_limits() if configured_limits is None else configured_limits
+    # The reader's bound comes from the same limits the app is configured with,
+    # exactly as the host composes them; a test that let the two differ would be
+    # asserting against a deployment that cannot exist.
+    queries = DbosQueries(runtime.engine, durable_projection_limit(active_limits))
     return TestClient(
         create_app(
             source_commit="commit-under-test",

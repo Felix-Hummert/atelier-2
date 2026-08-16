@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy import event
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos import queries as queries_module
@@ -50,6 +50,7 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionPage,
 )
 from tests.scenarios.agents import agent_attempt_execution, commit_configured_agent
+from tests.scenarios.api import durable_queries, permissive_projection_limit
 
 # A checkout the pool cannot serve at once is refused without waiting at all.
 # Zero is what makes the refusal a decision rather than an elapsed measurement,
@@ -101,7 +102,7 @@ def test_current_attempt_projection_is_exact_or_fails_as_corrupt(
         store = DbosAgentAttemptStore(runtime.engine)
         store.prepare(agent_attempt_execution(request))
         store.claim(agent_attempt_execution(request))
-        found = DbosQueries(runtime.engine).get_run(request.run_id)
+        found = durable_queries(runtime.engine).get_run(request.run_id)
         assert isinstance(found, RunFound)
         assert found.projection.current_agent_attempt is not None
 
@@ -119,7 +120,7 @@ def test_current_attempt_projection_is_exact_or_fails_as_corrupt(
             )
 
         assert isinstance(
-            DbosQueries(runtime.engine).get_run(request.run_id),
+            durable_queries(runtime.engine).get_run(request.run_id),
             QueryDurableStateCorrupt,
         )
     finally:
@@ -205,15 +206,15 @@ def test_projection_document_limit_refuses_before_workflow_parse(
         raise AssertionError("oversized durable document reached the YAML parser")
 
     monkeypatch.setattr(queries_module, "graph_from_document", unexpected_parse)
-    result = DbosQueries(engine).get_workflow_revision(
-        revision.revision_hash,
+    result = durable_queries(
+        engine,
         WorkflowPublicationLimits(
             maximum_document_bytes=len(revision.document) - 1,
             maximum_nodes=10,
             maximum_string_characters=100,
             maximum_payload_bytes=100,
         ),
-    )
+    ).get_workflow_revision(revision.revision_hash)
 
     assert result == ProjectionTooLarge()
 
@@ -228,17 +229,15 @@ def test_event_payload_limit_refuses_before_event_materialization(
         raise AssertionError("oversized durable event reached the event mapper")
 
     monkeypatch.setattr(queries_module, "event_from_record", unexpected_materialization)
-    result = DbosQueries(engine).read_run_event_page(
-        run_id,
-        9,
-        1,
+    result = durable_queries(
+        engine,
         WorkflowPublicationLimits(
             maximum_document_bytes=len(revision.document),
             maximum_nodes=10,
             maximum_string_characters=100,
             maximum_payload_bytes=1,
         ),
-    )
+    ).read_run_event_page(run_id, 9, 1)
 
     assert result == ProjectionTooLarge()
 
@@ -250,8 +249,10 @@ def test_query_connection_restores_pooled_busy_timeout(engine: Engine) -> None:
         connection.exec_driver_sql("PRAGMA busy_timeout=250")
         raw_identity = id(raw_before)
 
-    result = DbosQueries(engine, busy_timeout_seconds=0.001).list_workflow_revisions(
-        None, 1
+    result = (
+        durable_queries(engine)
+        .__class__(engine, permissive_projection_limit(), busy_timeout_seconds=0.001)
+        .list_workflow_revisions(None, 1)
     )
 
     assert isinstance(result, WorkflowRevisionPage)
@@ -273,7 +274,7 @@ def test_pool_checkout_timeout_is_a_typed_read_unavailable(tmp_path: Path) -> No
     initialize_schema(configured)
     try:
         with configured.connect():
-            result = DbosQueries(configured).list_workflow_revisions(None, 1)
+            result = durable_queries(configured).list_workflow_revisions(None, 1)
         assert isinstance(result, ReadUnavailable)
     finally:
         configured.dispose()
@@ -293,6 +294,7 @@ def test_query_timing_rejects_unrepresentable_or_unbounded_values(
     with pytest.raises(ValueError, match="must be finite"):
         DbosQueries(
             engine,
+            permissive_projection_limit(),
             busy_timeout_seconds=busy_timeout_seconds,
             query_deadline_seconds=query_deadline_seconds,
         )
@@ -304,9 +306,9 @@ def test_restored_timeout_preserves_a_subsequent_contended_write(
     with engine.connect() as connection:
         connection.exec_driver_sql("PRAGMA busy_timeout=250")
     assert isinstance(
-        DbosQueries(engine, busy_timeout_seconds=0.001).list_workflow_revisions(
-            None, 1
-        ),
+        durable_queries(engine)
+        .__class__(engine, permissive_projection_limit(), busy_timeout_seconds=0.001)
+        .list_workflow_revisions(None, 1),
         WorkflowRevisionPage,
     )
     database_path = Path(engine.url.database or "")
@@ -370,13 +372,17 @@ def test_real_deadline_returns_typed_result_and_clears_progress_handler(
         _context: Any,
         _executemany: bool,
     ) -> tuple[str, object]:
-        if "workflow_revisions.document" not in statement:
+        if "workflow_revisions" not in statement or "counter" in statement:
             return statement, parameters
+        # The read is bounded now, so its own columns must survive: the delay is
+        # wrapped around the real statement instead of replacing it, or the row
+        # comes back without the lengths the bound checks and the deadline is
+        # never what the test measured.
         long_statement = (
             "WITH RECURSIVE counter(value) AS ("
             "SELECT 1 UNION ALL SELECT value + 1 FROM counter WHERE value < 1000000"
-            ") SELECT document FROM workflow_revisions, counter "
-            "WHERE revision_hash = ? ORDER BY value DESC LIMIT 1"
+            ") SELECT bounded.* FROM (" + statement + ") AS bounded, counter "
+            "ORDER BY counter.value DESC LIMIT 1"
         )
         return long_statement, parameters
 
@@ -388,7 +394,7 @@ def test_real_deadline_returns_typed_result_and_clears_progress_handler(
     )
     try:
         result = DbosQueries(
-            engine, query_deadline_seconds=0.001
+            engine, permissive_projection_limit(), query_deadline_seconds=0.001
         ).get_workflow_revision(revision.revision_hash)
         assert isinstance(result, ReadUnavailable)
     finally:
@@ -409,7 +415,7 @@ def test_real_deadline_returns_typed_result_and_clears_progress_handler(
             == 10000
         )
     assert isinstance(
-        DbosQueries(engine).get_workflow_revision(revision.revision_hash),
+        durable_queries(engine).get_workflow_revision(revision.revision_hash),
         WorkflowRevisionFound,
     )
 
@@ -449,7 +455,9 @@ def test_cancelled_real_query_restores_pooled_connection_before_reuse(
             task = asyncio.create_task(
                 runner.run(
                     lambda: DbosQueries(
-                        engine, busy_timeout_seconds=0.001
+                        engine,
+                        permissive_projection_limit(),
+                        busy_timeout_seconds=0.001,
                     ).get_workflow_revision(revision.revision_hash)
                 )
             )
@@ -477,7 +485,7 @@ def test_cancelled_real_query_restores_pooled_connection_before_reuse(
         assert isinstance(raw, sqlite3.Connection)
         assert not raw.in_transaction
     assert isinstance(
-        DbosQueries(engine).get_workflow_revision(revision.revision_hash),
+        durable_queries(engine).get_workflow_revision(revision.revision_hash),
         WorkflowRevisionFound,
     )
 
@@ -492,7 +500,7 @@ def test_prepare_query_work_is_independent_of_history_length(tmp_path: Path) -> 
             _seed_history(configured, run_id=run_id, head=event_count)
             monotonic = CountingMonotonic()
             result = DbosQueries(
-                configured, monotonic=monotonic
+                configured, permissive_projection_limit(), monotonic=monotonic
             ).prepare_run_event_stream(run_id, 2)
             assert result == StreamReady(event_count, False, 2)
             progress_calls.append(monotonic.calls)
@@ -512,7 +520,7 @@ def test_prepare_uses_bounded_endpoints_and_page_read_detects_middle_gap(
         head=5,
         missing_sequences=frozenset({3}),
     )
-    queries = DbosQueries(engine)
+    queries = durable_queries(engine)
 
     assert queries.prepare_run_event_stream(run_id, 0) == StreamReady(5, False, 0)
     assert isinstance(queries.read_run_event_page(run_id, 0, 5), EventHistoryCorrupt)
@@ -576,11 +584,11 @@ def test_event_query_keeps_one_old_snapshot_when_history_appends_between_selects
     event.listen(engine, "after_cursor_execute", append_after_head_read)
     try:
         if query_kind == "page":
-            result = DbosQueries(engine).read_run_event_page(run_id, 0, 5)
+            result = durable_queries(engine).read_run_event_page(run_id, 0, 5)
             assert isinstance(result, queries_module.RunEventPage)
             assert tuple(event.event.event_sequence for event in result.events) == (1,)
         else:
-            assert DbosQueries(engine).prepare_run_event_stream(
+            assert durable_queries(engine).prepare_run_event_stream(
                 run_id, 0
             ) == StreamReady(0, False, 0)
     finally:
@@ -611,7 +619,7 @@ def test_prepare_rejects_missing_history_endpoint_before_stream_headers(
     )
 
     assert isinstance(
-        DbosQueries(engine).prepare_run_event_stream(run_id, 0),
+        durable_queries(engine).prepare_run_event_stream(run_id, 0),
         EventHistoryCorrupt,
     )
 
@@ -629,7 +637,7 @@ def test_prepare_rejects_terminal_run_without_terminal_head_event(
     )
 
     assert isinstance(
-        DbosQueries(engine).prepare_run_event_stream(run_id, 0),
+        durable_queries(engine).prepare_run_event_stream(run_id, 0),
         EventHistoryCorrupt,
     )
 
@@ -742,9 +750,10 @@ def test_run_core_text_limits_refuse_before_mapper_without_selecting_bootstrap_i
     try:
         detail = ProjectionTooLarge()
         assert (
-            DbosQueries(engine).get_run(RunId(run_id_value), projection_limit) == detail
+            durable_queries(engine, projection_limit).get_run(RunId(run_id_value))
+            == detail
         )
-        assert DbosQueries(engine).list_runs(None, 100, projection_limit) == detail
+        assert durable_queries(engine, projection_limit).list_runs(None, 100) == detail
     finally:
         event.remove(engine, "before_cursor_execute", capture_run_select)
 
@@ -766,7 +775,7 @@ def test_run_pages_follow_exact_utf8_bytes_from_existing_or_missing_boundary(
     )
     _seed_runs(engine, tuple((run_id, revision) for run_id in run_ids))
     expected = tuple(sorted(run_ids, key=lambda run_id: run_id.value.encode("utf-8")))
-    queries = DbosQueries(engine)
+    queries = durable_queries(engine)
     found = []
     after = None
     while True:
@@ -820,7 +829,7 @@ def test_run_page_refuses_real_rows_when_sqlite_order_or_boundary_is_wrong(
 
     event.listen(engine, "before_cursor_execute", corrupt_run_order, retval=True)
     try:
-        result = DbosQueries(engine).list_runs(after, 100)
+        result = durable_queries(engine).list_runs(after, 100)
     finally:
         event.remove(engine, "before_cursor_execute", corrupt_run_order)
 
@@ -850,14 +859,18 @@ def test_run_page_query_uses_primary_index_without_scan_or_temp_sort(
 
     event.listen(engine, "before_cursor_execute", capture_run_page)
     try:
-        result = DbosQueries(engine).list_runs(RunId("run-005x"), 3)
+        result = durable_queries(engine).list_runs(RunId("run-005x"), 3)
         assert isinstance(result, RunPage)
     finally:
         event.remove(engine, "before_cursor_execute", capture_run_page)
 
     assert len(captured) == 1
     statement, parameters = captured[0]
-    assert "CAST" not in statement.upper()
+    # Every read is bounded now, so the question is no longer whether the bound's
+    # expressions appear — they always do — but whether they cost the index. This
+    # asserts both halves: the projection really is bounded, and the plan is still
+    # an index search.
+    assert "CAST" in statement.upper()
     with engine.connect() as connection:
         plan = tuple(
             str(record[-1]).upper()
@@ -907,7 +920,7 @@ def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
 
     event.listen(engine, "before_cursor_execute", count_selects)
     try:
-        page = DbosQueries(engine).list_runs(None, 100)
+        page = durable_queries(engine).list_runs(None, 100)
     finally:
         event.remove(engine, "before_cursor_execute", count_selects)
 
@@ -1026,7 +1039,7 @@ nodes:
 
     event.listen(engine, "before_cursor_execute", count_selects)
     try:
-        page = DbosQueries(engine).list_runs(None, 100)
+        page = durable_queries(engine).list_runs(None, 100)
     finally:
         event.remove(engine, "before_cursor_execute", count_selects)
 
@@ -1085,6 +1098,48 @@ nodes:
     for mapper_name, bounded_run_id, limits in cases:
         with monkeypatch.context() as context:
             context.setattr(queries_module, mapper_name, unexpected_materialization)
-            assert DbosQueries(engine).get_run(bounded_run_id, limits) == (
+            assert durable_queries(engine, limits).get_run(bounded_run_id) == (
                 ProjectionTooLarge()
             ), mapper_name
+
+
+@pytest.mark.proves("a-durable-reader-holds-the-bound-it-reads-under")
+def test_a_reader_cannot_be_built_without_the_bound_it_reads_under() -> None:
+    """There is no unbounded reader to construct any more.
+
+    The bound used to travel as an optional argument on every read, so a caller
+    could omit it and a reader would answer without one. It is now what a reader
+    is made of, and leaving it out is not a permissive read — it is not a reader.
+    """
+    with pytest.raises(TypeError):
+        DbosQueries(create_engine("sqlite://"))  # type: ignore[call-arg]
+
+
+@pytest.mark.proves("a-durable-reader-holds-the-bound-it-reads-under")
+def test_the_bound_a_reader_holds_is_the_bound_it_applies(engine: Engine) -> None:
+    """No caller passes a bound, so the one it was built with has to be the one
+    that governs — otherwise the parameter's removal would have quietly removed
+    the enforcement with it."""
+    revision = WorkflowRevision(_workflow_document("bounded"))
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=revision.revision_hash.value,
+                document=revision.document,
+            )
+        )
+    tight = WorkflowPublicationLimits(
+        maximum_document_bytes=len(revision.document) - 1,
+        maximum_nodes=10,
+        maximum_string_characters=100,
+        maximum_payload_bytes=100,
+    )
+
+    assert (
+        durable_queries(engine, tight).get_workflow_revision(revision.revision_hash)
+        == ProjectionTooLarge()
+    )
+    assert isinstance(
+        durable_queries(engine).get_workflow_revision(revision.revision_hash),
+        WorkflowRevisionFound,
+    )

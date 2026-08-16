@@ -11,7 +11,6 @@ from httpx import Response
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -27,7 +26,7 @@ from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_canonical_base64
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from tests.scenarios.api import api_limits, event_poll_backoff
+from tests.scenarios.api import api_limits, durable_queries, event_poll_backoff
 from tests.scenarios.runtime import exact_output_runtime
 from tests.scenarios.workflows import (
     V3_CONTROL_EDGE_LINE,
@@ -62,7 +61,7 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
 
 
 def _client(runtime: DbosRuntime) -> TestClient:
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
     return TestClient(
         create_app(
             source_commit="commit-under-test",

@@ -20,7 +20,6 @@ from atelier2.adapters.claude_subscription import (
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -45,6 +44,7 @@ from atelier2.host.serving import (
 )
 from tests.scenarios.agents import claude_subscription_deployment
 from tests.scenarios.api import api_limits as scenario_api_limits
+from tests.scenarios.api import durable_queries
 from tests.scenarios.api import event_poll_backoff as scenario_event_poll_backoff
 from tests.scenarios.runtime import exact_output_runtime
 
@@ -184,7 +184,7 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
 
 
 def api_ports(runtime: DbosRuntime) -> ApiPorts:
-    queries = DbosQueries(runtime.engine)
+    queries = durable_queries(runtime.engine)
     return ApiPorts(
         workflow_revision_publisher=DbosWorkflowRevisionPublisher(runtime.engine),
         published_run_starter=DbosDurableRunStarter(

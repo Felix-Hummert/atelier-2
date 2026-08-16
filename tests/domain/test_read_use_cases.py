@@ -41,7 +41,6 @@ from atelier2.ports.workflow_revisions import (
 
 REVISION_HASH = WorkflowRevisionHash("a" * 64)
 RUN_ID = RunId("run")
-PROJECTION_LIMIT: Any = object()
 REVISION_PROJECTION: Any = object()
 RUN_PROJECTION: Any = object()
 
@@ -66,21 +65,21 @@ class ScriptedQueries:
     def get_workflow_revision(
         self, revision_hash: Any, projection_limit: Any = None
     ) -> Any:
-        return self._record(revision_hash, projection_limit)
+        return self._record(revision_hash)
 
     def list_described_workflow_revisions(
         self, after: Any, limit: Any, budget: Any, projection_limit: Any = None
     ) -> Any:
-        return self._record(after, limit, budget, projection_limit)
+        return self._record(after, limit, budget)
 
     def list_workflow_revisions(self, after: Any, limit: int) -> Any:
         return self._record(after, limit)
 
     def get_run(self, run_id: Any, projection_limit: Any = None) -> Any:
-        return self._record(run_id, projection_limit)
+        return self._record(run_id)
 
     def list_runs(self, after: Any, limit: int, projection_limit: Any = None) -> Any:
-        return self._record(after, limit, projection_limit)
+        return self._record(after, limit)
 
     def prepare_run_event_stream(self, run_id: Any, after_sequence: int) -> Any:
         return self._record(run_id, after_sequence)
@@ -102,7 +101,7 @@ READS: list[
 ] = [
     (
         "get-workflow-revision",
-        lambda queries: get_workflow_revision(REVISION_HASH, PROJECTION_LIMIT, queries),
+        lambda queries: get_workflow_revision(REVISION_HASH, queries),
         [
             (
                 WorkflowRevisionFound(REVISION_PROJECTION),
@@ -125,7 +124,7 @@ READS: list[
     ),
     (
         "get-run",
-        lambda queries: get_run(RUN_ID, PROJECTION_LIMIT, queries),
+        lambda queries: get_run(RUN_ID, queries),
         [
             (RunFound(RUN_PROJECTION), RunRead(RUN_PROJECTION)),
             (RunQueryMissing(), RunNotFound()),
@@ -134,7 +133,7 @@ READS: list[
     ),
     (
         "list-runs",
-        lambda queries: list_runs(None, 50, PROJECTION_LIMIT, queries),
+        lambda queries: list_runs(None, 50, queries),
         [
             (RunPage((RUN_PROJECTION,), RUN_ID), RunsListed((RUN_PROJECTION,), RUN_ID)),
             *PORT_REFUSALS,
@@ -185,8 +184,8 @@ def test_a_read_hands_the_projection_on_untouched_rather_than_rendering_it() -> 
     run = ScriptedQueries(RunFound(RUN_PROJECTION))
     revision = ScriptedQueries(WorkflowRevisionFound(REVISION_PROJECTION))
 
-    read_run = get_run(RUN_ID, PROJECTION_LIMIT, run)
-    read_revision = get_workflow_revision(REVISION_HASH, PROJECTION_LIMIT, revision)
+    read_run = get_run(RUN_ID, run)
+    read_revision = get_workflow_revision(REVISION_HASH, revision)
 
     assert isinstance(read_run, RunRead)
     assert read_run.projection is RUN_PROJECTION
@@ -198,6 +197,6 @@ def test_a_read_hands_the_projection_on_untouched_rather_than_rendering_it() -> 
 def test_a_read_asks_its_port_with_exactly_what_the_caller_named() -> None:
     queries = ScriptedQueries(RunPage((), None))
 
-    list_runs(RUN_ID, 25, PROJECTION_LIMIT, queries)
+    list_runs(RUN_ID, 25, queries)
 
-    assert queries.asked == [(RUN_ID, 25, PROJECTION_LIMIT)]
+    assert queries.asked == [(RUN_ID, 25)]
