@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,6 +9,7 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.advancer import (
+    EFFECT_WORKFLOW_ID_PREFIX,
     EffectIntentIdentityConflict,
     effect_workflow_id_for,
 )
@@ -79,10 +79,9 @@ def prepare(
 
 
 def test_effect_workflow_id_is_deterministic_from_the_exact_logical_key() -> None:
-    key = LogicalEffectKey(" run-1/action-1 ")
-
-    assert effect_workflow_id_for(key) == (
-        "atelier2-effect-" + hashlib.sha256(key.value.encode()).hexdigest()
+    assert effect_workflow_id_for(LogicalEffectKey(" run-1/action-1 ")) == (
+        EFFECT_WORKFLOW_ID_PREFIX
+        + "c5f618be5af7f6dbfd72e38fdcd8d8d489db73c420ccedae3644fa4e8d1e0211"
     )
 
 
