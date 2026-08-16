@@ -21,6 +21,24 @@ afterEach(() => {
   cleanup();
 });
 
+const completedRun = (changes: Partial<RunV1> = {}): RunV1 =>
+  startedRun({ state: "COMPLETED", terminal_hash: "b".repeat(64), ...changes });
+
+const waitingReconciliationRun = (changes: Partial<RunV1> = {}): RunV1 =>
+  startedRun({
+    state: "WAITING_RECONCILIATION",
+    waiting: {
+      type: "WAITING_RECONCILIATION",
+      node_id: "act",
+      logical_effect_key: "effect",
+      request_hash: "c".repeat(64),
+      request_base64: "",
+      intent_state_version: 0,
+      pending_command: null
+    },
+    ...changes
+  });
+
 function openAt(pathname: string, overrides: Partial<CockpitApi> = {}) {
   window.history.replaceState(null, "", pathname);
   return render(App, {
@@ -55,6 +73,26 @@ describe("the project answers what is happening here", () => {
     expect(within(running).getAllByRole("link")).toHaveLength(2);
     expect(within(await screen.findByRole("region", { name: "Waiting for you" })).getAllByRole("link")).toHaveLength(1);
     expect(screen.queryByRole("region", { name: "Done" })).toBeNull();
+  });
+
+  it("lets a row carry the move a human owes and the group carry the state", async () => {
+    openProject([
+      startedRun({ public_run_reference: "run1.YQ", run_id: "alpha" }),
+      waitingInputRun({ public_run_reference: "run1.Yg", run_id: "beta" }),
+      waitingReconciliationRun({ public_run_reference: "run1.Yw", run_id: "gamma" }),
+      completedRun({ public_run_reference: "run1.ZA", run_id: "delta" })
+    ]);
+
+    const waiting = await screen.findByRole("region", { name: "Waiting for you" });
+    expect(within(waiting).getByText("Answer").isConnected).toBe(true);
+    expect(within(waiting).getByText("Reconcile").isConnected).toBe(true);
+
+    for (const group of ["Running", "Done"]) {
+      const rows = within(screen.getByRole("region", { name: group })).getAllByRole("link");
+      expect(rows.map((row) => row.textContent?.trim())).toEqual(
+        group === "Running" ? ["alpha"] : ["delta"]
+      );
+    }
   });
 
   it("leads down into a run of this project", async () => {
@@ -92,7 +130,10 @@ describe("the queue names what does not exist yet", () => {
 
     const queue = await screen.findByRole("region", { name: "Queue" });
 
-    expect(within(queue).getByText(/no priority and no assignment/i).isConnected).toBe(true);
+    expect(
+      within(queue).getByText("This project has no priority and no assignment yet.").isConnected
+    ).toBe(true);
+    expect(within(queue).queryByText(/order|first|next|schedul|priorit\w+ is/i)).toBeNull();
     expect(screen.getAllByRole("link", { name: "Start a run" })).toHaveLength(1);
 
     await fireEvent.click(within(queue).getByRole("link", { name: "Start a run" }));

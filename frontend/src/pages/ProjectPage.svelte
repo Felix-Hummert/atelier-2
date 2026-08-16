@@ -52,7 +52,7 @@
 
   <section class="queue" aria-labelledby="queue-title">
     <h2 id="queue-title">Queue</h2>
-    <p>This project has no priority and no assignment yet: it runs what you start, in the order you start it.</p>
+    <p>This project has no priority and no assignment yet.</p>
     <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>Start a run</a>
   </section>
 
