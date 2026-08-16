@@ -2,8 +2,10 @@
   import { onMount } from "svelte";
 
   import type { CockpitApi, RunPage } from "../api/client";
+  import Breadcrumb from "../components/Breadcrumb.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
+  import { runPath } from "../lib/route";
   import { readEveryRun } from "../lib/runPages";
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
   import { humanMove, runsStanding, standingMarks, standingOrder, standingWords } from "../lib/runState";
@@ -38,7 +40,7 @@
 </script>
 
 <section aria-labelledby="project-title">
-  <a class="back-link" href="/atelier" onclick={(event) => { event.preventDefault(); navigate("/atelier"); }}>← Studio</a>
+  <Breadcrumb steps={[{ label: "Studio", path: "/atelier" }]} current={THE_ONE_PROJECT} {navigate} />
 
   <header class="page-header">
     <div>
@@ -71,7 +73,7 @@
         <ul class="card-list">
           {#each group.runs as run (run.public_run_reference)}
             <li>
-              <a class="run-card" href={`/atelier/runs/${run.public_run_reference}`} onclick={(event) => { event.preventDefault(); navigate(`/atelier/runs/${run.public_run_reference}`); }}>
+              <a class="run-card" href={runPath(run.public_run_reference)} onclick={(event) => { event.preventDefault(); navigate(runPath(run.public_run_reference)); }}>
                 <strong>{run.run_id}</strong>
                 {#if group.standing === "waiting"}
                   <span class="state-label state-waiting"><span aria-hidden="true">{standingMarks.waiting}</span>{humanMove(run.state)}</span>

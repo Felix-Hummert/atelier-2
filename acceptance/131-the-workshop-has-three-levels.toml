@@ -45,3 +45,7 @@ text = "From every level a named way leads exactly one level up: from the run to
 [[sentence]]
 id = "the-workshop-reads-every-page-or-says-it-could-not"
 text = "The workshop reads the durable run list to its end instead of stopping at the first page, and when a page cannot be read it says that what is shown is incomplete rather than presenting a part as the whole."
+
+[[sentence]]
+id = "the-deepest-level-shows-the-whole-way-it-sits-on"
+text = "Standing in a run, the operator sees the whole way it sits on -- studio, project, run -- and can walk any step of it by name, while the level being looked at is named without being offered as somewhere to go."

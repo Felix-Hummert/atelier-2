@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Run } from "../api/client";
+  import { runPath } from "../lib/route";
   import { humanMove, standingMarks, waitsForAHuman } from "../lib/runState";
 
   export let runs: readonly Run[];
@@ -16,8 +17,8 @@
         <li>
           <a
             class="run-card"
-            href={`/atelier/runs/${run.public_run_reference}`}
-            onclick={(event) => { event.preventDefault(); navigate(`/atelier/runs/${run.public_run_reference}`); }}
+            href={runPath(run.public_run_reference)}
+            onclick={(event) => { event.preventDefault(); navigate(runPath(run.public_run_reference)); }}
           >
             <span class="state-label state-waiting"><span aria-hidden="true">{standingMarks.waiting}</span>{humanMove(run.state)}</span>
             <code>{run.run_id}</code>

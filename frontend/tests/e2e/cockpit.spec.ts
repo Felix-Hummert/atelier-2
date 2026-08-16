@@ -87,8 +87,37 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({ path: "test-results/project-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
-  await page.getByRole("link", { name: "← Studio" }).click();
+
+
+});
+
+
+test("walks the whole workshop: studio into the project, project into the run, and the trail back up", async ({ page }) => {
+  await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+  await page.getByRole("article", { name: "This workshop" }).getByRole("link").click();
+  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+
+  await page
+    .getByRole("region", { name: "Waiting for you" })
+    .getByRole("link")
+    .first()
+    .click();
+  await expect(page.getByRole("heading", { name: /^Run / })).toBeVisible();
+  const trail = page.getByRole("navigation", { name: "Where you are" });
+  await expect(trail.getByRole("link", { name: "Studio" })).toBeVisible();
+  await expect(trail.getByRole("link", { name: "This workshop" })).toBeVisible();
+  await page.screenshot({ path: "test-results/run-trail-desktop.png", fullPage: true });
+  await assertNoSeriousAccessibilityFindings(page);
+
+  await trail.getByRole("link", { name: "This workshop" }).click();
+  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Where you are" })
+    .getByRole("link", { name: "Studio" })
+    .click();
+  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier$/);
 });
 
 test("mobile Found and Absent reconcile exact durable runs", async ({ browser }) => {
