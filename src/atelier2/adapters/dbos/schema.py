@@ -17,21 +17,28 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 _VERSION_NINE = 9
+_VERSION_TEN = 10
 # Operator ruling 5307892458: no store compatibility until a named maturity.
-# V9 remains the published predecessor; runtime never migrates it.
+# Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
-# V9 product tables equal V8. V10 adds the thin catalog/receipt subset.
+# V9 product tables equal V8. V10 adds the thin catalog/receipt foundation. V11
+# closes the artifact/output/access store shape that Cut B writes atomically.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
     9: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
     10: "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7",
+    11: "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_NINE],
+)
+V10_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -827,6 +834,43 @@ catalog_lineage_members = sa.Table(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
+node_artifacts_v3 = sa.Table(
+    "node_artifacts_v3",
+    metadata,
+    sa.Column(
+        "run_id",
+        sa.Text,
+        sa.ForeignKey("runs.run_id"),
+        nullable=False,
+    ),
+    sa.Column("node_id", sa.Text, nullable=False),
+    sa.Column("node_execution_id", sa.Text, nullable=False),
+    sa.Column("output_name", sa.Text, nullable=False),
+    sa.Column("schema_revision_hash", sa.Text, nullable=False),
+    sa.Column("value", sa.LargeBinary, nullable=False),
+    sa.Column("value_hash", sa.Text, nullable=False),
+    sa.Column("artifact_hash", sa.Text, unique=True, nullable=False),
+    sa.PrimaryKeyConstraint("run_id", "node_id", "node_execution_id", "output_name"),
+    sa.UniqueConstraint(
+        "node_execution_id",
+        "output_name",
+        "schema_revision_hash",
+        "value_hash",
+    ),
+    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint("length(output_name) > 0"),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(schema_revision_hash) = 64 "
+        "AND schema_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(
+        "length(artifact_hash) = 64 AND artifact_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
 node_receipts_v3 = sa.Table(
     "node_receipts_v3",
     metadata,
@@ -852,6 +896,67 @@ node_receipts_v3 = sa.Table(
     ),
     sa.CheckConstraint(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
+node_receipt_outputs_v3 = sa.Table(
+    "node_receipt_outputs_v3",
+    metadata,
+    sa.Column(
+        "node_execution_id",
+        sa.Text,
+        sa.ForeignKey("node_receipts_v3.node_execution_id"),
+        nullable=False,
+    ),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("output_name", sa.Text, nullable=False),
+    sa.Column("schema_revision_hash", sa.Text, nullable=False),
+    sa.Column("value_hash", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("node_execution_id", "position"),
+    sa.UniqueConstraint("node_execution_id", "output_name"),
+    sa.ForeignKeyConstraint(
+        (
+            "node_execution_id",
+            "output_name",
+            "schema_revision_hash",
+            "value_hash",
+        ),
+        (
+            "node_artifacts_v3.node_execution_id",
+            "node_artifacts_v3.output_name",
+            "node_artifacts_v3.schema_revision_hash",
+            "node_artifacts_v3.value_hash",
+        ),
+    ),
+    sa.CheckConstraint("position >= 0"),
+    sa.CheckConstraint("length(output_name) > 0"),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(schema_revision_hash) = 64 "
+        "AND schema_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"),
+)
+node_receipt_access_v3 = sa.Table(
+    "node_receipt_access_v3",
+    metadata,
+    sa.Column(
+        "node_execution_id",
+        sa.Text,
+        sa.ForeignKey("node_receipts_v3.node_execution_id"),
+        nullable=False,
+    ),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("access_receipt_hash", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("node_execution_id", "position"),
+    sa.CheckConstraint("position >= 0"),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(access_receipt_hash) = 64 "
+        "AND access_receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
 
@@ -1157,6 +1262,18 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'catalog lineage members are immutable');
         END
     """,
+    "node_artifacts_v3_no_update": """
+        CREATE TRIGGER node_artifacts_v3_no_update
+        BEFORE UPDATE ON node_artifacts_v3 BEGIN
+          SELECT RAISE(ABORT, 'v3 node artifacts are immutable');
+        END
+    """,
+    "node_artifacts_v3_no_delete": """
+        CREATE TRIGGER node_artifacts_v3_no_delete
+        BEFORE DELETE ON node_artifacts_v3 BEGIN
+          SELECT RAISE(ABORT, 'v3 node artifacts are immutable');
+        END
+    """,
     "node_receipts_v3_no_update": """
         CREATE TRIGGER node_receipts_v3_no_update
         BEFORE UPDATE ON node_receipts_v3 BEGIN
@@ -1167,6 +1284,30 @@ _PRODUCT_TRIGGERS = {
         CREATE TRIGGER node_receipts_v3_no_delete
         BEFORE DELETE ON node_receipts_v3 BEGIN
           SELECT RAISE(ABORT, 'v3 node receipts are immutable');
+        END
+    """,
+    "node_receipt_outputs_v3_no_update": """
+        CREATE TRIGGER node_receipt_outputs_v3_no_update
+        BEFORE UPDATE ON node_receipt_outputs_v3 BEGIN
+          SELECT RAISE(ABORT, 'v3 node receipt outputs are immutable');
+        END
+    """,
+    "node_receipt_outputs_v3_no_delete": """
+        CREATE TRIGGER node_receipt_outputs_v3_no_delete
+        BEFORE DELETE ON node_receipt_outputs_v3 BEGIN
+          SELECT RAISE(ABORT, 'v3 node receipt outputs are immutable');
+        END
+    """,
+    "node_receipt_access_v3_no_update": """
+        CREATE TRIGGER node_receipt_access_v3_no_update
+        BEFORE UPDATE ON node_receipt_access_v3 BEGIN
+          SELECT RAISE(ABORT, 'v3 node receipt access is immutable');
+        END
+    """,
+    "node_receipt_access_v3_no_delete": """
+        CREATE TRIGGER node_receipt_access_v3_no_delete
+        BEFORE DELETE ON node_receipt_access_v3 BEGIN
+          SELECT RAISE(ABORT, 'v3 node receipt access is immutable');
         END
     """,
 }
