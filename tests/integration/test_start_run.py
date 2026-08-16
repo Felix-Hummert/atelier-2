@@ -125,7 +125,10 @@ def count(engine: sa.Engine, table: str) -> int:
     [
         ("run-1", "4e65d3fbe8ad6535681b021b30785b12b6c0e3f8878859a4148b3f58b8835db0"),
         (" run-1 ", "2dab30c2369645f3034a977f79499de4115eb9680bef84680f4cecc981e67ee7"),
-        ("\N{SNOWMAN}", "51643361c79ecaef25a8de802de24f570ba25d9c2df1d22d94fade11b4f466cc"),
+        (
+            "\N{SNOWMAN}",
+            "51643361c79ecaef25a8de802de24f570ba25d9c2df1d22d94fade11b4f466cc",
+        ),
     ],
 )
 def test_workflow_id_is_deterministic_from_exact_run_id(

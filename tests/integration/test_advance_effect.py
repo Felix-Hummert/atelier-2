@@ -79,14 +79,10 @@ def prepare(
 
 
 def test_effect_workflow_id_is_deterministic_from_the_exact_logical_key() -> None:
-    key = LogicalEffectKey(" run-1/action-1 ")
-    first = effect_workflow_id_for(key)
-    second = effect_workflow_id_for(key)
-    other = effect_workflow_id_for(LogicalEffectKey("run-1/action-1"))
-
-    assert first.startswith(EFFECT_WORKFLOW_ID_PREFIX)
-    assert first == second
-    assert first != other
+    assert effect_workflow_id_for(LogicalEffectKey(" run-1/action-1 ")) == (
+        EFFECT_WORKFLOW_ID_PREFIX
+        + "c5f618be5af7f6dbfd72e38fdcd8d8d489db73c420ccedae3644fa4e8d1e0211"
+    )
 
 
 def test_preparing_the_graph_action_writes_exactly_one_exact_intent(
