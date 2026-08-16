@@ -1,7 +1,11 @@
 # ADR 0007: Named lineages own catalog identity above hash-true revisions
 
-- Status: PROPOSED — round 5, rebased onto `main` `f9ff73c` and answering the Codex
-  REVISE of 2026-08-15; not accepted, not implemented
+- Status: ACCEPTED 2026-08-16 — acceptance authority: operator ruling
+  [#63](https://github.com/FlexOr2/atelier-2/issues/63#issuecomment-5307533025), clarified
+  by [the prototype-store ruling](https://github.com/FlexOr2/atelier-2/issues/63#issuecomment-5307545004):
+  build and isolated proof are authorized, the proven prototype store may replace its
+  predecessor, and unattended arming remains gated; document only, not implemented;
+  candidate identity deferred to the eventual PR/commit
 - Date: 2026-08-15
 - Depends on: [ADR 0001](0001-durable-runtime.md),
   [ADR 0002](0002-exact-yaml-graph.md), [ADR 0006](0006-node-vocabulary.md)
@@ -77,7 +81,7 @@ successor, and no way to be asked for by anything but its hash. #6 wants a catal
 named, versioned, proven chains that new work is laid back into; #8 wants a balance
 aggregated over a revision **lineage** with decay, so re-publishing cannot wash a
 record clean. Neither has an object to attach to, and ADR 0006's references are
-written `{ref: "<… id>", revision: "<… revision id>"}` while handing "their naming,
+written `{ref: "<KIND lineage id>", revision: "<revision hash>"}` while handing "their naming,
 lineage and storage" here — so `ref` has no owner and no rule saying the revision
 belongs to it.
 
@@ -119,14 +123,10 @@ listed under after its lineage is renamed. Decisions 1, 2 and 4 close all three.
 ## ADR 0006 amendment A1, required for acceptance
 
 ADR 0006's normative reference form already writes an **id** in the `ref` position and
-defers naming to #22, so `ref` = lineage id contradicts nothing it decided. Its examples,
-however, spell readable tokens (`review_verdict`, `review_panel`) there, which reads as a
-display name. One line is added beside its "this record only the reference form" sentence,
-and this record is not accepted before it lands:
-
-> `ref` is the stable derived lineage id of ADR 0007. The readable tokens in this
-> record's examples are illustrative lineage ids, never display names; a display
-> name never appears in document bytes.
+defers naming to #22, so `ref` = lineage id contradicts nothing it decided. Its examples
+however used readable placeholders in the ref slot, not display names. The amendment
+beside its "this record only the reference form" sentence now owns the exact rule and
+the typed placeholders; this record points there instead of maintaining a second copy.
 
 ## Decision
 
@@ -160,7 +160,8 @@ lineage for the operator's library to exist at all, and ADR 0006's `profile`, `s
 `tool` are three different things a definition is not.
 
 **What enters a hashed preimage is the stable lineage id; the mutable display name
-never does.** A persisted reference is `{ref: <lineage id>, revision: <revision hash>}`
+never does.** A persisted reference is
+`{ref: "<KIND lineage id>", revision: "<revision hash>"}`
 — both sides immutable, so a rename changes no document, no bound run, no receipt.
 That follows the existing model rather than breaking it: `auth-profile-revision/v1`
 already frames a stable id into a hash. The first draft's claim that *no name* enters
@@ -737,7 +738,7 @@ revision's bytes carry neither field, so its picker row shows a name and an empt
 description until someone authors the content forward. Nothing is hidden, and nothing is
 invented to fill the row.
 
-## Required proofs before acceptance
+## Required proofs for implementation
 
 - Literal vectors over `atelier2.contracts.hashing.frame` pin the lineage id, the
   measurement id and the export manifest hash; the same founding revision in two

@@ -3,8 +3,10 @@
 - Status: ACCEPTED 2026-08-14 (Codex fifth exact-head review PASS, PR #30) — document
   surface implemented by PR #41
 - Date: 2026-08-14, amended 2026-08-15 with "The document names itself" (the
-  document-level `name` and `description`), decided while PR #41 was still draft
-  because a field added to a closed hashed model after it lands is a format change
+  document-level `name` and `description`, decided while PR #41 was still draft
+  because a field added to a closed hashed model after it lands is a format change),
+  amended 2026-08-16 with "The `ref` placeholders in examples are typed lineage ids by
+  reference kind"
 - Depends on: [ADR 0002](0002-exact-yaml-graph.md), [ADR 0001](0001-durable-runtime.md)
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   whose "Deklaratives Kontext- und Artefaktrouting", "Parallele DAG-Ausführung"
@@ -148,9 +150,9 @@ shared fields decide what it may see, what it must produce, and what bounds it.
   available_context: []
   inputs: []
   outputs: []
-  budget: {ref: "<budget policy id>", revision: "<policy revision id>"}
-  retry: {ref: "<retry policy id>", revision: "<policy revision id>"}
-  cancellation: {ref: "<cancellation policy id>", revision: "<policy revision id>"}
+  budget: {ref: "<budget-policy lineage id>", revision: "<policy revision id>"}
+  retry: {ref: "<retry-policy lineage id>", revision: "<policy revision id>"}
+  cancellation: {ref: "<cancellation-policy lineage id>", revision: "<policy revision id>"}
 ```
 
 `depends_on` replaces the `next` chain and is the only control edge. The initial
@@ -335,12 +337,12 @@ carry their retry policies — as the child declares its own context.
   mode: headless
   instruction: |
     work-specific instruction text
-  profile: {ref: "<profile id>", revision: "<profile revision id>"}
+  profile: {ref: "<profile lineage id>", revision: "<profile revision id>"}
   skills:
-    - {ref: "<skill id>", revision: "<skill revision id>"}
+    - {ref: "<skill lineage id>", revision: "<skill revision id>"}
   tools:
-    - {ref: "<tool id>", revision: "<tool grant revision id>"}
-  policy: {ref: "<policy id>", revision: "<policy revision id>"}
+    - {ref: "<tool lineage id>", revision: "<tool grant revision id>"}
+  policy: {ref: "<policy lineage id>", revision: "<policy revision id>"}
 ```
 
 `instruction` replaces `job` and carries **only work-specific instruction** — what
@@ -372,13 +374,13 @@ cancellation and cleanup — V3 adds no second attempt model.
   type: deterministic
   depends_on: [code_review, test_review]
   join: all_terminal
-  operation: {ref: merge_review_verdicts, revision: "<deterministic operation revision id>"}
+  operation: {ref: "<deterministic-operation lineage id>", revision: "<deterministic operation revision id>"}
   inputs:
     - name: code_findings
       from: {node: code_review, output: findings}
   outputs:
     - name: merged
-      schema: {ref: review_verdict, revision: "<schema revision id>"}
+      schema: {ref: "<schema lineage id>", revision: "<schema revision id>"}
 ```
 
 `operation` binds a published **deterministic operation revision** in its own
@@ -413,7 +415,7 @@ overwrite. Gated by `deterministic_operations`.
       from: {node: behaviour_test, output: report}
   outputs:
     - name: approval
-      schema: {ref: landing_approval, revision: "<schema revision id>"}
+      schema: {ref: "<schema lineage id>", revision: "<schema revision id>"}
 ```
 
 This is #1's asynchronous, attributed approval gate, not a conversation: a Wait
@@ -441,7 +443,7 @@ format_version: 3
 name: Review a candidate and return one verdict
 graph_inputs:
   - name: candidate
-    schema: {ref: workspace_candidate, revision: "<schema revision id>"}
+    schema: {ref: "<schema lineage id>", revision: "<schema revision id>"}
 graph_outputs:
   - name: verdict
     from: {node: merge_findings, output: merged}
@@ -452,13 +454,13 @@ nodes: []
 - id: review_panel
   type: subworkflow
   depends_on: [implement]
-  workflow: {ref: review_panel, revision: "<workflow revision id>"}
+  workflow: {ref: "<workflow lineage id>", revision: "<workflow revision id>"}
   inputs:
     - name: candidate
       from: {node: implement, output: candidate}
   outputs:
     - name: verdict
-      schema: {ref: review_verdict, revision: "<schema revision id>"}
+      schema: {ref: "<schema lineage id>", revision: "<schema revision id>"}
 ```
 
 **Mapping is by name and schema revision, one to one.** Every `graph_input` must
@@ -504,7 +506,7 @@ Agent node.
 - id: publish_report
   type: action
   depends_on: [behaviour_test]
-  operation: {ref: "<adapter operation id>", revision: "<operation revision id>"}
+  operation: {ref: "<adapter-operation lineage id>", revision: "<operation revision id>"}
   inputs:
     - name: body
       from: {node: behaviour_test, output: report}
@@ -572,7 +574,12 @@ and pinned in the document — instruction bytes, profile, skills, tools, policy
 budget, retry and cancellation — because those change the meaning of the work that
 is judged and published; **who performs it** is deployment configuration bound at
 run start. Anything reusable is a versioned reference, never copied inline; #22 owns
-their naming, lineage and storage, this record only the reference form.
+their naming, lineage and storage, this record only the reference form. In that
+sentence, `ref` is the stable derived lineage id of ADR 0007. Every example uses
+kind-specific placeholders in the form `<KIND lineage id>`. For example:
+`<workflow lineage id>`, `<schema lineage id>`, `<adapter-operation lineage id>`,
+`<context-source lineage id>`, and `<read-operation lineage id>`. A display name does
+not occupy the persisted `ref` position in any versioned reference.
 
 ### Context edges
 
@@ -582,13 +589,13 @@ revision-bound; per #1 they differ in provenance and in when they are fetched.
 ```yaml
 required_context:
   - name: story
-    source: {ref: requirement, revision: "<requirement revision id>", selector: story_acceptance}
+    source: {ref: "<context-source lineage id>", revision: "<requirement revision id>", selector: story_acceptance}
 available_context:
   - name: decision_records
-    source: {ref: decision_record_index, revision: "<index revision id>"}
+    source: {ref: "<context-source lineage id>", revision: "<index revision id>"}
     read_operations:
-      - {ref: search, revision: "<read operation revision id>"}
-      - {ref: fetch_document, revision: "<read operation revision id>"}
+      - {ref: "<read-operation lineage id>", revision: "<read operation revision id>"}
+      - {ref: "<read-operation lineage id>", revision: "<read operation revision id>"}
 ```
 
 `required_context` names sources materialized in full and hashed **before START**,
@@ -619,7 +626,7 @@ a summary never replaces its sources.
 ```yaml
 outputs:
   - name: findings
-    schema: {ref: review_verdict, revision: "<schema revision id>"}
+    schema: {ref: "<schema lineage id>", revision: "<schema revision id>"}
 ```
 
 An output is named, typed by a **versioned schema reference**, and hashed. The
@@ -928,21 +935,21 @@ nodes:
     instruction: |
       Implement every literal acceptance sentence of the bound story inside your
       workspace, and return the candidate you produced.
-    profile: {ref: builder_method, revision: "<profile revision id>"}
+    profile: {ref: "<profile lineage id>", revision: "<profile revision id>"}
     skills:
-      - {ref: workspace_discipline, revision: "<skill revision id>"}
-    budget: {ref: build_budget, revision: "<budget revision id>"}
+      - {ref: "<skill lineage id>", revision: "<skill revision id>"}
+    budget: {ref: "<budget-policy lineage id>", revision: "<budget revision id>"}
     required_context:
       - name: story
-        source: {ref: requirement, revision: "<requirement revision id>", selector: story_acceptance}
+        source: {ref: "<context-source lineage id>", revision: "<requirement revision id>", selector: story_acceptance}
     available_context:
       - name: decision_records
-        source: {ref: decision_record_index, revision: "<index revision id>"}
+        source: {ref: "<context-source lineage id>", revision: "<index revision id>"}
         read_operations:
-          - {ref: search, revision: "<read operation revision id>"}
+          - {ref: "<read-operation lineage id>", revision: "<read operation revision id>"}
     outputs:
       - name: candidate
-        schema: {ref: workspace_candidate, revision: "<schema revision id>"}
+        schema: {ref: "<schema lineage id>", revision: "<schema revision id>"}
 
   - id: code_review
     type: agent
@@ -953,13 +960,13 @@ nodes:
     depends_on: [implement]
     required_context:
       - name: story
-        source: {ref: requirement, revision: "<requirement revision id>", selector: story_acceptance}
+        source: {ref: "<context-source lineage id>", revision: "<requirement revision id>", selector: story_acceptance}
     inputs:
       - name: candidate
         from: {node: implement, output: candidate}
     outputs:
       - name: findings
-        schema: {ref: review_verdict, revision: "<schema revision id>"}
+        schema: {ref: "<schema lineage id>", revision: "<schema revision id>"}
 
   - id: test_review
     type: agent
@@ -973,13 +980,13 @@ nodes:
         from: {node: implement, output: candidate}
     outputs:
       - name: findings
-        schema: {ref: review_verdict, revision: "<schema revision id>"}
+        schema: {ref: "<schema lineage id>", revision: "<schema revision id>"}
 
   - id: merge_findings
     type: deterministic
     depends_on: [code_review, test_review]
     join: all_terminal
-    operation: {ref: merge_review_verdicts, revision: "<deterministic operation revision id>"}
+    operation: {ref: "<deterministic-operation lineage id>", revision: "<deterministic operation revision id>"}
     inputs:
       - name: code_findings
         from: {node: code_review, output: findings}
@@ -987,12 +994,12 @@ nodes:
         from: {node: test_review, output: findings}
     outputs:
       - name: merged
-        schema: {ref: review_verdict, revision: "<schema revision id>"}
+        schema: {ref: "<schema lineage id>", revision: "<schema revision id>"}
 
   - id: publish_report
     type: action
     depends_on: [merge_findings]
-    operation: {ref: requirement_comment, revision: "<operation revision id>"}
+    operation: {ref: "<adapter-operation lineage id>", revision: "<operation revision id>"}
     inputs:
       - name: body
         from: {node: merge_findings, output: merged}
