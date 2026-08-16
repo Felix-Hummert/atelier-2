@@ -16,6 +16,7 @@ from atelier2.contracts.workflows_v3 import (
     GraphInput,
     GraphInputSource,
     GraphOutput,
+    InputSource,
     NodeInput,
     NodeOutput,
     NodeOutputSource,
@@ -248,7 +249,13 @@ def _refuse_broken_boundary(
             node,
             reached_by,
             f"graph input {graph_input.name!r}",
-            _proven_schema(node, reached_by, bound_input, graph),
+            _proven_schema(
+                node,
+                reached_by,
+                f"input {bound_input.name!r}",
+                bound_input.source,
+                graph,
+            ),
             graph_input.schema_reference,
         )
     for graph_output in child.graph_outputs:
@@ -260,7 +267,7 @@ def _refuse_broken_boundary(
             bound_output.schema_reference,
             _sourced_schema(child, graph_output),
         )
-    _refuse_unbound_iteration(node, child, reached_by)
+    _refuse_unbound_iteration(node, graph, child, reached_by)
 
 
 def _carried_names(node: SubworkflowNodeV3) -> frozenset[str]:
@@ -276,7 +283,10 @@ def _carried_names(node: SubworkflowNodeV3) -> frozenset[str]:
 
 
 def _refuse_unbound_iteration(
-    node: SubworkflowNodeV3, child: WorkflowGraphV3, reached_by: ReachedBy
+    node: SubworkflowNodeV3,
+    graph: WorkflowGraphV3,
+    child: WorkflowGraphV3,
+    reached_by: ReachedBy,
 ) -> None:
     """Whether the child can answer the green condition and take the handover.
 
@@ -285,6 +295,11 @@ def _refuse_unbound_iteration(
     order a round hands on is one the next round accepts under the schema revision
     both levels agreed. The refusals stay the boundary's own: "the schema
     revisions disagree" must not gain a third name.
+
+    Both ends of a carried order are checked here, because the loop above skips a
+    carried order and neither end reaches it otherwise: the result a round hands
+    on, and the seed that fills the same order in the first round. A seed held to
+    less would let round one run under a type no later round accepts.
     """
     if node.iterate is None:
         return
@@ -302,12 +317,26 @@ def _refuse_unbound_iteration(
         handed_on = _child_result(
             node, child, reached_by, f"carry {entry.name!r}", entry.from_output
         )
+        order = _child_order(node, child, reached_by, entry.name)
         _refuse_differing_schema(
             node,
             reached_by,
             f"carry {entry.name!r}",
             _sourced_schema(child, handed_on),
-            _child_order(node, child, reached_by, entry.name).schema_reference,
+            order.schema_reference,
+        )
+        _refuse_differing_schema(
+            node,
+            reached_by,
+            f"the seed of carry {entry.name!r}",
+            _proven_schema(
+                node,
+                reached_by,
+                f"the seed of carry {entry.name!r}",
+                entry.seed,
+                graph,
+            ),
+            order.schema_reference,
         )
 
 
@@ -398,10 +427,11 @@ def _named[Declared: (NodeInput, NodeOutput, GraphInput)](
 def _proven_schema(
     node: SubworkflowNodeV3,
     reached_by: ReachedBy,
-    bound: NodeInput,
+    subject: str,
+    source: InputSource | None,
     graph: WorkflowGraphV3,
 ) -> VersionedReference:
-    """The schema revision one bound input proves, or a refusal that it proves none.
+    """The schema revision one declared read proves, or a refusal that it proves none.
 
     A child's graph input demands a typed value, and exactly two declarations state
     the schema revision of what they carry: an upstream node output, and an order
@@ -412,8 +442,11 @@ def _proven_schema(
     Passing an order down is what makes one published workflow reusable through a
     whole nesting: the order a run supplies at the top reaches the node that reads
     it, however deep it sits, under the schema revision every level agreed on.
+
+    A round's seed reaches a child order exactly as an input does, so it proves its
+    schema here rather than through a second, weaker rule — ADR 0013 holds the seed
+    to the rules an input is held to, and this is where those rules live.
     """
-    source = bound.source
     if isinstance(source, NodeOutputSource):
         return _named(graph.node(source.node).outputs, source.output).schema_reference
     if isinstance(source, GraphInputSource):
@@ -422,7 +455,7 @@ def _proven_schema(
         SubworkflowBindingRefusalReason.UNPROVEN_INPUT_SCHEMA,
         node,
         reached_by,
-        f"input {bound.name!r} proves no schema revision, so it cannot bind a "
+        f"{subject} proves no schema revision, so it cannot bind a "
         "typed graph input of the child",
     )
 

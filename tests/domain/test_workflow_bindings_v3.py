@@ -739,6 +739,50 @@ def test_a_handover_the_child_accepts_under_another_schema_is_refused() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "seeded_schema",
+    (
+        b"{ref: review_verdict, revision: schema-other}",
+        b"{ref: landing_approval, revision: schema-approval}",
+    ),
+    ids=("another revision of the same schema", "another schema entirely"),
+)
+@pytest.mark.proves("a-round-handover-the-child-cannot-bind-is-refused-by-name")
+def test_a_seed_the_child_accepts_under_another_schema_is_refused(
+    seeded_schema: bytes,
+) -> None:
+    """The first round's value is typed by the same order every later round is.
+
+    Only the seeded output's schema differs, so nothing else can raise this: the
+    carried result still agrees with the order, and the boundary is otherwise the
+    one that binds.
+    """
+    disagreeing = ITERATING_PARENT.replace(
+        b"""      - name: first_verdict
+        schema: {ref: review_verdict, revision: schema-verdict}""",
+        b"""      - name: first_verdict
+        schema: """
+        + seeded_schema,
+    )
+    assert disagreeing != ITERATING_PARENT
+
+    with pytest.raises(SubworkflowBindingRefused) as raised:
+        bind_iterating(document=disagreeing)
+
+    refusal = raised.value.refusal
+    assert refusal.reason is SubworkflowBindingRefusalReason.SCHEMA_REVISION_MISMATCH
+    assert refusal.node == "review_panel"
+    assert "previous_verdict" in str(refusal)
+
+
+@pytest.mark.proves("a-round-handover-the-child-cannot-bind-is-refused-by-name")
+def test_a_seed_agreeing_with_the_order_it_fills_binds() -> None:
+    """The control the refusal above is measured against."""
+    binding = bind_iterating()
+
+    assert binding.subworkflows[0].node_id == "review_panel"
+
+
 @pytest.mark.proves("an-iteration-past-the-proven-round-bound-is-refused-by-name")
 def test_an_iteration_declaring_more_rounds_than_were_proven_is_refused() -> None:
     with pytest.raises(SubworkflowBindingRefused) as raised:

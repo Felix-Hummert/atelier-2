@@ -63,7 +63,7 @@ text = "A green condition that reads a result the child declares nowhere is refu
 
 [[sentence]]
 id = "a-round-handover-the-child-cannot-bind-is-refused-by-name"
-text = "A round handover is bound against the child on both sides: the result it reads and the order it hands on must both be declared by the child under the schema revision both levels agreed, and a carried order is supplied by the round before it rather than demanded from the parent."
+text = "A round handover is bound against the child on every side it has: the result it reads, the order it hands on, and the seed that fills that same order in the first round are each held to the schema revision both levels agreed, and a carried order is supplied by the round before it rather than demanded from the parent."
 
 [[sentence]]
 id = "an-iteration-past-the-proven-round-bound-is-refused-by-name"
