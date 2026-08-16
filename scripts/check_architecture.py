@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import sys
+import typing
+from collections import abc
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,18 +23,43 @@ EXPECTED_CONTRACT_NAMES = {
     "schema-owner": "JSON Schema evaluation stays inside one profile owner",
 }
 PORT_PACKAGE = "atelier2.ports"
+APPLICATION_PACKAGE = "atelier2.application"
+USE_CASE_RECORD_IMPORT = "atelier2.api.context"
 USE_CASE_RECORD_MODULE = "src/atelier2/api/context.py"
 USE_CASE_RECORD_NAME = "ApiUseCases"
 PORTS_RECORD_NAME = "ApiPorts"
 ROUTE_PACKAGE = "src/atelier2/api/routes"
-ROUTE_MODULES_STILL_HOLDING_PORTS = frozenset({"agents", "events", "revisions", "runs"})
-"""Route modules that have not been translated into use-cases yet.
+ROUTE_CALLS_STILL_HOLDING_PORTS = {
+    "agents": frozenset(
+        {
+            "publish_auth_profile_revision_route",
+            "publish_agent_configuration_revision_route",
+        }
+    ),
+    "events": frozenset({"event_stream_route"}),
+    "revisions": frozenset({"publish_revision"}),
+    "runs": frozenset(
+        {
+            "start_run_route",
+            "cancel_agent_attempt_route",
+            "answer_run_route",
+            "reconcile_run_route",
+        }
+    ),
+}
+"""The exact calls that have not been translated into use-cases yet.
 
-The list is read in both directions: a module outside it that reaches a port is
-red, and a module inside it that reaches none is red too. A stale entry is
-therefore a failure rather than a comfortable lie, exactly as
-`unmatched_ignore_imports_alerting = "error"` already reads the import contract.
-It shrinks to empty, and with the last entry it deletes itself.
+Named per call rather than per module, because a module is not translated all at
+once: `events` legitimately keeps a port for the stream its B3 head still owns,
+and a whole-module exception would let the *read* beside it quietly take its port
+back while every proof stayed green. The unit of the exception is the unit of the
+work.
+
+Read in both directions: a call outside this map that reaches a port is red, and a
+call named here that reaches none is red too. A stale entry is a failure rather
+than a comfortable lie, exactly as `unmatched_ignore_imports_alerting = "error"`
+already reads the import contract. It shrinks to empty, and with the last entry it
+deletes itself.
 """
 EXPECTED_LAYER_ROWS = (
     "__main__",
@@ -134,137 +163,188 @@ def _parsed(module: Path) -> ast.Module:
     return ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
 
 
-def _port_names_bound_by(module: ast.Module) -> frozenset[str]:
-    """Every local name in this module that stands for something under `ports`.
+def _record_under_test(project_root: Path) -> type:
+    """The record as Python resolves it, from the tree being checked.
 
-    `if TYPE_CHECKING:` blocks are read like any other, because this check is
-    textual and does not honour the quarantine — the same escape `pyproject.toml`
-    keeps shut repository-wide with `exclude_type_checking_imports = false`.
+    Reading the annotations as text can only ever compare spellings, and a route
+    receives the resolved object rather than its spelling — an alias or a
+    re-export defeats any amount of name matching. So the type is resolved by the
+    language itself.
+
+    The module's file is checked against the tree under test rather than trusted:
+    an editable install that shadowed the copy would otherwise let this check pass
+    on a different tree than the one it claims to judge.
     """
-    bound: set[str] = set()
-    for node in ast.walk(module):
-        if isinstance(node, ast.ImportFrom):
-            source = node.module or ""
-            if source == PORT_PACKAGE or source.startswith(f"{PORT_PACKAGE}."):
-                bound.update(alias.asname or alias.name for alias in node.names)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == PORT_PACKAGE or alias.name.startswith(
-                    f"{PORT_PACKAGE}."
-                ):
-                    bound.add(alias.asname or alias.name.split(".")[0])
-    return frozenset(bound)
-
-
-def _annotation_expression(annotation: ast.expr) -> ast.expr:
-    """The type an annotation states, with quoting and `Annotated` metadata removed."""
-    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
-        return _annotation_expression(
-            ast.parse(annotation.value, mode="eval").body,
+    sys.path.insert(0, str(project_root / "src"))
+    try:
+        module = importlib.import_module(USE_CASE_RECORD_IMPORT)
+    except ImportError as error:
+        raise ArchitecturePreflightError(
+            f"{USE_CASE_RECORD_MODULE} could not be imported to resolve its "
+            f"annotations: {error}"
+        ) from error
+    origin = Path(module.__file__ or "")
+    if origin != (project_root / USE_CASE_RECORD_MODULE).resolve():
+        raise ArchitecturePreflightError(
+            f"{USE_CASE_RECORD_IMPORT} resolved to {origin}, which is not the "
+            f"{USE_CASE_RECORD_MODULE} of the tree under test"
         )
-    if isinstance(annotation, ast.Subscript):
-        base = annotation.value
-        named = (
-            base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", "")
+    record = getattr(module, USE_CASE_RECORD_NAME, None)
+    if not isinstance(record, type):
+        raise ArchitecturePreflightError(
+            f"{USE_CASE_RECORD_MODULE} declares no {USE_CASE_RECORD_NAME}; "
+            "the routes' use-case record is what this check exists for"
         )
-        if named == "Annotated" and isinstance(annotation.slice, ast.Tuple):
-            return _annotation_expression(annotation.slice.elts[0])
-    return annotation
+    return record
 
 
-def _dotted_path(attribute: ast.Attribute) -> str:
-    parts = [attribute.attr]
-    current: ast.expr = attribute.value
-    while isinstance(current, ast.Attribute):
-        parts.append(current.attr)
-        current = current.value
-    if isinstance(current, ast.Name):
-        parts.append(current.id)
-    return ".".join(reversed(parts))
+def _declared_in(annotation: Any) -> Iterator[str]:
+    """The module every type inside one annotation was declared in."""
+    module = getattr(annotation, "__module__", None)
+    if isinstance(module, str):
+        yield module
+    for argument in typing.get_args(annotation):
+        if isinstance(argument, list):
+            for element in argument:
+                yield from _declared_in(element)
+        else:
+            yield from _declared_in(argument)
 
 
-def _named_in(annotation: ast.expr) -> tuple[frozenset[str], tuple[str, ...]]:
-    reduced = _annotation_expression(annotation)
-    names = {node.id for node in ast.walk(reduced) if isinstance(node, ast.Name)}
-    paths = tuple(
-        _dotted_path(node)
-        for node in ast.walk(reduced)
-        if isinstance(node, ast.Attribute)
-    )
-    return frozenset(names), paths
+def _owned_by(module: str, package: str) -> bool:
+    return module == package or module.startswith(f"{package}.")
 
 
 def use_case_record_problems(project_root: Path) -> tuple[str, ...]:
     """Every way the use-case record could hand a port back to a route.
 
     The record is what the routes hold, so a field of it that resolves to a port
-    reopens exactly the call the three other locks close. There is no exception
-    list: the record does not predate this rule, so it never legitimately holds
-    one.
+    reopens exactly the call the other locks close. The rule is positive and
+    therefore fail-closed: a field is a call into this application, or it is
+    refused. A field that is not a callable at all, or whose outcome was declared
+    anywhere but `atelier2.application`, fails without anyone having to predict the
+    spelling it would have used.
+
+    There is no exception list: the record does not predate this rule, so it never
+    legitimately holds a port.
     """
-    module_path = project_root / USE_CASE_RECORD_MODULE
-    module = _parsed(module_path)
-    port_names = _port_names_bound_by(module)
-    records = [
-        node
-        for node in module.body
-        if isinstance(node, ast.ClassDef) and node.name == USE_CASE_RECORD_NAME
-    ]
-    if not records:
+    record = _record_under_test(project_root)
+    problems = list(_unannotated_fields(project_root))
+    try:
+        resolved = typing.get_type_hints(record)
+    except (NameError, TypeError, AttributeError) as error:
+        # An annotation nobody can resolve is refused rather than skipped: what a
+        # route would hold cannot be judged, and the safe answer to that is no.
+        # Any other failure still ends the run — this check never reports green
+        # for a record it could not read.
         return (
+            *problems,
             (
-                f"{USE_CASE_RECORD_MODULE} declares no {USE_CASE_RECORD_NAME}; "
-                "the routes' use-case record is what this check exists for"
+                f"{USE_CASE_RECORD_NAME} carries an annotation that resolves to "
+                f"nothing, so what a route would hold cannot be judged: {error}"
             ),
         )
-    problems: list[str] = []
-    for statement in records[0].body:
-        if isinstance(statement, (ast.Assign, ast.AugAssign)):
+    for field, annotation in resolved.items():
+        stated = f"{USE_CASE_RECORD_NAME}.{field} is {annotation}"
+        if typing.get_origin(annotation) is not abc.Callable:
             problems.append(
-                f"{USE_CASE_RECORD_NAME} carries an unannotated assignment; "
-                "a field without an annotation is a hole in this check"
+                f"{stated}, which is not a call into {APPLICATION_PACKAGE}; every "
+                "field of this record is a use-case the composition already bound"
             )
             continue
-        if not isinstance(statement, ast.AnnAssign):
+        declared = tuple(_declared_in(annotation))
+        if any(_owned_by(module, PORT_PACKAGE) for module in declared):
+            problems.append(f"{stated}, which resolves to {PORT_PACKAGE}")
             continue
-        names, paths = _named_in(statement.annotation)
-        reaches_port = bool(names & port_names) or any(
-            path.startswith(("ports.", f"{PORT_PACKAGE}.")) for path in paths
-        )
-        if reaches_port:
-            field = ast.unparse(statement.target)
+        outcome = typing.get_args(annotation)[1]
+        if not all(
+            _owned_by(module, APPLICATION_PACKAGE) for module in _declared_in(outcome)
+        ):
             problems.append(
-                f"{USE_CASE_RECORD_NAME}.{field} is annotated with "
-                f"{ast.unparse(statement.annotation)}, which resolves to {PORT_PACKAGE}"
+                f"{stated}, whose outcome was not declared in "
+                f"{APPLICATION_PACKAGE}; a route reads this layer's own answer"
             )
     return tuple(problems)
 
 
-def _route_module_reaches_ports(module: ast.Module) -> bool:
+def _unannotated_fields(project_root: Path) -> Iterator[str]:
+    """A class-body assignment carrying no annotation is invisible to the resolver.
+
+    `typing.get_type_hints` reports annotated fields only, so an unannotated
+    assignment would never reach the rule above. It is refused here rather than
+    tolerated, because a field without an annotation is a hole in exactly this
+    check.
+    """
+    module = _parsed(project_root / USE_CASE_RECORD_MODULE)
     for node in ast.walk(module):
-        if isinstance(node, ast.Name) and node.id == PORTS_RECORD_NAME:
+        if not isinstance(node, ast.ClassDef) or node.name != USE_CASE_RECORD_NAME:
+            continue
+        for statement in node.body:
+            if isinstance(statement, (ast.Assign, ast.AugAssign)):
+                yield (
+                    f"{USE_CASE_RECORD_NAME} carries an unannotated assignment; "
+                    "a field without an annotation is a hole in this check"
+                )
+
+
+def _reaches_a_port(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id == PORTS_RECORD_NAME:
             return True
-        if isinstance(node, ast.Attribute) and node.attr == "ports":
+        if isinstance(child, ast.Attribute) and child.attr == "ports":
             return True
     return False
 
 
+def _calls_reaching_ports(module: ast.Module) -> frozenset[str]:
+    """Which named call of one route module reaches a port, innermost one wins."""
+    reaching: set[str] = set()
+    definitions = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    for definition in definitions:
+        nested = {
+            id(inner)
+            for child in ast.iter_child_nodes(definition)
+            for inner in ast.walk(child)
+            if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and inner is not definition
+        }
+        own = [
+            child
+            for child in ast.walk(definition)
+            if child is not definition and id(child) not in nested
+        ]
+        if any(_reaches_a_port(child) for child in own):
+            reaching.add(definition.name)
+    outside = [
+        statement
+        for statement in module.body
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    if any(_reaches_a_port(statement) for statement in outside):
+        reaching.add("<module>")
+    return frozenset(reaching)
+
+
 def route_port_problems(project_root: Path) -> tuple[str, ...]:
-    """Which route modules still reach a port, read against the declared list."""
+    """Which calls still reach a port, read against the declared map."""
     problems: list[str] = []
     for module_path in sorted((project_root / ROUTE_PACKAGE).glob("*.py")):
         name = module_path.stem
-        reaches = _route_module_reaches_ports(_parsed(module_path))
-        declared = name in ROUTE_MODULES_STILL_HOLDING_PORTS
-        if reaches and not declared:
+        reaching = _calls_reaching_ports(_parsed(module_path))
+        declared = ROUTE_CALLS_STILL_HOLDING_PORTS.get(name, frozenset())
+        for call in sorted(reaching - declared):
             problems.append(
-                f"{ROUTE_PACKAGE}/{name}.py reaches a port; a route reads the "
-                "use-case record the composition bound for it"
+                f"{ROUTE_PACKAGE}/{name}.py: {call} reaches a port; a route reads "
+                "the use-case record the composition bound for it"
             )
-        if declared and not reaches:
+        for call in sorted(declared - reaching):
             problems.append(
-                f"{ROUTE_PACKAGE}/{name}.py reaches no port any more; remove it "
-                "from ROUTE_MODULES_STILL_HOLDING_PORTS"
+                f"{ROUTE_PACKAGE}/{name}.py: {call} reaches no port any more; "
+                "remove it from ROUTE_CALLS_STILL_HOLDING_PORTS"
             )
     return tuple(problems)
 
@@ -287,7 +367,7 @@ def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
         "Architecture preflight: "
         f"{source_count} source modules, {len(configuration.contracts)} contracts, "
         f"{len(configuration.layer_members)} layer members, "
-        f"{len(ROUTE_MODULES_STILL_HOLDING_PORTS)} route modules still holding ports",
+        f"{sum(len(calls) for calls in ROUTE_CALLS_STILL_HOLDING_PORTS.values())} route calls still holding ports",
         flush=True,
     )
     return configuration

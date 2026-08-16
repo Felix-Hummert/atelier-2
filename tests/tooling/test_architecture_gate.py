@@ -248,12 +248,12 @@ def test_gate_runs_with_minimal_environment_and_no_network_or_service(
 
 
 def replace_use_case_field(project: Path, field: str, imported: str = "") -> None:
-    """Add one field to the record, with the port import a real evasion would need.
+    """Add one field to the record, with the import a real evasion would need.
 
-    The import matters: the check binds port names from this module's own imports,
-    so a field naming a type nobody imported here is a name that resolves to
-    nothing. Writing the import too is what makes these cases the evasions they
-    claim to be rather than typos the gate would also refuse.
+    The field is appended after the record's own fields, because a field carrying
+    a default in front of them is a dataclass error and would end the run before
+    the rule under test is ever reached. Writing the import too is what makes
+    these cases the evasions they claim to be rather than typos.
     """
     context = project / "src/atelier2/api/context.py"
     source = context.read_text(encoding="utf-8")
@@ -266,8 +266,9 @@ def replace_use_case_field(project: Path, field: str, imported: str = "") -> Non
             1,
         )
     body_start = source.index(marker) + len(marker)
+    body_end = source.index("\n\n\n", body_start)
     context.write_text(
-        source[:body_start] + f"    {field}\n" + source[body_start:],
+        source[:body_end] + f"\n    {field}" + source[body_end:],
         encoding="utf-8",
     )
 
@@ -361,7 +362,7 @@ def test_a_translated_route_module_that_reaches_a_port_again_fails(
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "health.py reaches a port" in result.stderr
+    assert "health.py: leak reaches a port" in result.stderr
 
 
 @pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
@@ -372,4 +373,92 @@ def test_a_stale_entry_in_the_untranslated_route_list_fails(tmp_path: Path) -> N
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "reaches no port any more" in result.stderr
+    assert "event_stream_route reaches no port any more" in result.stderr
+
+
+ALIAS_IMPORT = (
+    "from atelier2.ports.run_queries import RunQueries\nPortAlias = RunQueries"
+)
+REEXPORT_MODULE = "src/atelier2/application/port_reexport.py"
+REEXPORT_IMPORT = "from atelier2.application.port_reexport import RunPage"
+
+
+def add_port_reexport_module(project: Path) -> None:
+    """A module of the application layer that re-exports a durable port verbatim.
+
+    Every layer contract stays green: `application` may read `ports`, and `api`
+    may read `application`. The re-exported name is deliberately one `context.py`
+    does not import itself, so this case cannot pass for the older rule's reason —
+    only a check that resolves what the field really names can see the port.
+    """
+    (project / REEXPORT_MODULE).write_text(
+        "from atelier2.ports.run_queries import RunPage as RunPage\n",
+        encoding="utf-8",
+    )
+
+
+def reach_a_port_from_a_read_of_an_allowlisted_module(project: Path) -> None:
+    """Hand the port back inside a read of a module allowlisted for another call.
+
+    Behaviour-preserving and type-correct: the composition lambda and this call
+    take the same arguments. `events` legitimately keeps a port for its stream, so
+    a check that records one boolean per module cannot see that this *read* stopped
+    going through its use-case.
+    """
+    events = project / "src/atelier2/api/routes/events.py"
+    source = events.read_text(encoding="utf-8")
+    replaced = source.replace(
+        "        lambda: context.use_cases.prepare_run_events(run_id, after_sequence),",
+        "        lambda: prepare_run_events(\n"
+        "            run_id, after_sequence, context.ports.run_event_queries\n"
+        "        ),",
+    )
+    assert replaced != source
+    events.write_text(
+        replaced.replace(
+            "from atelier2.application.prepare_run_events import (",
+            "from atelier2.application.prepare_run_events import (\n    prepare_run_events,",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
+def test_a_use_case_field_behind_a_local_alias_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    replace_use_case_field(
+        project, "leaked_port: PortAlias | None = None", ALIAS_IMPORT
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "a route can still reach a port" in result.stderr
+
+
+@pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
+def test_a_use_case_field_behind_a_re_export_of_another_layer_fails(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    add_port_reexport_module(project)
+    replace_use_case_field(project, "leaked: RunPage | None = None", REEXPORT_IMPORT)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "a route can still reach a port" in result.stderr
+
+
+@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+def test_a_read_that_reaches_a_port_inside_an_allowlisted_module_fails(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    reach_a_port_from_a_read_of_an_allowlisted_module(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "prepare_events" in result.stderr
