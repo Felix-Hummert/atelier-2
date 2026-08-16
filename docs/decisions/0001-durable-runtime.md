@@ -179,9 +179,13 @@ bytes so a later review can identify documentation drift.
 Production crash tests replace the H0 effect, unknown, C1, C2, C3, and
 concurrency simulations, so the exploratory probe is no longer retained.
 
-A preserving version hop that does not change product tables exists so a later
-non-preserving cutover has a frozen predecessor. Do not add another such hop
-while the store remains a replaceable prototype.
+Until a named maturity, the product does not promise store compatibility.
+[#16 comment 5307892458](https://github.com/FlexOr2/atelier-2/issues/16#issuecomment-5307892458)
+rules that preserving hops, compatibility layers, and keeping old store shapes
+openable are unnecessary while the store is a prototype. The V8→V9 hop exists
+only because #16 Phase 2 already owed #63 a frozen predecessor. #63 replaces
+the store; it does not preserve V9 rows. Do not add another preserving schema
+hop or dual-read of an old shape.
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the

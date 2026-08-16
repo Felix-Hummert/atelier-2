@@ -344,4 +344,6 @@ without a partial upgrade; there is no runtime downgrade. #63 consumes the
 published handoff object `PRODUCT_SCHEMA_HANDOFF` — version 9, product-schema
 fingerprint
 `6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38`, identical to
-V8 — and must not reopen a populated V9 store as a later catalog cutover.
+V8 — and must not reopen a populated V9 store as a later catalog cutover. Until
+a named maturity there is no compatibility promise: later store work replaces
+the prototype instead of carrying old shapes.
