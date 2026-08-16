@@ -1,0 +1,40 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/88"
+
+# This head takes four of the eight lines the audit cut for #88. The other four
+# are named here rather than quietly folded in, because a vocabulary item that
+# reports itself finished while half its list stands is the drift it exists to
+# remove:
+#
+#   - Hygiene-4, the page limit travelling as a bare int through routes and the
+#     stream. It is the D2 shape (a bound the reader should hold), and D2 was a
+#     head of its own for the same reason: the parameter has to die at every call
+#     site at once. It does not fit beside four unrelated lines.
+#   - H7 beyond what is already pinned. The suite next door already proves every
+#     schema CHECK equals the vocabulary its contract owns; what is left is the
+#     handful of columns with no Python owner at all (`runs.workflow_format_version`
+#     among them), and minting those owners is a contract decision, not a
+#     hygiene edit.
+#   - M5, the control-frame strings. Measured and found OUTSIDE the manager fence
+#     (#15 declares `systemd_agent_processes.py` and `bounded_processes.py`; the
+#     frames live in `agent_process_watchdog.py` and `agent_processes.py`), so it
+#     is buildable — it is deferred for size, not for ownership, and the unlanded
+#     manager module is the reason to give the enum an owner before a third
+#     speaker copies the strings again.
+#   - The cancel-token proof over query and SSE. Test-only, and it wants the
+#     live-stream harness rather than the projection seam this head worked in.
+#
+# What the two sentences below share is the shape of the defect: a number or a
+# name written twice, agreeing today, with nothing red on the day they stop.
+
+[[sentence]]
+id = "a-persisted-bound-is-written-once-and-derived-everywhere"
+text = "A bound the product persists or admits at its edge is written once at the contract that owns it and derived everywhere else, so no schema check and no host constant can keep an old bound after the owner moves; a bound the schema may still spell for itself is named with the reason it has no owner."
+
+[[sentence]]
+id = "a-durable-id-keeps-the-exact-form-it-was-minted-in"
+text = "Every durable workflow and effect identity is pinned as a whole literal string rather than as its prefix, so a changed digest, separator or encoding turns identical work into a second identity loudly instead of silently."
+
+[[sentence]]
+id = "the-v1-event-vocabulary-is-spelled-once-and-refuses-by-name"
+text = "The set of event kinds a V1 run cannot carry has one owner that both the published schema and the projection read, so every unpublished kind is refused by name instead of leaving the closed union through a fall-through assertion."
