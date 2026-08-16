@@ -1,7 +1,10 @@
 # ADR 0007: Named lineages own catalog identity above hash-true revisions
 
-- Status: PROPOSED — round 5, rebased onto `main` `f9ff73c` and answering the Codex
-  REVISE of 2026-08-15; not accepted, not implemented
+- Status: ACCEPTED 2026-08-16 — acceptance authority: operator ruling
+  [#63](https://github.com/FlexOr2/atelier-2/issues/63#issuecomment-5307533025), clarified
+  by [the prototype-store ruling](https://github.com/FlexOr2/atelier-2/issues/63#issuecomment-5307545004):
+  build and isolated proof are authorized, the proven prototype store may replace its
+  predecessor, and unattended arming remains gated; document only, not implemented
 - Date: 2026-08-15
 - Depends on: [ADR 0001](0001-durable-runtime.md),
   [ADR 0002](0002-exact-yaml-graph.md), [ADR 0006](0006-node-vocabulary.md)
@@ -116,17 +119,12 @@ catalog has no rule saying where either lives, so a picker showing "name and des
 has nothing to read them from, and nothing says which label an already-terminated run is
 listed under after its lineage is renamed. Decisions 1, 2 and 4 close all three.
 
-## ADR 0006 amendment A1, required for acceptance
+## ADR 0006 amendment A1, accepted with this record
 
 ADR 0006's normative reference form already writes an **id** in the `ref` position and
-defers naming to #22, so `ref` = lineage id contradicts nothing it decided. Its examples,
-however, spell readable tokens (`review_verdict`, `review_panel`) there, which reads as a
-display name. One line is added beside its "this record only the reference form" sentence,
-and this record is not accepted before it lands:
-
-> `ref` is the stable derived lineage id of ADR 0007. The readable tokens in this
-> record's examples are illustrative lineage ids, never display names; a display
-> name never appears in document bytes.
+defers naming to #22, so `ref` = lineage id contradicts nothing it decided. The accepted
+amendment now lives beside its "this record only the reference form" sentence; this
+record points there instead of maintaining a second copy.
 
 ## Decision
 
@@ -737,7 +735,7 @@ revision's bytes carry neither field, so its picker row shows a name and an empt
 description until someone authors the content forward. Nothing is hidden, and nothing is
 invented to fill the row.
 
-## Required proofs before acceptance
+## Required proofs for implementation
 
 - Literal vectors over `atelier2.contracts.hashing.frame` pin the lineage id, the
   measurement id and the export manifest hash; the same founding revision in two

@@ -219,9 +219,9 @@ the registries are ports a caller supplies,
 because no durable registry shape and no publication command for one exists yet;
 resolution is lineage-free and a reference's `ref` is carried into that snapshot
 without proving membership, because named lineages, admitted membership and name
-resolution belong to the proposed catalog-identity record, which is not accepted and
-whose `resolve_reference` this port gains when it is; there is no capability attestation
-and no V3 record shape in the store, and no runtime executes a child.
+resolution belong to the accepted but unimplemented catalog-identity record, whose
+`resolve_reference` this port gains only when it is implemented; there is no capability
+attestation and no V3 record shape in the store, and no runtime executes a child.
 
 A valid V3 document is publishable long before it is executable: it
 becomes an immutable revision under the same exact-bytes hash identity as V1 and V2,
@@ -249,9 +249,9 @@ to. This is the authoring format alone: nothing enforces a tool declaration yet,
 no serving surface publishes a definition yet, and today's configuration revision
 carries no field for a name, description, tool declaration, or system prompt, so
 the published revision alone cannot reconstruct the definition it came from.
-Where an authored definition durably lives is the open catalog-identity
-decision; until it is made, the round trip holds over the definition's own
-canonical bytes and not over the catalog.
+Where an authored definition durably lives is decided by the accepted but
+unimplemented catalog-identity record; until it is implemented, the round trip
+holds over the definition's own canonical bytes and not over the catalog.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically
