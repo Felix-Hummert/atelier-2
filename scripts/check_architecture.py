@@ -45,8 +45,8 @@ ROUTE_CALLS_STILL_HOLDING_PORTS = {
 """Every port a route still reaches, named down to the single access.
 
 The unit of the exception is the unit of the work, and the work is one access at a
-time. A module is not translated at once — `events` keeps the stream's port until
-its own head lands — and neither is a call: an allowlisted call that grows a
+time. A module is not translated at once, and neither is a call: an allowlisted
+call that grows a
 *second* port read has taken back a decision it had already given up. So the
 declaration names which ports each call reaches, and the check compares the whole
 list rather than asking whether the call reaches one at all.
