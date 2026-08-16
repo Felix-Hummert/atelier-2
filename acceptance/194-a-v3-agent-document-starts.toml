@@ -53,7 +53,7 @@ text = "A V3 agent node is admitted by the durable attempt store under the same 
 
 [[sentence]]
 id = "a-completed-v3-attempt-reaches-the-runs-terminal-hash"
-text = "A V3 agent attempt that succeeds records the provider's receipt and carries its own run to COMPLETED with a terminal hash, exactly as a V2 attempt does."
+text = "A V3 agent attempt that succeeds records the provider's receipt and carries its own run to COMPLETED with a terminal hash, exactly as a V2 attempt does; a V3 node that is not its run's sink is refused by name instead of advanced, because choosing what runs next is the ready set's decision and not this one's."
 
 # OPEN, AND NAMED RATHER THAN NARROWED. The `node-receipt/v3` link from that
 # provider receipt into the event chain -- `NodeReceipt.agent_receipt_hash` and
