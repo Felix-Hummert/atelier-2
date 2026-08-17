@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -12,6 +12,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+if TYPE_CHECKING:
+    from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 
 NonemptyString = Annotated[str, StringConstraints(min_length=1)]
 
@@ -317,9 +320,24 @@ class RunCompletes:
 type NodeCompletion = RunContinues | RunCompletes
 
 
-def completion_after_node(graph: AnyWorkflowGraph, node_id: str) -> NodeCompletion:
-    """Decide continuation once, without inventing a successor for the sink."""
+def completion_after_node(graph: AnyWorkflowDocument, node_id: str) -> NodeCompletion:
+    """Decide continuation once, without inventing a successor for the sink.
 
+    One rule for every format: a sink completes the run, anything else hands on.
+    A V3 graph answers the sink half through its own `depends_on` edges, and has
+    no successor to hand to -- the one startable V3 shape is a single node, and
+    advancing beyond it is the ready set H2 and #86 own.
+    """
+    # V3's vocabulary is built on this module's, so `workflows_v3` imports here and
+    # never the other way at module scope; reading its sink rule needs this import.
+    from atelier2.contracts.workflows_v3 import WorkflowGraphV3, is_sink_node
+
+    if isinstance(graph, WorkflowGraphV3):
+        if is_sink_node(graph, node_id):
+            return RunCompletes()
+        raise ValueError(
+            f"V3 node {node_id!r} is not a sink, and no runtime advances past it yet"
+        )
     if graph.is_sink(node_id):
         return RunCompletes()
     return RunContinues(graph.successor(node_id).id)
