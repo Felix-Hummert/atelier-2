@@ -483,21 +483,33 @@ that cannot be talked out of is not built. Neither is the static capability
 attestation of a build -- declared, resolved, redeemed and proven is the whole of
 the claim.
 
-The canonical store is schema V15. A fresh store is created as exact V15 and
+Whoever recomputes a finished run's terminal hash now also proves under which
+binding it ran. The agent receipt already folded provider, auth mode, auth
+profile revision, model, executor revision, configuration revision and request
+hash into one value; that value is a named position in the `AGENT_COMPLETED`
+event's own preimage, so the fold from receipt fields through event hashes to the
+terminal hash misses under any other binding. Older events are untouched: the
+`node-event-hash/v3` domain is chosen by content, so a completion that carries no
+receipt binding keeps the hash it always had, and an event written before this
+version carries no binding rather than an invented one. What is still not proven
+is the request hash's own preimage: the job bytes it is taken over have no
+durable home, so a verifier copies that hash rather than recomputing it.
+
+The canonical store is schema V16. A fresh store is created as exact V16 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
 access bindings, and the immutable declared context packages, node-execution request
 preimages and run configuration snapshots those receipts name, and the immutable
-orders a run was started with, and the immutable proof of every redeemed tool
-grant. The catalog adapter founds a lineage
+orders a run was started with, the immutable proof of every redeemed tool
+grant, and the receipt hash an agent completion binds. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
 founding, unpublished member, wrong kind, or retired lineage is refused by
-name. Measurements and policy activations are not in this profile. V13 and V14
-remain published predecessor objects; exact V7 through V14 files are refused by
-runtime without mutation, with no runtime migration or downgrade. An offline
-`atelier2 migrate` command raises an exact V13 or V14 store to the current
+name. Measurements and policy activations are not in this profile. V13 through
+V15 remain published predecessor objects; exact V7 through V15 files are refused
+by runtime without mutation, with no runtime migration or downgrade. An offline
+`atelier2 migrate` command raises an exact V13, V14 or V15 store to the current
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.

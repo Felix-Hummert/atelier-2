@@ -560,6 +560,9 @@ def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
         None
         if record["replacement_attempt_id"] is None
         else str(record["replacement_attempt_id"]),
+        None
+        if record["agent_receipt_hash"] is None
+        else AgentReceiptHash(str(record["agent_receipt_hash"])),
     )
     if event.payload_hash.value != record["payload_hash"]:
         raise RunTransitionConflict("durable event payload hash disagrees")
@@ -578,6 +581,7 @@ def _existing_event(
     receipt_logical_key: LogicalEffectKey | None,
     receipt_result_hash: Sha256Hash | None,
     agent_attempt_id: AgentAttemptId | None = None,
+    agent_receipt_hash: AgentReceiptHash | None = None,
 ) -> TransitionSnapshot | None:
     record = (
         session.execute(
@@ -605,6 +609,7 @@ def _existing_event(
         or event.payload != payload
         or event.receipt_logical_key != receipt_logical_key
         or event.receipt_result_hash != receipt_result_hash
+        or event.agent_receipt_hash != agent_receipt_hash
     ):
         raise RunTransitionConflict("existing event differs from exact retry")
     current = load_run(session, run_id)
@@ -649,6 +654,11 @@ def _insert_event(session: Any, event: RunEvent) -> None:
             replacement=event.replacement,
             cancellation_disposition=event.cancellation_disposition,
             replacement_attempt_id=event.replacement_attempt_id,
+            agent_receipt_hash=(
+                None
+                if event.agent_receipt_hash is None
+                else event.agent_receipt_hash.value
+            ),
         )
     )
 
@@ -668,6 +678,7 @@ def _commit_event(
     terminal: bool = False,
     agent_attempt_id: AgentAttemptId | None = None,
     attempt_ordinal: int | None = None,
+    agent_receipt_hash: AgentReceiptHash | None = None,
 ) -> TransitionSnapshot:
     existing = _existing_event(
         session,
@@ -679,6 +690,7 @@ def _commit_event(
         receipt_logical_key,
         receipt_result_hash,
         agent_attempt_id,
+        agent_receipt_hash,
     )
     if existing is not None:
         return existing
@@ -714,6 +726,7 @@ def _commit_event(
         receipt_result_hash,
         None if agent_attempt_id is None else agent_attempt_id.value,
         attempt_ordinal,
+        agent_receipt_hash=agent_receipt_hash,
     )
     terminal_hash: Sha256Hash | None = None
     if terminal:

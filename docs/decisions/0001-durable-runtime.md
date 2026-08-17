@@ -30,16 +30,16 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V15 only in a truly empty canonical store and reopens
-only an exact V15 product schema. V9 through V14 remain published predecessor
-objects (`V9_SCHEMA_HANDOFF` through `V14_SCHEMA_HANDOFF`) and are not opened or
-migrated by runtime. An exact V13 or V14 store advances to the current schema
-only through the offline `atelier2 migrate` command, one published step at a
-time; older published predecessors stay refused by name. Older, future,
+The runtime creates schema V16 only in a truly empty canonical store and reopens
+only an exact V16 product schema. V9 through V15 remain published predecessor
+objects (`V9_SCHEMA_HANDOFF` through `V15_SCHEMA_HANDOFF`) and are not opened or
+migrated by runtime. An exact V13, V14 or V15 store advances to the current
+schema only through the offline `atelier2 migrate` command, one published step at
+a time; older published predecessors stay refused by name. Older, future,
 malformed, or nonempty unowned stores are rejected without mutation. There is no
-runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 15 with
+runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 16 with
 product-schema fingerprint
-`375e81d1c8967053951d1be0cab19cee274e35272f364feae15ec3413eb3c9b9`.
+`97605fb330cb6382d52a554d644015f631cccea3759c04c27de3ca5f1fea9c3a`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -157,6 +157,7 @@ provider contract.
 | V13 V3 record preimages | A fresh exact V13 store gives the declared context package (`context-package-declared/v3`, the half a document and its frozen configuration can produce today), the `node-execution-request/v3` preimage and the run configuration snapshot durable, immutable homes, and **every** format-3 run records the configuration revision it was started under. Both V3 starts bind that snapshot; the supervised writer persists all three records inside the same transaction as the run and its receipt, refuses a decided truth that names a record it does not carry, and shares an identical record between runs rather than conflicting on it. Foreign keys bind a run to its configuration, and a composite key binds a receipt to the request of its own node execution -- the pair, because each hash alone can name a record that exists while the two together describe an execution nobody ran -- so no row can name a record that does not exist, and an injected failure at any one of those writes leaves none of them. V12 remains unchanged and is refused without mutation. |
 | V14 run orders | A fresh exact V14 store gives the order a run was started with a durable, immutable home: name, the schema revision it satisfies and its exact bytes, keyed one order to one name per run, with update and delete refused by trigger. The start resolves the `graph_inputs` schema the document pinned, refuses a missing, undeclared, twice-supplied, wrongly-pinned or schema-violating order before any row exists, and a repeat of the same run id with a different order is an identity conflict rather than the run that already exists. V13 remains unchanged and is refused without mutation. |
 | V15 redeemed tool grants | A fresh exact V15 store gives one redeemed tool grant a durable, immutable home: the node execution and attempt that redeemed it, the published grant revision, the capability it granted, the exact command, its exit code and the hash of what it wrote, with update and delete refused by trigger. It is written inside the transaction that makes the attempt succeed, so a succeeded attempt and the proof of what its tool ran are durable together or not at all. V14 remains unchanged and is refused without mutation. |
+| V16 receipt in the chain | A fresh exact V16 store gives an `AGENT_COMPLETED` event the receipt hash its preimage binds: `node-event-hash/v3` is chosen by content whenever that field is set, so an event without a binding keeps its frozen V1 or V2 hash byte for byte. The store admits the field only on a completion, mirroring the contract's rule, and a finished run's terminal hash recomputes from presented receipt and event fields alone -- under any other provider, profile, model, executor revision or request hash it misses. V15 remains unchanged and is refused without mutation. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 | V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |
@@ -187,9 +188,13 @@ Until a named maturity, the product does not promise store compatibility.
 rules that preserving hops, compatibility layers, and keeping old store shapes
 openable are unnecessary while the store is a prototype. Runtime still refuses
 every predecessor. The offline migrate command is the one exception: an exact
-V13 or V14 store is raised to the current schema, preserving product rows,
-because every step is
-additive: `run_inputs_v3` was empty in V13, and `tool_redemptions` in V14.
+V13, V14 or V15 store is raised to the current schema, preserving product rows,
+because every step is additive: `run_inputs_v3` was empty in V13,
+`tool_redemptions` in V14, and V16's `run_events.agent_receipt_hash` is NULL for
+every event a V15 store wrote. That last step rebuilds `run_events` rather than
+appending a column, because SQLite can only append behind a table's constraints
+while the shape a store is checked against is the one the declaration renders;
+every predecessor row is copied verbatim into the rebuilt table.
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the

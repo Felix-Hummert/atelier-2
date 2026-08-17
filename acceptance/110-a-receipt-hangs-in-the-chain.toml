@@ -1,0 +1,32 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/110"
+
+# WHAT THE TERMINAL HASH PROVED BEFORE THIS HEAD, AND WHAT IT PROVES NOW.
+#
+# `terminal_hash_for` folds event hashes, and an `AGENT_COMPLETED` event's
+# preimage covered its payload -- the provider's output bytes. So a recomputed
+# terminal hash proved the ordered answers of a run and nothing about the
+# provider, auth profile, model, executor revision or configuration that
+# produced them. `AgentReceiptV2.hash_for` had already folded every one of those
+# dimensions into a single value; that value simply had no position in the
+# chain. It has one now.
+#
+# WHAT THIS HEAD DOES NOT CLAIM:
+#
+#   - NOT THE REQUEST HASH'S OWN PREIMAGE. `request_hash` is taken over
+#     `job_bytes`, and no column holds them. A verifier copies that hash from
+#     the presented receipt; it cannot recompute it. That is #63's subject and
+#     stays unproven here, so no document may say more.
+#   - NO EXPORT. Handing a verifier the receipt and event fields out of band is
+#     #104's dossier, not this head. What is proven here is that such a fold
+#     exists and that it misses under a tampered binding.
+#   - NO WIRE CHANGE. The event payload is untouched, so what a run answers with
+#     over HTTP is exactly what it answered with before.
+
+[[sentence]]
+id = "a-terminal-hash-proves-the-binding-its-run-worked-under"
+text = "A finished run's terminal hash recomputes from the presented receipt and event fields alone -- the receipt hash folded out of the receipt's own binding dimensions, the event hashes folded out of the events -- and the same fold misses that terminal hash when it is handed a receipt whose binding differs by one field."
+
+[[sentence]]
+id = "an-agent-completion-without-a-receipt-binding-keeps-its-hash"
+text = "An AGENT_COMPLETED event that carries no receipt binding hashes to exactly the value it hashed to before the binding existed, because the hash domain is chosen by the content of the event rather than by a stored version marker."

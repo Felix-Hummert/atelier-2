@@ -10,7 +10,7 @@ from pathlib import Path
 import sqlalchemy as sa
 from sqlalchemy.dialects import sqlite as sqlite_dialect
 from sqlalchemy.engine import Engine
-from sqlalchemy.schema import CreateTable
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -26,13 +26,14 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
 _VERSION_TWELVE = 12
 _VERSION_THIRTEEN = 13
 _VERSION_FOURTEEN = 14
+_VERSION_FIFTEEN = 15
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -45,7 +46,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # order a run was started with a durable, immutable home, so one published
 # revision serves every order instead of one revision per distinct input. V15
 # adds the immutable evidence of one redeemed tool grant: which command the
-# attempt ran, how it ended, and what it wrote.
+# attempt ran, how it ended, and what it wrote. V16 gives an agent completion a
+# home for the receipt hash its event preimage now binds, so a recomputed
+# terminal hash proves under which binding the attempt ran.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -56,6 +59,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     13: "5782fdc1331c52f3f04097f6a2a6d416ab528d6ee8a6546a7d6435ae9d11c175",
     14: "6cf56491322e716fce9be2310584ed2b92533961b8fda341bfcc317182432f0a",
     15: "375e81d1c8967053951d1be0cab19cee274e35272f364feae15ec3413eb3c9b9",
+    16: "97605fb330cb6382d52a554d644015f631cccea3759c04c27de3ca5f1fea9c3a",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -80,6 +84,10 @@ V13_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V14_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_FOURTEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FOURTEEN],
+)
+V15_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FIFTEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FIFTEEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -791,6 +799,7 @@ run_events = sa.Table(
     sa.Column("replacement", sa.Text, nullable=True),
     sa.Column("cancellation_disposition", sa.Text, nullable=True),
     sa.Column("replacement_attempt_id", sa.Text, nullable=True),
+    sa.Column("agent_receipt_hash", sa.Text, nullable=True),
     sa.PrimaryKeyConstraint("run_id", "event_sequence"),
     sa.ForeignKeyConstraint(
         ("run_id", "revision_hash"), ("runs.run_id", "runs.revision_hash")
@@ -855,6 +864,15 @@ run_events = sa.Table(
         f"AND length(cancellation_command_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS} "
         "AND replacement IN ('NONE', 'ONE') "
         "AND cancellation_disposition IS NOT NULL)))"
+    ),
+    # The mirror of the contract's admission rule (contracts/executions.py):
+    # only a completion has an agent receipt, and it stays nullable because a
+    # run written before v3 of the event hash carries none.
+    sa.CheckConstraint(
+        "(event_kind = 'AGENT_COMPLETED' AND (agent_receipt_hash IS NULL "
+        "OR (length(agent_receipt_hash) = 64 "
+        "AND agent_receipt_hash NOT GLOB '*[^0-9a-f]*'))) "
+        "OR (event_kind <> 'AGENT_COMPLETED' AND agent_receipt_hash IS NULL)"
     ),
 )
 sa.Index(
@@ -1850,7 +1868,7 @@ def _table_fingerprint(
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, _VERSION_FIFTEEN}:
         return PRODUCT_TABLE_NAMES
     if version == _VERSION_FOURTEEN:
         return PRODUCT_TABLE_NAMES - {tool_redemptions.name}
@@ -2039,14 +2057,28 @@ def _is_sqlite_lock(error: BaseException) -> bool:
     return "locked" in text or "busy" in text
 
 
+def _raise_declared_version(
+    connection: sqlite3.Connection, source: int, target: int
+) -> None:
+    changed = connection.execute(
+        f"UPDATE {atelier_schema_versions.name} SET version = ? WHERE version = ?",
+        (target, source),
+    ).rowcount
+    if changed != 1:
+        raise StoreMigrationRefused(
+            f"schema version CAS {source} -> {target} changed nothing; "
+            "this command will not alter it"
+        )
+
+
 def _added_table_step(
     table: sa.Table, triggers: tuple[str, ...], source: int, target: int
 ) -> Callable[[sqlite3.Connection], None]:
     """One additive hop: a table this version introduces, its triggers, the CAS.
 
-    Every published step so far adds exactly one immutable table, so the hop is
-    written once rather than copied per version; what differs between two of
-    them is only the table, its triggers, and the two version numbers.
+    Two published steps add exactly one immutable table, so the hop is written
+    once rather than copied per version; what differs between them is only the
+    table, its triggers, and the two version numbers.
     """
 
     def apply(connection: sqlite3.Connection) -> None:
@@ -2064,17 +2096,66 @@ def _added_table_step(
         )
         for trigger in triggers:
             connection.execute(_PRODUCT_TRIGGERS[trigger])
-        changed = connection.execute(
-            f"UPDATE {atelier_schema_versions.name} SET version = ? WHERE version = ?",
-            (target, source),
-        ).rowcount
-        if changed != 1:
-            raise StoreMigrationRefused(
-                f"schema version CAS {source} -> {target} changed nothing; "
-                "this command will not alter it"
-            )
+        _raise_declared_version(connection, source, target)
 
     return apply
+
+
+_RUN_EVENTS_TRIGGERS = ("run_events_no_update", "run_events_no_delete")
+_PREDECESSOR_RUN_EVENTS = "run_events_before_the_receipt_column"
+
+
+def _apply_v15_to_v16(connection: sqlite3.Connection) -> None:
+    """Give an event the column v3 of its hash binds, and keep every stored row.
+
+    SQLite can only append a column behind a table's constraints, while the
+    shape this store is checked against is the one the table declaration
+    renders, so the hop rebuilds `run_events` in the published order and copies
+    each predecessor row verbatim. Nothing already written is reinterpreted: an
+    event from before this version carries NULL, which is what "this attempt
+    recorded no receipt binding" means, and never an invented hash.
+    """
+
+    # The rebuild parks the predecessor under this name, and the fingerprint
+    # this store was checked against says nothing about objects outside the
+    # product schema. Any object holding the name is therefore refused before
+    # the first statement, so the collision is named rather than raised.
+    if connection.execute(
+        "SELECT name FROM sqlite_master WHERE name=?",
+        (_PREDECESSOR_RUN_EVENTS,),
+    ).fetchone():
+        raise StoreMigrationRefused(
+            f"schema version {_VERSION_FIFTEEN} already has "
+            f"{_PREDECESSOR_RUN_EVENTS}; this command will not alter it"
+        )
+    indexes = sorted(run_events.indexes, key=lambda index: index.name or "")
+    carried = ", ".join(
+        column.name
+        for column in run_events.columns
+        if column.name != run_events.c.agent_receipt_hash.name
+    )
+    for trigger in _RUN_EVENTS_TRIGGERS:
+        connection.execute(f"DROP TRIGGER {trigger}")
+    for index in indexes:
+        connection.execute(f"DROP INDEX {index.name}")
+    connection.execute(
+        f"ALTER TABLE {run_events.name} RENAME TO {_PREDECESSOR_RUN_EVENTS}"
+    )
+    connection.execute(
+        str(CreateTable(run_events).compile(dialect=sqlite_dialect.dialect()))
+    )
+    connection.execute(
+        f"INSERT INTO {run_events.name} ({carried}) "
+        f"SELECT {carried} FROM {_PREDECESSOR_RUN_EVENTS}"
+    )
+    connection.execute(f"DROP TABLE {_PREDECESSOR_RUN_EVENTS}")
+    for index in indexes:
+        connection.execute(
+            str(CreateIndex(index).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger in _RUN_EVENTS_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+    _raise_declared_version(connection, _VERSION_FIFTEEN, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2097,14 +2178,15 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     ),
     _SchemaMigrationStep(
         _VERSION_FOURTEEN,
-        SCHEMA_VERSION,
+        _VERSION_FIFTEEN,
         _added_table_step(
             tool_redemptions,
             ("tool_redemptions_no_update", "tool_redemptions_no_delete"),
             _VERSION_FOURTEEN,
-            SCHEMA_VERSION,
+            _VERSION_FIFTEEN,
         ),
     ),
+    _SchemaMigrationStep(_VERSION_FIFTEEN, SCHEMA_VERSION, _apply_v15_to_v16),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
