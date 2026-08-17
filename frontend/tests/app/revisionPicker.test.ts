@@ -70,13 +70,15 @@ function namedGraph() {
         id: "implement",
         kind: "agent" as const,
         role: "builder",
-        instruction_start: "Implement every acceptance sentence of the bound story."
+        instruction_start: "Implement every acceptance sentence of the bound story.",
+        depends_on: []
       },
       {
         id: "review",
         kind: "agent" as const,
         role: "reviewer",
-        instruction_start: "Name every defect with the sentence it violates."
+        instruction_start: "Name every defect with the sentence it violates.",
+        depends_on: ["implement"]
       }
     ],
     name: "Implement a candidate, then review it for defects",
@@ -199,7 +201,7 @@ describe("the saved-workflow picker", () => {
     });
     expect(details?.textContent).toContain("reviewer");
     expect(details?.textContent).toContain(reviewStart);
-    expect(details?.querySelectorAll(".revision-nodes li")).toHaveLength(graph.node_previews.length);
+    expect(details?.querySelectorAll("[data-node-id]")).toHaveLength(graph.node_previews.length);
     expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_INSTRUCTION");
   });
 
@@ -214,7 +216,8 @@ describe("the saved-workflow picker", () => {
           id: "approve",
           kind: "wait" as const,
           role: null,
-          instruction_start: null
+          instruction_start: null,
+          depends_on: []
         }
       ]
     };
@@ -251,10 +254,10 @@ describe("the saved-workflow picker", () => {
 
     const details = screen.getByText("Details").closest("details");
     await waitFor(() => {
-      expect(details?.querySelectorAll(".revision-nodes li")).toHaveLength(1);
+      expect(details?.querySelectorAll("[data-node-id]")).toHaveLength(1);
     });
     expect(details?.textContent).toMatch(/wait/i);
-    expect(details?.querySelector(".revision-node-instruction")).toBeNull();
+    expect(details?.querySelector(".node-instruction")).toBeNull();
     expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_PROMPT");
   });
 

@@ -89,7 +89,8 @@ describe("the served vocabulary", () => {
         id: "implement",
         kind: "agent",
         role: "builder",
-        instruction_start: "ä".repeat(maxLength ?? 0)
+        instruction_start: "ä".repeat(maxLength ?? 0),
+        depends_on: []
       }).instruction_start
     ).toHaveLength(maxLength ?? 0);
     expect(() =>
@@ -97,7 +98,8 @@ describe("the served vocabulary", () => {
         id: "implement",
         kind: "agent",
         role: "builder",
-        instruction_start: "ä".repeat((maxLength ?? 0) + 1)
+        instruction_start: "ä".repeat((maxLength ?? 0) + 1),
+        depends_on: []
       })
     ).toThrow();
   });
@@ -125,7 +127,8 @@ describe("the served vocabulary", () => {
             id: "cook",
             kind: "agent" as const,
             role: "cook",
-            instruction_start: "Cook exactly what the order says."
+            instruction_start: "Cook exactly what the order says.",
+            depends_on: []
           }
         ],
         name: "Cook to order",
@@ -135,6 +138,11 @@ describe("the served vocabulary", () => {
 
     expect(Object.keys(sample.graph).sort()).toEqual(
       Object.keys(served?.properties ?? {}).sort()
+    );
+    expect(Object.keys(workflowNodePreviewSchema.shape).sort()).toEqual(
+      Object.keys(
+        servedDocument.components.schemas.WorkflowNodePreviewResourceV3?.properties ?? {}
+      ).sort()
     );
     expect(Object.keys(workflowDeclaredOrderSchema.shape).sort()).toEqual(
       Object.keys(

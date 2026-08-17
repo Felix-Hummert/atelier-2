@@ -324,46 +324,6 @@ small {
   color: var(--muted);
 }
 
-.revision-nodes {
-  list-style: none;
-  margin: 0 0 0.5rem;
-  padding: 0;
-  display: grid;
-  gap: 0.45rem;
-}
-
-.revision-node {
-  display: grid;
-  grid-template-columns: 1.25rem 1fr;
-  gap: 0.4rem;
-  align-items: start;
-  border-left: 3px solid var(--line);
-  padding: 0.15rem 0 0.15rem 0.5rem;
-}
-
-.revision-node-mark {
-  color: var(--muted);
-  font-size: 0.85rem;
-  line-height: 1.4;
-}
-
-.revision-node .node-kind {
-  margin-right: 0.4rem;
-}
-
-.revision-node-role {
-  margin-left: 0.35rem;
-  color: var(--muted);
-}
-
-.revision-node-instruction {
-  margin: 0.15rem 0 0;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .mode-picker legend {
   grid-column: 1 / -1;
   margin-bottom: 0.25rem;

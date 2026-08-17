@@ -146,11 +146,13 @@ class WorkflowNodePreviewResourceV3(ApiModel):
     """One node of a published V3 revision, as an excerpt, never as the node.
 
     Full nodes would republish instruction, inputs, outputs, tools, and the rest.
-    This resource answers only what a picker has to show: which node, which kind,
-    which role, and a bounded start of the instruction. A node that declares no
-    role or no instruction answers those fields empty -- the node's own answer,
-    not a named refusal and not a stand-in invented to fill the column. A wait
-    prompt is not an instruction and is not projected here.
+    This resource answers only what a picker or a graph has to show: which node,
+    which kind, which role, a bounded start of the instruction, and the control
+    edges the author wrote. A node that declares no role or no instruction
+    answers those fields empty -- the node's own answer, not a named refusal and
+    not a stand-in invented to fill the column. A wait prompt is not an
+    instruction and is not projected here. An entry node answers `depends_on`
+    empty -- that absence is the authored edge set, not a missing column.
     """
 
     id: str = Field(min_length=1)
@@ -159,6 +161,7 @@ class WorkflowNodePreviewResourceV3(ApiModel):
     instruction_start: str | None = Field(
         min_length=1, max_length=MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS
     )
+    depends_on: tuple[str, ...]
 
     @model_validator(mode="after")
     def validate_preview_shape(self) -> WorkflowNodePreviewResourceV3:
@@ -262,6 +265,13 @@ class WorkflowGraphResourceV3(ApiModel):
         names = tuple(order.name for order in self.orders)
         if len(set(names)) != len(names):
             raise ValueError("each declared order has one name")
+        preview_ids = {node.id for node in self.node_previews}
+        if any(
+            dependency not in preview_ids
+            for node in self.node_previews
+            for dependency in node.depends_on
+        ):
+            raise ValueError("every depends_on names a published preview")
         return self
 
 

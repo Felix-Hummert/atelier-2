@@ -103,18 +103,19 @@ const workflowGraphV2Schema = z
 /**
  * A published V3 revision says what it is and whether this build runs it.
  *
- * `node_previews` is an excerpt — id, kind, role, instruction start — not
- * the authored node. The browser must not parse `document_base64` to learn
- * the same facts. `orders` is the same class of answer for the material a
- * start must supply: name plus the schema the author pinned, never the
- * schema bytes.
+ * `node_previews` is an excerpt — id, kind, role, instruction start, and the
+ * authored `depends_on` edges — not the authored node. The browser must not
+ * parse `document_base64` to learn the same facts. `orders` is the same class
+ * of answer for the material a start must supply: name plus the schema the
+ * author pinned, never the schema bytes.
  */
 const workflowNodePreviewSchema = z
   .object({
     id: z.string().min(1),
     kind: z.enum(["agent", "deterministic", "wait", "subworkflow", "action"]),
     role: z.string().min(1).max(1_024).nullable(),
-    instruction_start: z.string().min(1).max(120).nullable()
+    instruction_start: z.string().min(1).max(120).nullable(),
+    depends_on: z.array(z.string().min(1))
   })
   .strict();
 
