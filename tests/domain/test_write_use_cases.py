@@ -42,6 +42,13 @@ from atelier2.application.publish_agent_configurations import (
     publish_agent_configuration_revision,
     publish_auth_profile_revision,
 )
+from atelier2.application.publish_schema_revision import (
+    SchemaPublicationCollision,
+    SchemaPublicationCreated,
+    SchemaPublicationExisting,
+    SchemaPublicationInvalid,
+    publish_schema_revision,
+)
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
@@ -126,6 +133,11 @@ from atelier2.ports.durable_runs import (
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCollision,
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
 
 REVISION_HASH = WorkflowRevisionHash("a" * 64)
 RUN_ID = RunId("run")
@@ -151,6 +163,12 @@ class ScriptedCatalog:
 
     def publish_agent_configuration_revision(self, revision: Any) -> Any:
         return self._record(revision)
+
+    def publish_revision(self, revision: Any) -> Any:
+        return self._record(revision)
+
+    def resolve(self, kind: Any, revision_hash: Any) -> Any:
+        raise AssertionError("a publication under test resolved a revision")
 
     def auth_profile_revision(self, revision_hash: Any) -> Any:
         raise AssertionError("a publication under test read the catalog back")
@@ -187,6 +205,13 @@ def publish_configuration(catalog: ScriptedCatalog) -> object:
     )
 
 
+VALID_SCHEMA = b'{"type": "object"}'
+
+
+def publish_schema(catalog: ScriptedCatalog) -> object:
+    return publish_schema_revision(VALID_SCHEMA, catalog)
+
+
 PUBLICATIONS: list[
     tuple[str, Callable[[ScriptedCatalog], object], list[tuple[Any, Any]]]
 ] = [
@@ -216,6 +241,16 @@ PUBLICATIONS: list[
             (PortProfileMissing(), AuthProfileRevisionNotFound()),
             (PortExecutorBindingUnavailable(), AgentExecutorBindingUnavailable()),
             (PortConfigurationCollision(), AgentConfigurationRevisionCollision()),
+            *WRITE_REFUSALS,
+        ],
+    ),
+    (
+        "schema",
+        publish_schema,
+        [
+            (PublishedRevisionCreated(STORED), SchemaPublicationCreated(STORED)),
+            (PublishedRevisionExisting(STORED), SchemaPublicationExisting(STORED)),
+            (PublishedRevisionCollision(), SchemaPublicationCollision()),
             *WRITE_REFUSALS,
         ],
     ),
@@ -262,6 +297,15 @@ def test_authored_values_that_make_no_revision_refuse_before_the_catalog_is_aske
     assert isinstance(
         result, (UnpublishableAuthProfile, UnpublishableAgentConfiguration)
     )
+    assert catalog.published == []
+
+
+def test_a_document_that_is_not_a_schema_refuses_before_the_catalog_is_asked() -> None:
+    catalog = ScriptedCatalog(PublishedRevisionCreated(STORED))
+
+    result = publish_schema_revision(b"Guten Morgen", catalog)
+
+    assert isinstance(result, SchemaPublicationInvalid)
     assert catalog.published == []
 
 

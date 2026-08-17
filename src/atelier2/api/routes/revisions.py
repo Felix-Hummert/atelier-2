@@ -10,6 +10,7 @@ from atelier2.api._support import (
     parse_limit,
     parse_revision_view,
     require_media_type,
+    require_one_of_media_types,
     resource_response,
     run_control_query,
 )
@@ -30,6 +31,7 @@ from atelier2.api.wire.resources import (
     AnyWorkflowRevisionPageResource,
     CatalogAdmissionResource,
     CatalogNameResolutionResource,
+    SchemaRevisionResource,
     VersionedWorkflowRevisionPageResource,
     WorkflowRevisionDetailResource,
     WorkflowRevisionPageResource,
@@ -40,6 +42,12 @@ from atelier2.application.admit_catalog_member import (
     CatalogDisplayNameInvalid,
     CatalogExplicitNameRequired,
     CatalogRevisionUnpublished,
+)
+from atelier2.application.publish_schema_revision import (
+    SchemaPublicationCollision,
+    SchemaPublicationCreated,
+    SchemaPublicationExisting,
+    SchemaPublicationInvalid,
 )
 from atelier2.application.publish_workflow_revision import (
     PublicationCollision,
@@ -88,6 +96,41 @@ from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowRefusal
 
 router = APIRouter()
+
+
+@router.post(
+    API_PREFIX + "/schema-revisions",
+    response_model=SchemaRevisionResource,
+    status_code=HTTPStatus.CREATED,
+    responses={HTTPStatus.OK: {"model": SchemaRevisionResource}},
+)
+async def publish_schema_revision(
+    request: Request, context: ApiContext = api_context_dependency
+) -> JSONResponse:
+    require_one_of_media_types(request, "application/json", "application/yaml")
+    document = await request.body()
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.publish_schema_revision(document),
+    )
+    match result:
+        case SchemaPublicationCreated(revision):
+            status = HTTPStatus.CREATED
+        case SchemaPublicationExisting(revision):
+            status = HTTPStatus.OK
+        case SchemaPublicationInvalid(refusal):
+            raise ApiProblem("invalid-schema-document", str(refusal))
+        case SchemaPublicationCollision():
+            raise ApiProblem("schema-revision-collision")
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return resource_response(
+        SchemaRevisionResource(revision_hash=revision.revision_hash.value), status
+    )
 
 
 @router.post(

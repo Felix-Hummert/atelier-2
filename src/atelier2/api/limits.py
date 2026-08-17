@@ -179,6 +179,7 @@ class RequestBodyLimitMiddleware:
         self._app = app
         self._maximum_body_bytes = maximum_body_bytes
         self._workflow_publication_path = api_prefix + "/workflow-revisions"
+        self._schema_publication_path = api_prefix + "/schema-revisions"
         self._start_run_path = api_prefix + "/runs"
         self._run_command_path = re.compile(
             re.escape(api_prefix) + r"/runs/[^/]+/(?:answers|reconciliations)"
@@ -240,6 +241,8 @@ class RequestBodyLimitMiddleware:
         path = scope["path"]
         if path == self._workflow_publication_path:
             return "invalid-workflow-document"
+        if path == self._schema_publication_path:
+            return "invalid-schema-document"
         if path == self._start_run_path or self._run_command_path.fullmatch(path):
             return "invalid-request"
         return None

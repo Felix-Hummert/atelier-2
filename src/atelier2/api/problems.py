@@ -139,6 +139,16 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Invalid workflow document",
         "Submit exact bytes for a safe closed workflow graph.",
     ),
+    "invalid-schema-document": ProblemDefinition(
+        422,
+        "Invalid schema document",
+        "Submit exact bytes for a schema this product enforces.",
+    ),
+    "schema-revision-collision": ProblemDefinition(
+        409,
+        "Schema revision collision",
+        "Stop and inspect durable schema revision integrity.",
+    ),
     "unsupported-media-type": ProblemDefinition(
         415,
         "Unsupported media type",

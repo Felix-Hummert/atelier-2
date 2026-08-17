@@ -154,6 +154,7 @@ def test_encoded_projection_limit_branches_are_explicit(
     ("path", "problem_code"),
     [
         (API_PREFIX + "/workflow-revisions", "invalid-workflow-document"),
+        (API_PREFIX + "/schema-revisions", "invalid-schema-document"),
         (API_PREFIX + "/runs", "invalid-request"),
     ],
 )

@@ -167,12 +167,16 @@ def parse_revision_view(value: str) -> RevisionListingView:
 
 
 def require_media_type(request: Request, expected: str) -> None:
+    require_one_of_media_types(request, expected)
+
+
+def require_one_of_media_types(request: Request, *expected: str) -> None:
     header = request.headers.get("content-type")
     if header is None:
         raise ApiProblem("unsupported-media-type")
     parts = [part.strip().lower() for part in header.split(";")]
     if (
-        parts[0] != expected
+        parts[0] not in expected
         or (len(parts) == 2 and parts[1] != "charset=utf-8")
         or len(parts) > 2
     ):

@@ -115,6 +115,14 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (API_PREFIX + "/schema-revisions", "post"): (
+        "invalid-schema-document",
+        "schema-revision-collision",
+        "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (API_PREFIX + "/workflow-revisions", "post"): (
         "invalid-workflow-document",
         "revision-collision",
@@ -289,6 +297,13 @@ def _install_publication_request_body(schema: dict[str, Any]) -> None:
         "required": True,
         "content": {
             "application/yaml": {"schema": {"type": "string", "format": "binary"}}
+        },
+    }
+    schema["paths"][API_PREFIX + "/schema-revisions"]["post"]["requestBody"] = {
+        "required": True,
+        "content": {
+            "application/json": {"schema": {"type": "string", "format": "binary"}},
+            "application/yaml": {"schema": {"type": "string", "format": "binary"}},
         },
     }
 

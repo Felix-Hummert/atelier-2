@@ -263,7 +263,10 @@ else: no route, no rendering and no stored shape carries it. Behind that, nothin
 the registries are ports a caller supplies. A durable catalog adapter now
 publishes exact revision bytes, founds a named lineage through a typed writer
 that derives the lineage id, and resolves an admitted name or lineage id to
-those bytes. A workflow already published through `POST /workflow-revisions`
+those bytes. A schema is published through `POST /schema-revisions` the same
+way a workflow is published through `POST /workflow-revisions`: exact bytes
+in, hash out, a second identical post the same answer. A workflow already
+published through `POST /workflow-revisions`
 is named through `POST /workflow-lineages` from those same bytes and the same
 hash; founding does not invent a second identity. Run-configuration binding is
 still lineage-free and a reference's `ref` is carried into that snapshot

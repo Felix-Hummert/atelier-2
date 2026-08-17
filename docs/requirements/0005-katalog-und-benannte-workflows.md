@@ -76,6 +76,7 @@ Beweis:     a-published-revision-becomes-a-named-lineage-over-the-api
             a-later-revision-joins-the-lineage-that-already-holds-its-name
             an-admission-the-catalog-refuses-is-named-by-its-own-reason
             a-workflow-published-over-the-api-is-named-over-the-api
+            a-schema-is-published-over-the-api
 Offen:      - Der Picker fehlt, der eine Mitgliedschaft und einen Namen anbietet (Eigentümer: #131-Familie, Ziel: Oberfläche)
 
 ## Open questions

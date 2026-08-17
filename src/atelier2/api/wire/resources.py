@@ -173,6 +173,12 @@ AnyWorkflowGraphResource = Annotated[
 ]
 
 
+class SchemaRevisionResource(ApiModel):
+    """The hash of the exact schema bytes the catalog now holds."""
+
+    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+
+
 class WorkflowRevisionSummaryResource(ApiModel):
     revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 

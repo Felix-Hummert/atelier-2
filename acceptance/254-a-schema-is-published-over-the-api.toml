@@ -1,0 +1,19 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/254"
+
+# THE SCHEMA PUBLICATION DOOR IS THE SAME SHAPE AS THE WORKFLOW ONE.
+#
+# The store already published a schema revision. HTTP could not. A live chain
+# had to stop the unit and call `publish_revision(SCHEMA)` in-process because
+# OpenAPI had no schema path. This sentence binds that hole: POST
+# /schema-revisions takes the exact bytes, answers with their hash, and writes
+# once. A document the profile refuses is named and writes nothing.
+#
+# Requirement owner: `docs/requirements/0005-katalog-und-benannte-workflows.md`,
+# REQ-KATALOG-05. Publication and admission stay two acts; this is only the
+# publication door the catalog already had for every other kind.
+
+[[sentence]]
+id = "a-schema-is-published-over-the-api"
+requirement = "REQ-KATALOG-05"
+text = "A schema posted through POST /schema-revisions is published under its exact-bytes hash; repeating the same bytes is the same answer and writes nothing; a document the profile refuses is named and writes nothing."

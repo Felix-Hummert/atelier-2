@@ -336,6 +336,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 ),
                 catalog_resolver=DbosCatalogStore(runtime.engine),
                 catalog_admissions=DbosCatalogStore(runtime.engine),
+                published_revision_registry=DbosCatalogStore(runtime.engine),
             ),
             limits=limits,
             event_poll_backoff=settings.event_poll_backoff,
