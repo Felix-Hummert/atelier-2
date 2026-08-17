@@ -31,6 +31,17 @@ dev = [
     "sqlglot==30.13.0",
 ]
 
+[tool.atelier2.verification]
+# What verifies this project, stated by this project. A node that redeems the
+# `run-project-verification` grant runs exactly this, so the statement lives with
+# the source it verifies rather than in the atelier's own configuration. The
+# pipeline's job list is its own and stays in .github/workflows/ci.yml; this is
+# the one command that says whether the tree is sound. Until H2 pins a
+# checkout into the attempt's directory (see the absence named in
+# acceptance/60-...), redeeming the grant runs this where no tree exists yet.
+command = ["uv", "run", "--locked", "pytest", "--dist", "loadgroup", "-n", "auto", "tests", "-q"]
+timeout_seconds = 1800
+
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 pythonpath = ["src"]

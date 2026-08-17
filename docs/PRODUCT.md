@@ -417,19 +417,41 @@ for the schema the document pinned are each refused by name; a typed 422 from
 the service is handed on in the service's own words. An output contract that
 could decide an exit code still does not exist.
 
-The canonical store is schema V14. A fresh store is created as exact V14 and
+A node can now say which tool it needs and have it redeemed. A `tools` entry is
+a published tool grant the document pins by hash, exactly as an output pins its
+schema, so what a node may do is byte-pinned like every other material it names;
+the one capability a runtime here redeems is `run-project-verification`. When
+such a node runs, the command the project's own manifest declares under
+`[tool.atelier2.verification]` is run in that attempt's own leased directory --
+the project decides what verifies it, never the agent and never the atelier --
+and the run leaves durable proof of exactly which command ran, how it ended and
+the hash of what it wrote, beside the agent receipt whose provider bytes stay
+its own. Three refusals are named rather than worked around: a grant naming a
+capability nothing here performs, or bytes that are no grant at all, refuses the
+run at the reference that pinned it; a node pinning more grants than one attempt
+redeems is refused by that count; and a project stating no verification refuses
+the attempt in the words of the manifest that should have stated it, before any
+provider process starts. What this does not claim is isolation: the leased
+directory is still honestly "not a sandbox", the verification runs as the served
+process's own user, and enforcement at a boundary that cannot be talked out of
+is not built. Neither is the static capability attestation of a build --
+declared, resolved, redeemed and proven is the whole of the claim.
+
+The canonical store is schema V15. A fresh store is created as exact V15 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
 access bindings, and the immutable declared context packages, node-execution request
 preimages and run configuration snapshots those receipts name, and the immutable
-orders a run was started with. The catalog adapter founds a lineage
+orders a run was started with, and the immutable proof of every redeemed tool
+grant. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
 founding, unpublished member, wrong kind, or retired lineage is refused by
-name. Measurements and policy activations are not in this profile. V13 remains a
-published predecessor object; exact V7 through V13 files are refused by
+name. Measurements and policy activations are not in this profile. V13 and V14
+remain published predecessor objects; exact V7 through V14 files are refused by
 runtime without mutation, with no runtime migration or downgrade. An offline
-`atelier2 migrate` command raises an exact V13 store to V14. Until a named
-maturity there is no compatibility promise.
+`atelier2 migrate` command raises an exact V13 or V14 store to the current
+schema, one published step at a time. Until a named maturity there is no
+compatibility promise.

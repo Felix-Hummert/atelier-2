@@ -26,12 +26,13 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
 _VERSION_TWELVE = 12
 _VERSION_THIRTEEN = 13
+_VERSION_FOURTEEN = 14
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -42,7 +43,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # configuration snapshot durable, immutable homes, and records the run
 # configuration revision a supervised V3 run was started under. V14 gives the
 # order a run was started with a durable, immutable home, so one published
-# revision serves every order instead of one revision per distinct input.
+# revision serves every order instead of one revision per distinct input. V15
+# adds the immutable evidence of one redeemed tool grant: which command the
+# attempt ran, how it ended, and what it wrote.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -52,6 +55,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     12: "feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7",
     13: "5782fdc1331c52f3f04097f6a2a6d416ab528d6ee8a6546a7d6435ae9d11c175",
     14: "6cf56491322e716fce9be2310584ed2b92533961b8fda341bfcc317182432f0a",
+    15: "375e81d1c8967053951d1be0cab19cee274e35272f364feae15ec3413eb3c9b9",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -72,6 +76,10 @@ V12_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V13_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTEEN],
+)
+V14_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FOURTEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FOURTEEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -582,6 +590,65 @@ agent_receipts_v2 = sa.Table(
     ),
     sa.CheckConstraint(
         "length(output_hash) = 64 AND output_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
+tool_redemptions = sa.Table(
+    "tool_redemptions",
+    metadata,
+    sa.Column(
+        "node_execution_id",
+        sa.Text,
+        sa.ForeignKey("agent_receipts_v2.node_execution_id"),
+        primary_key=True,
+    ),
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
+    sa.Column(
+        "attempt_id",
+        sa.Text,
+        sa.ForeignKey("agent_attempts.attempt_id"),
+        nullable=False,
+    ),
+    sa.Column("tool_revision_hash", sa.Text, nullable=False),
+    sa.Column("capability", sa.Text, nullable=False),
+    sa.Column("command", sa.Text, nullable=False),
+    sa.Column("exit_code", sa.Integer, nullable=False),
+    sa.Column("standard_output_hash", sa.Text, nullable=False),
+    sa.Column("receipt_hash", sa.Text, nullable=False, unique=True),
+    sa.ForeignKeyConstraint(
+        ("run_id", "workflow_revision_hash"),
+        ("runs.run_id", "runs.revision_hash"),
+    ),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(
+        "length(workflow_revision_hash) = 64 "
+        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
+    ),
+    sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(
+        "length(tool_revision_hash) = 64 AND tool_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("capability IN ('run-project-verification')"),
+    # The exact argv, as the adapter writes one immutable value. Its length is
+    # the record's own bound, not a second one spelled here: what a store may
+    # hold and what a receipt may carry would be two numbers for one limit.
+    sa.CheckConstraint("length(command) > 0"),
+    sa.CheckConstraint(
+        f"exit_code BETWEEN {-MAXIMUM_SIGNED_INT64 - 1} AND {MAXIMUM_SIGNED_INT64}"
+    ),
+    sa.CheckConstraint(
+        "length(standard_output_hash) = 64 "
+        "AND standard_output_hash NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
@@ -1306,6 +1373,18 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'v2 agent receipts are immutable');
         END
     """,
+    "tool_redemptions_no_update": """
+        CREATE TRIGGER tool_redemptions_no_update
+        BEFORE UPDATE ON tool_redemptions BEGIN
+          SELECT RAISE(ABORT, 'tool redemptions are immutable');
+        END
+    """,
+    "tool_redemptions_no_delete": """
+        CREATE TRIGGER tool_redemptions_no_delete
+        BEFORE DELETE ON tool_redemptions BEGIN
+          SELECT RAISE(ABORT, 'tool redemptions are immutable');
+        END
+    """,
     "reconcile_commands_payload_no_update": """
         CREATE TRIGGER reconcile_commands_payload_no_update
         BEFORE UPDATE OF command_id, logical_key, expected_intent_version,
@@ -1773,8 +1852,10 @@ def _table_fingerprint(
 def _table_names_for_version(version: int) -> frozenset[str]:
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version == _VERSION_FOURTEEN:
+        return PRODUCT_TABLE_NAMES - {tool_redemptions.name}
     if version == _VERSION_THIRTEEN:
-        return PRODUCT_TABLE_NAMES - {run_inputs_v3.name}
+        return PRODUCT_TABLE_NAMES - {run_inputs_v3.name, tool_redemptions.name}
     raise UnsupportedSchemaVersion(version)
 
 
@@ -1958,30 +2039,42 @@ def _is_sqlite_lock(error: BaseException) -> bool:
     return "locked" in text or "busy" in text
 
 
-def _apply_v13_to_v14(connection: sqlite3.Connection) -> None:
-    existing = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (run_inputs_v3.name,),
-    ).fetchone()
-    if existing is not None:
-        raise StoreMigrationRefused(
-            "schema version 13 already has run_inputs_v3; "
-            "this command will not alter it"
+def _added_table_step(
+    table: sa.Table, triggers: tuple[str, ...], source: int, target: int
+) -> Callable[[sqlite3.Connection], None]:
+    """One additive hop: a table this version introduces, its triggers, the CAS.
+
+    Every published step so far adds exactly one immutable table, so the hop is
+    written once rather than copied per version; what differs between two of
+    them is only the table, its triggers, and the two version numbers.
+    """
+
+    def apply(connection: sqlite3.Connection) -> None:
+        existing = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table.name,),
+        ).fetchone()
+        if existing is not None:
+            raise StoreMigrationRefused(
+                f"schema version {source} already has {table.name}; "
+                "this command will not alter it"
+            )
+        connection.execute(
+            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
         )
-    connection.execute(
-        str(CreateTable(run_inputs_v3).compile(dialect=sqlite_dialect.dialect()))
-    )
-    connection.execute(_PRODUCT_TRIGGERS["run_inputs_v3_no_update"])
-    connection.execute(_PRODUCT_TRIGGERS["run_inputs_v3_no_delete"])
-    changed = connection.execute(
-        f"UPDATE {atelier_schema_versions.name} SET version = ? WHERE version = ?",
-        (SCHEMA_VERSION, _VERSION_THIRTEEN),
-    ).rowcount
-    if changed != 1:
-        raise StoreMigrationRefused(
-            "schema version CAS 13 -> 14 changed nothing; "
-            "this command will not alter it"
-        )
+        for trigger in triggers:
+            connection.execute(_PRODUCT_TRIGGERS[trigger])
+        changed = connection.execute(
+            f"UPDATE {atelier_schema_versions.name} SET version = ? WHERE version = ?",
+            (target, source),
+        ).rowcount
+        if changed != 1:
+            raise StoreMigrationRefused(
+                f"schema version CAS {source} -> {target} changed nothing; "
+                "this command will not alter it"
+            )
+
+    return apply
 
 
 @dataclass(frozen=True)
@@ -1992,7 +2085,26 @@ class _SchemaMigrationStep:
 
 
 _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
-    _SchemaMigrationStep(_VERSION_THIRTEEN, SCHEMA_VERSION, _apply_v13_to_v14),
+    _SchemaMigrationStep(
+        _VERSION_THIRTEEN,
+        _VERSION_FOURTEEN,
+        _added_table_step(
+            run_inputs_v3,
+            ("run_inputs_v3_no_update", "run_inputs_v3_no_delete"),
+            _VERSION_THIRTEEN,
+            _VERSION_FOURTEEN,
+        ),
+    ),
+    _SchemaMigrationStep(
+        _VERSION_FOURTEEN,
+        SCHEMA_VERSION,
+        _added_table_step(
+            tool_redemptions,
+            ("tool_redemptions_no_update", "tool_redemptions_no_delete"),
+            _VERSION_FOURTEEN,
+            SCHEMA_VERSION,
+        ),
+    ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
@@ -2073,9 +2185,12 @@ def migrate_store(database_path: Path) -> StoreMigrationReport:
     step = _SCHEMA_MIGRATION_BY_SOURCE.get(source_version)
     if step is None:
         if source_version in _OFFLINE_CUTOVER_VERSIONS:
+            raisable = ", ".join(
+                str(version) for version in sorted(_SCHEMA_MIGRATION_BY_SOURCE)
+            )
             raise StoreMigrationRefused(
                 f"schema version {source_version} has no migration step; "
-                f"only version {_VERSION_THIRTEEN} can be raised to {SCHEMA_VERSION}. "
+                f"only version {raisable} can be raised to {SCHEMA_VERSION}. "
                 "runtime startup still refuses it without mutation"
             )
         raise StoreMigrationRefused(

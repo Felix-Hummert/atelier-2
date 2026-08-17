@@ -30,17 +30,16 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V14 only in a truly empty canonical store and reopens
-only an exact V14 product schema. V9, V10, V11, V12, and V13 remain published
-predecessor objects (`V9_SCHEMA_HANDOFF`, `V10_SCHEMA_HANDOFF`,
-`V11_SCHEMA_HANDOFF`, `V12_SCHEMA_HANDOFF`, and `V13_SCHEMA_HANDOFF`) and are not
-opened or migrated by runtime. An exact V13 store advances to V14 only through
-the offline `atelier2 migrate` command; older published predecessors stay
-refused by name. Older, future, malformed, or nonempty unowned stores are
-rejected without mutation. There is no runtime downgrade. The published
-`PRODUCT_SCHEMA_HANDOFF` is version 14 with
+The runtime creates schema V15 only in a truly empty canonical store and reopens
+only an exact V15 product schema. V9 through V14 remain published predecessor
+objects (`V9_SCHEMA_HANDOFF` through `V14_SCHEMA_HANDOFF`) and are not opened or
+migrated by runtime. An exact V13 or V14 store advances to the current schema
+only through the offline `atelier2 migrate` command, one published step at a
+time; older published predecessors stay refused by name. Older, future,
+malformed, or nonempty unowned stores are rejected without mutation. There is no
+runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 15 with
 product-schema fingerprint
-`6cf56491322e716fce9be2310584ed2b92533961b8fda341bfcc317182432f0a`.
+`375e81d1c8967053951d1be0cab19cee274e35272f364feae15ec3413eb3c9b9`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -157,6 +156,7 @@ provider contract.
 | V12 named catalog | A fresh exact V12 store adds append-only alias and retirement histories. One typed founder and admission writer derives `CatalogLineageId` from kind and founding hash and refuses a mismatched id before mutation. `resolve_name` returns the current display name and retirement flag through membership, or the typed missing/retired refusals. A 64-hex query is a lineage id. V11 remains unchanged and is refused without mutation. |
 | V13 V3 record preimages | A fresh exact V13 store gives the declared context package (`context-package-declared/v3`, the half a document and its frozen configuration can produce today), the `node-execution-request/v3` preimage and the run configuration snapshot durable, immutable homes, and **every** format-3 run records the configuration revision it was started under. Both V3 starts bind that snapshot; the supervised writer persists all three records inside the same transaction as the run and its receipt, refuses a decided truth that names a record it does not carry, and shares an identical record between runs rather than conflicting on it. Foreign keys bind a run to its configuration, and a composite key binds a receipt to the request of its own node execution -- the pair, because each hash alone can name a record that exists while the two together describe an execution nobody ran -- so no row can name a record that does not exist, and an injected failure at any one of those writes leaves none of them. V12 remains unchanged and is refused without mutation. |
 | V14 run orders | A fresh exact V14 store gives the order a run was started with a durable, immutable home: name, the schema revision it satisfies and its exact bytes, keyed one order to one name per run, with update and delete refused by trigger. The start resolves the `graph_inputs` schema the document pinned, refuses a missing, undeclared, twice-supplied, wrongly-pinned or schema-violating order before any row exists, and a repeat of the same run id with a different order is an identity conflict rather than the run that already exists. V13 remains unchanged and is refused without mutation. |
+| V15 redeemed tool grants | A fresh exact V15 store gives one redeemed tool grant a durable, immutable home: the node execution and attempt that redeemed it, the published grant revision, the capability it granted, the exact command, its exit code and the hash of what it wrote, with update and delete refused by trigger. It is written inside the transaction that makes the attempt succeed, so a succeeded attempt and the proof of what its tool ran are durable together or not at all. V14 remains unchanged and is refused without mutation. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 | V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |
@@ -187,8 +187,9 @@ Until a named maturity, the product does not promise store compatibility.
 rules that preserving hops, compatibility layers, and keeping old store shapes
 openable are unnecessary while the store is a prototype. Runtime still refuses
 every predecessor. The offline migrate command is the one exception: an exact
-V13 store is raised to V14, preserving product rows, because the hop is
-additive (`run_inputs_v3` was empty in V13).
+V13 or V14 store is raised to the current schema, preserving product rows,
+because every step is
+additive: `run_inputs_v3` was empty in V13, and `tool_redemptions` in V14.
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the

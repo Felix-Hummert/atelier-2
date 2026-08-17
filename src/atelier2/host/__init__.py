@@ -35,6 +35,7 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
     verify_grok_capability,
 )
+from atelier2.adapters.project_verification import LocalProjectVerificationRunner
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
 from atelier2.host.migrate_command import describe_migration, execute_migrate
 from atelier2.host.run_command import (
@@ -57,6 +58,7 @@ from atelier2.host.serving import (
     event_poll_backoff,
     serve,
 )
+from atelier2.ports.project_verification import ProjectVerificationUndeclared
 
 MIGRATE_DESCRIPTION = """\
 Raise an existing canonical store to the current product schema.
@@ -68,9 +70,9 @@ visible, so stopping the serve is the operator's gate, not this process's.
 
 The file is inspected, then raised one published step at a time. Each step
 ends with the fingerprint ADR 0001 names. Any doubt rolls the transaction
-back, so a failed hop leaves the predecessor unaltered. Today the only
-built step is schema version 13 to 14. Older published predecessors, and
-unknown or future versions, are refused by name.
+back, so a failed hop leaves the predecessor unaltered. The built steps run
+from schema version 13 upward, one published version at a time. Older
+published predecessors, and unknown or future versions, are refused by name.
 
 A store already on the current schema is left unaltered and said to be
 already current.
@@ -193,6 +195,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             host=parsed.host,
             port=parsed.port,
             agent_scratch_root=_attested_agent_scratch_root(parser, parsed),
+            project_root=_declared_project_root(parser, parsed),
             claude_subscription=_claude_subscription_settings(parser, parsed),
             grok_subscription=_grok_subscription_settings(parser, parsed),
             codex_subscription=_codex_subscription_settings(parser, parsed),
@@ -342,6 +345,27 @@ def _attested_agent_scratch_root(
     return root
 
 
+def _declared_project_root(
+    parser: argparse.ArgumentParser, parsed: argparse.Namespace
+) -> Path | None:
+    """Refuse a project that declares no verification before the server exists.
+
+    A node redeeming `run-project-verification` runs what this project's own
+    manifest states, so a root whose manifest states nothing is refused here --
+    where the operator who named it is still reading -- rather than at the first
+    run that pins a grant.
+    """
+
+    root: Path | None = parsed.project_root
+    if root is None:
+        return None
+    try:
+        LocalProjectVerificationRunner(root).preflight()
+    except ProjectVerificationUndeclared as refusal:
+        parser.error(str(refusal))
+    return root
+
+
 def _claude_subscription_settings(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
 ) -> ClaudeSubscriptionSettings | None:
@@ -480,6 +504,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--host", default=DEFAULT_HOST)
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve_parser.add_argument("--agent-scratch-root", type=Path)
+    serve_parser.add_argument("--project-root", type=Path)
     serve_parser.add_argument("--claude-executable", type=Path)
     serve_parser.add_argument("--claude-credential-directory", type=Path)
     serve_parser.add_argument("--grok-executable", type=Path)

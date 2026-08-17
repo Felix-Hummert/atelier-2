@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal, NotRequired, TypedDict, assert_never, cast
 
+import sqlalchemy as sa
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
 from atelier2.adapters.agent_processes import AgentProcessSupervisor
@@ -35,6 +36,7 @@ from atelier2.adapters.dbos.run_store import (
     load_run_inputs,
     load_wait_answer,
 )
+from atelier2.adapters.dbos.schema import published_revisions
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
@@ -73,11 +75,18 @@ from atelier2.contracts.executions import (
     node_workflow_id_for,
     subworkflow_workflow_id_for,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import (
     RunId,
     RunState,
     WorkflowRevisionHash,
+)
+from atelier2.contracts.tool_grants_v3 import (
+    DeclaredToolGrant,
+    ToolGrantCapability,
+    ToolGrantRefused,
+    read_tool_grant_document,
 )
 from atelier2.contracts.workflows import (
     ActionNode,
@@ -97,6 +106,10 @@ from atelier2.ports.agent_executions import (
     AgentExecutorV2,
 )
 from atelier2.ports.effects import EffectAdapter
+from atelier2.ports.project_verification import (
+    ProjectVerificationRunner,
+    ToolGrantRedemption,
+)
 
 WORKFLOW_NAME = "atelier2_durable_run"
 NODE_WORKFLOW_NAME = "atelier2_graph_node"
@@ -143,6 +156,8 @@ class EncodedAgentBindingV2(TypedDict):
     type: Literal["agent-v2"]
     role: str
     job: str
+    tool_revision_hash: NotRequired[str]
+    tool_capability: NotRequired[str]
     configuration_hash: str
     auth_hash: str
     profile_id: str
@@ -254,7 +269,7 @@ def _node_binding(
                 raise RunTransitionConflict("V2 Agent role has no durable binding")
             configuration = resolved.configuration
             auth = resolved.auth_profile
-            return {
+            encoded: EncodedAgentBindingV2 = {
                 "type": "agent-v2",
                 "role": resolved.role.value,
                 "job": (
@@ -277,6 +292,11 @@ def _node_binding(
                 "revision_format_version": int(configuration.revision_format_version),
                 "requested_capability": configuration.requested_capability.value,
             }
+            pinned = _pinned_tool_grant(session, node)
+            if pinned is not None:
+                encoded["tool_revision_hash"] = pinned.revision_hash.value
+                encoded["tool_capability"] = pinned.capability.value
+            return encoded
         if isinstance(node, ActionNode):
             return {"type": "action"}
         if isinstance(node, WaitNode):
@@ -293,6 +313,67 @@ def _node_binding(
         EncodedNodeBinding,
         datasource.run_tx_step({"name": NODE_BINDING_STEP_NAME}, load),
     )
+
+
+def _pinned_tool_grant(
+    session: Any, node: AgentNodeV2 | AgentNodeV3
+) -> DeclaredToolGrant | None:
+    """The grant this node pinned, read from the revision the document pins by hash.
+
+    A V3 `tools` entry pins its published revision by that revision's own hash, so
+    reading the registry under it is reading exactly what the run configuration
+    froze rather than resolving a second time. The bytes are immutable and were
+    already read as a grant when the run was bound; a registry that cannot answer
+    for them now contradicts a run that has already started.
+    """
+    if not isinstance(node, AgentNodeV3) or not node.tools:
+        return None
+    pinned = node.tools[0]
+    document = session.scalar(
+        sa.select(published_revisions.c.document).where(
+            published_revisions.c.kind == RevisionKind.TOOL.value,
+            published_revisions.c.revision_hash == pinned.revision,
+        )
+    )
+    if document is None:
+        raise RunBindingConflict("the pinned tool revision left the registry")
+    grant = read_tool_grant_document(bytes(document))
+    if isinstance(grant, ToolGrantRefused):
+        raise RunBindingConflict(f"the pinned tool revision is no grant: {grant}")
+    return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
+
+
+def _declared_tool_grant(binding: EncodedAgentBindingV2) -> DeclaredToolGrant | None:
+    """The grant a durable node binding carries, or nothing where none was pinned."""
+    revision_hash = binding.get("tool_revision_hash")
+    capability = binding.get("tool_capability")
+    if revision_hash is None or capability is None:
+        if revision_hash is not None or capability is not None:
+            raise RunBindingConflict("a durable tool grant is only partly encoded")
+        return None
+    try:
+        return DeclaredToolGrant(
+            PublishedRevisionHash(revision_hash), ToolGrantCapability(capability)
+        )
+    except (TypeError, ValueError) as error:
+        raise RunBindingConflict(
+            "a durable tool grant carries an unknown value"
+        ) from error
+
+
+def _redemption(
+    binding: EncodedAgentBindingV2, verifications: ProjectVerificationRunner | None
+) -> ToolGrantRedemption | None:
+    """What redeems this node's grant, or the named refusal that nothing does."""
+    grant = _declared_tool_grant(binding)
+    if grant is None:
+        return None
+    if verifications is None:
+        raise RunBindingConflict(
+            "a node redeeming a tool grant requires the declared project, and this "
+            "runtime was given none"
+        )
+    return ToolGrantRedemption(grant, verifications)
 
 
 def _agent_request_v2(
@@ -388,6 +469,7 @@ def register_durable_run_workflow(
     agent_attempt_store: AgentAttemptStore,
     agent_process_supervisor: AgentProcessSupervisor,
     agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
+    project_verifications: ProjectVerificationRunner | None,
     adapter: EffectAdapter,
     effect_binding: EffectAdapterBinding,
 ) -> None:
@@ -487,6 +569,7 @@ def register_durable_run_workflow(
             agent_attempt_store,
             agent_process_supervisor,
             _declared_workspace_owner(agent_workspace_owner),
+            _redemption(binding, project_verifications),
         )
         if isinstance(outcome, AgentAttemptSucceeded):
             match outcome.completion:
@@ -560,6 +643,7 @@ def register_durable_run_workflow(
                 agent_attempt_store,
                 agent_process_supervisor,
                 _declared_workspace_owner(agent_workspace_owner),
+                _redemption(binding, project_verifications),
             )
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value

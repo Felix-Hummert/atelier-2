@@ -32,6 +32,7 @@ from atelier2.contracts.run_configuration_v3 import (
     declared_references,
 )
 from atelier2.contracts.runs import WorkflowRevision
+from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 from atelier2.ports.published_revisions import (
@@ -67,7 +68,19 @@ SCHEMA_VERDICT = published_schema("the verdict a review panel returns")
 SCHEMA_RECEIPT = published_schema("the receipt a comment leaves behind")
 PROFILE = published(RevisionKind.PROFILE, "the standing method of a builder")
 SKILL = published(RevisionKind.SKILL, "workspace discipline, and its tool grants")
-TOOL = published(RevisionKind.TOOL, "the grant that writes into a repository")
+
+
+def published_grant(capability: ToolGrantCapability) -> PublishedRevision:
+    """A real tool grant, because prose published under `tool` is refused now.
+
+    A `tools` reference reads the grant it pins exactly as an `outputs.schema`
+    reference reads its schema, so a fixture standing in for one has to be one.
+    A grant a skill only carries never passes that reader, and stays prose.
+    """
+    return published(RevisionKind.TOOL, json.dumps({"capability": capability.value}))
+
+
+TOOL = published_grant(ToolGrantCapability.RUN_PROJECT_VERIFICATION)
 POLICY = published(RevisionKind.POLICY, "the house rules of this workshop")
 BUDGET = published(RevisionKind.BUDGET_POLICY, "what one build may spend")
 RETRY = published(RevisionKind.RETRY_POLICY, "twice, then the node has failed")

@@ -31,6 +31,10 @@ from atelier2.contracts.run_configuration_v3 import (
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaRefused, read_schema_document
+from atelier2.contracts.tool_grants_v3 import (
+    ToolGrantRefused,
+    read_tool_grant_document,
+)
 from atelier2.contracts.workflow_bindings_v3 import BoundSubworkflow, SubworkflowBinding
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.published_revisions import (
@@ -87,7 +91,7 @@ def resolve_declared_reference(
                     declared,
                     f"the registry answered with revision {revision.revision_hash.value}",
                 )
-            unusable = _unusable_schema(declared, revision)
+            unusable = _unreadable_document(declared, revision)
             if unusable is not None:
                 return unusable
             return ResolvedReference(
@@ -103,24 +107,39 @@ def resolve_declared_reference(
             assert_never(unreachable)
 
 
-def _unusable_schema(
+def _unreadable_document(
     declared: DeclaredReference, revision: PublishedRevision
 ) -> ReferenceRefusal | None:
-    """Whether a `schema` revision resolved to bytes that are not a schema.
+    """Whether a revision resolved to bytes that are not the thing it was read as.
 
-    Every other kind resolves on identity alone, because nothing here knows what
-    its bytes must say. A `schema` is the one kind this product must read to do
-    its job at all, so the reference that pins it is where the reading belongs.
+    Most kinds resolve on identity alone, because nothing here knows what their
+    bytes must say. Two kinds this product must read to do its job at all are the
+    exception, and the reference that pins them is where the reading belongs: a
+    `schema`, which a value is read against, and a `tool` grant, whose capability
+    decides what an attempt is going to redeem. A grant naming a capability
+    nothing performs is refused here rather than at the attempt, because a run
+    that started under it has already told its author it would be honoured.
     """
-    if declared.kind is not RevisionKind.SCHEMA:
+    if declared.kind is RevisionKind.SCHEMA:
+        verdict = read_schema_document(revision.document)
+        if isinstance(verdict, SchemaRefused):
+            return _refusal(
+                ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT,
+                declared,
+                "the published revision is not a schema this product enforces "
+                f"({verdict})",
+            )
         return None
-    verdict = read_schema_document(revision.document)
-    if isinstance(verdict, SchemaRefused):
-        return _refusal(
-            ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT,
-            declared,
-            f"the published revision is not a schema this product enforces ({verdict})",
-        )
+    if declared.kind is RevisionKind.TOOL:
+        grant = read_tool_grant_document(revision.document)
+        if isinstance(grant, ToolGrantRefused):
+            return _refusal(
+                ReferenceRefusalReason.UNREDEEMABLE_TOOL_GRANT,
+                declared,
+                "the published revision is not a tool grant this runtime "
+                f"redeems ({grant})",
+            )
+        return None
     return None
 
 

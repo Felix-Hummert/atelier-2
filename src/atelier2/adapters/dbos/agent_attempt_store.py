@@ -10,10 +10,13 @@ from sqlalchemy.engine import Engine
 from atelier2.adapters.dbos.run_store import (
     AgentReceiptConflict,
     RunTransitionConflict,
+    ToolRedemptionConflict,
     _agent_receipt_v2_from_record,
     _agent_receipt_v2_values,
     _commit_event,
     _insert_event,
+    _tool_redemption_from_record,
+    _tool_redemption_values,
     load_graph,
     load_node_outputs,
     load_run,
@@ -23,6 +26,7 @@ from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
     runs,
+    tool_redemptions,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.application.compose_node_job import node_job
@@ -56,6 +60,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.contracts.workflows import (
     AgentNodeV2,
     NodeCompletion,
@@ -321,6 +326,46 @@ def _require_completed_attempt_head(
             assert_never(unreachable)
 
 
+def _keep_tool_redemption(
+    connection: Any,
+    execution: AgentAttemptExecution,
+    redemption: ToolRedemptionReceipt | None,
+) -> None:
+    """Keep what this attempt's grant redeemed, inside the write that succeeds it.
+
+    A retry of the same durable attempt runs the verification again, and the row
+    that is already there decides: identical evidence is the same redemption
+    written twice, and different evidence is two answers about one node
+    execution, which is a contradiction rather than a second receipt.
+    """
+    if redemption is None:
+        return
+    if (
+        redemption.node_execution_id != execution.request.node_execution_id
+        or redemption.attempt_id != execution.attempt_id
+    ):
+        raise ToolRedemptionConflict("tool redemption differs from its exact attempt")
+    connection.execute(
+        tool_redemptions.insert()
+        .prefix_with("OR IGNORE")
+        .values(_tool_redemption_values(redemption))
+    )
+    stored = (
+        connection.execute(
+            sa.select(tool_redemptions).where(
+                tool_redemptions.c.node_execution_id
+                == redemption.node_execution_id.value
+            )
+        )
+        .mappings()
+        .one()
+    )
+    if _tool_redemption_from_record(stored) != redemption:
+        raise ToolRedemptionConflict(
+            "durable tool redemption differs from exact redemption"
+        )
+
+
 def _insert_attempt_event(
     connection: Any,
     attempt: AgentAttempt,
@@ -543,7 +588,10 @@ class DbosAgentAttemptStore:
             return _load_attempt(connection, attempt_id)
 
     def complete_success(
-        self, execution: AgentAttemptExecution, result: AgentExecutionResult
+        self,
+        execution: AgentAttemptExecution,
+        result: AgentExecutionResult,
+        redemption: ToolRedemptionReceipt | None = None,
     ) -> AgentAttemptSucceeded:
         request = execution.request
         attempt_id = execution.attempt_id
@@ -581,6 +629,7 @@ class DbosAgentAttemptStore:
                 raise AgentReceiptConflict(
                     "durable V2 agent receipt differs from exact result"
                 )
+            _keep_tool_redemption(connection, execution, redemption)
             updated = connection.execute(
                 agent_attempts.update()
                 .where(

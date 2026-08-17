@@ -32,7 +32,12 @@ from atelier2.adapters.exact_output_agent import (
     ExactOutputAgentExecutorFactory,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptId
+from atelier2.contracts.agent_attempts import (
+    AgentAttempt,
+    AgentAttemptFailureCode,
+    AgentAttemptId,
+    AgentAttemptState,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -49,6 +54,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ExactOutputContract,
     ProviderId,
+    ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
@@ -352,6 +358,58 @@ def claude_subscription_attempt(
             CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
             b"build",
         )
+    )
+
+
+def agent_execution_request_v2(
+    run_name: str = "scenario/one-agent",
+    node_id: str = "builder",
+    executor_revision: str = "scenario-cli/v1",
+    operational_identity: str = "controlled-process",
+) -> AgentExecutionRequestV2:
+    """One V2 request bound to a plausible role, for scenarios with no store.
+
+    The binding is real rather than a stub because the request hashes it, and an
+    attempt identity derived from a half-built binding would not be the identity
+    the durable path mints.
+    """
+
+    run_id = RunId(run_name)
+    revision = WorkflowRevisionHash("2" * 64)
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision(executor_revision),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    return AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run_id, revision, node_id),
+        run_id,
+        revision,
+        node_id,
+        ResolvedAgentBinding(AgentRole(node_id), configuration, auth),
+        AgentExecutorOperationalIdentity(operational_identity),
+        b"build",
+    )
+
+
+def prepared_agent_attempt(execution: AgentAttemptExecution) -> AgentAttempt:
+    """The attempt a store hands back before anything has been claimed."""
+
+    request = execution.request
+    return AgentAttempt(
+        execution.attempt_id,
+        request.node_execution_id,
+        request.request_hash,
+        request.executor_operational_identity,
+        request.run_id,
+        request.workflow_revision_hash,
+        request.node_id,
+        execution.ordinal,
+        AgentAttemptState.PREPARED,
+        0,
     )
 
 

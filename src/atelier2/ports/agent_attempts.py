@@ -13,6 +13,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.contracts.workflows import NodeCompletion
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
@@ -117,8 +118,19 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
     def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimResult: ...
 
     def complete_success(
-        self, execution: AgentAttemptExecution, result: AgentExecutionResult
-    ) -> AgentAttemptSucceeded: ...
+        self,
+        execution: AgentAttemptExecution,
+        result: AgentExecutionResult,
+        redemption: ToolRedemptionReceipt | None = None,
+    ) -> AgentAttemptSucceeded:
+        """Keep this attempt's terminal truth, and what its grant redeemed with it.
+
+        `redemption` is absent for an attempt whose node pinned no tool grant. One
+        that redeemed a grant hands its evidence in here rather than writing it
+        beside this call, so a succeeded attempt and the proof of what its tool
+        ran become durable together or not at all.
+        """
+        ...
 
     def complete_known_failure(
         self, execution: AgentAttemptExecution
