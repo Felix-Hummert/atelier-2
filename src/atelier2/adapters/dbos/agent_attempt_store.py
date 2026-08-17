@@ -16,6 +16,7 @@ from atelier2.adapters.dbos.run_store import (
     _insert_event,
     load_graph,
     load_run,
+    load_run_inputs,
 )
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -23,6 +24,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptCancellation,
@@ -242,8 +244,14 @@ def _validate_request(
     node = graph.node(request.node_id)
     if not isinstance(node, (AgentNodeV2, AgentNodeV3)):
         raise RunTransitionConflict("agent attempt request differs from durable graph")
+    # Recomputed from durable truth rather than trusted: what the node's author
+    # wrote, plus the orders this run was started with, through the one owner
+    # that decides what an agent is handed. A second spelling here would let a
+    # request claim a job the document and the run never agreed on.
     authored_job = (
-        node.job if isinstance(node, AgentNodeV2) else node.instruction
+        node.job
+        if isinstance(node, AgentNodeV2)
+        else node_job(node.instruction, load_run_inputs(session, request.run_id, node))
     ).encode("utf-8")
     if (
         node.role != request.resolved_binding.role.value

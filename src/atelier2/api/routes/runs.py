@@ -76,6 +76,7 @@ from atelier2.application.start_published_run import (
     RunCreated,
     RunExisting,
     RunFormatNotExecutable,
+    RunInputRefused,
     RunIdentityConflict,
 )
 from atelier2.application.start_published_run import (
@@ -153,6 +154,12 @@ async def start_run_route(
             raise ApiProblem("run-identity-conflict")
         case RunFormatNotExecutable():
             raise ApiProblem("workflow-format-not-executable")
+        case RunInputRefused(name, refusal, _detail):
+            # The input is named in the detail because it is what an operator
+            # fixes; the refusal token says which of the named ways it is wrong.
+            raise ApiProblem(
+                "run-input-refused", detail=f"input {name!r} was refused: {refusal}"
+            )
         case InvalidAgentBindings():
             raise ApiProblem("invalid-agent-bindings")
         case AgentConfigurationRevisionMissing():

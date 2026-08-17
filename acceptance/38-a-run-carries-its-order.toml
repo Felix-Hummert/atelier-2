@@ -1,34 +1,39 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/38"
 
-# This file does not list every sentence of #38, and that is deliberate.
+# THE ORDER BECAME MATERIAL. Until this head the job travelled inside the
+# document, so one distinct input burned one published revision -- the everyday
+# reflex this story exists to end. A run started through `start_published` now
+# carries the order beside the document: stored under the run, immutably, and
+# handed to the agent that declared it reads it.
 #
-# #38 wants a run to carry its order as input. The head that lands here — plan
-# 5304493237, amendment 5304533072, deputy PASS 5304543725 — makes that order
-# declarable, completely checked and visible. It does not make commissioning
-# real: no V3 document can become a run yet (`parse_executable_workflow_document`
-# refuses format 3, and `runs.workflow_format_version IN (1, 2)` refuses the row),
-# and that gate belongs to #63.
+# What that took, because it is the reason this took three attempts: the
+# executable admission had to stop refusing `inputs`, the `graph_inputs` schema
+# reference had to actually resolve at the public start rather than be refused
+# with every other declared reference, and the driver had to hand the order on.
+# A head that did only the first two would have admitted a document whose inputs
+# the run then ignored in silence; one that did only the storing would have built
+# a run that remembers an order nobody reads. The measurement that ruled them
+# inseparable is 5313021607.
 #
-# Four sentences of #38 therefore have no proof of any kind and are named here
-# rather than quietly dropped:
+# STILL OPEN, and named rather than quietly dropped:
 #
-#   1. A published workflow is reusable with different run inputs, without a new
-#      revision.
 #   2b. The supplied value is hash-bound in the run snapshot as a context-package
-#      member, and visible with its provenance.
-#   3b. A run start with a missing, schema-violating or oversized input is refused
-#      by name, leaving no run, context, attempt, event, enqueue or process behind.
-#   4. The conductor loop needs no revision per turn.
+#      member, and visible with its provenance. The value IS hash-bound under the
+#      run and the agent receives it; what is absent is the node-record half --
+#      no runtime authors a `context-package/v3` or a `node-execution-request/v3`
+#      yet, so there is no package for it to be a member of. That is the record
+#      family's own head, not a wording this one may narrow.
+#   4. The conductor loop needs no revision per turn. Needs the command (#111).
 #
-# Sentence 2 was split into 2a (declared below) and 2b; sentence 3 into 3a
-# (declared below) and 3b. 3a is a document-level refusal and is EXPLICITLY NOT a
-# substitute for 3b, which is a start-level refusal: no review may count 3a for
-# it. #38 is not verified and not retired while any of the four above is open.
+# #38 is not verified and not retired while either of those is open.
 #
-# Declaring them now would red this gate on main for a capability nobody has
-# built, and inventing a proof to make it green is the one thing ADR 0012 forbids.
-# They join this file in the change that proves them.
+# ALSO ABSENT ON PURPOSE, each because the start would otherwise ignore what an
+# author wrote: an `inputs` entry whose source is another node's output, a node
+# receipt or a context entry is refused by the source it named, and so is an
+# authored `value` -- a constant inside the document is the very thing an order
+# replaces. Those sources need the ready set and the record family; they are
+# refused today rather than admitted and dropped.
 
 [[sentence]]
 id = "an-unreadable-or-unread-graph-input-is-refused-by-name"
@@ -41,3 +46,11 @@ text = "An order the parent graph declares reaches a subworkflow: it binds as a 
 [[sentence]]
 id = "the-preview-names-every-declared-graph-input-with-its-schema"
 text = "Before any start, the preview names every declared graph input with its name and schema revision, at the graph that declared it."
+
+[[sentence]]
+id = "a-run-carries-its-order-as-material-not-as-a-new-revision"
+text = "An operator starts one published workflow revision with the order it should run on, and the run carries that order as material: the exact bytes are stored under the run and the name its author declared, immutably, and the agent whose node reads that order is handed it -- so the same published revision serves every order instead of one revision per distinct input."
+
+[[sentence]]
+id = "an-order-the-start-cannot-honour-is-refused-by-its-own-name"
+text = "A start whose order is missing, is one the document never declared, does not satisfy the schema the document pinned, or is supplied twice under one name, is refused naming that input -- and leaves no run, no configuration, no order and no enqueue behind."

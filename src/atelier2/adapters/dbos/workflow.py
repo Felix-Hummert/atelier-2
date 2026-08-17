@@ -31,11 +31,13 @@ from atelier2.adapters.dbos.run_store import (
     entry_node_of,
     load_graph,
     load_run,
+    load_run_inputs,
     load_wait_answer,
 )
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
+from atelier2.application.compose_node_job import node_job
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -242,7 +244,13 @@ def _node_binding(
             return {
                 "type": "agent-v2",
                 "role": resolved.role.value,
-                "job": node.job if isinstance(node, AgentNodeV2) else node.instruction,
+                "job": (
+                    node.job
+                    if isinstance(node, AgentNodeV2)
+                    else node_job(
+                        node.instruction, load_run_inputs(session, run_id, node)
+                    )
+                ),
                 "configuration_hash": configuration.revision_hash.value,
                 "auth_hash": auth.revision_hash.value,
                 "profile_id": auth.profile_id,

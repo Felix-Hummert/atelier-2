@@ -142,6 +142,36 @@ class ContextPackageMember:
         )
 
 
+@dataclass(frozen=True)
+class RunInput:
+    """One order a run was started with: a name, its schema, and exact bytes.
+
+    This is material, not a revision. #38's first sentence is that a published
+    workflow serves every order without a new revision, and that is only true
+    while the order travels beside the document rather than inside it.
+
+    It is a **separate form** from `ContextPackageMember` on purpose. That one is
+    `required_context`-shaped -- a source revision and a selector into it -- and
+    an order has neither: it has a schema it satisfies and bytes somebody
+    supplied. Writing an order into that shape would put a source revision where
+    a schema revision is, which is a lie in a preimage rather than a reuse.
+    """
+
+    name: str
+    schema_revision: PublishedRevisionHash
+    value: bytes
+    value_hash: Sha256Hash = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("a run input names a nonempty order")
+        if not isinstance(self.schema_revision, PublishedRevisionHash):
+            raise TypeError("a run input names a typed schema revision")
+        if not isinstance(self.value, bytes):
+            raise TypeError("a run input carries exact bytes")
+        object.__setattr__(self, "value_hash", Sha256Hash.of(self.value))
+
+
 def declared_context_package_of(
     workflow_revision_hash: WorkflowRevisionHash,
     run_id: RunId,
