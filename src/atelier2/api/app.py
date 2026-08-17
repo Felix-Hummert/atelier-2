@@ -73,6 +73,7 @@ def bound_use_cases(
                 ports.catalog_resolver,
                 ports.catalog_admissions,
                 ports.workflow_document_parser,
+                ports.workflow_revision_queries,
             )
         ),
         admit_catalog_member=lambda kind, lineage_id, revision_hash, actor, at: (
@@ -85,6 +86,7 @@ def bound_use_cases(
                 ports.catalog_resolver,
                 ports.catalog_admissions,
                 ports.workflow_document_parser,
+                ports.workflow_revision_queries,
             )
         ),
         list_workflow_revisions=lambda after, limit: list_workflow_revisions(

@@ -16,6 +16,8 @@ from atelier2.adapters.dbos.schema import (
     catalog_lineage_retirements,
     catalog_lineages,
     initialize_schema,
+    published_revisions,
+    workflow_revisions,
 )
 from atelier2.application.resolve_catalog_name import (
     CatalogNameLineageRetired,
@@ -414,6 +416,38 @@ def test_writer_derives_the_lineage_id_and_refuses_a_forged_claim(
             )
             == 1
         )
+
+
+def test_writer_founds_a_workflow_already_published_through_workflow_revisions(
+    harness: CatalogHarness, scene: CatalogScene
+) -> None:
+    published = _workflow(b"name: lasagne\n")
+    display_name = CatalogLineageDisplayName("lasagne")
+    with harness.engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=published.revision_hash.value,
+                document=published.document,
+            )
+        )
+
+    founded = harness.catalog.found_lineage(
+        published, display_name, scene.actor, scene.founded_at
+    )
+
+    assert founded == CatalogLineageFounded(
+        CatalogLineage(published.kind, published.revision_hash),
+        published,
+        display_name,
+    )
+    with harness.engine.connect() as connection:
+        stored = connection.execute(
+            sa.select(published_revisions.c.document).where(
+                published_revisions.c.kind == published.kind.value,
+                published_revisions.c.revision_hash == published.revision_hash.value,
+            )
+        ).scalar_one()
+        assert bytes(stored) == published.document
 
 
 def test_writer_refuses_unpublished_bytes_and_a_reused_name(
