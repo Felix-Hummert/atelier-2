@@ -126,6 +126,11 @@ _RUN_PROJECTION_COLUMNS: tuple[sa.Column[Any], ...] = (
     runs.c.state_version,
     runs.c.last_event_sequence,
     runs.c.terminal_hash,
+    # A V3 run reads back as `RunV3`, which is bound to the configuration
+    # revision it was started under; without this column every projection of one
+    # raises rather than answering. It stayed unnoticed while no V3 run could
+    # reach a public route.
+    runs.c.run_configuration_revision_hash,
 )
 _RUN_FIELD_COLUMNS = frozenset(("run_id", "current_node_id"))
 _REVISION_DOCUMENT_COLUMNS = frozenset(("document",))
