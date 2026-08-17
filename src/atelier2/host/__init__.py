@@ -1,4 +1,4 @@
-"""The operator's command line: serve the product, or run one workflow on it."""
+"""The operator's command line: serve, run, resolve, or migrate a store."""
 
 from __future__ import annotations
 
@@ -28,12 +28,14 @@ from atelier2.adapters.codex_subscription import (
     attest_codex_containment,
     verify_codex_capability,
 )
+from atelier2.adapters.dbos.schema import StoreMigrationRefused
 from atelier2.adapters.grok_subscription import (
     GrokExecutableUnsupported,
     GrokSubscriptionSettings,
     verify_grok_capability,
 )
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
+from atelier2.host.migrate_command import describe_migration, execute_migrate
 from atelier2.host.run_command import (
     DEFAULT_CATALOG_POSITION,
     AgentBindingSource,
@@ -53,6 +55,25 @@ from atelier2.host.serving import (
     event_poll_backoff,
     serve,
 )
+
+MIGRATE_DESCRIPTION = """\
+Raise an existing canonical store to the current product schema.
+
+This command is offline. It does not start a server, does not open a runtime,
+and does not create a store. Stop the process that owns the file first. A
+write lock the command can see is refused; an idle reader is not always
+visible, so stopping the serve is the operator's gate, not this process's.
+
+The file is inspected, then raised one published step at a time. Each step
+ends with the fingerprint ADR 0001 names. Any doubt rolls the transaction
+back, so a failed hop leaves the predecessor unaltered. Today the only
+built step is schema version 13 to 14. Older published predecessors, and
+unknown or future versions, are refused by name.
+
+A store already on the current schema is left unaltered and said to be
+already current.
+"""
+
 
 RESOLVE_DESCRIPTION = """\
 Ask a served Atelier which published revision a workflow name holds, and print
@@ -112,6 +133,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return _run(parser, parsed)
     if parsed.command == "resolve":
         return _resolve(parser, parsed)
+    if parsed.command == "migrate":
+        return _migrate(parsed)
     parser.error("a command is required")
 
 
@@ -211,6 +234,16 @@ def _run(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
         sys.stdout.buffer.write(output.output)
     sys.stdout.buffer.flush()
     print(describe_receipt(report), file=sys.stderr)
+    return 0
+
+
+def _migrate(parsed: argparse.Namespace) -> int:
+    try:
+        report = execute_migrate(parsed.database)
+    except StoreMigrationRefused as refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+    print(describe_migration(report))
     return 0
 
 
@@ -418,6 +451,13 @@ def _argument_parser() -> argparse.ArgumentParser:
         choices=tuple(mode.value for mode in CodexSandboxMode),
         default=CodexSandboxMode.READ_ONLY.value,
     )
+    migrate_parser = commands.add_parser(
+        "migrate",
+        help="raise an existing store to the current schema, offline",
+        description=MIGRATE_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    migrate_parser.add_argument("--database", type=Path, required=True)
     resolve_parser = commands.add_parser(
         "resolve",
         help="ask a served Atelier which revision a workflow name holds",
