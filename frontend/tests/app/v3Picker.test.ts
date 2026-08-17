@@ -27,13 +27,15 @@ function v3Revision(hash: string, documentBase64: string) {
           id: "implement",
           kind: "agent" as const,
           role: "builder",
-          instruction_start: "Do the one thing this chain is for."
+          instruction_start: "Do the one thing this chain is for.",
+          depends_on: []
         },
         {
           id: "review",
           kind: "agent" as const,
           role: "builder",
-          instruction_start: "Check what the node before you did."
+          instruction_start: "Check what the node before you did.",
+          depends_on: ["implement"]
         }
       ],
       name: "Seen from the picker",

@@ -117,6 +117,26 @@ class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
         return self.opened
 
 
+class DelayedAgentExecutor(RecordingAgentExecutorV2):
+    """Holds a V3 node in `working` long enough for the browser to draw it live."""
+
+    def decode_process_completion(
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        time.sleep(3.0)
+        return super().decode_process_completion(invocation, completion)
+
+
+class DelayedAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
+    def open(self) -> RecordingAgentExecutorV2:
+        self.opens += 1
+        self.lifecycle.append(f"open:{self.provider}")
+        self.opened = DelayedAgentExecutor(
+            self.output, [], self.lifecycle, self.provider
+        )
+        return self.opened
+
+
 class BrowserProofHarness:
     def __init__(
         self, app: ASGIApp, engine: sa.Engine, factory: BlockingAgentExecutorFactory
@@ -210,11 +230,15 @@ def main() -> None:
     factory = BlockingAgentExecutorFactory(
         "e2e", "blocking/v1", "e2e-blocking-process", "Grüße 東京".encode()
     )
-    # A second provider that does not wait to be observed. The blocking one exists
-    # so the browser can catch a V2 attempt mid-flight; a V3 run is watched after
-    # it has finished, so holding its attempt open would only stall the proof.
+    # The blocking provider exists so the browser can catch a V2 attempt
+    # mid-flight. The immediate one finishes a V3 line without a hold. The
+    # delayed one keeps a V3 node in `working` long enough for the graph
+    # drawing to be photographed live.
     immediate = RecordingAgentExecutorFactoryV2(
         "e2e-v3", "immediate/v1", "e2e-immediate-process", b"V3 provider bytes"
+    )
+    delayed = DelayedAgentExecutorFactory(
+        "e2e-v3-slow", "delayed/v1", "e2e-delayed-process", b"V3 provider bytes"
     )
 
     def runtime(
@@ -223,7 +247,7 @@ def main() -> None:
         agent_factory: AgentExecutorFactory,
         agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
     ) -> DbosRuntime:
-        factories = (*agent_factories_v2, factory, immediate)
+        factories = (*agent_factories_v2, factory, immediate, delayed)
         # The e2e runtime root lives inside the repository checkout, which no
         # scratch root may, so the leased workspaces stand outside it.
         return DbosRuntime(

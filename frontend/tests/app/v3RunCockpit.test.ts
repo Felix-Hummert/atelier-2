@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -9,6 +9,39 @@ import { publicReference, revisionHash as digest } from "../support/workflowV1";
 
 const configurationHash = "c".repeat(64);
 const terminalHash = "d".repeat(64);
+
+function v3Revision() {
+  return {
+    revision_hash: digest,
+    document_base64: "YQ==",
+    graph: {
+      format_version: 3 as const,
+      executable: true as const,
+      not_executable_reason: null,
+      node_count: 2,
+      agent_roles: ["builder"],
+      orders: [],
+      node_previews: [
+        {
+          id: "implement",
+          kind: "agent" as const,
+          role: "builder",
+          instruction_start: "Do the one thing this chain is for.",
+          depends_on: []
+        },
+        {
+          id: "review",
+          kind: "agent" as const,
+          role: "builder",
+          instruction_start: "Check what the node before you did.",
+          depends_on: ["implement"]
+        }
+      ],
+      name: "Two agents in a line",
+      description: null
+    }
+  };
+}
 
 function v3Run(overrides: Partial<RunV3> = {}): RunV3 {
   return {
@@ -35,6 +68,7 @@ function v3Run(overrides: Partial<RunV3> = {}): RunV3 {
 function api(run: RunV3, overrides: Partial<CockpitApi> = {}): CockpitApi {
   return cockpitApiStub({
     getRun: vi.fn(async () => run),
+    getWorkflowRevision: vi.fn(async () => v3Revision()),
     ...overrides
   });
 }
@@ -58,9 +92,9 @@ describe("a version 3 run in the cockpit", () => {
     expect(
       (await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" })).isConnected
     ).toBe(true);
-    const rail = screen.getAllByRole("listitem").map((item) => item.textContent ?? "");
-    expect(rail.some((entry) => entry.includes("implement") && /done/i.test(entry))).toBe(true);
-    expect(rail.some((entry) => entry.includes("review") && /working/i.test(entry))).toBe(true);
+    const graph = await screen.findByRole("region", { name: "Workflow" });
+    expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true);
+    expect(within(graph).getByRole("button", { name: "review — Working" }).isConnected).toBe(true);
     expect(screen.getByText(/not yet/i).isConnected).toBe(true);
     expect(screen.getByText(configurationHash).isConnected).toBe(true);
     // A loaded run is not a failed one: the page must not offer to fetch it again
@@ -110,7 +144,7 @@ describe("a version 3 run in the cockpit", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
-  it("asks for no workflow revision, and opens the stream it can now read", async () => {
+  it("asks for the published revision so it can draw the edges, and opens the stream it can now read", async () => {
     const feed = new FakeRunEventFeed();
     const cockpitApi = api(v3Run(), { openRunEvents: feed.open });
 
@@ -119,12 +153,44 @@ describe("a version 3 run in the cockpit", () => {
     });
 
     await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
-    // The revision half is unchanged and still true: it would be fetched only to
-    // walk the graph's nodes, and a version 3 graph carries none. The stream
-    // half is what #249 changed -- there is a format-3 event now, so declining
-    // to open would be the page refusing to show what it can read.
-    expect(cockpitApi.getWorkflowRevision).not.toHaveBeenCalled();
+    await screen.findByRole("region", { name: "Workflow" });
+    expect(cockpitApi.getWorkflowRevision).toHaveBeenCalledWith(digest);
     expect(feed.open).toHaveBeenCalledTimes(1);
+  });
+
+  it("says it is looking while the published graph is still arriving", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), {
+          getWorkflowRevision: vi.fn(() => new Promise<ReturnType<typeof v3Revision>>(() => undefined))
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
+    expect(screen.getByText("Looking…").isConnected).toBe(true);
+    expect(screen.queryByRole("region", { name: "Workflow" })).toBeNull();
+  });
+
+  it("names a graph that could not be read instead of inventing a line from the rail", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), {
+          getWorkflowRevision: vi.fn(async () => {
+            throw new Error("store asleep");
+          })
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    expect((await screen.findByText("The graph could not be read")).isConnected).toBe(true);
+    expect(screen.getByText("store asleep").isConnected).toBe(true);
+    expect(screen.queryByRole("region", { name: "Workflow" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Run v3/two-agents" }).isConnected).toBe(
+      true
+    );
   });
 });
 

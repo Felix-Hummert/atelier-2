@@ -378,37 +378,25 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   }).toPass({ timeout: 15_000 });
   expect(terminal).not.toBeNull();
 
-  const unreadable: string[] = [];
-  await page.route("**/atelier/api/v1/**", async (route) => {
-    const url = route.request().url();
-    // The revision half is unchanged: a version 3 graph carries no nodes to
-    // walk. The events half moved to #270 -- the page subscribes now.
-    if (url.includes("/workflow-revisions/")) unreadable.push(url);
-    await route.continue();
-  });
-
   await page.goto(`/atelier/runs/${reference}`);
 
   await expect(page.getByRole("heading", { level: 1, name: "Run v3/seen-in-the-browser" })).toBeVisible();
-  const rail = page.getByRole("listitem");
-  await expect(rail.nth(0)).toContainText("implement");
-  await expect(rail.nth(0)).toContainText("Done");
-  await expect(rail.nth(1)).toContainText("review");
-  await expect(rail.nth(1)).toContainText("Done");
+  const graph = page.getByRole("region", { name: "Workflow" });
+  await expect(graph.getByRole("button", { name: "implement — Done" })).toBeVisible();
+  await expect(graph.getByRole("button", { name: "review — Done" })).toBeVisible();
   await expect(page.getByLabel("Where this run stands")).toContainText("Done");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Snapshot");
   await expect(page.getByText(terminal as unknown as string)).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
-  // A version 3 run has no event stream and no nodes to walk, so the page must
-  // ask for neither rather than opening a connection that answers nothing.
-  expect(unreadable).toEqual([]);
 
   await page.screenshot({ path: "test-results/v3-run-desktop.png", fullPage: true });
+  await page.screenshot({ path: "test-results/v3-graph-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole("heading", { level: 1, name: "Run v3/seen-in-the-browser" })).toBeVisible();
   expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/v3-run-mobile.png", fullPage: true });
+  await page.screenshot({ path: "test-results/v3-graph-390x844.png", fullPage: true });
 });
 
 test("starts a published V3 workflow by picking a named agent", async ({ page }) => {
@@ -518,15 +506,15 @@ test("publishes a V3 workflow, binds its role, and watches the line it started",
   await page.getByRole("button", { name: "Start" }).click();
 
   await expect(page.getByRole("heading", { level: 1, name: /^Run / })).toBeVisible();
-  const rail = page.getByRole("listitem");
-  await expect(rail.nth(0)).toContainText("implement");
-  await expect(rail.nth(1)).toContainText("review");
+  const graph = page.getByRole("region", { name: "Workflow" });
+  await expect(graph.getByRole("button", { name: /implement/ })).toBeVisible();
+  await expect(graph.getByRole("button", { name: /review/ })).toBeVisible();
   // The reload this used to need is gone with #270: the page follows the run it
   // just started, so the same truth arrives without the operator asking twice.
   await expect(page.getByLabel("Where this run stands")).toContainText("Done", {
     timeout: 20_000
   });
-  await expect(rail.nth(1)).toContainText("Done");
+  await expect(graph.getByRole("button", { name: "review — Done" })).toBeVisible();
   await page.screenshot({ path: "test-results/v3-picker-run-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
 });
@@ -603,6 +591,83 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
   await expect(page.getByLabel("Where this run stands")).toContainText("Ended");
 
   await page.screenshot({ path: "test-results/v3-run-live.png", fullPage: true });
+});
+
+test("draws a running V3 chain as a graph while a node is still working", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const workflowYaml = [
+    "format_version: 3",
+    "name: Two agents drawn live",
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Do the one thing this chain is for.",
+    "  - id: review",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Check what the node before you did.",
+    "    depends_on: [implement]",
+    ""
+  ].join("\n");
+
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).revision_hash as string;
+
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: { profile_id: "v3-drawn", revision_number: 1, provider_id: "e2e-v3-slow", auth_mode: "subscription" }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: "v3-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "delayed/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 2,
+      run_id: "v3/drawn-while-running",
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [
+        {
+          role: "builder",
+          agent_configuration_revision_hash: (await configuration.json())
+            .agent_configuration_revision_hash
+        }
+      ]
+    }
+  });
+  expect(started.status()).toBe(201);
+  const reference = (await started.json()).public_run_reference as string;
+
+  await page.goto(`/atelier/runs/${reference}`);
+
+  const graph = page.getByRole("region", { name: "Workflow" });
+  await expect(graph).toBeVisible();
+  await expect(graph.getByRole("button", { name: /implement/ })).toBeVisible();
+  await expect(graph.getByRole("button", { name: /review/ })).toBeVisible();
+  await expect(graph.getByRole("button", { name: /Working$/ })).toBeVisible({ timeout: 10_000 });
+  await expect(graph.locator('[data-node-id="implement"]')).toHaveAttribute("data-layer", "0");
+  await expect(graph.locator('[data-node-id="review"]')).toHaveAttribute("data-layer", "1");
+
+  await page.screenshot({ path: "test-results/v3-graph-running-desktop.png", fullPage: true });
+  await assertNoSeriousAccessibilityFindings(page);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(graph.getByRole("button", { name: /Working$/ })).toBeVisible();
+  await assertMobileSurface(page);
+  await page.screenshot({ path: "test-results/v3-graph-running-390x844.png", fullPage: true });
 });
 
 test("clicking a stuck node says what stopped the run, and the node before it shows its whole log", async ({

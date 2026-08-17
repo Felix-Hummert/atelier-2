@@ -43,7 +43,8 @@ function graph(orders: Array<typeof portionsOrder>, name: string) {
         id: "cook",
         kind: "agent" as const,
         role: "cook",
-        instruction_start: "Cook exactly what the order says."
+        instruction_start: "Cook exactly what the order says.",
+        depends_on: []
       }
     ],
     name,
