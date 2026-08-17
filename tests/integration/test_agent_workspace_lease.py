@@ -173,6 +173,9 @@ class MaterializingExecutor:
             )
         return AgentExecutionResult(completion.standard_output)
 
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        del command
+
     def close(self) -> None:
         return
 
@@ -200,6 +203,9 @@ class WaitingExecutor:
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult:
         return AgentExecutionResult(completion.standard_output)
+
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        del command
 
     def close(self) -> None:
         return
@@ -567,7 +573,9 @@ def test_a_root_path_replaced_after_binding_refuses_instead_of_leasing(
     assert workspace_names(tmp_path / "moved-away") == set()
 
 
-@pytest.mark.proves("an-occupied-attempt-path-starts-no-provider-and-survives-everything-after")
+@pytest.mark.proves(
+    "an-occupied-attempt-path-starts-no-provider-and-survives-everything-after"
+)
 def test_a_preexisting_attempt_path_refuses_the_attempt_and_starts_no_provider(
     tmp_path: Path,
 ) -> None:
@@ -602,7 +610,9 @@ def test_a_preexisting_attempt_path_refuses_the_attempt_and_starts_no_provider(
         runtime.close()
 
 
-@pytest.mark.proves("an-occupied-attempt-path-starts-no-provider-and-survives-everything-after")
+@pytest.mark.proves(
+    "an-occupied-attempt-path-starts-no-provider-and-survives-everything-after"
+)
 def test_a_refused_attempt_path_survives_the_cancellation_of_its_attempt(
     tmp_path: Path,
 ) -> None:
@@ -658,7 +668,9 @@ def test_a_refused_attempt_path_survives_the_cancellation_of_its_attempt(
         pytest.param(7, AgentAttemptState.FAILED, id="known failure"),
     ],
 )
-@pytest.mark.proves("a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe")
+@pytest.mark.proves(
+    "a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe"
+)
 def test_a_terminal_attempt_leaves_its_workspace_and_nothing_else_removed(
     tmp_path: Path, return_code: int, terminal: AgentAttemptState
 ) -> None:
@@ -726,7 +738,9 @@ def test_a_provider_really_materializes_the_observed_write_set(
     assert sentinel_survived(sentinel)
 
 
-@pytest.mark.proves("a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe")
+@pytest.mark.proves(
+    "a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe"
+)
 def test_a_workspace_nested_deeper_than_recursion_allows_is_still_removed(
     tmp_path: Path,
 ) -> None:
@@ -755,7 +769,9 @@ def test_a_workspace_nested_deeper_than_recursion_allows_is_still_removed(
     assert sentinel_survived(sentinel)
 
 
-@pytest.mark.proves("a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe")
+@pytest.mark.proves(
+    "a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe"
+)
 def test_a_cancelled_attempt_loses_its_workspace_only_behind_attested_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -945,7 +961,9 @@ def test_restart_preserves_the_workspace_of_every_nonterminal_attempt(
     assert snapshot(workspace) == before
 
 
-@pytest.mark.proves("an-occupied-attempt-path-starts-no-provider-and-survives-everything-after")
+@pytest.mark.proves(
+    "an-occupied-attempt-path-starts-no-provider-and-survives-everything-after"
+)
 def test_a_refused_attempt_path_survives_the_restart_that_follows(
     tmp_path: Path,
 ) -> None:
@@ -989,7 +1007,9 @@ def test_restart_refuses_a_name_that_is_no_attempt_workspace(tmp_path: Path) -> 
     assert workspace.is_dir()
 
 
-@pytest.mark.proves("a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe")
+@pytest.mark.proves(
+    "a-workspace-falls-only-behind-the-two-facts-that-make-removal-safe"
+)
 def test_a_cleanup_that_cannot_finish_stays_visible_and_removes_nothing_wider(
     tmp_path: Path,
 ) -> None:
@@ -1067,6 +1087,9 @@ class ReportingExecutor:
             self.reported.append(result.output_bytes)
         return result
 
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        del command
+
     def close(self) -> None:
         self.inner.close()
 
@@ -1086,6 +1109,9 @@ class DirectoryReportingExecutor:
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult:
         return AgentExecutionResult(completion.standard_output)
+
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        del command
 
     def close(self) -> None:
         return

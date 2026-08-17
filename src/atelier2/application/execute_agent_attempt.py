@@ -40,7 +40,6 @@ def execute_agent_attempt(
     store.prepare(execution)
     command = executor.prepare_process(execution.request)
     workspaces.preflight()
-    invocation: AgentProcessInvocation | None = None
     try:
         supervisor.prepare(execution)
         claim = store.claim(execution)
@@ -61,6 +60,5 @@ def execute_agent_attempt(
         supervisor.finalize(execution)
         workspaces.release(execution.attempt_id)
     finally:
-        if invocation is not None:
-            executor.release_process(invocation)
+        executor.release_credential_channel(command)
     return outcome

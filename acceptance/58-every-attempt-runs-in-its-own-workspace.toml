@@ -12,10 +12,14 @@ story = "https://github.com/FlexOr2/atelier-2/issues/58"
 #   - NO PROVIDER-SIDE CONTAINMENT CHANGES. The credential boundary, the
 #     environment scrub and the containment attestations belong to each
 #     provider's executor and are untouched here.
-#   - GROK'S JOB DIRECTORIES ARE NOT YET UNDER THE LEASE. PR #185 is open at
-#     this head and carries the Grok executor's own per-execution directories.
-#     One directory regime is the rule, so folding them in belongs to whichever
-#     of the two lands second; it is named here rather than left to be noticed.
+#   - THE SECRET CHANNEL IS NOT THE WORKSPACE, AND THIS FILE DOES NOT SPEAK FOR
+#     IT. Grok reads its credentials from a private directory made for one
+#     command, holding a copy of the operator's own `auth.json`. That directory
+#     is taken back on every path -- success, refusal, a lost claim, an
+#     exception -- and deliberately not on the workspace's discipline, which
+#     keeps what a provider left behind until the attempt is durably terminal.
+#     Evidence may wait; a credential may not. The sentences below are about the
+#     ground a provider stands on, never about that channel.
 #
 # The sentences below are what an operator would recognise as "every attempt
 # runs in a scratch workspace of its own".

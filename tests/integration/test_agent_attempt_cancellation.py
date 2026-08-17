@@ -241,7 +241,7 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
         }
         assert len(failures) == 1
         assert isinstance(failures[0], RunTransitionConflict)
-        assert len(executor.released_invocations) == 1
+        assert len(executor.released_commands) == 1
     finally:
         runtime.close()
 

@@ -469,11 +469,16 @@ class CodexSubscriptionExecutor:
             return _UNUSABLE_PROVIDER_ANSWER
         return AgentExecutionResult(answer)
 
-    def release_process(self, invocation: AgentProcessInvocation) -> None:
-        try:
-            shutil.rmtree(_answer_file_of(invocation).parent)
-        except FileNotFoundError:
-            pass
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        """Nothing to take back: this executor copies no credential anywhere.
+
+        `CODEX_HOME` names the operator's own credential directory rather than a
+        copy made for one invocation, and the answer lives in the attempt's
+        leased directory, which the workspace owner takes away. Removing
+        anything here would remove the lease itself.
+        """
+
+        del command
 
     def close(self) -> None:
         """The lease owns every byte this executor produced, so it owns nothing."""

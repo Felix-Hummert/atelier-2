@@ -200,8 +200,20 @@ class AgentExecutorV2(Protocol):
         """
         ...
 
-    def release_process(self, invocation: AgentProcessInvocation) -> None:
-        """Release live-only resources owned by this exact invocation."""
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        """Take back the secret channel this invocation handed its provider.
+
+        A provider that reads its credentials from a directory gets one made for
+        this command alone, and it is taken back on every path -- success,
+        refusal, a claim this call lost, or an exception. It takes the command
+        rather than the invocation because the channel is made while the command
+        is prepared, which is before the attempt is claimed and therefore before
+        any workspace is leased. That is deliberately not the discipline of the
+        attempt's workspace: the workspace falls only once the attempt is
+        durably terminal, because what a provider left behind is evidence. A
+        copy of the operator's credentials is not evidence, and the shortest
+        life it can have is the one it gets.
+        """
         ...
 
     def close(self) -> None: ...
