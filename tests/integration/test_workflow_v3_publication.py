@@ -25,7 +25,10 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import API_PREFIX
-from atelier2.api.references import encode_canonical_base64
+from atelier2.api.references import (
+    MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
+    encode_canonical_base64,
+)
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from tests.scenarios.api import api_limits, durable_queries, event_poll_backoff
 from tests.scenarios.runtime import exact_output_runtime
@@ -165,6 +168,14 @@ def test_a_v3_revision_this_build_runs_reads_back_as_executable(
     # The roles are what a caller must bind to start this revision, and until now
     # they could be learnt only by reading the document itself.
     assert read.json()["graph"]["agent_roles"] == ["builder"]
+    assert read.json()["graph"]["node_previews"] == [
+        {
+            "id": "implement",
+            "kind": "agent",
+            "role": "builder",
+            "instruction_start": "Do the one thing this chain is for.",
+        }
+    ]
 
 
 @pytest.mark.proves("a-revision-says-which-form-it-waits-for-not-which-version-it-is")
@@ -193,6 +204,24 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
         ),
         "node_count": V3_NODE_COUNT,
         "agent_roles": ["builder", "reviewer"],
+        "node_previews": [
+            {
+                "id": "implement",
+                "kind": "agent",
+                "role": "builder",
+                "instruction_start": (
+                    "Implement every acceptance sentence of the bound story."
+                ),
+            },
+            {
+                "id": "review",
+                "kind": "agent",
+                "role": "reviewer",
+                "instruction_start": (
+                    "Name every defect with the sentence it violates."
+                ),
+            },
+        ],
         "name": V3_DOCUMENT_NAME,
         "description": None,
     }
@@ -200,6 +229,105 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
         "items": [{"revision_hash": revision_hash}],
         "next_after_revision_hash": None,
     }
+
+
+def test_a_v3_revision_answers_an_instruction_start_not_the_authored_whole(
+    runtime: DbosRuntime,
+) -> None:
+    """The preview is an excerpt: past the wire bound, the rest stays in the document."""
+    bound = MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS
+    authored = ("ä" * bound) + "TAIL-MUST-NOT-APPEAR"
+    document = (
+        "format_version: 3\n"
+        "name: One long instruction\n"
+        "nodes:\n"
+        "  - id: implement\n"
+        "    type: agent\n"
+        "    role: builder\n"
+        "    mode: headless\n"
+        f"    instruction: {authored}\n"
+    ).encode()
+    client = _client(runtime)
+    revision_hash = _publish(client, document).json()["revision_hash"]
+
+    graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
+        "graph"
+    ]
+
+    assert graph["node_previews"] == [
+        {
+            "id": "implement",
+            "kind": "agent",
+            "role": "builder",
+            "instruction_start": authored[:bound],
+        }
+    ]
+    assert "TAIL-MUST-NOT-APPEAR" not in graph["node_previews"][0]["instruction_start"]
+    assert len(graph["node_previews"][0]["instruction_start"]) == bound
+
+
+def test_a_v3_node_without_an_instruction_answers_that_field_empty(
+    runtime: DbosRuntime,
+) -> None:
+    """A wait declares a prompt, not an instruction. Empty is the node's answer."""
+    document = b"""format_version: 3
+name: Wait for a decision
+nodes:
+  - id: approve
+    type: wait
+    prompt: Approve the candidate or send it back.
+    outputs:
+      - name: decision
+        schema: {ref: decision, revision: schema-decision}
+"""
+    client = _client(runtime)
+    revision_hash = _publish(client, document).json()["revision_hash"]
+
+    graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
+        "graph"
+    ]
+
+    assert graph["node_previews"] == [
+        {
+            "id": "approve",
+            "kind": "wait",
+            "role": None,
+            "instruction_start": None,
+        }
+    ]
+    assert graph["agent_roles"] == []
+    assert "Approve the candidate" not in str(graph["node_previews"])
+
+
+def test_a_v1_revision_does_not_invent_a_v3_node_preview(
+    runtime: DbosRuntime,
+) -> None:
+    client = _client(runtime)
+    revision_hash = _publish(client, V1_DOCUMENT).json()["revision_hash"]
+
+    graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
+        "graph"
+    ]
+
+    assert graph["format_version"] == 1
+    assert "node_previews" not in graph
+    assert "instruction_start" not in graph["nodes"][0]
+    assert graph["nodes"][0]["job"] == "test"
+
+
+def test_the_described_listing_does_not_carry_the_node_excerpt(
+    runtime: DbosRuntime,
+) -> None:
+    client = _client(runtime)
+    revision_hash = _publish(client, EXECUTABLE_V3_DOCUMENT).json()["revision_hash"]
+
+    listed = client.get(API_PREFIX + "/workflow-revisions?view=described")
+
+    assert listed.status_code == 200
+    item = listed.json()["items"][0]
+    assert item["revision_hash"] == revision_hash
+    assert "node_previews" not in item
+    assert "nodes" not in item
 
 
 def test_starting_a_run_on_a_v3_revision_is_refused_by_name_and_writes_no_run(

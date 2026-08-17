@@ -205,9 +205,9 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was last regenerated when `POST /runs` grew the V3 start
-    that carries orders: name and exact JSON text, schema pin owned by the
-    document. That regeneration is the wire change this head declares;
+    The artefact was last regenerated when the V3 graph grew a node excerpt
+    (id, kind, role, bounded instruction start) on the existing detail
+    resource. That regeneration is the wire change this head declares;
     refreshing it alongside a refactor is what this test still refuses.
     """
 

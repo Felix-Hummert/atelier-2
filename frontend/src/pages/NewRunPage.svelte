@@ -201,16 +201,26 @@
   let publishedGraphs: Record<string, WorkflowRevisionDetail["graph"]> = {};
   let revealingHash: string | null = null;
 
-  /**
-   * The graph resource publishes no nodes. A node view for a stored revision
-   * needs its own wire head.
-   */
   function publishedNodeCount(graph: WorkflowRevisionDetail["graph"] | undefined): number | null {
     return graph?.format_version === 3 ? graph.node_count : null;
   }
 
+  function publishedNodePreviews(
+    graph: WorkflowRevisionDetail["graph"] | undefined
+  ): Extract<WorkflowRevisionDetail["graph"], { format_version: 3 }>["node_previews"] | null {
+    return graph?.format_version === 3 ? graph.node_previews : null;
+  }
+
   function publishedAgentRoles(graph: WorkflowRevisionDetail["graph"] | undefined): string[] | null {
     return graph?.format_version === 3 ? [...graph.agent_roles] : null;
+  }
+
+  function kindMark(kind: "agent" | "deterministic" | "wait" | "subworkflow" | "action"): string {
+    if (kind === "agent") return "●";
+    if (kind === "wait") return "○";
+    if (kind === "action") return "■";
+    if (kind === "deterministic") return "◆";
+    return "▣";
   }
 
   function publishedRevisionFacts(
@@ -511,6 +521,23 @@
               {publishedRevisionFacts(revision, publishedGraphs[revision.revision_hash])}
               {#if revealingHash === revision.revision_hash} · Loading workflow…{/if}
             </p>
+            {#if publishedNodePreviews(publishedGraphs[revision.revision_hash]) !== null}
+              <ul class="revision-nodes">
+                {#each publishedNodePreviews(publishedGraphs[revision.revision_hash]) ?? [] as preview (preview.id)}
+                  <li class="revision-node" data-kind={preview.kind}>
+                    <span class="revision-node-mark" aria-hidden="true">{kindMark(preview.kind)}</span>
+                    <div>
+                      <span class="node-kind">{preview.kind}</span>
+                      <strong>{preview.id}</strong>
+                      {#if preview.role !== null}<span class="revision-node-role">{preview.role}</span>{/if}
+                      {#if preview.instruction_start !== null}
+                        <p class="revision-node-instruction">{preview.instruction_start}</p>
+                      {/if}
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
             <code class="revision-hash">{revision.revision_hash}</code>
           </details>
         {/if}

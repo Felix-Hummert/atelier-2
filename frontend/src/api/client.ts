@@ -101,17 +101,23 @@ const workflowGraphV2Schema = z
   .superRefine(validateWorkflowGraph);
 
 /**
- * A published V3 revision says what it is and whether this build runs it. It
- * carries no nodes to walk, so there is no graph to validate here -- only the
- * truth the operator has to be told instead of a generic wire-contract failure.
+ * A published V3 revision says what it is and whether this build runs it.
  *
- * `executable` was pinned to `false` here, which mirrored a server that could
- * never answer otherwise. It can now, and a literal would have turned the first
- * honest `true` into exactly the wire-contract failure this shape exists to
- * prevent. `not_executable_reason` carries the server's own words about which
- * form is still waiting, so the operator is told about the document rather than
- * about version 3.
+ * `node_previews` is an excerpt — id, kind, role, instruction start — not
+ * the authored node. The browser must not parse `document_base64` to learn
+ * the same facts.
  */
+const workflowNodePreviewSchema = z
+  .object({
+    id: z.string().min(1),
+    kind: z.enum(["agent", "deterministic", "wait", "subworkflow", "action"]),
+    role: z.string().min(1).max(1_024).nullable(),
+    instruction_start: z.string().min(1).max(120).nullable()
+  })
+  .strict();
+
+export { workflowNodePreviewSchema };
+
 const workflowGraphV3Schema = z
   .object({
     format_version: z.literal(3),
@@ -119,6 +125,7 @@ const workflowGraphV3Schema = z
     not_executable_reason: z.string().nullable(),
     node_count: z.number().int().positive(),
     agent_roles: z.array(z.string().min(1)).max(100),
+    node_previews: z.array(workflowNodePreviewSchema),
     name: z.string().min(1),
     description: z.string().nullable()
   })
