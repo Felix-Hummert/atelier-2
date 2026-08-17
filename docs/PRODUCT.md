@@ -409,9 +409,13 @@ authored constant is refused by the source it named. A workflow name is no
 longer among what is missing either: `--name` runs the revision a catalog name
 holds, asked of the service before anything is written and at the lineage member
 `--position` names, so an operator starts named work without translating a name
-into a hash by hand. The command does not yet carry an order of its own -- that
-seam is `start_published` -- and an output contract that could decide an exit
-code still does not exist.
+into a hash by hand. `--input NAME=VALUE` and `--input-file NAME=PATH` fill the
+`graph_inputs` that workflow declared: the command publishes nothing for them
+and hands the exact JSON bytes to `POST /runs`. A name the document never
+declared, a declared name that is missing, and a value that is not valid JSON
+for the schema the document pinned are each refused by name; a typed 422 from
+the service is handed on in the service's own words. An output contract that
+could decide an exit code still does not exist.
 
 The canonical store is schema V14. A fresh store is created as exact V14 and
 carries published revisions of the closed kind set, lineage membership bound

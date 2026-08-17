@@ -75,10 +75,9 @@ text = "A name the service refuses ends the command unsuccessfully and in the se
 
 # WHAT THE COMMAND STILL DOES NOT DO, named rather than discovered:
 #
-#   - NO `--input`. A run's order as material belongs to the L6 family under #38,
-#     which is built and waiting for exactly this door. Until it lands a named run
-#     repeats the revision the name holds, so a distinct input still needs a
-#     distinct workflow -- the reflex #38 exists to end is not ended here.
+#   - `--input` / `--input-file` now belong to #38 and travel with that item.
+#     A named run carries the order the operator supplied; this file no longer
+#     claims the flag is absent.
 #   - NO ANSWERING A WAIT. A run that stops for a human ends the command
 #     unsuccessfully and says which capability is missing; there is no form here.
 #   - NO VERDICT EXIT CODE. Output contracts are #57. The exit code says whether
