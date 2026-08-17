@@ -47,12 +47,14 @@ reaches that seam.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
 from typing import NoReturn
 
-from jsonschema import Draft202012Validator
+import jsonschema.validators
+from jsonschema import Draft202012Validator, TypeChecker
 from jsonschema_specifications import REGISTRY as SPECIFICATION_REGISTRY
 from referencing import Registry
 from referencing.jsonschema import Schema
@@ -83,7 +85,26 @@ _IN_PLACE_SUBSCHEMA_MAPS = ("dependentSchemas",)
 # decoder refuses every non-canonical literal, so nothing outside this shape
 # reaches a caller.
 type JsonValue = (
-    None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+    None | bool | int | Decimal | str | list["JsonValue"] | dict[str, "JsonValue"]
+)
+
+
+def _is_integer(checker: TypeChecker, instance: object) -> bool:
+    if isinstance(instance, bool):
+        return False
+    if isinstance(instance, int):
+        return True
+    return isinstance(instance, Decimal) and instance == instance.to_integral_value()
+
+
+# Numbers are decoded exactly rather than through float64, because two JSON
+# numbers that differ must stay different: a value whose hash is stored and whose
+# schema is enforced cannot be collapsed onto the nearest double. The evaluator
+# is taught the same vocabulary so `number` and `integer` still mean what the
+# draft says they mean.
+_EXACT_NUMBER_TYPES = Draft202012Validator.TYPE_CHECKER.redefine("integer", _is_integer)
+_ExactNumberValidator = jsonschema.validators.extend(
+    Draft202012Validator, type_checker=_EXACT_NUMBER_TYPES
 )
 
 
@@ -302,17 +323,42 @@ def _first_violation(value: JsonValue, schema: Schema) -> InstanceRefused | None
     earliest place in the value, then the message, so one input always reads
     back one refusal.
     """
-    validator = Draft202012Validator(schema, registry=schema_registry())
+    validator = _ExactNumberValidator(schema, registry=schema_registry())
     errors = sorted(
         validator.iter_errors(value),
-        key=lambda error: ([str(part) for part in error.absolute_path], error.message),
+        key=lambda error: (_ordered_path(error.absolute_path), error.message),
     )
     if not errors:
         return None
     first = errors[0]
-    located = "/".join(str(part) for part in first.absolute_path)
+    located = _pointer(first.absolute_path)
     place = "the value itself" if located == "" else located
     return InstanceRefused(InstanceRefusal.SCHEMA_VIOLATED, f"{place}: {first.message}")
+
+
+def _ordered_path(path: Iterable[object]) -> tuple[tuple[int, int, str], ...]:
+    """A path order a reader expects: index 2 before index 10, keys by name.
+
+    Ordering the parts as text puts `10` before `2`, so the refusal an operator
+    reads first is not the earliest place in their value.
+    """
+    ordered: list[tuple[int, int, str]] = []
+    for part in path:
+        if isinstance(part, int) and not isinstance(part, bool):
+            ordered.append((0, part, ""))
+        else:
+            ordered.append((1, 0, str(part)))
+    return tuple(ordered)
+
+
+def _pointer(path: Iterable[object]) -> str:
+    """The place as an RFC 6901 JSON pointer, so a key can never be misread.
+
+    A key containing `/` or `~` is ambiguous when the parts are simply joined;
+    escaped, `a/b~c` reads as `a~1b~0c` and names exactly one place.
+    """
+    parts = [str(part).replace("~", "~0").replace("/", "~1") for part in path]
+    return "".join(f"/{part}" for part in parts)
 
 
 def _refused_dialect(schema: Schema) -> SchemaRefused | None:
@@ -373,6 +419,7 @@ def _decoded_json(text: str) -> _Decoded | SchemaRefused:
         value: JsonValue = json.loads(
             text,
             parse_constant=_refuse_constant,
+            parse_float=Decimal,
             object_pairs_hook=_refuse_duplicate_keys,
         )
     except _NonCanonicalNumber as refused:
