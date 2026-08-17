@@ -230,6 +230,33 @@ def _validate_bounded_record(
         projection_limit.validate_field_length(len(str(value)))
 
 
+_V3_WORKFLOW_FORMAT_VERSION = 3
+
+
+def _run_ending_event_predicate(
+    workflow_format_version: int, current_node_id: str
+) -> Callable[[tuple[str, str]], bool]:
+    """Whether one endpoint event is the event that ended this run.
+
+    Two families spell an ending differently, and the stream's pre-flight has to
+    ask the question rather than name one spelling. A V1 or V2 line ends on the
+    subworkflow completion of its final node, so the kind alone identifies it. A
+    V3 line ends on its **agent** sink -- #194 H1b lifted the terminal condition
+    off the subworkflow node onto the run -- and there the kind identifies
+    nothing, because every agent node completes with the same kind. What is
+    unambiguous there is the node: the store keeps a completed run standing on
+    its sink, and refuses a terminal state anywhere else.
+
+    Asking the run row rather than parsing its document keeps this check as cheap
+    as it was: it is a pre-flight before stream headers, not a projection.
+    """
+
+    if workflow_format_version == _V3_WORKFLOW_FORMAT_VERSION:
+        return lambda endpoint: endpoint[1] == current_node_id
+    terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value
+    return lambda endpoint: endpoint[0] == terminal_kind
+
+
 def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
     try:
         return AgentAttemptState(str(persisted_value))
@@ -932,9 +959,12 @@ class DbosQueries:
             with self._connection() as connection:
                 record = (
                     connection.execute(
-                        sa.select(runs.c.state, runs.c.last_event_sequence).where(
-                            runs.c.run_id == run_id.value
-                        )
+                        sa.select(
+                            runs.c.state,
+                            runs.c.last_event_sequence,
+                            runs.c.workflow_format_version,
+                            runs.c.current_node_id,
+                        ).where(runs.c.run_id == run_id.value)
                     )
                     .mappings()
                     .one_or_none()
@@ -960,11 +990,15 @@ class DbosQueries:
                 if after_sequence > 0:
                     required_sequences.add(after_sequence)
                 endpoint_records = {
-                    int(endpoint["event_sequence"]): str(endpoint["event_kind"])
+                    int(endpoint["event_sequence"]): (
+                        str(endpoint["event_kind"]),
+                        str(endpoint["node_id"]),
+                    )
                     for endpoint in connection.execute(
                         sa.select(
                             run_events.c.event_sequence,
                             run_events.c.event_kind,
+                            run_events.c.node_id,
                         ).where(
                             run_events.c.run_id == run_id.value,
                             run_events.c.event_sequence.in_(required_sequences),
@@ -973,10 +1007,13 @@ class DbosQueries:
                 }
                 if set(endpoint_records) != required_sequences:
                     return EventHistoryCorrupt()
-                terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value
-                if (endpoint_records[head] == terminal_kind) != terminal or any(
-                    sequence < head and kind == terminal_kind
-                    for sequence, kind in endpoint_records.items()
+                ended_the_run = _run_ending_event_predicate(
+                    int(record["workflow_format_version"]),
+                    str(record["current_node_id"]),
+                )
+                if ended_the_run(endpoint_records[head]) != terminal or any(
+                    sequence < head and ended_the_run(endpoint)
+                    for sequence, endpoint in endpoint_records.items()
                 ):
                     return EventHistoryCorrupt()
                 return StreamReady(head, terminal, after_sequence)

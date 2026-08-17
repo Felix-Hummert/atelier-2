@@ -25,6 +25,7 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     initialize_schema,
     reconcile_commands,
+    run_configuration_revisions,
     run_events,
     runs,
     workflow_revisions,
@@ -145,7 +146,15 @@ def _seed_history(
     missing_sequences: frozenset[int] = frozenset(),
     state: RunState = RunState.STARTED,
     terminal_event: bool = False,
+    workflow_format_version: int = 1,
+    sink_node_id: str | None = None,
 ) -> WorkflowRevision:
+    """One durable history of the exact shape a run of that family leaves.
+
+    `sink_node_id` is what a V3 run stands on when it ends: its agent sink, whose
+    completion carries the same kind as every other node's, so only the node says
+    which event ended the run.
+    """
     revision = WorkflowRevision(_workflow_document())
     event_records = []
     for sequence in range(1, head + 1):
@@ -162,7 +171,11 @@ def _seed_history(
                 "run_id": run_id.value,
                 "revision_hash": revision.revision_hash.value,
                 "event_sequence": sequence,
-                "node_id": f"node-{sequence}",
+                "node_id": (
+                    sink_node_id
+                    if sink_node_id is not None and sequence == head
+                    else f"node-{sequence}"
+                ),
                 "node_execution_id": _digest(f"execution-{run_id.value}-{sequence}"),
                 "event_kind": event_kind.value,
                 "payload": payload,
@@ -179,14 +192,30 @@ def _seed_history(
                 document=revision.document,
             )
         )
+        configuration_hash: str | None = None
+        if workflow_format_version == 3:
+            # The schema keeps a V3 row honest: it stands on the configuration
+            # revision it was started under, and the preimage that hash names.
+            configuration_hash = _digest(f"configuration-{run_id.value}")
+            connection.execute(
+                run_configuration_revisions.insert().values(
+                    revision_hash=configuration_hash,
+                    preimage=b"seeded run configuration",
+                )
+            )
         connection.execute(
             runs.insert().values(
                 run_id=run_id.value,
                 bootstrap_workflow_id=f"workflow-{run_id.value}",
                 revision_hash=revision.revision_hash.value,
-                workflow_format_version=1,
+                workflow_format_version=workflow_format_version,
+                run_configuration_revision_hash=configuration_hash,
                 agent_binding_set_hash=None,
-                current_node_id="final" if state is RunState.COMPLETED else "agent",
+                current_node_id=(
+                    sink_node_id
+                    if sink_node_id is not None
+                    else ("final" if state is RunState.COMPLETED else "agent")
+                ),
                 state=state.value,
                 state_version=head,
                 last_event_sequence=head,
@@ -631,6 +660,56 @@ def test_prepare_rejects_missing_history_endpoint_before_stream_headers(
     assert isinstance(
         durable_queries(engine).prepare_run_event_stream(run_id, 0),
         EventHistoryCorrupt,
+    )
+
+
+def test_prepare_rejects_a_terminal_v3_run_whose_head_event_left_the_sink(
+    engine: Engine,
+) -> None:
+    """The V3 spelling of an ending is checked as strictly as the V1 one.
+
+    A V3 line ends on its agent sink, and every agent node completes with the
+    same kind -- so the node is what says which event ended the run. A completed
+    run whose last event stands somewhere else is a torn history, and naming it
+    is the whole reason this pre-flight exists (#90).
+    """
+    run_id = RunId("v3-head-off-the-sink")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=5,
+        state=RunState.COMPLETED,
+        workflow_format_version=3,
+        sink_node_id=None,
+    )
+
+    assert isinstance(
+        durable_queries(engine).prepare_run_event_stream(run_id, 0),
+        EventHistoryCorrupt,
+    )
+
+
+def test_prepare_opens_a_terminal_v3_run_that_ended_on_its_sink(
+    engine: Engine,
+) -> None:
+    """And the honest history opens, instead of being reported as corruption.
+
+    Before this, every finished V3 run answered `EventHistoryCorrupt` -- the
+    loudest thing this system can say, about a store that is intact -- because
+    the pre-flight knew only the subworkflow spelling of an ending.
+    """
+    run_id = RunId("v3-head-on-the-sink")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=5,
+        state=RunState.COMPLETED,
+        workflow_format_version=3,
+        sink_node_id="sink",
+    )
+
+    assert durable_queries(engine).prepare_run_event_stream(run_id, 0) == StreamReady(
+        5, True, 0
     )
 
 
