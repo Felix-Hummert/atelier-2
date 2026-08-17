@@ -127,18 +127,29 @@ def ordered_configuration(revision: PublishedRevision) -> RunConfigurationRevisi
     )
 
 
-def ordered_run_input() -> RunInput:
-    return RunInput(ORDER_NAME, ORDER_SCHEMA.revision_hash, ORDER_VALUE)
+def ordered_run_input(
+    value: bytes = ORDER_VALUE,
+    schema: PublishedRevisionHash | None = None,
+    name: str = ORDER_NAME,
+) -> RunInput:
+    return RunInput(name, schema or ORDER_SCHEMA.revision_hash, value)
 
 
-def ordered_truth_for(revision: PublishedRevision) -> StartV3RunWithReceiptRequest:
+def ordered_truth_for(
+    revision: PublishedRevision,
+    order_value: bytes = ORDER_VALUE,
+    order_schema: PublishedRevisionHash | None = None,
+    orders_supplied: bool = True,
+) -> StartV3RunWithReceiptRequest:
     """The decided truth for one cooked order of this exact revision."""
     workflow_hash = WorkflowRevisionHash(revision.revision_hash.value)
     execution_id = NodeExecutionId.for_node(ORDERED_RUN_ID, workflow_hash, "cook")
     graph = parse_workflow_document(revision.document)
     assert isinstance(graph, WorkflowGraphV3)
     frozen = ordered_configuration(revision)
-    supplied = (ordered_run_input(),)
+    supplied = (
+        (ordered_run_input(order_value, order_schema),) if orders_supplied else ()
+    )
     bound = bind_node_execution(
         ORDERED_RUN_ID, workflow_hash, graph, "cook", frozen, supplied
     )

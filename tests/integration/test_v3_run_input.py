@@ -15,7 +15,7 @@ large are each refused **by the name of the input**, before anything is written.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -40,6 +40,8 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     DurableV3RunCreated,
+    DurableV3RunExisting,
+    DurableV3StartBindingInvalid,
     DurableV3StartInputRefused,
     V3InputRefusal,
 )
@@ -158,21 +160,34 @@ def test_the_stored_order_can_never_be_changed_or_removed(
 
 @pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
 @pytest.mark.parametrize(
-    ("label", "refusal", "detail"),
+    ("expected_name", "label", "refusal", "detail"),
     (
-        ("nothing supplied for a declared order", V3InputRefusal.MISSING, None),
-        ("an order the document never declared", V3InputRefusal.UNDECLARED, None),
         (
+            ORDER_NAME,
+            "nothing supplied for a declared order",
+            V3InputRefusal.MISSING,
+            None,
+        ),
+        (
+            "an-order-nobody-declared",
+            "an order the document never declared",
+            V3InputRefusal.UNDECLARED,
+            None,
+        ),
+        (
+            ORDER_NAME,
             "a value the schema refuses",
             V3InputRefusal.VALUE_REFUSED,
             "schema-violated",
         ),
         (
+            ORDER_NAME,
             "a value larger than one order may be",
             V3InputRefusal.VALUE_REFUSED,
             "instance-too-large",
         ),
         (
+            ORDER_NAME,
             "an order pinned to a schema the document did not name",
             V3InputRefusal.SCHEMA_MISMATCH,
             "the document pinned",
@@ -182,6 +197,7 @@ def test_the_stored_order_can_never_be_changed_or_removed(
 )
 def test_an_order_the_start_cannot_honour_is_refused_by_its_own_name(
     storage: tuple[Engine, DbosDurableRunStarter],
+    expected_name: str,
     label: str,
     refusal: V3InputRefusal,
     detail: str | None,
@@ -192,46 +208,39 @@ def test_an_order_the_start_cannot_honour_is_refused_by_its_own_name(
     the document to find out which order they got wrong.
     """
     engine, starter = storage
-    decided = ordered_truth_for(ordered_revision())
+    revision = ordered_revision()
+    decided = ordered_truth_for(revision)
     broken = {
-        "missing": replace(decided, run_inputs=()),
-        "undeclared": replace(
+        # Each case is composed coherently around the order it is about, so the
+        # only thing wrong is the thing the case names. Mutating an order after
+        # composition would be refused as an incoherent request instead.
+        "missing": lambda: ordered_truth_for(revision, orders_supplied=False),
+        "undeclared": lambda: replace(
             decided,
             run_inputs=(
                 *decided.run_inputs,
                 replace(decided.run_inputs[0], name="an-order-nobody-declared"),
             ),
         ),
-        "schema-violated": replace(
-            decided,
-            run_inputs=(replace(decided.run_inputs[0], value=b'{"portions": 0}'),),
+        "schema-violated": lambda: ordered_truth_for(
+            revision, order_value=b'{"portions": 0}'
         ),
-        "instance-too-large": replace(
-            decided,
-            run_inputs=(
-                replace(
-                    decided.run_inputs[0], value=b'{"portions": ' + b"1" * 20_000 + b"}"
-                ),
-            ),
+        "instance-too-large": lambda: ordered_truth_for(
+            revision, order_value=b'{"portions": ' + b"1" * 20_000 + b"}"
         ),
-        # A published, perfectly readable schema -- just not the one the document
-        # pinned for this order. Without the revision check the start would
-        # validate the value against a schema nobody asked for and admit it.
-        "the document pinned": replace(
-            decided,
-            run_inputs=(
-                replace(
-                    decided.run_inputs[0], schema_revision=MEAL_SCHEMA.revision_hash
-                ),
-            ),
+        "the document pinned": lambda: ordered_truth_for(
+            revision, order_schema=MEAL_SCHEMA.revision_hash
         ),
-    }[detail or refusal.value]
+    }[detail or refusal.value]()
 
     answer = starter.start_v3_with_receipt(broken)
 
     assert isinstance(answer, DurableV3StartInputRefused)
     assert answer.refusal is refusal
-    assert answer.name in {ORDER_NAME, "an-order-nobody-declared"}
+    # The sentence promises the name of the input it is about, so the expected
+    # name is exact: a regression that names the declared order for the
+    # undeclared case would pass a membership check and fail this one.
+    assert answer.name == expected_name
     if detail is not None:
         assert answer.detail is not None and answer.detail.startswith(detail)
     with engine.connect() as connection:
@@ -240,3 +249,70 @@ def test_an_order_the_start_cannot_honour_is_refused_by_its_own_name(
             connection.scalar(sa.select(sa.func.count()).select_from(run_inputs_v3))
             == 0
         )
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+@pytest.mark.parametrize(
+    ("label", "incoherent"),
+    (
+        ("other bytes", lambda order: replace(order, value=b'{"portions": 5}')),
+        (
+            "another schema",
+            lambda order: replace(order, schema_revision=MEAL_SCHEMA.revision_hash),
+        ),
+        ("another name", lambda order: replace(order, name="another-order")),
+    ),
+    ids=("bytes", "schema", "name"),
+)
+def test_an_order_the_records_do_not_attest_is_refused_without_a_write(
+    storage: tuple[Engine, DbosDurableRunStarter],
+    label: str,
+    incoherent: Callable[[RunInput], RunInput],
+) -> None:
+    """The stored bytes and the records that name them are one truth or none.
+
+    A request composed for one order and then handed a different one would store
+    an order while its own package and request attest another -- durable false
+    truth, and exactly what this story exists to make impossible. The binding is
+    checked in every dimension the records carry: the bytes, the schema revision
+    the order satisfies, and the name it answers to.
+    """
+    engine, starter = storage
+    decided = ordered_truth_for(ordered_revision())
+    forged = replace(decided, run_inputs=(incoherent(decided.run_inputs[0]),))
+
+    answer = starter.start_v3_with_receipt(forged)
+
+    assert isinstance(answer, DurableV3StartBindingInvalid)
+    with engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(run_inputs_v3))
+            == 0
+        )
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_a_retry_with_another_order_is_never_answered_as_the_same_run(
+    storage: tuple[Engine, DbosDurableRunStarter],
+) -> None:
+    """The exact-retry answer is exact, or it is a lie about what was stored.
+
+    After a start of order 4, a request that recomposes cleanly around order 5 is
+    a different run truth. Answering it with the existing run would tell a caller
+    its order was accepted while the row still holds the first one.
+    """
+    engine, starter = storage
+    first = ordered_truth_for(ordered_revision())
+    assert isinstance(starter.start_v3_with_receipt(first), DurableV3RunCreated)
+
+    again = starter.start_v3_with_receipt(ordered_truth_for(ordered_revision()))
+    assert isinstance(again, DurableV3RunExisting)
+
+    other = ordered_truth_for(ordered_revision(), order_value=b'{"portions": 5}')
+    answer = starter.start_v3_with_receipt(other)
+
+    assert not isinstance(answer, DurableV3RunExisting)
+    with engine.connect() as connection:
+        stored = connection.execute(sa.select(run_inputs_v3)).mappings().one()
+    assert bytes(stored["value"]) == ORDER_VALUE

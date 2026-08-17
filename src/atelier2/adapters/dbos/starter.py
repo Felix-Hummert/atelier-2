@@ -50,10 +50,12 @@ from atelier2.contracts.agents import (
     ResolvedAgentBinding,
 )
 from atelier2.contracts.executions import NodeExecutionId
-from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.node_records_v3 import (
     PersistedReceiptDisposition,
+    ProjectedDeliveryStatus,
     ReceiptOutput,
+    RunInput,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
@@ -162,6 +164,8 @@ def _v3_start_is_bound(request: StartV3RunWithReceiptRequest) -> bool:
         or request.run_configuration.workflow_revision_hash
         != node_request.workflow_revision_hash
     ):
+        return False
+    if not _orders_are_attested(request):
         return False
     artifacts = request.artifacts
     if len({artifact.output_name for artifact in artifacts}) != len(artifacts):
@@ -276,6 +280,27 @@ def _stored_v3_start_matches(
             node_request.preimage,
         ),
     }
+    # An order the node reads is covered by the request hash through the package,
+    # so a retry that matches there matches here too. What this comparison adds is
+    # the order the run carries and this node does not read: it sits outside every
+    # hash the retry compares, and only the stored row can speak for it. No test
+    # can make it fire while the admitted shape is one node -- named, not hidden.
+    stored_orders = tuple(
+        (str(row["name"]), str(row["schema_revision_hash"]), str(row["value_hash"]))
+        for row in connection.execute(
+            sa.select(run_inputs_v3)
+            .where(run_inputs_v3.c.run_id == node_request.run_id.value)
+            .order_by(run_inputs_v3.c.name)
+        ).mappings()
+    )
+    expected_orders = tuple(
+        sorted(
+            (order.name, order.schema_revision.value, order.value_hash.value)
+            for order in request.run_inputs
+        )
+    )
+    if stored_orders != expected_orders:
+        return False
     if run_record is None or receipt_record is None:
         return False
     if any(
@@ -418,6 +443,37 @@ def _seam_of(graph: AnyWorkflowDocument) -> _StartSeam:
     if isinstance(graph, WorkflowGraphV3):
         return _StartSeam.V3_FOUNDATION
     return _StartSeam.EXECUTED_BY_THE_RUNTIME
+
+
+def _orders_are_attested(request: StartV3RunWithReceiptRequest) -> bool:
+    """Whether every order this node reads is the order its records attest.
+
+    The bytes are stored under the run while the package and the request speak
+    for them, so a request composed for one order and handed another would make
+    the store say two things at once. Each order the node reads is bound one to
+    one -- name, the schema revision it satisfies, and the hash of its exact
+    bytes -- as a succeeded envelope in the request, and as the package's own
+    orders section, rebuilt here and required byte for byte.
+
+    An order the run carries but this node does not read is not attested by this
+    node's records and is not required to be: another node reads it, and whether
+    the document declares it at all is the start's own question below.
+    """
+    supplied = {order.name: order for order in request.run_inputs}
+    read: list[RunInput] = []
+    for envelope in request.node_request.inputs:
+        if envelope.status is not ProjectedDeliveryStatus.SUCCEEDED:
+            continue
+        order = supplied.get(envelope.name)
+        if (
+            order is None
+            or envelope.schema_revision != order.schema_revision
+            or envelope.value_hash != order.value_hash
+        ):
+            return False
+        read.append(order)
+    section = frame("context-package-orders/v3", *(order.framed() for order in read))
+    return section in request.context_package.manifest
 
 
 def _refused_order(
