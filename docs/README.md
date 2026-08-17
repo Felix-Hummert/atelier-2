@@ -16,6 +16,7 @@ where this map and an owner disagree, the owner is right.
 | What does the machine count as done? | Acceptance | `acceptance/*.toml` at the repository root, with schema and trace rules in [requirements/README.md](requirements/README.md). |
 | Why was it built this way? | Decisions | Records indexed by [decisions/README.md](decisions/README.md). |
 | What exists today? | Product | [PRODUCT.md](PRODUCT.md). Implementation status; its intent section is a derived view. |
+| How is this installation started? | Operations | [OPERATIONS.md](OPERATIONS.md). The operator runbook for the packaged serve. |
 
 Agent policy lives in [`AGENTS.md`](../AGENTS.md) at the repository root, not here.
 

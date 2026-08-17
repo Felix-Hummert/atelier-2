@@ -20,6 +20,7 @@ question is mapped in [docs/README.md](docs/README.md).
 | Reusable agent policy | [AGENTS.md](AGENTS.md); [CLAUDE.md](CLAUDE.md) only loads it for Claude |
 | Foundation verification | [.github/workflows/foundation.yml](.github/workflows/foundation.yml) |
 | Current code verification | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
+| How this installation is started and redeployed | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
 
 Use [.github/pull_request_template.md](.github/pull_request_template.md) to bind
 future changes to their requirement, acceptance evidence, context, decisions,

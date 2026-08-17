@@ -360,6 +360,15 @@ workflow editing. The graph, API, and local cockpit are a proven durable
 vertical, not yet a general-purpose workflow engine or a deployed remote
 product.
 
+A packaged container image now exists for that same local serve: the locked
+project and the built cockpit are baked in, the process runs unprivileged, and
+only the Claude executable is admitted, with isolated `HOME` and a single
+mounted `.credentials.json`. Durable store and scratch are a host volume.
+The live host unit `atelier2-live.service` is still the running serve; the
+container path is documented, not switched live. How to start and redeploy it
+is owned by [OPERATIONS.md](OPERATIONS.md). Network hardening remains
+[ADR 0009](decisions/0009-runner-trust.md).
+
 That API now has a command-line client of its own, so starting real work costs
 one command instead of four ceremonies. `atelier2 run` publishes one workflow
 document and one agent file per bound role, starts the run they describe,
