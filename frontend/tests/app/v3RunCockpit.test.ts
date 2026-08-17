@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -157,3 +157,143 @@ async function completedEvent(nodeId: string, output: string, sequence: number) 
     attempt_ordinal: 1
   };
 }
+
+describe("the click into a node", () => {
+  // Both values stand well over the 120 characters at which the timeline cuts
+  // its preview, because the sentence these tests carry says the panel shows the
+  // job and the answer WHOLE. Under a shorter value a truncating panel passes
+  // every assertion here, so the value is the proof: shorten either one and the
+  // clause stops being tested.
+  const asked =
+    "Judge the draft you were handed, sentence by sentence, and say plainly which of them you would send back to its author, and for what reason.";
+  const wrote =
+    "Ein gutes Code-Review schuetzt vor fehlerhaftem Code. Es liest zuerst die Absicht und danach die Zeilen. Wer nur die Zeilen liest, findet Tippfehler und keine Denkfehler.";
+
+  function nodeDetail(overrides: Record<string, unknown> = {}) {
+    return {
+      run_id: "v3/two-agents",
+      public_run_reference: publicReference,
+      node_id: "implement",
+      state: "succeeded",
+      job_base64: btoa(asked),
+      job_hash: "e".repeat(64),
+      answer: { value_base64: btoa(wrote), value_hash: "f".repeat(64) },
+      provenance: {
+        role: "builder",
+        provider_id: "anthropic",
+        model: "sonnet",
+        executor_revision: "headless-print-json/v1",
+        executor_operational_identity: "headless-print-json/v1",
+        auth_mode: "subscription",
+        profile_id: "operator-subscription",
+        agent_configuration_revision_hash: "a".repeat(64),
+        request_hash: "b".repeat(64),
+        receipt_hash: "c".repeat(64)
+      },
+      refusal: null,
+      ...overrides
+    };
+  }
+
+  it("proves(a-click-into-a-node-shows-what-it-was-asked-and-wrote): asks the server for that node and shows what it was asked, wrote and who ran it", async () => {
+    const getNodeDetail = vi.fn(async () => nodeDetail() as never);
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("implement");
+
+    await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
+
+    expect(getNodeDetail).toHaveBeenCalledWith(publicReference, "implement");
+    // The whole answer, not a preview: an operator asked to see the log.
+    await screen.findByText(asked);
+    await screen.findByText(wrote);
+    await screen.findByText(/builder · anthropic · sonnet/);
+  });
+
+  it("proves(a-click-into-a-node-shows-what-it-was-asked-and-wrote): says usage and duration are not recorded instead of leaving the question open", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => nodeDetail() as never) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("implement");
+
+    await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
+
+    await screen.findByText(/not recorded yet/);
+  });
+
+  it("proves(a-stopped-node-says-so-and-a-waiting-one-does-not): shows the refusal that stops the run, in the words of the owner that refused", async () => {
+    const stopped = nodeDetail({
+      node_id: "review",
+      state: "working",
+      job_base64: null,
+      job_hash: null,
+      answer: null,
+      provenance: null,
+      refusal:
+        "node 'implement' produced an output its own schema refuses: instance-not-json: Expecting value"
+    });
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => stopped as never) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("review");
+
+    await fireEvent.click(screen.getByRole("button", { name: /review/ }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Stopped here");
+    expect(alert.textContent).toContain("instance-not-json");
+    expect(alert.textContent).toContain("implement");
+  });
+
+  it("proves(a-stopped-node-says-so-and-a-waiting-one-does-not): shows a node whose work has not arrived as waiting, not as refused", async () => {
+    const waiting = nodeDetail({
+      node_id: "review",
+      state: "queued",
+      job_base64: null,
+      job_hash: null,
+      answer: null,
+      provenance: null,
+      refusal: null
+    });
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => waiting as never) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("review");
+
+    await fireEvent.click(screen.getByRole("button", { name: /review/ }));
+
+    await screen.findByText(/Waiting for the work before it/);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("proves(a-stopped-node-says-so-and-a-waiting-one-does-not): shows a store that disagrees with itself as a problem, not as a tidy refusal", async () => {
+    const getNodeDetail = vi.fn(async () => {
+      throw new Error("Durable state is corrupt");
+    });
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail: getNodeDetail as never }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("implement");
+
+    await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
+
+    await screen.findByText("This node could not be read");
+    expect(screen.queryByRole("alert")?.textContent ?? "").not.toContain("Stopped here");
+  });
+});
