@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from enum import Enum, auto
 from typing import assert_never
 
 import sqlalchemy as sa
@@ -82,7 +81,6 @@ from atelier2.contracts.workflows import (
 )
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
-    AnyWorkflowDocument,
     WorkflowGraphV3,
 )
 from atelier2.ports.agent_executions import AgentExecutorKey, AgentExecutorRegistry
@@ -403,25 +401,12 @@ def _stored_v3_start_matches(
     )
 
 
-class _StartSeam(Enum):
-    """Which document family one start entry point exists for.
-
-    One value decides both halves that used to be independent booleans -- which
-    format is admitted, and whether a bootstrap is enqueued -- because the two
-    combinations nobody wants are the dangerous ones: a V3 run that enqueues work
-    no runtime executes, and a runtime run that is written and never started.
-    """
-
-    EXECUTED_BY_THE_RUNTIME = auto()
-    V3_FOUNDATION = auto()
-
-
-def _foundation_run_configuration(
+def _v3_run_configuration(
     graph: WorkflowGraphV3,
     revision_hash: WorkflowRevisionHash,
     binding_set: AgentBindingSet,
 ) -> RunConfigurationRevision:
-    """The exact snapshot a foundation V3 run is bound to.
+    """The exact snapshot a V3 run is bound to.
 
     The admitted shape declares no versioned reference at all -- every optional
     form is refused before a run exists -- so the matrix is empty and complete,
@@ -438,13 +423,6 @@ def _foundation_run_configuration(
     return RunConfigurationRevision(revision_hash, binding_set.binding_set_hash, ())
 
 
-def _seam_of(graph: AnyWorkflowDocument) -> _StartSeam:
-    """The one seam a parsed document belongs to."""
-    if isinstance(graph, WorkflowGraphV3):
-        return _StartSeam.V3_FOUNDATION
-    return _StartSeam.EXECUTED_BY_THE_RUNTIME
-
-
 def _orders_are_attested(request: StartV3RunWithReceiptRequest) -> bool:
     """Whether every order this node reads is the order its records attest.
 
@@ -459,6 +437,12 @@ def _orders_are_attested(request: StartV3RunWithReceiptRequest) -> bool:
     node's records and is not required to be: another node reads it, and whether
     the document declares it at all is the start's own question below.
     """
+    names = [order.name for order in request.run_inputs]
+    if len(names) != len(set(names)):
+        # A name answers one order. Two under the same name reach the primary key
+        # as a collision, and a collision is reported as durable corruption --
+        # which names the store when the thing that is wrong is the request.
+        return False
     supplied = {order.name: order for order in request.run_inputs}
     read: list[RunInput] = []
     for envelope in request.node_request.inputs:
@@ -557,37 +541,25 @@ class DbosDurableRunStarter:
     ) -> DurablePublishedRunResult:
         """Start one published revision the runtime can execute end to end.
 
-        A V3 revision is refused here even though the document parses, because
-        nothing executes it yet: no advance path, no wire resource, no attempt
-        arm. Admitting it would write a run and enqueue a bootstrap for work that
-        cannot proceed, and the caller would learn about it as a 500 after the
-        state already existed. The foundation seam below is how a V3 revision is
-        reached instead, and it enqueues nothing.
+        A V3 revision starts here like any other, because the runtime now drives
+        one: the attempt path binds a V3 agent node (#194 H1c), the terminal
+        condition belongs to the run rather than a subworkflow node (H1b), and a
+        node hands on to the heir its author declared (H2). While none of that
+        existed, this seam refused V3 by document family and a separate internal
+        foundation seam wrote the run without enqueueing anything; both are gone,
+        because a second door is only honest while the first one cannot open.
+
+        What refuses an unexecutable V3 document is one layer down and always
+        was: `parse_executable_workflow_document` names what the document still
+        waits for -- an uninterpreted node kind, a branch nothing chooses between
+        -- before this seam is consulted, so admitting the family here does not
+        admit a graph the driver would stall on.
         """
-        return self._start(request, _StartSeam.EXECUTED_BY_THE_RUNTIME)
-
-    def start_v3_foundation(
-        self, request: StartPublishedRunRequestV2
-    ) -> DurablePublishedRunResult:
-        """Persist one V3 run's foundation, and start nothing.
-
-        Internal on purpose: it exists so #194 H1a can prove that the admitted V3
-        shape becomes a durable run of its own format, and it deliberately does
-        not enqueue a bootstrap, because no runtime owns the execution until
-        H1c. No public route reaches it.
-
-        It is the public seam's mirror rather than its complement: that one
-        refuses V3, and this one refuses everything else, both before any write.
-        A V1 revision reaching here wrote a durable STARTED run that nothing
-        would ever enqueue; the V1 *request* form cannot reach here at all,
-        because this signature takes the bound form.
-        """
-        return self._start(request, _StartSeam.V3_FOUNDATION)
+        return self._start(request)
 
     def _start(
         self,
         request: AnyStartPublishedRunRequest,
-        seam: _StartSeam,
     ) -> DurablePublishedRunResult:
         try:
             with self._engine.connect() as read_connection:
@@ -604,13 +576,11 @@ class DbosDurableRunStarter:
             if revision.revision_hash != request.revision_hash:
                 return DurableStateCorrupt()
             graph = parse_executable_workflow_document(revision.document)
-            if _seam_of(graph) is not seam:
-                return DurableRunFormatNotExecutable()
             run_configuration: RunConfigurationRevision | None = None
             if isinstance(graph, WorkflowGraphV3):
                 if not isinstance(request, StartPublishedRunRequestV2):
                     return DurableInvalidAgentBindings()
-                run_configuration = _foundation_run_configuration(
+                run_configuration = _v3_run_configuration(
                     graph,
                     WorkflowRevisionHash(revision.revision_hash.value),
                     request.agent_bindings,
@@ -854,13 +824,12 @@ class DbosDurableRunStarter:
                     "workflow_id": workflow_id,
                     "app_version": self._settings.application_version,
                 }
-                if seam is _StartSeam.EXECUTED_BY_THE_RUNTIME:
-                    client.enqueue_in_transaction(
-                        connection,
-                        options,
-                        request.run_id.value,
-                        request.revision_hash.value,
-                    )
+                client.enqueue_in_transaction(
+                    connection,
+                    options,
+                    request.run_id.value,
+                    request.revision_hash.value,
+                )
                 return DurableRunCreated(run)
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()

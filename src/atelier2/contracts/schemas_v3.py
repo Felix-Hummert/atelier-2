@@ -89,10 +89,6 @@ type JsonValue = (
 )
 
 
-def _is_number(checker: TypeChecker, instance: object) -> bool:
-    return isinstance(instance, (int, Decimal)) and not isinstance(instance, bool)
-
-
 def _is_integer(checker: TypeChecker, instance: object) -> bool:
     if isinstance(instance, bool):
         return False
@@ -107,8 +103,8 @@ def _is_integer(checker: TypeChecker, instance: object) -> bool:
 # is taught the same vocabulary so `number` and `integer` still mean what the
 # draft says they mean.
 _EXACT_NUMBER_VALIDATOR = Draft202012Validator.TYPE_CHECKER.redefine(
-    "number", _is_number
-).redefine("integer", _is_integer)
+    "integer", _is_integer
+)
 ExactNumberValidator = jsonschema.validators.extend(
     Draft202012Validator, type_checker=_EXACT_NUMBER_VALIDATOR
 )

@@ -316,3 +316,30 @@ def test_a_retry_with_another_order_is_never_answered_as_the_same_run(
     with engine.connect() as connection:
         stored = connection.execute(sa.select(run_inputs_v3)).mappings().one()
     assert bytes(stored["value"]) == ORDER_VALUE
+
+
+@pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
+def test_two_orders_under_one_name_are_refused_before_the_store_collides(
+    storage: tuple[Engine, DbosDurableRunStarter],
+) -> None:
+    """A name answers one order, and the refusal must say so, not the store.
+
+    Two orders under one name reach the primary key as a collision, and a
+    collision is reported as durable corruption -- which names the store when the
+    thing that is wrong is the request. The structural refusal comes first.
+    """
+    engine, starter = storage
+    decided = ordered_truth_for(ordered_revision())
+    # The same order twice: the envelope binding cannot see it, because a name
+    # maps to one order and both are that order. Only a structural check can.
+    twice = replace(decided, run_inputs=(decided.run_inputs[0], decided.run_inputs[0]))
+
+    answer = starter.start_v3_with_receipt(twice)
+
+    assert isinstance(answer, DurableV3StartBindingInvalid)
+    with engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(run_inputs_v3))
+            == 0
+        )

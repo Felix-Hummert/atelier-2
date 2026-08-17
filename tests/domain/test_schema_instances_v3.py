@@ -186,6 +186,10 @@ def test_a_recursive_schema_the_profile_admits_evaluates_to_an_answer() -> None:
         ("an exponent past float range", b'{"type": "number"}', b"1e400", True),
         ("that exponent is not infinity", b'{"const": 1e400}', b"2e400", False),
         ("a decimal fraction keeps its identity", b'{"const": 0.1}', b"0.1", True),
+        # `integer` must still mean integer once numbers stop being floats: 4.0
+        # is an integral decimal and the draft admits it, 4.5 is not.
+        ("an integral decimal is an integer", b'{"type": "integer"}', b"4.0", True),
+        ("a fractional decimal is not", b'{"type": "integer"}', b"4.5", False),
     ),
     ids=(
         "adjacent-below",
@@ -193,6 +197,8 @@ def test_a_recursive_schema_the_profile_admits_evaluates_to_an_answer() -> None:
         "overflow",
         "overflow-distinct",
         "fraction",
+        "integral-decimal",
+        "fractional-decimal",
     ),
 )
 def test_two_numbers_that_differ_stay_different(
