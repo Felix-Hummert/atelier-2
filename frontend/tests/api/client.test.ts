@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,6 +13,48 @@ import {
   type Problem
 } from "../../src/api/client";
 import { workflowRevision } from "../support/workflowV1";
+
+const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
+
+/**
+ * The frozen OpenAPI document is the one object both sides can read. The
+ * schema-* problems are generated from SchemaDocumentRefusal, so a new enum
+ * member publishes a type without anyone editing this file. Collecting every
+ * type.const with the problem prefix, and the title.const and status.const
+ * that sit beside it, is what makes that drift fail here.
+ */
+const servedDocument = JSON.parse(
+  readFileSync(resolve(process.cwd(), "..", "tests", "api", "openapi_frozen.json"), "utf8")
+) as {
+  components: {
+    schemas: Record<
+      string,
+      {
+        properties?: {
+          type?: { const?: string };
+          title?: { const?: string };
+          status?: { const?: number };
+        };
+      }
+    >;
+  };
+};
+
+function publishedProblemDefinitions(document: typeof servedDocument) {
+  return Object.fromEntries(
+    Object.values(document.components.schemas).flatMap((schema) => {
+      const type = schema.properties?.type?.const;
+      return typeof type === "string" && type.startsWith(PROBLEM_TYPE_PREFIX)
+        ? [
+            [
+              type.slice(PROBLEM_TYPE_PREFIX.length),
+              { status: schema.properties?.status?.const, title: schema.properties?.title?.const }
+            ]
+          ]
+        : [];
+    })
+  );
+}
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
@@ -343,6 +387,21 @@ describe("closed API decoders", () => {
     expect(() => decodeProblem({ ...problem, type: "urn:atelier2:problem:v1:new-problem" })).toThrow();
   });
 
+  it("decodes a published run-input-refused problem instead of calling it undocumented", () => {
+    const problem = decodeProblem({
+      type: "urn:atelier2:problem:v1:run-input-refused",
+      title: "Run input refused",
+      status: 422,
+      detail: "Supply exactly the orders this workflow declares, each satisfying the schema its author pinned."
+    });
+    expect(problem).toEqual({
+      type: "urn:atelier2:problem:v1:run-input-refused",
+      title: "Run input refused",
+      status: 422,
+      detail: "Supply exactly the orders this workflow declares, each satisfying the schema its author pinned."
+    });
+  });
+
   it.each(Object.entries(problemDefinitions))(
     "binds problem %s to its exact title and status",
     (code, definition) => {
@@ -358,8 +417,8 @@ describe("closed API decoders", () => {
     }
   );
 
-  it("matches the complete R2 problem definition matrix", () => {
-    expect(problemDefinitions).toEqual(expectedProblemDefinitions);
+  it("decodes exactly the problem definitions the document publishes", () => {
+    expect(problemDefinitions).toEqual(publishedProblemDefinitions(servedDocument));
   });
 });
 
@@ -428,47 +487,6 @@ describe("agent configuration publication", () => {
     ).rejects.toThrow("did not match the durable wire contract");
   });
 });
-
-const expectedProblemDefinitions = {
-  "auth-profile-revision-conflict": { status: 409, title: "Auth profile revision conflict" },
-  "auth-profile-revision-collision": { status: 409, title: "Auth profile revision collision" },
-  "auth-profile-revision-not-found": { status: 404, title: "Auth profile revision not found" },
-  "agent-executor-binding-unavailable": { status: 409, title: "Agent executor binding unavailable" },
-  "agent-configuration-revision-collision": { status: 409, title: "Agent configuration revision collision" },
-  "agent-configuration-revision-not-found": { status: 404, title: "Agent configuration revision not found" },
-  "invalid-agent-bindings": { status: 422, title: "Invalid agent bindings" },
-  "invalid-public-run-reference": { status: 400, title: "Invalid public run reference" },
-  "invalid-event-cursor": { status: 400, title: "Invalid event cursor" },
-  "invalid-revision-hash": { status: 400, title: "Invalid revision hash" },
-  "event-cursor-run-mismatch": { status: 409, title: "Event cursor belongs to another run" },
-  "event-cursor-ahead": { status: 409, title: "Event cursor is ahead of durable history" },
-  "invalid-request": { status: 422, title: "Invalid request" },
-  "invalid-base64": { status: 422, title: "Invalid base64" },
-  "invalid-workflow-document": { status: 422, title: "Invalid workflow document" },
-  "unsupported-media-type": { status: 415, title: "Unsupported media type" },
-  "not-acceptable": { status: 406, title: "Not acceptable" },
-  "workflow-revision-not-found": { status: 404, title: "Workflow revision not found" },
-  "run-not-found": { status: 404, title: "Run not found" },
-  "node-not-found": { status: 404, title: "Node not found" },
-  "revision-collision": { status: 409, title: "Workflow revision collision" },
-  "run-identity-conflict": { status: 409, title: "Run identity conflict" },
-  "answer-revision-conflict": { status: 409, title: "Answer revision conflict" },
-  "answer-state-conflict": { status: 409, title: "Answer state conflict" },
-  "answer-bytes-conflict": { status: 409, title: "Answer bytes conflict" },
-  "reconciliation-target-missing": { status: 409, title: "Reconciliation target missing" },
-  "reconciliation-stale": { status: 409, title: "Reconciliation is stale" },
-  "reconciliation-command-conflict": { status: 409, title: "Reconciliation command conflict" },
-  "reconciliation-determination-conflict": {
-    status: 409,
-    title: "Reconciliation determination conflict"
-  },
-  "reconciliation-rejected": { status: 409, title: "Reconciliation was rejected" },
-  "route-not-found": { status: 404, title: "Route not found" },
-  "method-not-allowed": { status: 405, title: "Method not allowed" },
-  "temporarily-unavailable": { status: 503, title: "Temporarily unavailable" },
-  "durable-state-corrupt": { status: 500, title: "Durable state is corrupt" },
-  "internal-error": { status: 500, title: "Internal error" }
-} as const;
 
 function startedRun(changes: Record<string, unknown> = {}) {
   return {
