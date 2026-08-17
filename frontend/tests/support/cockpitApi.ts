@@ -21,6 +21,7 @@ export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi 
     answer: vi.fn(),
     reconcile: vi.fn(),
     getRun: vi.fn(),
+    getNodeDetail: vi.fn(),
     getWorkflowRevision: vi.fn(),
     openRunEvents: vi.fn(() => ({ close: vi.fn() })),
     ...overrides

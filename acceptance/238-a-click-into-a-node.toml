@@ -58,3 +58,22 @@ text = "One read of one node of a run answers what that node was handed -- the e
 [[sentence]]
 id = "a-node-that-stops-the-run-says-what-it-is-waiting-on"
 text = "A node that cannot be given what its author declared it reads names the refusal that stops it, in the words of the owner that refused -- and only then: a node whose predecessor has not written yet carries no refusal at all, and a store that disagrees with itself is reported as corruption rather than dressed as a refusal, so a run standing still says why it stands still and a run merely waiting is not called stopped."
+
+# THE PANEL. The read above hands a caller four answers; this is where an operator
+# actually clicks. Two sentences rather than one, because the second is what the
+# API repair bought: the panel has to keep three situations apart that used to
+# arrive as one. A node that was refused says so, loudly. A node whose work has
+# not arrived says it is waiting and nothing more. A store that disagrees with
+# itself never reaches the panel at all -- it answers as a problem, and the page
+# shows that instead.
+#
+# The output is shown whole. The operator asked to see the log, and a panel that
+# truncated the answer would make him open something else to read the rest.
+
+[[sentence]]
+id = "a-click-into-a-node-shows-what-it-was-asked-and-wrote"
+text = "A click on a node of a run opens that node: the exact job it was handed and the exact value it wrote, both whole rather than previewed, the hash each carries, and which agent under which configuration produced it -- and where usage and duration would stand, the panel says they are not recorded rather than leaving an operator to wonder."
+
+[[sentence]]
+id = "a-stopped-node-says-so-and-a-waiting-one-does-not"
+text = "A node that stopped the run shows the refusal that stopped it, in the words of the owner that refused; a node whose work has simply not arrived shows that it is waiting and carries no refusal at all; and a store that disagrees with itself is shown as a problem rather than dressed as either."

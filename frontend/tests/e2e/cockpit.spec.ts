@@ -536,3 +536,126 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
 
   await page.screenshot({ path: "test-results/v3-run-live.png", fullPage: true });
 });
+
+test("clicking a stuck node says what stopped the run, and the node before it shows its whole log", async ({
+  page
+}) => {
+  // The operator's own silence, reproduced in a browser. `live/die-kette-sieht`
+  // stood on STARTED with nothing to read: its first node wrote prose while its
+  // author had pinned a text schema, so the chain refused to hand the value on
+  // and no surface said why. The e2e provider writes raw bytes for the same
+  // reason, so the same refusal appears here.
+  const api = "/atelier/api/v1";
+
+  const schema = await page.request.post(`${api}/schema-revisions`, {
+    headers: { "content-type": "application/json" },
+    data: '{"type": "string"}'
+  });
+  expect([200, 201]).toContain(schema.status());
+  const schemaHash = (await schema.json()).revision_hash as string;
+
+  const workflowYaml = [
+    "format_version: 3",
+    "name: the chain the operator watched",
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Write three German sentences about code review.",
+    "    outputs:",
+    "      - name: draft",
+    "        schema:",
+    "          ref: text-schema",
+    `          revision: ${schemaHash}`,
+    "  - id: review",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Judge the draft you were handed.",
+    "    depends_on: [implement]",
+    "    inputs:",
+    "      - name: draft",
+    "        from:",
+    "          node: implement",
+    "          output: draft",
+    ""
+  ].join("\n");
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).revision_hash as string;
+
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: {
+      profile_id: "v3-stuck",
+      revision_number: 1,
+      provider_id: "e2e-v3",
+      auth_mode: "subscription"
+    }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: "v3-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 2,
+      run_id: "v3/the-silent-one",
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [
+        {
+          role: "builder",
+          agent_configuration_revision_hash: (await configuration.json())
+            .agent_configuration_revision_hash
+        }
+      ]
+    }
+  });
+  expect(started.status()).toBe(201);
+  const reference = (await started.json()).public_run_reference as string;
+
+  // The run cannot finish: the value the first node wrote is not what its own
+  // schema admits, so the chain stops with the second node standing.
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${reference}`);
+    expect(read.status()).toBe(200);
+    const body = await read.json();
+    expect(body.state).toBe("STARTED");
+    expect(body.current_node_id).toBe("review");
+  }).toPass({ timeout: 15_000 });
+
+  await page.goto(`/atelier/runs/${reference}`);
+  await expect(page.getByRole("heading", { level: 1, name: "Run v3/the-silent-one" })).toBeVisible();
+
+  await page.getByRole("button", { name: /review/ }).click();
+  const stopped = page.getByRole("alert");
+  await expect(stopped).toContainText("Stopped here");
+  await expect(stopped).toContainText("instance-not-json");
+  await expect(stopped).toContainText("implement");
+  await page.screenshot({ path: "test-results/v3-node-refusal.png", fullPage: true });
+
+  await page.getByRole("button", { name: /implement/ }).click();
+  await expect(page.getByLabel("Asked")).toContainText(
+    "Write three German sentences about code review."
+  );
+  // The same value twice on one page, and that is the division of labour: the
+  // timeline keeps it short so movement stays readable, the panel shows the
+  // whole log the operator asked for.
+  await expect(page.getByLabel("Answered")).toContainText("V3 provider bytes");
+  await expect(page.getByLabel("Events as they arrive")).toContainText(
+    "V3 provider bytes"
+  );
+  await expect(page.getByText(/not recorded yet/)).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.screenshot({ path: "test-results/v3-node-detail.png", fullPage: true });
+});
