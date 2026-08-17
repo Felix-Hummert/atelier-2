@@ -23,14 +23,16 @@ state machine. Cancellation returns `202` while cleanup is pending and `200` for
 an exact terminal retry. Stale, terminal, non-current, conflicting-command, and
 forbidden-replacement requests are distinct closed problems.
 
-V1 and V2 workflow, start, run, and SSE resources coexist as exact closed
-unions. Workflow and run resources carry `format_version` or
-`workflow_format_version`; start uses the closed shape itself to select the
-version. A V2 run projection includes its immutable, public binding matrix. A V2
-`AGENT_COMPLETED` event carries canonical Base64 plus the exact output hash so
-arbitrary bytes never pass through UTF-8 decoding. The preexisting V1 raw JSON
-and named OpenAPI components are byte-frozen; adding V2 does not silently widen
-them. The SSE envelope carries only `id` and `data`: omitting the transport
+V1, V2, and V3 SSE event resources coexist as exact closed unions. V1 and V2
+workflow, start, and run resources remain their own closed families. Workflow
+and run resources carry `format_version` or `workflow_format_version`; start
+uses the closed shape itself to select the version. A V2 run projection includes
+its immutable, public binding matrix. A V2 or V3 `AGENT_COMPLETED` event carries
+canonical Base64 plus the exact output hash so arbitrary bytes never pass
+through UTF-8 decoding. The preexisting V1 raw JSON and named OpenAPI
+components are byte-frozen; adding V2 or V3 does not silently widen them. The
+V3 event family publishes only the agent kinds a format-3 line actually writes.
+The SSE envelope carries only `id` and `data`: omitting the transport
 `event:` field makes every frame a default `message`, while `data.event` is the
 sole domain discriminant. The stream has exactly two frame shapes under that
 one envelope: a durable event, which carries its cursor as `id`, and the

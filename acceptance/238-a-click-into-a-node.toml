@@ -1,0 +1,34 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/238"
+
+# THE OPERATOR'S WISH, AND THE FIRST HONEST SLICE OF IT. #238 wants a click into a
+# node to show what it was asked, what it answered, and the receipt that proves
+# neither moved. This head does not build that panel. It removes the lie the panel
+# would have been built on: a format-3 run projected its events through the V1
+# mapping, so every event of a V3 run arrived naming no format and carrying no
+# node rail -- a cockpit reading the stream of a run it had just started could not
+# tell which family it was looking at, nor where the run stood after the event it
+# had just received.
+#
+# WHAT IS MEASURED AND WAITING, so the next head cuts rather than searches:
+#
+#   * the ASK is derivable, hash-bound: `node_job` composes what the provider was
+#     handed, and the attempt guard already recomputes it byte for byte against
+#     the stored request hash.
+#   * the ANSWER is durable twice over: `run_events.payload` with its
+#     `payload_hash`, and the receipt's `output_bytes` with its `output_hash`.
+#   * the RECEIPT carries provenance -- provider, model, executor revision,
+#     operational identity, auth mode, role, and the binding and configuration
+#     hashes.
+#   * USAGE AND DURATION ARE NOT THERE. The item asks for them; no column holds
+#     them. That is a measurement, not an omission of this file: a node-detail
+#     answer can prove what ran and what came out, and cannot yet say what it
+#     cost or how long it took.
+#
+# The node-detail answer itself -- one read that hands a caller those three
+# layers for one node -- is the next head, and it is a route, a use case and a
+# query rather than a projection fix.
+
+[[sentence]]
+id = "a-format-three-event-answers-in-the-shape-that-says-so"
+text = "Every event of a format-3 run answers in its own shape: it names the format it belongs to and carries the node rail that says where the run stands once that event is folded in, instead of borrowing the V1 shape that says neither -- and a kind a V3 run's nodes can never write is refused rather than rendered as something a reader would believe."
