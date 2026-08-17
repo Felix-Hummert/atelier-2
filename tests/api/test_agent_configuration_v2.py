@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 import pytest
@@ -20,6 +20,7 @@ from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
+    AgentConfigurationRevisionHash,
     AgentExecutionCapability,
     AgentExecutionRequestHash,
     AgentExecutorRevision,
@@ -42,11 +43,13 @@ from atelier2.contracts.workflow_projections import WorkflowRevisionProjection
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCollision,
     AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionPage,
     AgentExecutorBindingUnavailable,
     AuthProfileRevisionCollision,
     AuthProfileRevisionConflict,
     AuthProfileRevisionCreated,
     AuthProfileRevisionMissing,
+    CatalogReadUnavailable,
 )
 from atelier2.ports.durable_runs import (
     DurableRunCreated,
@@ -96,8 +99,10 @@ class RecordingCatalog:
 
     auth_result: object
     configuration_result: object | None = None
+    list_result: object = AgentConfigurationRevisionPage((), None)
     auth_calls: int = 0
     configuration_calls: int = 0
+    list_calls: list[tuple[object, int]] = field(default_factory=list)
 
     def publish_auth_profile_revision(self, revision: AuthProfileRevision) -> object:
         self.auth_calls += 1
@@ -117,6 +122,10 @@ class RecordingCatalog:
 
     def agent_configuration_revision(self, _revision_hash: object) -> None:
         return None
+
+    def list_agent_configuration_revisions(self, after: object, limit: int) -> object:
+        self.list_calls.append((after, limit))
+        return self.list_result
 
 
 def _client(catalog: RecordingCatalog) -> TestClient:
@@ -380,6 +389,98 @@ def test_openapi_names_both_publish_operations_and_exact_problem_sets() -> None:
     ]["graph"]
     assert set(graph["discriminator"]["mapping"]) == {"1", "2", "3"}
     assert len(graph["oneOf"]) == 3
+
+
+def test_list_answers_with_the_published_item_form_and_no_secrets() -> None:
+    catalog = RecordingCatalog(
+        object(),
+        list_result=AgentConfigurationRevisionPage(((CONFIGURATION, AUTH),), None),
+    )
+
+    response = _client(catalog).get(API_PREFIX + "/agent-configuration-revisions")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "model": "claude-opus-4-1",
+                "auth_profile_revision_hash": AUTH.revision_hash.value,
+                "executor_revision": "claude-cli/v1",
+                "provider_id": "anthropic",
+                "auth_mode": "subscription",
+                "requested_capability": "headless",
+                "agent_configuration_revision_hash": CONFIGURATION.revision_hash.value,
+            }
+        ],
+        "next_after_revision_hash": None,
+    }
+    assert all(
+        forbidden not in response.text.lower()
+        for forbidden in ("secret", "credential", "handle", "api_key_value")
+    )
+    assert catalog.list_calls == [(None, 50)]
+
+
+def test_list_pages_with_the_workflow_revision_cursor() -> None:
+    catalog = RecordingCatalog(
+        object(),
+        list_result=AgentConfigurationRevisionPage(
+            ((CONFIGURATION, AUTH),), CONFIGURATION.revision_hash
+        ),
+    )
+
+    response = _client(catalog).get(
+        API_PREFIX + "/agent-configuration-revisions",
+        params={"after_revision_hash": "a" * 64, "limit": "1"},
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["next_after_revision_hash"] == CONFIGURATION.revision_hash.value
+    )
+    after, limit = catalog.list_calls[0]
+    assert isinstance(after, AgentConfigurationRevisionHash)
+    assert after.value == "a" * 64
+    assert limit == 1
+
+
+def test_list_empty_is_an_empty_page() -> None:
+    response = _client(RecordingCatalog(object())).get(
+        API_PREFIX + "/agent-configuration-revisions"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "next_after_revision_hash": None}
+
+
+def test_list_refuses_a_malformed_cursor_before_the_catalog() -> None:
+    catalog = RecordingCatalog(object())
+
+    response = _client(catalog).get(
+        API_PREFIX + "/agent-configuration-revisions",
+        params={"after_revision_hash": "not-a-hash"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["type"].endswith(":invalid-revision-hash")
+    assert catalog.list_calls == []
+
+
+@pytest.mark.parametrize(
+    ("result", "status", "code"),
+    [
+        (CatalogReadUnavailable("store asleep"), 503, "temporarily-unavailable"),
+        (DurableStateCorrupt(), 500, "durable-state-corrupt"),
+    ],
+)
+def test_list_maps_every_read_refusal(result: object, status: int, code: str) -> None:
+    response = _client(RecordingCatalog(object(), list_result=result)).get(
+        API_PREFIX + "/agent-configuration-revisions"
+    )
+
+    assert response.status_code == status
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["type"] == f"urn:atelier2:problem:v1:{code}"
 
 
 def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> None:

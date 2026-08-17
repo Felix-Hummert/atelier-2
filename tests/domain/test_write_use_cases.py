@@ -174,6 +174,9 @@ class ScriptedCatalog:
     def agent_configuration_revision(self, revision_hash: Any) -> Any:
         raise AssertionError("a publication under test read the catalog back")
 
+    def list_agent_configuration_revisions(self, after: Any, limit: int) -> Any:
+        raise AssertionError("a publication under test listed the catalog")
+
 
 class ScriptedStarter:
     def __init__(self, answer: Any) -> None:

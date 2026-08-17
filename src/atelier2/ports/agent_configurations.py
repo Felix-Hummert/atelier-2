@@ -13,6 +13,22 @@ from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavail
 
 
 @dataclass(frozen=True)
+class AgentConfigurationRevisionPage:
+    items: tuple[tuple[AgentConfigurationRevision, AuthProfileRevision], ...]
+    next_after: AgentConfigurationRevisionHash | None
+
+
+@dataclass(frozen=True)
+class CatalogReadUnavailable:
+    detail: str | None = None
+
+
+type ListAgentConfigurationRevisionsResult = (
+    AgentConfigurationRevisionPage | CatalogReadUnavailable | DurableStateCorrupt
+)
+
+
+@dataclass(frozen=True)
 class AuthProfileRevisionCreated:
     revision: AuthProfileRevision
 
@@ -96,3 +112,7 @@ class AgentConfigurationCatalog(Protocol):
     def agent_configuration_revision(
         self, revision_hash: AgentConfigurationRevisionHash
     ) -> tuple[AgentConfigurationRevision, AuthProfileRevision] | None: ...
+
+    def list_agent_configuration_revisions(
+        self, after: AgentConfigurationRevisionHash | None, limit: int
+    ) -> ListAgentConfigurationRevisionsResult: ...
