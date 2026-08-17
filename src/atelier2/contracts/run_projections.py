@@ -17,7 +17,7 @@ from atelier2.contracts.effects import EffectIntentSnapshot, ReconcileCommandSna
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId
-from atelier2.contracts.workflows import AnyWorkflowGraph
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 
 
 class NodeState(StrEnum):
@@ -107,7 +107,7 @@ class AgentAttemptProjection:
 @dataclass(frozen=True)
 class RunProjection:
     run: AnyRun
-    graph: AnyWorkflowGraph
+    graph: AnyWorkflowDocument
     reconciliation: WaitingReconciliationProjection | None
     agent_attempts: tuple[AgentAttemptProjection, ...] = ()
 

@@ -26,6 +26,7 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
+from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 
 EFFECT_WORKFLOW_ID_PREFIX = "atelier2-effect-"
 
@@ -60,6 +61,11 @@ def graph_action_intent(
         or not isinstance(action, ActionNode)
     ):
         raise RunEffectConflict("effect requires the current STARTED Action")
+    if isinstance(graph, WorkflowGraphV3):
+        # Unreachable today: the executable door refuses a V3 document carrying an
+        # Action node, so no V3 run owns one. Named rather than assumed, so the
+        # day an Action kind is interpreted this says what is missing.
+        raise RunEffectConflict("a V3 Action node has no effect path yet")
     predecessor = graph.predecessor(action.id)
     if not isinstance(predecessor, (AgentNode, AgentNodeV2)):
         raise RunEffectConflict("Action predecessor is not an Agent")

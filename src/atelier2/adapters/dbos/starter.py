@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from enum import Enum, auto
 from typing import assert_never
 
 import sqlalchemy as sa
@@ -14,6 +15,7 @@ from atelier2.adapters.dbos.agent_catalog import (
     auth_profile_from_record,
 )
 from atelier2.adapters.dbos.run_store import (
+    entry_node_of,
     run_from_record,
     run_from_record_with_bindings,
 )
@@ -49,14 +51,22 @@ from atelier2.contracts.node_records_v3 import (
     ReceiptOutput,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import (
     RunId,
     RunState,
     WorkflowRevision,
 )
-from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraph, WorkflowGraphV2
-from atelier2.contracts.workflows_v3 import WorkflowGraphV3
+from atelier2.contracts.workflows import (
+    AgentNodeV2,
+    WorkflowGraph,
+    WorkflowGraphV2,
+)
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    AnyWorkflowDocument,
+    WorkflowGraphV3,
+)
 from atelier2.ports.agent_executions import AgentExecutorKey, AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
@@ -309,6 +319,26 @@ def _stored_v3_start_matches(
     )
 
 
+class _StartSeam(Enum):
+    """Which document family one start entry point exists for.
+
+    One value decides both halves that used to be independent booleans -- which
+    format is admitted, and whether a bootstrap is enqueued -- because the two
+    combinations nobody wants are the dangerous ones: a V3 run that enqueues work
+    no runtime executes, and a runtime run that is written and never started.
+    """
+
+    EXECUTED_BY_THE_RUNTIME = auto()
+    V3_FOUNDATION = auto()
+
+
+def _seam_of(graph: AnyWorkflowDocument) -> _StartSeam:
+    """The one seam a parsed document belongs to."""
+    if isinstance(graph, WorkflowGraphV3):
+        return _StartSeam.V3_FOUNDATION
+    return _StartSeam.EXECUTED_BY_THE_RUNTIME
+
+
 class DbosDurableRunStarter:
     def __init__(
         self,
@@ -322,6 +352,40 @@ class DbosDurableRunStarter:
 
     def start_published(
         self, request: AnyStartPublishedRunRequest
+    ) -> DurablePublishedRunResult:
+        """Start one published revision the runtime can execute end to end.
+
+        A V3 revision is refused here even though the document parses, because
+        nothing executes it yet: no advance path, no wire resource, no attempt
+        arm. Admitting it would write a run and enqueue a bootstrap for work that
+        cannot proceed, and the caller would learn about it as a 500 after the
+        state already existed. The foundation seam below is how a V3 revision is
+        reached instead, and it enqueues nothing.
+        """
+        return self._start(request, _StartSeam.EXECUTED_BY_THE_RUNTIME)
+
+    def start_v3_foundation(
+        self, request: StartPublishedRunRequestV2
+    ) -> DurablePublishedRunResult:
+        """Persist one V3 run's foundation, and start nothing.
+
+        Internal on purpose: it exists so #194 H1a can prove that the admitted V3
+        shape becomes a durable run of its own format, and it deliberately does
+        not enqueue a bootstrap, because no runtime owns the execution until
+        H1c. No public route reaches it.
+
+        It is the public seam's mirror rather than its complement: that one
+        refuses V3, and this one refuses everything else, both before any write.
+        A V1 revision reaching here wrote a durable STARTED run that nothing
+        would ever enqueue; the V1 *request* form cannot reach here at all,
+        because this signature takes the bound form.
+        """
+        return self._start(request, _StartSeam.V3_FOUNDATION)
+
+    def _start(
+        self,
+        request: AnyStartPublishedRunRequest,
+        seam: _StartSeam,
     ) -> DurablePublishedRunResult:
         try:
             with self._engine.connect() as read_connection:
@@ -338,6 +402,8 @@ class DbosDurableRunStarter:
             if revision.revision_hash != request.revision_hash:
                 return DurableStateCorrupt()
             graph = parse_executable_workflow_document(revision.document)
+            if _seam_of(graph) is not seam:
+                return DurableRunFormatNotExecutable()
         except WorkflowFormatNotExecutable:
             return DurableRunFormatNotExecutable()
         except (OperationalError, PoolTimeoutError):
@@ -374,13 +440,16 @@ class DbosDurableRunStarter:
                         return DurableInvalidAgentBindings()
                     resolved_bindings: tuple[ResolvedAgentBinding, ...] = ()
                     binding_set: AgentBindingSet | None = None
-                elif isinstance(graph, WorkflowGraphV2):
+                elif isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3)):
+                    # V3's Agent kind binds its role exactly as V2's does, so the
+                    # resolution below is shared rather than copied. What differs
+                    # is only where the run starts, which `entry_node_of` answers.
                     if not isinstance(request, StartPublishedRunRequestV2):
                         return DurableInvalidAgentBindings()
                     expected_roles = {
                         node.role
                         for node in graph.nodes
-                        if isinstance(node, AgentNodeV2)
+                        if isinstance(node, (AgentNodeV2, AgentNodeV3))
                     }
                     requested_roles = {
                         binding.role.value
@@ -400,7 +469,8 @@ class DbosDurableRunStarter:
                         if (
                             str(existing_record["revision_hash"])
                             != request.revision_hash.value
-                            or int(existing_record["workflow_format_version"]) != 2
+                            or int(existing_record["workflow_format_version"])
+                            != graph.format_version
                             or str(existing_record["agent_binding_set_hash"])
                             != binding_set.binding_set_hash.value
                         ):
@@ -473,7 +543,7 @@ class DbosDurableRunStarter:
                             if binding_set is None
                             else binding_set.binding_set_hash.value
                         ),
-                        current_node_id=graph.start,
+                        current_node_id=entry_node_of(graph),
                         state=RunState.STARTED.value,
                         state_version=0,
                         last_event_sequence=0,
@@ -492,9 +562,16 @@ class DbosDurableRunStarter:
                 if isinstance(graph, WorkflowGraph):
                     run = run_from_record(existing_record)
                 else:
+                    # The shape follows the exact graph version, the same rule
+                    # `run_from_record_with_bindings` applies when a retry reads
+                    # this row back. Constructing `RunV2` for every bound graph
+                    # meant a first start answered V2 while a retry answered V3
+                    # for one row. It is built here rather than read back because
+                    # the binding rows below are not written yet.
                     assert binding_set is not None
                     terminal_hash = existing_record["terminal_hash"]
-                    run = RunV2(
+                    shape = RunV2 if isinstance(graph, WorkflowGraphV2) else RunV3
+                    run = shape(
                         request.run_id,
                         request.revision_hash,
                         binding_set.binding_set_hash,
@@ -546,12 +623,13 @@ class DbosDurableRunStarter:
                     "workflow_id": workflow_id,
                     "app_version": self._settings.application_version,
                 }
-                client.enqueue_in_transaction(
-                    connection,
-                    options,
-                    request.run_id.value,
-                    request.revision_hash.value,
-                )
+                if seam is _StartSeam.EXECUTED_BY_THE_RUNTIME:
+                    client.enqueue_in_transaction(
+                        connection,
+                        options,
+                        request.run_id.value,
+                        request.revision_hash.value,
+                    )
                 return DurableRunCreated(run)
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()

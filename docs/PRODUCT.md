@@ -98,10 +98,21 @@ CLI starts. It attests exactly one execution capability,
 demanding an interactive one is refused before that run exists at all. An
 unsuccessful exit, an unreadable envelope, an envelope declaring a provider
 error, and an answer larger than the durable output bound all fail the attempt
-instead of recording invented output. Undeclared, the
-host composes no V2 provider factory and behaves exactly as before. The isolated
-read, edit, and test tools an agent needs to change its own workspace are not
-part of this contract.
+instead of recording invented output. Undeclared, the host composes no V2
+provider factory and behaves exactly as before. When the
+operator also declares a Grok executable, workspace, and credential directory,
+the host composes one Grok subscription executor beside Claude. It runs the
+bound model headless through `grok -p --output-format json`, hands the job
+through `--prompt-file` rather than the argument vector, and grants the child
+only the serving host's search path plus one disposable invocation-private
+`HOME`/`GROK_HOME`. That home receives a private copy of the source
+`auth.json`; provider sessions and responses stay there and the entire home is
+removed after success, known failure, cancellation, retry refusal, or process
+error without touching another invocation. Before launch, `grok inspect`
+must report that exact home/configuration as its only configuration source,
+all external-compatibility imports disabled, and no ambient trust surface.
+The isolated read, edit, and test tools an agent needs to change its own
+workspace are not part of this contract.
 
 Codex sits behind the same boundary, declared the same way and composed
 alongside Claude rather than instead of it. Its CLI has no prompt-file flag, so
@@ -128,8 +139,9 @@ contract accepts can be refused as a frame.
 
 The call itself is deliberately the barest one its authentication allows: no
 tools, no hooks, no MCP servers, no plugins or skills, no project configuration
-discovery, no persisted session, no prompt history, no retries, and a bounded
-turn count, so the credentials it is handed answer text and do nothing else.
+discovery, no session or prompt history surviving the invocation, no retries,
+and a bounded turn count, so the credentials it is handed answer text and do
+nothing else.
 It also asks the CLI to strip provider credentials from every subprocess
 environment, as defence in depth against a child this invocation does not
 expect to have; that hardening needs bubblewrap on the search path the launched

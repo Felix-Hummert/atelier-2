@@ -27,6 +27,10 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.grok_subscription import (
+    GrokSubscriptionExecutorFactory,
+    GrokSubscriptionSettings,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
@@ -124,6 +128,7 @@ class HostSettings:
     limits: ApiLimits = field(default_factory=api_limits)
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
     claude_subscription: ClaudeSubscriptionSettings | None = None
+    grok_subscription: GrokSubscriptionSettings | None = None
     codex_subscription: CodexSubscriptionSettings | None = None
 
     @property
@@ -132,6 +137,7 @@ class HostSettings:
 
         configured = (
             ("Claude", self.claude_subscription),
+            ("Grok", self.grok_subscription),
             ("Codex", self.codex_subscription),
         )
         return tuple(name for name, settings in configured if settings is not None)
@@ -187,12 +193,18 @@ def _is_loopback(host: str) -> bool:
 
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
     claude_subscription = settings.claude_subscription
+    grok_subscription = settings.grok_subscription
     codex_subscription = settings.codex_subscription
     subscription_executors = (
         *(
             ()
             if claude_subscription is None
             else (ClaudeSubscriptionExecutorFactory(claude_subscription),)
+        ),
+        *(
+            ()
+            if grok_subscription is None
+            else (GrokSubscriptionExecutorFactory(grok_subscription),)
         ),
         *(
             ()
