@@ -12,6 +12,11 @@ MAX_SIGNED_INT64 = 9_223_372_036_854_775_807
 # The wire's own bound: no durable owner caps how many roles one run binds, so
 # the edge decides it, once, rather than twice in two request shapes.
 MAXIMUM_RUN_AGENT_BINDINGS = 100
+# The wire's own bound: a published V3 node preview carries a start of the
+# authored instruction, never the instruction. The durable owner bounds the
+# whole instruction in UTF-8 bytes; this glance is a character count the
+# edge decides once, so two shapes cannot pick two lengths.
+MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS = 120
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"

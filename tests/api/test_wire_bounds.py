@@ -26,7 +26,10 @@ import pytest
 from annotated_types import MaxLen
 from pydantic import BaseModel
 
-from atelier2.api.references import MAXIMUM_RUN_AGENT_BINDINGS
+from atelier2.api.references import (
+    MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
+    MAXIMUM_RUN_AGENT_BINDINGS,
+)
 from atelier2.api.wire import events, requests, resources
 from atelier2.contracts.agent_attempts import REPLACEMENT_AGENT_ATTEMPT_ORDINAL
 from atelier2.contracts.agents import (
@@ -101,6 +104,10 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     # A document declares no more roles than a run can bind: one role is one
     # binding, so the two carry the same limit for the same reason.
     "WorkflowGraphResourceV3.agent_roles": MAXIMUM_RUN_AGENT_BINDINGS,
+    "WorkflowNodePreviewResourceV3.instruction_start": (
+        MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS
+    ),
+    "WorkflowNodePreviewResourceV3.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "StartRunRequestResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunRequestResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,

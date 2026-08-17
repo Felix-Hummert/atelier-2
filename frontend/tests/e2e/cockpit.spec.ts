@@ -659,3 +659,54 @@ test("clicking a stuck node says what stopped the run, and the node before it sh
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v3-node-detail.png", fullPage: true });
 });
+
+test("opening Details on a saved V3 workflow shows each node with its role and instruction start", async ({
+  page
+}) => {
+  const api = "/atelier/api/v1";
+  const workflowYaml = [
+    "format_version: 3",
+    "name: Implement a candidate, then review it for defects",
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Implement every acceptance sentence of the bound story.",
+    "  - id: review",
+    "    type: agent",
+    "    role: reviewer",
+    "    mode: headless",
+    "    instruction: Name every defect with the sentence it violates.",
+    "    depends_on: [implement]",
+    ""
+  ].join("\n");
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status()).toBe(201);
+
+  await page.goto("/atelier/new");
+  await page.getByLabel("Saved workflow").check();
+  await expect(
+    page.getByRole("radio", { name: /Implement a candidate, then review it for defects/ })
+  ).toBeVisible();
+  await page.getByText("Details", { exact: true }).click();
+  const details = page.locator("details.revision-details");
+  await expect(details).toContainText("implement");
+  await expect(details).toContainText("builder");
+  await expect(details).toContainText("Implement every acceptance sentence of the bound story.");
+  await expect(details).toContainText("review");
+  await expect(details).toContainText("reviewer");
+  await expect(details).toContainText("Name every defect with the sentence it violates.");
+  await page.screenshot({
+    path: "test-results/v3-picker-node-previews.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: "test-results/v3-picker-node-previews-mobile.png",
+    fullPage: true
+  });
+});

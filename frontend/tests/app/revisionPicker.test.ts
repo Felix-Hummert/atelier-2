@@ -64,6 +64,20 @@ function namedGraph() {
     not_executable_reason: "agent forms nothing binds yet: outputs",
     node_count: 2,
     agent_roles: ["builder", "reviewer"],
+    node_previews: [
+      {
+        id: "implement",
+        kind: "agent" as const,
+        role: "builder",
+        instruction_start: "Implement every acceptance sentence of the bound story."
+      },
+      {
+        id: "review",
+        kind: "agent" as const,
+        role: "reviewer",
+        instruction_start: "Name every defect with the sentence it violates."
+      }
+    ],
     name: "Implement a candidate, then review it for defects",
     description: "Builds the candidate, then reviews it for defects."
   };
@@ -156,6 +170,90 @@ describe("the saved-workflow picker", () => {
     expect(vi.mocked(cockpitApi.getWorkflowRevision).mock.calls.map(([hash]) => hash)).toEqual([
       namedHash
     ]);
+  });
+
+  it("opening Details shows each published node with its role and instruction start", async () => {
+    const graph = namedGraph();
+    const cockpitApi = api([namedRevision()], {
+      getWorkflowRevision: vi.fn(async () => namedDetail())
+    });
+    render(App, {
+      props: {
+        cockpitApi,
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("radio", {
+      name: /Implement a candidate, then review it for defects/
+    });
+
+    await fireEvent.click(screen.getByText("Details"));
+
+    const details = screen.getByText("Details").closest("details");
+    const implementStart = graph.node_previews[0]?.instruction_start ?? "";
+    const reviewStart = graph.node_previews[1]?.instruction_start ?? "";
+    await waitFor(() => {
+      expect(details?.textContent).toContain("builder");
+      expect(details?.textContent).toContain(implementStart);
+    });
+    expect(details?.textContent).toContain("reviewer");
+    expect(details?.textContent).toContain(reviewStart);
+    expect(details?.querySelectorAll(".revision-nodes li")).toHaveLength(graph.node_previews.length);
+    expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_INSTRUCTION");
+  });
+
+  it("a node without a role or instruction is shown as itself, not filled in", async () => {
+    const graph = {
+      ...namedGraph(),
+      node_count: 1,
+      agent_roles: [] as string[],
+      node_previews: [
+        {
+          id: "approve",
+          kind: "wait" as const,
+          role: null,
+          instruction_start: null
+        }
+      ]
+    };
+    const cockpitApi = api(
+      [
+        decodedRow({
+          revision_hash: namedHash,
+          format_version: 3,
+          executable: false,
+          not_executable_reason: "agent forms nothing binds yet: outputs",
+          name: "Implement a candidate, then review it for defects",
+          description: "Builds the candidate, then reviews it for defects."
+        })
+      ],
+      {
+        getWorkflowRevision: vi.fn(async () => ({
+          revision_hash: namedHash,
+          document_base64: utf8Base64("prompt: NEVER_PARSE_THIS_PROMPT\n"),
+          graph
+        }))
+      }
+    );
+    render(App, {
+      props: {
+        cockpitApi,
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("radio", {
+      name: /Implement a candidate, then review it for defects/
+    });
+
+    await fireEvent.click(screen.getByText("Details"));
+
+    const details = screen.getByText("Details").closest("details");
+    await waitFor(() => {
+      expect(details?.querySelectorAll(".revision-nodes li")).toHaveLength(1);
+    });
+    expect(details?.textContent).toMatch(/wait/i);
+    expect(details?.querySelector(".revision-node-instruction")).toBeNull();
+    expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_PROMPT");
   });
 
   it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries): says a revision cannot be started, and why, before it is chosen", async () => {

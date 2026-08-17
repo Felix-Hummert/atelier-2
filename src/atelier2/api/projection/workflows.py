@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import cast
 
-from atelier2.api.references import encode_canonical_base64
+from atelier2.api.references import (
+    MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
+    encode_canonical_base64,
+)
 from atelier2.api.wire.resources import (
     ActionNodeResource,
     AgentNodeResource,
@@ -22,6 +25,7 @@ from atelier2.api.wire.resources import (
     WorkflowGraphResource,
     WorkflowGraphResourceV2,
     WorkflowGraphResourceV3,
+    WorkflowNodePreviewResourceV3,
     WorkflowRevisionDetailResource,
     WorkflowRevisionSummaryResourceV2,
 )
@@ -49,6 +53,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
     WorkflowGraphV3,
+    WorkflowNodeV3,
     what_a_v3_document_still_waits_for,
 )
 
@@ -109,6 +114,30 @@ def _executability_of(graph: AnyWorkflowDocument) -> tuple[bool, str | None]:
     return waiting is None, waiting
 
 
+def _node_preview(node: WorkflowNodeV3) -> WorkflowNodePreviewResourceV3:
+    """The excerpt one published node may show, never the node itself.
+
+    Only an agent declares a role and an instruction. A wait prompt is a
+    different authored field and is not projected as one: empty here is the
+    node's own answer, not a refusal and not a stand-in.
+    """
+    if isinstance(node, AgentNodeV3):
+        return WorkflowNodePreviewResourceV3(
+            id=node.id,
+            kind="agent",
+            role=node.role,
+            instruction_start=node.instruction[
+                :MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS
+            ],
+        )
+    return WorkflowNodePreviewResourceV3(
+        id=node.id,
+        kind=node.type,
+        role=None,
+        instruction_start=None,
+    )
+
+
 def graph_resource(
     graph: AnyWorkflowDocument,
 ) -> WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3:
@@ -124,6 +153,7 @@ def graph_resource(
                     {node.role for node in graph.nodes if isinstance(node, AgentNodeV3)}
                 )
             ),
+            node_previews=tuple(_node_preview(node) for node in graph.nodes),
             name=graph.name,
             description=graph.description,
         )
