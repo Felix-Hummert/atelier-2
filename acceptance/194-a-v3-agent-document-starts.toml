@@ -1,19 +1,20 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/194"
 
-# CURRENT V13 TRUTH. The admitted V3 shape is a linear sequence of Agent nodes,
-# not the private one-node foundation this file first described. The in-process
-# public starter writes a format-3 run and its frozen bindings, enqueues the
-# bootstrap, and the runtime invokes the existing provider/Attempt owner for each
-# node. A successful node writes one `AgentReceiptV2` and one `AGENT_COMPLETED`
-# event; the authored heir starts, and the sink completes the run on its terminal
-# hash. #219 separately proves the HTTP resource -- this file proves the public
-# in-process start seam and never substitutes that for an HTTP call.
+# CURRENT V13 TRUTH. The admitted V3 shape is a linear sequence of Agent and
+# Wait nodes, not the private one-node foundation this file first described. The
+# in-process public starter writes a format-3 run and its frozen bindings,
+# enqueues the bootstrap, and the runtime invokes the existing provider/Attempt
+# owner for each Agent node. A successful node writes one `AgentReceiptV2` and
+# one `AGENT_COMPLETED` event; a Wait node writes `WAITING_INPUT` and stops until
+# a person answers; the authored heir starts, and the sink completes the run on
+# its terminal hash. #219 separately proves the HTTP resource -- this file proves
+# the public in-process start seam and never substitutes that for an HTTP call.
 #
-# The form remains deliberately narrow: one entry, one sink, Agent nodes only,
-# at most one predecessor and one dependent, and none of the optional V3 fields
-# the runtime does not bind. Branching, Wait, fan-out/join and every unbound form
-# are still refused by name before a run exists.
+# The form remains deliberately narrow: one entry, one sink, Agent and Wait nodes
+# only, at most one predecessor and one dependent, and none of the optional V3
+# fields the runtime does not bind. Branching, fan-out/join and every unbound
+# form are still refused by name before a run exists.
 
 [[sentence]]
 id = "a-v3-agent-document-starts-and-binds-its-node"
@@ -60,6 +61,10 @@ text = "After a successful attempt on a V3 node that is not its run's sink, the 
 id = "a-completed-v3-attempt-reaches-the-runs-terminal-hash"
 text = "A V3 agent attempt that succeeds records the provider's receipt and carries its own run to COMPLETED with a terminal hash, exactly as a V2 attempt does; a V3 node that is not its run's sink hands on to the one heir its author declared, and a node with several dependents is refused in typed words instead of advanced, because choosing between them is the ready set's decision and not this one's."
 
+[[sentence]]
+id = "a-v3-line-stops-for-a-person-and-their-answer-carries-it-on"
+text = "A V3 line whose author put a Wait node in it holds at that node as a durable state rather than as work in progress -- the run reads back as waiting, at that node, with the rail marking it as the one owing a person a move, and no later node is started while it holds, across the death and restart of the process that reached it. The answer is judged by the schema that node's own author pinned, so a value that schema refuses is named as no answer at all and leaves the run waiting for another, while an answer to a run that is not waiting is refused as the state conflict it is; the answer that is admitted is kept as the event's own bytes and carries the line on -- to the heir its author declared, or, where the Wait node is the line's sink, to the run's own terminal hash."
+
 # OPEN, AND NAMED RATHER THAN NARROWED. V13 durably owns the run-configuration
 # snapshot the public start writes. The package is still only the declared half:
 # no owner materializes a `required_context` selector into ADR 0006's complete
@@ -70,6 +75,14 @@ text = "A V3 agent attempt that succeeds records the provider's receipt and carr
 # does not yet carry the V3 receipt into the event chain. Those #110 links remain
 # later work; this file neither calls the existing prelaunch NodeReceipt a live
 # provider receipt nor claims a complete context package.
+#
+# The pause above adds two of its own, named here rather than implied by the
+# sentence. A V3 run resource says it is WAITING_INPUT and names the node, and it
+# does not restate what that node asks: the prompt and the answer schema belong
+# to the document and are read from the workflow revision the run names. And the
+# cockpit has no form for typing a V3 answer -- the rail shows the pause and the
+# API takes the answer, which is where this head stops; the operator surface is
+# the UI trail's, not this one's.
 
 # RETIRED WITH THE CALLERLESS SUPERVISED DOOR. This file declared
 # `a-supervised-v3-start-leaves-the-manifest-its-receipt-names` for a private
@@ -80,14 +93,21 @@ text = "A V3 agent attempt that succeeds records the provider's receipt and carr
 
 [[sentence]]
 id = "a-v3-node-execution-request-is-composed-not-supplied"
-text = "The node execution request and the manifest it names are composed on the real start path from the document and the run configuration the run is bound to, never resolved a second time and never taken from the caller: a decided truth carrying a request this document does not compose is refused by both hashes before anything durable exists, a declared reference the frozen configuration does not carry is refused by its site rather than dropped, and a node declaring more revisions of one kind than the request can bind is refused by that count rather than bound in part."
+text = "A node execution request and the context-package manifest it names are composed from the document and the frozen run configuration the run is bound to, never resolved a second time and never taken from a caller: a declared reference the frozen configuration does not carry is refused by its site rather than dropped, a configuration frozen for another revision is refused as another run's answer, a node declaring more revisions of one kind than the request can bind is refused by that count rather than bound in part, and the manifest hash covers the declared members in the order and under the selectors their author wrote."
 
-# NARROWED WITH THE CALLERLESS SUPERVISED DOOR, SAME ID. This sentence used to
-# claim the supervised start and the public start alike, plus the preimages of
-# the node-execution request and the manifest, receipt recomputation from kept
-# bytes, and that a receipt can only carry the request of its own node
-# execution. Those clauses described the deleted door. What remains is the
-# snapshot the public start actually stores.
+# NARROWED WITH THE CALLERLESS SUPERVISED DOOR, SAME ID, AND CORRECTED HERE ON
+# BOTH SIDES. Two things had drifted apart and the note itself was one of them.
+#
+# The text said "on the real start path". `bind_node_execution` has no
+# production caller: the driver composes its own binding in the adapter, and
+# this composition is the shape the interpreter is to be moved onto, which #86
+# owns. Claiming a path it does not sit on was the false half, so the text now
+# says what it is -- a composition, with its refusals -- and claims no caller.
+#
+# The note said "what remains is the snapshot the public start actually stores".
+# That describes the sentence below it, not this one; what remains here is the
+# composition and the manifest, which is exactly what the title always said.
+# Both halves now agree with the proofs that claim them.
 
 [[sentence]]
 id = "a-supervised-v3-run-records-the-configuration-it-was-started-under"

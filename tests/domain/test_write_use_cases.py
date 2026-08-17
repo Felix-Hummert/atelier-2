@@ -130,6 +130,7 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.durable_runs import (
     DurableAnswerCreated,
+    DurableAnswerNotAdmitted,
     DurableRunCreated,
     DurableWriteUnavailable,
     StartPublishedRunRequestV3,
@@ -423,22 +424,32 @@ class ScriptedAnswerer:
         return self.answer
 
 
-@pytest.mark.parametrize(
-    ("node_id", "answer_bytes"),
-    [("", b"6"), ("waiting", b"06"), ("waiting", b"")],
-    ids=["unnamed-node", "non-canonical-integer", "no-answer"],
-)
-def test_an_answer_that_makes_no_submission_refuses_before_the_store_is_asked(
-    node_id: str, answer_bytes: bytes
-) -> None:
+def test_an_answer_that_makes_no_submission_refuses_before_the_store_is_asked() -> None:
     """Building the submission belongs to the decision, so a value that makes none
     is an outcome of it — and the store is never asked."""
     answerer = ScriptedAnswerer(DurableAnswerCreated(SNAPSHOT))
 
-    result = answer_wait_result(RUN_ID, REVISION_HASH, node_id, answer_bytes, answerer)
+    result = answer_wait_result(RUN_ID, REVISION_HASH, "", b"6", answerer)
 
     assert isinstance(result, UnanswerableWait)
     assert answerer.submitted == []
+
+
+def test_bytes_the_waiting_node_does_not_admit_read_back_as_an_unanswerable_wait() -> (
+    None
+):
+    """Which vocabulary the node declares is the store's to know, not this layer's.
+
+    A V1 wait admits canonical integer text and a V3 wait admits what its own
+    schema admits, so the bytes are carried to the store and its refusal is what
+    decides. The caller is told the same thing either way: this was no answer.
+    """
+    answerer = ScriptedAnswerer(DurableAnswerNotAdmitted("not what this node admits"))
+
+    result = answer_wait_result(RUN_ID, REVISION_HASH, "waiting", b"06", answerer)
+
+    assert isinstance(result, UnanswerableWait)
+    assert [submitted.answer_bytes for submitted in answerer.submitted] == [b"06"]
 
 
 def test_an_answer_carries_the_authored_values_into_the_submission() -> None:

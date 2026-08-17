@@ -270,7 +270,11 @@
   async function followDurableEvent(event: RunEvent): Promise<void> {
     let journalFailure: string | null = null;
     try {
-      if (event.event === "WAIT_ANSWERED") {
+      // Only the older formats' answer card writes a wait mutation, and only
+      // their event carries the decimal `answer` that card sent. A format-3
+      // answer reaches the stream through the API alone, so there is no pending
+      // mutation of this page's to settle against it.
+      if (event.event === "WAIT_ANSWERED" && "answer" in event) {
         const mutationId = waitMutationId(event.public_run_reference, event.node_id);
         const entry = await mutationJournal.get(mutationId);
         const resolved = entry?.kind === "wait" && await mutationJournal.resolve(mutationId, {
@@ -757,6 +761,7 @@
     return projection?.events.some(
       (event) =>
         event.event === "WAIT_ANSWERED" &&
+        "answer" in event &&
         event.public_run_reference === mutation.public_run_reference &&
         event.workflow_revision_hash === mutation.workflow_revision_hash &&
         event.node_id === mutation.node_id &&

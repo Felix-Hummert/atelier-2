@@ -206,6 +206,20 @@ class DurableAnswerBytesConflict:
     pass
 
 
+@dataclass(frozen=True)
+class DurableAnswerNotAdmitted:
+    """The waiting node does not accept these bytes as an answer at all.
+
+    Separate from the state conflict, because the two say different things to
+    whoever asked: a state conflict means the run was not waiting for this, and
+    this means the run *is* waiting and the value is not one this node's own
+    declaration admits. Which declaration refused, and in whose words, stays
+    inside the store; what travels is that the submission was never answerable.
+    """
+
+    detail: str
+
+
 type DurableAnswerResult = (
     DurableAnswerCreated
     | DurableAnswerExisting
@@ -214,6 +228,7 @@ type DurableAnswerResult = (
     | DurableAnswerRevisionConflict
     | DurableAnswerStateConflict
     | DurableAnswerBytesConflict
+    | DurableAnswerNotAdmitted
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )

@@ -6,7 +6,6 @@ from atelier2.contracts.executions import (
     SubmitWaitAnswerRequest,
     WaitAnswerSnapshot,
     WaitAnswerState,
-    is_canonical_integer_bytes,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.durable_runs import (
@@ -14,6 +13,7 @@ from atelier2.ports.durable_runs import (
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
+    DurableAnswerNotAdmitted,
     DurableAnswerRevisionConflict,
     DurableAnswerRunMissing,
     DurableAnswerStateConflict,
@@ -82,7 +82,14 @@ type AnswerWaitResult = (
 
 @dataclass(frozen=True)
 class UnanswerableWait:
-    """The authored answer does not make one submission for this wait."""
+    """The authored answer is no answer to this wait.
+
+    Two ways reach it and both mean the same thing to whoever asked: the values
+    make no submission at all, or the waiting node's own declaration does not
+    admit the bytes. Which of the two it was is not a distinction an operator
+    acts on differently -- either way the answer has to be rewritten -- so they
+    share one word rather than two the caller would have to tell apart.
+    """
 
 
 def answer_wait_result(
@@ -95,12 +102,19 @@ def answer_wait_result(
     """Answer one waiting node, from the values an author supplied.
 
     Building the submission is part of the decision rather than a step before it:
-    a node nobody named, or answer bytes that are not the canonical form a wait
-    accepts, refuse the answer in the same vocabulary as everything else that can
-    go wrong here. The store is not asked in that case.
+    a submission that cannot be built at all -- a node nobody named -- refuses the
+    answer in the same vocabulary as everything else that can go wrong here, and
+    the store is not asked.
+
+    Whether the bytes are an answer *this* node accepts is asked of the store
+    rather than decided here. A V1 or V2 Wait node admits the canonical text of an
+    integer and a V3 one admits whatever the schema its author pinned admits;
+    which of the two applies is a fact about the node, and this layer cannot read
+    a node. Deciding it here would mean owning one format's vocabulary and
+    refusing the other's valid answers under it. The answer comes back as the
+    same `UnanswerableWait` either way, so what a caller is told did not move
+    when the decision did.
     """
-    if not is_canonical_integer_bytes(answer_bytes):
-        return UnanswerableWait()
     try:
         request = SubmitWaitAnswerRequest(run_id, revision_hash, node_id, answer_bytes)
     except (TypeError, ValueError):
@@ -123,6 +137,8 @@ def answer_wait_result(
             return AnswerStateConflict()
         case DurableAnswerBytesConflict():
             return AnswerBytesConflict()
+        case DurableAnswerNotAdmitted():
+            return UnanswerableWait()
         case DurableWriteUnavailable():
             return WriteUnavailable()
         case PortDurableStateCorrupt():

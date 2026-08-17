@@ -17,6 +17,7 @@ from atelier2.adapters.dbos.workflow import (
     AGENT_COMMIT_STEP_NAME,
     ANSWER_COMMIT_STEP_NAME,
     COMMIT_STEP_NAME,
+    WAIT_COMMIT_STEP_NAME,
 )
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -61,7 +62,35 @@ nodes:
 """
     + declared_output()
 )
+V3_WAIT_DOCUMENT = (
+    b"""format_version: 3
+name: A person approves between two agents
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+"""
+    + declared_output()
+    + b"""  - id: approve
+    type: wait
+    prompt: Approve this candidate, or name the blocking defect.
+    depends_on: [implement]
+"""
+    + declared_output(name="approval")
+    + b"""  - id: review
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Check what the person approved.
+    depends_on: [approve]
+"""
+    + declared_output()
+)
 V3_RUN_ID = "v3/two-agents/recovery"
+V3_WAIT_RUN_ID = "v3/a-person-approves/recovery"
+V3_ANSWER = '"approved"'
 V3_PROVIDER_OUTPUT = b'"the exact provider bytes"'
 
 
@@ -386,6 +415,27 @@ def v3_node_workflow_id(node_id: str) -> str:
     revision = WorkflowRevision(V3_DOCUMENT)
     return node_workflow_id_for(
         NodeExecutionId.for_node(RunId(V3_RUN_ID), revision.revision_hash, node_id)
+    )
+
+
+def v3_wait_node_execution(node_id: str) -> NodeExecutionId:
+    return NodeExecutionId.for_node(
+        RunId(V3_WAIT_RUN_ID), WorkflowRevision(V3_WAIT_DOCUMENT).revision_hash, node_id
+    )
+
+
+def initialize_and_seed_v3_wait(root: Path) -> None:
+    child(root, "initialize")
+    child(root, "seed-v3", V3_WAIT_RUN_ID, V3_WAIT_DOCUMENT.hex())
+
+
+def wait_run_row(root: Path) -> tuple[object, ...]:
+    return database_row(
+        root,
+        "atelier.sqlite",
+        "SELECT state,current_node_id,last_event_sequence,terminal_hash "
+        "FROM runs WHERE run_id=?",
+        (V3_WAIT_RUN_ID,),
     )
 
 
@@ -783,3 +833,83 @@ def test_v3_completed_attempt_reentry_refuses_a_torn_or_foreign_head(
         else "run current node is absent from its workflow graph"
     )
     assert expected_message in recovery.stderr
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_a_v3_wait_survives_the_death_of_the_process_that_reached_it(
+    tmp_path: Path,
+) -> None:
+    """A stopped run is stopped across a restart, and one answer still ends it.
+
+    The process is killed inside the transition that writes the pause, before its
+    step result is recorded -- the worst moment, because a recovery that replayed
+    it blindly would write the pause twice or drive the line past a person nobody
+    asked. What the restart must produce is exactly one WAITING_INPUT, a run still
+    standing on the wait node with no attempt started beyond it, and a queue with
+    nothing left to run: waiting is a state, not a paused piece of work.
+
+    Then the answer arrives, as it would have before the crash, and carries the
+    line to its terminal hash. Durability that only survives until someone tries
+    to use it is not durability, so the finish is part of the same case.
+    """
+    initialize_and_seed_v3_wait(tmp_path)
+    marker = tmp_path / "v3-wait-crash"
+
+    child(
+        tmp_path,
+        "execute-v3-until-wait",
+        V3_WAIT_RUN_ID,
+        str(marker),
+        WAIT_COMMIT_STEP_NAME,
+        expected=CRASHED,
+    )
+
+    assert marker.read_text() == f"{WAIT_COMMIT_STEP_NAME}:before-record"
+
+    child(tmp_path, "execute-v3-until-wait", V3_WAIT_RUN_ID, "NONE", "NONE")
+
+    assert wait_run_row(tmp_path) == ("WAITING_INPUT", "approve", 2, None)
+    assert event_kinds(tmp_path) == ("AGENT_COMPLETED", "WAITING_INPUT")
+    assert v3_cardinalities(tmp_path) == (1, 1, 2, 1)
+    assert (
+        workflow_identity_rows(
+            tmp_path, node_workflow_id_for(v3_wait_node_execution("review"))
+        )
+        == ()
+    )
+
+    child(tmp_path, "answer", V3_WAIT_RUN_ID, "approve", V3_ANSWER)
+    child(tmp_path, "execute-v3-until-complete", V3_WAIT_RUN_ID, "NONE", "NONE")
+
+    with sqlite3.connect(tmp_path / "atelier.sqlite", timeout=30) as connection:
+        events = tuple(
+            connection.execute(
+                "SELECT event_sequence,node_id,event_kind,payload "
+                "FROM run_events ORDER BY event_sequence"
+            )
+        )
+        event_hashes = tuple(
+            Sha256Hash(str(row[0]))
+            for row in connection.execute(
+                "SELECT event_hash FROM run_events ORDER BY event_sequence"
+            )
+        )
+    assert events == (
+        (1, "implement", "AGENT_COMPLETED", V3_PROVIDER_OUTPUT),
+        (2, "approve", "WAITING_INPUT", b""),
+        (3, "approve", "WAIT_ANSWERED", V3_ANSWER.encode("utf-8")),
+        (4, "review", "AGENT_COMPLETED", V3_PROVIDER_OUTPUT),
+    )
+    assert wait_run_row(tmp_path) == (
+        "COMPLETED",
+        "review",
+        4,
+        terminal_hash_for(
+            WorkflowRevision(V3_WAIT_DOCUMENT).revision_hash, event_hashes
+        ).value,
+    )
+    assert scalar(tmp_path, "SELECT state FROM wait_answers") == "APPLIED"
+    answer_identity = answer_workflow_id_for(v3_wait_node_execution("approve"))
+    assert workflow_identity_rows(tmp_path, answer_identity) == (
+        (answer_identity, "atelier2_wait_answer"),
+    )

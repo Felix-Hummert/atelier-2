@@ -82,13 +82,19 @@
       return encodedContext("Result", event.receipt.result_base64, event.receipt.result_hash);
     }
     if (event.event === "WAIT_ANSWERED") {
-      return {
-        kind: "context",
-        label: "Answer",
-        bytes: new globalThis.TextEncoder().encode(event.answer).byteLength,
-        hash: event.answer_hash,
-        exact: event.answer
-      };
+      // A version 3 wait admits whatever its declared schema admits, so its
+      // answer travels base64 like every other opaque value; the older formats
+      // answer with the decimal text their node's `answer_type` names, and that
+      // text is what a reader should see rather than an encoding of it.
+      return "answer_base64" in event
+        ? encodedContext("Answer", event.answer_base64, event.answer_hash)
+        : {
+            kind: "context",
+            label: "Answer",
+            bytes: new globalThis.TextEncoder().encode(event.answer).byteLength,
+            hash: event.answer_hash,
+            exact: event.answer
+          };
     }
     if (event.event === "SUBWORKFLOW_COMPLETED") {
       const exact = String(event.result);

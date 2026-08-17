@@ -217,10 +217,11 @@ class RunEventBaseResourceV3(ApiModel):
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     """Where the whole run stands once this event is folded into the snapshot.
 
-    A format-3 line writes agent events through the same attempt store as V2, so
-    the rail travels with them the same way. V1 stays byte-frozen and cannot
-    carry it. Wait, Action, and Subworkflow V3 resources are not invented here:
-    no format-3 run persists those kinds today.
+    A format-3 line writes agent events through the same attempt store as V2 and
+    its pauses through the same wait path, so the rail travels with all of them
+    the same way. V1 stays byte-frozen and cannot carry it. Action and
+    Subworkflow V3 resources are not invented here: no format-3 run persists
+    those kinds today.
     """
 
 
@@ -279,12 +280,40 @@ class AgentInterruptedEventResourceV3(RunEventBaseResourceV3):
     replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class WaitingInputEventResourceV3(RunEventBaseResourceV3):
+    """A format-3 run has stopped at a Wait node and is owed an answer.
+
+    It carries no `answer_type`. The V1 and V2 shapes name one because their Wait
+    node declares one; a V3 Wait node declares an output with a schema instead, so
+    the honest answer to "what may I send" is the published schema that node
+    pinned, reachable from the workflow revision this event names -- and stating
+    `integer` here would be a shape nothing enforces.
+    """
+
+    event: Literal["WAITING_INPUT"]
+
+
+class WaitAnsweredEventResourceV3(RunEventBaseResourceV3):
+    """The exact bytes a person answered with, and the hash the run kept.
+
+    Base64 rather than the V2 shape's decimal text, for the same reason an agent
+    output travels that way: a V3 answer is whatever JSON value its schema
+    admits, and rendering it as a number would be a lie for every other value.
+    """
+
+    event: Literal["WAIT_ANSWERED"]
+    answer_base64: str
+    answer_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
 RunEventResourceV3 = Annotated[
     AgentCompletedEventResourceV3
     | AgentFailedEventResourceV3
     | AgentCancelRequestedEventResourceV3
     | AgentCancelledEventResourceV3
-    | AgentInterruptedEventResourceV3,
+    | AgentInterruptedEventResourceV3
+    | WaitingInputEventResourceV3
+    | WaitAnsweredEventResourceV3,
     Field(discriminator="event"),
 ]
 

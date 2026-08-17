@@ -35,8 +35,10 @@ from atelier2.api.wire.events import (
     SubworkflowCompletedEventResourceV2,
     WaitAnsweredEventResource,
     WaitAnsweredEventResourceV2,
+    WaitAnsweredEventResourceV3,
     WaitingInputEventResource,
     WaitingInputEventResourceV2,
+    WaitingInputEventResourceV3,
 )
 from atelier2.api.wire.resources import NodeRailResource
 from atelier2.contracts.executions import (
@@ -359,5 +361,14 @@ def _run_event_resource_v3(
             )
         return AgentInterruptedEventResourceV3(
             event="AGENT_INTERRUPTED", **terminal_common, **common
+        )
+    if event.event_kind is RunEventKind.WAITING_INPUT:
+        return WaitingInputEventResourceV3(event=event.event_kind.value, **common)
+    if event.event_kind is RunEventKind.WAIT_ANSWERED:
+        return WaitAnsweredEventResourceV3(
+            event=event.event_kind.value,
+            answer_base64=encode_canonical_base64(event.payload),
+            answer_hash=event.payload_hash.value,
+            **common,
         )
     raise ValueError(f"a V3 run cannot carry {event.event_kind.value}")

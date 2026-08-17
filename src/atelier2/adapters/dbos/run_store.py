@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, assert_never
 
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
@@ -93,15 +93,21 @@ from atelier2.contracts.tool_grants_v3 import (
 from atelier2.contracts.workflows import (
     ActionNode,
     AgentNodeV2,
+    RunCompletes,
+    RunContinues,
     WaitNode,
     WorkflowGraphV2,
+    completion_after_node,
 )
 from atelier2.contracts.workflows_v3 import (
+    ANY_WAIT_NODE_KINDS,
     AgentNodeV3,
+    AnyWaitNode,
     AnyWorkflowDocument,
     GraphInputSource,
     NodeOutput,
     NodeOutputSource,
+    WaitNodeV3,
     WorkflowGraphV3,
     is_sink_node,
 )
@@ -110,6 +116,7 @@ from atelier2.ports.durable_runs import (
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
+    DurableAnswerNotAdmitted,
     DurableAnswerResult,
     DurableAnswerRevisionConflict,
     DurableAnswerRunMissing,
@@ -428,6 +435,30 @@ def refuse_an_output_its_schema_does_not_admit(
     enforce. What is added here is the one thing the start could not do -- reading
     a value that did not exist yet.
     """
+    refusal = why_a_value_its_declared_schema_refuses(
+        session, node_id, declared, payload
+    )
+    if refusal is not None:
+        raise NodeOutputSchemaRefused(
+            f"node {node_id!r} produced an output its own schema refuses: {refusal}"
+        )
+
+
+def why_a_value_its_declared_schema_refuses(
+    session: Any,
+    node_id: str,
+    declared: NodeOutput,
+    payload: bytes,
+) -> str | None:
+    """The schema owner's own words against this value, or nothing where it admits it.
+
+    A refusal is answered rather than raised because the two callers owe their
+    own callers different vocabularies: a node that produced bad bytes is a
+    transition conflict, and a person who typed an answer the wait's schema
+    refuses is not an error of the run at all. A store that cannot answer for the
+    schema it froze is neither, and still raises -- that is the store disagreeing
+    with itself.
+    """
     pinned = declared.schema_reference.revision
     document = session.scalar(
         sa.select(published_revisions.c.document).where(
@@ -447,10 +478,7 @@ def refuse_an_output_its_schema_does_not_admit(
             f"{declared.name!r} is not one: {schema}"
         )
     verdict = read_instance_document(payload, schema)
-    if isinstance(verdict, InstanceRefused):
-        raise NodeOutputSchemaRefused(
-            f"node {node_id!r} produced an output its own schema refuses: {verdict}"
-        )
+    return str(verdict) if isinstance(verdict, InstanceRefused) else None
 
 
 def load_run(session: Any, run_id: RunId) -> AnyRun:
@@ -486,14 +514,15 @@ def entry_node_of(graph: AnyWorkflowDocument) -> str:
 
 
 def successor_of(graph: AnyWorkflowDocument, node_id: str) -> str:
-    """The one node a finished node hands the run to.
+    """The one node a finished node hands the run to, where `next` names it.
 
-    V1 and V2 name it directly. A V3 run cannot reach this at all today: the one
-    executable V3 shape is a single node, and nothing advances it, because
-    advancing needs the ready set over `depends_on` that ADR 0006 hands the
-    scheduler. Refused by name rather than answered by a rule that would be the
-    first inch of that ready set -- H2 and #86 own it, and owning it here would
-    mean deciding fan-out and join semantics in a head about a binding arm.
+    This is the V1 and V2 spelling alone, and its callers are the V1 Agent and the
+    Action transitions -- neither of which a V3 graph can carry. A V3 run does
+    advance, and it asks `completion_after_node`, which reads `depends_on` and
+    answers the sink and the heir under one rule for every format. A V3 graph
+    arriving here would therefore be a caller reaching for the wrong spelling, and
+    it is refused by name rather than left to fail on an attribute this graph does
+    not have.
     """
     if isinstance(graph, WorkflowGraphV3):
         raise RunTransitionConflict(
@@ -525,7 +554,9 @@ def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
         raise RunTransitionConflict(
             "run current node is absent from its workflow graph"
         ) from error
-    if run.state is RunState.WAITING_INPUT and not isinstance(node, WaitNode):
+    if run.state is RunState.WAITING_INPUT and not isinstance(
+        node, ANY_WAIT_NODE_KINDS
+    ):
         raise RunTransitionConflict("WAITING_INPUT must name a Wait node")
     if run.state is RunState.WAITING_RECONCILIATION and not isinstance(
         node, ActionNode
@@ -703,7 +734,9 @@ def _commit_event(
         raise RunTransitionConflict("run is not at the transition's exact source")
     graph = load_graph(session, revision_hash)
     target_node = graph.node(target_node_id)
-    if target_state is RunState.WAITING_INPUT and not isinstance(target_node, WaitNode):
+    if target_state is RunState.WAITING_INPUT and not isinstance(
+        target_node, ANY_WAIT_NODE_KINDS
+    ):
         raise RunTransitionConflict("WAITING_INPUT target is not a Wait node")
     if target_state is RunState.WAITING_RECONCILIATION and not isinstance(
         target_node, ActionNode
@@ -1092,6 +1125,21 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
     if durable.answer != answer:
         raise RunTransitionConflict("answer workflow binding differs")
     graph = load_graph(session, answer.revision_hash)
+    # The answer is asked the same question every other completed node is asked --
+    # is this the run's sink, and if not which heir did its author declare -- so a
+    # Wait node standing last carries its own run to COMPLETED instead of handing
+    # on to a successor no document names.
+    match completion_after_node(graph, answer.node_id):
+        case RunContinues(successor):
+            target_state = RunState.STARTED
+            target_node_id = successor
+            terminal = False
+        case RunCompletes():
+            target_state = RunState.COMPLETED
+            target_node_id = answer.node_id
+            terminal = True
+        case _ as unreachable:
+            assert_never(unreachable)
     transition = _commit_event(
         session,
         answer.run_id,
@@ -1100,8 +1148,9 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
         RunEventKind.WAIT_ANSWERED,
         answer.answer_bytes,
         RunState.WAITING_INPUT,
-        RunState.STARTED,
-        successor_of(graph, answer.node_id),
+        target_state,
+        target_node_id,
+        terminal=terminal,
     )
     if durable.state is WaitAnswerState.PENDING:
         updated = session.execute(
@@ -1141,6 +1190,37 @@ def commit_subworkflow_completed(
         node_id,
         terminal=True,
     )
+
+
+def why_a_wait_node_does_not_admit_an_answer(
+    session: Any, node: AnyWaitNode, answer_bytes: bytes
+) -> str | None:
+    """Why these bytes are no answer to this waiting node, or nothing where they are.
+
+    One question, two vocabularies, because the two formats declare different
+    things. A V1 or V2 Wait node declares `answer_type`, and the one type this
+    product implements is the canonical text of an integer. A V3 Wait node
+    declares no answer type at all: it declares one output with a schema, and
+    that schema is what judges the value -- the same owner that reads every other
+    value a run produces, asked here about the one a person typed.
+
+    It is answered here rather than in the use case that receives the submission,
+    because which vocabulary applies is a fact about the node, and the node is
+    only reachable from the document this store holds.
+    """
+    match node:
+        case WaitNodeV3():
+            return why_a_value_its_declared_schema_refuses(
+                session, node.id, node.outputs[0], answer_bytes
+            )
+        case WaitNode():
+            if node.answer_type != "integer":
+                return f"no runtime answers a wait of type {node.answer_type!r}"
+            if not is_canonical_integer_bytes(answer_bytes):
+                return "a wait of type 'integer' admits canonical integer text only"
+            return None
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def wait_answer_snapshot_from_record(record: Mapping[Any, Any]) -> WaitAnswerSnapshot:
@@ -1189,8 +1269,6 @@ class DbosWaitAnswerer:
         self._application_version = application_version
 
     def submit_result(self, request: SubmitWaitAnswerRequest) -> DurableAnswerResult:
-        if not is_canonical_integer_bytes(request.answer_bytes):
-            return DurableAnswerStateConflict()
         from atelier2.adapters.dbos.workflow import ANSWER_WORKFLOW_NAME, QUEUE_NAME
 
         try:
@@ -1311,11 +1389,16 @@ class DbosWaitAnswerer:
                     if (
                         run.current_node_id != request.node_id
                         or run.state is not RunState.WAITING_INPUT
-                        or not isinstance(node, WaitNode)
-                        or node.answer_type != "integer"
+                        or not isinstance(node, ANY_WAIT_NODE_KINDS)
                     ):
                         connection.rollback()
                         return DurableAnswerStateConflict()
+                    unanswerable = why_a_wait_node_does_not_admit_an_answer(
+                        connection, node, request.answer_bytes
+                    )
+                    if unanswerable is not None:
+                        connection.rollback()
+                        return DurableAnswerNotAdmitted(unanswerable)
                     options: EnqueueOptions = {
                         "workflow_name": ANSWER_WORKFLOW_NAME,
                         "queue_name": QUEUE_NAME,

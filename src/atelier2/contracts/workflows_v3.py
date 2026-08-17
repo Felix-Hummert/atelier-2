@@ -24,6 +24,7 @@ from atelier2.contracts.workflow_refusals import (
 from atelier2.contracts.workflows import (
     AnyWorkflowGraph,
     NonemptyString,
+    WaitNode,
     WorkflowGraph,
     WorkflowGraphV2,
 )
@@ -364,6 +365,16 @@ class WorkflowGraphV3(_ClosedV3Model):
 
 
 type AnyWorkflowDocument = AnyWorkflowGraph | WorkflowGraphV3
+
+type AnyWaitNode = WaitNode | WaitNodeV3
+ANY_WAIT_NODE_KINDS = (WaitNode, WaitNodeV3)
+"""The node classes that hold a run for a person, across every executable format.
+
+A store guard asks "is this the kind that may stand in WAITING_INPUT", and the
+answer is one question with two spellings. Kept together so a guard that admits
+one format cannot silently refuse the other, which is how a durable run ends up
+in a state its own reader calls impossible.
+"""
 
 
 class MultipleSinkCompletionUnsupported(ValueError):
@@ -961,7 +972,7 @@ def _node_id_at(
     return identifier if isinstance(identifier, str) else None
 
 
-V3_UNBOUND_AGENT_FORMS = (
+V3_UNBOUND_AUTHORED_FORMS = (
     "join",
     "profile",
     "skills",
@@ -972,12 +983,17 @@ V3_UNBOUND_AGENT_FORMS = (
     "required_context",
     "available_context",
 )
-"""Every authored form of a V3 Agent node that nothing binds at run start yet.
+"""Every authored form of an interpreted V3 node that nothing binds at run start.
 
 Naming the forms rather than the kinds is the point. "Only Agent nodes" would
 still admit a document declaring skills, a policy or a budget, and the run would
 start having silently ignored what its author wrote. A document is executable
 only when nothing in it is waiting for an owner.
+
+The list is read against whichever forms a node actually declares, so it holds
+for the Wait kind too without naming it twice: a Wait node carries `join`,
+`cancellation` and `required_context` and no others, and each of the three is
+refused on it for the same reason it is refused on an Agent node.
 
 `inputs` left this list when the start began binding one: it is admitted per
 source by `V3_BOUND_INPUT_SOURCES` rather than as a whole form, because only an
@@ -1028,13 +1044,23 @@ the source it named rather than started and quietly given nothing.
 """
 
 
+V3_INTERPRETED_NODE_KINDS = (AgentNodeV3, WaitNodeV3)
+"""The node classes a run of this build actually reaches and executes.
+
+An Agent node runs its attempt through the durable attempt path; a Wait node
+holds the run for a person and is carried on by their answer. The remaining
+three name work no runtime performs, so a document declaring one is refused by
+the kind it wrote rather than started and abandoned when the run arrives there.
+"""
+
+
 def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     """What this document declares that no runtime binds yet, or None if nothing.
 
-    The executable shape is a line of Agent nodes: each entered by at most one
-    dependency and followed by at most one dependent, ending in a single sink,
-    declaring nothing else optional. It is checked as a form rather than as a
-    list of kinds, because a kind check would admit a document whose skills,
+    The executable shape is a line of Agent and Wait nodes: each entered by at
+    most one dependency and followed by at most one dependent, ending in a single
+    sink, declaring nothing else optional. It is checked as a form rather than as
+    a list of kinds, because a kind check would admit a document whose skills,
     policy or budget the run start then ignores in silence.
 
     A branch is still refused on purpose. `depends_on` is bound only where it
@@ -1043,7 +1069,11 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     decided in passing. #86 owns that, so this shape stops at the line.
     """
     foreign = sorted(
-        {node.type for node in graph.nodes if not isinstance(node, AgentNodeV3)}
+        {
+            node.type
+            for node in graph.nodes
+            if not isinstance(node, V3_INTERPRETED_NODE_KINDS)
+        }
     )
     if foreign:
         return f"node kinds no runtime interprets: {', '.join(foreign)}"
@@ -1060,19 +1090,43 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
         {
             form
             for node in graph.nodes
-            for form in V3_UNBOUND_AGENT_FORMS
+            for form in V3_UNBOUND_AUTHORED_FORMS
             if form in node.model_fields_set
         }
     )
     if declared:
-        return f"agent forms nothing binds yet: {', '.join(declared)}"
+        return f"authored forms nothing binds yet: {', '.join(declared)}"
     unredeemed = _unredeemed_tool_grants(graph)
     if unredeemed is not None:
         return unredeemed
     unbound_output = _unbound_output_forms(graph)
     if unbound_output is not None:
         return unbound_output
+    unbound_prompt = _unbound_wait_forms(graph)
+    if unbound_prompt is not None:
+        return unbound_prompt
     return _unbound_input_sources(graph)
+
+
+def _unbound_wait_forms(graph: WorkflowGraphV3) -> str | None:
+    """What an authored Wait node declares that the pause does not carry.
+
+    Two of its forms are kept. `prompt` is what the person is asked, and the one
+    declared output is the schema their answer is read against -- the same owner
+    that judges every other value this run produces.
+
+    `inputs` is not kept: nothing composes an earlier node's value into the
+    question, so a document that wrote one would have its answer judged against a
+    contract the operator was never shown. Refused by the form it wrote rather
+    than accepted and dropped.
+    """
+    for node in graph.nodes:
+        if isinstance(node, WaitNodeV3) and "inputs" in node.model_fields_set:
+            return (
+                f"inputs on wait node {node.id!r} that nothing composes into the "
+                "question a person is asked"
+            )
+    return None
 
 
 def _unredeemed_tool_grants(graph: WorkflowGraphV3) -> str | None:
