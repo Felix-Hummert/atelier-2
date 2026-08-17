@@ -1,0 +1,38 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/219"
+
+# The last stretch between a run the runtime drives and a run the operator can
+# see. #216 made a V3 line drive itself; until this head the API could not answer
+# with one, so the route refused the start outright rather than write state it
+# could not render. That refusal was a declared bridge, and this file is where it
+# is carried off: the guard, its problem type and its architecture-gate allowlist
+# line are all removed in the change that declares these sentences.
+#
+# WHAT THIS HEAD DOES NOT CLAIM, measured rather than assumed:
+#
+#   - NO AGENT ATTEMPTS ON THE WIRE. The run projection fetches attempts only for
+#     a V2 agent node, so a V3 run has none to show. The resource therefore omits
+#     `agent_attempts` and its rail entries carry a null `attempt` -- which in
+#     this vocabulary means "nothing to tell", not "no attempt ran". Surfacing
+#     them is its own head with its own query change.
+#   - NO RAIL FOR A BRANCHING GRAPH. The rail walks the one edge the author
+#     declared; a node with several dependents is refused before a run exists,
+#     because choosing between them is the ready set's decision (#86).
+#   - NO CAPABILITY VERDICT. `decide_executability` answers whether the bound
+#     capability revision attests what a document demands, which a published
+#     revision without bindings cannot be asked. Its missing door is a named
+#     observation elsewhere, not a gap this head fills.
+#   - NO OPERATOR SEEING THE RUN. The API answers with a V3 run; the browser
+#     still cannot draw one. `executableGraph` refuses a V3 graph because the
+#     wire carries a node count for one and not its nodes, so the run page has
+#     nothing to walk -- which is why the picker gates on what this cockpit can
+#     draw rather than on what the server can start. The cockpit drawing is its
+#     own head (#224), and this sentence must not be read as reaching the glass.
+
+[[sentence]]
+id = "a-v3-run-answers-over-http-with-its-own-resource"
+text = "A V3 revision started over the public route answers with its run in its own format -- its identity, the configuration revision it was started under, where it stands and the rail of the line its author declared -- instead of failing after the run already existed, and instead of being dressed up in the frozen V2 shape whose state rules a V3 run does not obey."
+
+[[sentence]]
+id = "a-revision-says-which-form-it-waits-for-not-which-version-it-is"
+text = "A published revision reports whether this build can execute it by the one rule the start path applies, and a revision it cannot execute names the form it is still waiting for -- a node kind nothing interprets, a branch nothing chooses between, an authored form nothing binds -- rather than reporting that its version is unsupported."

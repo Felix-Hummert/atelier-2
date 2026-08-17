@@ -101,14 +101,22 @@ const workflowGraphV2Schema = z
   .superRefine(validateWorkflowGraph);
 
 /**
- * A published V3 revision says what it is and that nothing runs it. It carries
- * no nodes to walk, so there is no graph to validate here -- only the truth the
- * operator has to be told instead of a generic wire-contract failure.
+ * A published V3 revision says what it is and whether this build runs it. It
+ * carries no nodes to walk, so there is no graph to validate here -- only the
+ * truth the operator has to be told instead of a generic wire-contract failure.
+ *
+ * `executable` was pinned to `false` here, which mirrored a server that could
+ * never answer otherwise. It can now, and a literal would have turned the first
+ * honest `true` into exactly the wire-contract failure this shape exists to
+ * prevent. `not_executable_reason` carries the server's own words about which
+ * form is still waiting, so the operator is told about the document rather than
+ * about version 3.
  */
 const workflowGraphV3Schema = z
   .object({
     format_version: z.literal(3),
-    executable: z.literal(false),
+    executable: z.boolean(),
+    not_executable_reason: z.string().nullable(),
     node_count: z.number().int().positive(),
     name: z.string().min(1),
     description: z.string().nullable()
@@ -189,6 +197,7 @@ export const workflowRevisionSummarySchema = z
     revision_hash: sha256,
     format_version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     executable: z.boolean(),
+    not_executable_reason: z.string().nullable(),
     name: z.string().nullable(),
     description: z.string().nullable()
   })

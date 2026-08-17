@@ -208,12 +208,6 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Workflow format is not executable",
         "This revision is published and no runtime here runs its format version yet.",
     ),
-    "run-resource-unavailable-for-format": ProblemDefinition(
-        409,
-        "Run resource unavailable for this workflow format",
-        "The runtime executes this revision, but the API has no resource to "
-        "answer with a run of its format yet, so no run was started.",
-    ),
     "run-identity-conflict": ProblemDefinition(
         409,
         "Run identity conflict",

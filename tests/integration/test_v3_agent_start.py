@@ -26,7 +26,6 @@ from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
-    run_agent_bindings,
     run_configuration_revisions,
     runs,
 )
@@ -224,26 +223,21 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
     )
 
 
-@pytest.mark.proves("a-public-start-refuses-a-v3-revision-before-any-write")
-def test_the_public_start_route_refuses_a_v3_revision_with_no_row_and_no_enqueue(
+@pytest.mark.proves("a-v3-run-answers-over-http-with-its-own-resource")
+def test_the_public_start_route_answers_a_v3_revision_with_its_run_resource(
     runtime: DbosRuntime,
 ) -> None:
-    """The route must not start what it cannot answer with.
+    """The last door: a V3 revision started over HTTP answers with its run.
 
-    The runtime drives a V3 line now, but the API still has no resource to render
-    one, so a start over HTTP wrote the run, enqueued its bootstrap, drove it to
-    completion in the background -- and then raised on the missing resource. The
-    caller was told the request failed while a run of its making was already
-    running: durable state on one side, a 500 on the other.
-
-    That is the half of the original refusal whose reason never expired. It is
-    re-declared here as a named stopgap at the layer that actually lacks
-    something, and it is removed by the head that gives a V3 run its own wire
-    resource -- not by anyone widening what the API pretends to serve.
+    Until this head the route could not answer at all. First it wrote the run and
+    then raised on the missing resource, handing the caller a 500 over durable
+    state; then a named stopgap refused the start outright so at least nothing was
+    left behind. Both are gone now, because the answer exists: the run is created
+    and rendered in its own format, not dressed up as a V2 one.
     """
     workflow, bindings = publish(runtime)
 
-    refused = durable_api_client(runtime).post(
+    started = durable_api_client(runtime).post(
         API_PREFIX + "/runs",
         json={
             "workflow_format_version": 2,
@@ -261,17 +255,16 @@ def test_the_public_start_route_refuses_a_v3_revision_with_no_row_and_no_enqueue
         },
     )
 
-    assert refused.status_code == 409
-    assert refused.json()["type"].endswith(":run-resource-unavailable-for-format")
+    assert started.status_code == 201
+    answered = started.json()
+    assert answered["workflow_format_version"] == 3
+    assert answered["run_id"] == RUN.value
+    assert answered["state"] == RunState.STARTED.value
+    assert answered["workflow_revision_hash"] == workflow.revision_hash.value
+    assert answered["terminal_hash"] is None
+    assert [entry["node_id"] for entry in answered["node_rail"]] == ["implement"]
     with runtime.engine.connect() as connection:
-        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
-        assert (
-            connection.scalar(
-                sa.select(sa.func.count()).select_from(run_agent_bindings)
-            )
-            == 0
-        )
-        assert connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status")) == 0
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 1
 
 
 @pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
@@ -328,10 +321,14 @@ def test_the_first_start_and_its_retry_answer_the_same_run_shape(
 @pytest.mark.proves(
     "a-supervised-v3-run-records-the-configuration-it-was-started-under"
 )
-def test_the_v3_foundation_start_binds_the_exact_run_configuration(
+def test_a_v3_start_binds_the_exact_run_configuration(
     runtime: DbosRuntime,
 ) -> None:
-    """Both V3 starts bind their configuration, or neither may claim to.
+    """A V3 run binds the configuration it was started under, or it is not one.
+
+    This was named after the foundation start and said "both V3 starts", from
+    when a private second door persisted V3 runs that nothing executed. #216
+    deleted that door; there is one start, and the claim is about it.
 
     The admitted shape declares no versioned reference at all -- every optional
     form is refused before a run exists -- so its resolution matrix is empty and

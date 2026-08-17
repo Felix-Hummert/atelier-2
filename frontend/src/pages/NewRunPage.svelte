@@ -7,7 +7,8 @@
     type CockpitApi,
     type RunV2,
     type WorkflowRevisionDetail,
-    type WorkflowRevisionPage
+    type WorkflowRevisionPage,
+    type WorkflowRevisionSummary
   } from "../api/client";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import {
@@ -61,6 +62,21 @@
   let operation: "load" | "publish" | "start" | "retry" | null = null;
   $: busy = operation !== null;
   let selectionGeneration = 0;
+
+  /**
+   * Whether this cockpit can carry a run of that revision, which is narrower
+   * than whether the server can start one.
+   *
+   * The server answers a version 3 run now, and its own rule decides whether a
+   * document is executable. What this cockpit still lacks is a way to draw one:
+   * the wire carries no node list for a version 3 graph, so `executableGraph`
+   * refuses it and the run page has nothing to walk. Offering Start here would
+   * hand the operator a run the next screen cannot show, so the picker waits for
+   * the head that gives a version 3 graph its nodes.
+   */
+  function cockpitCanShow(revision: WorkflowRevisionSummary): boolean {
+    return revision.executable && revision.format_version !== 3;
+  }
 
   async function chooseSaved(revisionHash: string): Promise<void> {
     const generation = ++selectionGeneration;
@@ -401,8 +417,8 @@
     <fieldset class="revision-picker">
       <legend>Saved workflow</legend>
       {#each revisions.confirmed?.items ?? [] as revision (revision.revision_hash)}
-        <label class="revision-option" class:unstartable={!revision.executable}>
-          <input type="radio" name="saved-revision" value={revision.revision_hash} disabled={busy || !revision.executable} onchange={() => { void chooseSaved(revision.revision_hash); }} />
+        <label class="revision-option" class:unstartable={!cockpitCanShow(revision)}>
+          <input type="radio" name="saved-revision" value={revision.revision_hash} disabled={busy || !cockpitCanShow(revision)} onchange={() => { void chooseSaved(revision.revision_hash); }} />
           <span class="revision-label">
             {#if revision.name === null}
               <code class="revision-hash">{revision.revision_hash}</code>
@@ -412,7 +428,9 @@
               {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
             {/if}
             {#if !revision.executable}
-              <span class="revision-refusal">Cannot be started: format {revision.format_version} is not executable yet.</span>
+              <span class="revision-refusal">Cannot be started: {revision.not_executable_reason}</span>
+            {:else if revision.format_version === 3}
+              <span class="revision-refusal">Runs, but this cockpit cannot show a version 3 run yet.</span>
             {/if}
           </span>
         </label>
@@ -464,7 +482,11 @@
           <p class="eyebrow">Published</p>
           <h2 id="start-title">{draft.revision.graph.name}</h2>
           {#if draft.revision.graph.description !== null}<p class="muted">{draft.revision.graph.description}</p>{/if}
-          <p class="revision-refusal">Cannot be started: format 3 is not executable yet.</p>
+          {#if !draft.revision.graph.executable}
+            <p class="revision-refusal">Cannot be started: {draft.revision.graph.not_executable_reason}</p>
+          {:else}
+            <p class="revision-refusal">Runs, but this cockpit cannot show a version 3 run yet.</p>
+          {/if}
         </div>
       </section>
     {:else}

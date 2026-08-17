@@ -959,3 +959,67 @@ def _node_id_at(
         return None
     identifier = node.get("id")
     return identifier if isinstance(identifier, str) else None
+
+
+V3_UNBOUND_AGENT_FORMS = (
+    "join",
+    "profile",
+    "skills",
+    "tools",
+    "policy",
+    "budget",
+    "retry",
+    "cancellation",
+    "required_context",
+    "available_context",
+    "inputs",
+    "outputs",
+)
+"""Every authored form of a V3 Agent node that nothing binds at run start yet.
+
+Naming the forms rather than the kinds is the point. "Only Agent nodes" would
+still admit a document declaring skills, tools or a budget, and the run would
+start having silently ignored what its author wrote. A document is executable
+only when nothing in it is waiting for an owner.
+"""
+
+
+def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
+    """What this document declares that no runtime binds yet, or None if nothing.
+
+    The executable shape is a line of Agent nodes: each entered by at most one
+    dependency and followed by at most one dependent, ending in a single sink,
+    declaring nothing else optional. It is checked as a form rather than as a
+    list of kinds, because a kind check would admit a document whose skills,
+    tools or budget the run start then ignores in silence.
+
+    A branch is still refused on purpose. `depends_on` is bound only where it
+    names one edge; where a node has several dependents, choosing between them is
+    the ready set ADR 0006 hands the scheduler, with fan-out and join semantics
+    decided in passing. #86 owns that, so this shape stops at the line.
+    """
+    foreign = sorted(
+        {node.type for node in graph.nodes if not isinstance(node, AgentNodeV3)}
+    )
+    if foreign:
+        return f"node kinds no runtime interprets: {', '.join(foreign)}"
+    if not is_linear_chain(graph):
+        return (
+            f"{len(graph.nodes)} nodes that do not form one line, and choosing "
+            "between them needs the ready set no runtime has yet"
+        )
+    # Authored, not truthy. `skills: []` and `depends_on: []` are things the
+    # author wrote, and a run that ignored them would ignore a statement rather
+    # than an absence -- so presence in the parsed document decides, and an empty
+    # authored form is refused exactly like a filled one.
+    declared = sorted(
+        {
+            form
+            for node in graph.nodes
+            for form in V3_UNBOUND_AGENT_FORMS
+            if form in node.model_fields_set
+        }
+    )
+    if declared:
+        return f"agent forms nothing binds yet: {', '.join(declared)}"
+    return None

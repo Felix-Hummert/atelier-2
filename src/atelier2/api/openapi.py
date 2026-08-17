@@ -158,7 +158,6 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "agent-executor-binding-unavailable",
         "run-identity-conflict",
         "workflow-format-not-executable",
-        "run-resource-unavailable-for-format",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",

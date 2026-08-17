@@ -142,6 +142,7 @@ describe("mobile run entry", () => {
           graph: {
             format_version: 3 as const,
             executable: false as const,
+            not_executable_reason: "agent forms nothing binds yet: outputs" as const,
             node_count: 1,
             name: "Nightly regression sweep",
             description: "Runs the sweep and files what it finds."
@@ -163,7 +164,12 @@ describe("mobile run entry", () => {
 
     await waitFor(() => expect(cockpitApi.publish).toHaveBeenCalledTimes(1));
     expect((await screen.findByText("Nightly regression sweep")).isConnected).toBe(true);
-    expect(screen.getByText(/format 3 is not executable yet/i).isConnected).toBe(true);
+    // Extension, named: this pinned "format 3 is not executable yet", which is the
+    // version blame the server's own rule avoids. The reason it now serves names
+    // the authored form nothing binds, which is what the sentence asks for.
+    expect(
+      screen.getByText(/agent forms nothing binds yet: outputs/i).isConnected
+    ).toBe(true);
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -640,6 +646,7 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
           revision_hash: revisionHash,
           format_version: 2 as const,
           executable: true,
+          not_executable_reason: null,
           name: null,
           description: null
         }
