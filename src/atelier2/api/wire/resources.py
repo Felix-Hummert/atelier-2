@@ -4,11 +4,20 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from atelier2.api.references import (
     EVENT_CURSOR_PATTERN,
     MAX_SIGNED_INT64,
+    MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
+    MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     PUBLIC_RUN_REFERENCE_PATTERN,
@@ -797,11 +806,34 @@ class EffectReceiptResource(ApiModel):
     reconcile_command_id: str | None
 
 
+class InvalidFieldResource(ApiModel):
+    """One request field a validation refusal can name.
+
+    `path` is the loc the framework already walked, joined; `reason` is that
+    error's own message. The pair is a pointer, not a second problem type.
+    """
+
+    path: str = Field(min_length=1, max_length=MAXIMUM_INVALID_FIELD_PATH_CHARACTERS)
+    reason: str = Field(
+        min_length=1, max_length=MAXIMUM_INVALID_FIELD_REASON_CHARACTERS
+    )
+
+
 class ProblemResource(ApiModel):
     type: str
     title: str
     status: int
     detail: str
+    invalid_fields: tuple[InvalidFieldResource, ...] | None = None
+
+    @model_serializer(mode="wrap")
+    def omit_absent_field_pointers(
+        self, serializer: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        dumped = serializer(self)
+        if dumped.get("invalid_fields") is None:
+            dumped.pop("invalid_fields", None)
+        return dumped
 
 
 class StreamFailureResource(ApiModel):

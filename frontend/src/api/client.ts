@@ -1289,14 +1289,23 @@ function problemVariant<
   const Title extends (typeof problemDefinitions)[Code]["title"],
   const Status extends (typeof problemDefinitions)[Code]["status"]
 >(code: Code, definition: { readonly title: Title; readonly status: Status }) {
-  return z
-    .object({
-      type: z.literal(`urn:atelier2:problem:v1:${code}` as const),
-      title: z.literal(definition.title),
-      status: z.literal(definition.status),
-      detail: z.string()
-    })
-    .strict();
+  const fields = {
+    type: z.literal(`urn:atelier2:problem:v1:${code}` as const),
+    title: z.literal(definition.title),
+    status: z.literal(definition.status),
+    detail: z.string()
+  };
+  if (code === "invalid-request") {
+    return z
+      .object({
+        ...fields,
+        invalid_fields: z
+          .array(z.object({ path: z.string().min(1), reason: z.string().min(1) }).strict())
+          .optional()
+      })
+      .strict();
+  }
+  return z.object(fields).strict();
 }
 
 function isCanonicalStandardBase64(value: string): boolean {

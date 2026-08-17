@@ -20,7 +20,7 @@ from atelier2.api.references import (
 )
 from atelier2.api.stream import BoundedQueryRunner, QueryAdmissionTimeout
 from atelier2.api.wire.requests import RevisionListingView
-from atelier2.api.wire.resources import AnyRunResource
+from atelier2.api.wire.resources import AnyRunResource, InvalidFieldResource
 from atelier2.application.read_runs import (
     GetRunResult,
     RunNotFound,
@@ -148,7 +148,15 @@ def require_new_run_identity(run_id: RunId, limits: ApiLimits) -> None:
 
 def parse_limit(value: str) -> int:
     if re.fullmatch(r"(?:[1-9]|[1-9][0-9]|100)", value) is None:
-        raise ApiProblem("invalid-request")
+        raise ApiProblem(
+            "invalid-request",
+            invalid_fields=(
+                InvalidFieldResource(
+                    path="query/limit",
+                    reason="not a page size this list accepts",
+                ),
+            ),
+        )
     return int(value)
 
 

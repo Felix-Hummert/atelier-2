@@ -32,6 +32,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agent_attempts import (
+    TERMINAL_AGENT_ATTEMPT_STATES,
     AgentAttempt,
     AgentAttemptCancellation,
     AgentAttemptCancellationDisposition,
@@ -44,6 +45,8 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
     WatchdogGenerationId,
+    driving_workflow_id,
+    replacement_workflow_id_for,
 )
 from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
@@ -90,6 +93,16 @@ from atelier2.ports.agent_attempts import (
 
 CANCELLATION_WORKFLOW_NAME = "atelier2_agent_attempt_cancellation"
 REPLACEMENT_WORKFLOW_NAME = "atelier2_agent_attempt_replacement"
+
+# DBOS owns this table and these tokens; the store only reads them, and only to
+# answer whether a workflow it enqueued itself is still going to run. Reaching
+# for the whole DBOS model to ask one question would bind far more of the
+# runtime's internals than the answer is worth.
+_dbos_workflow_status = sa.table(
+    "workflow_status", sa.column("workflow_uuid"), sa.column("status")
+)
+_DRIVING_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
+"""The DBOS statuses under which a workflow is still owed its next step."""
 
 
 def _attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
@@ -588,6 +601,46 @@ class DbosAgentAttemptStore:
         with self._engine.connect() as connection:
             return _load_attempt(connection, attempt_id)
 
+    def driverless_attempts(self) -> tuple[AgentAttempt, ...]:
+        """Ask only after the durable runtime is launched.
+
+        Before the launch, the workflow table this reads is either absent or
+        still holds the statuses of the process that died, so every answer it
+        could give would be about a machine that is not running yet.
+        """
+
+        with self._engine.connect() as connection:
+            nonterminal = tuple(
+                _attempt_from_record(record)
+                for record in connection.execute(
+                    sa.select(agent_attempts)
+                    .where(
+                        agent_attempts.c.state.not_in(
+                            tuple(
+                                state.value for state in TERMINAL_AGENT_ATTEMPT_STATES
+                            )
+                        )
+                    )
+                    .order_by(agent_attempts.c.attempt_id)
+                ).mappings()
+            )
+            if not nonterminal:
+                return ()
+            drivers = {attempt: driving_workflow_id(attempt) for attempt in nonterminal}
+            driving = set(
+                connection.scalars(
+                    sa.select(_dbos_workflow_status.c.workflow_uuid).where(
+                        _dbos_workflow_status.c.workflow_uuid.in_(
+                            tuple(drivers.values())
+                        ),
+                        _dbos_workflow_status.c.status.in_(_DRIVING_WORKFLOW_STATUSES),
+                    )
+                )
+            )
+        return tuple(
+            attempt for attempt, driver in drivers.items() if driver not in driving
+        )
+
     def complete_success(
         self,
         execution: AgentAttemptExecution,
@@ -971,8 +1024,8 @@ class DbosAgentAttemptStore:
                     options: EnqueueOptions = {
                         "workflow_name": REPLACEMENT_WORKFLOW_NAME,
                         "queue_name": QUEUE_NAME,
-                        "workflow_id": (
-                            "atelier2-agent-replacement-" + replacement_attempt_id.value
+                        "workflow_id": replacement_workflow_id_for(
+                            replacement_attempt_id
                         ),
                         "app_version": self._application_version,
                     }

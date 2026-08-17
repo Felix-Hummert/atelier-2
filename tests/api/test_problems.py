@@ -36,7 +36,12 @@ def empty_ports() -> ApiPorts:
             del run_id
             raise AssertionError("invalid request reached run queries")
 
-        def list_runs(self, after: RunId | None, limit: int) -> ListRunsResult:
+        def list_runs(
+            self,
+            after: RunId | None,
+            limit: int,
+            state: object = None,
+        ) -> ListRunsResult:
             del after, limit
             raise AssertionError("invalid request reached run queries")
 
@@ -49,7 +54,7 @@ def test_every_problem_code_renders_exactly_its_own_definition(code: str) -> Non
 
     resource = problem_resource(code)
 
-    assert resource.model_dump() == {
+    assert resource.model_dump(exclude_none=True) == {
         "type": PROBLEM_TYPE_PREFIX + code,
         "title": definition.title,
         "status": definition.status,
@@ -105,7 +110,19 @@ def test_framework_and_media_errors_are_normalized(
     assert response.status_code == status
     assert response.headers["content-type"] == "application/problem+json"
     assert response.json()["type"] == PROBLEM_TYPE_PREFIX + code
-    assert set(response.json()) == {"type", "title", "status", "detail"}
+    if code == "invalid-request":
+        assert set(response.json()) == {
+            "type",
+            "title",
+            "status",
+            "detail",
+            "invalid_fields",
+        }
+        assert response.json()["invalid_fields"]
+        assert response.json()["invalid_fields"][0]["path"]
+        assert response.json()["invalid_fields"][0]["reason"]
+    else:
+        assert set(response.json()) == {"type", "title", "status", "detail"}
 
 
 def test_app_requires_both_source_identities_at_construction() -> None:

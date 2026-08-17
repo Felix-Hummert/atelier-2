@@ -796,6 +796,7 @@ class DbosQueries:
         self,
         after: RunId | None,
         limit: int,
+        state: RunState | None = None,
     ) -> ListRunsResult:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("run page limit must be an integer from 1 to 100")
@@ -809,6 +810,8 @@ class DbosQueries:
                 )
                 if after is not None:
                     statement = statement.where(runs.c.run_id > after.value)
+                if state is not None:
+                    statement = statement.where(runs.c.state == state.value)
                 records = tuple(
                     connection.execute(
                         statement.order_by(runs.c.run_id).limit(limit + 1)

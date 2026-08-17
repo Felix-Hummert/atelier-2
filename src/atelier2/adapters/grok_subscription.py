@@ -1,4 +1,4 @@
-"""One headless `grok -p` subscription executor.
+"""One headless `grok` subscription executor.
 
 Containment flags and the version set are measured against grok 1.0.4. Job
 bytes travel through `--prompt-file` so they never appear on the argument
@@ -72,7 +72,6 @@ _VERSION_FLAG = "--version"
 _VERSION_PROBE_TIMEOUT_SECONDS = 30.0
 _VERSION_PROBE_OUTPUT_BYTES = 4_096
 
-_PRINT_FLAG = "-p"
 _OUTPUT_FORMAT_FLAG = "--output-format"
 _JSON_OUTPUT_FORMAT = "json"
 _MODEL_FLAG = "--model"
@@ -536,8 +535,14 @@ class GrokSubscriptionExecutor:
             attest_grok_containment(settings, state_directory)
             command = AgentProcessCommand(
                 (
+                    # Measured on grok 1.0.4 (build d846eb93d9): `-p` is the
+                    # short alias for `--single <PROMPT>`, a flag that
+                    # requires an inline value, not the bare print flag this
+                    # executor once assumed -- the CLI refuses the launch with
+                    # "a value is required for '--single <PROMPT>' but none
+                    # was supplied" before any billing occurs. `--prompt-file`
+                    # is left as the only single-turn carrier.
                     str(settings.executable),
-                    _PRINT_FLAG,
                     _OUTPUT_FORMAT_FLAG,
                     _JSON_OUTPUT_FORMAT,
                     _MODEL_FLAG,

@@ -10,12 +10,21 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
     AgentReceiptHash,
 )
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.executions import NodeExecutionId, node_workflow_id_for
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 AGENT_ATTEMPT_ORDINAL = 1
 REPLACEMENT_AGENT_ATTEMPT_ORDINAL = 2
+REPLACEMENT_WORKFLOW_ID_PREFIX = "atelier2-agent-replacement-"
+STOP_AFTER_DRIVER_LOSS = "atelier2-driver-lost"
+"""The command id a restart stops an attempt under when its driver is gone.
+
+One durable id for the whole class, because the id is what the cancellation
+event carries: a reader of the run is then told *why* the attempt was stopped
+rather than only that it was. It is stable so that a second restart re-issues
+the very same command instead of a second one the attempt would refuse.
+"""
 
 
 class AgentAttemptId(Sha256Hash):
@@ -331,3 +340,55 @@ class AgentAttempt:
             raise ValueError(
                 "agent attempt cancellation/state has a noncanonical shape"
             )
+
+
+def replacement_workflow_id_for(attempt_id: AgentAttemptId) -> str:
+    """The durable workflow that runs one replacement attempt."""
+
+    return REPLACEMENT_WORKFLOW_ID_PREFIX + attempt_id.value
+
+
+def stop_command_for(attempt: AgentAttempt) -> CancelAgentAttemptRequest:
+    """The stop this attempt already stands under, or the one a lost driver earns.
+
+    An attempt that is already being cancelled keeps its exact command: reissuing
+    a second one under a new id is what the store refuses as a command conflict,
+    and rightly, because two commands would disagree about which cleanup the
+    attestation belongs to. An attempt under no command yet is stopped under the
+    one durable driver-loss command.
+    """
+
+    cancellation = attempt.cancellation
+    if cancellation is None:
+        return CancelAgentAttemptRequest(
+            attempt.run_id,
+            attempt.attempt_id,
+            STOP_AFTER_DRIVER_LOSS,
+            attempt.state_version,
+            AgentAttemptReplacement.NONE,
+        )
+    return CancelAgentAttemptRequest(
+        attempt.run_id,
+        attempt.attempt_id,
+        cancellation.command_id,
+        cancellation.expected_attempt_state_version,
+        cancellation.replacement,
+    )
+
+
+def driving_workflow_id(attempt: AgentAttempt) -> str:
+    """The durable workflow that owes this attempt its next move.
+
+    Exactly one workflow drives an attempt at a time, and which one it is follows
+    from the attempt itself: a cancelled attempt is owed its cleanup by the
+    cancellation it carries, a replacement by the replacement workflow that was
+    enqueued for it, and every other attempt by the node workflow of its
+    execution. Naming that here is what lets a restart ask whether anything is
+    still driving an attempt at all.
+    """
+
+    if attempt.cancellation is not None:
+        return stop_command_for(attempt).workflow_id
+    if attempt.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
+        return replacement_workflow_id_for(attempt.attempt_id)
+    return node_workflow_id_for(attempt.node_execution_id)

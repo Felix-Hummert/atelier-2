@@ -317,6 +317,9 @@ class _FailingAttemptStore:
         del attempt_id
         return self._attempt
 
+    def driverless_attempts(self) -> tuple[AgentAttempt, ...]:
+        raise AssertionError("this attempt is driven by the call under test")
+
     def complete_success(
         self,
         execution: AgentAttemptExecution,

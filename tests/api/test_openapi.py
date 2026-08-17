@@ -211,10 +211,12 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was last regenerated when a format-3 run learned to wait: its
-    resource gained the WAITING_INPUT state and its event union the two wait
-    kinds. That regeneration is the wire change this head declares; refreshing it
-    alongside a refactor is what this test still refuses.
+    The artefact carries two regenerations: `invalid-request` grew field
+    pointers and `GET /runs` grew a `state` filter, and a format-3 run learned
+    to wait — its resource gained the WAITING_INPUT state and its event union
+    the two wait kinds. Those regenerations are the wire changes their heads
+    declare; refreshing the artefact alongside a refactor is what this test
+    still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
