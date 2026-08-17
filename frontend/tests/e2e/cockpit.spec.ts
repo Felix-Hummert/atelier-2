@@ -779,3 +779,111 @@ test("opening Details on a saved V3 workflow shows each node with its role and i
     fullPage: true
   });
 });
+
+test("a declared order is a material field on start, and the typed value travels as that order", async ({
+  page
+}) => {
+  const api = "/atelier/api/v1";
+  const schema = await page.request.post(`${api}/schema-revisions`, {
+    headers: { "content-type": "application/json" },
+    data: '{"type":"object","properties":{"portions":{"type":"integer","minimum":1}},"required":["portions"],"additionalProperties":false}'
+  });
+  expect([200, 201]).toContain(schema.status());
+  const schemaHash = (await schema.json()).revision_hash as string;
+
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: {
+      profile_id: "cook-order",
+      revision_number: 1,
+      provider_id: "e2e-v3",
+      auth_mode: "subscription"
+    }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: "cook-sonnet",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+
+  const workflowYaml = [
+    "format_version: 3",
+    "name: Cook to order",
+    "graph_inputs:",
+    "  - name: portions",
+    "    schema:",
+    "      ref: portions-schema",
+    `      revision: ${schemaHash}`,
+    "nodes:",
+    "  - id: cook",
+    "    type: agent",
+    "    role: cook",
+    "    mode: headless",
+    "    instruction: Cook exactly what the order says.",
+    "    inputs:",
+    "      - name: portions",
+    "        from:",
+    "          graph_input: portions",
+    ""
+  ].join("\n");
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status()).toBe(201);
+
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: "Saved workflow" }).check();
+  await page.getByRole("radio", { name: /Cook to order/ }).check();
+
+  const order = page.getByRole("article", { name: "Order portions" });
+  await expect(order).toBeVisible();
+  await expect(order).toContainText(`portions-schema@${schemaHash}`);
+  const material = order.getByRole("textbox", { name: "Material portions" });
+  await expect(material).toHaveValue("");
+  await expect(page.getByRole("article", { name: /^Order / })).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(order.getByRole("alert")).toContainText(
+    "input 'portions' was refused: missing"
+  );
+  await page.screenshot({ path: "test-results/v3-material-missing-desktop.png", fullPage: true });
+
+  await material.fill('{"portions": 7}');
+  const binding = page.getByRole("article", { name: "Binding cook" });
+  const picker = binding.getByLabel("Agent for cook");
+  await expect(picker).toContainText("e2e-v3 · cook-sonnet · Subscription");
+  await picker.selectOption({ label: "e2e-v3 · cook-sonnet · Subscription" });
+
+  const started: { orders: Array<{ name: string; value: string }> | null } = {
+    orders: null
+  };
+  await page.route("**/runs", async (route) => {
+    const request = route.request();
+    if (request.method() === "POST" && /\/runs$/.test(new URL(request.url()).pathname)) {
+      const body = request.postDataJSON() as {
+        orders?: Array<{ name: string; value: string }>;
+      };
+      started.orders = body.orders ?? null;
+    }
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: /^Run / })).toBeVisible({
+    timeout: 20_000
+  });
+  expect(started.orders).toEqual([{ name: "portions", value: '{"portions": 7}' }]);
+  await page.screenshot({ path: "test-results/v3-material-started-desktop.png", fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: /Cook to order/ }).check();
+  await expect(page.getByRole("article", { name: "Order portions" })).toBeVisible();
+  await assertMobileSurface(page);
+  await page.screenshot({ path: "test-results/v3-material-390x844.png", fullPage: true });
+});
+

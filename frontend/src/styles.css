@@ -436,7 +436,8 @@ textarea {
   font-weight: 700;
 }
 
-.named-agent select {
+.named-agent select,
+.named-agent textarea {
   color: var(--ink);
 }
 

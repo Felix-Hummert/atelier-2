@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   MutationJournal,
+  startMutationV3,
   type MutationEnvelope,
   type MutationEvidence
 } from "../../src/lib/mutationJournal";
@@ -249,6 +250,45 @@ describe("MutationJournal exact transport truth", () => {
       expect(await journal.get(envelope.mutation_id)).toBeNull();
     }
   );
+
+  it("retains a V3 start that carries the exact order bytes", async () => {
+    const envelope = startMutationV3(
+      "run-1",
+      revisionHash,
+      [{ role: "cook", agent_configuration_revision_hash: "c".repeat(64) }],
+      [{ name: "portions", value: '{"portions": 7}' }]
+    );
+    const journal = new MutationJournal(sessionStorage);
+    await journal.prepare(envelope);
+    await journal.markUncertain(envelope.mutation_id);
+
+    expect(await new MutationJournal(sessionStorage).get(envelope.mutation_id)).toEqual({
+      ...envelope,
+      delivery: "uncertain"
+    });
+    const body = JSON.parse(globalThis.atob(envelope.body_base64)) as {
+      orders: Array<{ name: string; value: string }>;
+    };
+    expect(body.orders).toEqual([{ name: "portions", value: '{"portions": 7}' }]);
+  });
+
+  it("refuses a V3 start whose order is empty or duplicated", async () => {
+    const journal = new MutationJournal(sessionStorage);
+    const bound = [{ role: "cook", agent_configuration_revision_hash: "c".repeat(64) }];
+    await expect(
+      journal.prepare(
+        startMutationV3("run-1", revisionHash, bound, [{ name: "portions", value: "" }])
+      )
+    ).rejects.toThrow(/invalid start mutation order/);
+    await expect(
+      journal.prepare(
+        startMutationV3("run-1", revisionHash, bound, [
+          { name: "portions", value: "1" },
+          { name: "portions", value: "2" }
+        ])
+      )
+    ).rejects.toThrow(/invalid start mutation order/);
+  });
 
   it("fails loud when storage set or remove fails", async () => {
     const setFailure = new Error("set failed");
