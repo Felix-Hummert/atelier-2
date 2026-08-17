@@ -832,3 +832,154 @@ def test_a_refused_name_ends_the_command_unsuccessfully(
     assert exit_code == 1
     assert shown.out == ""
     assert "catalog-lineage-retired" in shown.err
+
+
+def named_serving_answers() -> dict[tuple[str, str], list[Answer]]:
+    """The conversation of a run started by name: resolve, then run.
+
+    No workflow revision is published, because the name already holds one. The
+    absence of that answer is what proves it: a command that still published
+    would meet a service with nothing scripted for it.
+    """
+
+    answers = serving_answers()
+    del answers[("POST", API_PREFIX + WORKFLOW_REVISION_PATH)]
+    answers[("GET", BY_NAME_URL_PATH)] = [name_answer()]
+    return answers
+
+
+@pytest.fixture
+def named_order(tmp_path: Path) -> Iterator[list[str]]:
+    binding = tmp_path / "writer.json"
+    binding.write_bytes(BINDING_DOCUMENT)
+    yield ["run", "--name", NAME, "--binding", f"{AGENT_ROLE}={binding}"]
+
+
+@pytest.mark.proves("one-command-runs-the-workflow-a-name-holds")
+def test_a_named_workflow_runs_and_prints_the_output_of_the_run_it_started(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """The command #111 exists for: a name in, the run's own output out.
+
+    Until the runtime could execute a published revision end to end, a `run` that
+    resolved a name would have been a verb that lies. It starts now, so the
+    resolution and the run are one command rather than two and a copied hash.
+    """
+    with ScriptedService(named_serving_answers()) as service:
+        exit_code = run_command(named_order, service)
+        started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
+        published_workflows = service.sent("POST", API_PREFIX + WORKFLOW_REVISION_PATH)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (0, AGENT_OUTPUT)
+    assert published_workflows == []
+    assert started["workflow_revision_hash"] == REVISION_HASH
+    reported = printed.err.decode()
+    assert PUBLIC_RUN_REFERENCE in reported
+    assert TERMINAL_HASH in reported
+    assert NAME in reported
+
+
+@pytest.mark.proves("one-command-runs-the-workflow-a-name-holds")
+def test_a_named_run_asks_the_service_for_the_name_before_it_starts_anything(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """Resolution is a question, and it is asked before any run exists."""
+    with ScriptedService(named_serving_answers()) as service:
+        run_command(named_order, service)
+        asked = [(call.method, call.path) for call in service.calls]
+
+    assert asked[0] == ("GET", BY_NAME_URL_PATH)
+    assert asked.index(("POST", RUNS_URL_PATH)) > asked.index(("GET", BY_NAME_URL_PATH))
+
+
+@pytest.mark.proves("a-refused-name-ends-the-command-unsuccessfully")
+def test_a_name_the_service_refuses_starts_no_run_and_ends_unsuccessfully(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    refused = problem_answer(
+        HTTPStatus.NOT_FOUND,
+        "urn:atelier2:problem:v1:catalog-name-not-found",
+        "Catalog name not found",
+        "No lineage of this kind holds that name at that position.",
+    )
+    answers = named_serving_answers()
+    answers[("GET", BY_NAME_URL_PATH)] = [refused]
+    with ScriptedService(answers) as service:
+        exit_code = run_command(named_order, service)
+        started = service.sent("POST", RUNS_URL_PATH)
+
+    assert (exit_code, started) == (1, [])
+    assert "catalog-name-not-found" in capsysbinary.readouterr().err.decode()
+
+
+def test_a_run_names_either_a_document_or_a_name_and_never_both(
+    tmp_path: Path, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """Two sources for the same revision would leave the operator guessing."""
+    workflow = tmp_path / "workflow.yaml"
+    workflow.write_bytes(WORKFLOW_DOCUMENT)
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "run",
+                "--workflow",
+                str(workflow),
+                "--name",
+                NAME,
+                "--service",
+                "http://x",
+            ]
+        )
+
+    assert b"--name" in capsysbinary.readouterr().err
+
+
+def test_a_run_that_names_no_workflow_at_all_is_refused_before_any_request(
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(["run", "--service", "http://x"])
+
+    assert b"--workflow" in capsysbinary.readouterr().err
+
+
+def test_a_position_without_a_name_is_refused_rather_than_ignored(
+    tmp_path: Path, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """Reading an option and then ignoring it is a quiet disagreement."""
+    workflow = tmp_path / "workflow.yaml"
+    workflow.write_bytes(WORKFLOW_DOCUMENT)
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "run",
+                "--workflow",
+                str(workflow),
+                "--position",
+                "2",
+                "--service",
+                "http://x",
+            ]
+        )
+
+    assert b"--position" in capsysbinary.readouterr().err
+
+
+@pytest.mark.proves("one-command-runs-the-workflow-a-name-holds")
+def test_a_named_run_at_an_exact_member_asks_the_service_for_that_member(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """A name can be run at the member the operator meant, not only at its head."""
+    path = f"{BY_NAME_URL_PATH}?position=1"
+    answers = named_serving_answers()
+    del answers[("GET", BY_NAME_URL_PATH)]
+    answers[("GET", path)] = [name_answer()]
+    with ScriptedService(answers) as service:
+        exit_code = run_command(named_order, service, "--position", "1")
+        asked = [call.path for call in service.calls]
+
+    assert exit_code == 0
+    assert path in asked
