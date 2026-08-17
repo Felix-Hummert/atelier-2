@@ -87,10 +87,8 @@ Four sections, in this order, each of which may be empty but not absent:
 - `## Intent` — the sentences that say what the human wants. Short, plain, and
   attributed.
 - `## Rules` — the sentences a builder is expected to satisfy. Every document
-  writes them as `REQ-<bereich>-<nn>` blocks under the sentence template below,
-  except 0003 and 0004, which still carry the numbered rules they were distilled
-  as and are converted in their own change. Every rule carries its **authority
-  grade** and its source:
+  writes them as `REQ-<bereich>-<nn>` blocks under the sentence template below.
+  Every rule carries its **authority grade** and its source:
   - **`OPERATOR`** — the cited object reproduces the operator's **own sentence**,
     verbatim and in the language he wrote it, and that sentence says what the
     rule says. The document repeats the quote at the rule, so the human intent
@@ -176,10 +174,11 @@ desk cannot grant either status.
 `UNGEBUNDEN`. Nothing in between. A bound identifier is a claim that a story
 declared that sentence for this requirement; it is not itself the proof — the
 acceptance gate still judges the test. `UNGEBUNDEN` on an `AGREED` sentence is
-named debt, and 0001 and 0002 are almost entirely that: their subjects are
-seam-now, build-later, so every rule there names what would prove it rather than
-pretending something already does. Documents 0003 and 0004 keep numbered rules
-until their own change.
+named debt, and most of the shelf is that today: 0001, 0002 and 0004 are
+seam-now, build-later throughout, so every rule there names what would prove it
+rather than pretending something already does. The bound ones are 0005's catalog
+rules and 0003's `REQ-UI-01` and `REQ-UI-16`, where the workshop's own levels and
+its teaching empty state are declared and proven.
 
 `## Acceptance` is a reading of those `Beweis` fields: it lists the identifiers
 already declared and names what is still `UNGEBUNDEN`. It does not bind a
