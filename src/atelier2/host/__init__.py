@@ -37,11 +37,13 @@ from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_UR
 from atelier2.host.run_command import (
     DEFAULT_CATALOG_POSITION,
     AgentBindingSource,
+    NamedRunOrder,
     NameOrder,
     RunCommandRefusal,
     RunOrder,
     describe_receipt,
     describe_resolution,
+    execute_named_run,
     execute_run,
     resolve_published_name,
 )
@@ -51,14 +53,16 @@ RESOLVE_DESCRIPTION = """\
 Ask a served Atelier which published revision a workflow name holds, and print
 the lineage, the member number and the exact revision hash.
 
-This command starts nothing. It answers the question `run --workflow` needs
-answered by hand today: which bytes a name stands for. Every refusal is the
-service's own - an unadmitted name, a retired lineage, a position the lineage
-does not hold - and each one ends this command unsuccessfully.
+This command starts nothing, which is the whole of what separates it from `run
+--name`: that one asks this same question and then runs the answer, so use this
+one to look before you leap. Every refusal is the service's own - an unadmitted
+name, a retired lineage, a position the lineage does not hold - and each one ends
+this command unsuccessfully, there and in `run --name` alike.
 """
 
 RUN_DESCRIPTION = """\
-Run one workflow document on a served Atelier API and wait for its end. Every
+Run a workflow on a served Atelier API and wait for its end -- either the
+document named by --workflow, or the one a catalog name holds via --name. Every
 agent output the run produced is written to standard output, as the exact bytes
 its hash covers and with no separator added, so a piped output is the output;
 the run, its revision, its terminal hash and one hash per output are written to
@@ -71,13 +75,21 @@ run there, exactly as any other client would. All three publications are
 idempotent, and the run identity is derived from the published hashes, so the
 same command run twice reports one run instead of paying for two.
 
+With --name nothing is published for the workflow: the service is asked which
+revision the name holds -- the same question `resolve` asks, and its refusals are
+handed on unchanged -- and that revision is what starts. --position picks the
+member of the lineage, so a name can be run at an exact revision rather than
+only at its head.
+
 Not supported yet, and refused rather than faked:
 
   --input       run input follows issue #38. Until it lands, the job travels
                 inside the workflow document, which burns one published
-                revision per distinct input.
-  a name        starting a workflow by name follows issue #22, so --workflow
-                takes the document itself.
+                revision per distinct input -- and a named run repeats the same
+                revision, so a distinct input still needs a distinct workflow.
+  a wait        a run that stops for a human ends this command unsuccessfully
+                and says which capability is missing; answering a wait from here
+                is not built.
 
 There is no verdict exit code: output contracts (issue #57) do not exist yet,
 so the exit code reports the run's disposition and nothing more.
@@ -126,16 +138,31 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
 
 
 def _run(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
-    order = RunOrder(
-        service_url=parsed.service,
-        workflow_document=_file_bytes(parser, parsed.workflow),
-        bindings=tuple(
-            _binding_source(parser, declared) for declared in parsed.binding
-        ),
-        run_id=parsed.run_id,
-    )
+    bindings = tuple(_binding_source(parser, declared) for declared in parsed.binding)
+    if parsed.position is not None and parsed.name is None:
+        # A position without a name would be read and then ignored, which is the
+        # quietest way for a command to disagree with the operator.
+        parser.error("--position selects a member of --name, so it needs one")
     try:
-        report = execute_run(order)
+        if parsed.name is not None:
+            report = execute_named_run(
+                NamedRunOrder(
+                    service_url=parsed.service,
+                    name=parsed.name,
+                    bindings=bindings,
+                    run_id=parsed.run_id,
+                    position=parsed.position or DEFAULT_CATALOG_POSITION,
+                )
+            )
+        else:
+            report = execute_run(
+                RunOrder(
+                    service_url=parsed.service,
+                    workflow_document=_file_bytes(parser, parsed.workflow),
+                    bindings=bindings,
+                    run_id=parsed.run_id,
+                )
+            )
     except RunCommandRefusal as refusal:
         print(refusal, file=sys.stderr)
         return 1
@@ -369,12 +396,31 @@ def _argument_parser() -> argparse.ArgumentParser:
         description=RUN_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    run_parser.add_argument(
+    # Exactly one source for the revision. Two would leave the operator guessing
+    # which one the run used; none would leave the command with nothing to run.
+    run_source = run_parser.add_mutually_exclusive_group(required=True)
+    run_source.add_argument(
         "--workflow",
         type=Path,
-        required=True,
         metavar="DOCUMENT.yaml",
         help="the workflow document to publish and run",
+    )
+    run_source.add_argument(
+        "--name",
+        metavar="NAME",
+        help=(
+            "run the workflow this catalog name holds, instead of publishing a "
+            "document; the name is resolved by the service before anything starts"
+        ),
+    )
+    run_parser.add_argument(
+        "--position",
+        default=None,
+        metavar="head|N",
+        help=(
+            "which member of the named lineage to run: head, or an exact member "
+            f"number (default {DEFAULT_CATALOG_POSITION}); only with --name"
+        ),
     )
     run_parser.add_argument(
         "--binding",

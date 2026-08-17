@@ -384,8 +384,13 @@ An order is refused before any row exists when it is missing, undeclared,
 supplied twice, pinned to another schema than the document named, or is a value
 that schema does not admit. Only an order the graph declares binds today; an
 input reading another node's output, a node receipt, a context entry or an
-authored constant is refused by the source it named. Neither a workflow name nor
-an output contract that could decide an exit code exists yet.
+authored constant is refused by the source it named. A workflow name is no
+longer among what is missing either: `--name` runs the revision a catalog name
+holds, asked of the service before anything is written and at the lineage member
+`--position` names, so an operator starts named work without translating a name
+into a hash by hand. The command does not yet carry an order of its own -- that
+seam is `start_published` -- and an output contract that could decide an exit
+code still does not exist.
 
 The canonical store is schema V14. A fresh store is created as exact V14 and
 carries published revisions of the closed kind set, lineage membership bound
