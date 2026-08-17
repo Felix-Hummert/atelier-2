@@ -35,6 +35,16 @@ class HealthResource(ApiModel):
     source_tree: str
 
 
+class SchemaRevisionResource(ApiModel):
+    """The hash of one published schema revision, and nothing else.
+
+    Publication is bytes in, hash out. The document is not echoed: the caller
+    already holds the exact bytes they posted, and the hash is their identity.
+    """
+
+    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+
+
 class AuthProfileRevisionResource(ApiModel):
     profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)

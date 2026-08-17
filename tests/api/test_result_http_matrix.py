@@ -36,6 +36,7 @@ from atelier2.contracts.executions import (
     WaitAnswerSnapshot,
     WaitAnswerState,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import (
     RunPage,
     RunProjection,
@@ -78,6 +79,12 @@ from atelier2.ports.effects import (
     DurableReconciliationExisting,
     DurableReconciliationResult,
 )
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCollision,
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+    PublishRevisionResult,
+)
 from atelier2.ports.run_events import (
     CursorAhead,
     EventHistoryCorrupt,
@@ -116,6 +123,8 @@ nodes:
   - {id: final, type: subworkflow, operation: add, operands: [2, 3], next: null}
 """
 REVISION = WorkflowRevision(DOCUMENT)
+SCHEMA_DOCUMENT = b'{"type": "object"}'
+SCHEMA_REVISION = PublishedRevision(RevisionKind.SCHEMA, SCHEMA_DOCUMENT)
 GRAPH = parse_executable_workflow_document(DOCUMENT)
 REVISION_PROJECTION = WorkflowRevisionProjection(REVISION, GRAPH)
 RUN = Run(RunId("run"), REVISION.revision_hash, RunState.STARTED, "final", 0, 0)
@@ -199,6 +208,20 @@ SUCCESS_CASES = (
         "publish",
         "publisher",
         DurableRevisionExisting(REVISION),
+        200,
+    ),
+    (
+        "publish-schema-created",
+        "publish-schema",
+        "schema-registry",
+        PublishedRevisionCreated(SCHEMA_REVISION),
+        201,
+    ),
+    (
+        "publish-schema-existing",
+        "publish-schema",
+        "schema-registry",
+        PublishedRevisionExisting(SCHEMA_REVISION),
         200,
     ),
     (
@@ -292,6 +315,38 @@ PROBLEM_CASES = (
         "publish-corrupt",
         "publish",
         "publisher",
+        DurableStateCorrupt(),
+        500,
+        "durable-state-corrupt",
+    ),
+    (
+        "publish-schema-invalid",
+        "publish-schema",
+        "invalid-schema",
+        None,
+        422,
+        "schema-document-not-json",
+    ),
+    (
+        "publish-schema-collision",
+        "publish-schema",
+        "schema-registry",
+        PublishedRevisionCollision(),
+        409,
+        "schema-revision-collision",
+    ),
+    (
+        "publish-schema-unavailable",
+        "publish-schema",
+        "schema-registry",
+        DurableWriteUnavailable(),
+        503,
+        "temporarily-unavailable",
+    ),
+    (
+        "publish-schema-corrupt",
+        "publish-schema",
+        "schema-registry",
         DurableStateCorrupt(),
         500,
         "durable-state-corrupt",
@@ -621,6 +676,22 @@ class MatrixPublisher:
 
 
 @dataclass
+class MatrixRegistry:
+    case: RouteResultCase
+
+    def publish_revision(self, revision: PublishedRevision) -> PublishRevisionResult:
+        del revision
+        if self.case.source == "invalid-schema":
+            raise AssertionError("an invalid schema reached the registry")
+        assert self.case.source == "schema-registry"
+        return cast(PublishRevisionResult, self.case.result)
+
+    def resolve(self, kind: object, revision_hash: object) -> object:
+        del kind, revision_hash
+        raise AssertionError("schema publication never resolves")
+
+
+@dataclass
 class MatrixStarter:
     case: RouteResultCase
 
@@ -747,6 +818,7 @@ def _ports(case: RouteResultCase) -> ApiPorts:
         workflow_revision_queries=queries,
         run_queries=queries,
         run_event_queries=queries,
+        published_revision_registry=MatrixRegistry(case),
         workflow_document_parser=parse_executable_workflow_document,
         agent_configuration_catalog=queries,
     )
@@ -759,6 +831,15 @@ def _request(client: TestClient, case: RouteResultCase):
             "/atelier/api/v1/workflow-revisions",
             content=document,
             headers={"content-type": "application/yaml"},
+        )
+    if case.operation == "publish-schema":
+        document = (
+            b"Guten Morgen" if case.source == "invalid-schema" else SCHEMA_DOCUMENT
+        )
+        return client.post(
+            "/atelier/api/v1/schema-revisions",
+            content=document,
+            headers={"content-type": "application/json"},
         )
     if case.operation == "revision-list":
         return client.get("/atelier/api/v1/workflow-revisions")
@@ -827,6 +908,8 @@ def _success_body(operation: str) -> object:
             ],
         },
     }
+    if operation == "publish-schema":
+        return {"revision_hash": SCHEMA_REVISION.revision_hash.value}
     if operation in {"publish", "revision-get"}:
         return revision_body
     if operation == "revision-list":

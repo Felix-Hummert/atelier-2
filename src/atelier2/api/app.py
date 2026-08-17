@@ -32,6 +32,7 @@ from atelier2.application.publish_agent_configurations import (
     publish_agent_configuration_revision,
     publish_auth_profile_revision,
 )
+from atelier2.application.publish_schema_revision import publish_schema_revision
 from atelier2.application.publish_workflow_revision import (
     WorkflowPublicationLimits,
     publish_workflow_revision,
@@ -117,6 +118,9 @@ def bound_use_cases(
             ports.workflow_revision_publisher,
             ports.workflow_document_parser,
             projection_limit,
+        ),
+        publish_schema_revision=lambda document: publish_schema_revision(
+            document, ports.published_revision_registry
         ),
         publish_auth_profile_revision=(
             lambda profile_id, revision_number, provider_id, auth_mode: (

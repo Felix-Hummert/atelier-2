@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from atelier2.api.wire.resources import ProblemResource
+from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
 
 PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."
 """How the API words a stored projection that does not fit its configured bound.
@@ -20,6 +21,32 @@ the wire.
 """
 
 PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:"
+
+
+def schema_document_problem_code(refusal: SchemaDocumentRefusal) -> str:
+    """The problem code one schema-profile refusal becomes on the wire.
+
+    The profile already names each fault. The route must not collapse those
+    names into `invalid-request`: the caller reads the reason from the type.
+    """
+
+    return f"schema-{refusal.value}"
+
+
+def _schema_document_problems() -> dict[str, ProblemDefinition]:
+    return {
+        schema_document_problem_code(refusal): ProblemDefinition(
+            422,
+            "Invalid schema document",
+            f"The document is not a schema this product enforces ({refusal.value}).",
+        )
+        for refusal in SchemaDocumentRefusal
+    }
+
+
+SCHEMA_DOCUMENT_PROBLEM_CODES = tuple(
+    schema_document_problem_code(refusal) for refusal in SchemaDocumentRefusal
+)
 
 
 @dataclass(frozen=True)
@@ -138,6 +165,12 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         422,
         "Invalid workflow document",
         "Submit exact bytes for a safe closed workflow graph.",
+    ),
+    **_schema_document_problems(),
+    "schema-revision-collision": ProblemDefinition(
+        409,
+        "Schema revision collision",
+        "Stop and inspect durable schema revision integrity.",
     ),
     "unsupported-media-type": ProblemDefinition(
         415,

@@ -216,6 +216,7 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
         ),
         catalog_resolver=DbosCatalogStore(runtime.engine),
         catalog_admissions=DbosCatalogStore(runtime.engine),
+        published_revision_registry=DbosCatalogStore(runtime.engine),
     )
 
 

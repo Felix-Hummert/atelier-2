@@ -42,6 +42,13 @@ from atelier2.application.publish_agent_configurations import (
     publish_agent_configuration_revision,
     publish_auth_profile_revision,
 )
+from atelier2.application.publish_schema_revision import (
+    SchemaPublicationCollision,
+    SchemaPublicationCreated,
+    SchemaPublicationExisting,
+    SchemaPublicationInvalid,
+    publish_schema_revision,
+)
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
@@ -63,7 +70,9 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted as DurableCancellationAccepted,
 )
@@ -125,6 +134,11 @@ from atelier2.ports.durable_runs import (
 )
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
+)
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCollision,
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
 )
 
 REVISION_HASH = WorkflowRevisionHash("a" * 64)
@@ -263,6 +277,62 @@ def test_authored_values_that_make_no_revision_refuse_before_the_catalog_is_aske
         result, (UnpublishableAuthProfile, UnpublishableAgentConfiguration)
     )
     assert catalog.published == []
+
+
+SCHEMA_DOCUMENT = b'{"type": "object"}'
+SCHEMA_REVISION = PublishedRevision(RevisionKind.SCHEMA, SCHEMA_DOCUMENT)
+
+
+class ScriptedRegistry:
+    """A published-revision registry that answers with the one scripted result."""
+
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+        self.published: list[PublishedRevision] = []
+
+    def publish_revision(self, revision: PublishedRevision) -> Any:
+        self.published.append(revision)
+        return self.answer
+
+    def resolve(self, kind: object, revision_hash: object) -> Any:
+        del kind, revision_hash
+        raise AssertionError("schema publication never resolves")
+
+
+@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        (
+            PublishedRevisionCreated(SCHEMA_REVISION),
+            SchemaPublicationCreated(SCHEMA_REVISION),
+        ),
+        (
+            PublishedRevisionExisting(SCHEMA_REVISION),
+            SchemaPublicationExisting(SCHEMA_REVISION),
+        ),
+        (PublishedRevisionCollision(), SchemaPublicationCollision()),
+        *WRITE_REFUSALS,
+    ],
+    ids=lambda value: type(value).__name__,
+)
+def test_every_port_answer_of_a_schema_publication_becomes_this_layers_own_outcome(
+    port_answer: Any, expected: Any
+) -> None:
+    registry = ScriptedRegistry(port_answer)
+
+    assert publish_schema_revision(SCHEMA_DOCUMENT, registry) == expected
+    assert registry.published == [SCHEMA_REVISION]
+
+
+def test_a_schema_outside_the_profile_is_refused_before_the_store_is_asked() -> None:
+    registry = ScriptedRegistry(PublishedRevisionCreated(SCHEMA_REVISION))
+
+    result = publish_schema_revision(b"Guten Morgen", registry)
+
+    assert isinstance(result, SchemaPublicationInvalid)
+    assert result.verdict.refusal is SchemaDocumentRefusal.DOCUMENT_NOT_JSON
+    assert registry.published == []
 
 
 def test_a_configuration_is_recorded_under_the_format_this_publication_decides() -> (
