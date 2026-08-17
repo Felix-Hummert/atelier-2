@@ -1,0 +1,40 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/235"
+
+# THE LINE BECOMES A CHAIN. A V3 line has driven itself since #216, and every
+# node of it was handed exactly its own authored instruction: the reviewer of
+# `code -> review -> fix` never saw what the coder wrote, so the only honest way
+# to write `iterate-v1` was a chain that was not one. The document language could
+# already say the hand-off -- `from: {node: code, output: draft}` is a first-class
+# input source -- and the executable admission refused it. This is where it stops
+# being refused and starts being kept.
+#
+# WHAT ADMITTING `outputs` COSTS, AND WHAT IS PAID HERE. Admitting a form means
+# keeping what it declares, so the value a node produces is now written durably by
+# its completion, hash-bound to that event, and read against the schema its own
+# author pinned before it is handed to the next node. What is NOT paid here is
+# refused rather than ignored: a second output on one agent node (its completion
+# writes one payload, so two would leave one answered by the other), and a graph
+# output (nothing carries a value out of a run yet).
+#
+# WHAT STAYS WITH #57. Join, retry, canary and the operator confirmation of an
+# artifact are that item's, untouched. What this head takes from its neighbourhood
+# is the single reading a hand-off cannot be honest without: the value that
+# travels is read against the schema that was declared for it.
+#
+# STILL REFUSED BY THE SOURCE THEY NAME: an input reading a node receipt or a
+# context entry, and an authored constant. Nothing produces the first two, and the
+# third is what an order replaces.
+#
+# ONE REFUSAL OF THIS HEAD STANDS BEHIND A DOOR NOTHING OPENS. `confirmed_by` is
+# refused here, and measuring showed an older structural rule refuses it first:
+# only an interactive node may claim a confirmation, and headless is the only mode
+# the executable admission takes. It is named rather than dressed as a proof.
+
+[[sentence]]
+id = "a-node-reads-the-work-of-the-node-before-it"
+text = "A node whose author declared that it reads an earlier node's output is handed the exact bytes that node produced -- announced by the node that did the work, inside the one job an agent receives -- so a published line of agents becomes a chain in which the reviewer judges what the coder actually wrote, while a line that declares no hand-off still tells each node only its own sentence."
+
+[[sentence]]
+id = "a-form-the-runtime-does-not-keep-is-still-refused-by-name"
+text = "An authored form of an output that this runtime does not keep is refused by the name of what it declares -- a second value on one agent node, or a graph output nothing carries out of a run -- rather than admitted and quietly dropped."

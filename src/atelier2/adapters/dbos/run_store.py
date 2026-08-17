@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.schema import (
     auth_profile_revisions,
     effect_intents,
     effect_receipts,
+    published_revisions,
     run_agent_bindings,
     run_events,
     run_inputs_v3,
@@ -66,8 +67,8 @@ from atelier2.contracts.executions import (
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.node_records_v3 import RunInput
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash
+from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.runs import (
@@ -77,6 +78,12 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevision,
     WorkflowRevisionHash,
+)
+from atelier2.contracts.schemas_v3 import (
+    InstanceRefused,
+    SchemaRefused,
+    read_instance_document,
+    read_schema_document,
 )
 from atelier2.contracts.workflows import (
     ActionNode,
@@ -88,6 +95,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
     GraphInputSource,
+    NodeOutputSource,
     WorkflowGraphV3,
     is_sink_node,
 )
@@ -301,6 +309,108 @@ def load_run_inputs(
             f"the run carries no order named {missing[0]!r}, which this node reads"
         )
     return tuple(stored[name] for name in sorted(read))
+
+
+def load_node_outputs(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    graph: AnyWorkflowDocument,
+    node: AgentNodeV3,
+) -> tuple[DeliveredOutput, ...]:
+    """The work of earlier nodes this node declared it reads, as they wrote it.
+
+    The value is the producing node's own completion payload -- the bytes its
+    `AGENT_COMPLETED` event carries -- and it is verified against the hash that
+    event stored, exactly as the Action path has always verified an Agent output
+    it consumes. A payload that no longer matches its hash is a store that
+    disagrees with itself, and it refuses here rather than travelling into a job.
+
+    It is then read against the schema the producing node's author pinned for
+    that output. The document may only read an output its producer declares, so
+    that schema always exists; checking it here rather than at completion is what
+    keeps the promise on the value that actually travels, and it is the same
+    reading an order gets at the start.
+
+    A node that reads nothing gets nothing: no query runs, and the composition
+    is the authored instruction alone.
+    """
+    read = tuple(
+        entry.source
+        for entry in node.inputs
+        if isinstance(entry.source, NodeOutputSource)
+    )
+    if not read:
+        return ()
+    if not isinstance(graph, WorkflowGraphV3):
+        raise RunTransitionConflict("a V3 agent node belongs to a V3 document")
+    delivered: list[DeliveredOutput] = []
+    for source in sorted(read, key=lambda named: (named.node, named.output)):
+        record = session.execute(
+            sa.select(run_events.c.payload, run_events.c.payload_hash).where(
+                run_events.c.run_id == run_id.value,
+                run_events.c.revision_hash == revision_hash.value,
+                run_events.c.node_id == source.node,
+                run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+            )
+        ).one_or_none()
+        if record is None:
+            raise RunTransitionConflict(
+                f"node {source.node!r} has written no output this node can read"
+            )
+        payload = bytes(record.payload)
+        if Sha256Hash.of(payload).value != str(record.payload_hash):
+            raise RunTransitionConflict(
+                f"the stored output of node {source.node!r} no longer matches its hash"
+            )
+        _refuse_an_output_its_schema_does_not_admit(session, graph, source, payload)
+        delivered.append(DeliveredOutput(source.node, source.output, payload))
+    return tuple(delivered)
+
+
+def _refuse_an_output_its_schema_does_not_admit(
+    session: Any,
+    graph: WorkflowGraphV3,
+    source: NodeOutputSource,
+    payload: bytes,
+) -> None:
+    """Read one produced value against the schema its own author pinned.
+
+    The pinned revision is read from the durable document rather than from the
+    frozen resolution matrix, and that is not a second resolver: the reference is
+    immutable inside the revision this run is bound to, and the start already
+    refused the document if that revision was not a schema this product can
+    enforce. What is added here is the one thing the start could not do -- reading
+    a value that did not exist yet.
+    """
+    declared = next(
+        output
+        for output in graph.node(source.node).outputs
+        if output.name == source.output
+    )
+    pinned = declared.schema_reference.revision
+    document = session.scalar(
+        sa.select(published_revisions.c.document).where(
+            published_revisions.c.kind == RevisionKind.SCHEMA.value,
+            published_revisions.c.revision_hash == pinned,
+        )
+    )
+    if document is None:
+        raise RunTransitionConflict(
+            f"the schema node {source.node!r} pinned for output "
+            f"{source.output!r} is absent from the store"
+        )
+    schema = read_schema_document(bytes(document))
+    if isinstance(schema, SchemaRefused):
+        raise RunTransitionConflict(
+            f"the schema node {source.node!r} pinned for output "
+            f"{source.output!r} is not one: {schema}"
+        )
+    verdict = read_instance_document(payload, schema)
+    if isinstance(verdict, InstanceRefused):
+        raise RunTransitionConflict(
+            f"node {source.node!r} produced an output its own schema refuses: {verdict}"
+        )
 
 
 def load_run(session: Any, run_id: RunId) -> AnyRun:

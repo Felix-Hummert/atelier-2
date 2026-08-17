@@ -172,6 +172,33 @@ class RunInput:
         object.__setattr__(self, "value_hash", Sha256Hash.of(self.value))
 
 
+@dataclass(frozen=True)
+class DeliveredOutput:
+    """One value a node produced, handed to the node whose author reads it.
+
+    It is what the producing node's completion wrote -- the exact payload bytes
+    of its `AGENT_COMPLETED` event -- addressed by the output name its author
+    declared. The hash is taken here so the reader's job carries an identity for
+    the value rather than a copy nobody can check against the event it came from.
+
+    It is a **separate form** from `RunInput`: an order is material somebody
+    supplied and the run stores, while this is work the run produced. They meet
+    only in the job, where each announces itself by name.
+    """
+
+    node_id: str
+    output_name: str
+    value: bytes
+    value_hash: Sha256Hash = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.node_id == "" or self.output_name == "":
+            raise ValueError("a delivered output names its node and its output")
+        if not isinstance(self.value, bytes):
+            raise TypeError("a delivered output carries exact bytes")
+        object.__setattr__(self, "value_hash", Sha256Hash.of(self.value))
+
+
 def declared_context_package_of(
     workflow_revision_hash: WorkflowRevisionHash,
     run_id: RunId,
