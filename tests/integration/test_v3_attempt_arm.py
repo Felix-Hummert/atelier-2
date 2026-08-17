@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 import sqlalchemy as sa
@@ -35,8 +36,9 @@ from atelier2.adapters.dbos.run_store import (
     run_from_record_with_bindings,
 )
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.schema import run_events, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.workflow import EncodedAgentBindingV2, _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import AgentAttemptId, AgentAttemptState
@@ -55,7 +57,8 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
-from atelier2.contracts.workflows import RunCompletes
+from atelier2.contracts.workflows import RunCompletes, RunContinues
+from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
 from tests.integration.test_v3_agent_start import publish
 from tests.scenarios.agents import failing_agent_executor_factory
@@ -188,3 +191,131 @@ def test_a_completed_v3_attempt_carries_its_run_to_the_terminal_hash(
         )
     assert run["state"] == RunState.COMPLETED.value
     assert run["terminal_hash"] is not None
+
+
+LINE_DOCUMENT = b"""format_version: 3
+name: A line of two agents
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the first thing this chain is for.
+  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: Judge the first thing.
+    depends_on: [implement]
+"""
+LINE_ROLES = (
+    ("implement", "builder", b"Do the first thing this chain is for."),
+    ("review", "reviewer", b"Judge the first thing."),
+)
+
+
+def _durable_head(runtime: DbosRuntime) -> tuple[str, str]:
+    with runtime.engine.connect() as connection:
+        record = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == RUN.value))
+            .mappings()
+            .one()
+        )
+    return str(record["current_node_id"]), str(record["state"])
+
+
+def _attempt_for(
+    runtime: DbosRuntime,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    role: str,
+    instruction: bytes,
+) -> AgentAttemptExecution:
+    with runtime.engine.connect() as connection:
+        record = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == RUN.value))
+            .mappings()
+            .one()
+        )
+        run = run_from_record_with_bindings(connection, record)
+    assert isinstance(run, RunV3)
+    binding = next(
+        candidate for candidate in run.agent_bindings if candidate.role.value == role
+    )
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(RUN, revision_hash, node_id),
+        RUN,
+        revision_hash,
+        node_id,
+        ResolvedAgentBinding(binding.role, binding.configuration, binding.auth_profile),
+        AgentExecutorOperationalIdentity("exact-operation"),
+        instruction,
+    )
+    return AgentAttemptExecution(
+        request,
+        AgentAttemptId.for_execution(request.node_execution_id, request.request_hash),
+        1,
+    )
+
+
+@pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
+@pytest.mark.proves("a-v3-run-follows-the-edge-its-author-declared")
+def test_a_succeeded_non_sink_leaves_the_run_standing_on_its_declared_heir(
+    runtime: DbosRuntime,
+) -> None:
+    """The edge, driven through the durable store rather than read off the graph.
+
+    The rule that picks the heir has unit proof; what had none is that a run
+    actually arrives there -- that the head the next attempt reads is the node
+    the author declared, and that the line ends where its sink does.
+    """
+    workflow, bindings = publish(runtime, LINE_DOCUMENT, ("builder", "reviewer"))
+    DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_v3_foundation(
+        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+    )
+    revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    assert _durable_head(runtime) == ("implement", RunState.STARTED.value)
+
+    completions = []
+    for node_id, role, instruction in LINE_ROLES:
+        execution = _attempt_for(runtime, revision_hash, node_id, role, instruction)
+        store.prepare(execution)
+        store.claim(execution)
+        succeeded = store.complete_success(
+            execution, AgentExecutionResult(f"bytes from {node_id}".encode())
+        )
+        assert isinstance(succeeded, AgentAttemptSucceeded)
+        completions.append(succeeded.completion)
+        if node_id == "implement":
+            # The heir, read back from the durable head the next attempt uses --
+            # and bound with its own role, which it could not be before the run
+            # arrived: a node binding answers only for the node the run stands on.
+            assert _durable_head(runtime) == ("review", RunState.STARTED.value)
+            heir = cast(
+                EncodedAgentBindingV2,
+                _node_binding(
+                    runtime.datasource, RUN, workflow.revision_hash, "review"
+                ),
+            )
+            assert heir["role"] == "reviewer"
+            assert heir["job"] == "Judge the first thing."
+
+    assert completions == [RunContinues("review"), RunCompletes()]
+    assert _durable_head(runtime) == ("review", RunState.COMPLETED.value)
+    with runtime.engine.connect() as connection:
+        events = [
+            (int(row["event_sequence"]), str(row["node_id"]))
+            for row in connection.execute(
+                sa.select(run_events).order_by(run_events.c.event_sequence)
+            ).mappings()
+        ]
+        terminal = connection.scalar(
+            sa.select(runs.c.terminal_hash).where(runs.c.run_id == RUN.value)
+        )
+
+    assert events == [(1, "implement"), (2, "review")]
+    assert terminal is not None
