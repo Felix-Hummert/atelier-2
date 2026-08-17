@@ -9,10 +9,15 @@ from pydantic import Field
 
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
+    MAXIMUM_RUN_AGENT_BINDINGS,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
 from atelier2.api.wire.resources import ApiModel, ReconciliationDeterminationResource
+from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_PROVIDER_ID_CHARACTERS,
+)
 
 
 class RevisionListingView(StrEnum):
@@ -30,16 +35,18 @@ class RevisionListingView(StrEnum):
 
 
 class PublishAuthProfileRevisionRequestResource(ApiModel):
-    profile_id: str = Field(min_length=1, max_length=1_024)
+    profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    provider_id: str = Field(min_length=1, max_length=64)
+    provider_id: str = Field(min_length=1, max_length=MAXIMUM_PROVIDER_ID_CHARACTERS)
     auth_mode: Literal["subscription", "api_key"]
 
 
 class PublishAgentConfigurationRevisionRequestResource(ApiModel):
-    model: str = Field(min_length=1, max_length=1_024)
+    model: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    executor_revision: str = Field(min_length=1, max_length=1_024)
+    executor_revision: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
+    )
     requested_capability: Literal["headless", "interactive"] = "headless"
 
 
@@ -49,7 +56,7 @@ class StartRunRequestResource(ApiModel):
 
 
 class StartRunAgentBindingResourceV2(ApiModel):
-    role: str = Field(min_length=1, max_length=1_024)
+    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
@@ -58,7 +65,7 @@ class StartRunRequestResourceV2(ApiModel):
     run_id: str = Field(min_length=1)
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     agent_bindings: tuple[StartRunAgentBindingResourceV2, ...] = Field(
-        max_length=100, strict=False
+        max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
     )
 
 
@@ -80,6 +87,6 @@ class ReconcileRunRequestResource(ApiModel):
 
 
 class CancelAgentAttemptRequestResource(ApiModel):
-    command_id: str = Field(min_length=1, max_length=1_024)
+    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     expected_attempt_state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     replacement: Literal["NONE", "ONE"]
