@@ -16,6 +16,9 @@ from atelier2.api.wire.resources import (
     AgentAttemptResourceV2,
     AgentBindingResourceV2,
     AnyRunResource,
+    NodeAnswerResource,
+    NodeDetailResource,
+    NodeProvenanceResource,
     NodeRailAttemptResource,
     NodeRailResource,
     NodeResource,
@@ -37,6 +40,7 @@ from atelier2.api.wire.resources import (
 from atelier2.application.project_node_rail import NodeRailEntry, project_node_rail
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_projections import (
+    NodeDetail,
     RunProjection,
 )
 from atelier2.contracts.runs import RunState
@@ -256,4 +260,42 @@ def _run_resource_v2(
             if run.last_event_sequence == 0
             else encode_event_cursor(run.run_id, run.last_event_sequence)
         ),
+    )
+
+
+def node_detail_resource(detail: NodeDetail) -> NodeDetailResource:
+    """One node detail on the wire, with every absence kept as an absence."""
+
+    return NodeDetailResource(
+        run_id=detail.run_id.value,
+        public_run_reference=encode_public_run_reference(detail.run_id),
+        node_id=detail.node_id,
+        state=cast(NodeStateName, detail.state.value),
+        job_base64=None if detail.job is None else encode_canonical_base64(detail.job),
+        job_hash=detail.job_hash,
+        answer=None
+        if detail.answer is None
+        else NodeAnswerResource(
+            value_base64=encode_canonical_base64(detail.answer.value),
+            value_hash=detail.answer.value_hash.value,
+        ),
+        provenance=None
+        if detail.provenance is None
+        else NodeProvenanceResource(
+            role=detail.provenance.role,
+            provider_id=detail.provenance.provider_id,
+            model=detail.provenance.model,
+            executor_revision=detail.provenance.executor_revision,
+            executor_operational_identity=(
+                detail.provenance.executor_operational_identity
+            ),
+            auth_mode=detail.provenance.auth_mode,
+            profile_id=detail.provenance.profile_id,
+            agent_configuration_revision_hash=(
+                detail.provenance.agent_configuration_revision_hash
+            ),
+            request_hash=detail.provenance.request_hash,
+            receipt_hash=detail.provenance.receipt_hash,
+        ),
+        refusal=detail.refusal,
     )
