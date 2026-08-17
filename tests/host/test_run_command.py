@@ -26,6 +26,7 @@ from atelier2.api.wire.events import (
     AgentCompletedEventResourceV2,
     AgentCompletedEventResourceV3,
     AgentFailedEventResourceV2,
+    AgentFailedEventResourceV3,
     WaitingInputEventResourceV2,
 )
 from atelier2.api.wire.resources import (
@@ -675,6 +676,57 @@ def test_a_failed_agent_attempt_ends_the_command_unsuccessfully(
     assert (exit_code, printed.out) == (1, b"")
     assert b"PROCESS_EXITED_UNSUCCESSFULLY" in printed.err
     assert ATTEMPT_ID.encode() in printed.err
+
+
+def agent_failed_v3() -> str:
+    """The format-3 failure the Completed twin already spoke; the command must too.
+
+    Dropping `AgentFailedEventResourceV3` from the acted union turns this payload
+    into a validation wall — the same unread history that #253 closed for
+    completion.
+    """
+
+    return AgentFailedEventResourceV3(
+        workflow_format_version=3,
+        node_rail=node_rail(NodeState.WORKING),
+        cursor=EVENT_CURSOR,
+        sequence=1,
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        node_id=AGENT_NODE_ID,
+        node_execution_id=NODE_EXECUTION_ID,
+        event_hash=EVENT_HASH,
+        event="AGENT_FAILED",
+        failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+        attempt_id=ATTEMPT_ID,
+        attempt_ordinal=1,
+    ).model_dump_json()
+
+
+def test_a_format_3_failed_agent_attempt_is_read_as_itself(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """The Completed chain has its pin; failure of the same shape had none."""
+    with ScriptedService(
+        serving_answers(
+            start=Answer(
+                chained_run_resource("STARTED", None).model_dump_json().encode()
+            ),
+            events=event_stream(agent_failed_v3()),
+            run=Answer(
+                chained_run_resource("STARTED", None).model_dump_json().encode()
+            ),
+        )
+    ) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    reported = printed.err.decode()
+    assert (exit_code, printed.out) == (1, b"")
+    assert "PROCESS_EXITED_UNSUCCESSFULLY" in reported
+    assert ATTEMPT_ID in reported
+    assert AGENT_NODE_ID in reported
+    assert "validation error" not in reported.lower()
 
 
 def test_a_run_waiting_for_input_says_which_capability_is_missing(
