@@ -180,13 +180,17 @@ expect to have; that hardening needs bubblewrap on the search path the launched
 process receives, so a deployment without it is refused at startup rather than
 at the first run.
 
-Every one of those switches was measured against each exact Claude release the
-executor admits, so the deployment reads the declared executable's version
-before it composes anything and admits only a release such a conformance run
-covers — not merely a new enough one, and not one that merely sits between two
-covered ones, because a later CLI can change a control the containment depends
-on, and admitting it costs a rerun of that one-call matrix and a decision about
-this executor's operational identity. The same startup attests that this host
+Every one of those switches was measured to be there and to really parse against
+each exact Claude release the executor admits, and one contained call on each
+shows what they leave standing when they act together; what that one call cannot
+separate — which single switch stops what, and the controls that make such an
+attribution mean anything — stands from the release it was first measured
+against. So the deployment reads the declared executable's version before it
+composes anything and admits only a release such a conformance run covers — not
+merely a new enough one, and not one that merely sits between two covered ones,
+because a later CLI can change a control the containment depends on, and
+admitting it costs a rerun of that one-call matrix and a decision about this
+executor's operational identity. The same startup attests that this host
 carries no administrator-managed policy: policy is outside every switch above by
 design and can still start a child beside the credential directory, so a host
 carrying one is refused rather than served. Reading the

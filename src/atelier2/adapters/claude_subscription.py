@@ -69,8 +69,13 @@ CLAUDE_SUBSCRIPTION_FRAME_BYTES = MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
 # introduced, never that a later release still means by them what this executor
 # claims, so conformance is an exact reviewed set rather than a floor. A version
 # enters it only once the one-call conformance matrix has been rerun against
-# that exact executable, so every measurement this module records below holds
-# for every member -- naming one version instead would say less than the set.
+# that exact executable. That rerun establishes for the new member that every
+# flag and variable the invocation below carries exists there and really parses,
+# what the whole vector leaves standing when it acts together, and the envelope,
+# meter and frame shape this module decodes. The observations a single contained
+# call cannot make are named where that invocation records them and stay
+# recorded from the release they were first run against -- naming one version
+# instead of the set would still say less than the set.
 CONFORMANT_CLAUDE_VERSIONS = frozenset({(2, 1, 221), (2, 1, 233)})
 
 _VERSION_FLAG = "--version"
@@ -272,8 +277,8 @@ def verify_claude_capability(
         raise ClaudeExecutableUnsupported(
             f"serving Claude subscription agents requires Claude Code {conformant}, "
             f"not {reported}: this executor's containment semantics were measured "
-            "against that exact release, and a later one can change a control they "
-            "depend on. Admitting a new version needs the one-call conformance "
+            "against those exact releases, and another one can change a control "
+            "they depend on. Admitting a new version needs the one-call conformance "
             "matrix rerun against it and a decision about this executor's "
             "operational identity, not a version comparison"
         )
@@ -416,10 +421,18 @@ class ClaudeSubscriptionExecutor:
     answers `error: unknown option`, so a call the whole vector survives really
     parsed all of it rather than ignoring what it no longer knows.
 
-    What each switch stops is the observation below. The first entry is the
-    negative control that makes the rest meaningful, and it is the one entry
+    What each switch stops is the observation below, and that whole list is
     recorded from the release it was first run against rather than from every
-    conformant version: proving a bait still bites costs a call that lets it.
+    conformant version. A single contained call shows what the vector leaves
+    standing when the flags act together; it can attribute nothing to one of
+    them, and neither the negative control that makes such an attribution mean
+    anything nor the positive control beside it can be taken inside a call that
+    contains everything. Each of those costs a further billed call against the
+    operator's live credential directory. So does the credential-scrub
+    equivalence recorded further below, which is of the same kind. What a
+    rerun establishes for a new member is the other half: that this vector
+    parses there, and that together these flags leave no hook, project prompt,
+    skill, MCP server, tool or transcript behind.
 
     * without them the CLI ran that hook, obeyed that `CLAUDE.md`, and wrote a
       resumable transcript under `CLAUDE_CONFIG_DIR/projects/`;
@@ -448,11 +461,12 @@ class ClaudeSubscriptionExecutor:
     and it is withdrawn: the "=0 to disable" diagnostics it rested on are what
     the CLI prints once the hardening is already active, while every conformant
     version reads the variable as the opt-IN that strips Anthropic and
-    cloud-provider credentials from every subprocess environment. Measured
-    against this exact invocation on each of them: set, the tool-free call
-    answers exactly as it does unset. It is not this executor's containment
-    guarantee -- it is what limits a child this invocation does not expect to
-    have.
+    cloud-provider credentials from every subprocess environment, and refuses
+    identically to start without bubblewrap when it is set. That set, the
+    tool-free call answers exactly as it does unset is recorded from the release
+    this invocation was first measured against. It is not this executor's
+    containment guarantee -- it is what limits a child this invocation does not
+    expect to have.
 
     The deployment contract this V1 is measured for, and the only one it is
     composed for: a personal subscription credential (`max` or `pro`), on a

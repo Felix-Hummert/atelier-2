@@ -568,6 +568,27 @@ def test_an_executable_inside_the_conformance_set_is_accepted(
     assert verify_claude_capability(settings.executable) == conformant
 
 
+def test_the_refusal_names_every_admitted_release(tmp_path: Path) -> None:
+    """The operator reads the whole admitted set out of the refusal itself.
+
+    The refusal is where an operator whose host updated its CLI learns what is
+    served instead, so it renders every member rather than a bound.
+    """
+
+    settings = claude_subscription_deployment(
+        tmp_path, INTROSPECTING_CLAUDE, version="2.1.234"
+    )
+
+    with pytest.raises(ClaudeExecutableUnsupported) as refusal:
+        verify_claude_capability(settings.executable)
+
+    named = str(refusal.value)
+    assert all(
+        ".".join(str(part) for part in conformant) in named
+        for conformant in CONFORMANT_CLAUDE_VERSIONS
+    )
+
+
 def test_the_version_probe_hands_the_executable_nothing_of_this_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
