@@ -343,6 +343,21 @@ describe("closed API decoders", () => {
     expect(() => decodeProblem({ ...problem, type: "urn:atelier2:problem:v1:new-problem" })).toThrow();
   });
 
+  it("decodes a published run-input-refused problem instead of calling it undocumented", () => {
+    const problem = decodeProblem({
+      type: "urn:atelier2:problem:v1:run-input-refused",
+      title: "Run input refused",
+      status: 422,
+      detail: "Supply exactly the orders this workflow declares, each satisfying the schema its author pinned."
+    });
+    expect(problem).toEqual({
+      type: "urn:atelier2:problem:v1:run-input-refused",
+      title: "Run input refused",
+      status: 422,
+      detail: "Supply exactly the orders this workflow declares, each satisfying the schema its author pinned."
+    });
+  });
+
   it.each(Object.entries(problemDefinitions))(
     "binds problem %s to its exact title and status",
     (code, definition) => {
@@ -358,7 +373,7 @@ describe("closed API decoders", () => {
     }
   );
 
-  it("matches the complete R2 problem definition matrix", () => {
+  it("matches the complete published problem definition matrix", () => {
     expect(problemDefinitions).toEqual(expectedProblemDefinitions);
   });
 });
@@ -437,6 +452,13 @@ const expectedProblemDefinitions = {
   "agent-configuration-revision-collision": { status: 409, title: "Agent configuration revision collision" },
   "agent-configuration-revision-not-found": { status: 404, title: "Agent configuration revision not found" },
   "invalid-agent-bindings": { status: 422, title: "Invalid agent bindings" },
+  "invalid-agent-attempt-id": { status: 400, title: "Invalid agent attempt id" },
+  "agent-attempt-not-found": { status: 404, title: "Agent attempt not found" },
+  "agent-attempt-not-current": { status: 409, title: "Agent attempt is not current" },
+  "agent-attempt-cancellation-stale": { status: 409, title: "Agent attempt cancellation is stale" },
+  "agent-attempt-terminal": { status: 409, title: "Agent attempt is terminal" },
+  "cancellation-command-conflict": { status: 409, title: "Cancellation command conflict" },
+  "replacement-not-allowed": { status: 409, title: "Replacement is not allowed" },
   "invalid-public-run-reference": { status: 400, title: "Invalid public run reference" },
   "invalid-event-cursor": { status: 400, title: "Invalid event cursor" },
   "invalid-revision-hash": { status: 400, title: "Invalid revision hash" },
@@ -445,12 +467,37 @@ const expectedProblemDefinitions = {
   "invalid-request": { status: 422, title: "Invalid request" },
   "invalid-base64": { status: 422, title: "Invalid base64" },
   "invalid-workflow-document": { status: 422, title: "Invalid workflow document" },
+  "schema-document-too-large": { status: 422, title: "Invalid schema document" },
+  "schema-document-not-utf8": { status: 422, title: "Invalid schema document" },
+  "schema-document-carries-byte-order-mark": { status: 422, title: "Invalid schema document" },
+  "schema-document-not-json": { status: 422, title: "Invalid schema document" },
+  "schema-non-canonical-number": { status: 422, title: "Invalid schema document" },
+  "schema-duplicate-object-key": { status: 422, title: "Invalid schema document" },
+  "schema-document-too-deep": { status: 422, title: "Invalid schema document" },
+  "schema-too-many-values": { status: 422, title: "Invalid schema document" },
+  "schema-forbidden-keyword": { status: 422, title: "Invalid schema document" },
+  "schema-nonlocal-reference": { status: 422, title: "Invalid schema document" },
+  "schema-unresolvable-reference": { status: 422, title: "Invalid schema document" },
+  "schema-non-terminating-reference-cycle": { status: 422, title: "Invalid schema document" },
+  "schema-unsupported-dialect": { status: 422, title: "Invalid schema document" },
+  "schema-not-a-schema": { status: 422, title: "Invalid schema document" },
+  "schema-revision-collision": { status: 409, title: "Schema revision collision" },
   "unsupported-media-type": { status: 415, title: "Unsupported media type" },
   "not-acceptable": { status: 406, title: "Not acceptable" },
+  "catalog-revision-unpublished": { status: 409, title: "Catalog revision is unpublished" },
+  "catalog-name-held": { status: 409, title: "Catalog name is held" },
+  "catalog-revision-owned": { status: 409, title: "Catalog revision is owned" },
+  "catalog-lineage-missing": { status: 404, title: "Catalog lineage not found" },
+  "catalog-name-not-found": { status: 404, title: "Catalog name not found" },
+  "catalog-lineage-retired": { status: 410, title: "Catalog lineage retired" },
+  "catalog-revision-not-a-member": { status: 409, title: "Catalog revision is not a member" },
+  "invalid-catalog-position": { status: 400, title: "Invalid catalog position" },
   "workflow-revision-not-found": { status: 404, title: "Workflow revision not found" },
   "run-not-found": { status: 404, title: "Run not found" },
   "node-not-found": { status: 404, title: "Node not found" },
   "revision-collision": { status: 409, title: "Workflow revision collision" },
+  "workflow-format-not-executable": { status: 409, title: "Workflow format is not executable" },
+  "run-input-refused": { status: 422, title: "Run input refused" },
   "run-identity-conflict": { status: 409, title: "Run identity conflict" },
   "answer-revision-conflict": { status: 409, title: "Answer revision conflict" },
   "answer-state-conflict": { status: 409, title: "Answer state conflict" },
