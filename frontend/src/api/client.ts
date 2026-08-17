@@ -240,6 +240,21 @@ export const workflowRevisionPageSchema = z
   })
   .strict();
 
+/**
+ * What `GET /workflow-revisions/by-name/{name}` answers: which revision that
+ * catalog name holds. The described listing does not carry lineage recency, so
+ * the picker reads this existing resource for the head instead of inventing an
+ * order from the hash-sorted page.
+ */
+export const catalogNameResolutionSchema = z
+  .object({
+    display_name: z.string().min(1).max(128),
+    lineage_id: sha256,
+    revision_hash: sha256,
+    revision_number: positiveSafeInteger
+  })
+  .strict();
+
 const authProfileInputSchema = z
   .object({
     profile_id: z.string().min(1).max(1_024),
@@ -897,6 +912,7 @@ export type WorkflowRevisionDetail = z.infer<typeof workflowRevisionDetailSchema
 export type RunPage = z.infer<typeof runPageSchema>;
 export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
 export type WorkflowRevisionSummary = z.infer<typeof workflowRevisionSummarySchema>;
+export type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
 
 /**
  * The graph of a revision a run can hold. Only an executable format carries
@@ -947,6 +963,7 @@ export interface CockpitApi {
   listRuns(after?: string): Promise<RunPage>;
   listWorkflowRevisions(after?: string): Promise<WorkflowRevisionPage>;
   listAgentConfigurationRevisions(after?: string): Promise<AgentConfigurationRevisionPage>;
+  getRevisionByName(name: string): Promise<CatalogNameResolution>;
   publish(mutation: PublishMutation): Promise<HttpResult<WorkflowRevisionDetail>>;
   publishAuthProfile(input: AuthProfileInput): Promise<HttpResult<AuthProfileRevision>>;
   publishAgentConfiguration(
@@ -1021,6 +1038,14 @@ export function createCockpitApi(
         {},
         [200],
         agentConfigurationRevisionPageSchema
+      ),
+    getRevisionByName: (name: string) =>
+      requestJson(
+        fetcher,
+        `/atelier/api/v1/workflow-revisions/by-name/${encodeURIComponent(name)}`,
+        {},
+        [200],
+        catalogNameResolutionSchema
       ),
     publish: async (mutation) =>
       requestJsonResult(
