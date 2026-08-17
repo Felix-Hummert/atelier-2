@@ -46,6 +46,7 @@ def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
     return PersistedRunEvent(event, None, 3)
 
 
+@pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
 def test_format_3_agent_completed_is_a_v3_resource_not_the_frozen_v1() -> None:
     projection = v3_projection(RunEventKind.AGENT_COMPLETED, COMPLETED_PAYLOAD)
 
@@ -65,6 +66,7 @@ def test_format_3_agent_completed_is_a_v3_resource_not_the_frozen_v1() -> None:
     assert type(resource).__name__ == "AgentCompletedEventResourceV3"
 
 
+@pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
 def test_format_3_agent_failed_is_a_v3_failure_not_the_v1_cannot_carry_path() -> None:
     resource = run_event_resource(
         v3_projection(RunEventKind.AGENT_FAILED, FAILURE_PAYLOAD), SERVED_RAIL
@@ -79,6 +81,27 @@ def test_format_3_agent_failed_is_a_v3_failure_not_the_v1_cannot_carry_path() ->
         entry.model_dump(mode="json") for entry in SERVED_RAIL
     ]
     assert type(resource).__name__ == "AgentFailedEventResourceV3"
+
+
+@pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
+def test_a_v3_run_cannot_answer_with_a_kind_its_nodes_never_write() -> None:
+    """A V3 node is an Agent, so a subworkflow completion is a store that lies."""
+    subworkflow = PersistedRunEvent(
+        event=RunEvent(
+            run_id=RUN_ID,
+            revision_hash=REVISION_HASH,
+            event_sequence=1,
+            node_id="done",
+            node_execution_id=NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "done"),
+            event_kind=RunEventKind.SUBWORKFLOW_COMPLETED,
+            payload=b"5",
+        ),
+        workflow_format_version=3,
+        receipt=None,
+    )
+
+    with pytest.raises(ValueError, match="a V3 run cannot carry SUBWORKFLOW_COMPLETED"):
+        run_event_resource(subworkflow, SERVED_RAIL)
 
 
 def test_format_1_agent_failed_still_raises_the_v1_cannot_carry_path() -> None:
