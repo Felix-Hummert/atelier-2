@@ -6,20 +6,19 @@ story = "https://github.com/FlexOr2/atelier-2/issues/87"
 # capability nobody has built. This file therefore does not list every sentence
 # of #87.
 #
-# Head B1 lands the read half of "no route calls a port directly". Still unbuilt,
-# and deliberately absent here:
+# THE WRITE SET IS FINISHED, and the sentence it was waiting for is declared
+# below. The last call was the cancellation, held back only because its module was
+# being rewritten by #70; #70 landed, and the pass-through that handed its port
+# union straight to a route is translated like every neighbour.
 #
-#   - the write half. `publish_revision` joined the use-cases once #141 landed and
-#     freed its file, so exactly one call is left: the cancellation, whose module
-#     a live change (#70) is rewriting. It is still the pass-through that hands its
-#     port union straight to a route. So the sentence a human would write here —
-#     *every* write decides through a use-case — is not true of this tree, and it
-#     is therefore not declared. It joins this file in the change that finishes the
-#     write set, not before.
-#     Until then the remainder is named by machine rather than in prose, in the
-#     `ignore_imports` of the `route-vocabulary` contract and in
-#     ROUTE_CALLS_STILL_HOLDING_PORTS in `scripts/check_architecture.py`. Both are
-#     red on a stale entry in either direction, so neither can claim it is done.
+# Two machine fences deleted themselves with it, which is what they said they
+# would do. ROUTE_CALLS_STILL_HOLDING_PORTS named every port a route still
+# reached, and went red in both directions -- an undeclared reach, and a declared
+# reach that no longer happened. Emptying it was therefore not a decision anyone
+# could take quietly: the last translation turned the guard red on its own stale
+# entry, and the map deleted itself as its docstring promised. The `ignore_imports`
+# entry for `agent_attempts` went the same way, because a stale ignore is an error
+# there too. What is left is the plain rule, and the sentence below says it.
 #   - the fail-open defaults are gone. `agent_executor_registry` in
 #     `adapters/dbos/starter.py` and the publication bound in
 #     `application/publish_workflow_revision.py` are both required now, and the
@@ -59,5 +58,9 @@ id = "the-use-case-record-cannot-hand-a-route-a-port"
 text = "The record of use-cases a route holds cannot carry a port back to it: a field annotated with anything that resolves to a durable port, including behind a bound call, a forward reference or a type-checking-only import, fails verification."
 
 [[sentence]]
-id = "an-untranslated-route-is-named-in-both-directions"
-text = "A route that still reaches a port is named by the verification rather than by prose, and the list that names them cannot lie in either direction: an undeclared route that reaches a port fails, and a declared route that no longer reaches one fails too."
+id = "no-route-reaches-a-port-and-the-verification-says-so"
+text = "No route reaches a durable port: a route that reads one -- directly, through an alias, or inside a module that still holds the composition -- fails verification rather than being noticed in review, and there is no declared exception left for one to hide behind."
+
+[[sentence]]
+id = "every-write-decision-belongs-to-a-use-case"
+text = "Every write the API offers is decided by a use-case that translates the store's answer into the application's own outcome, so each way a write can fail is a named member of that outcome rather than a port type a route matches on -- the cancellation included, which was the last route to hand its port union straight through."

@@ -12,6 +12,7 @@ from atelier2.application.admit_catalog_member import (
     FoundLineageResult,
 )
 from atelier2.application.answer_wait import AnswerWaitResult
+from atelier2.application.cancel_agent_attempt import CancelAgentAttemptResult
 from atelier2.application.prepare_run_events import PrepareRunEventsResult
 from atelier2.application.publish_agent_configurations import (
     PublishAgentConfigurationRevisionResult,
@@ -35,6 +36,7 @@ from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
     StartPublishedRunResult,
 )
+from atelier2.contracts.agent_attempts import CancelAgentAttemptRequest
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -123,6 +125,9 @@ class ApiUseCases:
     ]
     answer_wait: Callable[[RunId, WorkflowRevisionHash, str, bytes], AnswerWaitResult]
     reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]
+    cancel_agent_attempt: Callable[
+        [CancelAgentAttemptRequest], CancelAgentAttemptResult
+    ]
     resolve_catalog_name: Callable[
         [RevisionKind, CatalogLineageQuery, object], CatalogNameResult
     ]

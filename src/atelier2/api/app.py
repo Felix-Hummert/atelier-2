@@ -26,6 +26,7 @@ from atelier2.application.admit_catalog_member import (
     found_catalog_lineage,
 )
 from atelier2.application.answer_wait import answer_wait_result
+from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
 from atelier2.application.prepare_run_events import prepare_run_events
 from atelier2.application.publish_agent_configurations import (
     publish_agent_configuration_revision,
@@ -146,6 +147,9 @@ def bound_use_cases(
             answer_wait_result(
                 run_id, revision_hash, node_id, answer_bytes, ports.wait_answerer
             )
+        ),
+        cancel_agent_attempt=lambda request: cancel_agent_attempt(
+            request, ports.agent_attempt_canceller
         ),
         reconcile_run=lambda request: reconcile_run(
             request, ports.run_queries, ports.reconcile_commander

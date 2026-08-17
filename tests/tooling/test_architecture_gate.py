@@ -291,18 +291,6 @@ def add_route_reaching_a_port(project: Path) -> None:
     )
 
 
-def empty_a_route_module_that_is_declared_to_hold_ports(project: Path) -> None:
-    """Take the port away from the one call still declared to reach one.
-
-    The module is whichever one the list still names — the list shrinks head by
-    head, and this mutation follows it rather than pinning a module that has since
-    been translated.
-    """
-    (project / "src/atelier2/api/routes/runs.py").write_text(
-        "router = None\n", encoding="utf-8"
-    )
-
-
 RUN_QUERIES_IMPORT = "from atelier2.ports.run_queries import RunQueries"
 CANCELLATION_IMPORT = (
     "from atelier2.ports.agent_attempts import AgentAttemptCancellationResult"
@@ -360,7 +348,7 @@ def test_a_use_case_record_that_disappears_fails(tmp_path: Path) -> None:
     assert "declares no ApiUseCases" in result.stderr
 
 
-@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+@pytest.mark.proves("no-route-reaches-a-port-and-the-verification-says-so")
 def test_a_translated_route_module_that_reaches_a_port_again_fails(
     tmp_path: Path,
 ) -> None:
@@ -371,17 +359,6 @@ def test_a_translated_route_module_that_reaches_a_port_again_fails(
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert "health.py: leak reaches ('ApiPorts',)" in result.stderr
-
-
-@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
-def test_a_stale_entry_in_the_untranslated_route_list_fails(tmp_path: Path) -> None:
-    project = copied_project(tmp_path)
-    empty_a_route_module_that_is_declared_to_hold_ports(project)
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "cancel_agent_attempt_route reaches no port" in result.stderr
 
 
 ALIAS_IMPORT = (
@@ -459,7 +436,7 @@ def test_a_use_case_field_behind_a_re_export_of_another_layer_fails(
     assert "a route can still reach a port" in result.stderr
 
 
-@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+@pytest.mark.proves("no-route-reaches-a-port-and-the-verification-says-so")
 def test_a_read_that_reaches_a_port_inside_an_allowlisted_module_fails(
     tmp_path: Path,
 ) -> None:
@@ -530,7 +507,7 @@ def test_a_use_case_outcome_that_carries_a_port_inside_it_fails(
     assert "a route can still reach a port" in result.stderr
 
 
-@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+@pytest.mark.proves("no-route-reaches-a-port-and-the-verification-says-so")
 def test_a_second_port_read_inside_an_allowlisted_call_fails(tmp_path: Path) -> None:
     project = copied_project(tmp_path)
     reach_a_port_twice_inside_one_allowlisted_call(project)
@@ -560,24 +537,6 @@ def reach_a_port_through_an_alias_in_a_translated_call(project: Path) -> None:
     events.write_text(replaced, encoding="utf-8")
 
 
-def reach_a_second_port_through_an_alias_in_the_allowlisted_call(project: Path) -> None:
-    """Grow a second port inside the one call the map still allows."""
-    runs = project / "src/atelier2/api/routes/runs.py"
-    source = runs.read_text(encoding="utf-8")
-    marker = "        lambda: cancel_agent_attempt(request, context.ports.agent_attempt_canceller),"
-    assert source.count(marker) == 1
-    # Insert inside the allowlisted call itself, not merely somewhere in the file:
-    # the point of the case is that the *declared* call grows a second port.
-    call = source.index("async def cancel_agent_attempt_route(")
-    body = source.index("    result = await run_control_query(", call)
-    runs.write_text(
-        source[:body]
-        + "    ports = context.ports\n    ports.run_queries\n"
-        + source[body:],
-        encoding="utf-8",
-    )
-
-
 def add_outcome_hiding_a_port_behind_an_unreadable_annotation(project: Path) -> None:
     """An outcome that really carries a port, behind an annotation nothing resolves."""
     (project / "src/atelier2/application/hidden_outcome.py").write_text(
@@ -593,7 +552,7 @@ def add_outcome_hiding_a_port_behind_an_unreadable_annotation(project: Path) -> 
     )
 
 
-@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
+@pytest.mark.proves("no-route-reaches-a-port-and-the-verification-says-so")
 def test_a_translated_call_that_takes_a_port_back_through_an_alias_fails(
     tmp_path: Path,
 ) -> None:
@@ -604,19 +563,6 @@ def test_a_translated_call_that_takes_a_port_back_through_an_alias_fails(
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert "event_stream_route" in result.stderr
-
-
-@pytest.mark.proves("an-untranslated-route-is-named-in-both-directions")
-def test_a_second_port_through_an_alias_in_the_allowlisted_call_fails(
-    tmp_path: Path,
-) -> None:
-    project = copied_project(tmp_path)
-    reach_a_second_port_through_an_alias_in_the_allowlisted_call(project)
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "cancel_agent_attempt_route" in result.stderr
 
 
 @pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
