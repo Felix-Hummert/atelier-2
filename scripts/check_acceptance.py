@@ -97,11 +97,15 @@ class RequiredReport:
 
 REQUIRED_REPORTS = (
     RequiredReport(
-        "quality.junit.xml", ReportFormat.PYTEST_JUNIT, "Static and behavior"
+        "quality.junit.xml",
+        ReportFormat.PYTEST_JUNIT,
+        "Python: architecture, lint, types, tests",
     ),
     RequiredReport("crash.junit.xml", ReportFormat.PYTEST_JUNIT, "Crash recovery"),
     RequiredReport(
-        "frontend.vitest.json", ReportFormat.VITEST_JSON, "Cockpit static and behavior"
+        "frontend.vitest.json",
+        ReportFormat.VITEST_JSON,
+        "Cockpit: types, lint, tests, e2e",
     ),
 )
 

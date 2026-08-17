@@ -447,22 +447,3 @@ jobs:
       - name: Check the acceptance trace of a landed commit
         if: ${{ github.event_name != 'pull_request' }}
         run: uv run --locked python scripts/check_acceptance.py --reports reports
-
-  # Ruleset main-protection still requires the old check names. These jobs
-  # publish those names after the renamed surfaces succeed. Drop them when
-  # the required contexts flip.
-  static-and-behavior:
-    name: Static and behavior
-    needs: quality
-    runs-on: ubuntu-latest
-    steps:
-      - name: Hold the required check name
-        run: echo "Alias for ruleset main-protection; drop when Fable flips the required contexts."
-
-  cockpit-static-and-behavior:
-    name: Cockpit static and behavior
-    needs: frontend
-    runs-on: ubuntu-latest
-    steps:
-      - name: Hold the required check name
-        run: echo "Alias for ruleset main-protection; drop when Fable flips the required contexts."
