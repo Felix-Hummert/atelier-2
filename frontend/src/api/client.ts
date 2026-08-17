@@ -518,8 +518,13 @@ function validateRunShape(
     }
 }
 
+/**
+ * The list answers every run format the server can project. Mutation
+ * responses stay on `runSchema` so V3 is not folded into the V1/V2 union
+ * those readers already assume.
+ */
 export const runPageSchema = z
-  .object({ items: z.array(runSchema), next_after: publicRunReference.nullable() })
+  .object({ items: z.array(anyRunSchema), next_after: publicRunReference.nullable() })
   .strict();
 
 const receiptSchema = z

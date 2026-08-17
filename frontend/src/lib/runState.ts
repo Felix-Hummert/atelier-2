@@ -1,4 +1,4 @@
-import type { Run } from "../api/client";
+import type { AnyRun } from "../api/client";
 
 /**
  * What a durable run state means for the person looking at it.
@@ -10,7 +10,7 @@ import type { Run } from "../api/client";
  */
 export type RunStanding = "running" | "waiting" | "done";
 
-const standings: Record<Run["state"], RunStanding> = {
+const standings: Record<AnyRun["state"], RunStanding> = {
   STARTED: "running",
   WAITING_INPUT: "waiting",
   WAITING_RECONCILIATION: "waiting",
@@ -18,7 +18,7 @@ const standings: Record<Run["state"], RunStanding> = {
 };
 
 /** The move the run is waiting for from a human, in one word, or null when it waits for nobody. */
-const humanMoves: Record<Run["state"], string | null> = {
+const humanMoves: Record<AnyRun["state"], string | null> = {
   STARTED: null,
   WAITING_INPUT: "Answer",
   WAITING_RECONCILIATION: "Reconcile",
@@ -42,18 +42,18 @@ export const standingMarks: Record<RunStanding, string> = {
   done: "●"
 };
 
-export function humanMove(state: Run["state"]): string | null {
+export function humanMove(state: AnyRun["state"]): string | null {
   return humanMoves[state];
 }
 
-export function waitsForAHuman(state: Run["state"]): boolean {
+export function waitsForAHuman(state: AnyRun["state"]): boolean {
   return standings[state] === "waiting";
 }
 
-export function runsStanding(runs: readonly Run[], standing: RunStanding): Run[] {
+export function runsStanding(runs: readonly AnyRun[], standing: RunStanding): AnyRun[] {
   return runs.filter((run) => standings[run.state] === standing);
 }
 
-export function countStanding(runs: readonly Run[], standing: RunStanding): number {
+export function countStanding(runs: readonly AnyRun[], standing: RunStanding): number {
   return runsStanding(runs, standing).length;
 }

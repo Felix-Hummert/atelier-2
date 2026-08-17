@@ -2,12 +2,13 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/sve
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type { CockpitApi, RunV1 } from "../../src/api/client";
+import type { AnyRun, CockpitApi, RunV3 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
   completedRun,
   publicReference,
+  revisionHash,
   startedRun,
   waitingInputRun,
   waitingReconciliationRun,
@@ -33,11 +34,32 @@ function openAt(pathname: string, overrides: Partial<CockpitApi> = {}) {
   });
 }
 
-const openProject = (runs: RunV1[], overrides: Partial<CockpitApi> = {}) =>
+const openProject = (runs: AnyRun[], overrides: Partial<CockpitApi> = {}) =>
   openAt("/atelier/project", {
     listRuns: vi.fn(async () => ({ items: runs, next_after: null })),
     ...overrides
   });
+
+function completedV3Run(): RunV3 {
+  return {
+    workflow_format_version: 3,
+    run_id: "v3/two-agents",
+    public_run_reference: "run1.djMvdHdvLWFnZW50cw",
+    workflow_revision_hash: revisionHash,
+    agent_binding_set_hash: "b".repeat(64),
+    run_configuration_revision_hash: "c".repeat(64),
+    agent_bindings: [],
+    state_version: 2,
+    state: "COMPLETED",
+    current_node_id: "review",
+    node_rail: [
+      { node_id: "implement", state: "succeeded", attempt: null },
+      { node_id: "review", state: "succeeded", attempt: null }
+    ],
+    terminal_hash: "d".repeat(64),
+    latest_event_cursor: null
+  };
+}
 
 describe("the project answers what is happening here", () => {
   it("heads the level with the one project of this installation", async () => {
@@ -57,6 +79,16 @@ describe("the project answers what is happening here", () => {
     expect(within(running).getAllByRole("link")).toHaveLength(2);
     expect(within(await screen.findByRole("region", { name: "Waiting for you" })).getAllByRole("link")).toHaveLength(1);
     expect(screen.queryByRole("region", { name: "Done" })).toBeNull();
+  });
+
+  it("lists a completed V3 run by its id under Done, without inventing a current node", async () => {
+    openProject([completedV3Run()]);
+
+    const done = await screen.findByRole("region", { name: "Done" });
+    expect(within(done).getByRole("link", { name: "v3/two-agents" }).isConnected).toBe(true);
+    expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
+    expect(screen.queryByText(/current_node/i)).toBeNull();
   });
 
   it("lets a row carry the move a human owes and the group carry the state", async () => {

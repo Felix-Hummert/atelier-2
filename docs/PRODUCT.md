@@ -321,7 +321,7 @@ boundary.
 
 An HTTP API now projects that durable state under `/atelier/api/v1`. It can
 publish secret-free auth-profile and agent-configuration revisions; publish and
-inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs;
+inspect immutable workflow revisions; start, list, and inspect V1, V2, or V3 runs;
 answer a waiting node; cancel the current V2 Agent attempt with an optional
 single replacement; submit an accountable reconciliation; and follow the
 closed durable event history as a resumable server-sent event stream. A served V2
@@ -337,9 +337,10 @@ command was newly accepted or already existed without duplicating its durable
 write or wake-up. [ADR 0003](decisions/0003-http-api.md) owns the API and resume
 contract.
 
-A narrow local cockpit can list runs, publish and start a workflow from `/new`,
-and project one durable run's bound revision, state, nodes, and resumable event
-history. It opens in the Studio rather than in that list: one screen across the
+A narrow local cockpit can list runs — including a V3 run, shown by its identity
+and standing rather than a V1/V2 `current_node` it does not have — publish and
+start a workflow from `/new`, and project one durable run's bound revision,
+state, nodes, and resumable event history. It opens in the Studio rather than in that list: one screen across the
 whole workshop naming every run that waits for a human — the durable states
 `WAITING_INPUT` and `WAITING_RECONCILIATION` — beside the one project of this
 installation, where an area with nothing in it names the next action that is

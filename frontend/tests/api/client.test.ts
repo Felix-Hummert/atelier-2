@@ -8,6 +8,7 @@ import {
   decodeWorkflowRevisionDetail,
   executableGraph,
   problemDefinitions,
+  runPageSchema,
   type Problem
 } from "../../src/api/client";
 import { workflowRevision } from "../support/workflowV1";
@@ -582,5 +583,83 @@ describe("the graph a run is allowed to hold", () => {
 
     expect(graph.format_version).toBe(1);
     expect(executableGraph(graph)).toBe(graph);
+  });
+});
+
+function jsonPage(items: unknown[]) {
+  return new Response(JSON.stringify({ items, next_after: null }), {
+    status: 200,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+/**
+ * A completed V3 run as GET /runs/{reference} already answers it.
+ *
+ * The list must decode the same item; inventing a second list shape would be a
+ * second owner of the same resource.
+ */
+function completedV3RunOnTheWire() {
+  return {
+    workflow_format_version: 3,
+    run_id: "v3/two-agents",
+    public_run_reference: publicReference,
+    workflow_revision_hash: digest,
+    agent_binding_set_hash: "b".repeat(64),
+    run_configuration_revision_hash: "c".repeat(64),
+    agent_bindings: [],
+    state_version: 2,
+    state: "COMPLETED",
+    current_node_id: "review",
+    node_rail: [
+      { node_id: "implement", state: "succeeded", attempt: null },
+      { node_id: "review", state: "succeeded", attempt: null }
+    ],
+    terminal_hash: "d".repeat(64),
+    latest_event_cursor: null
+  };
+}
+
+function startedV2RunOnTheWire() {
+  return {
+    workflow_format_version: 2,
+    run_id: "run-1",
+    public_run_reference: publicReference,
+    workflow_revision_hash: digest,
+    agent_binding_set_hash: digest,
+    agent_bindings: [],
+    state_version: 1,
+    state: "STARTED",
+    current_node: {
+      type: "agent",
+      node_id: "agent",
+      role: "builder",
+      job: "Build",
+      next_node_id: "final"
+    },
+    node_rail: [{ node_id: "agent", state: "working", attempt: null }],
+    agent_attempts: [],
+    waiting: { type: "NONE" },
+    terminal_hash: null,
+    latest_event_cursor: "event1.cnVuLTE.1"
+  };
+}
+
+describe("the run listing the cockpit asks for", () => {
+  it("decodes a V3 list item in the same shape GET already answers, and still decodes V1 and V2", async () => {
+    const v3Item = completedV3RunOnTheWire();
+    const v1Item = startedRun();
+    const v2Item = startedV2RunOnTheWire();
+
+    expect(runPageSchema.parse({ items: [v3Item], next_after: null }).items[0]).toEqual(v3Item);
+    expect(runPageSchema.parse({ items: [v1Item], next_after: null }).items[0]).toEqual(v1Item);
+    expect(runPageSchema.parse({ items: [v2Item], next_after: null }).items[0]).toEqual(v2Item);
+
+    const listed = await createCockpitApi(
+      vi.fn<typeof fetch>().mockResolvedValue(jsonPage([v3Item]))
+    ).listRuns();
+
+    expect(listed.items).toEqual([v3Item]);
+    expect(listed.next_after).toBeNull();
   });
 });
