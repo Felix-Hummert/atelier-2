@@ -44,7 +44,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     10: "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7",
     11: "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef",
     12: "feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7",
-    13: "407a56375d5a7875a3d75c25060850aa2f9baf1291f0cdc06ac0c51030ce3cd2",
+    13: "80f05d7a1b073dd597179873983cfd0643ac9eac512cce6d0586a2c418c2a92e",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -101,7 +101,12 @@ runs = sa.Table(
     sa.Column("state_version", sa.Integer, nullable=False),
     sa.Column("last_event_sequence", sa.Integer, nullable=False),
     sa.Column("terminal_hash", sa.Text, nullable=True),
-    sa.Column("run_configuration_revision_hash", sa.Text, nullable=True),
+    sa.Column(
+        "run_configuration_revision_hash",
+        sa.Text,
+        sa.ForeignKey("run_configuration_revisions.revision_hash"),
+        nullable=True,
+    ),
     sa.UniqueConstraint("run_id", "revision_hash"),
     sa.UniqueConstraint("run_id", "revision_hash", "agent_binding_set_hash"),
     sa.CheckConstraint("length(run_id) > 0"),
@@ -127,10 +132,12 @@ runs = sa.Table(
         "OR (state <> 'COMPLETED' AND terminal_hash IS NULL)"
     ),
     sa.CheckConstraint(
-        "run_configuration_revision_hash IS NULL OR "
         "(workflow_format_version = 3 "
+        "AND run_configuration_revision_hash IS NOT NULL "
         "AND length(run_configuration_revision_hash) = 64 "
-        "AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*')"
+        "AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*') "
+        "OR (workflow_format_version <> 3 "
+        "AND run_configuration_revision_hash IS NULL)"
     ),
 )
 auth_profile_revisions = sa.Table(
@@ -965,7 +972,12 @@ node_receipts_v3 = sa.Table(
     sa.Column("disposition", sa.Text, nullable=False),
     sa.Column("reason", sa.Text, nullable=False),
     sa.Column("request_hash", sa.Text, nullable=False),
-    sa.Column("context_package_hash", sa.Text, nullable=False),
+    sa.Column(
+        "context_package_hash",
+        sa.Text,
+        sa.ForeignKey("context_packages_v3.package_hash"),
+        nullable=False,
+    ),
     sa.Column("receipt_hash", sa.Text, unique=True, nullable=False),
     sa.CheckConstraint(
         "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
@@ -998,9 +1010,28 @@ node_execution_requests_v3 = sa.Table(
     "node_execution_requests_v3",
     metadata,
     sa.Column("request_hash", sa.Text, primary_key=True),
+    sa.Column("node_execution_id", sa.Text, nullable=False),
+    sa.Column(
+        "run_configuration_revision_hash",
+        sa.Text,
+        sa.ForeignKey("run_configuration_revisions.revision_hash"),
+        nullable=False,
+    ),
+    sa.Column("context_package_hash", sa.Text, nullable=False),
     sa.Column("preimage", sa.LargeBinary, nullable=False),
+    sa.UniqueConstraint("node_execution_id", "request_hash"),
     sa.CheckConstraint(
         "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(context_package_hash) = 64 "
+        "AND context_package_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.ForeignKeyConstraint(
+        ("context_package_hash",), ("context_packages_v3.package_hash",)
     ),
 )
 context_packages_v3 = sa.Table(

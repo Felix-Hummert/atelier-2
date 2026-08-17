@@ -89,8 +89,8 @@ text = "A supervised V3 start writes the context-package manifest in the same tr
 
 [[sentence]]
 id = "a-v3-node-execution-request-is-composed-not-supplied"
-text = "The node execution request and the manifest it names are composed in production from the document and the run configuration the run is bound to, never resolved a second time and never assembled by the caller; a declared reference the frozen configuration does not carry is refused by its site rather than dropped, and a node declaring more revisions of one kind than the request can bind is refused by that count rather than bound in part."
+text = "The node execution request and the manifest it names are composed on the real start path from the document and the run configuration the run is bound to, never resolved a second time and never taken from the caller: a decided truth carrying a request this document does not compose is refused by both hashes before anything durable exists, a declared reference the frozen configuration does not carry is refused by its site rather than dropped, and a node declaring more revisions of one kind than the request can bind is refused by that count rather than bound in part."
 
 [[sentence]]
 id = "a-supervised-v3-run-records-the-configuration-it-was-started-under"
-text = "A supervised V3 run stores the exact preimage of its node execution request and of the run configuration snapshot it was bound to, beside the manifest, so every hash the receipt carries recomputes from bytes the store kept; the run reads back carrying that configuration, and a truth naming a record it does not carry writes nothing."
+text = "Every V3 run binds the exact run configuration it was started under -- the supervised start and the foundation start alike -- and the store keeps the preimage of that snapshot, of the node execution request and of the manifest, each immutable and each reachable from the row that names it, so every hash a receipt carries recomputes from bytes the store kept and no run, receipt or request can name a record that does not exist."

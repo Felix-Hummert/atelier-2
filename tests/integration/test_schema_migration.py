@@ -28,15 +28,18 @@ from atelier2.adapters.dbos.schema import (
     catalog_lineage_members,
     catalog_lineage_retirements,
     catalog_lineages,
+    context_packages_v3,
     effect_intents,
     effect_receipts,
     initialize_schema,
     node_artifacts_v3,
+    node_execution_requests_v3,
     node_receipt_access_v3,
     node_receipt_outputs_v3,
     node_receipts_v3,
     published_revisions,
     reconcile_commands,
+    run_configuration_revisions,
     runs,
     workflow_revisions,
 )
@@ -253,7 +256,7 @@ def test_published_handoffs_pin_v9_v10_v11_v12_and_v13_current() -> None:
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[13]
-        == "407a56375d5a7875a3d75c25060850aa2f9baf1291f0cdc06ac0c51030ce3cd2"
+        == "80f05d7a1b073dd597179873983cfd0643ac9eac512cce6d0586a2c418c2a92e"
     )
 
 
@@ -295,6 +298,7 @@ def _write_thin_vertical_set(
     execution: str = "11" * 32,
     request: str = "22" * 32,
     package: str = "33" * 32,
+    configuration: str = "44" * 32,
     receipt: str = "ef" * 32,
 ) -> CatalogLineage:
     lineage = CatalogLineage(published.kind, published.revision_hash)
@@ -325,6 +329,25 @@ def _write_thin_vertical_set(
         )
     )
     connection.execute(
+        run_configuration_revisions.insert().values(
+            revision_hash=configuration, preimage=b"one frozen resolution matrix"
+        )
+    )
+    connection.execute(
+        context_packages_v3.insert().values(
+            package_hash=package, manifest=b"one supervised manifest"
+        )
+    )
+    connection.execute(
+        node_execution_requests_v3.insert().values(
+            request_hash=request,
+            node_execution_id=execution,
+            run_configuration_revision_hash=configuration,
+            context_package_hash=package,
+            preimage=b"one node execution request",
+        )
+    )
+    connection.execute(
         runs.insert().values(
             run_id=run_id,
             bootstrap_workflow_id="bootstrap-lasagne",
@@ -336,6 +359,7 @@ def _write_thin_vertical_set(
             state_version=0,
             last_event_sequence=0,
             terminal_hash=None,
+            run_configuration_revision_hash=configuration,
         )
     )
     connection.execute(

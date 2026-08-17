@@ -13,12 +13,15 @@ from atelier2.adapters.dbos.runtime import (
     create_canonical_engine,
 )
 from atelier2.adapters.dbos.schema import (
+    context_packages_v3,
     initialize_schema,
     node_artifacts_v3,
+    node_execution_requests_v3,
     node_receipt_access_v3,
     node_receipt_outputs_v3,
     node_receipts_v3,
     published_revisions,
+    run_configuration_revisions,
     run_events,
     runs,
     workflow_revisions,
@@ -363,6 +366,9 @@ def test_receipt_for_another_node_execution_is_refused_without_a_write(
     )
     assert table_count(engine, published_revisions) == 0
     assert table_count(engine, workflow_revisions) == 0
+    assert table_count(engine, run_configuration_revisions) == 0
+    assert table_count(engine, context_packages_v3) == 0
+    assert table_count(engine, node_execution_requests_v3) == 0
     assert table_count(engine, runs) == 0
     assert table_count(engine, node_artifacts_v3) == 0
     assert table_count(engine, node_receipts_v3) == 0
@@ -522,6 +528,14 @@ def test_existing_run_under_another_revision_is_a_run_conflict(
             )
         )
         connection.execute(
+            run_configuration_revisions.insert()
+            .prefix_with("OR IGNORE")
+            .values(
+                revision_hash=exact.run_configuration.revision_hash.value,
+                preimage=exact.run_configuration.preimage,
+            )
+        )
+        connection.execute(
             runs.insert().values(
                 run_id=exact.node_request.run_id.value,
                 bootstrap_workflow_id=bootstrap_workflow_id_for(
@@ -535,6 +549,9 @@ def test_existing_run_under_another_revision_is_a_run_conflict(
                 state_version=0,
                 last_event_sequence=0,
                 terminal_hash=None,
+                run_configuration_revision_hash=(
+                    exact.run_configuration.revision_hash.value
+                ),
             )
         )
 
@@ -559,6 +576,14 @@ def test_split_run_identity_collision_is_a_typed_conflict(
             )
         )
         connection.execute(
+            run_configuration_revisions.insert()
+            .prefix_with("OR IGNORE")
+            .values(
+                revision_hash=exact.run_configuration.revision_hash.value,
+                preimage=exact.run_configuration.preimage,
+            )
+        )
+        connection.execute(
             runs.insert(),
             [
                 {
@@ -572,6 +597,9 @@ def test_split_run_identity_collision_is_a_typed_conflict(
                     "state_version": 0,
                     "last_event_sequence": 0,
                     "terminal_hash": None,
+                    "run_configuration_revision_hash": (
+                        exact.run_configuration.revision_hash.value
+                    ),
                 },
                 {
                     "run_id": "different-run",
@@ -586,6 +614,9 @@ def test_split_run_identity_collision_is_a_typed_conflict(
                     "state_version": 0,
                     "last_event_sequence": 0,
                     "terminal_hash": None,
+                    "run_configuration_revision_hash": (
+                        exact.run_configuration.revision_hash.value
+                    ),
                 },
             ],
         )
@@ -602,6 +633,9 @@ def test_split_run_identity_collision_is_a_typed_conflict(
     (
         "published_revisions",
         "workflow_revisions",
+        "run_configuration_revisions",
+        "context_packages_v3",
+        "node_execution_requests_v3",
         "runs",
         "node_artifacts_v3",
         "node_receipts_v3",

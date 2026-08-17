@@ -260,6 +260,8 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "agent_receipts_v2.workflow_revision_hash",
         "auth_profile_revisions.revision_hash",
         "context_packages_v3.package_hash",
+        "node_execution_requests_v3.context_package_hash",
+        "node_execution_requests_v3.node_execution_id",
         "node_execution_requests_v3.request_hash",
         "effect_intents.request_hash",
         "effect_intents.workflow_revision_hash",

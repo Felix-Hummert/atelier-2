@@ -20,9 +20,13 @@ What this composes, and nothing else:
    lineage member -- one call, because the membership proof lives inside it,
 2. the caller's already-decided terminal truth is checked to be about *those*
    bytes,
-3. Cut B's supervised start records the published revision, its workflow
-   backing, the run, its artifacts and its terminal receipt across all seven
-   durable tables in one transaction, or records none of them.
+3. the node execution request and the context package are **composed here**,
+   from the resolved bytes and the run configuration the caller froze, and a
+   decided truth that describes them differently is refused. The caller states
+   the outcome; what the node was asked to do is not a caller's to assert,
+4. Cut B's supervised start records the published revision, its workflow
+   backing, every record those hashes name, the run, its artifacts and its
+   terminal receipt in one transaction, or records none of them.
 
 **No graph is interpreted here, and none is claimed.** Cut B's starter takes an
 already-decided truth rather than producing one — it says so itself, "without
@@ -35,6 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from atelier2.application.bind_node_execution import bind_node_execution
 from atelier2.application.resolve_catalog_name import (
     CatalogNameResolved,
     CatalogNameResult,
@@ -45,9 +50,14 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageDisplayName,
     CatalogLineageId,
 )
-from atelier2.contracts.node_records_v3 import NodeReceiptHash
+from atelier2.contracts.node_records_v3 import (
+    NodeExecutionRequestHash,
+    NodeReceiptHash,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
-from atelier2.contracts.runs import RunId
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
+from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.durable_runs import (
     DurableV3RunCreated,
     DurableV3RunExisting,
@@ -56,6 +66,7 @@ from atelier2.ports.durable_runs import (
     StartV3RunWithReceiptRequest,
 )
 from atelier2.ports.published_revisions import CatalogLineageQuery, CatalogResolver
+from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 
 
 @dataclass(frozen=True)
@@ -86,6 +97,18 @@ class NamedRunRevisionUnbound:
 
 
 @dataclass(frozen=True)
+class NamedRunTruthNotComposed:
+    """The decided truth describes a request or package this document does not.
+
+    Refused rather than corrected, for the same reason a truth for another
+    revision is: the caller may say what happened, never what was asked.
+    """
+
+    composed_request_hash: NodeExecutionRequestHash
+    decided_request_hash: NodeExecutionRequestHash
+
+
+@dataclass(frozen=True)
 class NamedRunTruthForAnotherRevision:
     """The decided truth describes bytes other than the ones the name reached.
 
@@ -103,8 +126,17 @@ type NamedRunResult = (
     | NamedRunNameUnresolved
     | NamedRunRevisionUnbound
     | NamedRunTruthForAnotherRevision
+    | NamedRunTruthNotComposed
+    | NamedRunUnexecutableDocument
     | DurableV3StartWithReceiptResult
 )
+
+
+@dataclass(frozen=True)
+class NamedRunUnexecutableDocument:
+    """The name reached bytes this engine cannot read as a V3 document."""
+
+    reason: str
 
 
 def start_named_run(
@@ -114,6 +146,7 @@ def start_named_run(
     decided: StartV3RunWithReceiptRequest,
     catalog: CatalogResolver,
     starter: DurableV3RunStarter,
+    parse: WorkflowDocumentParser,
 ) -> NamedRunResult:
     """Start the exact revision this name holds, or write nothing and say why."""
     match resolve_catalog_name(kind, lineage_id_or_name, position, catalog):
@@ -129,12 +162,32 @@ def start_named_run(
             revision.revision_hash, decided.revision.revision_hash
         )
 
+    try:
+        graph = parse(revision.document)
+        if not isinstance(graph, WorkflowGraphV3):
+            return NamedRunUnexecutableDocument(
+                f"the name reached a format {graph.format_version} document"
+            )
+        composed = bind_node_execution(
+            decided.node_request.run_id,
+            WorkflowRevisionHash(revision.revision_hash.value),
+            graph,
+            decided.node_request.node_id,
+            decided.run_configuration,
+        )
+    except (WorkflowDocumentInvalid, KeyError, ValueError) as refused:
+        return NamedRunUnexecutableDocument(str(refused))
+    if composed.request.request_hash != decided.node_request.request_hash:
+        return NamedRunTruthNotComposed(
+            composed.request.request_hash, decided.node_request.request_hash
+        )
+
     started = starter.start_v3_with_receipt(
         StartV3RunWithReceiptRequest(
             revision,
             decided.run_configuration,
-            decided.node_request,
-            decided.context_package,
+            composed.request,
+            composed.context_package,
             decided.artifacts,
             decided.receipt,
         )
