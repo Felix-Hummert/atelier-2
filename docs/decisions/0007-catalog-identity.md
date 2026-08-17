@@ -19,9 +19,10 @@
   files in git are the source of truth, atelier-2 imports rather than versioning in
   parallel, and sharing is a future requirement. The landed requirement documents
   this record must not contradict — each `DRAFT`, and never outranking a landed
-  decision record — are [0002](../requirements/0002-teams-und-zugang.md) rule 9
+  decision record — are [0002](../requirements/0002-teams-und-zugang.md) REQ-ZUGANG-09
   (sharing a library or a workflow is sharing a git source; sources are registered
-  globally and selected per project; there is no second sharing channel) and rule 14
+  globally and selected per project; there is no second sharing channel) and
+  REQ-ZUGANG-14
   (credentials stay references and are never transported)
 - Consistent with, and each on `main`:
   [ADR 0008](0008-budget-units.md) (ACCEPTED), whose recorded meter decision 5's
@@ -253,7 +254,7 @@ private source names its credential **by reference, never as material**, exactly
 and libraries is installation-level, the **selection** of registered sources is a project
 bundle revision, and the resolution order is one sentence — the project's value wins,
 absence in the project inherits the installation's, and an explicit deselection is never
-re-inherited. Requirement 0002 rule 9 states the same split in the operator's own words.
+re-inherited. Requirement 0002 REQ-ZUGANG-09 states the same split in the operator's own words.
 This record therefore decides what a source *is* and what the three acts below do, and it
 adds no second scope rule: it holds for a source registered once and selected by one
 project exactly as for one selected by five. What follows from ADR 0011 decision 4 and is
@@ -352,7 +353,7 @@ is his decision to record, not the catalog's to infer.
 
 **Sharing, in V1, is a shared repository.** Sharing an agent, a skill or a whole workflow
 means pushing its file to a repository the other operator configures as a source; git is
-already the mechanism and nothing is built for it, and requirement 0002 rule 9 says the
+already the mechanism and nothing is built for it, and requirement 0002 REQ-ZUGANG-09 says the
 same in the operator's words: there is no second sharing channel. Decision 6's
 complete-store export is deliberately *not* that channel — it is the catalog's transport
 and carries measurements and lineage, and sharing a definition must not hand another

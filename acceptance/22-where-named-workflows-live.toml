@@ -4,7 +4,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/22"
 # One sentence of #22 is deliberately absent, because nothing has closed it and
 # declaring it would red this gate for work nobody has built:
 #
-#   "the library shows names, never hashes" — requirement 0003 rule 5 in full.
+#   "the library shows names, never hashes" — requirement 0003 REQ-UI-05 in full.
 #   A V1 or V2 revision carries no authored name and never will, so while the
 #   picker lists revisions rather than lineages, a hash stays the only honest
 #   label for one. The rule becomes provable when `catalog_lineages` and
