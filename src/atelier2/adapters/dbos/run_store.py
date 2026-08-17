@@ -100,6 +100,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
     GraphInputSource,
+    NodeOutput,
     NodeOutputSource,
     WorkflowGraphV3,
     is_sink_node,
@@ -355,10 +356,9 @@ def load_node_outputs(
     disagrees with itself, and it refuses here rather than travelling into a job.
 
     It is then read against the schema the producing node's author pinned for
-    that output. The document may only read an output its producer declares, so
-    that schema always exists; checking it here rather than at completion is what
-    keeps the promise on the value that actually travels, and it is the same
-    reading an order gets at the start.
+    that output, by the same owner the producing node's own success write asks.
+    A value written by an older build never passed that write, so the value that
+    travels is judged where it travels rather than trusted for having been stored.
 
     A node that reads nothing gets nothing: no query runs, and the composition
     is the authored instruction alone.
@@ -391,18 +391,35 @@ def load_node_outputs(
             raise RunTransitionConflict(
                 f"the stored output of node {source.node!r} no longer matches its hash"
             )
-        _refuse_an_output_its_schema_does_not_admit(session, graph, source, payload)
+        declared = next(
+            output
+            for output in graph.node(source.node).outputs
+            if output.name == source.output
+        )
+        refuse_an_output_its_schema_does_not_admit(
+            session, source.node, declared, payload
+        )
         delivered.append(DeliveredOutput(source.node, source.output, payload))
     return tuple(delivered)
 
 
-def _refuse_an_output_its_schema_does_not_admit(
+def refuse_an_output_its_schema_does_not_admit(
     session: Any,
-    graph: WorkflowGraphV3,
-    source: NodeOutputSource,
+    node_id: str,
+    declared: NodeOutput,
     payload: bytes,
 ) -> None:
     """Read one produced value against the schema its own author pinned.
+
+    This is the one place a produced value meets its declared schema, and both
+    moments a value has ask it: the success write, before the node may be said to
+    have succeeded, and the hand-off, before the value reaches the node that reads
+    it. One owner means one profile -- a second reading could admit what the first
+    refuses, which is exactly how an unenforced contract looks from outside.
+
+    Authority is the provider-neutral core's: what judges the bytes is the schema
+    profile owner, over the exact decoded bytes, whatever an adapter's own
+    structured-output help may have promised.
 
     The pinned revision is read from the durable document rather than from the
     frozen resolution matrix, and that is not a second resolver: the reference is
@@ -411,11 +428,6 @@ def _refuse_an_output_its_schema_does_not_admit(
     enforce. What is added here is the one thing the start could not do -- reading
     a value that did not exist yet.
     """
-    declared = next(
-        output
-        for output in graph.node(source.node).outputs
-        if output.name == source.output
-    )
     pinned = declared.schema_reference.revision
     document = session.scalar(
         sa.select(published_revisions.c.document).where(
@@ -425,19 +437,19 @@ def _refuse_an_output_its_schema_does_not_admit(
     )
     if document is None:
         raise RunTransitionConflict(
-            f"the schema node {source.node!r} pinned for output "
-            f"{source.output!r} is absent from the store"
+            f"the schema node {node_id!r} pinned for output "
+            f"{declared.name!r} is absent from the store"
         )
     schema = read_schema_document(bytes(document))
     if isinstance(schema, SchemaRefused):
         raise RunTransitionConflict(
-            f"the schema node {source.node!r} pinned for output "
-            f"{source.output!r} is not one: {schema}"
+            f"the schema node {node_id!r} pinned for output "
+            f"{declared.name!r} is not one: {schema}"
         )
     verdict = read_instance_document(payload, schema)
     if isinstance(verdict, InstanceRefused):
         raise NodeOutputSchemaRefused(
-            f"node {source.node!r} produced an output its own schema refuses: {verdict}"
+            f"node {node_id!r} produced an output its own schema refuses: {verdict}"
         )
 
 

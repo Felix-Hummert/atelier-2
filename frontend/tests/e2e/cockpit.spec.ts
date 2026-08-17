@@ -4,6 +4,31 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
 
+// Every executable V3 agent node declares exactly one output and the schema it
+// must satisfy: that is `single-json-output/v1`, the one output shape a run
+// enforces. Where a test is about something else, it pins the schema that admits
+// any JSON value, so the node's contract says no more than the shape requires.
+async function publishSchema(page: Page, document: string): Promise<string> {
+  const published = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: document
+  });
+  expect([200, 201]).toContain(published.status());
+  return (await published.json()).revision_hash as string;
+}
+
+const anyJsonSchema = (page: Page): Promise<string> => publishSchema(page, "true");
+
+function declaredOutput(schemaHash: string, name = "result"): string[] {
+  return [
+    "    outputs:",
+    `      - name: ${name}`,
+    "        schema:",
+    `          ref: ${name}-schema`,
+    `          revision: ${schemaHash}`
+  ];
+}
+
 test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await page.goto("/atelier/new");
   await page.getByLabel("Publish YAML").check();
@@ -304,6 +329,7 @@ async function assertContrastAtLeast(control: Locator, minimum: number): Promise
 
 test("opens a V3 run at its own address and shows the line it drove", async ({ page }) => {
   const api = "/atelier/api/v1";
+  const schemaHash = await anyJsonSchema(page);
   const workflowYaml = [
     "format_version: 3",
     "name: Two agents in a line",
@@ -313,12 +339,14 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
     "    role: builder",
     "    mode: headless",
     "    instruction: Do the one thing this chain is for.",
+    ...declaredOutput(schemaHash),
     "  - id: review",
     "    type: agent",
     "    role: builder",
     "    mode: headless",
     "    instruction: Check what the node before you did.",
     "    depends_on: [implement]",
+    ...declaredOutput(schemaHash),
     ""
   ].join("\n");
 
@@ -401,6 +429,7 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
 
 test("starts a published V3 workflow by picking a named agent", async ({ page }) => {
   const api = "/atelier/api/v1";
+  const schemaHash = await anyJsonSchema(page);
   const auth = await page.request.post(`${api}/auth-profile-revisions`, {
     data: {
       profile_id: "named-picker",
@@ -432,12 +461,14 @@ test("starts a published V3 workflow by picking a named agent", async ({ page })
       "    role: builder",
       "    mode: headless",
       "    instruction: Do the one thing this chain is for.",
+      ...declaredOutput(schemaHash),
       "  - id: review",
       "    type: agent",
       "    role: builder",
       "    mode: headless",
       "    instruction: Check what the node before you did.",
       "    depends_on: [implement]",
+      ...declaredOutput(schemaHash),
       ""
     ].join("\n")
   );
@@ -466,6 +497,7 @@ test("starts a published V3 workflow by picking a named agent", async ({ page })
 });
 
 test("publishes a V3 workflow, binds its role, and watches the line it started", async ({ page }) => {
+  const schemaHash = await anyJsonSchema(page);
   await page.goto("/atelier/new");
   await page.getByLabel("Publish YAML").check();
   await page.getByLabel("Exact workflow YAML").fill(
@@ -478,12 +510,14 @@ test("publishes a V3 workflow, binds its role, and watches the line it started",
       "    role: builder",
       "    mode: headless",
       "    instruction: Do the one thing this chain is for.",
+      ...declaredOutput(schemaHash),
       "  - id: review",
       "    type: agent",
       "    role: builder",
       "    mode: headless",
       "    instruction: Check what the node before you did.",
       "    depends_on: [implement]",
+      ...declaredOutput(schemaHash),
       ""
     ].join("\n")
   );
@@ -522,6 +556,7 @@ test("publishes a V3 workflow, binds its role, and watches the line it started",
 
 test("watches a V3 chain move, node by node, without a reload", async ({ page }) => {
   const api = "/atelier/api/v1";
+  const schemaHash = await anyJsonSchema(page);
   const workflowYaml = [
     "format_version: 3",
     "name: Two agents watched live",
@@ -531,12 +566,14 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
     "    role: builder",
     "    mode: headless",
     "    instruction: Do the one thing this chain is for.",
+    ...declaredOutput(schemaHash),
     "  - id: review",
     "    type: agent",
     "    role: builder",
     "    mode: headless",
     "    instruction: Check what the node before you did.",
     "    depends_on: [implement]",
+    ...declaredOutput(schemaHash),
     ""
   ].join("\n");
 
@@ -595,6 +632,7 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
 
 test("draws a running V3 chain as a graph while a node is still working", async ({ page }) => {
   const api = "/atelier/api/v1";
+  const schemaHash = await anyJsonSchema(page);
   const workflowYaml = [
     "format_version: 3",
     "name: Two agents drawn live",
@@ -604,12 +642,14 @@ test("draws a running V3 chain as a graph while a node is still working", async 
     "    role: builder",
     "    mode: headless",
     "    instruction: Do the one thing this chain is for.",
+    ...declaredOutput(schemaHash),
     "  - id: review",
     "    type: agent",
     "    role: builder",
     "    mode: headless",
     "    instruction: Check what the node before you did.",
     "    depends_on: [implement]",
+    ...declaredOutput(schemaHash),
     ""
   ].join("\n");
 
@@ -670,22 +710,22 @@ test("draws a running V3 chain as a graph while a node is still working", async 
   await page.screenshot({ path: "test-results/v3-graph-running-390x844.png", fullPage: true });
 });
 
-test("clicking a stuck node says what stopped the run, and the node before it shows its whole log", async ({
+test("a node whose answer its own contract refuses never reports success", async ({
   page
 }) => {
-  // The operator's own silence, reproduced in a browser. `live/die-kette-sieht`
-  // stood on STARTED with nothing to read: its first node wrote prose while its
-  // author had pinned a text schema, so the chain refused to hand the value on
-  // and no surface said why. The e2e provider writes raw bytes for the same
-  // reason, so the same refusal appears here.
+  // The operator's own silence, reproduced in a browser -- and its cause moved.
+  // `live/die-kette-sieht` stood on STARTED with nothing to read: its first node
+  // answered prose while its author had pinned a schema, and the atelier wrote
+  // `AGENT_COMPLETED` anyway. Since #57 that success is never written: the run
+  // stops on the node that answered, and nothing on the page claims it is done.
+  //
+  // What the page still cannot say is why, and this test pins that gap rather
+  // than hiding it: no durable record of the refusal exists yet, because nothing
+  // writes `node-receipt/v3`. The panel's refusal wording keeps its own proof in
+  // the cockpit component tests, which drive the read surface directly.
   const api = "/atelier/api/v1";
 
-  const schema = await page.request.post(`${api}/schema-revisions`, {
-    headers: { "content-type": "application/json" },
-    data: '{"type": "string"}'
-  });
-  expect([200, 201]).toContain(schema.status());
-  const schemaHash = (await schema.json()).revision_hash as string;
+  const schemaHash = await publishSchema(page, '{"type": "object"}');
 
   const workflowYaml = [
     "format_version: 3",
@@ -696,11 +736,7 @@ test("clicking a stuck node says what stopped the run, and the node before it sh
     "    role: builder",
     "    mode: headless",
     "    instruction: Write three German sentences about code review.",
-    "    outputs:",
-    "      - name: draft",
-    "        schema:",
-    "          ref: text-schema",
-    `          revision: ${schemaHash}`,
+    ...declaredOutput(schemaHash, "draft"),
     "  - id: review",
     "    type: agent",
     "    role: builder",
@@ -712,6 +748,7 @@ test("clicking a stuck node says what stopped the run, and the node before it sh
     "        from:",
     "          node: implement",
     "          output: draft",
+    ...declaredOutput(schemaHash, "findings"),
     ""
   ].join("\n");
   const published = await page.request.post(`${api}/workflow-revisions`, {
@@ -757,33 +794,118 @@ test("clicking a stuck node says what stopped the run, and the node before it sh
   expect(started.status()).toBe(201);
   const reference = (await started.json()).public_run_reference as string;
 
-  // The run cannot finish: the value the first node wrote is not what its own
-  // schema admits, so the chain stops with the second node standing.
+  // The provider answers a sentence where an object was declared, so the success
+  // write refuses it: the run stops standing on the node that answered, and no
+  // completion event is written for it.
   await expect(async () => {
     const read = await page.request.get(`${api}/runs/${reference}`);
     expect(read.status()).toBe(200);
     const body = await read.json();
     expect(body.state).toBe("STARTED");
-    expect(body.current_node_id).toBe("review");
+    expect(body.current_node_id).toBe("implement");
   }).toPass({ timeout: 15_000 });
 
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: "Run v3/the-silent-one" })).toBeVisible();
+  await expect(page.getByLabel("Where this run stands")).not.toContainText("Done");
 
-  await page.getByRole("button", { name: /review/ }).click();
-  const stopped = page.getByRole("alert");
-  await expect(stopped).toContainText("Stopped here");
-  await expect(stopped).toContainText("instance-not-json");
-  await expect(stopped).toContainText("implement");
+  await page.getByRole("button", { name: /implement/ }).click();
+  // Nothing was written, so there is nothing to show as an answer -- and the
+  // panel says so honestly rather than dressing the silence as a value.
+  await expect(page.getByLabel("Asked")).toContainText(
+    "Write three German sentences about code review."
+  );
+  await expect(page.getByLabel("Answered")).toContainText("Nothing written yet.");
   await page.screenshot({ path: "test-results/v3-node-refusal.png", fullPage: true });
+});
+
+test("clicking a finished node shows its whole log", async ({ page }) => {
+  // The other half of the panel: a node that did produce a value shows all of it.
+  // The timeline keeps the value short so movement stays readable; the panel
+  // shows the whole log the operator asked for.
+  const api = "/atelier/api/v1";
+  const schemaHash = await anyJsonSchema(page);
+
+  const workflowYaml = [
+    "format_version: 3",
+    "name: the chain the operator read",
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Write three German sentences about code review.",
+    ...declaredOutput(schemaHash, "draft"),
+    "  - id: review",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Judge the draft you were handed.",
+    "    depends_on: [implement]",
+    "    inputs:",
+    "      - name: draft",
+    "        from:",
+    "          node: implement",
+    "          output: draft",
+    ...declaredOutput(schemaHash, "findings"),
+    ""
+  ].join("\n");
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).revision_hash as string;
+
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: {
+      profile_id: "v3-read",
+      revision_number: 1,
+      provider_id: "e2e-v3",
+      auth_mode: "subscription"
+    }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: "v3-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 2,
+      run_id: "v3/the-read-one",
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [
+        {
+          role: "builder",
+          agent_configuration_revision_hash: (await configuration.json())
+            .agent_configuration_revision_hash
+        }
+      ]
+    }
+  });
+  expect(started.status()).toBe(201);
+  const reference = (await started.json()).public_run_reference as string;
+
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${reference}`);
+    expect(read.status()).toBe(200);
+    expect((await read.json()).state).toBe("COMPLETED");
+  }).toPass({ timeout: 15_000 });
+
+  await page.goto(`/atelier/runs/${reference}`);
+  await expect(page.getByRole("heading", { level: 1, name: "Run v3/the-read-one" })).toBeVisible();
 
   await page.getByRole("button", { name: /implement/ }).click();
   await expect(page.getByLabel("Asked")).toContainText(
     "Write three German sentences about code review."
   );
-  // The same value twice on one page, and that is the division of labour: the
-  // timeline keeps it short so movement stays readable, the panel shows the
-  // whole log the operator asked for.
   await expect(page.getByLabel("Answered")).toContainText("V3 provider bytes");
   await expect(page.getByLabel("Events as they arrive")).toContainText(
     "V3 provider bytes"
@@ -875,6 +997,7 @@ test("a declared order is a material field on start, and the typed value travels
   });
   expect(configuration.status()).toBe(201);
 
+  const answerSchemaHash = await anyJsonSchema(page);
   const workflowYaml = [
     "format_version: 3",
     "name: Cook to order",
@@ -893,6 +1016,7 @@ test("a declared order is a material field on start, and the typed value travels
     "      - name: portions",
     "        from:",
     "          graph_input: portions",
+    ...declaredOutput(answerSchemaHash),
     ""
   ].join("\n");
   const published = await page.request.post(`${api}/workflow-revisions`, {

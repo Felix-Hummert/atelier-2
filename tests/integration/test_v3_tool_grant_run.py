@@ -71,9 +71,10 @@ from tests.scenarios.agents import (
     agent_scratch_root,
 )
 from tests.scenarios.projects import declaring_verification, git_project
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/redeems-its-grant")
-PROVIDER_OUTPUT = b"the exact provider bytes"
+PROVIDER_OUTPUT = b'"the exact provider bytes"'
 VERIFICATION_OUTPUT = b"all green"
 VERIFICATION_EXIT_CODE = 3
 """Deliberately not zero: the evidence is the outcome, not a verdict this head reads."""
@@ -87,7 +88,8 @@ THE_GRANT = json.dumps(
 
 
 def one_node_document(grant_revision: str) -> bytes:
-    return b"""format_version: 3
+    return (
+        b"""format_version: 3
 name: One agent that must verify the project
 nodes:
   - id: implement
@@ -97,7 +99,10 @@ nodes:
     instruction: Do the one thing this chain is for.
     tools:
       - {ref: project-verification, revision: %s}
-""" % grant_revision.encode("ascii")
+"""
+        % grant_revision.encode("ascii")
+        + declared_output()
+    )
 
 
 def project_declaring_its_verification(root: Path, record: Path) -> Path:
@@ -177,13 +182,14 @@ def publish_granted_node(
     )
     grant = PublishedRevision(RevisionKind.TOOL, THE_GRANT)
     with runtime.engine.begin() as connection:
-        connection.execute(
-            published_revisions.insert().values(
-                kind=grant.kind.value,
-                revision_hash=grant.revision_hash.value,
-                document=grant.document,
+        for revision in (grant, ANY_JSON_SCHEMA):
+            connection.execute(
+                published_revisions.insert().values(
+                    kind=revision.kind.value,
+                    revision_hash=revision.revision_hash.value,
+                    document=revision.document,
+                )
             )
-        )
     workflow = WorkflowRevision(one_node_document(grant.revision_hash.value))
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     bindings = AgentBindingSet(

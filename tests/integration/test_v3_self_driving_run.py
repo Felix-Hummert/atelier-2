@@ -28,6 +28,7 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -71,14 +72,20 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
 from atelier2.ports.run_events import RunEventPage, StreamReady
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
-TWO_NODE_DOCUMENT = b"""format_version: 3
+TWO_NODE_DOCUMENT = (
+    b"""format_version: 3
 name: Two agents in a line
 nodes:
   - id: implement
@@ -86,16 +93,20 @@ nodes:
     role: builder
     mode: headless
     instruction: Do the one thing this chain is for.
-  - id: review
+"""
+    + declared_output()
+    + b"""  - id: review
     type: agent
     role: builder
     mode: headless
     instruction: Check what the node before you did.
     depends_on: [implement]
 """
+    + declared_output()
+)
 
 RUN = RunId("v3/two-agents")
-PROVIDER_OUTPUT = b"the exact provider bytes"
+PROVIDER_OUTPUT = b'"the exact provider bytes"'
 
 
 @pytest.fixture
@@ -130,6 +141,10 @@ def runtime(
 def publish_two_node_line(
     runtime: DbosRuntime,
 ) -> tuple[WorkflowRevision, AgentBindingSet]:
+    published = DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
+    assert isinstance(
+        published, (PublishedRevisionCreated, PublishedRevisionExisting)
+    ), published
     catalog = DbosAgentConfigurationCatalog(
         runtime.engine, runtime.agent_executor_registry
     )

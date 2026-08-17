@@ -235,7 +235,7 @@ def main() -> None:
     # delayed one keeps a V3 node in `working` long enough for the graph
     # drawing to be photographed live.
     immediate = RecordingAgentExecutorFactoryV2(
-        "e2e-v3", "immediate/v1", "e2e-immediate-process", b"V3 provider bytes"
+        "e2e-v3", "immediate/v1", "e2e-immediate-process", b'"V3 provider bytes"'
     )
     delayed = DelayedAgentExecutorFactory(
         "e2e-v3-slow", "delayed/v1", "e2e-delayed-process", b"V3 provider bytes"
