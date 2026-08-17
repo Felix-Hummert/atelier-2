@@ -9,9 +9,10 @@ run ignores, or a redemption nothing could have asked for.
 
 What is measured here is exactly what an operator can see afterwards: the run
 finished, the command the project's own manifest declares ran in that attempt's
-own directory, and the row that proves it carries the command, the exit code and
-the hash of what it wrote -- beside an agent receipt whose provider bytes are
-untouched by any of it.
+own directory -- filled with the tree the run's own binding pinned, so the
+manifest that declared the command and the ground it ran on are one commit -- and
+the row that proves it carries the command, the exit code and the hash of what it
+wrote, beside an agent receipt whose provider bytes are untouched by any of it.
 """
 
 from __future__ import annotations
@@ -69,12 +70,16 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
 )
+from tests.scenarios.projects import declaring_verification, git_project
 
 RUN = RunId("v3/redeems-its-grant")
 PROVIDER_OUTPUT = b"the exact provider bytes"
 VERIFICATION_OUTPUT = b"all green"
 VERIFICATION_EXIT_CODE = 3
 """Deliberately not zero: the evidence is the outcome, not a verdict this head reads."""
+
+COMMITTED_MARKER_NAME = "marker.txt"
+COMMITTED_MARKER = "the tree this run was pinned to\n"
 
 THE_GRANT = json.dumps(
     {"capability": ToolGrantCapability.RUN_PROJECT_VERIFICATION.value}
@@ -95,23 +100,24 @@ nodes:
 """ % grant_revision.encode("ascii")
 
 
-def project_declaring_its_verification(root: Path, cwd_record: Path) -> Path:
+def project_declaring_its_verification(root: Path, record: Path) -> Path:
     """A project whose manifest states the one command that verifies it.
 
-    The command prints where it was started, so the directory the verification
-    ran in is measurable after the lease is gone, and answers with bytes and an
-    exit code the store can be read for.
+    The command records where it was started and reads a file only its own commit
+    carries, so after the lease is gone both facts are still measurable: which
+    directory the verification ran in, and that the pinned tree stood in it.
     """
-    root.mkdir(parents=True, exist_ok=True)
     script = (
-        f"pwd > {cwd_record}; "
+        f"pwd > {record}; cat {COMMITTED_MARKER_NAME} >> {record}; "
         f"printf '{VERIFICATION_OUTPUT.decode('ascii')}'; "
         f"exit {VERIFICATION_EXIT_CODE}"
     )
-    command = json.dumps(["/bin/sh", "-c", script])
-    (root / "pyproject.toml").write_text(
-        f"[tool.atelier2.verification]\ncommand = {command}\ntimeout_seconds = 30\n",
-        encoding="utf-8",
+    git_project(
+        root,
+        {
+            **declaring_verification(["/bin/sh", "-c", script]),
+            COMMITTED_MARKER_NAME: COMMITTED_MARKER,
+        },
     )
     return root
 
@@ -203,6 +209,7 @@ def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
 
 
 @pytest.mark.proves("a-granted-node-gets-its-project-verification-run-and-proven")
+@pytest.mark.proves("what-a-project-declares-and-where-it-runs-are-one-commit")
 def test_a_granted_node_runs_the_projects_verification_and_leaves_the_proof(
     runtime: tuple[DbosRuntime, Path, Path],
 ) -> None:
@@ -250,10 +257,13 @@ def test_a_granted_node_runs_the_projects_verification_and_leaves_the_proof(
         str(redemption["standard_output_hash"])
         == Sha256Hash.of(VERIFICATION_OUTPUT).value
     )
-    # The attempt owns the place: the verification started in that attempt's own
-    # leased directory, not in the project it verifies and not in the server's.
-    ran_in = Path(cwd_record.read_text(encoding="utf-8").strip())
-    assert ran_in.parent == scratch_root
+    # The attempt owns the place, and the pin owns the material: the verification
+    # started in that attempt's own leased directory -- not in the project it
+    # verifies and not in the server's -- and the tree the binding pinned stood
+    # there to be read.
+    where, marker = cwd_record.read_text(encoding="utf-8").split("\n", 1)
+    assert Path(where).parent == scratch_root
+    assert marker == COMMITTED_MARKER
     # The provider's own bytes are the agent receipt's, and redeeming a grant
     # beside them changes neither what they are nor who answers for them.
     assert bytes(provider_output) == PROVIDER_OUTPUT

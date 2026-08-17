@@ -36,6 +36,7 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.workflow import EncodedAgentBindingV2, _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.project_verification import declared_project
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -73,6 +74,7 @@ from tests.scenarios.agents import (
     failing_agent_executor_factory,
 )
 from tests.scenarios.api import durable_api_client, durable_queries
+from tests.scenarios.projects import git_project
 
 ONE_AGENT_DOCUMENT = b"""format_version: 3
 name: One agent
@@ -212,7 +214,7 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
     encoded = _node_binding(
-        runtime.datasource, RUN, workflow.revision_hash, "implement"
+        runtime.datasource, RUN, workflow.revision_hash, "implement", None
     )
     binding = cast(EncodedAgentBindingV2, encoded)
 
@@ -227,6 +229,36 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
     assert (
         binding["configuration_hash"]
         == bindings.bindings[0].agent_configuration_revision_hash.value
+    )
+    assert "project_commit" not in binding
+
+
+@pytest.mark.proves("an-attempt-works-in-the-tree-its-own-binding-pinned")
+def test_the_binding_of_a_node_pins_the_project_source_it_will_work_in(
+    runtime: DbosRuntime, tmp_path: Path
+) -> None:
+    """Pinned where the binding is composed, so a later commit changes nothing."""
+    workflow, bindings = publish(runtime)
+    DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    root = tmp_path / "project"
+    pinned = git_project(root, {"pyproject.toml": "[project]\nname = 'pinned'\n"})
+
+    binding = cast(
+        EncodedAgentBindingV2,
+        _node_binding(
+            runtime.datasource,
+            RUN,
+            workflow.revision_hash,
+            "implement",
+            declared_project(root),
+        ),
+    )
+
+    assert (binding.get("project_commit"), binding.get("project_tree")) == (
+        pinned.commit,
+        pinned.tree,
     )
 
 

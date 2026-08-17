@@ -6,7 +6,7 @@ import signal
 import socket
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -33,6 +33,7 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
@@ -54,6 +55,11 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import api_limits as scenario_api_limits
 from tests.scenarios.api import durable_queries
 from tests.scenarios.api import event_poll_backoff as scenario_event_poll_backoff
+from tests.scenarios.projects import (
+    declaring_verification,
+    git_project,
+    write_into_checkout,
+)
 from tests.scenarios.runtime import exact_output_runtime
 
 INERT_CLAUDE = "raise SystemExit(0)\n"
@@ -428,6 +434,50 @@ def test_a_provider_deployment_without_a_scratch_root_refuses_to_serve(
 
     assert refusal.value.code == 2
     assert "--agent-scratch-root" in capsys.readouterr().err
+
+
+def a_root_that_is_no_repository(root: Path) -> None:
+    root.mkdir(parents=True)
+    write_into_checkout(root, declaring_verification(["/bin/true"]))
+
+
+def a_repository_declaring_no_verification(root: Path) -> None:
+    git_project(root, {PROJECT_MANIFEST_NAME: "[project]\nname = 'says nothing'\n"})
+
+
+PROJECT_ROOT_REFUSALS: tuple[tuple[str, Callable[[Path], None], str], ...] = (
+    ("a root that is no repository", a_root_that_is_no_repository, "project source"),
+    (
+        "a repository declaring no verification",
+        a_repository_declaring_no_verification,
+        "no verification",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "build", "refusal_words"),
+    PROJECT_ROOT_REFUSALS,
+    ids=[label for label, _build, _words in PROJECT_ROOT_REFUSALS],
+)
+def test_a_project_that_cannot_be_pinned_or_declares_nothing_refuses_to_serve(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    label: str,
+    build: Callable[[Path], None],
+    refusal_words: str,
+) -> None:
+    """Every attempt works in a commit of this project, so both facts are asked here."""
+
+    del label
+    root = tmp_path / "project"
+    build(root)
+
+    with pytest.raises(SystemExit) as refusal:
+        main(serve_arguments(tmp_path, "--project-root", str(root)))
+
+    assert refusal.value.code == 2
+    assert refusal_words in capsys.readouterr().err
 
 
 def test_a_scratch_root_without_any_provider_executor_refuses_to_serve(

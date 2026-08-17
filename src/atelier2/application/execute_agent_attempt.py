@@ -22,7 +22,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
     AgentProcessRunner,
 )
-from atelier2.ports.project_verification import ToolGrantRedemption
+from atelier2.ports.project_verification import PinnedProjectSource
 
 _LOG = logging.getLogger("atelier2")
 
@@ -33,7 +33,7 @@ def execute_agent_attempt(
     store: AgentAttemptStore,
     supervisor: AgentProcessRunner,
     workspaces: AgentAttemptWorkspaceOwner,
-    redemption: ToolGrantRedemption | None = None,
+    project: PinnedProjectSource | None = None,
 ) -> AgentAttemptExecutionOutcome:
     """Invoke only after this live call durably wins the launch boundary.
 
@@ -44,18 +44,26 @@ def execute_agent_attempt(
     proving no process or descendant of this attempt is left, and the durable
     terminal attempt.
 
-    `redemption` is absent for a node that pinned no tool grant. A node that
-    pinned one has its grant redeemed here, in the directory this attempt owns,
-    after the provider produced the work the verification is about -- and the
-    verification the project declares is attested before the claim, beside the
-    scratch root, so a project that declares none refuses before anything runs.
+    `project` is absent where this runtime was pointed at no project. Where one
+    is pinned, the tree that commit names is unpacked into the leased directory
+    between the claim and the provider, so the work happens on exactly the
+    material the durable binding pinned rather than on whatever a checkout holds
+    now -- and a pin the source can no longer answer for refuses beside the
+    scratch root, before any claim.
+
+    A node that pinned a tool grant has it redeemed here, in that same tree,
+    after the provider produced the work the verification is about. What the
+    project declares is read at the pin and attested before the claim too, so a
+    project that declares no verification refuses before anything runs.
     """
 
     store.prepare(execution)
     command = executor.prepare_process(execution.request)
     workspaces.preflight()
-    if redemption is not None:
-        redemption.verifications.preflight()
+    if project is not None:
+        project.source.attest(project.pin)
+        if project.grant is not None:
+            project.verifications.preflight(project.pin)
     try:
         supervisor.prepare(execution)
         claim = store.claim(execution)
@@ -64,6 +72,8 @@ def execute_agent_attempt(
                 supervisor.finalize(execution)
             return claim
         lease = workspaces.acquire(execution.attempt_id)
+        if project is not None:
+            project.source.materialize(project.pin, lease)
         invocation = AgentProcessInvocation(command, lease)
         completion = supervisor.launch_and_wait(execution, invocation)
         result = executor.decode_process_completion(invocation, completion)
@@ -85,7 +95,7 @@ def execute_agent_attempt(
             outcome = store.complete_known_failure(execution)
         else:
             outcome = store.complete_success(
-                execution, result, _redeemed(execution, lease, redemption)
+                execution, result, _redeemed(execution, lease, project)
             )
         supervisor.finalize(execution)
         workspaces.release(execution.attempt_id)
@@ -97,7 +107,7 @@ def execute_agent_attempt(
 def _redeemed(
     execution: AgentAttemptExecution,
     lease: AgentAttemptWorkspaceLease,
-    redemption: ToolGrantRedemption | None,
+    project: PinnedProjectSource | None,
 ) -> ToolRedemptionReceipt | None:
     """What redeeming this node's grant ran, or nothing where no grant was pinned.
 
@@ -106,17 +116,17 @@ def _redeemed(
     redemption durably missing beside a succeeded attempt would say a grant was
     never redeemed, which is exactly the thing this evidence exists to answer.
     """
-    if redemption is None:
+    if project is None or project.grant is None:
         return None
     request = execution.request
-    outcome = redemption.verifications.run(lease)
+    outcome = project.verifications.run(project.pin, lease)
     return ToolRedemptionReceipt.of(
         request.node_execution_id,
         request.run_id,
         request.workflow_revision_hash,
         request.node_id,
         execution.attempt_id,
-        redemption.grant,
+        project.grant,
         outcome.command,
         outcome.exit_code,
         outcome.standard_output_hash,

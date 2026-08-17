@@ -28,7 +28,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, register_durable_run_workflow
-from atelier2.adapters.project_verification import LocalProjectVerificationRunner
+from atelier2.adapters.project_verification import declared_project
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutorBinding,
@@ -389,7 +389,7 @@ def _open_binding(
             agent_workspace_owner,
             None
             if settings.project_root is None
-            else LocalProjectVerificationRunner(settings.project_root.resolve()),
+            else declared_project(settings.project_root.resolve()),
             adapter,
             effect_binding,
         )
