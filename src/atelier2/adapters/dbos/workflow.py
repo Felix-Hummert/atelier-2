@@ -30,6 +30,7 @@ from atelier2.adapters.dbos.run_store import (
     commit_waiting_input,
     entry_node_of,
     load_graph,
+    load_node_outputs,
     load_run,
     load_run_inputs,
     load_wait_answer,
@@ -230,7 +231,8 @@ def _node_binding(
             raise RunTransitionConflict(
                 "node workflow does not own current STARTED node"
             )
-        node = load_graph(session, revision_hash).node(node_id)
+        graph = load_graph(session, revision_hash)
+        node = graph.node(node_id)
         if isinstance(node, AgentNode):
             return {"type": "agent", "job": node.job, "output": node.output}
         if isinstance(node, (AgentNodeV2, AgentNodeV3)):
@@ -259,7 +261,9 @@ def _node_binding(
                     node.job
                     if isinstance(node, AgentNodeV2)
                     else node_job(
-                        node.instruction, load_run_inputs(session, run_id, node)
+                        node.instruction,
+                        load_run_inputs(session, run_id, node),
+                        load_node_outputs(session, run_id, revision_hash, graph, node),
                     )
                 ),
                 "configuration_hash": configuration.revision_hash.value,
