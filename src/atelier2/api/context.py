@@ -18,6 +18,7 @@ from atelier2.application.publish_agent_configurations import (
     PublishAgentConfigurationRevisionResult,
     PublishAuthProfileRevisionResult,
 )
+from atelier2.application.publish_budget_revision import PublishBudgetRevisionResult
 from atelier2.application.publish_schema_revision import PublishSchemaRevisionResult
 from atelier2.application.publish_workflow_revision import (
     PublishWorkflowRevisionResult,
@@ -127,6 +128,7 @@ class ApiUseCases:
     read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
     publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
     publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
+    publish_budget_revision: Callable[[bytes], PublishBudgetRevisionResult]
     publish_auth_profile_revision: Callable[
         [str, int, str, str], PublishAuthProfileRevisionResult
     ]

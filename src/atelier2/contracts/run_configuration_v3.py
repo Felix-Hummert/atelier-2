@@ -71,6 +71,7 @@ class ReferenceRefusalReason(StrEnum):
     UNBOUND_WORKFLOW_REFERENCE = "unbound_workflow_reference"
     UNUSABLE_SCHEMA_DOCUMENT = "unusable_schema_document"
     UNREDEEMABLE_TOOL_GRANT = "unredeemable_tool_grant"
+    UNUSABLE_BUDGET_DOCUMENT = "unusable_budget_document"
 
 
 @dataclass(frozen=True, slots=True)

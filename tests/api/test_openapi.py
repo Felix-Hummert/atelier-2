@@ -73,6 +73,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/auth-profile-revisions",
     API_PREFIX + "/agent-configuration-revisions",
     API_PREFIX + "/schema-revisions",
+    API_PREFIX + "/budget-revisions",
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/by-name/{name}",
     API_PREFIX + "/workflow-revisions/{revision_hash}",
@@ -108,6 +109,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         "POST",
         API_PREFIX + "/schema-revisions",
         "publish_schema_revision_route",
+    ),
+    (
+        "POST",
+        API_PREFIX + "/budget-revisions",
+        "publish_budget_revision_route",
     ),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
@@ -211,12 +217,12 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact carries two regenerations: `invalid-request` grew field
-    pointers and `GET /runs` grew a `state` filter, and a format-3 run learned
-    to wait — its resource gained the WAITING_INPUT state and its event union
-    the two wait kinds. Those regenerations are the wire changes their heads
-    declare; refreshing the artefact alongside a refactor is what this test
-    still refuses.
+    The artefact carries three regenerations: `invalid-request` grew field
+    pointers and `GET /runs` grew a `state` filter, a budget revision grew its
+    own publication route, and a format-3 run learned to wait — its resource
+    gained the WAITING_INPUT state and its event union the two wait kinds.
+    Those regenerations are the wire changes their heads declare; refreshing
+    the artefact alongside a refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()

@@ -126,6 +126,8 @@ nodes:
 REVISION = WorkflowRevision(DOCUMENT)
 SCHEMA_DOCUMENT = b'{"type": "object"}'
 SCHEMA_REVISION = PublishedRevision(RevisionKind.SCHEMA, SCHEMA_DOCUMENT)
+BUDGET_DOCUMENT = b'{"attempt_deadline_seconds": 900}'
+BUDGET_REVISION = PublishedRevision(RevisionKind.BUDGET_POLICY, BUDGET_DOCUMENT)
 GRAPH = parse_executable_workflow_document(DOCUMENT)
 REVISION_PROJECTION = WorkflowRevisionProjection(REVISION, GRAPH)
 RUN = Run(RunId("run"), REVISION.revision_hash, RunState.STARTED, "final", 0, 0)
@@ -223,6 +225,20 @@ SUCCESS_CASES = (
         "publish-schema",
         "schema-registry",
         PublishedRevisionExisting(SCHEMA_REVISION),
+        200,
+    ),
+    (
+        "publish-budget-created",
+        "publish-budget",
+        "budget-registry",
+        PublishedRevisionCreated(BUDGET_REVISION),
+        201,
+    ),
+    (
+        "publish-budget-existing",
+        "publish-budget",
+        "budget-registry",
+        PublishedRevisionExisting(BUDGET_REVISION),
         200,
     ),
     (
@@ -335,6 +351,38 @@ PROBLEM_CASES = (
         PublishedRevisionCollision(),
         409,
         "schema-revision-collision",
+    ),
+    (
+        "publish-budget-invalid",
+        "publish-budget",
+        "invalid-budget",
+        None,
+        422,
+        "budget-missing-attempt-deadline",
+    ),
+    (
+        "publish-budget-collision",
+        "publish-budget",
+        "budget-registry",
+        PublishedRevisionCollision(),
+        409,
+        "budget-revision-collision",
+    ),
+    (
+        "publish-budget-unavailable",
+        "publish-budget",
+        "budget-registry",
+        DurableWriteUnavailable(),
+        503,
+        "temporarily-unavailable",
+    ),
+    (
+        "publish-budget-corrupt",
+        "publish-budget",
+        "budget-registry",
+        DurableStateCorrupt(),
+        500,
+        "durable-state-corrupt",
     ),
     (
         "publish-schema-unavailable",
@@ -682,14 +730,14 @@ class MatrixRegistry:
 
     def publish_revision(self, revision: PublishedRevision) -> PublishRevisionResult:
         del revision
-        if self.case.source == "invalid-schema":
-            raise AssertionError("an invalid schema reached the registry")
-        assert self.case.source == "schema-registry"
+        if self.case.source in {"invalid-schema", "invalid-budget"}:
+            raise AssertionError("an invalid document reached the registry")
+        assert self.case.source in {"schema-registry", "budget-registry"}
         return cast(PublishRevisionResult, self.case.result)
 
     def resolve(self, kind: object, revision_hash: object) -> object:
         del kind, revision_hash
-        raise AssertionError("schema publication never resolves")
+        raise AssertionError("a publication never resolves")
 
 
 @dataclass
@@ -843,6 +891,17 @@ def _request(client: TestClient, case: RouteResultCase):
             content=document,
             headers={"content-type": "application/json"},
         )
+    if case.operation == "publish-budget":
+        document = (
+            b'{"maximum_assistant_turns": 8}'
+            if case.source == "invalid-budget"
+            else BUDGET_DOCUMENT
+        )
+        return client.post(
+            "/atelier/api/v1/budget-revisions",
+            content=document,
+            headers={"content-type": "application/json"},
+        )
     if case.operation == "revision-list":
         return client.get("/atelier/api/v1/workflow-revisions")
     if case.operation == "revision-get":
@@ -909,6 +968,8 @@ def _success_body(operation: str) -> object:
     }
     if operation == "publish-schema":
         return {"revision_hash": SCHEMA_REVISION.revision_hash.value}
+    if operation == "publish-budget":
+        return {"revision_hash": BUDGET_REVISION.revision_hash.value}
     if operation in {"publish", "revision-get"}:
         return revision_body
     if operation == "revision-list":
