@@ -333,9 +333,9 @@ carrying:
   another host is not this host's;
 - its **observed version pins**: the provider CLI versions actually present on
   this host, checked against the versions its referenced executor revisions
-  attest, as ADR 0008's meter revision already pins Claude 2.1.221. A host whose
-  observed version differs from the attested one has a changed attestation, not a
-  usable capability;
+  attest, as ADR 0008's meter revision already pins Claude's measured CLI
+  versions. A host whose observed version is outside the attested ones has a
+  changed attestation, not a usable capability;
 - its **attach channel state**: whether the deployment enabled the terminal
   channel on this runner (§8). This is a wrapper field, not a capability entry —
   a deployment toggle is exactly the authored grant 0006 refuses, and it never
