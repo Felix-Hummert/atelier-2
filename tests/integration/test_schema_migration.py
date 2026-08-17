@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.schema import (
     V12_SCHEMA_HANDOFF,
     V13_SCHEMA_HANDOFF,
     V14_SCHEMA_HANDOFF,
+    V15_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -42,6 +43,7 @@ from atelier2.adapters.dbos.schema import (
     published_revisions,
     reconcile_commands,
     run_configuration_revisions,
+    run_events,
     runs,
     workflow_revisions,
 )
@@ -268,15 +270,21 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[14]
         == "6cf56491322e716fce9be2310584ed2b92533961b8fda341bfcc317182432f0a"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 15
+    assert V15_SCHEMA_HANDOFF.version == 15
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V15_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[15]
         == "375e81d1c8967053951d1be0cab19cee274e35272f364feae15ec3413eb3c9b9"
     )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 16
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[16]
+        == "97605fb330cb6382d52a554d644015f631cccea3759c04c27de3ca5f1fea9c3a"
+    )
 
 
-@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12, 13, 14])
+@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12, 13, 14, 15])
 def test_predecessor_store_is_refused_without_mutation(
     tmp_path: Path, version: int
 ) -> None:
@@ -732,6 +740,68 @@ def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
             attempt_id="a" * 64,
             ordinal=1,
         )
+
+
+@pytest.mark.parametrize(
+    ("event_kind", "agent_receipt_hash", "admitted"),
+    [
+        pytest.param("AGENT_COMPLETED", "c" * 64, True, id="completion-with-binding"),
+        pytest.param("AGENT_COMPLETED", None, True, id="completion-before-v3"),
+        pytest.param("AGENT_COMPLETED", "c" * 63, False, id="not-a-digest"),
+        pytest.param("AGENT_COMPLETED", "C" * 64, False, id="not-lowercase"),
+        pytest.param("WAITING_INPUT", "c" * 64, False, id="wait-carrying-a-binding"),
+        pytest.param(
+            "SUBWORKFLOW_COMPLETED",
+            "c" * 64,
+            False,
+            id="subworkflow-carrying-a-binding",
+        ),
+    ],
+)
+def test_the_store_admits_a_receipt_binding_only_on_an_agent_completion(
+    ledger_engine: Engine,
+    event_kind: str,
+    agent_receipt_hash: str | None,
+    admitted: bool,
+) -> None:
+    """The store's half of the rule `contracts/executions.py` states.
+
+    Both halves land together on purpose: a contract that admits a field the
+    store refuses is a rule only the integration run discovers.
+    """
+
+    def write() -> None:
+        with ledger_engine.begin() as connection:
+            revision = str(
+                connection.scalar(
+                    sa.select(runs.c.revision_hash).where(runs.c.run_id == "run-1")
+                )
+            )
+            connection.execute(
+                run_events.insert().values(
+                    run_id="run-1",
+                    revision_hash=revision,
+                    event_sequence=1,
+                    node_id="agent",
+                    node_execution_id="1" * 64,
+                    event_kind=event_kind,
+                    payload=b"event",
+                    payload_hash=hashlib.sha256(b"event").hexdigest(),
+                    event_hash="a" * 64,
+                    agent_receipt_hash=agent_receipt_hash,
+                )
+            )
+
+    if admitted:
+        write()
+        with ledger_engine.connect() as connection:
+            assert (
+                connection.scalar(sa.select(run_events.c.agent_receipt_hash))
+                == agent_receipt_hash
+            )
+        return
+    with pytest.raises(IntegrityError, match="agent_receipt_hash"):
+        write()
 
 
 @pytest.fixture

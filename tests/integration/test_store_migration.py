@@ -1,8 +1,15 @@
 """The offline hop a live V13 store needed and did not have.
 
-The V13 fixture is a real predecessor store: the current create path, the V14
-addition removed, then a format-3 run. That is the #240 Z2 method — predecessor
-schema, not a version-row stub — expressed through today's owner.
+The V13 fixture is a real predecessor store: the current create path, every later
+addition removed, then a format-3 run that already wrote one event. That is the
+#240 Z2 method — predecessor schema, not a version-row stub — expressed through
+today's owner.
+
+V14 and V15 each added a table, so dropping those tables was the whole reversal.
+V16 changes `run_events` itself, so the fixture also restores that table's
+published predecessor shape below. The literal is not a second owner of the
+current table: it is the frozen artifact V13 through V15 really carried, and the
+pinned V13 fingerprint refuses it the moment a character drifts.
 """
 
 from __future__ import annotations
@@ -12,9 +19,13 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.engine import Connection
+from sqlalchemy.schema import CreateIndex
 
+from atelier2.adapters.dbos.run_store import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
+    _PRODUCT_TRIGGERS,
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V13_SCHEMA_HANDOFF,
@@ -29,16 +40,54 @@ from atelier2.adapters.dbos.schema import (
     node_receipts_v3,
     published_revisions,
     run_configuration_revisions,
+    run_events,
     run_inputs_v3,
     runs,
     tool_redemptions,
     workflow_revisions,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineage
+from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.host import main
 
 ARCHIVED_RUN_ID = "live/erster-lauf-nach-der-nacht"
+ARCHIVED_NODE_ID = "cook"
+ARCHIVED_OUTPUT = b"lasagne, aufgetragen"
+
+_PREDECESSOR_RUN_EVENTS_DDL = """
+CREATE TABLE run_events (
+    run_id TEXT NOT NULL,
+    revision_hash TEXT NOT NULL,
+    event_sequence INTEGER NOT NULL,
+    node_id TEXT NOT NULL,
+    node_execution_id TEXT NOT NULL,
+    event_kind TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    payload_hash TEXT NOT NULL,
+    receipt_logical_key TEXT,
+    receipt_result_hash TEXT,
+    event_hash TEXT NOT NULL,
+    agent_attempt_id TEXT,
+    attempt_ordinal INTEGER,
+    cancellation_command_id TEXT,
+    replacement TEXT,
+    cancellation_disposition TEXT,
+    replacement_attempt_id TEXT,
+    PRIMARY KEY (run_id, event_sequence),
+    FOREIGN KEY(run_id, revision_hash) REFERENCES runs (run_id, revision_hash),
+    FOREIGN KEY(receipt_logical_key, run_id, revision_hash, receipt_result_hash) REFERENCES effect_receipts (logical_key, run_id, workflow_revision_hash, result_hash),
+    CHECK (event_sequence > 0),
+    CHECK (length(node_id) > 0),
+    CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'),
+    CHECK (event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED', 'AGENT_CANCEL_REQUESTED', 'AGENT_CANCELLED', 'AGENT_INTERRUPTED', 'ACTION_RECONCILIATION_REQUIRED', 'ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED', 'WAITING_INPUT', 'WAIT_ANSWERED', 'SUBWORKFLOW_COMPLETED')),
+    CHECK (length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(event_hash) = 64 AND event_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK ((event_kind IN ('ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED') AND receipt_logical_key IS NOT NULL AND length(receipt_logical_key) > 0 AND receipt_result_hash IS NOT NULL AND length(receipt_result_hash) = 64 AND receipt_result_hash NOT GLOB '*[^0-9a-f]*' AND receipt_result_hash = payload_hash) OR (event_kind NOT IN ('ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED') AND receipt_logical_key IS NULL AND receipt_result_hash IS NULL)),
+    CHECK ((agent_attempt_id IS NULL AND attempt_ordinal IS NULL AND cancellation_command_id IS NULL AND replacement IS NULL AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) OR (length(agent_attempt_id) = 64 AND agent_attempt_id NOT GLOB '*[^0-9a-f]*' AND attempt_ordinal IN (1, 2) AND ((event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED') AND cancellation_command_id IS NULL AND replacement IS NULL AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) OR (event_kind = 'AGENT_CANCEL_REQUESTED' AND length(cancellation_command_id) BETWEEN 1 AND 1024 AND replacement IN ('NONE', 'ONE') AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) OR (event_kind IN ('AGENT_CANCELLED', 'AGENT_INTERRUPTED') AND length(cancellation_command_id) BETWEEN 1 AND 1024 AND replacement IN ('NONE', 'ONE') AND cancellation_disposition IS NOT NULL))))
+)
+"""
 
 
 def _logical_dump(database_path: Path) -> tuple[str, ...]:
@@ -46,11 +95,40 @@ def _logical_dump(database_path: Path) -> tuple[str, ...]:
         return tuple(connection.iterdump())
 
 
+def _restore_predecessor_run_events(connection: Connection) -> None:
+    triggers = ("run_events_no_update", "run_events_no_delete")
+    indexes = sorted(run_events.indexes, key=lambda index: index.name or "")
+    for trigger in triggers:
+        connection.execute(sa.text(f"DROP TRIGGER {trigger}"))
+    for index in indexes:
+        connection.execute(sa.text(f"DROP INDEX {index.name}"))
+    connection.execute(sa.text("DROP TABLE run_events"))
+    connection.execute(sa.text(_PREDECESSOR_RUN_EVENTS_DDL))
+    for index in indexes:
+        connection.execute(CreateIndex(index))
+    for trigger in triggers:
+        connection.execute(sa.text(_PRODUCT_TRIGGERS[trigger]))
+
+
+def _archived_completion(revision_hash: WorkflowRevisionHash) -> RunEvent:
+    """The completion an old run really wrote: no attempt binding, no receipt."""
+    run_id = RunId(ARCHIVED_RUN_ID)
+    return RunEvent(
+        run_id,
+        revision_hash,
+        1,
+        ARCHIVED_NODE_ID,
+        NodeExecutionId.for_node(run_id, revision_hash, ARCHIVED_NODE_ID),
+        RunEventKind.AGENT_COMPLETED,
+        ARCHIVED_OUTPUT,
+    )
+
+
 def _create_populated_v13_store(database_path: Path) -> None:
     """An exact V13 product store, not a version-row witness.
 
-    Every published step since V13 is strictly additive, so a fresh store of the
-    current schema with each later table and its triggers removed is the
+    A fresh store of the current schema with each later table and its triggers
+    removed, and `run_events` restored to the shape it had before V16, is the
     published V13 shape. That is the same method as the #240 Z2 testimony
     (predecessor schema from before the V14 head), expressed through today's
     owner so the fixture cannot drift from the create path the hop will reopen.
@@ -70,6 +148,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
             connection.execute(sa.text(f"DROP TABLE {table}"))
+        _restore_predecessor_run_events(connection)
         connection.execute(
             atelier_schema_versions.update()
             .where(atelier_schema_versions.c.version == SCHEMA_VERSION)
@@ -130,11 +209,34 @@ def _create_populated_v13_store(database_path: Path) -> None:
                 agent_binding_set_hash=None,
                 current_node_id="cook",
                 state="STARTED",
-                state_version=0,
-                last_event_sequence=0,
+                state_version=1,
+                last_event_sequence=1,
                 terminal_hash=None,
                 run_configuration_revision_hash=configuration,
             )
+        )
+        archived = _archived_completion(
+            WorkflowRevisionHash(published.revision_hash.value)
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO run_events (run_id, revision_hash, event_sequence, "
+                "node_id, node_execution_id, event_kind, payload, payload_hash, "
+                "event_hash) VALUES (:run_id, :revision_hash, :event_sequence, "
+                ":node_id, :node_execution_id, :event_kind, :payload, "
+                ":payload_hash, :event_hash)"
+            ),
+            {
+                "run_id": archived.run_id.value,
+                "revision_hash": archived.revision_hash.value,
+                "event_sequence": archived.event_sequence,
+                "node_id": archived.node_id,
+                "node_execution_id": archived.node_execution_id.value,
+                "event_kind": archived.event_kind.value,
+                "payload": archived.payload,
+                "payload_hash": archived.payload_hash.value,
+                "event_hash": archived.event_hash.value,
+            },
         )
         connection.execute(
             node_receipts_v3.insert().values(
@@ -193,6 +295,20 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
             connection.scalar(sa.select(sa.func.count()).select_from(tool_redemptions))
             == 0
         )
+        archived = (
+            connection.execute(
+                sa.select(run_events).where(run_events.c.run_id == ARCHIVED_RUN_ID)
+            )
+            .mappings()
+            .one()
+        )
+        expected = _archived_completion(
+            WorkflowRevisionHash(str(archived["revision_hash"]))
+        )
+        assert bytes(archived["payload"]) == ARCHIVED_OUTPUT
+        assert str(archived["event_hash"]) == expected.event_hash.value
+        assert archived["agent_receipt_hash"] is None
+        assert event_from_record(archived) == expected
     engine.dispose()
 
 
@@ -276,6 +392,48 @@ def test_a_locked_store_is_refused_without_mutation(
         holder.close()
     assert "in use" in capsys.readouterr().err
     assert _logical_dump(database_path) == before
+
+
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        pytest.param(
+            "CREATE TABLE run_events_before_the_receipt_column(wrong TEXT)",
+            id="table",
+        ),
+        pytest.param(
+            "CREATE VIEW run_events_before_the_receipt_column AS SELECT 1 AS wrong",
+            id="view",
+        ),
+    ],
+)
+def test_a_refused_receipt_column_hop_rolls_back_every_earlier_step(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
+) -> None:
+    """The last step refuses, so the two that already ran are undone with it.
+
+    The receipt-column hop rebuilds `run_events` under a parking name, so any
+    object already holding that name is a collision the hop refuses by name.
+    It sits behind two completed steps in the same transaction, which is what
+    makes this the whole hop's atomicity and not just this step's.
+    """
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v13_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(collision_sql)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "run_events_before_the_receipt_column" in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (13,)
 
 
 def test_a_failed_step_leaves_the_predecessor_intact(

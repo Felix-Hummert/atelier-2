@@ -108,6 +108,7 @@ class RunEvent:
     replacement: str | None = None
     cancellation_disposition: str | None = None
     replacement_attempt_id: str | None = None
+    agent_receipt_hash: Sha256Hash | None = None
     event_hash: Sha256Hash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -137,6 +138,11 @@ class RunEvent:
             self.receipt_logical_key is not None or self.receipt_result_hash is not None
         ):
             raise ValueError("nonreceipt event may not carry receipt fields")
+        if (
+            self.agent_receipt_hash is not None
+            and self.event_kind is not RunEventKind.AGENT_COMPLETED
+        ):
+            raise ValueError("nonagent-completion event may not carry a receipt hash")
         attempt_bound = self.agent_attempt_id is not None
         if attempt_bound != (self.attempt_ordinal is not None):
             raise ValueError("attempt event requires both exact attempt fields")
@@ -172,9 +178,18 @@ class RunEvent:
             )
         ):
             raise ValueError("noncancellation event may not carry cancellation fields")
+        agent_receipt_bound = self.agent_receipt_hash is not None
         use_v2_hash = cancellation_kind or self.attempt_ordinal == 2
-        hash_domain = "node-event-hash/v2" if use_v2_hash else "node-event-hash/v1"
-        extra_fields = (
+        if agent_receipt_bound:
+            hash_domain = "node-event-hash/v3"
+        elif use_v2_hash:
+            hash_domain = "node-event-hash/v2"
+        else:
+            hash_domain = "node-event-hash/v1"
+        # The family stays nested: v3 carries v2's attempt dimensions unchanged,
+        # so a completion that binds its receipt does not silently drop the
+        # attempt binding an ordinal-2 completion already has.
+        attempt_fields = (
             (
                 (self.agent_attempt_id or "").encode("ascii"),
                 str(self.attempt_ordinal or "").encode(
@@ -185,9 +200,15 @@ class RunEvent:
                 (self.cancellation_disposition or "").encode("ascii"),
                 (self.replacement_attempt_id or "").encode("ascii"),
             )
-            if use_v2_hash
+            if use_v2_hash or agent_receipt_bound
             else ()
         )
+        receipt_fields = (
+            ()
+            if self.agent_receipt_hash is None
+            else (self.agent_receipt_hash.value.encode("ascii"),)
+        )
+        extra_fields = attempt_fields + receipt_fields
         object.__setattr__(
             self,
             "event_hash",

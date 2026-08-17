@@ -460,6 +460,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "run_agent_bindings.binding_set_hash",
         "run_agent_bindings.revision_hash",
         "run_events.agent_attempt_id",
+        "run_events.agent_receipt_hash",
         "run_events.event_hash",
         "run_events.node_execution_id",
         "run_events.payload_hash",
