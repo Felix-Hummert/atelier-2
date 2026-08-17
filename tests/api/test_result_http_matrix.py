@@ -907,3 +907,117 @@ def test_a_typed_projection_refusal_answers_exactly_what_the_sentence_answered()
     assert response.json()["detail"] == (
         "Durable projection exceeds configured API limits."
     )
+
+
+# T16 — the four request-side branches the #11 audit named and no test held.
+# They never reach a port: what refuses them is the wire, so they are driven
+# here beside the result matrix rather than through a scripted outcome, and the
+# ports below assert they were not consulted at all.
+
+
+def _unreached_ports() -> ApiPorts:
+    """A composition whose every port fails the test if a route reaches it."""
+    return _ports(
+        RouteResultCase("t16-unreached", "wait", "answerer", UnreachedAnswer(), 500)
+    )
+
+
+@dataclass(frozen=True)
+class UnreachedAnswer:
+    """Handed to the scripted answerer so a reach is a failure, not a 500."""
+
+
+@pytest.mark.proves("a-port-refuses-by-type-and-the-api-words-the-answer")
+@pytest.mark.parametrize(
+    ("identifier", "path", "body", "headers", "status", "problem_code"),
+    [
+        pytest.param(
+            "non-canonical-integer",
+            "/atelier/api/v1/runs/run1.cnVu/reconciliations",
+            {
+                "command_id": "command",
+                "expected_intent_state_version": "1",
+                "actor": "operator",
+                "evidence": "inspected",
+                "determination": {"type": "operator_authoritative_absence"},
+            },
+            None,
+            422,
+            "invalid-request",
+            id="a version written as text is not a version",
+        ),
+        pytest.param(
+            "invalid-base64",
+            "/atelier/api/v1/runs/run1.cnVu/answers",
+            {
+                "revision_hash": REVISION.revision_hash.value,
+                "node_id": "wait",
+                "answer_base64": "not base64!!",
+            },
+            None,
+            422,
+            # Not the generic refusal: the API names the field that is wrong,
+            # which is the more useful answer and the one it actually gives.
+            "invalid-base64",
+            id="an answer that is not base64 is refused before the store",
+        ),
+        pytest.param(
+            "unsupported-media-type",
+            "/atelier/api/v1/runs/run1.cnVu/answers",
+            {
+                "revision_hash": REVISION.revision_hash.value,
+                "node_id": "wait",
+                "answer_base64": "Mw==",
+            },
+            {"content-type": "text/plain"},
+            415,
+            "unsupported-media-type",
+            id="a body the route does not read is refused by its media type",
+        ),
+        pytest.param(
+            "two-rules-one-answer",
+            "/atelier/api/v1/runs/run1.cnVu/answers",
+            {
+                "revision_hash": "not-a-hash",
+                "node_id": "wait",
+                "answer_base64": "not base64!!",
+            },
+            None,
+            422,
+            "invalid-request",
+            id="a request that breaks two rules still answers exactly one code",
+        ),
+    ],
+)
+def test_a_malformed_request_is_refused_by_name_without_reaching_a_port(
+    identifier: str,
+    path: str,
+    body: dict[str, object],
+    headers: dict[str, str] | None,
+    status: int,
+    problem_code: str,
+) -> None:
+    """What the wire refuses never becomes a question for the store.
+
+    Each of these was named by the #11 audit as a branch no test held. They are
+    one class: the request is wrong in a way the API can see for itself, so the
+    answer must be exact and the durable side must stay untouched -- a malformed
+    request that reached a port would be a write attempted on a value nobody
+    validated.
+    """
+    ports = _unreached_ports()
+    client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=ports,
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+    response = client.post(path, json=body, headers=headers)
+
+    assert response.status_code == status
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json()["type"] == "urn:atelier2:problem:v1:" + problem_code
