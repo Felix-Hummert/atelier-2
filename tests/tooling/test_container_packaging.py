@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 from atelier2.adapters.claude_subscription import (
@@ -33,15 +34,36 @@ CONFORMANT_CLAUDE_VERSION = ".".join(
     str(part) for part in max(CONFORMANT_CLAUDE_VERSIONS)
 )
 
+_USER_INSTRUCTION = re.compile(r"^USER\s+(\S+)\s*$", re.MULTILINE | re.IGNORECASE)
+_PRIVILEGED_USERS = frozenset({"root", "0"})
+
+
+def last_user_name(recipe: str) -> str:
+    declared = [
+        match.group(1).split(":", 1)[0] for match in _USER_INSTRUCTION.finditer(recipe)
+    ]
+    assert declared, "image recipe declares no USER"
+    return declared[-1]
+
+
+def assert_recipe_runs_unprivileged(recipe: str) -> None:
+    assert last_user_name(recipe) not in _PRIVILEGED_USERS
+
 
 def test_the_image_recipe_exists_and_runs_unprivileged() -> None:
     text = DOCKERFILE.read_text(encoding="utf-8")
 
-    assert re.search(r"^USER (?!root\b)\S+", text, re.MULTILINE)
-    assert not re.search(r"^USER root\s*$", text, re.MULTILINE)
+    assert_recipe_runs_unprivileged(text)
     assert "uv sync --locked --no-dev" in text
     assert "frontend/dist" in text
     assert "npm run build" in text
+
+
+def test_a_recipe_that_ends_as_numeric_root_is_refused() -> None:
+    recipe = DOCKERFILE.read_text(encoding="utf-8") + "\nUSER 0\n"
+
+    with pytest.raises(AssertionError):
+        assert_recipe_runs_unprivileged(recipe)
 
 
 def test_the_image_pins_the_one_conformant_claude_and_no_other_provider() -> None:
