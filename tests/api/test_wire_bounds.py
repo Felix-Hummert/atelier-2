@@ -85,6 +85,9 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "RunResourceV2.agent_attempts": REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     "RunResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "RunResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
+    # A document declares no more roles than a run can bind: one role is one
+    # binding, so the two carry the same limit for the same reason.
+    "WorkflowGraphResourceV3.agent_roles": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunRequestResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
 }

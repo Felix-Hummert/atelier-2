@@ -46,6 +46,7 @@ from atelier2.contracts.workflows import (
     WorkflowNodeV2,
 )
 from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
     AnyWorkflowDocument,
     WorkflowGraphV3,
     what_a_v3_document_still_waits_for,
@@ -118,6 +119,11 @@ def graph_resource(
             executable=executable,
             not_executable_reason=not_executable_reason,
             node_count=len(graph.nodes),
+            agent_roles=tuple(
+                sorted(
+                    {node.role for node in graph.nodes if isinstance(node, AgentNodeV3)}
+                )
+            ),
             name=graph.name,
             description=graph.description,
         )
