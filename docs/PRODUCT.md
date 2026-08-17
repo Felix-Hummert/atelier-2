@@ -412,15 +412,12 @@ to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
 access bindings, and the immutable declared context packages, node-execution request
 preimages and run configuration snapshots those receipts name, and the immutable
-orders a run was started with. A typed in-process writer can commit that exact
-supervised V3 start as one atomic set. The catalog adapter founds a lineage
+orders a run was started with. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
 founding, unpublished member, wrong kind, or retired lineage is refused by
-name. Measurements and policy activations are not in this profile. The start
-writer does not enqueue a V3 engine, validate artifact bytes against an
-output schema, write run events, or declare a terminal hash. V11 remains a
+name. Measurements and policy activations are not in this profile. V11 remains a
 published predecessor object; exact V7 through V11 files are refused without
 mutation, with no runtime migration or downgrade. Until a named maturity
 there is no compatibility promise.

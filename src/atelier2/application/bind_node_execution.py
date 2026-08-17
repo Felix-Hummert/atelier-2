@@ -10,8 +10,7 @@ author is a test is a record whose meaning is decided per caller.
 handed is whole and self-consistent. Deciding *what* a node was given is a
 composition over the document and its frozen resolution matrix, which is this
 layer's shape -- the same place `bind_run_configuration` already freezes that
-matrix. The host that will call both is #111's, exactly as `start_named_run`
-already says of itself.
+matrix. The host that will call both is #111's.
 
 **Why it never resolves a reference itself.** Every declared reference of the
 document was already resolved once, into the run configuration revision the run

@@ -45,7 +45,8 @@ Status:     DRAFT
 Quelle:     DESK — [ADR 0007](../decisions/0007-catalog-identity.md) Decision 1 und Abschnitt 9
 Begründung: Zwei Dinge zu zwei Zeitpunkten, und das Trennen ist der ganze Satz. Gewählt wird, was den Namen über ein Neu-Publizieren hinweg behält — die Lineage. Aufgelöst wird der Name nach Abschnitt 9 **genau einmal, zur Autorenzeit, bevor die Run-Konfigurations-Revision publiziert wird**; danach existieren nur noch Ids und Hashes. Gebunden ist deshalb der exakte Revisions-Hash, nie der Name — sonst bindet ein bewegter Head einen laufenden Auftrag still um.
 Journeys:
-Beweis:     a-name-reaches-exactly-the-bytes-it-resolved-to
+Beweis:     a-name-is-answerable-over-the-api
+            one-command-runs-the-workflow-a-name-holds
 Offen:
 
 ### REQ-KATALOG-03: Ein Anzeigename aus genau 64 hexadezimalen Kleinbuchstaben wird beim Namen verweigert.
@@ -96,8 +97,11 @@ REQ-KATALOG-04 is bound to three sentences declared in
 `a-published-revision-is-listed-with-the-name-its-author-wrote`,
 `a-format-that-declares-no-name-is-listed-as-unnamed` and
 `the-description-is-read-from-the-published-bytes-and-from-nowhere-else`.
-REQ-KATALOG-02 is bound to `a-name-reaches-exactly-the-bytes-it-resolved-to`,
-declared in `acceptance/63-a-named-workflow-starts-in-process.toml`.
+REQ-KATALOG-02 is bound to `a-name-is-answerable-over-the-api` and
+`one-command-runs-the-workflow-a-name-holds`, declared in
+`acceptance/111-a-name-is-answerable-over-the-api.toml`. The in-process
+supervised-start sentence that used to stand here described a door with no
+production caller and is retired with it.
 REQ-KATALOG-05 is bound to the three sentences declared in
 `acceptance/213-a-workflow-is-named-and-admitted-over-the-api.toml` and to
 `a-workflow-published-over-the-api-is-named-over-the-api` in

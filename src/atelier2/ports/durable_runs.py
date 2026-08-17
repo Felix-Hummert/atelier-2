@@ -6,17 +6,8 @@ from typing import Protocol
 
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
-from atelier2.contracts.node_records_v3 import (
-    DeclaredContextPackage,
-    NodeArtifact,
-    NodeExecutionRequest,
-    NodeReceipt,
-    NodeReceiptHash,
-    RunInput,
-)
-from atelier2.contracts.revisions_v3 import PublishedRevision, PublishedRevisionHash
+from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.run_bindings import AnyRun
-from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 
@@ -154,86 +145,6 @@ class DurablePublishedRunStarter(Protocol):
     def start_published(
         self, request: AnyStartPublishedRunRequest
     ) -> DurablePublishedRunResult: ...
-
-
-@dataclass(frozen=True)
-class StartV3RunWithReceiptRequest:
-    """One supervised V3 start and its already-decided terminal node truth.
-
-    The `context_package` and the `run_configuration` are the records themselves
-    and not only their hashes, because ADR 0006 binds that material to be written
-    once, immutably, before START. A request that named a record it did not carry
-    would leave a receipt pointing at bytes nobody kept, so every preimage a
-    receipt's hashes reach travels with the truth that names it.
-    """
-
-    revision: PublishedRevision
-    run_configuration: RunConfigurationRevision
-    node_request: NodeExecutionRequest
-    context_package: DeclaredContextPackage
-    artifacts: tuple[NodeArtifact, ...]
-    receipt: NodeReceipt
-
-
-@dataclass(frozen=True)
-class DurableV3RunCreated:
-    run_id: RunId
-    revision_hash: PublishedRevisionHash
-    receipt_hash: NodeReceiptHash
-
-
-@dataclass(frozen=True)
-class DurableV3RunExisting:
-    run_id: RunId
-    revision_hash: PublishedRevisionHash
-    receipt_hash: NodeReceiptHash
-
-
-@dataclass(frozen=True)
-class DurableV3StartBindingInvalid:
-    """The typed request objects do not describe one exact node execution."""
-
-
-class V3StartRecord(StrEnum):
-    PUBLISHED_REVISION = "published_revision"
-    WORKFLOW_BACKING = "workflow_backing"
-    RUN = "run"
-    ARTIFACT = "artifact"
-    RECEIPT = "receipt"
-    CONTEXT_PACKAGE = "context_package"
-    RUN_CONFIGURATION = "run_configuration"
-    NODE_EXECUTION_REQUEST = "node_execution_request"
-
-
-@dataclass(frozen=True)
-class DurableV3StartConflict:
-    """Durable identity exists with different bytes or bindings."""
-
-    record: V3StartRecord
-
-
-type DurableV3StartWithReceiptResult = (
-    DurableV3RunCreated
-    | DurableV3RunExisting
-    | DurableV3StartBindingInvalid
-    | DurableV3StartConflict
-    | DurableWriteUnavailable
-    | DurableStateCorrupt
-)
-
-
-class DurableV3RunStarter(Protocol):
-    """Persist one supervised V3 start and its terminal truth, or nothing.
-
-    The port exists so a caller can reach the atomic start without reaching for
-    the adapter that implements it: what makes the write trustworthy is the one
-    transaction behind this method, and a caller proves that by depending on the
-    method rather than on a store.
-    """
-
-    def start_v3_with_receipt(
-        self, request: StartV3RunWithReceiptRequest
-    ) -> DurableV3StartWithReceiptResult: ...
 
 
 @dataclass(frozen=True)
