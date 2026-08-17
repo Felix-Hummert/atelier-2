@@ -214,7 +214,7 @@ def main() -> None:
     # so the browser can catch a V2 attempt mid-flight; a V3 run is watched after
     # it has finished, so holding its attempt open would only stall the proof.
     immediate = RecordingAgentExecutorFactoryV2(
-        "e2e-v3", "immediate/v1", "e2e-immediate-process", b"V3 provider bytes"
+        "e2e-v3", "immediate/v1", "e2e-immediate-process", b'"V3 provider bytes"'
     )
 
     def runtime(
