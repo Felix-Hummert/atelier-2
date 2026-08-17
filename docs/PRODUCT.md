@@ -130,7 +130,7 @@ instead of recording invented output. Undeclared, the host composes no V2
 provider factory and behaves exactly as before. When the
 operator also declares a Grok executable, workspace, and credential directory,
 the host composes one Grok subscription executor beside Claude. It runs the
-bound model headless through `grok -p --output-format json`, hands the job
+bound model headless through `grok --output-format json`, hands the job
 through `--prompt-file` rather than the argument vector, and grants the child
 only the serving host's search path plus one disposable invocation-private
 `HOME`/`GROK_HOME`. That home receives a private copy of the source
