@@ -1,0 +1,29 @@
+# Packaged serve. Code is in the image; durable store and scratch live on the
+# host state directory. Credentials stay on the host and are mounted as one
+# read-only file. This file does not replace atelier2-live.service.
+#
+# Host networking keeps the process bind on 127.0.0.1 (required once Claude is
+# composed) while still reaching that loopback from the host browser. A bridge
+# `ports:` mapping is deliberately absent: it would need 0.0.0.0 inside.
+#
+# Network reachability beyond this machine is ADR 0009, not this file.
+
+name: atelier2
+
+services:
+  atelier2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ATELIER2_UID: "${ATELIER2_UID:-1000}"
+        ATELIER2_GID: "${ATELIER2_GID:-1000}"
+        ATELIER2_SOURCE_COMMIT: "${ATELIER2_SOURCE_COMMIT:-unknown}"
+        ATELIER2_SOURCE_TREE: "${ATELIER2_SOURCE_TREE:-unknown}"
+    network_mode: host
+    environment:
+      HOME: /home/atelier2
+      PATH: /app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+    volumes:
+      - ${ATELIER2_STATE}:/var/lib/atelier2
+      - ${ATELIER2_CLAUDE_CREDENTIALS}:/run/atelier2/claude/.credentials.json:ro
