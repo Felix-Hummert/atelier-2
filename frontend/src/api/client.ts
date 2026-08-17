@@ -118,6 +118,7 @@ const workflowGraphV3Schema = z
     executable: z.boolean(),
     not_executable_reason: z.string().nullable(),
     node_count: z.number().int().positive(),
+    agent_roles: z.array(z.string().min(1)).max(100),
     name: z.string().min(1),
     description: z.string().nullable()
   })
@@ -775,7 +776,7 @@ export interface CockpitApi {
   publishAgentConfiguration(
     input: AgentConfigurationInput
   ): Promise<HttpResult<AgentConfigurationRevision>>;
-  start(mutation: StartMutation): Promise<HttpResult<Run>>;
+  start(mutation: StartMutation): Promise<HttpResult<AnyRun>>;
   answer(mutation: WaitMutation): Promise<HttpResult<Run>>;
   reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
   getRun(publicReference: string): Promise<AnyRun>;
@@ -880,7 +881,7 @@ export function createCockpitApi(
           body: exactBody(mutation.body_base64)
         },
         [200, 201],
-        runSchema
+        anyRunSchema
       ),
     answer: async (mutation) => {
       const result = await requestJsonResult(

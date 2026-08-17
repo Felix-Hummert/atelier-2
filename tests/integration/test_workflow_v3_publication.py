@@ -161,6 +161,9 @@ def test_a_v3_revision_this_build_runs_reads_back_as_executable(
     assert read.status_code == 200
     assert read.json()["graph"]["executable"] is True
     assert read.json()["graph"]["not_executable_reason"] is None
+    # The roles are what a caller must bind to start this revision, and until now
+    # they could be learnt only by reading the document itself.
+    assert read.json()["graph"]["agent_roles"] == ["builder"]
 
 
 @pytest.mark.proves("a-revision-says-which-form-it-waits-for-not-which-version-it-is")
@@ -188,6 +191,7 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
             "graph outputs nothing carries out of a run: verdict"
         ),
         "node_count": V3_NODE_COUNT,
+        "agent_roles": ["builder", "reviewer"],
         "name": V3_DOCUMENT_NAME,
         "description": None,
     }
