@@ -519,8 +519,18 @@ function validateRunShape(
 }
 
 export const runPageSchema = z
-  .object({ items: z.array(runSchema), next_after: publicRunReference.nullable() })
+  .object({ items: z.array(anyRunSchema), next_after: publicRunReference.nullable() })
   .strict();
+/**
+ * The listing decodes every run the server can answer with, including V3.
+ *
+ * It read only V1 and V2 while the detail page already read V3, so one V3 run in
+ * the store took down every level that lists runs -- the studio and the project
+ * both answered "Request failed — wire contract" for a run they only had to name
+ * and link. A listing is the wrong place to be strict about a format it merely
+ * shows: what a row renders is the identity and the state, which every format
+ * carries.
+ */
 
 const receiptSchema = z
   .object({
