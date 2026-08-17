@@ -654,3 +654,83 @@ describe("the run listing the studio opens on", () => {
     expect(page.items.map((run) => run.state)).toEqual(["STARTED", "STARTED"]);
   });
 });
+
+describe("the node a click asks the server about", () => {
+  const nodeDetail = {
+    run_id: "run-1",
+    public_run_reference: publicReference,
+    node_id: "review",
+    state: "queued",
+    job_base64: null,
+    job_hash: null,
+    answer: null,
+    provenance: null,
+    refusal: null
+  };
+
+  it("proves(a-click-into-a-node-shows-what-it-was-asked-and-wrote): asks the node route and decodes the answer", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(nodeDetail), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const detail = await createCockpitApi(fetcher).getNodeDetail(publicReference, "review");
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      `/atelier/api/v1/runs/${publicReference}/nodes/review`
+    );
+    expect(detail.node_id).toBe("review");
+    expect(detail.refusal).toBeNull();
+  });
+
+  it("proves(a-click-into-a-node-shows-what-it-was-asked-and-wrote): decodes a node that ran, with its job, its answer and its provenance", async () => {
+    const ran = {
+      ...nodeDetail,
+      node_id: "implement",
+      state: "succeeded",
+      job_base64: btoa("Write three German sentences."),
+      job_hash: digest,
+      answer: { value_base64: btoa("Ein gutes Review."), value_hash: "d".repeat(64) },
+      provenance: {
+        role: "builder",
+        provider_id: "anthropic",
+        model: "sonnet",
+        executor_revision: "headless-print-json/v1",
+        executor_operational_identity: "headless-print-json/v1",
+        auth_mode: "subscription",
+        profile_id: "operator-subscription",
+        agent_configuration_revision_hash: "e".repeat(64),
+        request_hash: "f".repeat(64),
+        receipt_hash: "a".repeat(64)
+      }
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(ran), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const detail = await createCockpitApi(fetcher).getNodeDetail(publicReference, "implement");
+
+    expect(detail.provenance?.model).toBe("sonnet");
+    expect(detail.answer?.value_hash).toBe("d".repeat(64));
+    // The two hashes are different values, and the decoder keeps them apart.
+    expect(detail.job_hash).not.toBe(detail.provenance?.request_hash);
+  });
+
+  it("refuses an answer that names another node instead of showing it", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ ...nodeDetail, node_id: "somewhere-else" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    await expect(
+      createCockpitApi(fetcher).getNodeDetail(publicReference, "review")
+    ).rejects.toThrow(/named another node/);
+  });
+});

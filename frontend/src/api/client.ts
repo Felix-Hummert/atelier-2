@@ -460,6 +460,52 @@ const runV3Schema = z
   })
   .strict();
 
+/**
+ * One node of a run, as `GET /runs/{ref}/nodes/{node_id}` answers it.
+ *
+ * Four answers, each allowed to be absent, because the absence is the answer: a
+ * node that has not run yet was asked nothing this reader can prove, wrote
+ * nothing and has no receipt, and a refusal exists only where something really
+ * refuses. The panel renders exactly that and invents no placeholder.
+ *
+ * Usage and duration are not here because no receipt holds them. The panel says
+ * so rather than leaving a reader to assume the fields are coming.
+ */
+const nodeProvenanceSchema = z
+  .object({
+    role: z.string().min(1),
+    provider_id: z.string().min(1),
+    model: z.string().min(1),
+    executor_revision: z.string().min(1),
+    executor_operational_identity: z.string().min(1),
+    auth_mode: z.string().min(1),
+    profile_id: z.string().min(1),
+    agent_configuration_revision_hash: sha256,
+    request_hash: sha256,
+    receipt_hash: sha256
+  })
+  .strict();
+
+const nodeAnswerSchema = z
+  .object({ value_base64: z.string(), value_hash: sha256 })
+  .strict();
+
+export const nodeDetailSchema = z
+  .object({
+    run_id: z.string().min(1),
+    public_run_reference: publicRunReference,
+    node_id: z.string().min(1),
+    state: z.enum(NODE_STATES),
+    job_base64: z.string().nullable(),
+    job_hash: sha256.nullable(),
+    answer: nodeAnswerSchema.nullable(),
+    provenance: nodeProvenanceSchema.nullable(),
+    refusal: z.string().nullable()
+  })
+  .strict();
+
+export type NodeDetail = z.infer<typeof nodeDetailSchema>;
+
 export const runSchema = z.union([runV2Schema, runV1Schema]);
 
 /**
@@ -874,6 +920,7 @@ export interface CockpitApi {
   answer(mutation: WaitMutation): Promise<HttpResult<Run>>;
   reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
   getRun(publicReference: string): Promise<AnyRun>;
+  getNodeDetail(publicReference: string, nodeId: string): Promise<NodeDetail>;
   getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
   openRunEvents(publicReference: string, handlers: RunEventHandlers): RunEventSubscription;
 }
@@ -1028,6 +1075,20 @@ export function createCockpitApi(
         [200],
         anyRunSchema
       ),
+    getNodeDetail: async (publicReference, nodeId) => {
+      const detail = await requestJson(
+        fetcher,
+        `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}` +
+          `/nodes/${encodeURIComponent(nodeId)}`,
+        {},
+        [200],
+        nodeDetailSchema
+      );
+      if (detail.node_id !== nodeId) {
+        throw new CockpitRequestError("The node response named another node.");
+      }
+      return detail;
+    },
     getWorkflowRevision: async (revisionHash) => {
       const revision = await requestJson(
         fetcher,
