@@ -41,7 +41,7 @@ text = "A V3 document of the one admitted shape -- a single agent node that is i
 
 [[sentence]]
 id = "every-v3-shape-no-runtime-binds-is-refused-by-name"
-text = "Every V3 document outside that shape is refused by name before anything starts, and the refusal says what it is waiting for -- a node kind nothing interprets, a second node nothing advances to, or an authored form nothing binds -- rather than saying that version 3 is unsupported."
+text = "Every V3 document outside that shape is refused by name before anything starts, and the refusal says what it is waiting for -- a node kind nothing interprets, a branch nothing chooses between, or an authored form nothing binds -- rather than saying that version 3 is unsupported."
 
 [[sentence]]
 id = "a-public-start-refuses-a-v3-revision-before-any-write"
@@ -53,7 +53,7 @@ text = "A V3 agent node is admitted by the durable attempt store under the same 
 
 [[sentence]]
 id = "a-completed-v3-attempt-reaches-the-runs-terminal-hash"
-text = "A V3 agent attempt that succeeds records the provider's receipt and carries its own run to COMPLETED with a terminal hash, exactly as a V2 attempt does; a V3 node that is not its run's sink is refused by name instead of advanced, because choosing what runs next is the ready set's decision and not this one's."
+text = "A V3 agent attempt that succeeds records the provider's receipt and carries its own run to COMPLETED with a terminal hash, exactly as a V2 attempt does; a V3 node that is not its run's sink hands on to the one heir its author declared, and a node with several dependents is refused in typed words instead of advanced, because choosing between them is the ready set's decision and not this one's."
 
 # OPEN, AND NAMED RATHER THAN NARROWED. The `node-receipt/v3` link from that
 # provider receipt into the event chain -- `NodeReceipt.agent_receipt_hash` and

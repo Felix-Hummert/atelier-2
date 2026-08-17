@@ -377,6 +377,59 @@ class MultipleSinkCompletionUnsupported(ValueError):
         self.sink_node_ids = sink_node_ids
 
 
+class BranchingAdvanceUnsupported(ValueError):
+    """A node's successor is not one declared edge, so no linear rule fits.
+
+    The typed shape exists before the edge it guards: while only a single V3 node
+    was startable this could not be reached at all, and a bare `ValueError` there
+    would have surfaced through the attempt path as an unhandled error on the day
+    it became reachable. Naming it is what lets the caller that opens fan-out --
+    the ready set of #86 -- refuse in its own words instead of crashing.
+    """
+
+    def __init__(self, node_id: str, dependents: tuple[str, ...]) -> None:
+        super().__init__(
+            f"node {node_id!r} is followed by {len(dependents)} nodes "
+            f"({', '.join(dependents) or 'none'}); advancing past a branch needs "
+            "the ready set and its join semantics, which this rule does not decide"
+        )
+        self.node_id = node_id
+        self.dependents = dependents
+
+
+def _dependents_of(graph: WorkflowGraphV3, node_id: str) -> tuple[str, ...]:
+    return tuple(node.id for node in graph.nodes if node_id in node.depends_on)
+
+
+def is_linear_chain(graph: WorkflowGraphV3) -> bool:
+    """Whether the graph is one line, whose advance needs no scheduler.
+
+    Two conditions say that and no more -- one entry, and no node with a second
+    dependent. A fan-in needs no clause of its own: reaching two dependencies
+    from one entry requires a node somewhere with two dependents, which the
+    second condition already refuses. Choosing between waiting dependents is the
+    ready set's decision, and this rule declines to make it rather than guessing.
+    """
+
+    if any(len(_dependents_of(graph, node.id)) > 1 for node in graph.nodes):
+        return False
+    entries = [node.id for node in graph.nodes if not node.depends_on]
+    return len(entries) == 1
+
+
+def linear_successor_id(graph: WorkflowGraphV3, node_id: str) -> str:
+    """The one node the author declared to run after this one."""
+
+    graph.node(node_id)
+    dependents = _dependents_of(graph, node_id)
+    if len(dependents) != 1:
+        raise BranchingAdvanceUnsupported(node_id, dependents)
+    successor = graph.node(dependents[0])
+    if len(successor.depends_on) != 1:
+        raise BranchingAdvanceUnsupported(successor.id, tuple(successor.depends_on))
+    return successor.id
+
+
 def is_sink_node(graph: AnyWorkflowDocument, node_id: str) -> bool:
     """Whether this node's completion completes the run, in any executable format.
 
