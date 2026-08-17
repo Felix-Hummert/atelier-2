@@ -145,6 +145,10 @@ class AgentExecutorV2(Protocol):
         """
         ...
 
+    def release_process(self, invocation: AgentProcessInvocation) -> None:
+        """Release live-only resources owned by this exact invocation."""
+        ...
+
     def close(self) -> None: ...
 
 
