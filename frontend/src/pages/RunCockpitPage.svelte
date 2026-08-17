@@ -815,7 +815,7 @@
   />
 
   {#if v3Run !== null}
-    <V3RunView run={v3Run} />
+    <V3RunView run={v3Run} {cockpitApi} />
   {:else if snapshot.request.state === "failed"}
     <ProblemNotice problem={snapshot.request.problem} />
   {:else if failureMessage !== null}

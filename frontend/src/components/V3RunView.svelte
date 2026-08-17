@@ -1,9 +1,49 @@
 <script lang="ts">
-  import type { RunV3 } from "../api/client";
+  import type { CockpitApi, NodeDetail, RunV3 } from "../api/client";
   import InfoHint from "./InfoHint.svelte";
+  import NodeDetailPanel from "./NodeDetailPanel.svelte";
+  import ProblemNotice from "./ProblemNotice.svelte";
   import StateMark from "./StateMark.svelte";
 
   export let run: RunV3;
+  export let cockpitApi: CockpitApi;
+
+  let openNodeId: string | null = null;
+  let detail: NodeDetail | null = null;
+  let failure: string | null = null;
+
+  /**
+   * One click asks the server, and the server answers the whole node.
+   *
+   * The panel deliberately does not assemble itself from the run, the events and
+   * the receipts the page already holds: those are three sources for one answer,
+   * and the derivation is exactly what the node read exists to end.
+   */
+  async function openNode(nodeId: string): Promise<void> {
+    if (openNodeId === nodeId) {
+      closeNode();
+      return;
+    }
+    openNodeId = nodeId;
+    detail = null;
+    failure = null;
+    try {
+      const answered = await cockpitApi.getNodeDetail(run.public_run_reference, nodeId);
+      if (openNodeId === nodeId) {
+        detail = answered;
+      }
+    } catch (error) {
+      if (openNodeId === nodeId) {
+        failure = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
+  function closeNode(): void {
+    openNodeId = null;
+    detail = null;
+    failure = null;
+  }
 
   /**
    * The rail is rendered, not derived.
@@ -38,11 +78,28 @@
   <ol class="rail">
     {#each rail as entry (entry.node_id)}
       <li class="rail-entry" class:current={entry.node_id === run.current_node_id}>
-        <StateMark state={entry.state} />
-        <span class="node-id">{entry.node_id}</span>
+        <button
+          type="button"
+          class="node-button"
+          aria-expanded={openNodeId === entry.node_id}
+          on:click={() => void openNode(entry.node_id)}
+        >
+          <StateMark state={entry.state} />
+          <span class="node-id">{entry.node_id}</span>
+        </button>
       </li>
     {/each}
   </ol>
+
+  {#if openNodeId !== null}
+    {#if failure !== null}
+      <ProblemNotice title="This node could not be read" message={failure} />
+    {:else if detail !== null}
+      <NodeDetailPanel {detail} onClose={closeNode} />
+    {:else}
+      <p class="muted">Reading {openNodeId}…</p>
+    {/if}
+  {/if}
 
   <dl class="facts">
     <dt>Terminal hash</dt>
@@ -68,6 +125,7 @@
   .rail { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
   .rail-entry { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.6rem; border-radius: 0.4rem; }
   .rail-entry.current { background: color-mix(in srgb, currentColor 8%, transparent); }
+  .node-button { display: flex; align-items: center; gap: 0.6rem; width: 100%; border: 0; background: transparent; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
   .node-id { font-weight: 600; }
   .facts { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 1rem; margin: 0; }
   .facts dd { margin: 0; overflow-wrap: anywhere; }
