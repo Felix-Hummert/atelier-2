@@ -1,0 +1,16 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/254"
+
+# THE SCHEMA PUBLICATION DOOR LETS A CHAIN EXIST ENTIRELY OVER HTTP.
+#
+# A chain workflow pins each declared output to a published schema revision.
+# openapi.json had no schema path; the operator workaround was to stop the unit,
+# call DbosCatalogStore.publish_revision in-process, and start it again. This
+# sentence binds that hole: POST /schema-revisions is the same form as
+# POST /workflow-revisions (bytes in, hash out, idempotent), and a chain whose
+# outputs[].schema.revision is that hash is then admitted. It does not invent a
+# second publication write; it calls the store owner that already existed.
+
+[[sentence]]
+id = "a-schema-published-over-the-api-is-the-hash-a-chain-names"
+text = "A JSON Schema published through POST /schema-revisions is stored under its exact-bytes hash, and a V3 chain workflow published through POST /workflow-revisions whose outputs[].schema.revision is that hash is accepted."

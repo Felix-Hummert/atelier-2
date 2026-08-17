@@ -70,6 +70,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/health",
     API_PREFIX + "/auth-profile-revisions",
     API_PREFIX + "/agent-configuration-revisions",
+    API_PREFIX + "/schema-revisions",
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/by-name/{name}",
     API_PREFIX + "/workflow-revisions/{revision_hash}",
@@ -94,6 +95,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         "POST",
         API_PREFIX + "/agent-configuration-revisions",
         "publish_agent_configuration_revision_route",
+    ),
+    (
+        "POST",
+        API_PREFIX + "/schema-revisions",
+        "publish_schema_revision_route",
     ),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
@@ -130,6 +136,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/health", "get"): {"200"},
     (API_PREFIX + "/auth-profile-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-configuration-revisions", "post"): {"200", "201"},
+    (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
     (API_PREFIX + "/workflow-revisions/{revision_hash}", "get"): {"200"},
@@ -194,10 +201,11 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was last regenerated when the event stream published a format-3
-    family for the agent kinds a V3 line writes. That regeneration is the wire
-    change this head declares; refreshing it alongside a refactor is what this
-    test still refuses.
+    The artefact was last regenerated when `POST /schema-revisions` opened:
+    exact JSON Schema bytes in, the catalog store's existing publish_revision
+    write, hash out, and each profile refusal as its own problem code. That
+    regeneration is the wire change this head declares; refreshing it alongside
+    a refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
@@ -290,6 +298,15 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
         "required": True,
         "content": {
             "application/yaml": {"schema": {"type": "string", "format": "binary"}}
+        },
+    }
+    schema_publication_body = schema["paths"][API_PREFIX + "/schema-revisions"]["post"][
+        "requestBody"
+    ]
+    assert schema_publication_body == {
+        "required": True,
+        "content": {
+            "application/json": {"schema": {"type": "string", "format": "binary"}}
         },
     }
 

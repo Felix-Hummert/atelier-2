@@ -148,6 +148,7 @@ def _api_client(runtime: DbosRuntime) -> TestClient:
                 ),
                 catalog_resolver=DbosCatalogStore(runtime.engine),
                 catalog_admissions=DbosCatalogStore(runtime.engine),
+                published_revision_registry=DbosCatalogStore(runtime.engine),
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),

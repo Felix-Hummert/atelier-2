@@ -14,11 +14,11 @@ process receives the request.
 ## Decision
 
 FastAPI owns a thin, versioned adapter at `/atelier/api/v1`. The API publishes
-secret-free auth-profile and agent-configuration revisions and exact safe-YAML
-workflow bytes, starts runs from published revisions, projects revision and run
-pages, accepts Wait answers, current-attempt cancellation commands, and
-reconciliation commands, and streams the eleven implemented durable event
-kinds. It does not accept credentials or own a parallel run, command, or event
+secret-free auth-profile and agent-configuration revisions, exact safe-YAML
+workflow bytes, and exact JSON Schema bytes, starts runs from published
+revisions, projects revision and run pages, accepts Wait answers,
+current-attempt cancellation commands, and reconciliation commands, and streams
+the eleven implemented durable event kinds. It does not accept credentials or own a parallel run, command, or event
 state machine. Cancellation returns `202` while cleanup is pending and `200` for
 an exact terminal retry. Stale, terminal, non-current, conflicting-command, and
 forbidden-replacement requests are distinct closed problems.
@@ -64,8 +64,12 @@ intentionally replays unacknowledged events, and reconnecting to a new process
 reads the same history from the durable store. A terminal stream ends only
 after its durable tail has been delivered.
 
-JSON resources and commands are closed typed models. Workflow publication is
-the one raw `application/yaml` request. Centrally injected limits reject declared
+JSON resources and commands are closed typed models. Two publications take
+raw exact bytes rather than a typed model: workflow publication is
+`application/yaml`, and schema publication is `application/json` — JSON Schema
+is JSON, and the hash is of those exact bytes. Each schema-profile refusal the
+store already names is a distinct closed problem, not a generic invalid
+request. Centrally injected limits reject declared
 oversize bodies before route parsing and stop undeclared or chunked bodies while
 they are received; they also bound individual fields, encoded and decoded payloads,
 workflow graphs, response projections, and concurrent query work. Durable

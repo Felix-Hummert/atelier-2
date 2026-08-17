@@ -8,7 +8,11 @@ from fastapi import FastAPI
 from fastapi.openapi.models import OpenAPI
 from fastapi.openapi.utils import get_openapi
 
-from atelier2.api.problems import PROBLEM_DEFINITIONS, PROBLEM_TYPE_PREFIX
+from atelier2.api.problems import (
+    PROBLEM_DEFINITIONS,
+    PROBLEM_TYPE_PREFIX,
+    SCHEMA_DOCUMENT_PROBLEM_CODES,
+)
 from atelier2.api.references import (
     EVENT_CURSOR_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
@@ -110,6 +114,14 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "auth-profile-revision-not-found",
         "agent-executor-binding-unavailable",
         "agent-configuration-revision-collision",
+        "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (API_PREFIX + "/schema-revisions", "post"): (
+        *SCHEMA_DOCUMENT_PROBLEM_CODES,
+        "schema-revision-collision",
         "unsupported-media-type",
         "temporarily-unavailable",
         "durable-state-corrupt",
@@ -289,6 +301,12 @@ def _install_publication_request_body(schema: dict[str, Any]) -> None:
         "required": True,
         "content": {
             "application/yaml": {"schema": {"type": "string", "format": "binary"}}
+        },
+    }
+    schema["paths"][API_PREFIX + "/schema-revisions"]["post"]["requestBody"] = {
+        "required": True,
+        "content": {
+            "application/json": {"schema": {"type": "string", "format": "binary"}}
         },
     }
 

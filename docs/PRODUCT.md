@@ -323,7 +323,8 @@ transition is another crash-safe transaction.
 boundary.
 
 An HTTP API now projects that durable state under `/atelier/api/v1`. It can
-publish secret-free auth-profile and agent-configuration revisions; publish and
+publish secret-free auth-profile and agent-configuration revisions; publish
+exact JSON Schema revisions; publish and
 inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs;
 answer a waiting node; cancel the current V2 Agent attempt with an optional
 single replacement; submit an accountable reconciliation; and follow the
