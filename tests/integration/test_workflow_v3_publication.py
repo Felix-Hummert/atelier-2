@@ -143,7 +143,10 @@ nodes:
     role: builder
     mode: headless
     instruction: Do the one thing this chain is for.
-"""
+    outputs:
+      - name: result
+        schema: {ref: any-json, revision: "%s"}
+""" % (b"e" * 64)
 
 
 @pytest.mark.proves("a-revision-says-which-form-it-waits-for-not-which-version-it-is")

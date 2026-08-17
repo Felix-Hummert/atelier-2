@@ -228,13 +228,17 @@ Green is therefore the conjunction of two facts the core reads:
    evaluated against the bound schema.
 
 **Fact 2 has a named owner, and it is not this record.** #57's first landed head
-established that *a published schema is a schema*: the public
-surface of `src/atelier2/contracts/schemas_v3.py` is `read_schema_document(bytes)`,
-and its single evaluator call checks the schema against the metaschema. **No
-instance evaluator exists in `src` today** — nothing yet evaluates a value against a
-bound schema. That evaluator is #57's, and this record names it so that a second one
-is not built here. Until it exists, fact 2 cannot be enforced, which is why the head
-that enforces it waits (see Delivery boundaries).
+established that *a published schema is a schema*: `read_schema_document(bytes)` in
+`src/atelier2/contracts/schemas_v3.py` checks the schema against the metaschema.
+Its second head added the other half of that owner's surface,
+`read_instance_document(bytes, schema)`, and its runtime head made it the gate on
+an agent's answer: a V3 node's decoded output is read against the schema it pinned
+before any success is written. **The evaluator therefore exists, and fact 2's other
+half still does not** — no `node-artifact/v3` row is written by anything, so there
+is no durable artifact to evaluate a round's `until` output from. Fact 2 stays
+unenforceable on that half, which is why the head that enforces it waits (see
+Delivery boundaries), and this record names the one evaluator so that a second is
+not built here.
 
 Explicitly refused as a green source: an agent output that merely claims completion,
 a free-text match, an exit code without a receipt, and any condition over a non-sink
@@ -300,14 +304,16 @@ declarer".
    against the child, the capability attestation is extended, and a missing
    attestation refuses the whole run.
 4. **Durable rounds:** the `(parent_node_execution_id, round_ordinal)` binding, the
-   per-round evaluation and the one terminal receipt. **Not claimable** until four
-   owners exist: [#63](https://github.com/FlexOr2/atelier-2/issues/63) (the V3
-   store's `node-artifact/v3` and `node-receipt/v3`), the V3 Join/Ready/Scheduler
-   owner ADR 0008 names and explicitly declares that slice unclaimable without,
+   per-round evaluation and the one terminal receipt. **Not claimable** until three
+   owners exist: [#63](https://github.com/FlexOr2/atelier-2/issues/63) (a writer for
+   the V3 store's `node-artifact/v3` and `node-receipt/v3`, whose tables are
+   landed and whose rows nothing writes), the V3 Join/Ready/Scheduler owner ADR 0008
+   names and explicitly declares that slice unclaimable without, and
    [#16](https://github.com/FlexOr2/atelier-2/issues/16) (the durable failure
-   token), and [#57](https://github.com/FlexOr2/atelier-2/issues/57)'s instance
-   evaluator, without which green fact 2 cannot be enforced. This boundary carries
-   no size estimate: naming one before those four exist would be invention.
+   token). [#57](https://github.com/FlexOr2/atelier-2/issues/57)'s instance
+   evaluator left this list when it landed and began gating every V3 success. This
+   boundary carries no size estimate: naming one before those three exist would be
+   invention.
 
 ## Required proof before implementation
 
@@ -344,8 +350,8 @@ declarer".
   child-run boundary rather than in a document edge.
 - A published document can express a loop the runtime cannot yet run, and the
   preview marks it — the staged-execution cost ADR 0006 already chose.
-- Bounded iteration cannot ship before an instance evaluator exists, which makes
-  #57's open sentence a visible dependency rather than a surprise.
+- Bounded iteration cannot ship before a durable artifact row exists to evaluate,
+  which makes #63's open writer a visible dependency rather than a surprise.
 
 ## Out of scope and stop conditions
 

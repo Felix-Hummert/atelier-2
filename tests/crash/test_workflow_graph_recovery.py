@@ -28,6 +28,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from tests.scenarios.workflows import declared_output
 
 CRASHED = 86
 HARNESS = Path(__file__).with_name("workflow_graph_harness.py")
@@ -40,7 +41,8 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
 """
-V3_DOCUMENT = b"""format_version: 3
+V3_DOCUMENT = (
+    b"""format_version: 3
 name: Two agents in a line
 nodes:
   - id: implement
@@ -48,15 +50,19 @@ nodes:
     role: builder
     mode: headless
     instruction: Do the one thing this chain is for.
-  - id: review
+"""
+    + declared_output()
+    + b"""  - id: review
     type: agent
     role: builder
     mode: headless
     instruction: Check what the node before you did.
     depends_on: [implement]
 """
+    + declared_output()
+)
 V3_RUN_ID = "v3/two-agents/recovery"
-V3_PROVIDER_OUTPUT = b"the exact provider bytes"
+V3_PROVIDER_OUTPUT = b'"the exact provider bytes"'
 
 
 def child(

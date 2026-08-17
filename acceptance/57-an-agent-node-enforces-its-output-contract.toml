@@ -1,7 +1,7 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/57"
 
-# This file carries head 1 only, and names what it deliberately leaves open.
+# This file carries heads 1 and 2, and names what each deliberately leaves open.
 #
 # Head 1 proves that a document published as a `schema` revision is a schema at
 # all. It does NOT prove that an agent's decoded output satisfies it: that needs
@@ -10,18 +10,36 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 # (`adapters/yaml_workflows.py` WorkflowFormatNotExecutable, and schema.py's
 # `workflow_format_version IN (1, 2)` CHECK).
 #
-# The item's own acceptance sentences that stay OPEN and UNPROVEN after head 1,
+# HEAD 2 IS THE RUNTIME HALF, and it answers the item's sentence 1b: after the
+# provider decode and before the success write, the provider-neutral profile
+# owner reads the exact decoded bytes against the schema the node's author
+# pinned, and bytes it refuses never become a success. Its two sentences are the
+# last two declared below.
+#
+# The item's own acceptance sentences that stay OPEN and UNPROVEN after head 2,
 # named rather than silently dropped, per the pattern of
 # acceptance/66-agent-as-a-markdown-file.toml:
 #
-#   1b. "Autoritaet bleibt der providerneutrale Core: nach Provider-Decode und
-#       vor Success-Write validiert er dieselben gebundenen Bytes." (heads 2/3)
 #   2.  "Gueltig schreibt atomar Artefakt, succeeded-node-receipt/v3 und
-#       Run-Ereignis; erst danach waechst Ready." (head 3)
+#       Run-Ereignis; erst danach waechst Ready." (head 3) -- the success write is
+#       atomic today over the V2 receipt, the run event and the run's advance;
+#       what is absent is `node-artifact/v3` and `node-receipt/v3` THEMSELVES.
+#       #63 landed their tables, their immutability triggers and their typed
+#       contracts; nothing in the product writes a row into either yet.
 #   3.  "Ungueltiges UTF-8/JSON, Schema-Abweichung oder Bound-Verletzung schreibt
 #       atomar ein failed-node-receipt/v3 mit stabilem Reason-Token,
 #       Schema-Revision und Hash der exakten decodierten Bytes; kein Artefakt und
-#       kein Success-Receipt." (head 3)
+#       kein Success-Receipt." (head 3) -- HALF PROVEN, and the half that is not
+#       is named here rather than implied. Head 2 proves "kein Artefakt und kein
+#       Success-Receipt": the refusal is named in the words of the profile owner
+#       and nothing is written. It does NOT write a durable `failed` receipt,
+#       because there is no writer for `node-receipt/v3` (see 2 above) and the
+#       one durable attempt-failure vocabulary this product owns
+#       (`AgentAttemptFailureCode`) is enumerated in the store's own CHECK, so a
+#       second member is store movement this head was fenced out of. The
+#       consequence an operator sees is stated rather than hidden: a refused
+#       answer leaves the run standing on the node that produced it, with the
+#       reason live in the refusal and durable nowhere.
 #   4.  "Join bleibt ADR 0006: all_succeeded blockiert; all_terminal darf starten
 #       und erhaelt das Failure-Receipt." (head 3)
 #   5.  "Retry/Restart erzeugt weder zweites Artefakt noch zweites terminales
@@ -31,7 +49,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 #
 # The first sentence declared below is 1a, and 1a is EXPRESSLY NOT a substitute
 # for 1b: 1a proves the bound contract is a contract, 1b proves the core holds an
-# output to it. #57 is not verified and not retired while any of the six is open.
+# output to it. #57 is not verified and not retired while any of the five is open.
 #
 # SHARPENED, not narrowed, by head 1b. The closed profile the first sentence
 # names grew three rules after Codex found that head 1 checked a reference's
@@ -59,3 +77,15 @@ text = "A nonlocal $ref, an $id, an $anchor, an $dynamicAnchor and an $dynamicRe
 [[sentence]]
 id = "an-unusable-schema-is-drawn-as-unresolved-and-refuses-the-binding"
 text = "One finding reaches both callers correctly: the composed preview names it as an unresolved reference and keeps drawing, while the run-configuration binding refuses the whole snapshot."
+
+# Head 2. The runtime half: what an agent answers is held to what its node
+# declared, and the shape that declaration must have is refused before anything
+# runs when no owner enforces it.
+
+[[sentence]]
+id = "an-agent-node-whose-output-shape-has-no-owner-refuses-before-a-run"
+text = "An agent node that declares no output, or more than one, is refused under the name agent-output-shape-unavailable before any run is written and before any provider process starts, because single-json-output/v1 -- exactly one declared output whose whole decoded bytes are its value -- is the one output shape a run enforces."
+
+[[sentence]]
+id = "bytes-their-own-schema-refuses-never-become-a-success"
+text = "Exact decoded output bytes that the schema their own node pinned does not admit never produce a success: the refusal is named in the words of the schema profile owner, and no agent receipt, no completion event and no advanced run are written, while bytes that schema admits are still written as the one atomic success."

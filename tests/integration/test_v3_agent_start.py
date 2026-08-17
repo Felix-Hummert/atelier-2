@@ -23,6 +23,7 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
@@ -51,14 +52,20 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_bindings import RunV3
-from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
+from atelier2.contracts.run_configuration_v3 import (
+    ReferenceSite,
+    ResolvedReference,
+    RunConfigurationRevision,
+)
 from atelier2.contracts.runs import (
     RunId,
     RunState,
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.workflows_v3 import VersionedReference
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -68,6 +75,10 @@ from atelier2.ports.durable_runs import (
     DurableRunExisting,
     StartPublishedRunRequestV2,
 )
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
 from atelier2.ports.run_queries import RunFound
 from tests.scenarios.agents import (
     agent_scratch_root,
@@ -75,6 +86,7 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.api import durable_api_client, durable_queries
 from tests.scenarios.projects import git_project
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 ONE_AGENT_DOCUMENT = b"""format_version: 3
 name: One agent
@@ -84,7 +96,7 @@ nodes:
     role: builder
     mode: headless
     instruction: Do the one thing this chain is for.
-"""
+""" + declared_output()
 
 EXECUTABLE_V2_DOCUMENT = b"""format_version: 2
 start: implement
@@ -124,7 +136,11 @@ def publish(
     document: bytes = ONE_AGENT_DOCUMENT,
     roles: tuple[str, ...] = ("builder",),
 ) -> tuple[WorkflowRevision, AgentBindingSet]:
-    """Publish one V3 document and bind every role its nodes declare."""
+    """Publish one V3 document, the schema it pins, and every role it declares."""
+    published = DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
+    assert isinstance(
+        published, (PublishedRevisionCreated, PublishedRevisionExisting)
+    ), published
     catalog = DbosAgentConfigurationCatalog(
         runtime.engine, runtime.agent_executor_registry
     )
@@ -369,10 +385,10 @@ def test_a_v3_start_binds_the_exact_run_configuration(
     when a private second door persisted V3 runs that nothing executed. #216
     deleted that door; there is one start, and the claim is about it.
 
-    The admitted shape declares no versioned reference at all -- every optional
-    form is refused before a run exists -- so its resolution matrix is empty and
-    exact, and there is nothing to resolve and nothing to guess. A run persisted
-    without it would be a V3 run whose own snapshot nobody could name.
+    The admitted shape declares exactly one versioned reference -- the schema its
+    one output pins -- so its resolution matrix is that reference and nothing
+    else, exact rather than guessed. A run persisted without it would be a V3 run
+    whose own snapshot nobody could name.
     """
     workflow, bindings = publish(runtime)
     DbosDurableRunStarter(
@@ -381,7 +397,16 @@ def test_a_v3_start_binds_the_exact_run_configuration(
     expected = RunConfigurationRevision(
         WorkflowRevisionHash(workflow.revision_hash.value),
         bindings.binding_set_hash,
-        (),
+        (
+            ResolvedReference(
+                ReferenceSite("outputs.schema", "implement", "result"),
+                RevisionKind.SCHEMA,
+                VersionedReference(
+                    ref="result-schema", revision=ANY_JSON_SCHEMA.revision_hash.value
+                ),
+                ANY_JSON_SCHEMA.revision_hash,
+            ),
+        ),
     )
 
     with runtime.engine.connect() as connection:

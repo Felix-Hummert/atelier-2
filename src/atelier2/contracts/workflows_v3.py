@@ -996,6 +996,26 @@ two happened is not something an author should have to guess, so the document is
 refused by the count it wrote.
 """
 
+AGENT_OUTPUT_SHAPE_UNAVAILABLE = "agent-output-shape-unavailable"
+"""The name a V3 Agent node is refused under when its output shape has no owner.
+
+The one executable shape is `single-json-output/v1`: exactly one declared output,
+whose whole decoded bytes are its value. A node declaring none promises bytes no
+schema judges, and a node declaring several promises a runtime that can tell one
+of its values from another -- neither has an owner, so both are refused by this
+one name rather than by two descriptions of the same missing shape.
+"""
+
+AGENT_OUTPUTS_ONE_SHAPE_KEEPS = 1
+"""How many outputs `single-json-output/v1` binds, because an attempt writes that many.
+
+An agent attempt completes with one payload, and that payload is the value of the
+output its author declared. Zero leaves the bytes unjudged and several leave one
+value answered by another; the count is where the document is refused rather than
+started under a shape nobody enforces.
+"""
+
+
 V3_BOUND_INPUT_SOURCES = (GraphInputSource, NodeOutputSource)
 """Which `inputs` source a node may read, because the runtime actually binds it.
 
@@ -1085,14 +1105,14 @@ def _unbound_output_forms(graph: WorkflowGraphV3) -> str | None:
 
     * `confirmed_by` promises a human confirmed the artifact, and nothing asks
       anyone;
-    * a second output promises the runtime can tell one value of a node from
-      another, and an agent node completes with exactly one payload, so a
-      document declaring two would have one of them answered by the other.
+    * an output count other than one promises a shape `single-json-output/v1` is
+      not, and both directions are refused under `AGENT_OUTPUT_SHAPE_UNAVAILABLE`.
 
-    The part that is kept is the value itself: it is written durably when the
-    producing node completes, hash-bound, and read against the schema its author
-    pinned before it is handed on. What #57 still owns is everything around that
-    -- join, retry, canary, and the operator confirmation refused here.
+    The part that is kept is the value itself: the run writes it durably when the
+    producing node completes, hash-bound, and reads it against the schema its
+    author pinned -- before the success is written and again before it is handed
+    on. What #57 still owns around that is join, retry, canary, and the operator
+    confirmation refused here.
     """
     if graph.graph_outputs:
         return "graph outputs nothing carries out of a run: " + ", ".join(
@@ -1101,10 +1121,11 @@ def _unbound_output_forms(graph: WorkflowGraphV3) -> str | None:
     for node in graph.nodes:
         if not isinstance(node, AgentNodeV3):
             continue
-        if len(node.outputs) > 1:
+        if len(node.outputs) != AGENT_OUTPUTS_ONE_SHAPE_KEEPS:
             return (
-                f"{len(node.outputs)} outputs on node {node.id!r}, and an agent "
-                "node completes with one value nothing tells apart"
+                f"{AGENT_OUTPUT_SHAPE_UNAVAILABLE}: {len(node.outputs)} outputs on "
+                f"node {node.id!r}, and an agent node completes with the one value "
+                "its own schema judges"
             )
         if any(output.confirmed_by is not None for output in node.outputs):
             return "an output confirmed by an operator nothing asks"
