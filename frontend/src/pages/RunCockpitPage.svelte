@@ -5,7 +5,10 @@
     CockpitRequestError,
     executableGraph,
     type CockpitApi,
+    isRunV3,
+    type AnyRun,
     type Run,
+    type RunV3,
     type RunEvent,
     type RunEventSubscription,
     type WorkflowRevisionDetail
@@ -28,6 +31,7 @@
     type ReconciliationMutation,
     type WaitMutation
   } from "../lib/mutationJournal";
+  import V3RunView from "../components/V3RunView.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
   import {
     confirmResource,
@@ -60,6 +64,15 @@
     confirmed: null,
     request: { state: "idle" }
   };
+  /**
+   * A version 3 run, held apart from the snapshot below.
+   *
+   * Everything after this point -- the revision binding, the event stream, the
+   * wait and reconciliation forms, the rail -- reads fields a version 3 run does
+   * not have. Branching once here keeps that whole path exactly as it was
+   * instead of teaching thirty-seven readers that this format has no such thing.
+   */
+  let v3Run: RunV3 | null = null;
   let projection: StreamProjection | null = null;
   let stream: RunEventSubscription | null = null;
   let failureMessage: string | null = null;
@@ -101,6 +114,12 @@
     try {
       const run = await cockpitApi.getRun(publicReference);
       requireRequestedRun(run);
+      if (isRunV3(run)) {
+        if (disposed || generation !== loadGeneration) return;
+        v3Run = run;
+        snapshot = { confirmed: null, request: { state: "idle" } };
+        return;
+      }
       const revision =
         snapshot.confirmed?.revision.revision_hash === run.workflow_revision_hash
           ? snapshot.confirmed.revision
@@ -129,7 +148,8 @@
     }
   }
 
-  function requireRequestedRun(run: Run): void {
+  /** Asked of every format: the identity check runs before the run is narrowed. */
+  function requireRequestedRun(run: AnyRun): void {
     if (run.public_run_reference !== publicReference) {
       throw new CockpitRequestError("The API returned a different durable run.");
     }
@@ -780,7 +800,11 @@
   }
 
   $: trailHere =
-    snapshot.confirmed === null ? "Run" : `Run ${snapshot.confirmed.run.run_id}`;
+    v3Run !== null
+      ? `Run ${v3Run.run_id}`
+      : snapshot.confirmed === null
+        ? "Run"
+        : `Run ${snapshot.confirmed.run.run_id}`;
 </script>
 
 <section aria-labelledby="run-title">
@@ -790,7 +814,9 @@
     {navigate}
   />
 
-  {#if snapshot.request.state === "failed"}
+  {#if v3Run !== null}
+    <V3RunView run={v3Run} />
+  {:else if snapshot.request.state === "failed"}
     <ProblemNotice problem={snapshot.request.problem} />
   {:else if failureMessage !== null}
     <ProblemNotice title="Run unavailable" message={failureMessage} />
@@ -882,7 +908,7 @@
     </details>
   {:else if snapshot.request.state === "loading"}
     <p class="status" role="status">Looking…</p>
-  {:else}
+  {:else if v3Run === null}
     <button type="button" onclick={load}>Retry</button>
   {/if}
 </section>
