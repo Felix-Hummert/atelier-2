@@ -527,7 +527,8 @@ def test_an_unusable_claude_deployment_is_refused_at_configuration(
     ("version", "refusal"),
     [
         pytest.param("2.1.220", "conformance matrix", id="one patch below the set"),
-        pytest.param("2.1.222", "conformance matrix", id="one patch above the set"),
+        pytest.param("2.1.222", "conformance matrix", id="between two of the set"),
+        pytest.param("2.1.234", "conformance matrix", id="one patch above the set"),
         pytest.param("2.2.0", "conformance matrix", id="a later minor"),
         pytest.param("3.0.0", "conformance matrix", id="a later major"),
         pytest.param(
@@ -542,8 +543,9 @@ def test_an_executable_outside_the_conformance_set_is_refused(
 
     A later Claude Code can change one of the controls this executor's
     credential containment depends on, so an unmeasured version is refused at
-    composition however new it is, and the refusal names what admitting it
-    costs.
+    composition however new it is -- and, because the set is a set and not a
+    range, also when it sits between two measured ones. The refusal names what
+    admitting it costs.
     """
 
     settings = claude_subscription_deployment(

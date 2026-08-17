@@ -183,9 +183,13 @@ signed 64-bit integers; an absent value is not zero.
   twice.
 - `output_tokens` is the native output-token count.
 
-Claude's first meter revision pins the measured JSON mapping of CLI version
-2.1.221. Codex receives a distinct meter revision only after its native stream
-mapping has been measured.
+Claude's first meter revision pins the measured JSON mapping of every CLI
+version the Claude subscription executor admits — the same conformance set that
+gates the executable, so a version whose usage mapping was never measured cannot
+be served either. It survives a version's admission only while every field named
+above still carries the same meaning; an added field is not a new mapping, a
+renamed or reused one is. Codex receives a distinct meter revision only after its
+native stream mapping has been measured.
 
 Raw values from different meter revisions are never summed. When a composed
 scope carries a numerical threshold, every descendant it covers must resolve to

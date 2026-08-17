@@ -15,8 +15,10 @@ MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
 # decision from the durable answer bound; they share a number today and must
 # not be derived from each other (#88).
 MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
-# Current process-frame ceiling, earned by Claude 2.1.221's measured JSON frame;
-# each invocation still declares its exact lower limit at the process port.
+# Current process-frame ceiling, earned by the measured JSON frame of every
+# Claude Code this repository admits (see the Claude subscription adapter's
+# conformance set); each invocation still declares its exact lower limit at the
+# process port.
 MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 MAXIMUM_SIGNED_INT64 = 2**63 - 1
 MAXIMUM_PROVIDER_ID_CHARACTERS = 64

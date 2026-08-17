@@ -33,6 +33,14 @@ from atelier2.ports.agent_executions import (
 CLAUDE_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
     ProviderId("anthropic"), AgentExecutorRevision("claude-subscription/v1")
 )
+# The operation, not the release that performs it: one headless print call whose
+# argument vector, environment and JSON envelope contract are what this name
+# stands for. Admitting a version therefore leaves it alone while the matrix
+# finds that operation unchanged, and every durable attempt record keeps
+# comparing against the same identity. A release that changed one of them --
+# a control that stops meaning what it meant, an envelope this executor must
+# decode differently -- would be a different operation and would need a new
+# identity here rather than a widened conformance set.
 CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
     "headless-print-json/v1"
 )
@@ -48,19 +56,22 @@ CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
 #   * JSON string escaping expands one source byte to at most six frame bytes
 #     (a C0 control byte becomes a six-character backslash-u escape), so a
 #     durable-legal result occupies at most 6 * 49,152 = 294,912 frame bytes.
-#   * The remaining 98,304 bytes are the envelope metadata allowance. One real
-#     `claude -p --output-format json` answer (claude 2.1.221) was measured
-#     carrying 1,328 bytes of metadata around its result, so the allowance is
-#     about seventy times the observed envelope -- room for more models in
-#     `modelUsage`, permission denials and future fields without ever bounding
-#     an answer the durable contract would accept.
+#   * The remaining 98,304 bytes are the envelope metadata allowance. The
+#     largest metadata a real `claude -p --output-format json` answer of a
+#     conformant version was measured carrying around its result is 1,631
+#     bytes, so the allowance is about sixty times the observed envelope --
+#     room for more models in `modelUsage`, permission denials and future
+#     fields without ever bounding an answer the durable contract would accept.
 CLAUDE_SUBSCRIPTION_FRAME_BYTES = MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
 
 # Every Claude Code whose containment behaviour was measured end to end for
 # this executor. A version bound would only prove that the flags were
 # introduced, never that a later release still means by them what this executor
-# claims, so conformance is an exact reviewed set rather than a floor.
-CONFORMANT_CLAUDE_VERSIONS = frozenset({(2, 1, 221)})
+# claims, so conformance is an exact reviewed set rather than a floor. A version
+# enters it only once the one-call conformance matrix has been rerun against
+# that exact executable, so every measurement this module records below holds
+# for every member -- naming one version instead would say less than the set.
+CONFORMANT_CLAUDE_VERSIONS = frozenset({(2, 1, 221), (2, 1, 233)})
 
 _VERSION_FLAG = "--version"
 _VERSION_PROBE_TIMEOUT_SECONDS = 30.0
@@ -70,7 +81,7 @@ _VERSION_PROBE_TIMEOUT_SECONDS = 30.0
 _VERSION_PROBE_OUTPUT_BYTES = 4_096
 
 # Every directory this CLI treats as an administrator policy root and every
-# entry it loads from one, read out of the 2.1.221 executable: the platform
+# entry it loads from one, read out of each conformant executable: the platform
 # switch answers `/etc/claude-code`, the macOS bundle directory, or the Windows
 # policy directory, and a WSL host reads that Windows directory through DrvFs.
 # The product of roots and entries is deliberately a superset of what any one
@@ -93,7 +104,7 @@ REMOTE_MANAGED_POLICY_ENTRY = "remote-settings.json"
 
 # The credential record the CLI keeps in that same directory, and the field of
 # it that decides whether server-managed settings are delivered at all. Read
-# out of the 2.1.221 executable: a first-party OAuth session fetches managed
+# out of each conformant executable: a first-party OAuth session fetches managed
 # settings at startup -- after any scan of the cache above could see them --
 # when this persisted subscription type is `enterprise` or `team`, and also
 # when it is absent, and it does not fetch them for a personal subscription.
@@ -110,11 +121,11 @@ _OUTPUT_FORMAT_FLAG = "--output-format"
 _JSON_OUTPUT_FORMAT = "json"
 _MODEL_FLAG = "--model"
 
-# The containment flags, each measured against claude 2.1.221 (see the class
-# docstring for what each one was observed to stop). The two that carry an
-# empty value use the `--flag=` equals form deliberately: the process seam
-# refuses an empty argument vector element, and the equals form states "this
-# option, with nothing" in a single nonempty argument.
+# The containment flags, each measured against every conformant version (see
+# the class docstring for what each one was observed to stop). The two that
+# carry an empty value use the `--flag=` equals form deliberately: the process
+# seam refuses an empty argument vector element, and the equals form states
+# "this option, with nothing" in a single nonempty argument.
 _NO_TOOLS = "--tools="
 _NO_SETTING_SOURCES = "--setting-sources="
 _STRICT_MCP_CONFIG_FLAG = "--strict-mcp-config"
@@ -132,24 +143,27 @@ _HEARTBEAT_MAXIMUM_TURNS = "1"
 
 _CREDENTIAL_DIRECTORY_VARIABLE = "CLAUDE_CONFIG_DIR"
 _SEARCH_PATH_VARIABLE = "PATH"
-# Read straight out of the 2.1.221 executable: `ETr` returns before appending
-# to the prompt history when this is set, so the operator's history file never
-# receives a job this seam sent. It is distinct from session persistence, which
-# owns the resumable transcript.
+# Read straight out of each conformant executable: the prompt-history writer
+# returns before appending when this is set, so the operator's history file
+# never receives a job this seam sent. It is distinct from session persistence,
+# which owns the resumable transcript.
 _SKIP_PROMPT_HISTORY_VARIABLE = "CLAUDE_CODE_SKIP_PROMPT_HISTORY"
 _SKIP_PROMPT_HISTORY = "1"
-# Also read straight out of that executable: a finite value of at least zero
-# replaces the built-in retry count, so a billed call cannot silently become
-# several. Zero is the bound this heartbeat wants.
+# Also read straight out of those executables: a value parsed as a finite number
+# of at least zero replaces the built-in retry count, so a billed call cannot
+# silently become several. Zero is the bound this heartbeat wants. What the
+# reading has to establish for each conformant version is that zero itself
+# reaches the override, because a release that read it as "unset" would quietly
+# restore its own count.
 _MAXIMUM_RETRIES_VARIABLE = "CLAUDE_CODE_MAX_RETRIES"
 _NO_RETRIES = "0"
 # Defence in depth for the child this invocation does not expect to have: set,
 # the CLI strips Anthropic and cloud-provider credentials from every subprocess
-# environment. Measured on 2.1.221 against the invocation below: with it the
-# tool-free call answers exactly as without it, and on a search path where
-# bubblewrap does not resolve the CLI refuses to start at all rather than
-# running unscrubbed -- which is why `ClaudeSubscriptionSettings` proves
-# bubblewrap is reachable before this deployment composes.
+# environment. Measured on every conformant version against the invocation
+# below: with it the tool-free call answers exactly as without it, and on a
+# search path where bubblewrap does not resolve the CLI refuses to start at all
+# rather than running unscrubbed -- which is why `ClaudeSubscriptionSettings`
+# proves bubblewrap is reachable before this deployment composes.
 _SUBPROCESS_ENVIRONMENT_SCRUB_VARIABLE = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"
 _SCRUB_SUBPROCESS_ENVIRONMENT = "1"
 _BUBBLEWRAP_EXECUTABLE = "bwrap"
@@ -355,9 +369,9 @@ class ClaudeSubscriptionSettings:
     CLI resolves its interpreter and its own child tools through it, and the
     launched process receives no other inherited environment. Because this
     executor asks the CLI to scrub every subprocess environment, that path must
-    also resolve bubblewrap: measured on 2.1.221, a CLI told to scrub without
-    it refuses to start, so a deployment that could only fail at invocation
-    time is refused here instead.
+    also resolve bubblewrap: measured on every conformant version, a CLI told to
+    scrub without it refuses to start, so a deployment that could only fail at
+    invocation time is refused here instead.
     """
 
     executable: Path
@@ -395,10 +409,17 @@ class ClaudeSubscriptionExecutor:
     credential directory. It decides no working directory: the CLI writes into
     wherever it is started, so where that is belongs to the attempt that owns
     the process, not to this executor. Every flag and variable below exists in
-    claude 2.1.221 and was measured there -- against a workspace holding a
-    `CLAUDE.md` and a `.claude/settings.json` whose `SessionStart` hook creates
-    a file, and against the executable's own `--help` and strings, with a
-    deliberately bogus flag as the control (it answers `error: unknown option`):
+    every conformant version and is measured there before it is admitted --
+    against a workspace holding a `CLAUDE.md` and a `.claude/settings.json`
+    whose `SessionStart` hook creates a file, and against the executable's own
+    `--help` and strings, with a deliberately bogus flag as the control: it
+    answers `error: unknown option`, so a call the whole vector survives really
+    parsed all of it rather than ignoring what it no longer knows.
+
+    What each switch stops is the observation below. The first entry is the
+    negative control that makes the rest meaningful, and it is the one entry
+    recorded from the release it was first run against rather than from every
+    conformant version: proving a bait still bites costs a call that lets it.
 
     * without them the CLI ran that hook, obeyed that `CLAUDE.md`, and wrote a
       resumable transcript under `CLAUDE_CONFIG_DIR/projects/`;
@@ -425,12 +446,13 @@ class ClaudeSubscriptionExecutor:
     revision of this executor left it unset and claimed the variable was an
     opt-OUT that a tool-free call could not benefit from. That claim was wrong,
     and it is withdrawn: the "=0 to disable" diagnostics it rested on are what
-    the CLI prints once the hardening is already active, while 2.1.221 reads
-    the variable as the opt-IN that strips Anthropic and cloud-provider
-    credentials from every subprocess environment. Measured against this exact
-    invocation on 2.1.221: set, the tool-free call answers exactly as it does
-    unset. It is not this executor's containment guarantee -- it is what limits
-    a child this invocation does not expect to have.
+    the CLI prints once the hardening is already active, while every conformant
+    version reads the variable as the opt-IN that strips Anthropic and
+    cloud-provider credentials from every subprocess environment. Measured
+    against this exact invocation on each of them: set, the tool-free call
+    answers exactly as it does unset. It is not this executor's containment
+    guarantee -- it is what limits a child this invocation does not expect to
+    have.
 
     The deployment contract this V1 is measured for, and the only one it is
     composed for: a personal subscription credential (`max` or `pro`), on a

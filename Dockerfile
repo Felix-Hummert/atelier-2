@@ -14,7 +14,7 @@ RUN npm run build
 
 
 FROM debian:bookworm-slim AS claude-cli
-ARG CLAUDE_VERSION=2.1.221
+ARG CLAUDE_VERSION=2.1.233
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
