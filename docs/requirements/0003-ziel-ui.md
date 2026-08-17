@@ -205,7 +205,7 @@ Offen:
 ### REQ-UI-18: Mockups sind Entwurfs-Vorlagen.
 Status:     DRAFT
 Quelle:     DESK — 5302769095, das dies als „Mockups sind Design-VORLAGEN (Operator ausdrücklich)" schreibt — eine Klammer-Zuschreibung, kein zitierter Satz, weshalb die Regel `DESK` ist, obwohl derselbe Kommentar ihn für REQ-UI-01 zitiert; 5302066517 Schluss (Regel 18)
-Begründung: Die gebaute Oberfläche darf besser oder anders aussehen; bindend sind die Informationshierarchie von REQ-UI-01 und dass jede Anzeige quittierte Wahrheit zeigt. Das referenzierte Artefakt ist Mockup v3, beim Operator, klickbar, unter derselben URL wie v1 und v2 — es liegt nicht in diesem Repository.
+Begründung: Die gebaute Oberfläche darf besser oder anders aussehen; bindend sind die Informationshierarchie von REQ-UI-01 und dass jede Anzeige quittierte Wahrheit zeigt. Der aktuelle Stand der Vorlage ist Mockup v4 und liegt als [0003-ziel-ui-mockup-v4.html](0003-ziel-ui-mockup-v4.html) in diesem Repository — im Browser zu öffnen, klickbar, damit jeder Kopf sieht, wie die Ziel-UI aussehen soll (Operator-Auftrag 18.08.2026). Das lebende Original bleibt beim Operator unter derselben Artefakt-URL wie v1 bis v3; ändert er es dort, wird die Datei hier regeneriert, nie unabhängig editiert.
 Journeys:
 Beweis:     UNGEBUNDEN
 Offen:
