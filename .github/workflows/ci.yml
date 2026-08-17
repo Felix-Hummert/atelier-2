@@ -438,15 +438,27 @@ jobs:
           PULL_REQUEST_BODY: ${{ github.event.pull_request.body }}
         run: printf '%s' "$PULL_REQUEST_BODY" > pull-request-body.md
 
-      - name: Check the acceptance trace of the proposed landing
+      - name: Check the acceptance trace of the proposed landing (PR only)
         if: ${{ github.event_name == 'pull_request' }}
-        run: >-
-          uv run --locked python scripts/check_acceptance.py --reports reports
-          --pull-request-body pull-request-body.md
+        run: |
+          set -euo pipefail
+          uv run --locked python scripts/check_acceptance.py --reports reports \
+            --pull-request-body pull-request-body.md 2>&1 | tee acceptance-trace.log
 
-      - name: Check the acceptance trace of a landed commit
+      - name: Check the acceptance trace of a landed commit (main only)
         if: ${{ github.event_name != 'pull_request' }}
-        run: uv run --locked python scripts/check_acceptance.py --reports reports
+        run: |
+          set -euo pipefail
+          uv run --locked python scripts/check_acceptance.py --reports reports 2>&1 | tee acceptance-trace.log
+
+      - name: Upload the acceptance trace
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: acceptance-trace-${{ github.run_attempt }}
+          path: acceptance-trace.log
+          if-no-files-found: warn
+          retention-days: 7
 
   # Ruleset main-protection still requires the old check names. These jobs
   # publish those names after the renamed surfaces finish, and fail unless
