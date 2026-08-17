@@ -17,6 +17,7 @@ from atelier2.adapters.codex_subscription import (
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -254,6 +255,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 agent_attempt_canceller=DbosAgentAttemptStore(
                     runtime.engine, runtime.settings.application_version
                 ),
+                catalog_resolver=DbosCatalogStore(runtime.engine),
             ),
             limits=settings.limits,
             event_poll_backoff=settings.event_poll_backoff,

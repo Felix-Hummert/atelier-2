@@ -17,6 +17,7 @@ from atelier2.adapters.dbos import run_store as run_store_module
 from atelier2.adapters.dbos import starter as starter_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import (
@@ -773,6 +774,7 @@ def _client(
                 agent_attempt_canceller=DbosAgentAttemptStore(
                     runtime.engine, runtime.settings.application_version
                 ),
+                catalog_resolver=DbosCatalogStore(runtime.engine),
             ),
             limits=active_limits,
             event_poll_backoff=event_poll_backoff(),

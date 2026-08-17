@@ -32,6 +32,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
 )
+from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
 
 WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events)
 
@@ -56,6 +57,9 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AuthProfileRevisionResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "CancelAgentAttemptRequestResource.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "CatalogNameResolutionResource.display_name": (
+        MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+    ),
     "PublishAgentConfigurationRevisionRequestResource.executor_revision": (
         MAXIMUM_AGENT_FIELD_CHARACTERS
     ),

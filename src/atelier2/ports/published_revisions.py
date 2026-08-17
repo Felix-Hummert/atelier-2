@@ -7,6 +7,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineage,
     CatalogLineageDisplayName,
     CatalogLineageId,
+    CatalogLineageQuery,
 )
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
@@ -53,7 +54,6 @@ class PublishedRevisionMissing:
 type ResolvePublishedRevisionResult = PublishedRevisionFound | PublishedRevisionMissing
 
 
-type CatalogLineageQuery = CatalogLineageId | CatalogLineageDisplayName
 type CatalogRevisionPosition = int | Literal["head"]
 
 

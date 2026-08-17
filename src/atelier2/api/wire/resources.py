@@ -19,6 +19,9 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
 )
+from atelier2.contracts.catalog_v3 import (
+    MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+)
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 
 
@@ -143,6 +146,17 @@ class WorkflowRevisionDetailResource(ApiModel):
     revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     document_base64: str
     graph: AnyWorkflowGraphResource
+
+
+class CatalogNameResolutionResource(ApiModel):
+    """Which revision one catalog name resolves to, and nothing about running it."""
+
+    display_name: str = Field(
+        min_length=1, max_length=MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+    )
+    lineage_id: str = Field(pattern=REVISION_HASH_PATTERN)
+    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    revision_number: int = Field(ge=1)
 
 
 class WorkflowRevisionPageResource(ApiModel):
