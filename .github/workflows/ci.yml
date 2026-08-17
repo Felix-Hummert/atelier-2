@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   frontend:
-    name: Cockpit static and behavior
+    name: "Cockpit: types, lint, tests, e2e"
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -72,6 +72,14 @@ jobs:
       - name: Install locked backend dependencies
         working-directory: .
         run: uv sync --locked --all-groups
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
 
       - name: Install the browser
         run: npx playwright install --with-deps chromium
@@ -135,7 +143,7 @@ jobs:
         run: ./gitleaks git --redact --no-banner .
 
   quality:
-    name: Static and behavior
+    name: "Python: architecture, lint, types, tests"
     runs-on: ubuntu-24.04
     steps:
       - name: Check out the event commit
@@ -439,3 +447,22 @@ jobs:
       - name: Check the acceptance trace of a landed commit
         if: ${{ github.event_name != 'pull_request' }}
         run: uv run --locked python scripts/check_acceptance.py --reports reports
+
+  # Ruleset main-protection still requires the old check names. These jobs
+  # publish those names after the renamed surfaces succeed. Drop them when
+  # the required contexts flip.
+  static-and-behavior:
+    name: Static and behavior
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hold the required check name
+        run: echo "Alias for ruleset main-protection; drop when Fable flips the required contexts."
+
+  cockpit-static-and-behavior:
+    name: Cockpit static and behavior
+    needs: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hold the required check name
+        run: echo "Alias for ruleset main-protection; drop when Fable flips the required contexts."
