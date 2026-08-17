@@ -177,10 +177,11 @@ Distilled from the review classes of 2026-08-17 (anchored on #111,
   E2E locally before the PR, with locators scoped to the objects the test
   itself created — a page-global locator meets strict mode and every other
   test's leftovers. (Source: REVISE 5317898796 on #281.)
-- On a failing GitHub call or check, read the **outage class first** (429/503,
-  empty check list) and retry with backoff — never diagnose repository code
-  from an infrastructure error. (Sources: action-download outages 17.08.,
-  503 waves 18.08.)
+- On a failing GitHub call or check, read the **outage class first** (429/503)
+  and retry with backoff — never diagnose repository code from an
+  infrastructure error. A head showing no checks at all is the merge state
+  above, not an outage. (Sources: action-download outages 17.08., 503 waves
+  18.08.)
 
 ### Named-healing rule
 
