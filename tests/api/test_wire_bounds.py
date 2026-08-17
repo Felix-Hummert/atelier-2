@@ -22,6 +22,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 from annotated_types import MaxLen
 from pydantic import BaseModel
 
@@ -114,17 +115,47 @@ def _declared_wire_bounds() -> Mapping[str, int]:
     return declared
 
 
-def _typed_bound_literals(module: ModuleType) -> tuple[str, ...]:
-    """Where a wire module writes a maximum length as a number of its own."""
-    source = Path(inspect.getfile(module)).read_text(encoding="utf-8")
-    typed: list[str] = []
-    for node in ast.walk(ast.parse(source)):
+def unowned_bounds(source: str, where: str) -> tuple[str, ...]:
+    """Where this source writes a maximum length it does not take from an owner.
+
+    A bound follows its owner only if it *names* one. Three shapes do not, and
+    they fail the same way -- the value is right today and stops moving with the
+    contract tomorrow:
+
+      - a literal, which was never connected to anything;
+      - an expression, which recomputes the number instead of reading it;
+      - a name this module assigned itself, which is a second owner wearing the
+        first one's value.
+
+    The third is why comparing values was not enough. `WIRE_BOUND = 1_024` beside
+    `max_length=WIRE_BOUND` reports the same integer as the contract and passes
+    every check that only asks what the number is.
+    """
+
+    tree = ast.parse(source)
+    assigned_here = {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    unowned: list[str] = []
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         for keyword in node.keywords:
-            if keyword.arg == "max_length" and isinstance(keyword.value, ast.Constant):
-                typed.append(f"{module.__name__}:{keyword.value.lineno}")
-    return tuple(typed)
+            if keyword.arg != "max_length":
+                continue
+            bound = keyword.value
+            if not isinstance(bound, ast.Name) or bound.id in assigned_here:
+                unowned.append(f"{where}:{bound.lineno}")
+    return tuple(unowned)
+
+
+def _unowned_wire_bounds(module: ModuleType) -> tuple[str, ...]:
+    source = Path(inspect.getfile(module)).read_text(encoding="utf-8")
+    return unowned_bounds(source, module.__name__)
 
 
 def test_every_bounded_wire_field_is_bounded_by_the_contract_that_owns_it() -> None:
@@ -132,12 +163,43 @@ def test_every_bounded_wire_field_is_bounded_by_the_contract_that_owns_it() -> N
     assert _declared_wire_bounds() == OWNED_WIRE_BOUNDS
 
 
-def test_no_wire_field_types_a_bound_it_does_not_own() -> None:
-    """A literal cannot follow its owner, so the wire never writes one."""
-    typed = tuple(
-        location
-        for module in WIRE_MODULES
-        for location in _typed_bound_literals(module)
+@pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
+def test_no_wire_field_writes_a_bound_it_does_not_take_from_its_owner() -> None:
+    """Every bound on the wire names the contract it follows, and nothing else."""
+    unowned = tuple(
+        location for module in WIRE_MODULES for location in _unowned_wire_bounds(module)
     )
 
-    assert typed == ()
+    assert unowned == ()
+
+
+@pytest.mark.parametrize(
+    ("shape", "source", "reported"),
+    [
+        ("the owner itself", "Field(max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)", False),
+        ("a literal", "Field(max_length=1_024)", True),
+        ("an expression over the owner", "Field(max_length=512 * 2)", True),
+        (
+            "a name this module assigned itself",
+            "WIRE_BOUND = 1_024\nField(max_length=WIRE_BOUND)",
+            True,
+        ),
+        (
+            "a local alias of the owner",
+            "WIRE_BOUND = MAXIMUM_AGENT_FIELD_CHARACTERS\nField(max_length=WIRE_BOUND)",
+            True,
+        ),
+    ],
+)
+@pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
+def test_the_guard_reports_every_bound_that_stopped_naming_its_owner(
+    shape: str, source: str, reported: bool
+) -> None:
+    """The three shapes that keep the value and lose the derivation, pinned.
+
+    Pinned against synthetic source rather than by editing a wire module, so the
+    guard's own reach is a standing claim instead of something a reviewer has to
+    re-prove by hand each time. The last two are the pair that passed both earlier
+    checks: same value, no owner.
+    """
+    assert bool(unowned_bounds(source, shape)) is reported
