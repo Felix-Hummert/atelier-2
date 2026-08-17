@@ -8,6 +8,7 @@ import {
   workflowDeclaredOrderSchema,
   workflowNodePreviewSchema,
   workflowRevisionDetailSchema,
+  catalogNameResolutionSchema,
   workflowRevisionSummarySchema
 } from "../../src/api/client";
 
@@ -150,6 +151,14 @@ describe("the served vocabulary", () => {
       ).sort()
     );
     expect(workflowRevisionDetailSchema.parse(sample)).toEqual(sample);
+  });
+
+  it("decodes exactly the fields the catalog name resolution serves", () => {
+    const served = servedDocument.components.schemas.CatalogNameResolutionResource;
+
+    expect(Object.keys(catalogNameResolutionSchema.shape).sort()).toEqual(
+      Object.keys(served?.properties ?? {}).sort()
+    );
   });
 
   it("decodes exactly the fields the agent-configuration listing serves", () => {

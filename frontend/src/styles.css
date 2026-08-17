@@ -267,7 +267,7 @@ small {
   font-weight: 700;
 }
 
-.revision-picker label {
+.revision-picker .revision-option {
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -276,6 +276,11 @@ small {
   border-radius: 0.55rem;
   padding: 0.65rem;
   background: var(--paper);
+}
+
+.saved-workflow {
+  display: grid;
+  gap: 0.5rem;
 }
 
 .revision-label {
@@ -306,17 +311,29 @@ small {
   border-style: dashed;
 }
 
-.revision-details {
+.revision-details,
+.revision-history {
   margin: -0.25rem 0 0 0.65rem;
   font-size: 0.85rem;
 }
 
-.revision-details summary {
+.revision-details summary,
+.revision-history summary {
   display: flex;
   align-items: center;
   min-height: 44px;
   color: var(--muted);
   cursor: pointer;
+}
+
+.revision-choice {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.revision-choice select {
+  min-height: 44px;
+  width: 100%;
 }
 
 .revision-facts {
