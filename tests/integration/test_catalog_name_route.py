@@ -135,7 +135,10 @@ def test_a_retired_lineage_refuses_by_name_instead_of_answering(
 
     assert response.status_code == 410
     assert response.json()["type"].endswith("catalog-lineage-retired")
+    # A retirement discloses neither the bytes it once held nor which lineage
+    # held them: the refusal is the whole answer.
     assert revision.revision_hash.value not in response.text
+    assert lineage_id.value not in response.text
 
 
 @pytest.mark.proves("a-name-is-answerable-over-the-api")
@@ -179,3 +182,17 @@ def test_a_position_that_is_not_a_member_is_a_named_problem(
 
     assert response.status_code == 404
     assert response.json()["type"].endswith("catalog-name-not-found")
+
+
+@pytest.mark.proves("a-name-the-catalog-cannot-honour-is-refused-by-its-own-reason")
+def test_a_position_that_is_neither_a_number_nor_head_is_refused(
+    runtime: DbosRuntime,
+) -> None:
+    found(runtime)
+
+    response = client(runtime).get(
+        f"{API_PREFIX}/workflow-revisions/by-name/{NAME}?position=later"
+    )
+
+    assert response.status_code == 400
+    assert response.json()["type"].endswith("invalid-catalog-position")

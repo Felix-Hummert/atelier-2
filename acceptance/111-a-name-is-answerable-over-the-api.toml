@@ -16,6 +16,16 @@ story = "https://github.com/FlexOr2/atelier-2/issues/111"
 #   - NO CLI. `run --name` is the next head and this route's first caller. A `run`
 #     that resolves without running would be a verb that lies.
 #
+# ONE REFUSAL IS DECLARED WITHOUT A TEST, AND THAT IS SAID RATHER THAN HIDDEN.
+# `catalog-revision-not-a-member` answers the case where a name resolves but the
+# lineage does not admit the revision it resolved to. No sequence of store calls
+# reaches it: the same write that admits a member is what makes the name resolve.
+# It is the corrupt-store class -- the shape #190 named for
+# `NamedRunRevisionUnbound` -- so the route keeps the branch and the code stays
+# declared, because the alternative is a route that meets a torn store and
+# answers with an internal error instead of the reason. Reaching it in a test
+# would mean writing a torn store by hand, which proves the fixture, not the code.
+
 # Related sentences that are NOT duplicated here: #63 owns "a name reaches exactly
 # the bytes it resolved to" for the in-process path; #22 owns how named revisions
 # are listed. This head owns one thing neither does -- the same question asked
