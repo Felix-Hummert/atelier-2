@@ -6,9 +6,11 @@ serving, and every shape it writes or reads is the wire contract that API
 publishes, so this command can neither do nor claim anything an operator could
 not obtain from the same service by hand.
 
-The API exposes no lookup for a published auth profile, agent configuration, or
-workflow revision, so this command publishes each of them from the operator's
-own files on every invocation. All three publications are idempotent: identical
+The API exposes no lookup for a published auth profile or agent configuration,
+so `run` publishes each of them from the operator's own files on every
+invocation. A workflow revision can be looked up by the name its lineage
+carries, which is what `resolve` asks and what a later `run --name` will use;
+`run --workflow` still publishes the document it was handed. All three publications are idempotent: identical
 bytes answer with the same hash and change nothing. The run identity is derived
 from those hashes for the same reason, so repeating the command reports the
 first run again instead of starting - and paying for - a second one.
@@ -21,7 +23,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import IO, Final
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
@@ -48,6 +50,7 @@ from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
     AnyRunResource,
     AuthProfileRevisionResource,
+    CatalogNameResolutionResource,
     ProblemResource,
     StreamFailureResource,
     WorkflowRevisionDetailResource,
@@ -63,6 +66,7 @@ AUTH_PROFILE_PATH = "/auth-profile-revisions"
 AGENT_CONFIGURATION_PATH = "/agent-configuration-revisions"
 WORKFLOW_REVISION_PATH = "/workflow-revisions"
 RUN_PATH = "/runs"
+DEFAULT_CATALOG_POSITION: Final = "head"
 
 JSON_MEDIA_TYPE = "application/json"
 YAML_MEDIA_TYPE = "application/yaml"
@@ -95,6 +99,7 @@ STREAM_FAILURE_NAME: Final[str] = StreamFailureResource.model_fields["event"].de
 _auth_profile_resource = TypeAdapter(AuthProfileRevisionResource)
 _agent_configuration_resource = TypeAdapter(AgentConfigurationRevisionResource)
 _workflow_revision_resource = TypeAdapter(WorkflowRevisionDetailResource)
+_catalog_name_resolution_resource = TypeAdapter(CatalogNameResolutionResource)
 _run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
 _acted_event_resource = TypeAdapter[ActedEventResource](ActedEventResource)
 _stream_failure_resource = TypeAdapter(StreamFailureResource)
@@ -210,6 +215,55 @@ class RunReport:
     workflow_revision_hash: str
     terminal_hash: str
     outputs: tuple[AgentOutput, ...]
+
+
+@dataclass(frozen=True)
+class NameOrder:
+    """One question for the catalog: which revision does this name hold?"""
+
+    service_url: str
+    name: str
+    position: str = "head"
+
+
+@dataclass(frozen=True)
+class NameResolution:
+    display_name: str
+    lineage_id: str
+    revision_hash: str
+    revision_number: int
+
+
+def resolve_published_name(order: NameOrder) -> NameResolution:
+    """Ask the service which revision one catalog name holds. Start nothing.
+
+    The service owns the answer and every refusal in it: an unadmitted name, a
+    retired lineage, a position it does not hold. This command adds no judgment
+    of its own -- it asks, and hands the service's own words on.
+    """
+
+    api = _api_url(order.service_url)
+    asked = f"{api}{WORKFLOW_REVISION_PATH}/by-name/{quote(order.name, safe='')}"
+    if order.position != DEFAULT_CATALOG_POSITION:
+        asked = f"{asked}?position={quote(order.position, safe='')}"
+    resolved = _decoded(
+        _catalog_name_resolution_resource, _get(asked), "a catalog name"
+    )
+    return NameResolution(
+        resolved.display_name,
+        resolved.lineage_id,
+        resolved.revision_hash,
+        resolved.revision_number,
+    )
+
+
+def describe_resolution(resolution: NameResolution) -> str:
+    """What the name resolved to, in the terms the operator asked in."""
+
+    return (
+        f"{resolution.display_name} is revision {resolution.revision_number} "
+        f"of lineage {resolution.lineage_id}: {resolution.revision_hash}"
+    )
 
 
 def execute_run(order: RunOrder) -> RunReport:
