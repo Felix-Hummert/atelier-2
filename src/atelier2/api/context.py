@@ -23,6 +23,9 @@ from atelier2.application.publish_workflow_revision import (
     PublishWorkflowRevisionResult,
     WorkflowPublicationLimits,
 )
+from atelier2.application.read_agent_configurations import (
+    ListAgentConfigurationRevisionsResult,
+)
 from atelier2.application.read_run_events import ReadRunEventsResult
 from atelier2.application.read_runs import (
     GetNodeDetailUseCaseResult,
@@ -43,6 +46,7 @@ from atelier2.application.start_published_run import (
     StartPublishedRunResult,
 )
 from atelier2.contracts.agent_attempts import CancelAgentAttemptRequest
+from atelier2.contracts.agents import AgentConfigurationRevisionHash
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -128,6 +132,10 @@ class ApiUseCases:
     ]
     publish_agent_configuration_revision: Callable[
         [str, str, str, str], PublishAgentConfigurationRevisionResult
+    ]
+    list_agent_configuration_revisions: Callable[
+        [AgentConfigurationRevisionHash | None, int],
+        ListAgentConfigurationRevisionsResult,
     ]
     start_published_run: Callable[
         [

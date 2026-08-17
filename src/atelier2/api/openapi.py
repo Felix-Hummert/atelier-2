@@ -119,6 +119,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (API_PREFIX + "/agent-configuration-revisions", "get"): (
+        "invalid-revision-hash",
+        "invalid-request",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (API_PREFIX + "/schema-revisions", "post"): (
         *SCHEMA_DOCUMENT_PROBLEM_CODES,
         "schema-revision-collision",

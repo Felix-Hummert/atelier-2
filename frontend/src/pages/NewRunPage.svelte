@@ -3,9 +3,9 @@
 
   import {
     CockpitRequestError,
+    type AgentConfigurationRevision,
     type AuthProfileInput,
     type CockpitApi,
-    type RunV2,
     type WorkflowRevisionDetail,
     type WorkflowRevisionPage,
     type WorkflowRevisionSummary
@@ -22,7 +22,12 @@
     type PublishMutation,
     type StartMutation
   } from "../lib/mutationJournal";
-  import { readEveryRevision } from "../lib/runPages";
+  import {
+    namedAgentLabel,
+    readLastNamedAgentChoices,
+    rememberNamedAgentChoice
+  } from "../lib/namedAgentChoice";
+  import { readEveryAgentConfiguration, readEveryRevision } from "../lib/runPages";
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
 
   export let cockpitApi: CockpitApi;
@@ -32,6 +37,7 @@
 
   interface BindingDraft {
     role: string;
+    selectedHash: string;
     profileId: string;
     revisionNumber: string;
     providerId: string;
@@ -51,6 +57,8 @@
     confirmed: null,
     request: { state: "idle" }
   };
+  let publishedConfigurations: AgentConfigurationRevision[] = [];
+  let configurationsRequest: "idle" | "loading" = "idle";
   let mode: "saved" | "publish" = "saved";
   let exactYaml = "";
   let draft: RunDraft | null = null;
@@ -97,7 +105,7 @@
   }
 
   onMount(async () => {
-    await Promise.all([loadRevisions(), loadPending()]);
+    await Promise.all([loadRevisions(), loadConfigurations(), loadPending()]);
   });
 
   async function loadRevisions(): Promise<void> {
@@ -117,6 +125,27 @@
     } catch (error) {
       showFailure(error, "The workflow list could not be loaded.");
       revisions = { ...revisions, request: { state: "idle" } };
+    }
+  }
+
+  async function loadConfigurations(): Promise<void> {
+    configurationsRequest = "loading";
+    try {
+      const reading = await readEveryAgentConfiguration((after) =>
+        cockpitApi.listAgentConfigurationRevisions(after)
+      );
+      publishedConfigurations = reading.configurations;
+      applyRememberedChoices();
+      if (!reading.complete) {
+        showFailure(
+          new Error(`Some published agents could not be read: ${reading.unreadable}.`),
+          "The published agent list is incomplete."
+        );
+      }
+    } catch (error) {
+      showFailure(error, "The published agent list could not be loaded.");
+    } finally {
+      configurationsRequest = "idle";
     }
   }
 
@@ -261,7 +290,7 @@
       operation = "start";
       failureMessage = null;
       const bindings = selected.bindings.map((binding) => ({ ...binding }));
-      const publishedBindings = await publishBindings(bindings);
+      const publishedBindings = await resolveBindings(bindings);
       if (publishedBindings === null) {
         operation = null;
         return;
@@ -334,6 +363,7 @@
       runId: createRunId(),
       bindings: roles.map((role) => ({
         role,
+        selectedHash: "",
         profileId: "",
         revisionNumber: "",
         providerId: "",
@@ -343,11 +373,48 @@
         error: null
       }))
     };
+    applyRememberedChoices();
   }
 
-  async function publishBindings(bindings: BindingDraft[]): Promise<RunV2["agent_bindings"] | null> {
-    const published: RunV2["agent_bindings"] = [];
+  function applyRememberedChoices(): void {
+    if (draft === null || publishedConfigurations.length === 0) return;
+    const remembered = readLastNamedAgentChoices(globalThis.localStorage);
+    const known = new Set(
+      publishedConfigurations.map((item) => item.agent_configuration_revision_hash)
+    );
+    draft = {
+      ...draft,
+      bindings: draft.bindings.map((binding) => {
+        const hash = remembered[binding.role];
+        if (hash === undefined || !known.has(hash)) return binding;
+        return { ...binding, selectedHash: hash };
+      })
+    };
+  }
+
+  function chooseNamedAgent(role: string, hash: string): void {
+    if (draft === null) return;
+    draft = {
+      ...draft,
+      bindings: draft.bindings.map((binding) =>
+        binding.role === role ? { ...binding, selectedHash: hash, error: null } : binding
+      )
+    };
+    if (hash.length > 0) rememberNamedAgentChoice(globalThis.localStorage, role, hash);
+  }
+
+  async function resolveBindings(
+    bindings: BindingDraft[]
+  ): Promise<Array<{ role: string; agent_configuration_revision_hash: string }> | null> {
+    const published: Array<{ role: string; agent_configuration_revision_hash: string }> = [];
     for (const binding of bindings) {
+      if (binding.selectedHash.length > 0) {
+        published.push({
+          role: binding.role,
+          agent_configuration_revision_hash: binding.selectedHash
+        });
+        continue;
+      }
       try {
         const authInput = {
           profile_id: binding.profileId,
@@ -370,10 +437,7 @@
         })) throw new Error("The configuration response changed these fields.");
         published.push({
           role: binding.role,
-          agent_configuration_revision_hash: configuration.value.agent_configuration_revision_hash,
-          ...auth.value,
-          model: binding.model,
-          executor_revision: binding.executorRevision
+          agent_configuration_revision_hash: configuration.value.agent_configuration_revision_hash
         });
       } catch (error) {
         setBindingError(binding.role, error instanceof Error ? error.message : "Binding failed.");
@@ -384,10 +448,14 @@
   }
 
   function validateBindings(bindings: BindingDraft[]): boolean {
+    const known = new Set(
+      publishedConfigurations.map((item) => item.agent_configuration_revision_hash)
+    );
     let valid = true;
     for (const binding of bindings) {
       const revisionNumber = Number(binding.revisionNumber);
-      const complete =
+      const named = binding.selectedHash.length > 0 && known.has(binding.selectedHash);
+      const expert =
         binding.profileId.length > 0 &&
         /^(?:[1-9][0-9]*)$/.test(binding.revisionNumber) &&
         Number.isSafeInteger(revisionNumber) &&
@@ -395,7 +463,12 @@
         binding.authMode !== "" &&
         binding.model.length > 0 &&
         binding.executorRevision.length > 0;
-      binding.error = complete ? null : "Complete every field.";
+      const complete = named || expert;
+      binding.error = complete
+        ? null
+        : publishedConfigurations.length === 0
+          ? "Complete every field."
+          : "Choose a published agent or complete every field.";
       valid &&= complete;
     }
     draft = draft === null ? null : { ...draft, bindings: [...bindings] };
@@ -567,14 +640,37 @@
             <header class="node-header">
               <span class="node-kind">Agent role</span><h3>{binding.role}</h3>
             </header>
-            <div class="binding-grid">
-              <label>Profile ID<input type="text" bind:value={binding.profileId} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
-              <label>Revision<input type="text" inputmode="numeric" bind:value={binding.revisionNumber} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
-              <label>Provider<input type="text" bind:value={binding.providerId} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
-              <label>Auth mode<select bind:value={binding.authMode} onchange={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null}><option value="">Choose</option><option value="subscription">Subscription</option><option value="api_key">API key</option></select></label>
-              <label>Model<input type="text" bind:value={binding.model} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
-              <label>Executor<input type="text" bind:value={binding.executorRevision} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
-            </div>
+            {#if configurationsRequest === "loading"}
+              <p class="status" role="status">Loading published agents…</p>
+            {:else if publishedConfigurations.length === 0}
+              <p class="muted">No published agent configurations yet. Publish one below, then it will appear here.</p>
+            {:else}
+              <label class="named-agent">Agent
+                <select
+                  value={binding.selectedHash}
+                  onchange={(event) => chooseNamedAgent(binding.role, event.currentTarget.value)}
+                  disabled={busy}
+                  aria-invalid={binding.error !== null}
+                  aria-label={`Agent for ${binding.role}`}
+                >
+                  <option value="">Choose</option>
+                  {#each publishedConfigurations as item (item.agent_configuration_revision_hash)}
+                    <option value={item.agent_configuration_revision_hash}>{namedAgentLabel(item)}</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
+            <details class="revision-details expert-fields">
+              <summary>Expert fields</summary>
+              <div class="binding-grid">
+                <label>Profile ID<input type="text" bind:value={binding.profileId} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
+                <label>Revision<input type="text" inputmode="numeric" bind:value={binding.revisionNumber} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
+                <label>Provider<input type="text" bind:value={binding.providerId} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
+                <label>Auth mode<select bind:value={binding.authMode} onchange={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null}><option value="">Choose</option><option value="subscription">Subscription</option><option value="api_key">API key</option></select></label>
+                <label>Model<input type="text" bind:value={binding.model} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
+                <label>Executor<input type="text" bind:value={binding.executorRevision} oninput={() => setBindingError(binding.role, null)} disabled={busy} aria-invalid={binding.error !== null} /></label>
+              </div>
+            </details>
             {#if binding.error !== null}<p class="binding-error" role="alert">{binding.error}</p>{/if}
           </article>
         {/each}

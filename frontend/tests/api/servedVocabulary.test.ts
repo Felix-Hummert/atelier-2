@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   NODE_STATES,
   PUBLIC_ATTEMPT_STATES,
+  agentConfigurationRevisionPageSchema,
   workflowNodePreviewSchema,
   workflowRevisionSummarySchema
 } from "../../src/api/client";
@@ -97,5 +98,13 @@ describe("the served vocabulary", () => {
         instruction_start: "ä".repeat((maxLength ?? 0) + 1)
       })
     ).toThrow();
+  });
+
+  it("decodes exactly the fields the agent-configuration listing serves", () => {
+    const served = servedDocument.components.schemas.AgentConfigurationRevisionPageResource;
+
+    expect(Object.keys(agentConfigurationRevisionPageSchema.shape).sort()).toEqual(
+      Object.keys(served?.properties ?? {}).sort()
+    );
   });
 });

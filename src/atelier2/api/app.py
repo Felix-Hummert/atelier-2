@@ -37,6 +37,9 @@ from atelier2.application.publish_workflow_revision import (
     WorkflowPublicationLimits,
     publish_workflow_revision,
 )
+from atelier2.application.read_agent_configurations import (
+    list_agent_configuration_revisions,
+)
 from atelier2.application.read_run_events import read_run_events
 from atelier2.application.read_runs import get_node_detail, get_run, list_runs
 from atelier2.application.read_workflow_revisions import (
@@ -145,6 +148,11 @@ def bound_use_cases(
                     capability,
                     ports.agent_configuration_catalog,
                 )
+            )
+        ),
+        list_agent_configuration_revisions=(
+            lambda after, limit: list_agent_configuration_revisions(
+                after, limit, ports.agent_configuration_catalog
             )
         ),
         start_published_run=lambda run_id, revision_hash, bindings, orders=(): (

@@ -11,6 +11,10 @@ from atelier2.application.prepare_run_events import (
     prepare_run_events,
 )
 from atelier2.application.prepare_run_events import RunNotFound as EventRunNotFound
+from atelier2.application.read_agent_configurations import (
+    AgentConfigurationRevisionsListed,
+    list_agent_configuration_revisions,
+)
 from atelier2.application.read_runs import (
     RunNotFound,
     RunRead,
@@ -33,6 +37,11 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
 )
+from atelier2.ports.agent_configurations import (
+    AgentConfigurationRevisionPage,
+    CatalogReadUnavailable,
+)
+from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.run_events import (
     CursorAhead,
     EventHistoryCorrupt,
@@ -215,3 +224,27 @@ def test_a_read_asks_its_port_with_exactly_what_the_caller_named() -> None:
     list_runs(RUN_ID, 25, queries)
 
     assert queries.asked == [(RUN_ID, 25)]
+
+
+def test_list_agent_configuration_revisions_becomes_this_layers_own_outcome() -> None:
+    listed = AgentConfigurationRevisionPage((), None)
+
+    class Catalog:
+        def __init__(self, answer: object) -> None:
+            self.answer = answer
+            self.asked: list[tuple[object, int]] = []
+
+        def list_agent_configuration_revisions(
+            self, after: object, limit: int
+        ) -> object:
+            self.asked.append((after, limit))
+            return self.answer
+
+    for port_answer, expected in (
+        (listed, AgentConfigurationRevisionsListed((), None)),
+        (CatalogReadUnavailable("store asleep"), ReadUnavailable("store asleep")),
+        (PortDurableStateCorrupt(), DurableStateCorrupt()),
+    ):
+        catalog: Any = Catalog(port_answer)
+        assert list_agent_configuration_revisions(None, 50, catalog) == expected
+        assert catalog.asked == [(None, 50)]

@@ -427,6 +427,23 @@ textarea {
 
 .binding-card::after { content: none; }
 
+.named-agent {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 1rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.named-agent select {
+  color: var(--ink);
+}
+
+.expert-fields {
+  margin: 0.75rem 0 0;
+}
+
 .binding-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

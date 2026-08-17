@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from atelier2.api._support import (
+    parse_limit,
     require_json_media_dependency,
     resource_response,
     run_control_query,
@@ -23,6 +24,7 @@ from atelier2.api.wire.requests import (
     PublishAuthProfileRevisionRequestResource,
 )
 from atelier2.api.wire.resources import (
+    AgentConfigurationRevisionPageResource,
     AgentConfigurationRevisionResource,
     AuthProfileRevisionResource,
 )
@@ -39,7 +41,15 @@ from atelier2.application.publish_agent_configurations import (
     UnpublishableAgentConfiguration,
     UnpublishableAuthProfile,
 )
-from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
+from atelier2.application.read_agent_configurations import (
+    AgentConfigurationRevisionsListed,
+)
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ReadUnavailable,
+    WriteUnavailable,
+)
+from atelier2.contracts.agents import AgentConfigurationRevisionHash
 
 router = APIRouter()
 
@@ -123,3 +133,44 @@ async def publish_agent_configuration_revision_route(
     return resource_response(
         agent_configuration_revision_resource(stored, auth_profile), status
     )
+
+
+@router.get(
+    API_PREFIX + "/agent-configuration-revisions",
+    response_model=AgentConfigurationRevisionPageResource,
+)
+async def list_agent_configuration_revisions_route(
+    after_revision_hash: str | None = None,
+    limit: str = "50",
+    context: ApiContext = api_context_dependency,
+) -> AgentConfigurationRevisionPageResource:
+    after = None
+    if after_revision_hash is not None:
+        try:
+            after = AgentConfigurationRevisionHash(after_revision_hash)
+        except ValueError as error:
+            raise ApiProblem("invalid-revision-hash") from error
+    parsed_limit = parse_limit(limit)
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.list_agent_configuration_revisions(
+            after, parsed_limit
+        ),
+    )
+    match result:
+        case AgentConfigurationRevisionsListed(items, next_after):
+            return AgentConfigurationRevisionPageResource(
+                items=tuple(
+                    agent_configuration_revision_resource(revision, auth_profile)
+                    for revision, auth_profile in items
+                ),
+                next_after_revision_hash=(
+                    None if next_after is None else next_after.value
+                ),
+            )
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)

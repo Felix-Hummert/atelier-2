@@ -66,6 +66,19 @@ class AgentConfigurationRevisionResource(ApiModel):
     agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class AgentConfigurationRevisionPageResource(ApiModel):
+    """One page of published agent configurations, in the item form already spoken.
+
+    The items are the existing revision resource, not a slimmer twin: a picker
+    needs the same display facts the publication already answers with. The
+    cursor is the item's own identity, named the same way the workflow list
+    names its cursor.
+    """
+
+    items: tuple[AgentConfigurationRevisionResource, ...]
+    next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
+
+
 class AgentNodeResource(ApiModel):
     type: Literal["agent"]
     node_id: str = Field(min_length=1)
