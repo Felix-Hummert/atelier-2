@@ -28,7 +28,11 @@ from atelier2.ports.durable_runs import (
     DurableWriteUnavailable,
     StartPublishedRunRequest,
     StartPublishedRunRequestV2,
+    StartPublishedRunRequestV3,
     V3InputRefusal,
+)
+from atelier2.ports.durable_runs import (
+    AuthoredOrder as PortAuthoredOrder,
 )
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
@@ -107,11 +111,20 @@ class AuthoredAgentBinding:
     agent_configuration_revision_hash: str
 
 
+@dataclass(frozen=True)
+class AuthoredOrder:
+    """An order as a caller supplies it: a name and the exact value bytes."""
+
+    name: str
+    value: bytes
+
+
 def start_published_run(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     bindings: tuple[AuthoredAgentBinding, ...] | None,
     starter: DurablePublishedRunStarter,
+    orders: tuple[AuthoredOrder, ...] = (),
 ) -> StartPublishedRunResult:
     """Start one published revision, from the values an author supplied.
 
@@ -121,9 +134,11 @@ def start_published_run(
     therefore has one outcome to read rather than an outcome and an exception.
 
     `bindings` is `None` for a revision that binds no agent, which is a different
-    statement from binding an empty set.
+    statement from binding an empty set. `orders` is the material the document
+    declared as `graph_inputs`; the start pins each one to the schema the
+    document named, so a caller does not repeat that hash.
     """
-    request = _durable_request(run_id, revision_hash, bindings)
+    request = _durable_request(run_id, revision_hash, bindings, orders)
     if request is None:
         return InvalidAgentBindings()
     result = starter.start_published(request)
@@ -160,24 +175,33 @@ def _durable_request(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     bindings: tuple[AuthoredAgentBinding, ...] | None,
+    orders: tuple[AuthoredOrder, ...] = (),
 ) -> AnyStartPublishedRunRequest | None:
     if bindings is None:
+        if orders:
+            return None
         return StartPublishedRunRequest(run_id, revision_hash)
     try:
-        return StartPublishedRunRequestV2(
-            run_id,
-            revision_hash,
-            AgentBindingSet(
-                tuple(
-                    AgentBinding(
-                        AgentRole(binding.role),
-                        AgentConfigurationRevisionHash(
-                            binding.agent_configuration_revision_hash
-                        ),
-                    )
-                    for binding in bindings
+        binding_set = AgentBindingSet(
+            tuple(
+                AgentBinding(
+                    AgentRole(binding.role),
+                    AgentConfigurationRevisionHash(
+                        binding.agent_configuration_revision_hash
+                    ),
                 )
-            ),
+                for binding in bindings
+            )
         )
+        if orders:
+            return StartPublishedRunRequestV3(
+                run_id,
+                revision_hash,
+                binding_set,
+                orders=tuple(
+                    PortAuthoredOrder(order.name, order.value) for order in orders
+                ),
+            )
+        return StartPublishedRunRequestV2(run_id, revision_hash, binding_set)
     except (TypeError, ValueError):
         return None

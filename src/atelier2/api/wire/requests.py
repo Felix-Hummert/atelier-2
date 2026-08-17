@@ -23,6 +23,7 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
+from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 
 class RevisionListingView(StrEnum):
@@ -103,7 +104,33 @@ class StartRunRequestResourceV2(ApiModel):
     )
 
 
-AnyStartRunRequestResource = StartRunRequestResource | StartRunRequestResourceV2
+class StartRunOrderResource(ApiModel):
+    """One order as a caller supplies it: a name and the exact JSON text.
+
+    The document pins the schema. The value is the exact bytes the operator
+    wrote, as UTF-8 text, so a pretty-printed file and a one-line flag stay
+    distinct material rather than being canonicalized into one hash.
+    """
+
+    name: str = Field(min_length=1)
+    value: str = Field(min_length=1, max_length=MAXIMUM_INSTANCE_DOCUMENT_BYTES)
+
+
+class StartRunRequestResourceV3(ApiModel):
+    """A start that carries the orders the document declares, beside it."""
+
+    workflow_format_version: Literal[3]
+    run_id: str = Field(min_length=1)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    agent_bindings: tuple[StartRunAgentBindingResourceV2, ...] = Field(
+        max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
+    )
+    orders: tuple[StartRunOrderResource, ...]
+
+
+AnyStartRunRequestResource = (
+    StartRunRequestResource | StartRunRequestResourceV2 | StartRunRequestResourceV3
+)
 
 
 class AnswerWaitRequestResource(ApiModel):

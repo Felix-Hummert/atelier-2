@@ -120,6 +120,24 @@ class DurableV3StartInputRefused:
 
 
 @dataclass(frozen=True)
+class AuthoredOrder:
+    """An order as a caller supplies it: a name and the exact value bytes.
+
+    The document pins the schema. A caller that also named a schema would
+    be repeating a decision they do not own; the start looks the pin up.
+    """
+
+    name: str
+    value: bytes
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("an order names a nonempty input")
+        if not isinstance(self.value, bytes):
+            raise TypeError("an order carries exact bytes")
+
+
+@dataclass(frozen=True)
 class StartPublishedRunRequestV3:
     """A start that carries the orders the document declares, beside it.
 
@@ -128,12 +146,18 @@ class StartPublishedRunRequestV3:
     run would describe something no graph can read. A V3 document that declares
     no `graph_inputs` still starts through the V2 shape; what refuses a missing
     order is the order itself being absent, not the shape of the request.
+
+    `run_inputs` is the durable form (name, pinned schema, bytes) the first
+    door already speaks. `orders` is what a caller can honestly supply: a
+    name and the exact bytes. The start pins the schema the document named.
+    One start uses one of the two, never both.
     """
 
     run_id: RunId
     revision_hash: WorkflowRevisionHash
     agent_bindings: AgentBindingSet
     run_inputs: tuple[RunInput, ...] = ()
+    orders: tuple[AuthoredOrder, ...] = ()
 
 
 type AnyStartPublishedRunRequest = (

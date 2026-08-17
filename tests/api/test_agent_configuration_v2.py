@@ -354,6 +354,7 @@ def test_openapi_names_both_publish_operations_and_exact_problem_sets() -> None:
     ] == [
         "#/components/schemas/StartRunRequestResource",
         "#/components/schemas/StartRunRequestResourceV2",
+        "#/components/schemas/StartRunRequestResourceV3",
     ]
     assert [
         item["$ref"]
