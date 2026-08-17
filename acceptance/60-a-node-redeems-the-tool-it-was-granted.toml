@@ -25,13 +25,25 @@ story = "https://github.com/FlexOr2/atelier-2/issues/60"
 # process's own user, with its environment. Enforcement at a boundary that cannot
 # be talked out of is #242's.
 #
-# ALSO ABSENT, AND NAMED SO NOBODY READS MORE THAN IS THERE: the project tree.
-# The command runs in the attempt's own leased directory, and nothing yet
-# materialises a checkout into it -- so redeeming `run-project-verification`
-# against this repository today produces a receipt proving the command could
-# not start. The tree is the pinned input of the #60 design note (repo@commit)
-# and arrives with H2/#242; until then the capability proves the mechanism,
-# not this repository.
+# THE TREE, AS OF H2: present, and pinned. The project source is resolved to one
+# commit when a node's durable binding is composed, and that commit's tree -- the
+# material, never the repository -- is unpacked into the attempt's leased
+# directory before any provider starts. The manifest that declares the
+# verification is read at the same commit, so declaration and execution are one
+# tree rather than a living checkout and a blank directory. What is still NOT
+# claimed: nothing in the lease can commit, fetch or push, because no history
+# travels with the tree; nothing writes back; and a second project does not exist
+# (#133 owns the project entity, `--project-root` stays one host setting).
+#
+# WHAT REMAINS DEFERRED AND IS NAMED HERE: git submodules and LFS content are not
+# resolved by `git archive`, so a project using them is materialised without them;
+# an ordinal-2 replacement composes its own binding and therefore pins the head as
+# it stands then, not attempt 1's; and the size of a tree is bounded by nothing but
+# the disk. Each waits for usage evidence. One further sentence is asserted rather
+# than separately proven: that a node recovered after a crash replays the pin its
+# binding recorded instead of resolving the head a second time rests on the durable
+# step contract every other field of that same binding already rests on, and no
+# crash test pins the commit specifically.
 #
 # STILL REFUSED BY NAME: a second grant on one node (one attempt leaves one
 # redemption receipt, so two would have one answering for the other), and every
@@ -48,3 +60,15 @@ text = "A tools entry whose published revision names a capability nothing here p
 [[sentence]]
 id = "a-project-that-declares-no-verification-refuses-before-anything-runs"
 text = "Where the project states no verification command of its own, the attempt of a node that pinned a grant is refused in the words of the manifest that should have stated it, before any provider process starts and before any durable attempt is claimed."
+
+[[sentence]]
+id = "an-attempt-works-in-the-tree-its-own-binding-pinned"
+text = "The project source is resolved to one commit when a node's durable binding is composed and never again, and the tree that commit names -- without the repository that holds it -- stands in the directory the attempt leased before any provider process starts, so the work happens on the material the binding named rather than on whatever the operator's checkout holds by then."
+
+[[sentence]]
+id = "what-a-project-declares-and-where-it-runs-are-one-commit"
+text = "The verification a redeeming node runs is read from the manifest the pinned commit carries and runs in the tree unpacked from that same commit, so an edit standing only in the operator's checkout decides nothing about a run already bound."
+
+[[sentence]]
+id = "a-pin-no-source-can-answer-for-refuses-before-the-claim"
+text = "An attempt whose pinned commit its project source can no longer answer for is refused in that source's own words before the attempt is claimed and before any workspace is leased; and a durable binding carrying half a pin, a pin naming no objects, or a tool grant with no pin at all is refused as the binding conflict it is."

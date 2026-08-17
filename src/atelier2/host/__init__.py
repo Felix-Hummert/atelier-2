@@ -35,7 +35,7 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
     verify_grok_capability,
 )
-from atelier2.adapters.project_verification import LocalProjectVerificationRunner
+from atelier2.adapters.project_verification import declared_project
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
 from atelier2.host.migrate_command import describe_migration, execute_migrate
 from atelier2.host.run_command import (
@@ -58,6 +58,7 @@ from atelier2.host.serving import (
     event_poll_backoff,
     serve,
 )
+from atelier2.ports.project_source import ProjectSourceUnavailable
 from atelier2.ports.project_verification import ProjectVerificationUndeclared
 
 MIGRATE_DESCRIPTION = """\
@@ -348,20 +349,22 @@ def _attested_agent_scratch_root(
 def _declared_project_root(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
 ) -> Path | None:
-    """Refuse a project that declares no verification before the server exists.
+    """Refuse a project that cannot be pinned or declares no verification.
 
-    A node redeeming `run-project-verification` runs what this project's own
-    manifest states, so a root whose manifest states nothing is refused here --
-    where the operator who named it is still reading -- rather than at the first
-    run that pins a grant.
+    Every attempt works in the tree one commit of this project names, and a node
+    redeeming `run-project-verification` runs what that tree's own manifest
+    states. So a root that is no repository of its own, and a root whose manifest
+    states nothing, are both refused here -- where the operator who named it is
+    still reading -- rather than at the first run that binds a node.
     """
 
     root: Path | None = parsed.project_root
     if root is None:
         return None
     try:
-        LocalProjectVerificationRunner(root).preflight()
-    except ProjectVerificationUndeclared as refusal:
+        project = declared_project(root)
+        project.verifications.preflight(project.source.head())
+    except (ProjectSourceUnavailable, ProjectVerificationUndeclared) as refusal:
         parser.error(str(refusal))
     return root
 

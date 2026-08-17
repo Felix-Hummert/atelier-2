@@ -92,13 +92,20 @@ holds anything that is not an attempt workspace; an attempt whose directory
 already exists is refused with that directory untouched, and no provider runs.
 A provider may write whatever it likes inside its own directory: the measured
 Claude CLI materializes a set of empty configuration and lock files there even
-tool-free, which is why a provider is never handed a project or repository path.
-The directory is removed once the process and its descendants are proven gone
-and the attempt is durably terminal -- after attested cleanup for a cancelled
-one -- and a restart removes what terminal attempts left behind while preserving
-every nonterminal one. Removal never follows a symbolic link out and never
-touches the root itself. This is a blank directory, not an operating-system
-sandbox: the process still runs as the serving user and can name other paths.
+tool-free, which is why a provider is never handed the operator's own checkout.
+What it is handed instead, where a project is declared, is that project's source
+at one commit: the source is resolved to a commit when the node's durable binding
+is composed and never again, and the tree that commit names is unpacked into the
+leased directory before the provider starts. The tree travels without its
+repository, so nothing in the lease can commit, fetch or push, and an attempt
+whose pinned commit the source can no longer answer for is refused in that
+source's own words before the attempt is claimed. The directory is removed once
+the process and its descendants are proven gone and the attempt is durably
+terminal -- after attested cleanup for a cancelled one -- and a restart removes
+what terminal attempts left behind while preserving every nonterminal one.
+Removal never follows a symbolic link out and never touches the root itself. This
+is a directory holding pinned material, not an operating-system sandbox: the
+process still runs as the serving user and can name other paths.
 
 The first real provider now sits behind that durable contract. When the operator
 declares a Claude executable and a credential directory, the host composes one
@@ -432,16 +439,21 @@ such a node runs, the command the project's own manifest declares under
 the project decides what verifies it, never the agent and never the atelier --
 and the run leaves durable proof of exactly which command ran, how it ended and
 the hash of what it wrote, beside the agent receipt whose provider bytes stay
-its own. Three refusals are named rather than worked around: a grant naming a
-capability nothing here performs, or bytes that are no grant at all, refuses the
-run at the reference that pinned it; a node pinning more grants than one attempt
-redeems is refused by that count; and a project stating no verification refuses
-the attempt in the words of the manifest that should have stated it, before any
-provider process starts. What this does not claim is isolation: the leased
-directory is still honestly "not a sandbox", the verification runs as the served
-process's own user, and enforcement at a boundary that cannot be talked out of
-is not built. Neither is the static capability attestation of a build --
-declared, resolved, redeemed and proven is the whole of the claim.
+its own. The manifest that is read is the one the pinned commit carries, and the
+directory it runs in holds the tree unpacked from that same commit, so what a
+project declared and where it was run are one tree rather than a living checkout
+and a blank directory. Refusals are named rather than worked around: a grant
+naming a capability nothing here performs, or bytes that are no grant at all,
+refuses the run at the reference that pinned it; a node pinning more grants than
+one attempt redeems is refused by that count; a project stating no verification
+at the pinned commit refuses the attempt in the words of the manifest that should
+have stated it; and a root that is no repository of its own is refused before the
+server exists -- each before any provider process starts. What this does not
+claim is isolation: the leased directory is still honestly "not a sandbox", the
+verification runs as the served process's own user, and enforcement at a boundary
+that cannot be talked out of is not built. Neither is the static capability
+attestation of a build -- declared, resolved, redeemed and proven is the whole of
+the claim.
 
 The canonical store is schema V15. A fresh store is created as exact V15 and
 carries published revisions of the closed kind set, lineage membership bound

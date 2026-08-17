@@ -106,9 +106,10 @@ from atelier2.ports.agent_executions import (
     AgentExecutorV2,
 )
 from atelier2.ports.effects import EffectAdapter
+from atelier2.ports.project_source import ProjectSourcePin
 from atelier2.ports.project_verification import (
-    ProjectVerificationRunner,
-    ToolGrantRedemption,
+    DeclaredProject,
+    PinnedProjectSource,
 )
 
 WORKFLOW_NAME = "atelier2_durable_run"
@@ -158,6 +159,8 @@ class EncodedAgentBindingV2(TypedDict):
     job: str
     tool_revision_hash: NotRequired[str]
     tool_capability: NotRequired[str]
+    project_commit: NotRequired[str]
+    project_tree: NotRequired[str]
     configuration_hash: str
     auth_hash: str
     profile_id: str
@@ -234,7 +237,17 @@ def _node_binding(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
+    project: DeclaredProject | None,
 ) -> EncodedNodeBinding:
+    """Compose what this node durably binds, including the source it is pinned to.
+
+    The pin is taken here and nowhere else. Composing the binding is the one
+    moment a node's material is decided, so resolving the project's head again at
+    launch time would let a commit landing between the two silently change what a
+    started run works on -- and a recovered node replays the binding this step
+    recorded rather than resolving anything a second time.
+    """
+
     def load() -> EncodedNodeBinding:
         session = datasource.sql_session()
         run = load_run(session, run_id)
@@ -296,6 +309,10 @@ def _node_binding(
             if pinned is not None:
                 encoded["tool_revision_hash"] = pinned.revision_hash.value
                 encoded["tool_capability"] = pinned.capability.value
+            if project is not None:
+                source_pin = project.source.head()
+                encoded["project_commit"] = source_pin.commit
+                encoded["project_tree"] = source_pin.tree
             return encoded
         if isinstance(node, ActionNode):
             return {"type": "action"}
@@ -361,19 +378,43 @@ def _declared_tool_grant(binding: EncodedAgentBindingV2) -> DeclaredToolGrant | 
         ) from error
 
 
-def _redemption(
-    binding: EncodedAgentBindingV2, verifications: ProjectVerificationRunner | None
-) -> ToolGrantRedemption | None:
-    """What redeems this node's grant, or the named refusal that nothing does."""
-    grant = _declared_tool_grant(binding)
-    if grant is None:
+def _declared_source_pin(binding: EncodedAgentBindingV2) -> ProjectSourcePin | None:
+    """The project source a durable node binding pinned, or nothing where none was."""
+    commit = binding.get("project_commit")
+    tree = binding.get("project_tree")
+    if commit is None or tree is None:
+        if commit is not None or tree is not None:
+            raise RunBindingConflict(
+                "a durable project source pin is only partly encoded"
+            )
         return None
-    if verifications is None:
+    try:
+        return ProjectSourcePin(commit, tree)
+    except (TypeError, ValueError) as error:
         raise RunBindingConflict(
-            "a node redeeming a tool grant requires the declared project, and this "
-            "runtime was given none"
+            "a durable project source pin carries an unknown value"
+        ) from error
+
+
+def _pinned_project(
+    binding: EncodedAgentBindingV2, project: DeclaredProject | None
+) -> PinnedProjectSource | None:
+    """The project this attempt works in, or the named refusal that none does."""
+    pin = _declared_source_pin(binding)
+    grant = _declared_tool_grant(binding)
+    if pin is None:
+        if grant is not None:
+            raise RunBindingConflict(
+                "a node redeeming a tool grant requires the project source its "
+                "binding pinned, and this durable binding pinned none"
+            )
+        return None
+    if project is None:
+        raise RunBindingConflict(
+            "a node whose binding pinned a project source requires the declared "
+            "project, and this runtime was given none"
         )
-    return ToolGrantRedemption(grant, verifications)
+    return project.pinned(pin, grant)
 
 
 def _agent_request_v2(
@@ -469,7 +510,7 @@ def register_durable_run_workflow(
     agent_attempt_store: AgentAttemptStore,
     agent_process_supervisor: AgentProcessSupervisor,
     agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
-    project_verifications: ProjectVerificationRunner | None,
+    project: DeclaredProject | None,
     adapter: EffectAdapter,
     effect_binding: EffectAdapterBinding,
 ) -> None:
@@ -537,6 +578,7 @@ def register_durable_run_workflow(
             replacement.run_id,
             replacement.workflow_revision_hash,
             replacement.node_id,
+            project,
         )
         if binding["type"] != "agent-v2":
             raise RunTransitionConflict("replacement attempt is not a V2 agent node")
@@ -569,7 +611,7 @@ def register_durable_run_workflow(
             agent_attempt_store,
             agent_process_supervisor,
             _declared_workspace_owner(agent_workspace_owner),
-            _redemption(binding, project_verifications),
+            _pinned_project(binding, project),
         )
         if isinstance(outcome, AgentAttemptSucceeded):
             match outcome.completion:
@@ -589,7 +631,9 @@ def register_durable_run_workflow(
     def durable_node(run_id: str, revision_hash: str, node_id: str) -> str:
         typed_run_id = RunId(run_id)
         typed_revision = WorkflowRevisionHash(revision_hash)
-        binding = _node_binding(datasource, typed_run_id, typed_revision, node_id)
+        binding = _node_binding(
+            datasource, typed_run_id, typed_revision, node_id, project
+        )
         if binding["type"] == "agent":
             execution_request = AgentExecutionRequest(
                 NodeExecutionId.for_node(typed_run_id, typed_revision, node_id),
@@ -643,7 +687,7 @@ def register_durable_run_workflow(
                 agent_attempt_store,
                 agent_process_supervisor,
                 _declared_workspace_owner(agent_workspace_owner),
-                _redemption(binding, project_verifications),
+                _pinned_project(binding, project),
             )
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value

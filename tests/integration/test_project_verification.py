@@ -1,20 +1,23 @@
 """The project's own manifest decides what verifies it, and says so or refuses.
 
-Two questions live here. What does this project declare -- answered by reading the
-manifest, and refused in the manifest's own words where it declares nothing. And
-when is that asked -- answered by the attempt, which attests the verification
-beside the scratch root: before any provider process, and before the claim that
-makes an attempt durable, so a project that declares nothing costs no run.
+Three questions live here. What does this project declare -- answered by reading
+the manifest the pinned commit carries, and refused in that manifest's own words
+where it declares nothing. Which manifest is that -- answered by the pin alone, so
+an edit sitting in the operator's checkout decides nothing about a started run.
+And when is it asked -- answered by the attempt, which attests both the pin and
+the verification beside the scratch root: before any provider process, and before
+the claim that makes an attempt durable, so a project that declares nothing and a
+pin that no longer resolves each cost no run.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
+from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import (
     PROJECT_MANIFEST_NAME,
     LocalProjectVerificationRunner,
@@ -33,11 +36,12 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
+from atelier2.ports.project_source import ProjectSourcePin, ProjectSourceUnavailable
 from atelier2.ports.project_verification import (
+    PinnedProjectSource,
     ProjectVerificationOutcome,
     ProjectVerificationUnavailable,
     ProjectVerificationUndeclared,
-    ToolGrantRedemption,
 )
 from tests.scenarios.agents import (
     agent_attempt_execution,
@@ -45,24 +49,20 @@ from tests.scenarios.agents import (
     leased_directory_identity,
     prepared_agent_attempt,
 )
+from tests.scenarios.projects import (
+    declaring_verification,
+    git_project,
+    write_into_checkout,
+)
 
 THE_GRANT = DeclaredToolGrant(
     PublishedRevisionHash("c3" * 32), ToolGrantCapability.RUN_PROJECT_VERIFICATION
 )
+A_PIN_NO_SOURCE_ANSWERS_FOR = ProjectSourcePin("f0" * 20, "e1" * 20)
 
 
-def manifest(root: Path, body: str) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / PROJECT_MANIFEST_NAME).write_text(body, encoding="utf-8")
-    return root
-
-
-def declaring(command: list[str], timeout_seconds: float = 30) -> str:
-    return (
-        "[tool.atelier2.verification]\n"
-        f"command = {json.dumps(command)}\n"
-        f"timeout_seconds = {timeout_seconds}\n"
-    )
+def runner_for(root: Path) -> LocalProjectVerificationRunner:
+    return LocalProjectVerificationRunner(LocalGitProjectSource(root))
 
 
 STATES_NO_VERIFICATION: tuple[tuple[str, str], ...] = (
@@ -104,34 +104,51 @@ def test_a_project_stating_no_verification_is_refused_in_its_manifests_words(
     tmp_path: Path, label: str, body: str
 ) -> None:
     del label
-    root = manifest(tmp_path / "project", body)
+    root = tmp_path / "project"
+    pin = git_project(root, {PROJECT_MANIFEST_NAME: body})
 
     with pytest.raises(ProjectVerificationUndeclared, match=PROJECT_MANIFEST_NAME):
-        LocalProjectVerificationRunner(root).preflight()
+        runner_for(root).preflight(pin)
 
 
 @pytest.mark.proves(
     "a-project-that-declares-no-verification-refuses-before-anything-runs"
 )
-def test_a_root_carrying_no_manifest_at_all_is_refused_by_the_path_it_named(
+def test_a_commit_carrying_no_manifest_at_all_is_refused_by_the_commit_it_named(
     tmp_path: Path,
 ) -> None:
+    root = tmp_path / "project"
+    pin = git_project(root, {"README.md": "a project that never declared one\n"})
+
     with pytest.raises(ProjectVerificationUndeclared, match="no project manifest"):
-        LocalProjectVerificationRunner(tmp_path / "nowhere").preflight()
+        runner_for(root).preflight(pin)
+
+
+@pytest.mark.proves("what-a-project-declares-and-where-it-runs-are-one-commit")
+def test_the_declaration_read_is_the_pinned_commits_and_not_the_checkouts(
+    tmp_path: Path,
+) -> None:
+    """An edit nobody committed decides nothing about a run already pinned."""
+
+    root = tmp_path / "project"
+    pin = git_project(root, declaring_verification(["/bin/true"]))
+    write_into_checkout(root, {PROJECT_MANIFEST_NAME: "[tool.pytest]\naddopts = ''\n"})
+
+    runner_for(root).preflight(pin)
 
 
 def test_the_declared_command_runs_in_the_lease_and_answers_with_its_own_outcome(
     tmp_path: Path,
 ) -> None:
-    root = manifest(
-        tmp_path / "project",
-        declaring(["/bin/sh", "-c", "pwd; printf ' works'; exit 7"]),
+    root = tmp_path / "project"
+    pin = git_project(
+        root, declaring_verification(["/bin/sh", "-c", "pwd; printf ' works'; exit 7"])
     )
     lease_directory = tmp_path / "lease"
     lease_directory.mkdir()
     lease = leased_directory_identity(AgentAttemptId("a1" * 32), lease_directory)
 
-    outcome = LocalProjectVerificationRunner(root).run(lease)
+    outcome = runner_for(root).run(pin, lease)
 
     assert outcome == ProjectVerificationOutcome(
         ("/bin/sh", "-c", "pwd; printf ' works'; exit 7"),
@@ -143,13 +160,14 @@ def test_the_declared_command_runs_in_the_lease_and_answers_with_its_own_outcome
 def test_a_verification_past_its_declared_deadline_is_refused_rather_than_awaited(
     tmp_path: Path,
 ) -> None:
-    root = manifest(tmp_path / "project", declaring(["/bin/sh", "-c", "sleep 30"], 0.2))
+    root = tmp_path / "project"
+    pin = git_project(root, declaring_verification(["/bin/sh", "-c", "sleep 30"], 0.2))
     lease_directory = tmp_path / "lease"
     lease_directory.mkdir()
     lease = leased_directory_identity(AgentAttemptId("a2" * 32), lease_directory)
 
     with pytest.raises(ProjectVerificationUnavailable, match="did not answer"):
-        LocalProjectVerificationRunner(root).run(lease)
+        runner_for(root).run(pin, lease)
 
 
 @dataclass
@@ -177,12 +195,15 @@ class _RefusingVerifications:
 
     asked: int = 0
 
-    def preflight(self) -> None:
+    def preflight(self, pin: ProjectSourcePin) -> None:
+        del pin
         self.asked += 1
         raise ProjectVerificationUndeclared("this project states no verification")
 
-    def run(self, lease: AgentAttemptWorkspaceLease) -> ProjectVerificationOutcome:
-        raise AssertionError(lease)
+    def run(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> ProjectVerificationOutcome:
+        raise AssertionError((pin, lease))
 
 
 @dataclass
@@ -226,30 +247,76 @@ class _CountingWorkspaces:
         del attempt_id
 
 
+@dataclass
+class _RefusedAttempt:
+    """One attempt driven until it refuses, and what it cost on the way."""
+
+    store: _RefusingStore = field(default_factory=_RefusingStore)
+    executor: _UnlaunchedExecutor = field(default_factory=_UnlaunchedExecutor)
+    workspaces: _CountingWorkspaces = field(default_factory=_CountingWorkspaces)
+
+    def drive(self, project: PinnedProjectSource) -> None:
+        execute_agent_attempt(
+            agent_attempt_execution(agent_execution_request_v2()),
+            self.executor,  # type: ignore[arg-type]
+            self.store,  # type: ignore[arg-type]
+            _SilentSupervisor(),  # type: ignore[arg-type]
+            self.workspaces,  # type: ignore[arg-type]
+            project,
+        )
+
+    @property
+    def cost(self) -> tuple[list[str], int, int]:
+        """What the refusal spent: store calls, provider launches, leases taken."""
+
+        return (self.store.calls, self.executor.launches, self.workspaces.acquired)
+
+
 @pytest.mark.proves(
     "a-project-that-declares-no-verification-refuses-before-anything-runs"
 )
-def test_an_undeclared_verification_refuses_before_the_attempt_is_claimed() -> None:
+def test_an_undeclared_verification_refuses_before_the_attempt_is_claimed(
+    tmp_path: Path,
+) -> None:
     """The refusal costs nothing: no claim, no workspace, no provider process."""
-    store = _RefusingStore()
+    root = tmp_path / "project"
+    pin = git_project(root, declaring_verification(["/bin/true"]))
     verifications = _RefusingVerifications()
-    executor = _UnlaunchedExecutor()
-    workspaces = _CountingWorkspaces()
-    execution = agent_attempt_execution(agent_execution_request_v2())
+    attempt = _RefusedAttempt()
 
     with pytest.raises(ProjectVerificationUndeclared):
-        execute_agent_attempt(
-            execution,
-            executor,  # type: ignore[arg-type]
-            store,  # type: ignore[arg-type]
-            _SilentSupervisor(),  # type: ignore[arg-type]
-            workspaces,  # type: ignore[arg-type]
-            ToolGrantRedemption(THE_GRANT, verifications),
+        attempt.drive(
+            PinnedProjectSource(
+                LocalGitProjectSource(root), verifications, pin, THE_GRANT
+            )
         )
 
     assert verifications.asked == 1
-    assert store.calls == ["prepare"]
-    assert (executor.launches, workspaces.acquired) == (0, 0)
+    assert attempt.cost == (["prepare"], 0, 0)
+
+
+@pytest.mark.proves("a-pin-no-source-can-answer-for-refuses-before-the-claim")
+def test_a_pin_this_source_cannot_answer_for_refuses_before_the_attempt_is_claimed(
+    tmp_path: Path,
+) -> None:
+    """A tree nothing can unpack refuses by name rather than running on nothing."""
+    root = tmp_path / "project"
+    git_project(root, declaring_verification(["/bin/true"]))
+    verifications = _RefusingVerifications()
+    attempt = _RefusedAttempt()
+
+    with pytest.raises(ProjectSourceUnavailable):
+        attempt.drive(
+            PinnedProjectSource(
+                LocalGitProjectSource(root),
+                verifications,
+                A_PIN_NO_SOURCE_ANSWERS_FOR,
+                THE_GRANT,
+            )
+        )
+
+    assert verifications.asked == 0
+    assert attempt.cost == (["prepare"], 0, 0)
 
 
 class _SilentSupervisor:

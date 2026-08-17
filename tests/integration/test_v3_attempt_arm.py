@@ -509,7 +509,7 @@ def test_a_succeeded_non_sink_leaves_the_run_standing_on_its_declared_heir(
             heir = cast(
                 EncodedAgentBindingV2,
                 _node_binding(
-                    runtime.datasource, RUN, workflow.revision_hash, "review"
+                    runtime.datasource, RUN, workflow.revision_hash, "review", None
                 ),
             )
             assert heir["role"] == "reviewer"

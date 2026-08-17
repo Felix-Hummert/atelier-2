@@ -1,15 +1,18 @@
 """The project manifest as the one owner of the project's verification command.
 
 The atelier does not decide what verifies a project, and neither does the agent
-whose node redeemed the grant. The project says it, in the manifest that already
-travels with its source, so the statement is pinnable with the tree like every
-other material. A manifest that says nothing refuses the redemption by name
-rather than letting the atelier choose a command on the project's behalf.
+whose node redeemed the grant. The project says it, in the manifest that travels
+with its source -- and the manifest that is read is the one the pinned commit
+carries, never the one the operator's checkout happens to hold now. Declaration
+and execution are therefore the same tree: what a project said at that commit is
+run in what that commit contains. A manifest that says nothing refuses the
+redemption by name rather than letting the atelier choose a command on the
+project's behalf.
 
 Nothing here claims isolation. The command runs as this process's own user, with
-this process's own environment, in the blank directory the attempt leases -- the
-same honest limit the lease itself states. Enforcement at a boundary that cannot
-be talked out of is #242's, and this adapter must not be read as having done it.
+this process's own environment, in the directory the attempt leases -- the same
+honest limit the lease itself states. Enforcement at a boundary that cannot be
+talked out of is #242's, and this adapter must not be read as having done it.
 """
 
 from __future__ import annotations
@@ -17,20 +20,30 @@ from __future__ import annotations
 import subprocess
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from atelier2.adapters.bounded_processes import bounded_process_answer
+from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.contracts.agents import MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.tool_grants_v3 import MAXIMUM_VERIFICATION_COMMAND_BYTES
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
+from atelier2.ports.project_source import (
+    ProjectSourcePin,
+    ProjectSourceRepository,
+    ProjectSourceUnavailable,
+)
 from atelier2.ports.project_verification import (
+    DeclaredProject,
     ProjectVerificationOutcome,
     ProjectVerificationUnavailable,
     ProjectVerificationUndeclared,
 )
 
 PROJECT_MANIFEST_NAME = "pyproject.toml"
+PROJECT_MANIFEST_PATH = PurePosixPath(PROJECT_MANIFEST_NAME)
+"""Where in a pinned tree the manifest stands."""
+
 DECLARED_VERIFICATION_PATH = ("tool", "atelier2", "verification")
 """Where in the manifest a project states its own verification."""
 
@@ -46,21 +59,26 @@ class DeclaredVerification:
     timeout_seconds: float
 
 
+def declared_project(project_root: Path) -> DeclaredProject:
+    """The project one root declares: its git source, and what that source verifies."""
+
+    source = LocalGitProjectSource(project_root)
+    return DeclaredProject(source, LocalProjectVerificationRunner(source))
+
+
 class LocalProjectVerificationRunner:
-    """Runs the verification the manifest of one local project declares."""
+    """Runs the verification the manifest of one pinned project tree declares."""
 
-    def __init__(self, project_root: Path) -> None:
-        self._project_root = project_root
+    def __init__(self, source: ProjectSourceRepository) -> None:
+        self._source = source
 
-    @property
-    def manifest_path(self) -> Path:
-        return self._project_root / PROJECT_MANIFEST_NAME
+    def preflight(self, pin: ProjectSourcePin) -> None:
+        self._declared(pin)
 
-    def preflight(self) -> None:
-        self._declared()
-
-    def run(self, lease: AgentAttemptWorkspaceLease) -> ProjectVerificationOutcome:
-        declared = self._declared()
+    def run(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> ProjectVerificationOutcome:
+        declared = self._declared(pin)
         try:
             process = subprocess.Popen(
                 declared.command,
@@ -72,7 +90,7 @@ class LocalProjectVerificationRunner:
             )
         except (OSError, ValueError) as error:
             raise ProjectVerificationUnavailable(
-                f"the verification {self.manifest_path} declares could not be "
+                f"the verification {_manifest_at(pin)} declares could not be "
                 f"started in {lease.working_directory}: {error}"
             ) from error
         try:
@@ -83,18 +101,20 @@ class LocalProjectVerificationRunner:
             )
         except OSError as error:
             raise ProjectVerificationUnavailable(
-                f"the verification {self.manifest_path} declares did not answer "
+                f"the verification {_manifest_at(pin)} declares did not answer "
                 f"within its declared {declared.timeout_seconds} seconds: {error}"
             ) from error
         return ProjectVerificationOutcome(
             declared.command, exit_code, Sha256Hash.of(standard_output)
         )
 
-    def _declared(self) -> DeclaredVerification:
-        manifest = self.manifest_path
+    def _declared(self, pin: ProjectSourcePin) -> DeclaredVerification:
+        manifest = _manifest_at(pin)
         try:
-            document = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        except OSError as error:
+            document = tomllib.loads(
+                self._source.read(pin, PROJECT_MANIFEST_PATH).decode("utf-8")
+            )
+        except ProjectSourceUnavailable as error:
             raise ProjectVerificationUndeclared(
                 f"no project manifest is readable at {manifest}, so this project "
                 f"declares no verification to redeem: {error}"
@@ -107,8 +127,14 @@ class LocalProjectVerificationRunner:
         return _read_declaration(manifest, document)
 
 
+def _manifest_at(pin: ProjectSourcePin) -> str:
+    """Which manifest a refusal is about: the one the pinned commit carries."""
+
+    return f"{PROJECT_MANIFEST_NAME} at commit {pin.commit}"
+
+
 def _read_declaration(
-    manifest: Path, document: dict[str, object]
+    manifest: str, document: dict[str, object]
 ) -> DeclaredVerification:
     """The one verification this manifest declares, or the reason it declares none."""
     declared: object = document
