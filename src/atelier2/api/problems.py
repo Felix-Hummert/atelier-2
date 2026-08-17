@@ -150,7 +150,7 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
     "catalog-revision-unpublished": ProblemDefinition(
         409,
         "Catalog revision is unpublished",
-        "Publish the revision before giving it a name.",
+        "Publish the revision through POST /atelier/api/v1/workflow-revisions before giving it a name.",
     ),
     "catalog-name-held": ProblemDefinition(
         409,
@@ -207,6 +207,12 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         409,
         "Workflow format is not executable",
         "This revision is published and no runtime here runs its format version yet.",
+    ),
+    "run-input-refused": ProblemDefinition(
+        422,
+        "Run input refused",
+        "Supply exactly the orders this workflow declares, each satisfying the "
+        "schema its author pinned.",
     ),
     "run-identity-conflict": ProblemDefinition(
         409,
