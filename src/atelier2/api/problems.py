@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from atelier2.api.wire.resources import ProblemResource
+from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
 from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
 
 PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."
@@ -49,6 +50,32 @@ def _schema_document_problems() -> dict[str, ProblemDefinition]:
 
 SCHEMA_DOCUMENT_PROBLEM_CODES = tuple(
     schema_document_problem_code(refusal) for refusal in SchemaDocumentRefusal
+)
+
+
+def budget_document_problem_code(refusal: BudgetRevisionRefusal) -> str:
+    """The problem code one budget-content refusal becomes on the wire.
+
+    The content owner already names each fault, and an author fixing a budget
+    needs to read which bound was wrong from the type, not from prose.
+    """
+
+    return f"budget-{refusal.value}"
+
+
+def _budget_document_problems() -> dict[str, ProblemDefinition]:
+    return {
+        budget_document_problem_code(refusal): ProblemDefinition(
+            422,
+            "Invalid budget document",
+            f"The document bounds no attempt this runtime runs ({refusal.value}).",
+        )
+        for refusal in BudgetRevisionRefusal
+    }
+
+
+BUDGET_DOCUMENT_PROBLEM_CODES = tuple(
+    budget_document_problem_code(refusal) for refusal in BudgetRevisionRefusal
 )
 
 
@@ -174,6 +201,12 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         409,
         "Schema revision collision",
         "Stop and inspect durable schema revision integrity.",
+    ),
+    **_budget_document_problems(),
+    "budget-revision-collision": ProblemDefinition(
+        409,
+        "Budget revision collision",
+        "Stop and inspect durable budget revision integrity.",
     ),
     "unsupported-media-type": ProblemDefinition(
         415,

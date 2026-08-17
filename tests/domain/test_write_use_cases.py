@@ -42,6 +42,13 @@ from atelier2.application.publish_agent_configurations import (
     publish_agent_configuration_revision,
     publish_auth_profile_revision,
 )
+from atelier2.application.publish_budget_revision import (
+    BudgetPublicationCollision,
+    BudgetPublicationCreated,
+    BudgetPublicationExisting,
+    BudgetPublicationInvalid,
+    publish_budget_revision,
+)
 from atelier2.application.publish_schema_revision import (
     SchemaPublicationCollision,
     SchemaPublicationCreated,
@@ -70,6 +77,7 @@ from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutorOperationalIdentity,
 )
+from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
@@ -286,6 +294,8 @@ def test_authored_values_that_make_no_revision_refuse_before_the_catalog_is_aske
 
 SCHEMA_DOCUMENT = b'{"type": "object"}'
 SCHEMA_REVISION = PublishedRevision(RevisionKind.SCHEMA, SCHEMA_DOCUMENT)
+BUDGET_DOCUMENT = b'{"attempt_deadline_seconds": 900}'
+BUDGET_REVISION = PublishedRevision(RevisionKind.BUDGET_POLICY, BUDGET_DOCUMENT)
 
 
 class ScriptedRegistry:
@@ -337,6 +347,43 @@ def test_a_schema_outside_the_profile_is_refused_before_the_store_is_asked() -> 
 
     assert isinstance(result, SchemaPublicationInvalid)
     assert result.verdict.refusal is SchemaDocumentRefusal.DOCUMENT_NOT_JSON
+    assert registry.published == []
+
+
+@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        (
+            PublishedRevisionCreated(BUDGET_REVISION),
+            BudgetPublicationCreated(BUDGET_REVISION),
+        ),
+        (
+            PublishedRevisionExisting(BUDGET_REVISION),
+            BudgetPublicationExisting(BUDGET_REVISION),
+        ),
+        (PublishedRevisionCollision(), BudgetPublicationCollision()),
+        *WRITE_REFUSALS,
+    ],
+    ids=lambda value: type(value).__name__,
+)
+def test_every_port_answer_of_a_budget_publication_becomes_this_layers_own_outcome(
+    port_answer: Any, expected: Any
+) -> None:
+    registry = ScriptedRegistry(port_answer)
+
+    assert publish_budget_revision(BUDGET_DOCUMENT, registry) == expected
+    assert registry.published == [BUDGET_REVISION]
+
+
+@pytest.mark.proves("a-published-budget-bounds-an-attempt-or-is-refused-by-name")
+def test_a_budget_bounding_nothing_is_refused_before_the_store_is_asked() -> None:
+    registry = ScriptedRegistry(PublishedRevisionCreated(BUDGET_REVISION))
+
+    result = publish_budget_revision(b'{"maximum_assistant_turns": 8}', registry)
+
+    assert isinstance(result, BudgetPublicationInvalid)
+    assert result.verdict.reason is BudgetRevisionRefusal.MISSING_ATTEMPT_DEADLINE
     assert registry.published == []
 
 

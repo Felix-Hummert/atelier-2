@@ -9,6 +9,7 @@ from fastapi.openapi.models import OpenAPI
 from fastapi.openapi.utils import get_openapi
 
 from atelier2.api.problems import (
+    BUDGET_DOCUMENT_PROBLEM_CODES,
     PROBLEM_DEFINITIONS,
     PROBLEM_TYPE_PREFIX,
     SCHEMA_DOCUMENT_PROBLEM_CODES,
@@ -129,6 +130,14 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/schema-revisions", "post"): (
         *SCHEMA_DOCUMENT_PROBLEM_CODES,
         "schema-revision-collision",
+        "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (API_PREFIX + "/budget-revisions", "post"): (
+        *BUDGET_DOCUMENT_PROBLEM_CODES,
+        "budget-revision-collision",
         "unsupported-media-type",
         "temporarily-unavailable",
         "durable-state-corrupt",

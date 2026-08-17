@@ -18,6 +18,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionHash,
     AgentRole,
 )
+from atelier2.contracts.budgets_v3 import BudgetField
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -82,7 +83,12 @@ def published_grant(capability: ToolGrantCapability) -> PublishedRevision:
 
 TOOL = published_grant(ToolGrantCapability.RUN_PROJECT_VERIFICATION)
 POLICY = published(RevisionKind.POLICY, "the house rules of this workshop")
-BUDGET = published(RevisionKind.BUDGET_POLICY, "what one build may spend")
+BUDGET = published(
+    RevisionKind.BUDGET_POLICY,
+    # Prose published under `budget_policy` is refused now, for the same reason
+    # prose published under `tool` is: the resolution reads what it pins.
+    json.dumps({BudgetField.ATTEMPT_DEADLINE_SECONDS.value: 900}),
+)
 RETRY = published(RevisionKind.RETRY_POLICY, "twice, then the node has failed")
 CANCELLATION = published(RevisionKind.CANCELLATION_POLICY, "drain, never abandon")
 CONTEXT_SOURCE = published(RevisionKind.CONTEXT_SOURCE, "the requirement of record")
