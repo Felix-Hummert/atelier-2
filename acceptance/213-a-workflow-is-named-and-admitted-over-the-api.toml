@@ -26,14 +26,19 @@ story = "https://github.com/FlexOr2/atelier-2/issues/213"
 [[sentence]]
 id = "a-published-revision-becomes-a-named-lineage-over-the-api"
 requirement = "REQ-KATALOG-05"
-text = "An operator who has published a revision gives it a name over the API, and the catalog answers with the lineage that name now holds -- so a workflow reaches the catalog without a test writing the row."
+text = "An operator who has published a V3 revision admits it over the API without restating its name, and the catalog answers with the exact name authored in those published bytes -- so a workflow reaches the catalog without a test writing the row."
 
 [[sentence]]
 id = "a-later-revision-joins-the-lineage-that-already-holds-its-name"
 requirement = "REQ-KATALOG-05"
-text = "A revision published after a name exists is admitted into that lineage over the API and becomes its next member, keeping the name it was already known by and the member number that says where it sits."
+text = "A later V3 revision is admitted into that lineage over the API, becomes its next member and appends the exact name authored in its own published bytes; after restart both authored names answer the same current member and its exact position."
 
 [[sentence]]
 id = "an-admission-the-catalog-refuses-is-named-by-its-own-reason"
 requirement = "REQ-KATALOG-05"
 text = "A revision nobody published, a name another lineage already holds, a revision another lineage already owns, a lineage that does not exist and a lineage that was retired are each refused by the reason that names them, and nothing is written."
+
+[[sentence]]
+id = "a-v3-workflow-with-a-64-hex-authored-name-is-refused-before-any-catalog-write"
+requirement = "REQ-KATALOG-03"
+text = "A V3 workflow whose authored name is exactly 64 lowercase hexadecimal characters is refused as an invalid catalog name before any catalog row is written."

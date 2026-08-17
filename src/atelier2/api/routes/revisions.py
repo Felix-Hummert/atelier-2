@@ -35,7 +35,12 @@ from atelier2.api.wire.resources import (
     WorkflowRevisionPageResource,
     WorkflowRevisionSummaryResource,
 )
-from atelier2.application.admit_catalog_member import CatalogRevisionUnpublished
+from atelier2.application.admit_catalog_member import (
+    CatalogAuthoredNameRestated,
+    CatalogDisplayNameInvalid,
+    CatalogExplicitNameRequired,
+    CatalogRevisionUnpublished,
+)
 from atelier2.application.publish_workflow_revision import (
     PublicationCollision,
     PublicationCreated,
@@ -214,16 +219,27 @@ async def found_catalog_lineage_route(
     request: FoundCatalogLineageRequestResource,
     context: ApiContext = api_context_dependency,
 ) -> CatalogAdmissionResource:
-    """Give one published revision the name the catalog will answer to."""
+    """Admit one revision under the name its authoring format owns."""
+
+    try:
+        display_name = (
+            None
+            if request.display_name is None
+            else CatalogLineageDisplayName(request.display_name)
+        )
+        actor = CatalogActor(request.actor)
+        activated_at = CatalogActivatedAt(request.activated_at)
+    except (TypeError, ValueError) as error:
+        raise ApiProblem("invalid-request") from error
 
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.found_catalog_lineage(
             RevisionKind.WORKFLOW,
             PublishedRevisionHash(request.revision_hash),
-            CatalogLineageDisplayName(request.display_name),
-            CatalogActor(request.actor),
-            CatalogActivatedAt(request.activated_at),
+            display_name,
+            actor,
+            activated_at,
         ),
     )
     return _admission_resource(result)
@@ -245,14 +261,19 @@ async def admit_catalog_member_route(
         identity = CatalogLineageId(lineage_id)
     except ValueError as error:
         raise ApiProblem("catalog-lineage-missing") from error
+    try:
+        actor = CatalogActor(request.actor)
+        activated_at = CatalogActivatedAt(request.activated_at)
+    except (TypeError, ValueError) as error:
+        raise ApiProblem("invalid-request") from error
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.admit_catalog_member(
             RevisionKind.WORKFLOW,
             identity,
             PublishedRevisionHash(request.revision_hash),
-            CatalogActor(request.actor),
-            CatalogActivatedAt(request.activated_at),
+            actor,
+            activated_at,
         ),
     )
     return _admission_resource(result)
@@ -297,7 +318,15 @@ def _admission_resource(result: object) -> CatalogAdmissionResource:
             raise ApiProblem("catalog-lineage-missing")
         case CatalogAdmissionRetired():
             raise ApiProblem("catalog-lineage-retired")
+        case (
+            CatalogAuthoredNameRestated()
+            | CatalogExplicitNameRequired()
+            | CatalogDisplayNameInvalid()
+        ):
+            raise ApiProblem("invalid-request")
         case CatalogAdmissionKindMismatch() | CatalogLineageIdMismatch():
+            raise ApiProblem("durable-state-corrupt")
+        case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case WriteUnavailable():
             raise ApiProblem("temporarily-unavailable")

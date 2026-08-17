@@ -40,11 +40,17 @@ class RevisionListingView(StrEnum):
 
 
 class FoundCatalogLineageRequestResource(ApiModel):
-    """Give one published revision a name the catalog will answer to."""
+    """Found a lineage for one published revision.
+
+    V3 workflow bytes author their own name; older formats require the explicit
+    name because they do not carry one.
+    """
 
     revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    display_name: str = Field(
-        min_length=1, max_length=MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+    display_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
     )
     actor: str = Field(min_length=1, max_length=MAXIMUM_CATALOG_ACTOR_CHARACTERS)
     activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
