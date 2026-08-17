@@ -118,6 +118,10 @@
         if (disposed || generation !== loadGeneration) return;
         v3Run = run;
         snapshot = { confirmed: null, request: { state: "idle" } };
+        // A version 3 run has an event stream now (#249), so the page follows it
+        // like any other. It opened none while the wire carried no format-3
+        // event and the page said so; saying so is what became untrue.
+        ensureEventStream(run);
         return;
       }
       const revision =
@@ -168,7 +172,7 @@
     }
   }
 
-  function ensureEventStream(run: Run): void {
+  function ensureEventStream(run: Run | RunV3): void {
     if (stream !== null || projection?.connection === "complete" || projection?.connection === "failed") return;
     projection = projection === null
       ? streamProjection(run.public_run_reference, run.workflow_revision_hash)
@@ -222,6 +226,14 @@
     }
     if (next.last_sequence === priorSequence) return;
     const latest = next.events.at(-1);
+    if (v3Run !== null) {
+      // A version 3 line ends on its agent sink, not on a subworkflow node, so
+      // the kind below cannot say "ended" for one. What can is the run itself:
+      // it is re-read once a node has finished its turn, which also carries the
+      // rail and the terminal hash the page is showing.
+      await refreshWatchedV3Run(next);
+      return;
+    }
     if (latest?.event === "SUBWORKFLOW_COMPLETED") {
       projection = markComplete(next);
       stream?.close();
@@ -238,6 +250,21 @@
     ) {
       void followDurableEvent(latest);
     }
+  }
+
+  async function refreshWatchedV3Run(applied: StreamProjection): Promise<void> {
+    let read: AnyRun;
+    try {
+      read = await cockpitApi.getRun(publicReference);
+    } catch {
+      return;
+    }
+    if (disposed || !isRunV3(read)) return;
+    v3Run = read;
+    if (read.state !== "COMPLETED") return;
+    projection = markComplete(applied);
+    stream?.close();
+    stream = null;
   }
 
   async function followDurableEvent(event: RunEvent): Promise<void> {
@@ -815,7 +842,7 @@
   />
 
   {#if v3Run !== null}
-    <V3RunView run={v3Run} />
+    <V3RunView run={v3Run} {projection} />
   {:else if snapshot.request.state === "failed"}
     <ProblemNotice problem={snapshot.request.problem} />
   {:else if failureMessage !== null}
