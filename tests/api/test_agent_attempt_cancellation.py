@@ -66,9 +66,10 @@ class _RunQueries:
         self,
         after: object,
         limit: int,
+        state: object = None,
         projection_limit: DurableProjectionLimit | None = None,
     ) -> ListRunsResult:
-        del after, limit, projection_limit
+        del after, limit, state, projection_limit
         raise AssertionError("cancellation must not list runs")
 
     def get_reconciliation_retry_target(
