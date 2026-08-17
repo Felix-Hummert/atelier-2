@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from atelier2.api.references import (
     EVENT_CURSOR_PATTERN,
@@ -817,7 +824,9 @@ class ProblemResource(ApiModel):
     invalid_fields: tuple[InvalidFieldResource, ...] | None = None
 
     @model_serializer(mode="wrap")
-    def omit_absent_field_pointers(self, serializer: object) -> dict[str, object]:
+    def omit_absent_field_pointers(
+        self, serializer: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
         dumped = serializer(self)
         if dumped.get("invalid_fields") is None:
             dumped.pop("invalid_fields", None)
