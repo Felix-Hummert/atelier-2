@@ -13,12 +13,15 @@ from atelier2.adapters.dbos.runtime import (
     create_canonical_engine,
 )
 from atelier2.adapters.dbos.schema import (
+    context_packages_v3,
     initialize_schema,
     node_artifacts_v3,
+    node_execution_requests_v3,
     node_receipt_access_v3,
     node_receipt_outputs_v3,
     node_receipts_v3,
     published_revisions,
+    run_configuration_revisions,
     run_events,
     runs,
     workflow_revisions,
@@ -27,15 +30,13 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     bootstrap_workflow_id_for,
 )
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.bind_node_execution import bind_node_execution
+from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
-    BoundNodeRevisions,
-    ContextPackage,
-    DeclaredOutput,
     NodeArtifact,
-    NodeExecutionRequest,
-    NodeKindV3,
     NodeReceipt,
     PersistedReceiptDisposition,
     ReceiptOutput,
@@ -45,8 +46,13 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
-from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
+from atelier2.contracts.run_configuration_v3 import (
+    ReferenceSite,
+    ResolvedReference,
+    RunConfigurationRevision,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt,
@@ -104,28 +110,28 @@ def request(
     revision: PublishedRevision | None = None,
     receipt_execution_id: NodeExecutionId | None = None,
 ) -> StartV3RunWithReceiptRequest:
+    """One supervised start, with its node truth built by the production author.
+
+    The frozen resolution matrix is the scenario's own data -- it is what the
+    document's references resolved to. Everything derived from it, the manifest
+    and the request that names it, comes from `bind_node_execution`, so a test
+    measures the composition rather than its own arithmetic.
+    """
     published = revision or PublishedRevision(RevisionKind.WORKFLOW, WORKFLOW_DOCUMENT)
     workflow_hash = WorkflowRevisionHash(published.revision_hash.value)
     run_id = RunId("run-lasagne")
-    context = ContextPackage(b"one supervised context")
-    node_request = NodeExecutionRequest(
-        workflow_revision_hash=workflow_hash,
-        run_configuration_revision_hash=RunConfigurationRevisionHash.of(
-            b"one exact run configuration"
-        ),
-        run_id=run_id,
-        node_id="cook",
-        context_package_hash=context.package_hash,
-        available_context=(),
-        kind=NodeKindV3.ACTION,
-        mode=None,
-        inputs=(),
-        bound_revisions=BoundNodeRevisions(),
-        declared_outputs=(
-            DeclaredOutput("meal", SCHEMA_REVISION),
-            DeclaredOutput("sauce", SAUCE_SCHEMA_REVISION),
+    graph = parse_workflow_document(published.document)
+    assert isinstance(graph, WorkflowGraphV3)
+    frozen = RunConfigurationRevision(
+        workflow_hash,
+        AgentBindingSet(()).binding_set_hash,
+        (
+            _resolved("outputs.schema", "meal", SCHEMA_REVISION),
+            _resolved("outputs.schema", "sauce", SAUCE_SCHEMA_REVISION),
         ),
     )
+    bound = bind_node_execution(run_id, workflow_hash, graph, "cook", frozen)
+    node_request = bound.request
     artifact = NodeArtifact(
         run_id=run_id,
         node_id="cook",
@@ -148,7 +154,7 @@ def request(
         disposition=PersistedReceiptDisposition.SUCCEEDED,
         reason="completed",
         request_hash=node_request.request_hash,
-        context_package_hash=context.package_hash,
+        context_package_hash=node_request.context_package_hash,
         outputs=(
             ReceiptOutput("meal", SCHEMA_REVISION, artifact.value_hash),
             ReceiptOutput("sauce", SAUCE_SCHEMA_REVISION, sauce_artifact.value_hash),
@@ -159,7 +165,24 @@ def request(
         ),
     )
     return StartV3RunWithReceiptRequest(
-        published, node_request, (artifact, sauce_artifact), receipt
+        published,
+        frozen,
+        node_request,
+        bound.context_package,
+        (artifact, sauce_artifact),
+        receipt,
+    )
+
+
+def _resolved(
+    field: str, entry: str, revision_hash: PublishedRevisionHash
+) -> ResolvedReference:
+    """One reference of the cook node, as the run configuration froze it."""
+    return ResolvedReference(
+        ReferenceSite(field, "cook", entry),
+        RevisionKind.SCHEMA,
+        VersionedReference(ref=f"{entry}-schema", revision=revision_hash.value),
+        revision_hash,
     )
 
 
@@ -343,6 +366,9 @@ def test_receipt_for_another_node_execution_is_refused_without_a_write(
     )
     assert table_count(engine, published_revisions) == 0
     assert table_count(engine, workflow_revisions) == 0
+    assert table_count(engine, run_configuration_revisions) == 0
+    assert table_count(engine, context_packages_v3) == 0
+    assert table_count(engine, node_execution_requests_v3) == 0
     assert table_count(engine, runs) == 0
     assert table_count(engine, node_artifacts_v3) == 0
     assert table_count(engine, node_receipts_v3) == 0
@@ -502,6 +528,14 @@ def test_existing_run_under_another_revision_is_a_run_conflict(
             )
         )
         connection.execute(
+            run_configuration_revisions.insert()
+            .prefix_with("OR IGNORE")
+            .values(
+                revision_hash=exact.run_configuration.revision_hash.value,
+                preimage=exact.run_configuration.preimage,
+            )
+        )
+        connection.execute(
             runs.insert().values(
                 run_id=exact.node_request.run_id.value,
                 bootstrap_workflow_id=bootstrap_workflow_id_for(
@@ -515,6 +549,9 @@ def test_existing_run_under_another_revision_is_a_run_conflict(
                 state_version=0,
                 last_event_sequence=0,
                 terminal_hash=None,
+                run_configuration_revision_hash=(
+                    exact.run_configuration.revision_hash.value
+                ),
             )
         )
 
@@ -539,6 +576,14 @@ def test_split_run_identity_collision_is_a_typed_conflict(
             )
         )
         connection.execute(
+            run_configuration_revisions.insert()
+            .prefix_with("OR IGNORE")
+            .values(
+                revision_hash=exact.run_configuration.revision_hash.value,
+                preimage=exact.run_configuration.preimage,
+            )
+        )
+        connection.execute(
             runs.insert(),
             [
                 {
@@ -552,6 +597,9 @@ def test_split_run_identity_collision_is_a_typed_conflict(
                     "state_version": 0,
                     "last_event_sequence": 0,
                     "terminal_hash": None,
+                    "run_configuration_revision_hash": (
+                        exact.run_configuration.revision_hash.value
+                    ),
                 },
                 {
                     "run_id": "different-run",
@@ -566,6 +614,9 @@ def test_split_run_identity_collision_is_a_typed_conflict(
                     "state_version": 0,
                     "last_event_sequence": 0,
                     "terminal_hash": None,
+                    "run_configuration_revision_hash": (
+                        exact.run_configuration.revision_hash.value
+                    ),
                 },
             ],
         )
@@ -582,6 +633,9 @@ def test_split_run_identity_collision_is_a_typed_conflict(
     (
         "published_revisions",
         "workflow_revisions",
+        "run_configuration_revisions",
+        "context_packages_v3",
+        "node_execution_requests_v3",
         "runs",
         "node_artifacts_v3",
         "node_receipts_v3",
@@ -603,6 +657,9 @@ def test_every_v3_start_write_failure_rolls_the_exact_set_back(
     assert isinstance(starter.start_v3_with_receipt(exact), DurableStateCorrupt)
     assert table_count(engine, published_revisions) == 0
     assert table_count(engine, workflow_revisions) == 0
+    assert table_count(engine, run_configuration_revisions) == 0
+    assert table_count(engine, context_packages_v3) == 0
+    assert table_count(engine, node_execution_requests_v3) == 0
     assert table_count(engine, runs) == 0
     assert table_count(engine, node_artifacts_v3) == 0
     assert table_count(engine, node_receipts_v3) == 0

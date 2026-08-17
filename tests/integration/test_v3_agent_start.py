@@ -23,7 +23,11 @@ from dbos import DBOSClient
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import run_agent_bindings, runs
+from atelier2.adapters.dbos.schema import (
+    run_agent_bindings,
+    run_configuration_revisions,
+    runs,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -46,7 +50,13 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.run_bindings import RunV3
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -319,3 +329,45 @@ def test_the_first_start_and_its_retry_answer_the_same_run_shape(
     assert isinstance(created.run, RunV3)
     assert isinstance(existing.run, RunV3)
     assert created.run == existing.run
+
+
+@pytest.mark.proves(
+    "a-supervised-v3-run-records-the-configuration-it-was-started-under"
+)
+def test_the_v3_foundation_start_binds_the_exact_run_configuration(
+    runtime: DbosRuntime,
+) -> None:
+    """Both V3 starts bind their configuration, or neither may claim to.
+
+    The admitted shape declares no versioned reference at all -- every optional
+    form is refused before a run exists -- so its resolution matrix is empty and
+    exact, and there is nothing to resolve and nothing to guess. A run persisted
+    without it would be a V3 run whose own snapshot nobody could name.
+    """
+    workflow, bindings = publish(runtime)
+    DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_v3_foundation(
+        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+    )
+    expected = RunConfigurationRevision(
+        WorkflowRevisionHash(workflow.revision_hash.value),
+        bindings.binding_set_hash,
+        (),
+    )
+
+    with runtime.engine.connect() as connection:
+        record = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == RUN.value))
+            .mappings()
+            .one()
+        )
+        stored = connection.scalar(
+            sa.select(run_configuration_revisions.c.preimage).where(
+                run_configuration_revisions.c.revision_hash
+                == expected.revision_hash.value
+            )
+        )
+
+    assert record["run_configuration_revision_hash"] == expected.revision_hash.value
+    assert stored is not None and bytes(stored) == expected.preimage

@@ -21,8 +21,14 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 MAXIMUM_KIND_TOKEN_CHARACTERS = 64
 
 
-class ContextPackageHash(Sha256Hash):
-    """The immutable identity of one context-package/v3 manifest."""
+class DeclaredContextPackageHash(Sha256Hash):
+    """The immutable identity of one `context-package-declared/v3` manifest.
+
+    Its own type because it is its own record. ADR 0006's complete package is
+    still unbuilt, and when it lands it brings `DeclaredContextPackageHash` back with its
+    own frame; keeping the final name free is what stops the incomplete record
+    from having quietly occupied it.
+    """
 
 
 class NodeExecutionRequestHash(Sha256Hash):
@@ -80,18 +86,97 @@ def _require_node_id(node_id: str) -> None:
 
 
 @dataclass(frozen=True)
-class ContextPackage:
-    """Exact manifest bytes under `context-package/v3`."""
+class DeclaredContextPackage:
+    """Exact manifest bytes under `context-package-declared/v3`.
+
+    The identifier is the same on the outside as on the inside on purpose: an
+    outer frame carrying the final domain name around a declared body would
+    narrow the record only where nobody reads it, and the hash -- the part that
+    travels into a receipt -- would still claim the complete package.
+    """
 
     manifest: bytes
-    package_hash: ContextPackageHash = field(init=False)
+    package_hash: DeclaredContextPackageHash = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "package_hash",
-            ContextPackageHash.of(frame("context-package/v3", self.manifest)),
+            DeclaredContextPackageHash.of(
+                frame("context-package-declared/v3", self.manifest)
+            ),
         )
+
+
+@dataclass(frozen=True)
+class ContextPackageMember:
+    """One `required_context` entry a node declared, bound to what it resolved to.
+
+    This is the **declared** half of ADR 0006's package member, and deliberately
+    not the whole of it. The ADR's member is `(name, source revision, selector,
+    content hash)`, and the content hash is the one part no owner can produce:
+    nothing materializes a selector against its source. Carrying the field empty
+    would mint a complete identity out of an incomplete record, so it is absent
+    here and the frame says which half this is. Members keep their declared
+    order, so a re-ordered or swapped member is visible in the hash.
+    """
+
+    name: str
+    source_revision: PublishedRevisionHash
+    selector: str
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("a context-package member names a nonempty entry")
+        if self.selector == "":
+            raise ValueError("a context-package member names a nonempty selector")
+        if not isinstance(self.source_revision, PublishedRevisionHash):
+            raise TypeError("a context-package member names a typed source revision")
+
+    def framed(self) -> bytes:
+        return frame(
+            "context-package-declared-member/v3",
+            self.name.encode("utf-8"),
+            _ascii_hash(self.source_revision),
+            self.selector.encode("utf-8"),
+        )
+
+
+def declared_context_package_of(
+    workflow_revision_hash: WorkflowRevisionHash,
+    run_id: RunId,
+    node_id: str,
+    members: tuple[ContextPackageMember, ...],
+) -> DeclaredContextPackage:
+    """The declared context one node was assembled with, as its own container.
+
+    **This is not ADR 0006's complete package, and its frame says so.** The ADR
+    binds the manifest to material written once before START -- the selected
+    requirement, epic and story material, the decisions and contracts, the source
+    and target SHAs, the prior receipts and the provenance -- and no owner
+    produces any of that yet. What can be produced today is what the document
+    declared and the frozen configuration resolved, so that is what this frames,
+    under `context-package-declared/v3`. When the missing material and the
+    selector materializer land, the complete package is authored under its own
+    identity rather than by quietly widening this one.
+
+    The container is what the hash covers, so the workflow revision and the node
+    it was assembled for are part of it: the same members reached for another
+    node are another package.
+    """
+    _require_node_id(node_id)
+    return DeclaredContextPackage(
+        frame(
+            "context-package-declared-body/v3",
+            _ascii_hash(workflow_revision_hash),
+            run_id.value.encode("utf-8"),
+            node_id.encode("utf-8"),
+            frame(
+                "context-package-declared-members/v3",
+                *(member.framed() for member in members),
+            ),
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -256,13 +341,14 @@ class NodeExecutionRequest:
     run_configuration_revision_hash: RunConfigurationRevisionHash
     run_id: RunId
     node_id: str
-    context_package_hash: ContextPackageHash
+    context_package_hash: DeclaredContextPackageHash
     available_context: tuple[AvailableContextGrant, ...]
     kind: NodeKindV3
     mode: AgentExecutionCapability | None
     inputs: tuple[InputEnvelope, ...]
     bound_revisions: BoundNodeRevisions
     declared_outputs: tuple[DeclaredOutput, ...]
+    preimage: bytes = field(init=False)
     request_hash: NodeExecutionRequestHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -275,7 +361,7 @@ class NodeExecutionRequest:
             raise TypeError("a node request names a typed run-configuration revision")
         if not isinstance(self.run_id, RunId):
             raise TypeError("a node request names a typed run id")
-        if not isinstance(self.context_package_hash, ContextPackageHash):
+        if not isinstance(self.context_package_hash, DeclaredContextPackageHash):
             raise TypeError("a node request names a typed context-package hash")
         if not isinstance(self.kind, NodeKindV3):
             raise TypeError("a node request names its kind through the contract")
@@ -287,35 +373,31 @@ class NodeExecutionRequest:
             raise ValueError("an agent request binds a mode")
         if self.kind is not NodeKindV3.AGENT and self.mode is not None:
             raise ValueError("only an agent request binds a mode")
-        object.__setattr__(
-            self,
-            "request_hash",
-            NodeExecutionRequestHash.of(
-                frame(
-                    "node-execution-request/v3",
-                    _ascii_hash(self.workflow_revision_hash),
-                    _ascii_hash(self.run_configuration_revision_hash),
-                    self.run_id.value.encode("utf-8"),
-                    self.node_id.encode("utf-8"),
-                    _ascii_hash(self.context_package_hash),
-                    frame(
-                        "available-context/v3",
-                        *(grant.framed() for grant in self.available_context),
-                    ),
-                    self.kind.value.encode("ascii"),
-                    b"" if self.mode is None else self.mode.value.encode("ascii"),
-                    frame(
-                        "input-envelopes/v3",
-                        *(envelope.framed() for envelope in self.inputs),
-                    ),
-                    *self.bound_revisions.framed_fields(),
-                    frame(
-                        "declared-outputs/v3",
-                        *(output.framed() for output in self.declared_outputs),
-                    ),
-                )
+        preimage = frame(
+            "node-execution-request/v3",
+            _ascii_hash(self.workflow_revision_hash),
+            _ascii_hash(self.run_configuration_revision_hash),
+            self.run_id.value.encode("utf-8"),
+            self.node_id.encode("utf-8"),
+            _ascii_hash(self.context_package_hash),
+            frame(
+                "available-context/v3",
+                *(grant.framed() for grant in self.available_context),
+            ),
+            self.kind.value.encode("ascii"),
+            b"" if self.mode is None else self.mode.value.encode("ascii"),
+            frame(
+                "input-envelopes/v3",
+                *(envelope.framed() for envelope in self.inputs),
+            ),
+            *self.bound_revisions.framed_fields(),
+            frame(
+                "declared-outputs/v3",
+                *(output.framed() for output in self.declared_outputs),
             ),
         )
+        object.__setattr__(self, "preimage", preimage)
+        object.__setattr__(self, "request_hash", NodeExecutionRequestHash.of(preimage))
 
 
 @dataclass(frozen=True)
@@ -394,7 +476,7 @@ class NodeReceipt:
     disposition: PersistedReceiptDisposition
     reason: str
     request_hash: NodeExecutionRequestHash
-    context_package_hash: ContextPackageHash
+    context_package_hash: DeclaredContextPackageHash
     outputs: tuple[ReceiptOutput, ...]
     access_receipt_hashes: tuple[Sha256Hash, ...] = ()
     receipt_hash: NodeReceiptHash = field(init=False)
@@ -408,7 +490,7 @@ class NodeReceipt:
             raise ValueError("a node receipt names a nonempty reason")
         if not isinstance(self.request_hash, NodeExecutionRequestHash):
             raise TypeError("a node receipt names a typed request hash")
-        if not isinstance(self.context_package_hash, ContextPackageHash):
+        if not isinstance(self.context_package_hash, DeclaredContextPackageHash):
             raise TypeError("a node receipt names a typed context-package hash")
         if (
             self.disposition is not PersistedReceiptDisposition.SUCCEEDED
