@@ -4,10 +4,21 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, TypeGuard
 
 from atelier2.contracts.catalog_v3 import (
-    CatalogLineage,
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogAdmissionExisting,
+    CatalogAdmissionKindMismatch,
+    CatalogAdmissionLineageMissing,
+    CatalogAdmissionNameHeld,
+    CatalogAdmissionRetired,
+    CatalogAdmissionRevisionOwned,
+    CatalogAdmissionUnpublished,
     CatalogLineageDisplayName,
+    CatalogLineageFounded,
     CatalogLineageId,
+    CatalogLineageIdMismatch,
     CatalogLineageQuery,
+    CatalogMemberAdmitted,
 )
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
@@ -101,69 +112,6 @@ class CatalogNameMissing:
 type ResolveCatalogNameResult = CatalogNameFound | CatalogNameMissing
 
 
-@dataclass(frozen=True)
-class CatalogLineageFounded:
-    lineage: CatalogLineage
-    revision: PublishedRevision
-    display_name: CatalogLineageDisplayName
-
-
-@dataclass(frozen=True)
-class CatalogMemberAdmitted:
-    lineage: CatalogLineage
-    revision: PublishedRevision
-    revision_number: int
-    display_name: CatalogLineageDisplayName
-
-
-@dataclass(frozen=True)
-class CatalogAdmissionExisting:
-    lineage: CatalogLineage
-    revision: PublishedRevision
-    revision_number: int
-    display_name: CatalogLineageDisplayName
-
-
-@dataclass(frozen=True)
-class CatalogLineageIdMismatch:
-    claimed: CatalogLineageId
-    derived: CatalogLineageId
-
-
-@dataclass(frozen=True)
-class CatalogAdmissionUnpublished:
-    revision_hash: PublishedRevisionHash
-
-
-@dataclass(frozen=True)
-class CatalogAdmissionNameHeld:
-    name: CatalogLineageDisplayName
-    holder: CatalogLineageId
-
-
-@dataclass(frozen=True)
-class CatalogAdmissionRevisionOwned:
-    revision_hash: PublishedRevisionHash
-    owner: CatalogLineageId
-
-
-@dataclass(frozen=True)
-class CatalogAdmissionRetired:
-    lineage_id: CatalogLineageId
-
-
-@dataclass(frozen=True)
-class CatalogAdmissionLineageMissing:
-    lineage_id: CatalogLineageId
-
-
-@dataclass(frozen=True)
-class CatalogAdmissionKindMismatch:
-    lineage_id: CatalogLineageId
-    expected: RevisionKind
-    actual: RevisionKind
-
-
 type FoundCatalogLineageResult = (
     CatalogLineageFounded
     | CatalogAdmissionExisting
@@ -231,6 +179,33 @@ class PublishedRevisionRegistry(PublishedRevisionResolver, Protocol):
     def publish_revision(
         self, revision: PublishedRevision
     ) -> PublishRevisionResult: ...
+
+
+class CatalogAdmissions(Protocol):
+    """The two catalog writes ADR 0007 Decision 3 names as its own commands.
+
+    Publication and admission are two acts, so the port that admits is not the
+    port that publishes. Founding is the first admission of a lineage and takes
+    the name; every later one joins a lineage that already holds it.
+    """
+
+    def found_lineage(
+        self,
+        revision: PublishedRevision,
+        display_name: CatalogLineageDisplayName,
+        actor: CatalogActor,
+        activated_at: CatalogActivatedAt,
+        claimed_lineage_id: CatalogLineageId | None = None,
+    ) -> FoundCatalogLineageResult: ...
+
+    def admit_member(
+        self,
+        lineage_id: CatalogLineageId,
+        revision: PublishedRevision,
+        display_name: CatalogLineageDisplayName,
+        actor: CatalogActor,
+        activated_at: CatalogActivatedAt,
+    ) -> AdmitCatalogMemberResult: ...
 
 
 class CatalogResolver(PublishedRevisionResolver, Protocol):

@@ -147,6 +147,26 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
     "not-acceptable": ProblemDefinition(
         406, "Not acceptable", "Accept text/event-stream or */*."
     ),
+    "catalog-revision-unpublished": ProblemDefinition(
+        409,
+        "Catalog revision is unpublished",
+        "Publish the revision before giving it a name.",
+    ),
+    "catalog-name-held": ProblemDefinition(
+        409,
+        "Catalog name is held",
+        "Another lineage of this kind already holds that name.",
+    ),
+    "catalog-revision-owned": ProblemDefinition(
+        409,
+        "Catalog revision is owned",
+        "That revision already belongs to another lineage.",
+    ),
+    "catalog-lineage-missing": ProblemDefinition(
+        404,
+        "Catalog lineage not found",
+        "No lineage of this kind carries that id.",
+    ),
     "catalog-name-not-found": ProblemDefinition(
         404,
         "Catalog name not found",
