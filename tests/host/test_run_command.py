@@ -24,6 +24,7 @@ from atelier2.api.references import encode_canonical_base64
 from atelier2.api.wire.events import (
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
+    AgentCompletedEventResourceV3,
     AgentFailedEventResourceV2,
     WaitingInputEventResourceV2,
 )
@@ -38,11 +39,13 @@ from atelier2.api.wire.resources import (
     ProblemResource,
     RunResource,
     RunResourceV2,
+    RunResourceV3,
     StreamFailureResource,
     SubworkflowNodeResource,
     WorkflowGraphResourceV2,
     WorkflowRevisionDetailResource,
 )
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
 from atelier2.host.run_command import (
@@ -71,6 +74,7 @@ NODE_EXECUTION_ID = "f" * 64
 EVENT_HASH = "1" * 64
 ATTEMPT_ID = "2" * 64
 BINDING_SET_HASH = "3" * 64
+RUN_CONFIGURATION_HASH = "4" * 64
 
 PUBLIC_RUN_REFERENCE = "run1.dGVzdA"
 EVENT_CURSOR = f"event1.dGVzdA.{1}"
@@ -439,6 +443,88 @@ def serving_answers(
         (method, path): [replacements.get(name, answer)]
         for name, (method, path, answer) in scripted.items()
     }
+
+
+CHAIN_SECOND_NODE_ID = "review"
+CHAIN_SECOND_OUTPUT = b'"what the reviewer wrote"'
+
+
+def chained_agent_completed(
+    node_id: str, output: bytes, sequence: int, cursor: str
+) -> str:
+    """One format-3 agent completion, in the shape #249 made the service answer.
+
+    This is the event that ended the first live chain run and that the command
+    could not read: the output travels base64 beside its hash, the attempt names
+    itself, and the rail rides along.
+    """
+
+    return AgentCompletedEventResourceV3(
+        workflow_format_version=3,
+        node_rail=node_rail(NodeState.WORKING),
+        cursor=cursor,
+        sequence=sequence,
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        node_id=node_id,
+        node_execution_id=NODE_EXECUTION_ID,
+        event_hash=EVENT_HASH,
+        event="AGENT_COMPLETED",
+        output_base64=encode_canonical_base64(output),
+        output_hash=Sha256Hash.of(output).value,
+        attempt_id=ATTEMPT_ID,
+        attempt_ordinal=1,
+    ).model_dump_json()
+
+
+def chained_run_resource(
+    state: Literal["STARTED", "COMPLETED"],
+    terminal_hash: str | None,
+    latest_event_cursor: str = EVENT_CURSOR,
+) -> RunResourceV3:
+    """The run a chain really is, in the shape the service answers with.
+
+    Pairing format-3 events with a format-2 run would prove only half the
+    conversation: the command reads the run twice as well, and the exit-0
+    contract is decided on what it reads back there.
+    """
+
+    return RunResourceV3(
+        workflow_format_version=3,
+        run_id="unread-by-the-command",
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        agent_binding_set_hash=BINDING_SET_HASH,
+        run_configuration_revision_hash=RUN_CONFIGURATION_HASH,
+        agent_bindings=(),
+        state_version=2,
+        state=state,
+        current_node_id=CHAIN_SECOND_NODE_ID,
+        node_rail=node_rail(
+            NodeState.SUCCEEDED if state == "COMPLETED" else NodeState.WORKING
+        ),
+        terminal_hash=terminal_hash,
+        latest_event_cursor=latest_event_cursor,
+    )
+
+
+def chained_serving_answers() -> dict[tuple[str, str], list[Answer]]:
+    """The conversation a chain has: two nodes, each handing its work on."""
+
+    return serving_answers(
+        start=Answer(chained_run_resource("STARTED", None).model_dump_json().encode()),
+        events=event_stream(
+            chained_agent_completed(AGENT_NODE_ID, AGENT_OUTPUT, 1, EVENT_CURSOR),
+            chained_agent_completed(
+                CHAIN_SECOND_NODE_ID, CHAIN_SECOND_OUTPUT, 2, LATER_EVENT_CURSOR
+            ),
+        ),
+        run=Answer(
+            chained_run_resource("COMPLETED", TERMINAL_HASH, LATER_EVENT_CURSOR)
+            .model_dump_json()
+            .encode()
+        ),
+    )
 
 
 def unbound_serving_answers() -> dict[tuple[str, str], list[Answer]]:
@@ -983,3 +1069,26 @@ def test_a_named_run_at_an_exact_member_asks_the_service_for_that_member(
 
     assert exit_code == 0
     assert path in asked
+
+
+@pytest.mark.proves("one-command-runs-the-workflow-a-name-holds")
+def test_the_command_reads_the_events_of_the_chain_it_started(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """The whole point of the command, for the runs this workshop is built for.
+
+    A format-3 line answers in the shape #249 landed, and this command decoded
+    only V1 and V2 -- so the first live chain run ended with 46 validation errors
+    and exit 1 while the run itself completed cleanly on the server. The exit-0
+    contract says the history was read whole and the terminal was seen; a chain
+    is exactly the run for which that promise matters most.
+    """
+    with ScriptedService(chained_serving_answers()) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    # Piped output is the output: every node's work, in the order it was done.
+    assert (exit_code, printed.out) == (0, AGENT_OUTPUT + CHAIN_SECOND_OUTPUT)
+    reported = printed.err.decode()
+    assert TERMINAL_HASH in reported
+    assert CHAIN_SECOND_NODE_ID in reported
