@@ -21,6 +21,7 @@ from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
     event_from_record,
     graph_from_document,
+    load_node_outputs,
     load_run_inputs,
     run_from_record_with_bindings,
     validate_run_graph_binding,
@@ -302,10 +303,18 @@ def _current_attempt_projection(
     execution_id = NodeExecutionId.for_node(
         run.run_id, run.revision_hash, run.current_node_id
     )
+    # Recomputed through the one composition owner, with everything that owner
+    # is given: the orders the run was started with and the work earlier nodes
+    # handed on. A recomputation that knew only part of it would answer a run
+    # that really was a chain with a conflict about its own identity.
     authored_job = (
         node.job
         if isinstance(node, AgentNodeV2)
-        else node_job(node.instruction, load_run_inputs(session, run.run_id, node))
+        else node_job(
+            node.instruction,
+            load_run_inputs(session, run.run_id, node),
+            load_node_outputs(session, run.run_id, run.revision_hash, graph, node),
+        )
     ).encode("utf-8")
     exact_request = AgentExecutionRequestV2(
         execution_id,

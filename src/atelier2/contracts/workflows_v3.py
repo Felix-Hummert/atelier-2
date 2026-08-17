@@ -972,7 +972,6 @@ V3_UNBOUND_AGENT_FORMS = (
     "cancellation",
     "required_context",
     "available_context",
-    "outputs",
 )
 """Every authored form of a V3 Agent node that nothing binds at run start yet.
 
@@ -986,14 +985,15 @@ source by `V3_BOUND_INPUT_SOURCES` rather than as a whole form, because only an
 order the graph declares has an owner at the start today.
 """
 
-V3_BOUND_INPUT_SOURCES = (GraphInputSource,)
-"""Which `inputs` source a node may read, because the start actually binds it.
+V3_BOUND_INPUT_SOURCES = (GraphInputSource, NodeOutputSource)
+"""Which `inputs` source a node may read, because the runtime actually binds it.
 
-An order the graph declares is supplied at the start and handed to the node. The
-other three sources name something the run produces -- another node's output, a
-node's receipt, a context entry -- and nothing walks a V3 graph to produce them
-yet, so a document that reads one is refused by the source it named rather than
-started and quietly given nothing.
+An order the graph declares is supplied at the start and handed to the node. A
+node output is what the node before it produced: the runtime writes that value
+durably when the producing node completes, and hands it to the reader as part of
+the job. The remaining two sources -- a node's receipt and a context entry --
+name something nothing produces yet, so a document that reads one is refused by
+the source it named rather than started and quietly given nothing.
 """
 
 
@@ -1035,7 +1035,45 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     )
     if declared:
         return f"agent forms nothing binds yet: {', '.join(declared)}"
+    unbound_output = _unbound_output_forms(graph)
+    if unbound_output is not None:
+        return unbound_output
     return _unbound_input_sources(graph)
+
+
+def _unbound_output_forms(graph: WorkflowGraphV3) -> str | None:
+    """What an authored `outputs` entry declares that nothing here keeps.
+
+    `outputs` left the blanket refusal when the runtime began handing a node's
+    value to the node that reads it, and admitting the form means keeping what it
+    says. Two parts of it are still nobody's:
+
+    * `confirmed_by` promises a human confirmed the artifact, and nothing asks
+      anyone;
+    * a second output promises the runtime can tell one value of a node from
+      another, and an agent node completes with exactly one payload, so a
+      document declaring two would have one of them answered by the other.
+
+    The part that is kept is the value itself: it is written durably when the
+    producing node completes, hash-bound, and read against the schema its author
+    pinned before it is handed on. What #57 still owns is everything around that
+    -- join, retry, canary, and the operator confirmation refused here.
+    """
+    if graph.graph_outputs:
+        return "graph outputs nothing carries out of a run: " + ", ".join(
+            sorted(entry.name for entry in graph.graph_outputs)
+        )
+    for node in graph.nodes:
+        if not isinstance(node, AgentNodeV3):
+            continue
+        if len(node.outputs) > 1:
+            return (
+                f"{len(node.outputs)} outputs on node {node.id!r}, and an agent "
+                "node completes with one value nothing tells apart"
+            )
+        if any(output.confirmed_by is not None for output in node.outputs):
+            return "an output confirmed by an operator nothing asks"
+    return None
 
 
 def _unbound_input_sources(graph: WorkflowGraphV3) -> str | None:

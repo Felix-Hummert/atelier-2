@@ -17,28 +17,47 @@ to carry it.
 
 from __future__ import annotations
 
-from atelier2.contracts.node_records_v3 import RunInput
+from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
 
 ORDER_HEADING = "--- order: {name} ---"
 """How one order announces itself inside the job, so the agent can tell them apart."""
 
+RESULT_HEADING = "--- result of {node}: {name} ---"
+"""How the work of an earlier node announces itself, named by the node that did it."""
 
-def node_job(instruction: str, orders: tuple[RunInput, ...]) -> str:
-    """The instruction its author wrote, followed by the orders this node reads.
 
-    Orders are ordered by name rather than by arrival, so the same run started
-    with the same orders is asked the same thing whatever order they were
-    supplied in -- a request hash that depended on that would make a retry a
+def node_job(
+    instruction: str,
+    orders: tuple[RunInput, ...] = (),
+    results: tuple[DeliveredOutput, ...] = (),
+) -> str:
+    """The instruction its author wrote, then what this node was given to read.
+
+    Two kinds of material meet here and they stay distinguishable, because they
+    answer different questions for the agent: an **order** is what the run was
+    started with, and a **result** is what an earlier node produced. Each
+    announces itself under the name its author declared, and a result also names
+    the node that did the work, so a reader can tell whose sentence it is looking
+    at without the composition inventing prose.
+
+    Both are ordered by name rather than by arrival, and results after orders, so
+    the same run asks the same thing whatever sequence the material reached this
+    layer in -- a request hash that depended on that would make a retry a
     different execution.
 
-    A value is decoded as UTF-8 because the start already read it as a JSON
-    document against the schema its author pinned; bytes that were not text could
-    not have reached a stored order.
+    A value is decoded as UTF-8 because it was already read as a document against
+    the schema its author pinned -- an order at the start, a result before it is
+    handed on -- so bytes that were not text could not have reached here.
     """
-    if not orders:
+    if not orders and not results:
         return instruction
     sections = [instruction]
     for order in sorted(orders, key=lambda supplied: supplied.name):
         sections.append(ORDER_HEADING.format(name=order.name))
         sections.append(order.value.decode("utf-8"))
+    for result in sorted(results, key=lambda done: (done.node_id, done.output_name)):
+        sections.append(
+            RESULT_HEADING.format(node=result.node_id, name=result.output_name)
+        )
+        sections.append(result.value.decode("utf-8"))
     return "\n\n".join(sections)

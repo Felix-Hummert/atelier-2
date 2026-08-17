@@ -15,6 +15,7 @@ from atelier2.adapters.dbos.run_store import (
     _commit_event,
     _insert_event,
     load_graph,
+    load_node_outputs,
     load_run,
     load_run_inputs,
 )
@@ -251,7 +252,13 @@ def _validate_request(
     authored_job = (
         node.job
         if isinstance(node, AgentNodeV2)
-        else node_job(node.instruction, load_run_inputs(session, request.run_id, node))
+        else node_job(
+            node.instruction,
+            load_run_inputs(session, request.run_id, node),
+            load_node_outputs(
+                session, request.run_id, request.workflow_revision_hash, graph, node
+            ),
+        )
     ).encode("utf-8")
     if (
         node.role != request.resolved_binding.role.value

@@ -553,7 +553,7 @@ def test_all_seven_v2_event_dtos_have_the_exact_closed_wire_shape() -> None:
         assert resource.model_dump(mode="json") == expected
 
 
-def test_openapi_sse_data_is_an_untagged_v1_v2_one_of() -> None:
+def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
     schema = cast(FastAPI, _client(RecordingCatalog(object(), object())).app).openapi()
 
     data = schema["paths"][API_PREFIX + "/runs/{public_ref}/events"]["get"][
@@ -567,6 +567,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_one_of() -> None:
         "oneOf": [
             {"$ref": "#/components/schemas/RunEventResource"},
             {"$ref": "#/components/schemas/RunEventResourceV2"},
+            {"$ref": "#/components/schemas/RunEventResourceV3"},
         ]
     }
     v2 = schema["components"]["schemas"]["RunEventResourceV2"]
@@ -627,6 +628,22 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_one_of() -> None:
         assert set(component["properties"]) == expected_fields
         assert set(component["required"]) == expected_fields
         assert component["additionalProperties"] is False
+    v3 = schema["components"]["schemas"]["RunEventResourceV3"]
+    assert len(v3["oneOf"]) == 5
+    assert set(v3["discriminator"]["mapping"]) == {
+        "AGENT_COMPLETED",
+        "AGENT_FAILED",
+        "AGENT_CANCEL_REQUESTED",
+        "AGENT_CANCELLED",
+        "AGENT_INTERRUPTED",
+    }
+    for event, reference in v3["discriminator"]["mapping"].items():
+        component = schema["components"]["schemas"][reference.rsplit("/", 1)[-1]]
+        expected_fields = common | payloads[event]
+        assert set(component["properties"]) == expected_fields
+        assert set(component["required"]) == expected_fields
+        assert component["additionalProperties"] is False
+        assert component["properties"]["workflow_format_version"]["const"] == 3
 
 
 def test_openapi_has_no_private_credential_channel() -> None:

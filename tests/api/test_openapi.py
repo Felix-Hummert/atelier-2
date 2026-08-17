@@ -194,12 +194,10 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was last regenerated when a start began carrying the order it
-    should run on, which brought the `run-input-refused` problem onto
-    `POST /runs`: an order that is missing, undeclared, supplied twice, or does
-    not satisfy the schema its document pinned is answered by name rather than
-    swallowed. That regeneration is the wire change this head declares;
-    refreshing it alongside a refactor is what this test still refuses.
+    The artefact was last regenerated when the event stream published a format-3
+    family for the agent kinds a V3 line writes. That regeneration is the wire
+    change this head declares; refreshing it alongside a refactor is what this
+    test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
