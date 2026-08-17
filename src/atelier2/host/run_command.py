@@ -13,8 +13,11 @@ carries, which is what `resolve` asks and what `run --name` runs, through the
 same question so the two cannot disagree; `run --workflow` publishes the document
 it was handed instead. All three publications are idempotent: identical
 bytes answer with the same hash and change nothing. The run identity is derived
-from those hashes for the same reason, so repeating the command reports the
-first run again instead of starting - and paying for - a second one.
+from those hashes and from the orders `--input` / `--input-file` supplied, so
+repeating the same command reports the first run again instead of starting -
+and paying for - a second one. The command publishes nothing for an order: it
+hands the exact bytes to `POST /runs`, which is the door that already carries
+them.
 """
 
 from __future__ import annotations
@@ -46,8 +49,10 @@ from atelier2.api.wire.requests import (
     PublishAgentConfigurationRevisionRequestResource,
     PublishAuthProfileRevisionRequestResource,
     StartRunAgentBindingResourceV2,
+    StartRunOrderResource,
     StartRunRequestResource,
     StartRunRequestResourceV2,
+    StartRunRequestResourceV3,
 )
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
@@ -210,11 +215,20 @@ class AgentOutput:
 
 
 @dataclass(frozen=True)
+class SuppliedOrder:
+    """One order the operator handed this command, as exact bytes."""
+
+    name: str
+    value: bytes
+
+
+@dataclass(frozen=True)
 class RunOrder:
     service_url: str
     workflow_document: bytes
     bindings: tuple[AgentBindingSource, ...]
     run_id: str | None
+    orders: tuple[SuppliedOrder, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -249,6 +263,7 @@ class NamedRunOrder:
     bindings: tuple[AgentBindingSource, ...]
     run_id: str | None
     position: str = "head"
+    orders: tuple[SuppliedOrder, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -306,7 +321,9 @@ def execute_run(order: RunOrder) -> RunReport:
     api = _api_url(order.service_url)
     bindings = tuple(_published_binding(api, source) for source in order.bindings)
     revision_hash = _published_workflow_revision(api, order.workflow_document)
-    return _run_published_revision(api, revision_hash, bindings, order.run_id)
+    return _run_published_revision(
+        api, revision_hash, bindings, order.run_id, order.orders
+    )
 
 
 def execute_named_run(order: NamedRunOrder) -> RunReport:
@@ -325,7 +342,7 @@ def execute_named_run(order: NamedRunOrder) -> RunReport:
     )
     bindings = tuple(_published_binding(api, source) for source in order.bindings)
     report = _run_published_revision(
-        api, resolution.revision_hash, bindings, order.run_id
+        api, resolution.revision_hash, bindings, order.run_id, order.orders
     )
     return replace(report, resolved_name=resolution)
 
@@ -335,6 +352,7 @@ def _run_published_revision(
     revision_hash: str,
     bindings: tuple[AgentRoleBinding, ...],
     asked_run_id: str | None,
+    orders: tuple[SuppliedOrder, ...] = (),
 ) -> RunReport:
     """Start one published revision and report the run that ended.
 
@@ -343,10 +361,10 @@ def _run_published_revision(
     the reading and the refusals is what keeps the two from drifting apart.
     """
 
-    run_id = asked_run_id or derived_run_id(revision_hash, bindings)
+    run_id = asked_run_id or derived_run_id(revision_hash, bindings, orders)
     started = _decoded(
         _run_resource,
-        _post(api + RUN_PATH, _start_request(run_id, revision_hash, bindings)),
+        _post(api + RUN_PATH, _start_request(run_id, revision_hash, bindings, orders)),
         "a run",
     )
     reference = started.public_run_reference
@@ -374,12 +392,18 @@ def _run_published_revision(
     )
 
 
-def derived_run_id(revision_hash: str, bindings: tuple[AgentRoleBinding, ...]) -> str:
+def derived_run_id(
+    revision_hash: str,
+    bindings: tuple[AgentRoleBinding, ...],
+    orders: tuple[SuppliedOrder, ...] = (),
+) -> str:
     """Derive the identity that makes repeating the same command harmless.
 
     `POST /runs` is idempotent over the caller's own run identity, so an
     identity derived from everything the run is made of turns a repeated
     command into a second report of the first run instead of a second run.
+    The order is part of what the run is made of: two starts of the same
+    revision with different material are two runs.
     """
 
     bound = (
@@ -388,7 +412,11 @@ def derived_run_id(revision_hash: str, bindings: tuple[AgentRoleBinding, ...]) -
         + binding.agent_configuration_revision_hash.encode()
         for binding in sorted(bindings, key=lambda binding: binding.role)
     )
-    preimage = frame(RUN_IDENTITY_DOMAIN, revision_hash.encode(), *bound)
+    ordered = (
+        order.name.encode() + b"=" + Sha256Hash.of(order.value).value.encode()
+        for order in sorted(orders, key=lambda supplied: supplied.name)
+    )
+    preimage = frame(RUN_IDENTITY_DOMAIN, revision_hash.encode(), *bound, *ordered)
     return Sha256Hash.of(preimage).value
 
 
@@ -467,9 +495,33 @@ def _published_workflow_revision(api: str, document: bytes) -> str:
 
 
 def _start_request(
-    run_id: str, revision_hash: str, bindings: tuple[AgentRoleBinding, ...]
+    run_id: str,
+    revision_hash: str,
+    bindings: tuple[AgentRoleBinding, ...],
+    orders: tuple[SuppliedOrder, ...] = (),
 ) -> bytes:
-    if bindings:
+    if orders:
+        requested = StartRunRequestResourceV3(
+            workflow_format_version=3,
+            run_id=run_id,
+            workflow_revision_hash=revision_hash,
+            agent_bindings=tuple(
+                StartRunAgentBindingResourceV2(
+                    role=binding.role,
+                    agent_configuration_revision_hash=(
+                        binding.agent_configuration_revision_hash
+                    ),
+                )
+                for binding in bindings
+            ),
+            orders=tuple(
+                StartRunOrderResource(
+                    name=order.name, value=order.value.decode("utf-8")
+                )
+                for order in orders
+            ),
+        )
+    elif bindings:
         requested = StartRunRequestResourceV2(
             workflow_format_version=2,
             run_id=run_id,
@@ -551,7 +603,7 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                     raise RunNeedsAnotherActor(
                         f"node {event.node_id} is waiting for an "
                         f"{event.answer_type} answer; this command carries no "
-                        "answer, and run input follows issue #38"
+                        "answer"
                     )
                 case _:
                     raise RunNeedsAnotherActor(

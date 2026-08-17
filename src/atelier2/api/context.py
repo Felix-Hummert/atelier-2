@@ -39,6 +39,7 @@ from atelier2.application.reconcile_run import ReconcileRunRequest
 from atelier2.application.resolve_catalog_name import CatalogNameResult
 from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
+    AuthoredOrder,
     StartPublishedRunResult,
 )
 from atelier2.contracts.agent_attempts import CancelAgentAttemptRequest
@@ -129,7 +130,12 @@ class ApiUseCases:
         [str, str, str, str], PublishAgentConfigurationRevisionResult
     ]
     start_published_run: Callable[
-        [RunId, WorkflowRevisionHash, tuple[AuthoredAgentBinding, ...] | None],
+        [
+            RunId,
+            WorkflowRevisionHash,
+            tuple[AuthoredAgentBinding, ...] | None,
+            tuple[AuthoredOrder, ...],
+        ],
         StartPublishedRunResult,
     ]
     answer_wait: Callable[[RunId, WorkflowRevisionHash, str, bytes], AnswerWaitResult]

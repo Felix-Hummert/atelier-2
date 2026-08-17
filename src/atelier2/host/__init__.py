@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from collections.abc import Sequence
@@ -44,6 +45,7 @@ from atelier2.host.run_command import (
     NameOrder,
     RunCommandRefusal,
     RunOrder,
+    SuppliedOrder,
     describe_receipt,
     describe_resolution,
     execute_named_run,
@@ -109,12 +111,15 @@ handed on unchanged -- and that revision is what starts. --position picks the
 member of the lineage, so a name can be run at an exact revision rather than
 only at its head.
 
+--input NAME=VALUE and --input-file NAME=PATH fill the graph_inputs the
+workflow declared. VALUE and the file are exact JSON text; the command
+publishes nothing for them and hands the bytes to POST /runs. A name the
+document never declared, a declared name that is missing, and a value that
+is not valid JSON for the schema the document pinned are each refused by
+name. A typed 422 from the service is handed on in the service's own words.
+
 Not supported yet, and refused rather than faked:
 
-  --input       run input follows issue #38. Until it lands, the job travels
-                inside the workflow document, which burns one published
-                revision per distinct input -- and a named run repeats the same
-                revision, so a distinct input still needs a distinct workflow.
   a wait        a run that stops for a human ends this command unsuccessfully
                 and says which capability is missing; answering a wait from here
                 is not built.
@@ -206,6 +211,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
 
 def _run(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
     bindings = tuple(_binding_source(parser, declared) for declared in parsed.binding)
+    orders = _supplied_orders(parser, parsed)
     if parsed.position is not None and parsed.name is None:
         # A position without a name would be read and then ignored, which is the
         # quietest way for a command to disagree with the operator.
@@ -219,6 +225,7 @@ def _run(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
                     bindings=bindings,
                     run_id=parsed.run_id,
                     position=parsed.position or DEFAULT_CATALOG_POSITION,
+                    orders=orders,
                 )
             )
         else:
@@ -228,6 +235,7 @@ def _run(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
                     workflow_document=_file_bytes(parser, parsed.workflow),
                     bindings=bindings,
                     run_id=parsed.run_id,
+                    orders=orders,
                 )
             )
     except RunCommandRefusal as refusal:
@@ -275,6 +283,39 @@ def _binding_source(
             f"--binding takes role{BINDING_SEPARATOR}agent-file.json, not {declared!r}"
         )
     return AgentBindingSource(role, _file_bytes(parser, Path(path)))
+
+
+def _named_assignment(
+    parser: argparse.ArgumentParser, flag: str, declared: str
+) -> tuple[str, str]:
+    name, separator, value = declared.partition(BINDING_SEPARATOR)
+    if not separator or not name or not value:
+        parser.error(f"{flag} takes NAME{BINDING_SEPARATOR}VALUE, not {declared!r}")
+    return name, value
+
+
+def _supplied_orders(
+    parser: argparse.ArgumentParser, parsed: argparse.Namespace
+) -> tuple[SuppliedOrder, ...]:
+    collected: list[tuple[str, bytes]] = []
+    for declared in parsed.input:
+        name, text = _named_assignment(parser, "--input", declared)
+        collected.append((name, text.encode()))
+    for declared in parsed.input_file:
+        name, path = _named_assignment(parser, "--input-file", declared)
+        collected.append((name, _file_bytes(parser, Path(path))))
+    seen: set[str] = set()
+    orders: list[SuppliedOrder] = []
+    for name, value in collected:
+        if name in seen:
+            parser.error(f"input {name!r} was supplied twice")
+        seen.add(name)
+        try:
+            json.loads(value)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            parser.error(f"input {name!r} is not valid JSON for the pinned schema")
+        orders.append(SuppliedOrder(name, value))
+    return tuple(orders)
 
 
 def _file_bytes(parser: argparse.ArgumentParser, path: Path) -> bytes:
@@ -549,6 +590,27 @@ def _argument_parser() -> argparse.ArgumentParser:
         help=(
             "bind one agent role of a format-2 workflow to the agent described "
             "by that file; repeatable"
+        ),
+    )
+    run_parser.add_argument(
+        "--input",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help=(
+            "one graph_input the workflow declared, as exact JSON text; "
+            "repeatable; the command publishes nothing for it and hands the "
+            "bytes to POST /runs"
+        ),
+    )
+    run_parser.add_argument(
+        "--input-file",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help=(
+            "one graph_input the workflow declared, read as exact JSON bytes "
+            "from that file; repeatable"
         ),
     )
     run_parser.add_argument(

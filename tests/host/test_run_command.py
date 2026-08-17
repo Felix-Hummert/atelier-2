@@ -687,7 +687,9 @@ def test_a_run_waiting_for_input_says_which_capability_is_missing(
 
     printed = capsysbinary.readouterr()
     assert exit_code == 1
-    assert b"#38" in printed.err
+    assert b"waiting" in printed.err
+    assert b"answer" in printed.err
+    assert b"#38" not in printed.err
 
 
 def test_an_event_history_that_ends_before_the_run_does_is_refused(
@@ -1092,3 +1094,217 @@ def test_the_command_reads_the_events_of_the_chain_it_started(
     reported = printed.err.decode()
     assert TERMINAL_HASH in reported
     assert CHAIN_SECOND_NODE_ID in reported
+
+
+ORDER_NAME = "order"
+ORDER_VALUE = '{"portions": 4}'
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_a_named_run_forwards_the_order_and_publishes_nothing_for_it(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """`--name` plus `--input` is one run of the named revision, not a new one.
+
+    The command publishes nothing for the order: it hands the name and the exact
+    bytes to `POST /runs`.
+    """
+    with ScriptedService(named_serving_answers()) as service:
+        exit_code = run_command(
+            named_order, service, "--input", f"{ORDER_NAME}={ORDER_VALUE}"
+        )
+        started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
+        published_workflows = service.sent("POST", API_PREFIX + WORKFLOW_REVISION_PATH)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (0, AGENT_OUTPUT)
+    assert published_workflows == []
+    assert started["workflow_revision_hash"] == REVISION_HASH
+    assert started["workflow_format_version"] == 3
+    assert started["orders"] == [{"name": ORDER_NAME, "value": ORDER_VALUE}]
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_a_document_run_forwards_the_order_the_same_way(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """`--workflow` is the other door; the order still travels on POST /runs."""
+    with ScriptedService(serving_answers()) as service:
+        exit_code = run_command(
+            order, service, "--input", f"{ORDER_NAME}={ORDER_VALUE}"
+        )
+        started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
+
+    assert (exit_code, capsysbinary.readouterr().out) == (0, AGENT_OUTPUT)
+    assert started["orders"] == [{"name": ORDER_NAME, "value": ORDER_VALUE}]
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_an_input_file_forwards_the_exact_bytes_it_held(
+    named_order: list[str],
+    tmp_path: Path,
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    order_file = tmp_path / "order.json"
+    order_file.write_bytes(ORDER_VALUE.encode())
+
+    with ScriptedService(named_serving_answers()) as service:
+        exit_code = run_command(
+            named_order, service, "--input-file", f"{ORDER_NAME}={order_file}"
+        )
+        started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
+
+    assert (exit_code, capsysbinary.readouterr().out) == (0, AGENT_OUTPUT)
+    assert started["orders"] == [{"name": ORDER_NAME, "value": ORDER_VALUE}]
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_two_inputs_travel_together_and_publish_no_workflow(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(named_serving_answers()) as service:
+        exit_code = run_command(
+            named_order,
+            service,
+            "--input",
+            f"{ORDER_NAME}={ORDER_VALUE}",
+            "--input",
+            'side={"name": "beans"}',
+        )
+        started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
+        published_workflows = service.sent("POST", API_PREFIX + WORKFLOW_REVISION_PATH)
+
+    assert (exit_code, published_workflows) == (0, [])
+    assert started["orders"] == [
+        {"name": ORDER_NAME, "value": ORDER_VALUE},
+        {"name": "side", "value": '{"name": "beans"}'},
+    ]
+    assert capsysbinary.readouterr().out == AGENT_OUTPUT
+
+
+def test_a_value_that_is_not_json_is_refused_before_any_request(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with (
+        ScriptedService(named_serving_answers()) as service,
+        pytest.raises(SystemExit),
+    ):
+        run_command(named_order, service, "--input", f"{ORDER_NAME}=not-json")
+
+    printed = capsysbinary.readouterr()
+    assert b"not valid JSON for the pinned schema" in printed.err
+    assert b"order" in printed.err
+
+
+def test_an_input_file_that_is_not_utf8_is_refused_by_name(
+    named_order: list[str],
+    tmp_path: Path,
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    """`json.loads` on bytes decodes UTF-8 first; latin-1 is not a JSON error.
+
+    A file of `{"greeting": "grüße"}` in latin-1 raises `UnicodeDecodeError`,
+    which is not a `JSONDecodeError`. That used to escape as a traceback.
+    """
+    order_file = tmp_path / "order.json"
+    order_file.write_bytes('{"greeting": "grüße"}'.encode("latin-1"))
+
+    with (
+        ScriptedService(named_serving_answers()) as service,
+        pytest.raises(SystemExit),
+    ):
+        run_command(named_order, service, "--input-file", f"{ORDER_NAME}={order_file}")
+
+    printed = capsysbinary.readouterr()
+    assert b"not valid JSON for the pinned schema" in printed.err
+    assert b"order" in printed.err
+
+
+def test_an_input_that_is_not_a_name_assignment_is_refused(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with (
+        ScriptedService(named_serving_answers()) as service,
+        pytest.raises(SystemExit),
+    ):
+        run_command(named_order, service, "--input", ORDER_VALUE)
+
+    assert b"NAME=VALUE" in capsysbinary.readouterr().err
+
+
+def test_the_same_input_twice_is_refused_before_any_request(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with (
+        ScriptedService(named_serving_answers()) as service,
+        pytest.raises(SystemExit),
+    ):
+        run_command(
+            named_order,
+            service,
+            "--input",
+            f"{ORDER_NAME}={ORDER_VALUE}",
+            "--input",
+            f"{ORDER_NAME}=" + '{"portions": 9}',
+        )
+
+    printed = capsysbinary.readouterr()
+    assert b"supplied twice" in printed.err
+    assert ORDER_NAME.encode() in printed.err
+
+
+@pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
+def test_a_run_input_refusal_reaches_the_operator_as_the_service_wrote_it(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """The command must not translate a 422 into a friendlier sentence."""
+    detail = "input 'order' was refused: undeclared"
+    refusal = problem_answer(
+        HTTPStatus.UNPROCESSABLE_ENTITY,
+        "urn:atelier2:problem:v1:run-input-refused",
+        "Run input refused",
+        detail,
+    )
+    answers = named_serving_answers()
+    answers[("POST", RUNS_URL_PATH)] = [refusal]
+    with ScriptedService(answers) as service:
+        exit_code = run_command(
+            named_order, service, "--input", f"{ORDER_NAME}={ORDER_VALUE}"
+        )
+        started = service.sent("POST", RUNS_URL_PATH)
+
+    printed = capsysbinary.readouterr()
+    assert exit_code == 1
+    assert started  # the command did ask; the service named the refusal
+    reported = printed.err.decode()
+    assert "urn:atelier2:problem:v1:run-input-refused" in reported
+    assert detail in reported
+
+
+def test_different_orders_ask_for_different_runs(
+    named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(named_serving_answers()) as service:
+        run_command(named_order, service, "--input", f"{ORDER_NAME}={ORDER_VALUE}")
+        run_command(
+            named_order, service, "--input", f"{ORDER_NAME}=" + '{"portions": 9}'
+        )
+        started = [
+            json.loads(body)["run_id"] for body in service.sent("POST", RUNS_URL_PATH)
+        ]
+
+    assert started[0] != started[1]
+    assert capsysbinary.readouterr().out == AGENT_OUTPUT + AGENT_OUTPUT
+
+
+def test_the_run_help_describes_input_instead_of_deferring_it(
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    with pytest.raises(SystemExit) as ended:
+        main(["run", "--help"])
+
+    assert ended.value.code == 0
+    shown = capsysbinary.readouterr().out.decode()
+    assert "--input" in shown
+    assert "--input-file" in shown
+    assert "follows issue #38" not in shown

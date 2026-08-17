@@ -14,6 +14,8 @@ export default tseslint.config(
       globals: {
         window: "readonly",
         sessionStorage: "readonly",
+        atob: "readonly",
+        TextDecoder: "readonly",
         Event: "readonly",
         KeyboardEvent: "readonly",
         HTMLButtonElement: "readonly",

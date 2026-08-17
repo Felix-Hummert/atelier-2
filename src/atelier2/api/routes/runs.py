@@ -31,6 +31,7 @@ from atelier2.api.wire.requests import (
     CancelAgentAttemptRequestResource,
     ReconcileRunRequestResource,
     StartRunRequestResourceV2,
+    StartRunRequestResourceV3,
 )
 from atelier2.api.wire.resources import (
     AnyRunPageResource,
@@ -86,6 +87,7 @@ from atelier2.application.refusals import (
 from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
     AuthoredAgentBinding,
+    AuthoredOrder,
     InvalidAgentBindings,
     RevisionMissing,
     RunCreated,
@@ -131,16 +133,23 @@ async def start_run_route(
     require_new_run_identity(run_id, context.limits)
     revision_hash = parse_revision_hash(body.workflow_revision_hash)
     bindings = None
-    if isinstance(body, StartRunRequestResourceV2):
+    orders: tuple[AuthoredOrder, ...] = ()
+    if isinstance(body, (StartRunRequestResourceV2, StartRunRequestResourceV3)):
         bindings = tuple(
             AuthoredAgentBinding(
                 binding.role, binding.agent_configuration_revision_hash
             )
             for binding in body.agent_bindings
         )
+    if isinstance(body, StartRunRequestResourceV3):
+        orders = tuple(
+            AuthoredOrder(order.name, order.value.encode()) for order in body.orders
+        )
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.start_published_run(run_id, revision_hash, bindings),
+        lambda: context.use_cases.start_published_run(
+            run_id, revision_hash, bindings, orders
+        ),
     )
     match result:
         case RunCreated():
