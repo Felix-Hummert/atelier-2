@@ -7,6 +7,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from atelier2.adapters.dbos.continuation import (
     ACTION_CHECKPOINT_STEP_NAME,
     action_continuation_workflow_id_for,
@@ -22,7 +24,9 @@ from atelier2.contracts.executions import (
     logical_effect_key_for,
     node_workflow_id_for,
     subworkflow_workflow_id_for,
+    terminal_hash_for,
 )
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
 
 CRASHED = 86
@@ -36,6 +40,23 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
 """
+V3_DOCUMENT = b"""format_version: 3
+name: Two agents in a line
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+  - id: review
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Check what the node before you did.
+    depends_on: [implement]
+"""
+V3_RUN_ID = "v3/two-agents/recovery"
+V3_PROVIDER_OUTPUT = b"the exact provider bytes"
 
 
 def child(
@@ -44,7 +65,7 @@ def child(
     *arguments: str,
     expected: int = 0,
     timeout: float = 20,
-) -> None:
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         [
             sys.executable,
@@ -71,6 +92,7 @@ def child(
         },
     )
     assert result.returncode == expected, result.stderr
+    return result
 
 
 def scalar(root: Path, statement: str, parameters: tuple[str, ...] = ()) -> object:
@@ -350,6 +372,37 @@ def initialize_and_seed(root: Path, run_id: str = "run-1") -> None:
     child(root, "seed", run_id, DOCUMENT.hex())
 
 
+def initialize_and_seed_v3(root: Path) -> None:
+    child(root, "seed-v3", V3_RUN_ID, V3_DOCUMENT.hex())
+
+
+def v3_node_workflow_id(node_id: str) -> str:
+    revision = WorkflowRevision(V3_DOCUMENT)
+    return node_workflow_id_for(
+        NodeExecutionId.for_node(RunId(V3_RUN_ID), revision.revision_hash, node_id)
+    )
+
+
+def provider_call_count(root: Path) -> int:
+    counter = root / "provider-count"
+    return 0 if not counter.exists() else len(counter.read_bytes())
+
+
+def integer_scalar(root: Path, statement: str) -> int:
+    value = scalar(root, statement)
+    assert type(value) is int
+    return value
+
+
+def v3_cardinalities(root: Path) -> tuple[int, int, int, int]:
+    return (
+        integer_scalar(root, "SELECT COUNT(*) FROM agent_attempts"),
+        integer_scalar(root, "SELECT COUNT(*) FROM agent_receipts_v2"),
+        integer_scalar(root, "SELECT COUNT(*) FROM run_events"),
+        provider_call_count(root),
+    )
+
+
 def drive_unknown_reconciliation_to_wait(root: Path, run_id: str = "run-1") -> None:
     identities = expected_workflow_identities(run_id)
     marker = root / "force-unknown"
@@ -597,3 +650,130 @@ def test_action_checkpoint_crash_recovers_one_successor(tmp_path: Path) -> None:
     assert workflow_identity_rows(tmp_path, identities.wait_node) == (
         (identities.wait_node, "atelier2_graph_node"),
     )
+
+
+def test_v3_completed_attempt_reentry_starts_its_heir_exactly_once(
+    tmp_path: Path,
+) -> None:
+    initialize_and_seed_v3(tmp_path)
+    marker = tmp_path / "v3-successor-crash"
+
+    child(
+        tmp_path,
+        "execute-v3-until-complete",
+        V3_RUN_ID,
+        str(marker),
+        "start-successor:review",
+        expected=CRASHED,
+    )
+
+    assert marker.read_text() == "start-successor:before-record"
+    assert database_row(
+        tmp_path,
+        "atelier.sqlite",
+        "SELECT state,current_node_id,last_event_sequence,terminal_hash "
+        "FROM runs WHERE run_id=?",
+        (V3_RUN_ID,),
+    ) == ("STARTED", "review", 1, None)
+    assert v3_cardinalities(tmp_path) == (1, 1, 1, 1)
+    assert database_row(
+        tmp_path,
+        "atelier.sqlite",
+        "SELECT node_id,state FROM agent_attempts",
+    ) == ("implement", "SUCCEEDED")
+    assert workflow_identity_rows(tmp_path, v3_node_workflow_id("implement")) == (
+        (v3_node_workflow_id("implement"), "atelier2_graph_node"),
+    )
+    assert workflow_identity_rows(tmp_path, v3_node_workflow_id("review")) == ()
+
+    child(
+        tmp_path,
+        "execute-v3-until-complete",
+        V3_RUN_ID,
+        "NONE",
+        "NONE",
+    )
+
+    assert v3_cardinalities(tmp_path) == (2, 2, 2, 2)
+    with sqlite3.connect(tmp_path / "atelier.sqlite", timeout=30) as connection:
+        attempts = tuple(
+            connection.execute(
+                "SELECT node_id,state FROM agent_attempts ORDER BY node_id"
+            )
+        )
+        events = tuple(
+            connection.execute(
+                "SELECT event_sequence,node_id,event_kind,payload "
+                "FROM run_events ORDER BY event_sequence"
+            )
+        )
+        event_hashes = tuple(
+            Sha256Hash(str(row[0]))
+            for row in connection.execute(
+                "SELECT event_hash FROM run_events ORDER BY event_sequence"
+            )
+        )
+    assert attempts == (("implement", "SUCCEEDED"), ("review", "SUCCEEDED"))
+    assert events == (
+        (1, "implement", "AGENT_COMPLETED", V3_PROVIDER_OUTPUT),
+        (2, "review", "AGENT_COMPLETED", V3_PROVIDER_OUTPUT),
+    )
+    assert workflow_identity_rows(tmp_path, v3_node_workflow_id("implement")) == (
+        (v3_node_workflow_id("implement"), "atelier2_graph_node"),
+    )
+    assert workflow_identity_rows(tmp_path, v3_node_workflow_id("review")) == (
+        (v3_node_workflow_id("review"), "atelier2_graph_node"),
+    )
+    terminal_hash = terminal_hash_for(
+        WorkflowRevision(V3_DOCUMENT).revision_hash, event_hashes
+    ).value
+    assert database_row(
+        tmp_path,
+        "atelier.sqlite",
+        "SELECT state,current_node_id,last_event_sequence,terminal_hash "
+        "FROM runs WHERE run_id=?",
+        (V3_RUN_ID,),
+    ) == ("COMPLETED", "review", 2, terminal_hash)
+
+
+@pytest.mark.parametrize("torn_head", ["implement", "not-in-the-graph"])
+def test_v3_completed_attempt_reentry_refuses_a_torn_or_foreign_head(
+    tmp_path: Path, torn_head: str
+) -> None:
+    initialize_and_seed_v3(tmp_path)
+    marker = tmp_path / "v3-successor-crash"
+    child(
+        tmp_path,
+        "execute-v3-until-complete",
+        V3_RUN_ID,
+        str(marker),
+        "start-successor:review",
+        expected=CRASHED,
+    )
+    before = v3_cardinalities(tmp_path)
+    assert before == (1, 1, 1, 1)
+    with sqlite3.connect(tmp_path / "atelier.sqlite", timeout=30) as connection:
+        connection.execute(
+            "UPDATE runs SET current_node_id=? WHERE run_id=?",
+            (torn_head, V3_RUN_ID),
+        )
+        connection.commit()
+
+    recovery = child(
+        tmp_path,
+        "execute-v3-until-complete",
+        V3_RUN_ID,
+        "NONE",
+        "NONE",
+        expected=1,
+    )
+
+    assert v3_cardinalities(tmp_path) == before
+    assert workflow_identity_rows(tmp_path, v3_node_workflow_id("review")) == ()
+    assert "RunTransitionConflict" in recovery.stderr
+    expected_message = (
+        "successful attempt has no exact successor transition"
+        if torn_head == "implement"
+        else "run current node is absent from its workflow graph"
+    )
+    assert expected_message in recovery.stderr

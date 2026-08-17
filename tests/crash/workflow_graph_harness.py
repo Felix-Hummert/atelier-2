@@ -5,15 +5,35 @@ import os
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import sqlalchemy as sa
+from dbos import DBOS
 
+from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
+from atelier2.adapters.dbos.starter import (
+    DbosDurableRunStarter,
+    DbosWorkflowRevisionPublisher,
+)
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.agents import (
+    AgentBinding,
+    AgentBindingSet,
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
+    AgentExecutorRevision,
+    AgentRole,
+    AuthMode,
+    AuthProfileRevision,
+    ProviderId,
+)
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectAdapterBinding,
@@ -33,7 +53,13 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.ports.agent_configurations import (
+    AgentConfigurationRevisionCreated,
+    AuthProfileRevisionCreated,
+)
+from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.effects import EffectAdapter
+from tests.scenarios.agents import RecordingAgentExecutorFactoryV2, launching
 from tests.scenarios.runs import (
     start_published_v1_run,
     submit_reconcile_command,
@@ -41,6 +67,12 @@ from tests.scenarios.runs import (
 )
 
 CRASHED = 86
+V3_PROVIDER_OUTPUT = b"the exact provider bytes"
+_COUNTING_PROVIDER = (
+    "from pathlib import Path; import os,sys; "
+    "Path(sys.argv[1]).open('ab').write(b'x'); "
+    "os.write(1, bytes.fromhex(sys.argv[2]))"
+)
 
 
 class HarnessEffectAdapter:
@@ -80,10 +112,24 @@ class HarnessEffectAdapterFactory:
 def runtime(
     database: Path, external: Path, version: str, force_unknown_marker: Path
 ) -> DbosRuntime:
+    provider = RecordingAgentExecutorFactoryV2(
+        "exact",
+        "exact/v1",
+        "exact-operation",
+        V3_PROVIDER_OUTPUT,
+        command=launching(
+            sys.executable,
+            "-c",
+            _COUNTING_PROVIDER,
+            str(database.parent / "provider-count"),
+            V3_PROVIDER_OUTPUT.hex(),
+        ),
+    )
     return DbosRuntime(
         DbosRuntimeSettings(database, version),
         HarnessEffectAdapterFactory(external, force_unknown_marker),
         ExactOutputAgentExecutorFactory(),
+        (provider,),
     )
 
 
@@ -111,6 +157,53 @@ def seed(
         start_published_v1_run(
             lease.engine, lease.settings, RunId(run_id), WorkflowRevision(document)
         )
+    finally:
+        lease.close()
+
+
+def seed_v3(
+    database: Path,
+    external: Path,
+    version: str,
+    force_unknown_marker: Path,
+    run_id: str,
+    document: bytes,
+) -> None:
+    lease = runtime(database, external, version, force_unknown_marker)
+    try:
+        lease.initialize_storage()
+        catalog = DbosAgentConfigurationCatalog(
+            lease.engine, lease.agent_executor_registry
+        )
+        auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
+        assert isinstance(
+            catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        )
+        configuration = AgentConfigurationRevision(
+            "opus",
+            auth.revision_hash,
+            AgentExecutorRevision("exact/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(configuration),
+            AgentConfigurationRevisionCreated,
+        )
+        workflow = WorkflowRevision(document)
+        DbosWorkflowRevisionPublisher(lease.engine).publish(workflow)
+        started = DbosDurableRunStarter(
+            lease.engine, lease.settings, lease.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(
+                RunId(run_id),
+                workflow.revision_hash,
+                AgentBindingSet(
+                    (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+                ),
+            )
+        )
+        assert isinstance(started, DurableRunCreated)
     finally:
         lease.close()
 
@@ -175,6 +268,21 @@ def install_crash(marker: Path, operation_name: str) -> None:
     SystemDatabase.record_operation_result = injected
 
 
+def install_successor_start_crash(marker: Path, successor_node_id: str) -> None:
+    original = DBOS.start_workflow
+
+    def injected(func: Callable[..., Any], *arguments: Any, **keywords: Any) -> Any:
+        if (
+            getattr(func, "__name__", "") == "durable_node"
+            and len(arguments) == 3
+            and arguments[2] == successor_node_id
+        ):
+            _crash_once(marker, "start-successor")
+        return original(func, *arguments, **keywords)
+
+    DBOS.start_workflow = injected
+
+
 def execute_until(
     database: Path,
     external: Path,
@@ -188,7 +296,12 @@ def execute_until(
     lease = runtime(database, external, version, force_unknown_marker)
     try:
         if marker is not None and operation_name is not None:
-            install_crash(marker, operation_name)
+            if operation_name.startswith("start-successor:"):
+                install_successor_start_crash(
+                    marker, operation_name.removeprefix("start-successor:")
+                )
+            else:
+                install_crash(marker, operation_name)
         lease.launch()
         deadline = time.monotonic() + 10
         observed = ""
@@ -202,12 +315,13 @@ def execute_until(
                 failed = tuple(
                     row[0]
                     for row in connection.execute(
-                        "SELECT status FROM workflow_status "
+                        "SELECT workflow_uuid FROM workflow_status "
                         "WHERE status IN ('ERROR','CANCELLED')"
                     )
                 )
             if failed:
-                raise RuntimeError(f"durable workflow failed with {failed!r}")
+                DBOS.retrieve_workflow(str(failed[0])).get_result()
+                raise AssertionError("failed durable workflow returned a result")
             if observed == target_state:
                 return
             time.sleep(0.025)
@@ -270,6 +384,16 @@ def main() -> None:
             run_id,
             bytes.fromhex(document_hex),
         )
+    elif command == "seed-v3":
+        run_id, document_hex = arguments
+        seed_v3(
+            database,
+            external,
+            version,
+            unknown_marker,
+            run_id,
+            bytes.fromhex(document_hex),
+        )
     elif command == "answer":
         run_id, node_id, answer = arguments
         submit_answer(
@@ -290,6 +414,7 @@ def main() -> None:
             "execute-until-reconcile": "WAITING_RECONCILIATION",
             "execute-until-wait": "WAITING_INPUT",
             "execute-until-complete": "COMPLETED",
+            "execute-v3-until-complete": "COMPLETED",
         }[command]
         execute_until(
             database,
