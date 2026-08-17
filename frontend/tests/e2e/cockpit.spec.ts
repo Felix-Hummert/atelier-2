@@ -300,3 +300,110 @@ async function assertContrastAtLeast(control: Locator, minimum: number): Promise
   const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
   expect((values[0]! + 0.05) / (values[1]! + 0.05)).toBeGreaterThanOrEqual(minimum);
 }
+
+test("opens a V3 run at its own address and shows the line it drove", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const workflowYaml = [
+    "format_version: 3",
+    "name: Two agents in a line",
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Do the one thing this chain is for.",
+    "  - id: review",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Check what the node before you did.",
+    "    depends_on: [implement]",
+    ""
+  ].join("\n");
+
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).revision_hash as string;
+
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: { profile_id: "v3-local", revision_number: 1, provider_id: "e2e-v3", auth_mode: "subscription" }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: "v3-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 2,
+      run_id: "v3/seen-in-the-browser",
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [
+        {
+          role: "builder",
+          agent_configuration_revision_hash: (await configuration.json())
+            .agent_configuration_revision_hash
+        }
+      ]
+    }
+  });
+  expect(started.status()).toBe(201);
+  const createdRun = await started.json();
+  expect(createdRun.workflow_format_version).toBe(3);
+  const reference = createdRun.public_run_reference as string;
+
+  // The runtime drives the line without any further request; the read route is
+  // what says it has, which is the vertical this page then renders.
+  let terminal: string | null = null;
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${reference}`);
+    expect(read.status()).toBe(200);
+    const body = await read.json();
+    expect(body.state).toBe("COMPLETED");
+    expect(body.node_rail.map((entry: { node_id: string }) => entry.node_id)).toEqual([
+      "implement",
+      "review"
+    ]);
+    terminal = body.terminal_hash as string;
+  }).toPass({ timeout: 15_000 });
+  expect(terminal).not.toBeNull();
+
+  const unreadable: string[] = [];
+  await page.route("**/atelier/api/v1/**", async (route) => {
+    const url = route.request().url();
+    if (url.includes("/events") || url.includes("/workflow-revisions/")) unreadable.push(url);
+    await route.continue();
+  });
+
+  await page.goto(`/atelier/runs/${reference}`);
+
+  await expect(page.getByRole("heading", { level: 1, name: "Run v3/seen-in-the-browser" })).toBeVisible();
+  const rail = page.getByRole("listitem");
+  await expect(rail.nth(0)).toContainText("implement");
+  await expect(rail.nth(0)).toContainText("Done");
+  await expect(rail.nth(1)).toContainText("review");
+  await expect(rail.nth(1)).toContainText("Done");
+  await expect(page.getByLabel("Where this run stands")).toContainText("Done");
+  await expect(page.getByLabel("Where this run stands")).toContainText("Snapshot");
+  await expect(page.getByText(terminal as unknown as string)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  // A version 3 run has no event stream and no nodes to walk, so the page must
+  // ask for neither rather than opening a connection that answers nothing.
+  expect(unreadable).toEqual([]);
+
+  await page.screenshot({ path: "test-results/v3-run-desktop.png", fullPage: true });
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("heading", { level: 1, name: "Run v3/seen-in-the-browser" })).toBeVisible();
+  expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: "test-results/v3-run-mobile.png", fullPage: true });
+});
