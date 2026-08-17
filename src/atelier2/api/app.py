@@ -38,7 +38,7 @@ from atelier2.application.publish_workflow_revision import (
     publish_workflow_revision,
 )
 from atelier2.application.read_run_events import read_run_events
-from atelier2.application.read_runs import get_run, list_runs
+from atelier2.application.read_runs import get_node_detail, get_run, list_runs
 from atelier2.application.read_workflow_revisions import (
     get_workflow_revision,
     list_described_workflow_revisions,
@@ -103,6 +103,9 @@ def bound_use_cases(
             )
         ),
         get_run=lambda run_id: get_run(run_id, ports.run_queries),
+        get_node_detail=lambda run_id, node_id: get_node_detail(
+            run_id, node_id, ports.run_queries
+        ),
         list_runs=lambda after, limit: list_runs(after, limit, ports.run_queries),
         prepare_run_events=lambda run_id, after_sequence: prepare_run_events(
             run_id, after_sequence, ports.run_event_queries

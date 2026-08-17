@@ -93,6 +93,9 @@ class ScriptedQueries:
     def list_runs(self, after: Any, limit: int, projection_limit: Any = None) -> Any:
         return self._record(after, limit)
 
+    def get_node_detail(self, run_id: Any, node_id: str) -> Any:
+        return self._record(run_id, node_id)
+
     def prepare_run_event_stream(self, run_id: Any, after_sequence: int) -> Any:
         return self._record(run_id, after_sequence)
 

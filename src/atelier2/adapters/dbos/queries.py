@@ -18,6 +18,8 @@ from atelier2.adapters.dbos.effect_store import (
     receipt_from_record,
 )
 from atelier2.adapters.dbos.run_store import (
+    NodeOutputNotWritten,
+    NodeOutputSchemaRefused,
     RunTransitionConflict,
     event_from_record,
     graph_from_document,
@@ -28,6 +30,7 @@ from atelier2.adapters.dbos.run_store import (
 )
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
+    agent_receipts_v2,
     effect_intents,
     effect_receipts,
     reconcile_commands,
@@ -37,6 +40,7 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.compose_node_job import node_job
+from atelier2.application.project_node_rail import project_node_rail
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
@@ -60,6 +64,7 @@ from atelier2.contracts.executions import (
     RunEventKind,
     logical_effect_key_for,
 )
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -68,6 +73,9 @@ from atelier2.contracts.run_events import (
 from atelier2.contracts.run_projections import (
     AgentAttemptCancellationProjection,
     AgentAttemptProjection,
+    NodeAnswer,
+    NodeDetail,
+    NodeProvenance,
     RunPage,
     RunProjection,
     WaitingReconciliationProjection,
@@ -96,9 +104,12 @@ from atelier2.ports.run_events import (
     StreamReady,
 )
 from atelier2.ports.run_queries import (
+    GetNodeDetailResult,
     GetReconciliationRetryTargetResult,
     GetRunResult,
     ListRunsResult,
+    NodeDetailFound,
+    NodeQueryMissing,
     ReconciliationRetryCommandConflict,
     ReconciliationRetryTargetFound,
     ReconciliationRetryTargetMissing,
@@ -400,6 +411,100 @@ def _current_attempt_projection(
     )
 
 
+def _node_job_and_refusal(
+    connection: Connection,
+    projection: RunProjection,
+    node: object,
+) -> tuple[bytes | None, str | None, str | None]:
+    """What this node was handed, and what stops it if something does.
+
+    A V1 or V2 node's job is the text its author wrote and nothing else, so there
+    is nothing to refuse. A V3 agent node is composed from its instruction, the
+    orders the run carries and the work earlier nodes handed on -- and composing
+    it is exactly where a refusal surfaces, because reading an earlier node's
+    value against the schema its author pinned happens there. The composer's
+    refusal is caught rather than raised: an operator asking about a stuck node
+    wants to be told the reason, not to be refused the question.
+    """
+
+    if isinstance(node, AgentNodeV2):
+        job = node.job.encode("utf-8")
+        return job, Sha256Hash.of(job).value, None
+    if not isinstance(node, AgentNodeV3):
+        return None, None, None
+    run = projection.run
+    try:
+        composed = node_job(
+            node.instruction,
+            load_run_inputs(connection, run.run_id, node),
+            load_node_outputs(
+                connection, run.run_id, run.revision_hash, projection.graph, node
+            ),
+        ).encode("utf-8")
+    except NodeOutputNotWritten:
+        # Absence, not refusal. The node this one reads has not written yet, so
+        # there is no job to prove and nothing has judged anything. Saying so as
+        # a refusal would report a waiting run as a stopped one.
+        return None, None, None
+    except NodeOutputSchemaRefused as refused:
+        return None, None, str(refused)
+    return composed, Sha256Hash.of(composed).value, None
+
+
+def _node_answer(
+    connection: Connection,
+    run_id: RunId,
+    projection: RunProjection,
+    node_id: str,
+) -> NodeAnswer | None:
+    """The value this node wrote, or nothing when it has written none yet."""
+
+    record = connection.execute(
+        sa.select(run_events.c.payload, run_events.c.payload_hash).where(
+            run_events.c.run_id == run_id.value,
+            run_events.c.revision_hash == projection.run.revision_hash.value,
+            run_events.c.node_id == node_id,
+            run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+        )
+    ).one_or_none()
+    if record is None:
+        return None
+    return NodeAnswer(bytes(record.payload), Sha256Hash(str(record.payload_hash)))
+
+
+def _node_provenance(
+    connection: Connection, run_id: RunId, node_id: str
+) -> NodeProvenance | None:
+    """Which agent produced this node's answer, as its receipt recorded it."""
+
+    record = (
+        connection.execute(
+            sa.select(agent_receipts_v2).where(
+                agent_receipts_v2.c.run_id == run_id.value,
+                agent_receipts_v2.c.node_id == node_id,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None:
+        return None
+    return NodeProvenance(
+        role=str(record["role"]),
+        provider_id=str(record["provider_id"]),
+        model=str(record["model"]),
+        executor_revision=str(record["executor_revision"]),
+        executor_operational_identity=str(record["executor_operational_identity"]),
+        auth_mode=str(record["auth_mode"]),
+        profile_id=str(record["profile_id"]),
+        agent_configuration_revision_hash=str(
+            record["agent_configuration_revision_hash"]
+        ),
+        request_hash=str(record["request_hash"]),
+        receipt_hash=str(record["receipt_hash"]),
+    )
+
+
 class DbosQueries:
     """Bounded SQLite projections; each call owns and closes its read connection."""
 
@@ -590,6 +695,62 @@ class DbosQueries:
                 return DescribedWorkflowRevisionPage(
                     tuple(items),
                     items[-1].revision.revision_hash if exhausted and items else None,
+                )
+        except ProjectionLimitExceeded:
+            return ProjectionTooLarge()
+        except (OperationalError, PoolTimeoutError):
+            return ReadUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return QueryDurableStateCorrupt()
+
+    def get_node_detail(self, run_id: RunId, node_id: str) -> GetNodeDetailResult:
+        """One node of one run, answered from what the run really kept.
+
+        Three of the four answers are read; the fourth is recomputed. The job is
+        not stored anywhere, so it is composed again through the one owner that
+        composed it for the provider. Its plain byte hash travels as job_hash;
+        the hash a reader holds against the receipt is provenance.request_hash,
+        which frames execution identity, revision, binding and operational
+        identity around those bytes. Doing it any other way would mean keeping
+        a second copy of a value that already has an identity.
+
+        A refusal is recomputed for the same reason and is the point of this read:
+        when a node's own output does not satisfy the schema its author pinned,
+        the run stops there and today that reason exists only as an exception
+        inside the driver. Here it is named, so the operator is told why a run
+        stands still instead of watching it stand still.
+        """
+
+        found = self.get_run(run_id)
+        if not isinstance(found, RunFound):
+            return found
+        projection = found.projection
+        try:
+            with self._connection() as connection:
+                try:
+                    node = projection.graph.node(node_id)
+                except KeyError:
+                    return NodeQueryMissing()
+                rail = {
+                    entry.node_id: entry.state
+                    for entry in project_node_rail(projection, ())
+                }
+                if node_id not in rail:
+                    return NodeQueryMissing()
+                job, job_hash, refusal = _node_job_and_refusal(
+                    connection, projection, node
+                )
+                return NodeDetailFound(
+                    NodeDetail(
+                        run_id=run_id,
+                        node_id=node_id,
+                        state=rail[node_id],
+                        job=job,
+                        job_hash=job_hash,
+                        answer=_node_answer(connection, run_id, projection, node_id),
+                        provenance=_node_provenance(connection, run_id, node_id),
+                        refusal=refusal,
+                    )
                 )
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()

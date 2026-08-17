@@ -311,6 +311,25 @@ def load_run_inputs(
     return tuple(stored[name] for name in sorted(read))
 
 
+class NodeOutputNotWritten(RunTransitionConflict):
+    """The node this one reads has not written its value yet.
+
+    This is absence, not refusal. Nothing has judged anything: the predecessor
+    simply has not run, or has not finished. It is its own class because a reader
+    that cannot tell it from a refusal will report a waiting run as a stopped one
+    -- and the driver still treats it as the conflict it is, because a driver
+    reaching here has asked for a value the run does not have.
+    """
+
+
+class NodeOutputSchemaRefused(RunTransitionConflict):
+    """A produced value is not what the schema its author pinned admits.
+
+    This is the refusal: something judged, and said no. It carries the words of
+    the schema owner that judged it, so a reader is told what the run was told.
+    """
+
+
 def load_node_outputs(
     session: Any,
     run_id: RunId,
@@ -355,7 +374,7 @@ def load_node_outputs(
             )
         ).one_or_none()
         if record is None:
-            raise RunTransitionConflict(
+            raise NodeOutputNotWritten(
                 f"node {source.node!r} has written no output this node can read"
             )
         payload = bytes(record.payload)
@@ -408,7 +427,7 @@ def _refuse_an_output_its_schema_does_not_admit(
         )
     verdict = read_instance_document(payload, schema)
     if isinstance(verdict, InstanceRefused):
-        raise RunTransitionConflict(
+        raise NodeOutputSchemaRefused(
             f"node {source.node!r} produced an output its own schema refuses: {verdict}"
         )
 

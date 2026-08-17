@@ -66,6 +66,8 @@ def rendered_document(document: dict[str, Any]) -> str:
     return json.dumps(document, separators=(",", ":"))
 
 
+NODE_DETAIL_PATH = API_PREFIX + "/runs/{public_ref}/nodes/{node_id}"
+
 EXPECTED_PATHS = {
     API_PREFIX + "/health",
     API_PREFIX + "/auth-profile-revisions",
@@ -78,6 +80,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/workflow-lineages/{lineage_id}/members",
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
+    NODE_DETAIL_PATH,
     API_PREFIX + "/runs/{public_ref}/answers",
     API_PREFIX + "/runs/{public_ref}/reconciliations",
     CANCELLATION_PATH,
@@ -122,6 +125,7 @@ EXPECTED_ROUTE_SEQUENCE = (
     ("POST", API_PREFIX + "/runs", "start_run_route"),
     ("GET", API_PREFIX + "/runs", "list_runs"),
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
+    ("GET", NODE_DETAIL_PATH, "get_node_detail_route"),
     ("POST", CANCELLATION_PATH, "cancel_agent_attempt_route"),
     ("POST", API_PREFIX + "/runs/{public_ref}/answers", "answer_run_route"),
     (

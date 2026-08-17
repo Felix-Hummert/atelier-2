@@ -17,11 +17,14 @@ from atelier2.application.refusals import (
     ReadUnavailable,
 )
 from atelier2.contracts.run_projections import (
+    NodeDetail,
     RunPage,
     RunProjection,
 )
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_queries import (
+    NodeDetailFound,
+    NodeQueryMissing,
     RunFound,
     RunQueries,
     RunQueryMissing,
@@ -61,6 +64,26 @@ type ListRunsResult = (
 )
 
 
+@dataclass(frozen=True)
+class NodeDetailRead:
+    detail: NodeDetail
+
+
+@dataclass(frozen=True)
+class NodeNotFound:
+    """The run exists and declares no node by that name."""
+
+
+type GetNodeDetailUseCaseResult = (
+    NodeDetailRead
+    | NodeNotFound
+    | RunNotFound
+    | ReadUnavailable
+    | ProjectionTooLarge
+    | DurableStateCorrupt
+)
+
+
 def get_run(
     run_id: RunId,
     queries: RunQueries,
@@ -68,6 +91,29 @@ def get_run(
     match queries.get_run(run_id):
         case RunFound(projection):
             return RunRead(projection)
+        case RunQueryMissing():
+            return RunNotFound()
+        case PortReadUnavailable(detail):
+            return ReadUnavailable(detail)
+        case PortProjectionTooLarge():
+            return ProjectionTooLarge()
+        case QueryDurableStateCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def get_node_detail(
+    run_id: RunId,
+    node_id: str,
+    queries: RunQueries,
+) -> GetNodeDetailUseCaseResult:
+    """One node of one run, or the named reason a reader cannot have it."""
+    match queries.get_node_detail(run_id, node_id):
+        case NodeDetailFound(detail):
+            return NodeDetailRead(detail)
+        case NodeQueryMissing():
+            return NodeNotFound()
         case RunQueryMissing():
             return RunNotFound()
         case PortReadUnavailable(detail):

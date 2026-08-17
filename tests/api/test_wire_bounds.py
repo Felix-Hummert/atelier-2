@@ -49,6 +49,15 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentBindingResourceV2.model": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
+    "NodeProvenanceResource.auth_mode": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "NodeProvenanceResource.executor_operational_identity": (
+        MAXIMUM_AGENT_FIELD_CHARACTERS
+    ),
+    "NodeProvenanceResource.executor_revision": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "NodeProvenanceResource.model": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "NodeProvenanceResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "NodeProvenanceResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
+    "NodeProvenanceResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AdmitCatalogMemberRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     "AgentCancelRequestedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,

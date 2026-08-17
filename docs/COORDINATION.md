@@ -139,3 +139,44 @@ Fail loud, fix forward, never rewrite history. A defect found after landing is
 anchored on the owning item with reproduction and impact — an unanchored
 finding is a rumor, and nobody acts on rumors. A sentence that turns out
 untrue is withdrawn, never narrowed. (Sources: #143/#156 precedents.)
+
+## Shortening the loop, never lowering the bar
+
+Distilled from the review classes of 2026-08-17 (anchored on #111,
+5316850338). These three rules cut round-trips; witness depth stays.
+
+### Builder checklist — read before the first commit
+
+- Every refusal is **named** in the words of its rule owner; a traceback is
+  never the primary signal.
+- A literal, bound, or default **references its owner** — no value is chosen
+  where one is already decided (#251).
+- Every new promise ships with a **mutation that bites**; a test that survives
+  the removal of its subject proves the fixture, not the behavior.
+- Deletions are **two-sided**: SPEC/acceptance ids, ignore entries, and prose
+  pointers fall with the code they held.
+- Every change has a **second side**: a rename, alias, or second reader of
+  the same question must speak the new language, **including the error path**.
+  (The class behind #239, #252, and #264: one reader learned the new spelling,
+  the other kept the old one.)
+- Three truths are never conflated: **honestly-empty ≠ named-refusal ≠
+  loud-corruption**. A read surface renders each as itself.
+- **Claim before build**, candidate search before claim — including the desk
+  when commissioning: check the item's claims before assigning a builder.
+
+### Named-healing rule
+
+When a REVISE names its healing precisely and option-free, the builder repairs
+**immediately** — no desk ruling round-trip. The desk rules only genuine
+option questions, and lands. The witness who named the healing confirms the
+delta.
+
+### Model tiers
+
+Assign contract and schema depth to Opus/Fable-class seats. Witness staffing
+follows the ceremony list above (double witnesses **only** for the cases it
+names) — this section adds no second ceremony. Narrow, well-specified heads and
+light witnessing may run on Sonnet-class headless seats. Mechanical sweeps,
+restacks, and measured audits go to the cheapest worker who can do them
+honestly — one build assignment per external CLI worker at a time, claims
+first, so parallel processes never build the same hole twice.

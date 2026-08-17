@@ -495,6 +495,70 @@ class NodeRailResource(ApiModel):
     attempt: NodeRailAttemptResource | None
 
 
+class NodeAnswerResource(ApiModel):
+    """What one node wrote, as the run kept it."""
+
+    value_base64: str
+    value_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class NodeProvenanceResource(ApiModel):
+    """Which agent produced a node's answer, as its receipt recorded it.
+
+    Usage and duration are absent because no receipt holds them: this answer can
+    prove what ran and what came out, and cannot say what it cost or how long it
+    took. Naming that here is cheaper than a reader assuming the fields are
+    coming.
+    """
+
+    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    provider_id: str = Field(min_length=1, max_length=MAXIMUM_PROVIDER_ID_CHARACTERS)
+    model: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    executor_revision: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
+    )
+    executor_operational_identity: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
+    )
+    auth_mode: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    receipt_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class NodeDetailResource(ApiModel):
+    """One node of a run, answered the way an operator asks about it.
+
+    Four answers, each allowed to be absent, because absence is itself the
+    answer. `job` is what the run really handed this node's provider, recomposed
+    through the one owner that composed it; `job_hash` is the hash of exactly
+    those bytes and nothing more. It is **not** the receipt's `request_hash`,
+    which frames the execution identity, the revision, the binding and the
+    operational identity around the job -- a reader comparing the two would
+    reject a job that is right. `provenance.request_hash` is the field that
+    meets the receipt.
+
+    `answer` is what the node wrote, with the hash its own completion event
+    kept. `provenance` is who did it. `refusal` is what stops the run here, and
+    only that: a node whose predecessor has simply not written yet carries no
+    job and no refusal, because nothing has judged anything. Anything that would
+    mean the store disagrees with itself -- a payload that no longer matches its
+    hash, a pinned schema revision that is gone -- is not softened into a
+    refusal here; it leaves as durable corruption, loudly.
+    """
+
+    run_id: str = Field(min_length=1)
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    node_id: str = Field(min_length=1)
+    state: NodeStateName
+    job_base64: str | None
+    job_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
+    answer: NodeAnswerResource | None
+    provenance: NodeProvenanceResource | None
+    refusal: str | None
+
+
 class RunResourceV2(ApiModel):
     workflow_format_version: Literal[2]
     run_id: str = Field(min_length=1)
