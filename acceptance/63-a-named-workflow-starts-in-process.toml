@@ -36,6 +36,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/63"
 [[sentence]]
 id = "a-name-reaches-exactly-the-bytes-it-resolved-to"
 text = "A name the catalog holds reaches exactly the bytes that name resolves to, and those exact bytes are the ones the supervised start records, in this process and against this engine; a retired lineage and a name nobody admitted each record nothing and refuse in the catalog's own words."
+requirement = "REQ-KATALOG-02"
 
 [[sentence]]
 id = "a-named-start-records-the-whole-durable-set-or-nothing"
