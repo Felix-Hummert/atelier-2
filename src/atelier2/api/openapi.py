@@ -24,11 +24,16 @@ from atelier2.api.wire.events import (
     ActionReconciliationResolvedEventResource,
     ActionReconciliationResolvedEventResourceV2,
     AgentCancelledEventResourceV2,
+    AgentCancelledEventResourceV3,
     AgentCancelRequestedEventResourceV2,
+    AgentCancelRequestedEventResourceV3,
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
+    AgentCompletedEventResourceV3,
     AgentFailedEventResourceV2,
+    AgentFailedEventResourceV3,
     AgentInterruptedEventResourceV2,
+    AgentInterruptedEventResourceV3,
     SubworkflowCompletedEventResource,
     SubworkflowCompletedEventResourceV2,
     WaitAnsweredEventResource,
@@ -70,10 +75,24 @@ EVENT_MODELS_V2 = (
     WaitAnsweredEventResourceV2,
     SubworkflowCompletedEventResourceV2,
 )
+EVENT_MODELS_V3 = (
+    AgentCompletedEventResourceV3,
+    AgentFailedEventResourceV3,
+    AgentCancelRequestedEventResourceV3,
+    AgentCancelledEventResourceV3,
+    AgentInterruptedEventResourceV3,
+)
 EVENT_NAMES = tuple(
     kind.value for kind in RunEventKind if kind not in KINDS_NO_V1_RUN_CARRIES
 )
 EVENT_NAMES_V2 = tuple(kind.value for kind in RunEventKind)
+EVENT_NAMES_V3 = (
+    RunEventKind.AGENT_COMPLETED.value,
+    RunEventKind.AGENT_FAILED.value,
+    RunEventKind.AGENT_CANCEL_REQUESTED.value,
+    RunEventKind.AGENT_CANCELLED.value,
+    RunEventKind.AGENT_INTERRUPTED.value,
+)
 
 OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/health", "get"): ("internal-error",),
@@ -392,10 +411,31 @@ def _install_event_components(schema: dict[str, Any]) -> None:
             },
         },
     }
+    for model in EVENT_MODELS_V3:
+        generated = model.model_json_schema(
+            mode="serialization", ref_template="#/components/schemas/{model}"
+        )
+        definitions = generated.pop("$defs", {})
+        components.update(definitions)
+        components[model.__name__] = generated
+    components["RunEventResourceV3"] = {
+        "oneOf": [
+            {"$ref": f"#/components/schemas/{model.__name__}"}
+            for model in EVENT_MODELS_V3
+        ],
+        "discriminator": {
+            "propertyName": "event",
+            "mapping": {
+                name: f"#/components/schemas/{model.__name__}"
+                for name, model in zip(EVENT_NAMES_V3, EVENT_MODELS_V3, strict=True)
+            },
+        },
+    }
     components["VersionedRunEventResource"] = {
         "oneOf": [
             {"$ref": "#/components/schemas/RunEventResource"},
             {"$ref": "#/components/schemas/RunEventResourceV2"},
+            {"$ref": "#/components/schemas/RunEventResourceV3"},
         ]
     }
     components[StreamFailureResource.__name__] = _stream_failure_component()

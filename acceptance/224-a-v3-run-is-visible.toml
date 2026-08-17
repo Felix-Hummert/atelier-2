@@ -12,9 +12,10 @@ story = "https://github.com/FlexOr2/atelier-2/issues/224"
 #     there is nothing to draw a shape from. What is shown is the rail the server
 #     already walked, which is the run's real path; the drawing needs a V3 node
 #     shape in the wire and is its own head.
-#   - NO LIVE FOLLOWING. The event resource is pinned to format 2, so a V3 run
-#     has no event stream. The page says so instead of opening a connection that
-#     would answer nothing, and no test here pretends a frame arrived.
+#   - NO LIVE FOLLOWING. The HTTP event resource now has a format-3 family, but
+#     this page still does not subscribe: it says so instead of opening a live
+#     follow this sentence does not claim, and no test here pretends a frame
+#     arrived.
 #   - THE PICKER NOW STARTS ONE, and the sentence below says so. It was named
 #     absent here while the cockpit could not draw a V3 run; it can, so the gate
 #     fell. What the picker needed was never the nodes -- it was the roles, which
@@ -33,8 +34,8 @@ text = "An operator who opens a V3 run by its address sees the line its author d
 
 # WHAT THE PICKER STILL DOES NOT DO. The graph is not drawn: a version 3 revision
 # answers with its roles and its node count, not its nodes, so there is no shape
-# to render and none is invented. Live following stays absent for the same reason
-# as above -- a version 3 run has no event stream.
+# to render and none is invented. Live following stays absent because this page
+# does not subscribe; the HTTP event resource is no longer the reason.
 
 [[sentence]]
 id = "a-v3-workflow-is-started-from-the-picker"

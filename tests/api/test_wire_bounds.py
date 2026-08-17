@@ -51,7 +51,9 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AdmitCatalogMemberRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     "AgentCancelRequestedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AgentCancelRequestedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelledEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AgentCancelledEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CatalogAdmissionResource.display_name": (MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS),
     "FoundCatalogLineageRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     "FoundCatalogLineageRequestResource.display_name": (
@@ -63,6 +65,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentConfigurationRevisionResource.model": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentConfigurationRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "AgentInterruptedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AgentInterruptedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "CancelAgentAttemptRequestResource.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
