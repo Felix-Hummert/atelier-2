@@ -142,6 +142,21 @@
     <p class="muted" role="status">Looking…</p>
   {:else if graphRequest.state === "failed"}
     <ProblemNotice title="The graph could not be read" message={graphRequest.message} />
+    <ol class="rail">
+      {#each rail as entry (entry.node_id)}
+        <li class="rail-entry" class:current={entry.node_id === run.current_node_id}>
+          <button
+            type="button"
+            class="node-button"
+            aria-expanded={openNodeId === entry.node_id}
+            on:click={() => void openNode(entry.node_id)}
+          >
+            <StateMark state={entry.state} />
+            <span class="node-id">{entry.node_id}</span>
+          </button>
+        </li>
+      {/each}
+    </ol>
   {:else}
     <WorkflowGraphDrawing
       previews={graphRequest.previews}
@@ -208,6 +223,10 @@
   .events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
   .event { display: flex; align-items: baseline; gap: 0.6rem; }
   .preview { opacity: 0.8; overflow-wrap: anywhere; }
+  .rail { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+  .rail-entry { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.6rem; border-radius: 0.4rem; }
+  .rail-entry.current { background: color-mix(in srgb, currentColor 8%, transparent); }
+  .node-button { display: flex; align-items: center; gap: 0.6rem; width: 100%; border: 0; background: transparent; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
   .node-id { font-weight: 600; }
   .facts { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 1rem; margin: 0; }
   .facts dd { margin: 0; overflow-wrap: anywhere; }

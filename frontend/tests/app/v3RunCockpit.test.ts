@@ -188,6 +188,8 @@ describe("a version 3 run in the cockpit", () => {
     expect((await screen.findByText("The graph could not be read")).isConnected).toBe(true);
     expect(screen.getByText("store asleep").isConnected).toBe(true);
     expect(screen.queryByRole("region", { name: "Workflow" })).toBeNull();
+    expect(screen.getByRole("button", { name: /implement/ }).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: /review/ }).isConnected).toBe(true);
     expect(screen.getByRole("heading", { level: 1, name: "Run v3/two-agents" }).isConnected).toBe(
       true
     );
