@@ -31,6 +31,7 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
+    driving_workflow_id,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -170,6 +171,27 @@ def attempt_request(
         AgentExecutorOperationalIdentity("controlled-process"),
         b"build",
     )
+
+
+def _record_driving_workflow(
+    runtime: DbosRuntime, workflow_id: str, status: str
+) -> None:
+    """Leave one DBOS workflow row in the state a real one would be found in.
+
+    The durable runtime owns this table; a test that wants to ask about a
+    workflow in a status only a crash or a raise produces cannot reach that
+    status by running one.
+    """
+
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO workflow_status "
+                "(workflow_uuid, status, created_at, updated_at, priority) "
+                "VALUES (:workflow_id, :status, 0, 0, 0)"
+            ),
+            {"workflow_id": workflow_id, "status": status},
+        )
 
 
 def _observing_durable_process_phase(runtime: DbosRuntime) -> AgentCompletionDecoder:
@@ -804,5 +826,67 @@ def test_reentry_after_a_terminal_success_refuses_a_run_head_that_disagrees(
             )
 
         assert len(executor.results) == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "driverless"),
+    (
+        ("PENDING", False),
+        ("ENQUEUED", False),
+        ("DELAYED", False),
+        ("SUCCESS", True),
+        ("ERROR", True),
+        ("CANCELLED", True),
+        ("MAX_RECOVERY_ATTEMPTS_EXCEEDED", True),
+    ),
+)
+def test_an_attempt_is_driverless_once_its_workflow_can_no_longer_move_it(
+    tmp_path: Path, status: str, driverless: bool
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime)
+        store = DbosAgentAttemptStore(runtime.engine)
+        attempt = store.prepare(agent_attempt_execution(request))
+        _record_driving_workflow(runtime, driving_workflow_id(attempt), status)
+
+        assert store.driverless_attempts() == ((attempt,) if driverless else ())
+    finally:
+        runtime.close()
+
+
+def test_an_attempt_whose_workflow_never_reached_the_store_is_driverless(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime)
+        store = DbosAgentAttemptStore(runtime.engine)
+        attempt = store.prepare(agent_attempt_execution(request))
+
+        assert store.driverless_attempts() == (attempt,)
+    finally:
+        runtime.close()
+
+
+def test_a_terminal_attempt_is_never_driverless(tmp_path: Path) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime)
+        store = DbosAgentAttemptStore(runtime.engine)
+        execute_agent_attempt(
+            agent_attempt_execution(request),
+            inspecting_executor(runtime),
+            store,
+            runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
+        )
+
+        assert store.driverless_attempts() == ()
     finally:
         runtime.close()

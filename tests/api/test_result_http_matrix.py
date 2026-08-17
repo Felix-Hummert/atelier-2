@@ -801,9 +801,10 @@ class MatrixQueries:
         self,
         after: RunId | None,
         limit: int,
+        state: object = None,
         projection_limit: DurableProjectionLimit | None = None,
     ) -> ListRunsResult:
-        del after, limit, projection_limit
+        del after, limit, state, projection_limit
         assert self.case.source == "run-list"
         return cast(ListRunsResult, self.case.result)
 

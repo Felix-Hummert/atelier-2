@@ -56,7 +56,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageQuery,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.durable_runs import (
@@ -123,7 +123,7 @@ class ApiUseCases:
     ]
     get_run: Callable[[RunId], GetRunResult]
     get_node_detail: Callable[[RunId, str], GetNodeDetailUseCaseResult]
-    list_runs: Callable[[RunId | None, int], ListRunsResult]
+    list_runs: Callable[[RunId | None, int, RunState | None], ListRunsResult]
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
     read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
     publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]

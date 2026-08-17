@@ -110,7 +110,9 @@ def bound_use_cases(
         get_node_detail=lambda run_id, node_id: get_node_detail(
             run_id, node_id, ports.run_queries
         ),
-        list_runs=lambda after, limit: list_runs(after, limit, ports.run_queries),
+        list_runs=lambda after, limit, state=None: list_runs(
+            after, limit, ports.run_queries, state
+        ),
         prepare_run_events=lambda run_id, after_sequence: prepare_run_events(
             run_id, after_sequence, ports.run_event_queries
         ),

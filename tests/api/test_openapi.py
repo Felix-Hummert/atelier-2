@@ -217,8 +217,9 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was last regenerated when the V3 node preview grew the authored
-    `depends_on` edges. That regeneration is the wire change this head declares;
+    The artefact was last regenerated when `invalid-request` grew field
+    pointers and `GET /runs` grew a `state` filter. That regeneration is the
+    wire change this head declares;
     refreshing it alongside a refactor is what this test still refuses.
     """
 
