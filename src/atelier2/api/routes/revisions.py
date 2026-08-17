@@ -21,15 +21,21 @@ from atelier2.api.projection.workflows import (
     workflow_revision_page_resource,
 )
 from atelier2.api.references import InvalidRevisionHash, parse_revision_hash
-from atelier2.api.wire.requests import RevisionListingView
+from atelier2.api.wire.requests import (
+    AdmitCatalogMemberRequestResource,
+    FoundCatalogLineageRequestResource,
+    RevisionListingView,
+)
 from atelier2.api.wire.resources import (
     AnyWorkflowRevisionPageResource,
+    CatalogAdmissionResource,
     CatalogNameResolutionResource,
     VersionedWorkflowRevisionPageResource,
     WorkflowRevisionDetailResource,
     WorkflowRevisionPageResource,
     WorkflowRevisionSummaryResource,
 )
+from atelier2.application.admit_catalog_member import CatalogRevisionUnpublished
 from atelier2.application.publish_workflow_revision import (
     PublicationCollision,
     PublicationCreated,
@@ -55,8 +61,24 @@ from atelier2.application.resolve_catalog_name import (
     CatalogNameResolved,
     CatalogReferenceNonMember,
 )
-from atelier2.contracts.catalog_v3 import catalog_lineage_query
-from atelier2.contracts.revisions_v3 import RevisionKind
+from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogAdmissionExisting,
+    CatalogAdmissionKindMismatch,
+    CatalogAdmissionLineageMissing,
+    CatalogAdmissionNameHeld,
+    CatalogAdmissionRetired,
+    CatalogAdmissionRevisionOwned,
+    CatalogAdmissionUnpublished,
+    CatalogLineageDisplayName,
+    CatalogLineageFounded,
+    CatalogLineageId,
+    CatalogLineageIdMismatch,
+    CatalogMemberAdmitted,
+    catalog_lineage_query,
+)
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowRefusal
 
@@ -181,6 +203,106 @@ def _asked_position(position: str) -> object:
         return int(position)
     except ValueError:
         return position
+
+
+@router.post(
+    API_PREFIX + "/workflow-lineages",
+    response_model=CatalogAdmissionResource,
+    status_code=201,
+)
+async def found_catalog_lineage_route(
+    request: FoundCatalogLineageRequestResource,
+    context: ApiContext = api_context_dependency,
+) -> CatalogAdmissionResource:
+    """Give one published revision the name the catalog will answer to."""
+
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.found_catalog_lineage(
+            RevisionKind.WORKFLOW,
+            PublishedRevisionHash(request.revision_hash),
+            CatalogLineageDisplayName(request.display_name),
+            CatalogActor(request.actor),
+            CatalogActivatedAt(request.activated_at),
+        ),
+    )
+    return _admission_resource(result)
+
+
+@router.post(
+    API_PREFIX + "/workflow-lineages/{lineage_id}/members",
+    response_model=CatalogAdmissionResource,
+    status_code=201,
+)
+async def admit_catalog_member_route(
+    lineage_id: str,
+    request: AdmitCatalogMemberRequestResource,
+    context: ApiContext = api_context_dependency,
+) -> CatalogAdmissionResource:
+    """Admit one published revision into the lineage this path names."""
+
+    try:
+        identity = CatalogLineageId(lineage_id)
+    except ValueError as error:
+        raise ApiProblem("catalog-lineage-missing") from error
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.admit_catalog_member(
+            RevisionKind.WORKFLOW,
+            identity,
+            PublishedRevisionHash(request.revision_hash),
+            CatalogActor(request.actor),
+            CatalogActivatedAt(request.activated_at),
+        ),
+    )
+    return _admission_resource(result)
+
+
+def _admission_resource(result: object) -> CatalogAdmissionResource:
+    """One resource for both acts, because both answer the same question."""
+
+    match result:
+        case CatalogLineageFounded(lineage, revision, display_name):
+            return CatalogAdmissionResource(
+                display_name=display_name.value,
+                lineage_id=lineage.lineage_id.value,
+                revision_hash=revision.revision_hash.value,
+                revision_number=1,
+            )
+        case CatalogMemberAdmitted(lineage, revision, revision_number, display_name):
+            return CatalogAdmissionResource(
+                display_name=display_name.value,
+                lineage_id=lineage.lineage_id.value,
+                revision_hash=revision.revision_hash.value,
+                revision_number=revision_number,
+            )
+        case CatalogAdmissionExisting(lineage, revision, revision_number, display_name):
+            # Admitting what is already admitted is the same answer, not a
+            # conflict: the caller asked for a state the catalog is already in.
+            return CatalogAdmissionResource(
+                display_name=display_name.value,
+                lineage_id=lineage.lineage_id.value,
+                revision_hash=revision.revision_hash.value,
+                revision_number=revision_number,
+            )
+        case CatalogRevisionUnpublished():
+            raise ApiProblem("catalog-revision-unpublished")
+        case CatalogAdmissionUnpublished():
+            raise ApiProblem("catalog-revision-unpublished")
+        case CatalogAdmissionNameHeld():
+            raise ApiProblem("catalog-name-held")
+        case CatalogAdmissionRevisionOwned():
+            raise ApiProblem("catalog-revision-owned")
+        case CatalogAdmissionLineageMissing():
+            raise ApiProblem("catalog-lineage-missing")
+        case CatalogAdmissionRetired():
+            raise ApiProblem("catalog-lineage-retired")
+        case CatalogAdmissionKindMismatch() | CatalogLineageIdMismatch():
+            raise ApiProblem("durable-state-corrupt")
+        case WriteUnavailable():
+            raise ApiProblem("temporarily-unavailable")
+        case _:
+            raise ApiProblem("internal-error")
 
 
 @router.get(

@@ -72,7 +72,7 @@ Quelle:     DESK — [ADR 0007](../decisions/0007-catalog-identity.md) Decision 
 Begründung: Publication and admission are two acts. The operator must not be offered a name that the catalog has not admitted.
 Journeys:
 Beweis:     UNGEBUNDEN
-Offen:      - Aufnahme-Befehl und Picker-Mitgliedschaft fehlen; der Store kann die Aufnahme (`admit_member`), aber keine Route oder ein Befehl bietet sie an (Eigentümer: #63, Ziel: Bahn B)
+Offen:      - Der Picker fehlt, der eine Mitgliedschaft und einen Namen anbietet (Eigentümer: #131-Familie, Ziel: Oberfläche). Die Aufnahme selbst ist über die API erreichbar (Eigentümer: #213)
 
 ## Open questions
 
