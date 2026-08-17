@@ -44,7 +44,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     10: "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7",
     11: "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef",
     12: "feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7",
-    13: "80f05d7a1b073dd597179873983cfd0643ac9eac512cce6d0586a2c418c2a92e",
+    13: "5782fdc1331c52f3f04097f6a2a6d416ab528d6ee8a6546a7d6435ae9d11c175",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -995,6 +995,17 @@ node_receipts_v3 = sa.Table(
     ),
     sa.CheckConstraint(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    # The pair is the binding. Each hash alone can name a record that exists
+    # while the two together describe a node execution nobody ran -- this
+    # execution's receipt pointing at another execution's request -- so the key
+    # is composite and a single-column one would not see it.
+    sa.ForeignKeyConstraint(
+        ("node_execution_id", "request_hash"),
+        (
+            "node_execution_requests_v3.node_execution_id",
+            "node_execution_requests_v3.request_hash",
+        ),
     ),
 )
 run_configuration_revisions = sa.Table(

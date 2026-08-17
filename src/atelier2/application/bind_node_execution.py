@@ -28,8 +28,8 @@ from atelier2.contracts.agents import AgentExecutionCapability
 from atelier2.contracts.node_records_v3 import (
     AvailableContextGrant,
     BoundNodeRevisions,
-    ContextPackage,
     ContextPackageMember,
+    DeclaredContextPackage,
     DeclaredOutput,
     NodeExecutionRequest,
     NodeKindV3,
@@ -59,7 +59,7 @@ class BoundNodeExecution:
     the hash was taken over.
     """
 
-    context_package: ContextPackage
+    context_package: DeclaredContextPackage
     request: NodeExecutionRequest
 
 

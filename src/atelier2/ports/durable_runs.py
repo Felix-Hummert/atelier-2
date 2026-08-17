@@ -7,7 +7,7 @@ from typing import Protocol
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
 from atelier2.contracts.node_records_v3 import (
-    ContextPackage,
+    DeclaredContextPackage,
     NodeArtifact,
     NodeExecutionRequest,
     NodeReceipt,
@@ -125,7 +125,7 @@ class StartV3RunWithReceiptRequest:
     revision: PublishedRevision
     run_configuration: RunConfigurationRevision
     node_request: NodeExecutionRequest
-    context_package: ContextPackage
+    context_package: DeclaredContextPackage
     artifacts: tuple[NodeArtifact, ...]
     receipt: NodeReceipt
 

@@ -29,8 +29,10 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
-    ContextPackage,
+    DeclaredContextPackage,
     NodeExecutionRequestHash,
 )
 from atelier2.contracts.run_configuration_v3 import (
@@ -86,7 +88,7 @@ def test_a_supervised_v3_start_leaves_the_manifest_its_receipt_names(
 
     assert manifest is not None
     assert (
-        ContextPackage(bytes(manifest)).package_hash.value
+        DeclaredContextPackage(bytes(manifest)).package_hash.value
         == stored_receipt["context_package_hash"]
     )
 
@@ -148,7 +150,10 @@ def test_a_truth_naming_a_package_it_does_not_carry_is_refused_without_a_write(
     decided = request()
 
     refused = starter.start_v3_with_receipt(
-        replace(decided, context_package=ContextPackage(b"a package nobody assembled"))
+        replace(
+            decided,
+            context_package=DeclaredContextPackage(b"a package nobody assembled"),
+        )
     )
 
     assert isinstance(refused, DurableV3StartBindingInvalid)
@@ -227,4 +232,56 @@ def test_a_truth_naming_a_configuration_it_does_not_carry_is_refused(
                 sa.select(sa.func.count()).select_from(run_configuration_revisions)
             )
             == 0
+        )
+
+
+@pytest.mark.proves(
+    "a-supervised-v3-run-records-the-configuration-it-was-started-under"
+)
+def test_a_receipt_cannot_carry_the_request_of_another_node_execution(
+    storage: tuple[Engine, DbosDurableRunStarter],
+) -> None:
+    """The pair is the binding, so the store refuses it as a pair.
+
+    A receipt names its node execution and the request that produced it. Each
+    hash on its own can be a record that exists while the two together describe
+    a node execution nobody ran -- one execution's receipt pointing at another
+    execution's request. That is the forgery this composite key exists to make
+    unrepresentable, and a single-column key cannot see it.
+    """
+    engine, starter = storage
+    decided = request()
+    assert isinstance(starter.start_v3_with_receipt(decided), DurableV3RunCreated)
+    other_execution = NodeExecutionId.for_node(
+        decided.node_request.run_id,
+        decided.node_request.workflow_revision_hash,
+        "another_node",
+    )
+
+    with engine.begin() as connection:
+        connection.execute(
+            node_execution_requests_v3.insert().values(
+                request_hash=Sha256Hash.of(b"another request").value,
+                node_execution_id=other_execution.value,
+                run_configuration_revision_hash=(
+                    decided.run_configuration.revision_hash.value
+                ),
+                context_package_hash=decided.context_package.package_hash.value,
+                preimage=b"another node execution request",
+            )
+        )
+
+    with (
+        engine.begin() as connection,
+        pytest.raises(IntegrityError, match="FOREIGN KEY"),
+    ):
+        connection.execute(
+            node_receipts_v3.insert().values(
+                node_execution_id=other_execution.value,
+                disposition=decided.receipt.disposition.value,
+                reason=decided.receipt.reason,
+                request_hash=decided.node_request.request_hash.value,
+                context_package_hash=decided.context_package.package_hash.value,
+                receipt_hash=Sha256Hash.of(b"a forged receipt").value,
+            )
         )

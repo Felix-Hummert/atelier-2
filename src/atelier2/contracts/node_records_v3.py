@@ -21,8 +21,14 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 MAXIMUM_KIND_TOKEN_CHARACTERS = 64
 
 
-class ContextPackageHash(Sha256Hash):
-    """The immutable identity of one context-package/v3 manifest."""
+class DeclaredContextPackageHash(Sha256Hash):
+    """The immutable identity of one `context-package-declared/v3` manifest.
+
+    Its own type because it is its own record. ADR 0006's complete package is
+    still unbuilt, and when it lands it brings `DeclaredContextPackageHash` back with its
+    own frame; keeping the final name free is what stops the incomplete record
+    from having quietly occupied it.
+    """
 
 
 class NodeExecutionRequestHash(Sha256Hash):
@@ -80,17 +86,25 @@ def _require_node_id(node_id: str) -> None:
 
 
 @dataclass(frozen=True)
-class ContextPackage:
-    """Exact manifest bytes under `context-package/v3`."""
+class DeclaredContextPackage:
+    """Exact manifest bytes under `context-package-declared/v3`.
+
+    The identifier is the same on the outside as on the inside on purpose: an
+    outer frame carrying the final domain name around a declared body would
+    narrow the record only where nobody reads it, and the hash -- the part that
+    travels into a receipt -- would still claim the complete package.
+    """
 
     manifest: bytes
-    package_hash: ContextPackageHash = field(init=False)
+    package_hash: DeclaredContextPackageHash = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "package_hash",
-            ContextPackageHash.of(frame("context-package/v3", self.manifest)),
+            DeclaredContextPackageHash.of(
+                frame("context-package-declared/v3", self.manifest)
+            ),
         )
 
 
@@ -133,7 +147,7 @@ def declared_context_package_of(
     run_id: RunId,
     node_id: str,
     members: tuple[ContextPackageMember, ...],
-) -> ContextPackage:
+) -> DeclaredContextPackage:
     """The declared context one node was assembled with, as its own container.
 
     **This is not ADR 0006's complete package, and its frame says so.** The ADR
@@ -151,9 +165,9 @@ def declared_context_package_of(
     node are another package.
     """
     _require_node_id(node_id)
-    return ContextPackage(
+    return DeclaredContextPackage(
         frame(
-            "context-package-declared/v3",
+            "context-package-declared-body/v3",
             _ascii_hash(workflow_revision_hash),
             run_id.value.encode("utf-8"),
             node_id.encode("utf-8"),
@@ -327,7 +341,7 @@ class NodeExecutionRequest:
     run_configuration_revision_hash: RunConfigurationRevisionHash
     run_id: RunId
     node_id: str
-    context_package_hash: ContextPackageHash
+    context_package_hash: DeclaredContextPackageHash
     available_context: tuple[AvailableContextGrant, ...]
     kind: NodeKindV3
     mode: AgentExecutionCapability | None
@@ -347,7 +361,7 @@ class NodeExecutionRequest:
             raise TypeError("a node request names a typed run-configuration revision")
         if not isinstance(self.run_id, RunId):
             raise TypeError("a node request names a typed run id")
-        if not isinstance(self.context_package_hash, ContextPackageHash):
+        if not isinstance(self.context_package_hash, DeclaredContextPackageHash):
             raise TypeError("a node request names a typed context-package hash")
         if not isinstance(self.kind, NodeKindV3):
             raise TypeError("a node request names its kind through the contract")
@@ -462,7 +476,7 @@ class NodeReceipt:
     disposition: PersistedReceiptDisposition
     reason: str
     request_hash: NodeExecutionRequestHash
-    context_package_hash: ContextPackageHash
+    context_package_hash: DeclaredContextPackageHash
     outputs: tuple[ReceiptOutput, ...]
     access_receipt_hashes: tuple[Sha256Hash, ...] = ()
     receipt_hash: NodeReceiptHash = field(init=False)
@@ -476,7 +490,7 @@ class NodeReceipt:
             raise ValueError("a node receipt names a nonempty reason")
         if not isinstance(self.request_hash, NodeExecutionRequestHash):
             raise TypeError("a node receipt names a typed request hash")
-        if not isinstance(self.context_package_hash, ContextPackageHash):
+        if not isinstance(self.context_package_hash, DeclaredContextPackageHash):
             raise TypeError("a node receipt names a typed context-package hash")
         if (
             self.disposition is not PersistedReceiptDisposition.SUCCEEDED

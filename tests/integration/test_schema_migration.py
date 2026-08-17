@@ -256,7 +256,7 @@ def test_published_handoffs_pin_v9_v10_v11_v12_and_v13_current() -> None:
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[13]
-        == "80f05d7a1b073dd597179873983cfd0643ac9eac512cce6d0586a2c418c2a92e"
+        == "5782fdc1331c52f3f04097f6a2a6d416ab528d6ee8a6546a7d6435ae9d11c175"
     )
 
 
