@@ -15,6 +15,8 @@ from atelier2.api.problems import (
 )
 from atelier2.api.references import (
     EVENT_CURSOR_PATTERN,
+    MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
+    MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
@@ -343,6 +345,26 @@ def _problem_component_name(code: str) -> str:
 
 def _install_problem_components(schema: dict[str, Any]) -> None:
     components = schema.setdefault("components", {}).setdefault("schemas", {})
+    components.setdefault(
+        "InvalidFieldResource",
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["path", "reason"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
+                },
+                "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
+                },
+            },
+        },
+    )
     for code, definition in PROBLEM_DEFINITIONS.items():
         components[_problem_component_name(code)] = {
             "type": "object",
@@ -353,6 +375,18 @@ def _install_problem_components(schema: dict[str, Any]) -> None:
                 "title": {"type": "string", "const": definition.title},
                 "status": {"type": "integer", "const": definition.status},
                 "detail": {"type": "string"},
+                **(
+                    {
+                        "invalid_fields": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/components/schemas/InvalidFieldResource"
+                            },
+                        }
+                    }
+                    if code == "invalid-request"
+                    else {}
+                ),
             },
         }
 

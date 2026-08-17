@@ -27,6 +27,8 @@ from annotated_types import MaxLen
 from pydantic import BaseModel
 
 from atelier2.api.references import (
+    MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
+    MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
 )
@@ -112,6 +114,8 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "StartRunRequestResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
+    "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
 }
 
 

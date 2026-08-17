@@ -8,7 +8,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.run_projections import NodeDetail, RunPage, RunProjection
-from atelier2.contracts.runs import RunId
+from atelier2.contracts.runs import RunId, RunState
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge,
     QueryDurableStateCorrupt,
@@ -74,6 +74,7 @@ class RunQueries(Protocol):
         self,
         after: RunId | None,
         limit: int,
+        state: RunState | None = None,
     ) -> ListRunsResult: ...
 
     def get_reconciliation_retry_target(

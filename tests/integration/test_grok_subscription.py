@@ -237,7 +237,6 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert job_file.parent.parent == settings.workspace
     assert command.arguments == (
         str(settings.executable),
-        "-p",
         "--output-format",
         "json",
         "--model",

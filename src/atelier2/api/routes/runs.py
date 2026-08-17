@@ -36,6 +36,7 @@ from atelier2.api.wire.requests import (
 from atelier2.api.wire.resources import (
     AnyRunPageResource,
     AnyRunResource,
+    InvalidFieldResource,
     NodeDetailResource,
     OperatorFoundDeterminationResource,
     VersionedRunPageResource,
@@ -113,7 +114,7 @@ from atelier2.contracts.effects import (
     ReconcileActor,
     ReconcileCommandId,
 )
-from atelier2.contracts.runs import RunId
+from atelier2.contracts.runs import RunId, RunState
 
 router = APIRouter()
 
@@ -187,15 +188,30 @@ async def start_run_route(
 async def list_runs(
     after: str | None = None,
     limit: str = "50",
+    state: str | None = None,
     context: ApiContext = api_context_dependency,
 ) -> AnyRunPageResource:
     boundary = None
     if after is not None:
         boundary = decode_public_reference(after, context.limits)
     parsed_limit = parse_limit(limit)
+    parsed_state = None
+    if state is not None:
+        try:
+            parsed_state = RunState(state)
+        except ValueError:
+            raise ApiProblem(
+                "invalid-request",
+                invalid_fields=(
+                    InvalidFieldResource(
+                        path="query/state",
+                        reason="not a run state this list can filter",
+                    ),
+                ),
+            ) from None
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_runs(boundary, parsed_limit),
+        lambda: context.use_cases.list_runs(boundary, parsed_limit, parsed_state),
     )
     match result:
         case RunsListed(runs, next_after):
