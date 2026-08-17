@@ -145,7 +145,7 @@ exists, the project owns what is chosen or overridden.**
 - *Installation-level*: provider connections; the **register** of definition sources
   and libraries (ADR 0007 decision 2, which this record leaves exactly where it is);
   default rules such as the model per role class and the budget frame; the runner
-  fleet and its enrolment register (requirement 0002 rule 10); appearance and
+  fleet and its enrolment register (requirement 0002 REQ-ZUGANG-10); appearance and
   language.
 - *Project-level, and therefore a bundle revision*: repository, tracker connection
   and credential reference; the **selection** of registered sources and libraries;
@@ -203,7 +203,7 @@ actually carry it, because one of them exists and the other does not:
   holds no other project's auth-profile rows at all, so this is a property of what
   the process can see rather than a predicate a query must remember. Placement
   carries the same scope on the runner side: `allowed-projects` is an attested
-  enrolment fact (requirement 0004 rules 6 and 7), so an attempt of A is never
+  enrolment fact (requirement 0004 REQ-REMOTE-06 and REQ-REMOTE-07), so an attempt of A is never
   placed on a runner that is not allowed for A.
 - **Confinement belongs to the sandbox, and it does not exist yet.** Stopping the
   *placed process* from reading B's root or a credential directory is the OS
@@ -332,7 +332,7 @@ and decision 3 leans on them, so they are decided here rather than assumed.
   lineages, activations, intake provenance as evidence, and measurements whose ids
   are store-stable. It is a **store transport** and not the library-sharing channel:
   sharing a library or a workflow with another operator is sharing a git source
-  (requirement 0002 rule 9), which decision 1 leaves exactly where it is, and this
+  (requirement 0002 REQ-ZUGANG-09), which decision 1 leaves exactly where it is, and this
   record adds no third channel.
 - **A backup of the root**, byte for byte, taken while the project's runtime is
   stopped. That is the whole project, and it is deliberately not an interchange
@@ -341,7 +341,7 @@ and decision 3 leans on them, so they are decided here rather than assumed.
 
 **A whole-project export bundle is refused, and refused as a decision rather than
 deferred.** It would carry a tracker connection and a credential reference into
-another installation — exactly the transport ADR 0009 and requirement 0002 rule 14
+another installation — exactly the transport ADR 0009 and requirement 0002 REQ-ZUGANG-14
 forbid — and it would carry an attempt ledger the receiving installation never ran,
 turning evidence about processes into a claim a file can assert. ADR 0007 removed
 selective bundles for the same reason one level down, and decision 3 refuses removal

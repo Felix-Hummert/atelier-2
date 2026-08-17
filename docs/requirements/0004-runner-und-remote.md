@@ -25,7 +25,7 @@ desk writing engineering direction. **No rule below is graded `OPERATOR`.** Ever
 object in this thread that looks like operator authority is one of the four
 things the convention names as `DESK`: a *question* („es gibt doch GitLab-Runner
 — entwickeln wir ein Konzept, das wir nicht brauchen?", „ist das der richtige
-Weg? sei absolut ehrlich", and the *Operator-Nachfrage* whose standard rule 15
+Weg? sei absolut ehrlich", and the *Operator-Nachfrage* whose standard REQ-REMOTE-15
 answers), a *rejection* („das reicht ja nicht — ich kenne die Umgebung nicht"), a
 rendering the thread itself marks *wörtlich sinngemäß*, or an attribution the
 desk wrote around its own prose (`ERGÄNZUNG (Operator…)`). So
@@ -47,7 +47,7 @@ Its own `Status` is still `PROPOSED`, decision-only, nothing implemented
 it does mean is that no rule below may be read as built.
 
 `Source-Threads` names `#1` for one object only: the house rule 5302447161,
-which the #21 thread invokes by id at rule 4. This document does not distil #1
+which the #21 thread invokes by id at REQ-REMOTE-04. This document does not distil #1
 and takes no position on its content beyond quoting the sentence the thread
 leans on.
 
@@ -94,10 +94,10 @@ are the desk's:
   the standard the desk was challenged to meet. The thread frames it as an
   *Operator-Nachfrage*, and the words are not a sentence: no subject, no verb,
   nothing that can independently state a `must`. The rule holding this standard
-  is the desk's reading of it; rule 15.
+  is the desk's reading of it; REQ-REMOTE-15.
 - „es gibt doch GitLab-Runner — entwickeln wir ein Konzept, das wir nicht
   brauchen?" (5302590978) — the question that produced the build-versus-consume
-  boundary. The boundary is the desk's; rule 4.
+  boundary. The boundary is the desk's; REQ-REMOTE-04.
 - „das reicht ja nicht — ich kenne die Umgebung nicht; wo gebe ich Credentials
   an? ist das durchdacht?" (5302967786) — the rejection that produced the first
   open question. It says what is not enough without saying what to build, so
@@ -111,280 +111,225 @@ runner is this machine, a CI job, or a server across the world** (#21 body @
 
 ## Rules
 
-**Where this document defers rather than repeats.** Requirement
-[0002](0002-teams-und-zugang.md) (#82) already reads the neighbouring thread,
-and these rules do not restate it:
+**Wo dieses Dokument verweist statt zu wiederholen.** Requirement
+[0002](0002-teams-und-zugang.md) (#82) liest den Nachbarfaden bereits, und diese
+Regeln tragen ihn nicht noch einmal:
 
-- **Operator authentication.** #21's body mandates it for the remote cockpit and
-  API; the rules that answer it are 0002 rules 4 and 5 (loopback needs no login,
-  a non-loopback bind makes it mandatory, a human is admitted by login plus a
-  granted role).
-- **Enrolment as the admission of a machine, and the owner scope on a runner
-  holding a personal subscription credential** — 0002 rules 6 and 10. What #21
-  adds is below at rules 5, 6 and 14.
-- **Credentials stay references and are never transported** — 0002 rule 14. #21
-  adds where the two halves live and what happens when one is missing: rules 12
-  and 13.
-- **Remote machines are first class for subscription credentials** — 0002 rule
-  11 rules the principle. Rule 14 below carries only the mechanism.
-- **Money and estimates.** 0002 rule 15 owns it, and it is the one `OPERATOR`
-  rule over there. Nothing in this document computes, displays, or gates on a
-  cost figure, and nothing here restates that rule.
+- **Operator-Authentifizierung.** Der Rumpf von #21 verlangt sie für Cockpit und
+  API aus der Ferne; die Regeln, die sie beantworten, sind REQ-ZUGANG-04 und
+  REQ-ZUGANG-05 (Loopback braucht keinen Login, ein Nicht-Loopback-Bind macht ihn
+  zur Pflicht, ein Mensch wird durch Login plus gewährte Rolle zugelassen).
+- **Einschreibung als Zulassung einer Maschine, und der Eigentümer-Bereich auf
+  einem Runner mit persönlichem Abo-Credential** — REQ-ZUGANG-06 und
+  REQ-ZUGANG-10. Was #21 hinzufügt, steht unten in REQ-REMOTE-05, -06 und -14.
+- **Credentials bleiben Referenzen und werden nie transportiert** —
+  REQ-ZUGANG-14. #21 fügt hinzu, wo die beiden Hälften liegen und was geschieht,
+  wenn eine fehlt: REQ-REMOTE-12 und -13.
+- **Entfernte Maschinen sind für Abo-Credentials erstklassig** — REQ-ZUGANG-11
+  entscheidet das Prinzip. REQ-REMOTE-14 trägt nur den Mechanismus.
+- **Geld und Schätzungen.** REQ-ZUGANG-15 besitzt das Thema, und es ist die eine
+  `OPERATOR`-Regel drüben. Nichts in diesem Dokument rechnet, zeigt oder tort auf
+  einer Kostenzahl, und nichts hier wiederholt jene Regel.
 
-### The boundary
+Die Gruppen, in denen der Faden diese Regeln ordnete, stehen weiter in ihrer
+Reihenfolge: die Grenze (01–04), was eine entfernte Maschine ist (05–06),
+Platzierung (07–11), Credentials (12–14), der zu erreichende Standard (15–18),
+Akteur und Kanal (19–20), die durable Hälfte im Code (21–22), Reihenfolge
+(23–24).
 
-1. `DESK` — **A runner delivers evidence; it never writes truth.** The
-   coordinating service owns the durable record; a runner owns provider
-   invocation and reports what it observed. This is the sentence every other
-   rule here is an instance of. (5302584358 §3, naming it as invariant 1 of the
-   record that became ADR 0009; corroborated by 5302602114 §2, where it is what killed
-   the cheaper alternative.)
+### REQ-REMOTE-01: Ein Runner liefert Evidenz; er schreibt nie Wahrheit.
+Status:     DRAFT
+Quelle:     DESK — 5302584358 §3 (Regel 1), das sie als Invariante 1 des Records benennt, aus dem ADR 0009 wurde; bestätigt durch 5302602114 §2, wo sie die billigere Alternative erledigt hat
+Begründung: Der koordinierende Dienst besitzt den durablen Datensatz; ein Runner besitzt den Provider-Aufruf und meldet, was er beobachtet hat. Das ist der Satz, von dem jede andere Regel hier ein Sonderfall ist.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-2. `DESK` — **Store-sharing was examined and refused, and it stays refused.**
-   Running a remote machine as a second durable worker against the same database
-   needs no protocol of our own at all, and was rejected anyway: the runner
-   could then write truth instead of delivering evidence, which erases rule 1.
-   Named verdict: the largest trust surface for the smallest saving. (5302602114
-   §2.)
+### REQ-REMOTE-02: Store-Sharing wurde geprüft und verworfen, und es bleibt verworfen.
+Status:     DRAFT
+Quelle:     DESK — 5302602114 §2 (Regel 2)
+Begründung: Eine entfernte Maschine als zweiten durablen Arbeiter gegen dieselbe Datenbank laufen zu lassen, braucht überhaupt kein eigenes Protokoll — und wurde trotzdem abgelehnt: der Runner könnte dann Wahrheit schreiben statt Evidenz zu liefern, was REQ-REMOTE-01 auslöscht. Benanntes Urteil: die größte Vertrauensfläche für die kleinste Ersparnis.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-3. `DESK` — **Runners pull; the atelier never pushes.** Runners connect outbound
-   to the atelier, fetch bound attempts, and stream observations — so no remote
-   machine opens an inbound port. Transport is outgoing HTTPS against the
-   existing API, not a new protocol. A CI runner is the one-shot case of the
-   same thing: fetch one → execute → report → exit. The pattern is consumed from
-   GitHub-Actions and GitLab runners, not invented. (5302584358 §1, 5302590978.)
+### REQ-REMOTE-03: Runner holen; das Atelier schiebt nie.
+Status:     DRAFT
+Quelle:     DESK — 5302584358 §1, 5302590978 (Regel 3)
+Begründung: Runner verbinden sich ausgehend zum Atelier, holen gebundene Attempts und streamen Beobachtungen — so öffnet keine entfernte Maschine einen eingehenden Port. Transport ist ausgehendes HTTPS gegen die bestehende API, kein neues Protokoll. Ein CI-Runner ist der Einmal-Fall derselben Sache: einen holen → ausführen → melden → beenden. Das Muster wird von GitHub-Actions- und GitLab-Runnern konsumiert, nicht erfunden.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-4. `DESK` — **We build only the thin evidence protocol; everything else is
-   consumed.** This is the answer to the operator's question „es gibt doch
-   GitLab-Runner — entwickeln wir ein Konzept, das wir nicht brauchen?"
-   (5302590978), and the question is quoted rather than graded because it says
-   what he doubts, not what to build.
+### REQ-REMOTE-04: Gebaut wird nur das dünne Evidenz-Protokoll; alles andere wird konsumiert.
+Status:     DRAFT
+Quelle:     DESK — 5302590978 (Regel 4). Das ist die Antwort auf die Operator-Frage „es gibt doch GitLab-Runner — entwickeln wir ein Konzept, das wir nicht brauchen?", und die Frage ist zitiert statt gegradet, weil sie sagt, was er bezweifelt, nicht was zu bauen ist. Der Faden ruft hier die Hausregel 5302447161 an, deren Operator-Satz lautet „Ich will nichts machen, was der Provider (Claude/Codex) mitliefert und besser kann — ich will das Drumherum verbessern."
+Begründung: Vier strukturelle Gründe, warum ein CI-Runner allein diesen Vertrag nicht tragen kann — als Struktur gesagt, nicht als Geschmack: CI ist per Entwurf at-least-once (ein Infrastrukturfehler startet den Job neu), während unser Kern bei bezahlten Aufrufen at-most-once mit durablem Zeugen ist; Logs und Artefakte sind kein Receipt und keine Attestierungskette; CI bietet keine Live-Beobachtung und keinen Eingriff mitten im Lauf; und interaktive Abo-Credentials passen nicht ins CI-Secret-Modell. Also bauen wir einen kleinen Runner, der die Evidenz-Seite spricht — Attempt holen → bezeugen → Beobachtungen streamen → Receipt-Evidenz — und konsumieren den Rest: Flottenverwaltung, Bereitstellung und Skalierung von CI-Plattformen oder schlicht systemd und Docker; Identität aus Standard-mTLS; Secrets als Referenzen in lokale Quellen. Unser Runner soll *innerhalb* eines GitLab- oder GitHub-Runners im Einmal-Modus laufen, und der erste Fernbeweis ist genau das — unser Runner in einem GitHub-Actions-Job, ohne eigene Infrastruktur. Der zitierte Hausregel-Satz handelt von provider-mitgelieferter Fähigkeit; ihn auf CI-Plattformen und PKI zu verallgemeinern ist die Verallgemeinerung des Desks, weshalb diese Regel `DESK` ist und nicht `OPERATOR`.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-   Four structural reasons a CI runner alone cannot carry this contract — stated
-   as structure, not taste: CI is at-least-once by design (an infrastructure
-   fault restarts the job) while our core is at-most-once on paid calls with a
-   durable witness; logs and artefacts are not a receipt and attestation chain;
-   CI offers no live observation and no intervention mid-run; and interactive
-   subscription credentials do not fit the CI secret model.
+### REQ-REMOTE-05: Eine entfernte Maschine braucht genau vier Dinge, und kein fünftes.
+Status:     DRAFT
+Quelle:     DESK — 5302584358 §2 (Regel 5)
+Begründung: Das Runner-Binary oder den Container; die Einschreibung (ein Einmal-Token, getauscht gegen ein Credential je Runner, gegenseitiges TLS); das Provider-Credential **lokal**, per Referenz; und eine attestierte Sandbox-Fähigkeit. Was eine fünfte Anforderung hinzufügen würde, ist die offene Frage am Ende dieses Dokuments, keine stille Ergänzung hier.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-   So we build one small runner that speaks the evidence side — fetch attempt →
-   witness → stream observations → receipt evidence — and consume the rest:
-   fleet management, provisioning and scaling from CI platforms or plain systemd
-   and Docker; identity from standard mTLS; secrets as references into local
-   sources. Our runner is expected to run *inside* a GitLab or GitHub runner in
-   one-shot mode, and the first remote proof is exactly that — our runner in a
-   GitHub-Actions job, with no infrastructure of our own. The thread invokes the
-   house rule 5302447161 here, whose operator sentence reads „Ich will nichts
-   machen, was der Provider (Claude/Codex) mitliefert und besser kann — ich will
-   das Drumherum verbessern." That sentence is about provider-shipped
-   capability; applying it to CI platforms and PKI is the desk's generalisation,
-   which is why this rule is `DESK` and not `OPERATOR`.
+### REQ-REMOTE-06: Die Einschreibung gilt je Runner, und das Register beantwortet „welche Runner sind meine".
+Status:     DRAFT
+Quelle:     DESK — 5302584358 §2; 5302961156 §1 für `owner`+`allowed-projects` als abgeglichene Fakten; REQ-ZUGANG-10 für das Register (Regel 6)
+Begründung: REQ-ZUGANG-10 besitzt das Register selbst; was dieses Thema hinzufügt, ist, dass der Einschreibe-Datensatz der einzige Ort ist, an dem Identität eines Runners, sein Eigentümer und seine erlaubten Projekte zu *Fakten werden, auf die das Atelier abgleichen kann* (REQ-REMOTE-07), statt Behauptungen zu bleiben, die ein sich verbindender Prozess über sich selbst aufstellt. Ein nicht eingeschriebener Runner ist kein Runner; eine widerrufene Einschreibung trifft genau eine Maschine.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-### What a remote machine is
+### REQ-REMOTE-07: „Tags" sind attestierte Fakten, nie getippte Labels.
+Status:     DRAFT
+Quelle:     DESK — 5302961156 §1 (Regel 7)
+Begründung: Runner-Auswahl ist der Abgleich der Anforderungen einer Bindung gegen **bewiesene** Fähigkeiten: auflösbare Credential-Referenzen, Sandbox-Stufe, Provider-Versionen, `owner` und `allowed-projects`. Die Ergonomie mag wie GitLab-Tags aussehen; die Substanz ist Attestierung, denn ein getipptes Label ist eine Behauptung, und Behauptungen sind genau das, was diese Grenze abweisen soll. Manuelle Runner-Klassen-Einschränkungen je Rolle sind zusätzlich erlaubt, und sie ersetzen den Abgleich nie — sie verengen ihn.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-5. `DESK` — **A remote machine needs exactly four things, and no fifth.** The
-   runner binary or container; enrolment (a one-time token exchanged for a
-   per-runner credential, mutual TLS); the provider credential **locally**, by
-   reference; and an attested sandbox capability. Anything a fifth requirement
-   would add is the open question at the end of this document, not a silent
-   addition here. (5302584358 §2.)
+### REQ-REMOTE-08: Anforderungen werden an der Arbeit erklärt, Fähigkeiten vom Runner attestiert, und das Atelier gleicht nur ab.
+Status:     DRAFT
+Quelle:     DESK — 5302967786 (Regel 8), das diese Hälfte als entschieden ausweist
+Begründung: Das zweiseitige Prinzip, mit benannter erklärender Seite: die Agenten-Definition erklärt den Werkzeugbedarf, die Executor-Revision den Laufzeitbedarf, das Projekt die Runner-Klassen und Platzierungsregeln. Das Atelier selbst erklärt nichts und attestiert nichts; es gleicht ab.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-6. `DESK` — **Enrolment is per runner, and the register is what answers "which
-   runners are mine".** 0002 rule 10 owns the register itself; what this subject
-   adds is that the enrolment record is the only place where a runner's
-   identity, its owner, and its allowed projects become *facts the atelier can
-   match on* (rule 7) rather than claims a connecting process makes about
-   itself. A runner that is not enrolled is not a runner; a revoked enrolment
-   hits exactly one machine. (5302584358 §2; 5302961156 §1 for
-   `owner`+`allowed-projects` as matched facts; 0002 rule 10 for the register.)
+### REQ-REMOTE-09: Platzierung geschieht je Attempt, nie je Lauf, und ein laufender Attempt wandert nie.
+Status:     DRAFT
+Quelle:     DESK — 5302961156 §2 (Regel 9); im Einklang mit ADR 0009 §10
+Begründung: At-most-once und die Evidenzkette sterben beide in dem Moment, in dem ein lebender Attempt umzieht. Ein verlorener Runner ergibt `POSSIBLY_RAN`, laut, und nie eine Neuplatzierung.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-### Placement
+### REQ-REMOTE-10: Maschinenwechsel geschieht an ehrlichen Grenzen, und ein Ersatz-Attempt ist erstklassig.
+Status:     DRAFT
+Quelle:     DESK — 5302961156 §2 (Regel 10)
+Begründung: Retry, Fortsetzen und ein bewusst ersetzter Attempt werden jeder **neu platziert** — automatisch auf jeden attestierend passenden Runner oder vom Operator festgesetzt. Der Normalfall des Fadens selbst: dem Runner gingen die Token aus, also läuft der nächste Attempt auf einer anderen Maschine, als **neuer quittierter Attempt** statt als Fortsetzung des alten. Ersatz-Attempts werden erstklassig gebaut, nicht als Fehlermodus modelliert.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-7. `DESK` — **"Tags" are attested facts, never typed labels.** Runner selection
-   is matching a binding's requirements against **proven** capabilities:
-   resolvable credential references, sandbox level, provider versions, `owner`
-   and `allowed-projects`. The ergonomics may look like GitLab tags; the
-   substance is attestation, because a typed label is a claim and a claim is
-   what this boundary exists to refuse. Manual runner-class constraints per role
-   are additionally allowed, and they never replace the matching — they narrow
-   it. (5302961156 §1.)
+### REQ-REMOTE-11: Platzierung scheitert geschlossen.
+Status:     DRAFT
+Quelle:     DESK — 5302587068, „fail-closed-Platzierung (Arbeit wartet sichtbar statt unsicher zu laufen)"; 5302584358 §4 (Regel 11)
+Begründung: Arbeit wartet sichtbar, statt unsicher zu laufen; eine Bindung, die kein verbundener, eingeschriebener Runner attestiert, bekommt keinen Runner, der beinahe passt, und kein Modus wird still herabgestuft. Bis der offene Kern am Ende dieses Dokuments entschieden ist, bleiben **Fernbindungen** überhaupt **verweigert**. Was „wartet sichtbar" in der Maschine heißt, muss dieses Dokument nicht mehr raten: ADR 0009 §7, gelandet, entscheidet, dass ein nicht platzierbarer Lauf beim Start verweigert und nie eingereiht wird, und die offene Frage unten hält dieses Ruling fest statt der Uneinigkeit, die es ersetzt hat.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-8. `DESK` — **Requirements are declared at the work, capabilities are attested
-   by the runner, and the atelier only matches.** The two-sided principle, with
-   the declaring side named: the agent definition declares tool need, the
-   executor revision declares runtime need, the project declares runner classes
-   and placement rules. The atelier itself declares nothing and attests nothing;
-   it matches. (5302967786, which states this half as decided.)
+### REQ-REMOTE-12: Werte leben auf der Maschine; Namen leben in der Konfiguration.
+Status:     DRAFT
+Quelle:     DESK — 5302967786; REQ-ZUGANG-14 besitzt die Nie-transportiert-Hälfte (Regel 12)
+Begründung: Beide Orte sind richtig, und sie sind verschiedene Dinge: der Credential-**Wert** sitzt auf dem Host — Umgebung, Datei, Schlüsselbund —, bei der Einschreibung dorthin gelegt; der **Name oder die Referenz** sitzt in der Konfiguration, wo ein Projekt sagt, es benutze Referenz `github-work`. Wer diese Referenz auflösen kann, ist ein attestierter Fakt (REQ-REMOTE-07), nie ein Transport. Das Atelier ist zu keinem Zeitpunkt ein Secret-Verteilkanal.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-9. `DESK` — **Placement is per attempt, never per run, and a running attempt
-   never migrates.** At-most-once and the evidence chain both die the moment a
-   live attempt moves. A lost runner yields `POSSIBLY_RAN`, loudly, and never a
-   re-placement. (5302961156 §2; consistent with ADR 0009 §10.)
+### REQ-REMOTE-13: Ein fehlendes Credential scheitert geschlossen auf drei Schichten, und keine Schicht stuft herab.
+Status:     DRAFT
+Quelle:     DESK — Schichten (b) und (c) sind 5302961156 §1 und 5302584358 §2/§3, und ADR 0009 §6/§7 gibt ihnen die Verweigerungsnamen `auth-profile-unresolvable` und `no-runner-attests-binding`, die nun binden, da der Record gelandet ist (Regel 13)
+Begründung: (a) Die *Konfiguration* trägt nur eine Referenz, sodass ein fehlender Wert nicht als Wert eingeschmuggelt werden kann. (b) Die *Platzierung* verweigert eine Bindung, von der kein verbundener, eingeschriebener Runner attestiert, sie auflösen zu können — die Auflösbarkeit der Referenz ist einer der abgeglichenen Fakten von REQ-REMOTE-07, sodass eine unauflösbare Bindung nie eine Maschine erreicht. (c) Der *Laufstart auf dem Runner* verweigert, wenn die gebundene Referenz auf diesem Host nicht auflöst, ohne Rückfall auf einen anderen Auth-Modus. Jede Schicht verweigert; keine setzt ein schwächeres Credential oder einen anderen Modus an die Stelle.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-10. `DESK` — **Change of machine happens at honest boundaries, and a replacement
-    attempt is first class.** Retry, resume, and a deliberately replaced attempt
-    are each **re-placed** — automatically onto any attesting-fit runner, or
-    pinned by the operator. The thread's own normal case: the runner ran out of
-    tokens, so the next attempt runs on another machine, as a **new receipted
-    attempt** rather than a continuation of the old one. Replacement attempts
-    are built as first class, not modelled as a failure mode. (5302961156 §2.)
+### REQ-REMOTE-14: Entfernte Abo-Runner sind in der Praxis erstklassig, nicht nur im Prinzip.
+Status:     DRAFT
+Quelle:     DESK — 5302584358, dessen Zitat der Faden als *wörtlich sinngemäß* markiert; 5302961156 §1 für die auflösbare Credential-Referenz als abgeglichenen Fakt (Regel 14)
+Begründung: REQ-ZUGANG-11 stellt das Prinzip auf, selbst als `DESK`: eine langlebige entfernte Maschine mit einem interaktiven Login trägt einen Abo-Executor vollständig, und nur *ephemere* Umgebungen können es strukturell nicht. Was dieses Thema besitzt, ist, was das auf einer echten Maschine wahr macht — REQ-REMOTE-05, -06, -12 und -13 — und die Folge, dass ein entfernter Abo-Runner ein gewöhnliches Platzierungsziel ist, keine in den Abgleicher geschnitzte Ausnahme. Das Bild dieses Fadens vom Endzustand hat genau diese Form: ein Codex-Runner lokal beim Operator, ein Claude-Reviewer in einer Cloud, mit den Provider-Credentials auf ihren jeweiligen Maschinen.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-11. `DESK` — **Placement fails closed.** Work waits visibly rather than running
-    unsafely; a binding that no connected, enrolled runner attests does not get
-    a runner that nearly fits, and no mode is silently downgraded. Until the
-    open core at the end of this document is decided, **remote bindings stay
-    refused** altogether. (5302587068, "fail-closed-Platzierung (Arbeit wartet
-    sichtbar statt unsicher zu laufen)"; 5302584358 §4.) What "waits visibly"
-    means in the machine is no longer this document's to guess: ADR 0009 §7,
-    landed, rules that an unplaceable run is refused at run start and never
-    queued, and the open question below records that ruling rather than the
-    disagreement it replaced.
+### REQ-REMOTE-15: Der Endzustand ist professionell und zugleich absolut sicher und funktionsfähig; Sicherheit wird nicht mit Unbenutzbarkeit erkauft.
+Status:     DRAFT
+Quelle:     DESK — 5302587068 (Regel 15), das den Standard so rahmt:
 
-### Credentials
+            > „professionell und zugleich absolut sicher und funktionsfähig"
+Begründung: Eine frühere Fassung gradete diese Regel `OPERATOR`. Das war falsch, und der Grund, warum es falsch war, gehört an die Regel. Der Grad der Konvention verlangt, dass das zitierte Objekt den **Satz** des Operators wiedergibt und dass dieser Satz sagt, was die Regel sagt. Das scheitert an beiden Hälften. Der Kommentar rahmt die Worte als *Operator-Nachfrage* — eine Frage, die die Konvention rundweg `DESK` gradet — und tut das innerhalb einer vom Desk geschriebenen `ERGÄNZUNG (Operator…)`-Zuschreibung, die die Konvention ebenfalls `DESK` gradet. Die Worte selbst sind ein Fragment: kein Subjekt, kein Verb, also können sie das `muss` dieser Regel nicht eigenständig aufstellen. Sie als autoritativ zu lesen, weil sie kein Fragezeichen enthalten, ließe die Stimmprüfung an Zeichensetzung innerhalb einer desk-geschriebenen Rahmung hängen — genau die Selbstbeglaubigung, die die Konvention abweisen soll. Keines der zehn Objekte, die dieses Dokument destilliert, enthält einen vollständigen Operator-Satz, der diese Anforderung aufstellt; wird später einer gepostet, wird diese Regel daran neu gegradet. Das Fragment bleibt, weil es der Standard ist, der die Regel motiviert hat — drei Begriffe, zusammengehalten durch *zugleich* —, und der Rest des Kommentars ist Desk-Ausarbeitung, die ebenfalls nichts bindet: die vierstufige Reifeleiter, die Wahl von SPIFFE/SPIRE als Endform und das Ein-Befehl-Onboarding von REQ-REMOTE-16. Die Rahmung „Long-term, nicht Prio 1" steht ebenso außerhalb der Anführungszeichen und ist die des Desks, weshalb REQ-REMOTE-23 sie als Reihenfolge des Desks trägt und nicht als seine Anweisung.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Wird ein vollständiger Operator-Satz zu diesem Standard gepostet, wird die Regel daran neu gegradet (Eigentümer: Operator, Ziel: Ruling)
 
-12. `DESK` — **Values live on the machine; names live in the configuration.**
-    Both places are right, and they are different kinds of thing: the credential
-    **value** sits on the host — environment, file, keychain — put there at
-    enrolment; the **name or reference** sits in configuration, where a project
-    says it uses reference `github-work`. Who can resolve that reference is an
-    attested fact (rule 7), never a transport. The atelier is at no point a
-    secret-distribution channel. (5302967786; 0002 rule 14 owns the
-    never-transported half.)
+### REQ-REMOTE-16: Onboarding ist ein Befehl, und alles danach ist unsichtbar korrekt.
+Status:     DRAFT
+Quelle:     DESK — 5302587068 (Regel 16)
+Begründung: `atelier runner join <token>` und sonst nichts, weil Sicherheit mit Reibung umgangen wird und unsichtbare Sicherheit gelebt wird. Das ist die betriebliche Lesart des Desks von *funktionsfähig* aus REQ-REMOTE-15.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-13. `DESK` — **A missing credential fails closed at three layers, and no layer
-    downgrades.** (a) *Configuration* carries only a reference, so a missing
-    value cannot be smuggled in as a value. (b) *Placement* refuses a binding no
-    connected, enrolled runner attests it can resolve — the reference's
-    resolvability is one of the matched facts of rule 7, so an unresolvable
-    binding never reaches a machine. (c) *Run start on the runner* refuses when
-    the bound reference does not resolve on that host, with no fallback to
-    another auth mode. Each layer refuses; none substitutes a weaker credential
-    or a different mode. (Layers b and c are 5302961156 §1 and 5302584358 §2/§3,
-    and ADR 0009 §6/§7 gives them the refusal names
-    `auth-profile-unresolvable` and `no-runner-attests-binding`, which bind now
-    that the record has landed.)
+### REQ-REMOTE-17: Keine eigene PKI und kein eigenes Identitäts-Framework.
+Status:     DRAFT
+Quelle:     DESK — 5302587068 (Regel 17)
+Begründung: Standard-mTLS-Werkzeug wird jetzt konsumiert, Workload-Identität nach SPIFFE/SPIRE ist die benannte Endform (automatisch rotierende kurzlebige Identitäten statt langlebiger Secrets), und die Konvergenz ist beabsichtigt: das in-toto-Agent-Prädikat aus der #104-Recherche benutzt SPIFFE-IDs, sodass Dossier und Runner-Identität am Ende eine Sprache sprechen. Menschen authentifizieren sich per OIDC, was das Thema von 0002 ist und nicht dieses.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-14. `DESK` — **Remote subscription runners are first class in practice, not only
-    in principle.** 0002 rule 11 states the principle, itself as `DESK`: a
-    long-lived remote machine with one interactive login carries a subscription
-    executor fully, and only *ephemeral* environments structurally cannot. What
-    this subject owns is what makes that true on a real machine — rules 5, 6, 12
-    and 13 — and the consequence that a remote subscription runner is an
-    ordinary placement target, not an exception carved into the matcher. This
-    thread's own picture of the end state is exactly that shape: a Codex runner
-    locally at the operator, a Claude reviewer in a cloud, with the provider
-    credentials on their respective machines. (5302584358, whose quotation the
-    thread marks *wörtlich sinngemäß*; 5302961156 §1 for the resolvable
-    credential reference as a matched fact.)
+### REQ-REMOTE-18: Drei Prinzipien gelten über jede Stufe der Leiter.
+Status:     DRAFT
+Quelle:     DESK — 5302587068, mit 5302590978 dafür, dass Stufe 2 das Runner-Protokoll ohne die Leitung ist (Regel 18)
+Begründung: Zero Trust — Identität plus Attestierung, nie Netzwerkposition; kurzlebig statt widerrufbar; und fail-closed-Platzierung, die REQ-REMOTE-11 vollständig aufstellt. Die Leiter, über die sie gelten: Stufe 1 lokal, nur Loopback (erledigt), Stufe 2 Prozesstrennung des Betriebssystems auf einem Host (#15, in Arbeit — die Miniatur des Fernfalls mit denselben Invarianten und ohne Netz), Stufe 3 holende Runner mit mTLS-Einschreibung, Lease/Heartbeat/Fencing und attestierter Sandbox, Stufe 4 Workload-Identität. Die Leiter ist Richtung, kein Zeitplan.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-### The standard to reach
+### REQ-REMOTE-19: Jeder Befehl trägt einen typisierten, authentifizierten Akteur.
+Status:     DRAFT
+Quelle:     DESK — #21 body @ 5c03ceb1; 5300894378 für den Befund des selbstbehaupteten Labels (Regel 19)
+Begründung: Und solange er das nicht tut, darf nichts Zurechnung genannt werden. Das Mandat benennt Akteurs- und Zurechnungsmodell für Befehle als ADR-Pflicht (mit Zufluss zu #7); die ehrliche Hälfte ist, dass der heutige Reconcile-Akteur ein selbstbehauptetes Label ist, weshalb keine Oberfläche ihn als Zurechnung darstellen darf.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-15. `DESK` — **The end state is professional and absolutely secure and
-    functional at the same time; security is not bought with unusability.** The
-    standard the desk is answering, as 5302587068 frames it:
+### REQ-REMOTE-20: Der Terminal-Kanal ist eine getrennt getorte, standardmäßig ausgeschaltete Fähigkeit.
+Status:     DRAFT
+Quelle:     DESK — #21 body @ 5c03ceb1; 5300894378. Die allgemeine Form der Prüfspur ist REQ-ZUGANG-03 (Regel 20)
+Begründung: Mit Step-up je Attach, kurzlebigen Token und einer Attach-Prüfspur. Es ist der eine Kanal, der die Tastenanschläge eines Menschen in einen credential-tragenden Prozess trägt, weshalb Ausführungsfähigkeit ihn nie impliziert.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-    > „professionell und zugleich absolut sicher und funktionsfähig"
+### REQ-REMOTE-21: „Entscheidung und Einreihung sind eine Transaktion" muss erzwingbar werden statt handgeschrieben.
+Status:     DRAFT
+Quelle:     DESK — 5302132060, Befund H4, HIGH, gegen main `b9c7796e` (Regel 21)
+Begründung: Die Invariante von ADR 0001 ist an jeder Aufrufstelle handgeschrieben — die Überschrift des Befunds sagt fünf, die Liste darunter nennt sieben, über fünf Module —, jede mit eigenen Vor- und Nachbedingungen, sodass eine weitere Stelle, die außerhalb der Transaktion einreiht, sie verletzt, ohne dass ein Tor oder ein Test es bemerkt. Genau diesen Zustand muss diese Grenze ausschließen: einen Runner, der einen Attempt empfängt, den keine committete Entscheidung deckt. Benannte kleinste Behebung: ein Eigentümer, der Entscheidungs-Schreibung und Einreihung in einem Aufruf nimmt, damit „Entscheidung ohne Einreihung" ein Typfehler wird statt einer Review-Frage.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-    An earlier revision graded this rule `OPERATOR`. That was wrong, and the
-    reason it was wrong is worth keeping at the rule. The convention's grade
-    requires the cited object to reproduce the operator's own **sentence**, and
-    that sentence to say what the rule says. This fails both halves. The comment
-    frames the words as an *Operator-Nachfrage* — a question, which the
-    convention grades `DESK` outright — and it does so inside an `ERGÄNZUNG
-    (Operator…)` attribution the desk wrote, which the convention also grades
-    `DESK`. The words themselves are a fragment: no subject and no verb, so they
-    cannot independently state the `must` this rule states. Reading them as
-    authoritative because they contain no question mark would make the voice test
-    turn on punctuation inside a desk-authored framing, which is the
-    self-certification the convention exists to refuse. None of the ten objects
-    this document distils contains a complete operator sentence stating this
-    requirement; if one is later posted, this rule is regraded against it.
+### REQ-REMOTE-22: „Welche Executor-Modi kann dieser Runner erzwingen" braucht genau einen Autor.
+Status:     DRAFT
+Quelle:     DESK — 5302132060, Befunde M7 und M8, MED (Regel 22)
+Begründung: Heute hat die Antwort zwei: eine zweite Kompositionswurzel baut die Executor-Registry aus Factory-Listen parallel zum Anwendungs-Komponisten (M8), und die Registry selbst trägt Auflösungsverhalten im laufzeitreinen Ports-Paket, wo ein optionales Argument still eine leere Registry baut — eine fail-open-Vorgabe, die nur existiert, um Tests billiger zu machen (M7). Beides ist für dieses Thema derselbe Defekt: eine Vertrauensgrenze, deren zentrale Frage zwei Autoren hat, kann nicht attestiert werden.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-    The fragment is kept because it is the standard that motivated the rule —
-    three terms held together by *zugleich* — and the rest of the comment is desk
-    elaboration binding nothing either: the four-stage maturity ladder, the choice
-    of SPIFFE/SPIRE as the end form, and the one-command onboarding of rule 16.
-    The framing „Long-term, nicht Prio 1" likewise sits outside the quotation
-    marks and is the desk's, which is why rule 23 carries it as the desk's
-    sequencing rather than as his instruction.
+### REQ-REMOTE-23: Das Tor zum Bau der Ferne ist Wert, kein Kalender.
+Status:     DRAFT
+Quelle:     DESK — 5302602114 §1 (Regel 23)
+Begründung: Für den Einzeloperator-Betrieb bleibt der Wert der Ferne lange bescheiden, also wird sie beim ersten echten Zweitmaschinen-Bedarf gebaut — der benannte Kandidat ist das „von der Arbeit aus"-Szenario von #79 — und „nicht Priorität eins" ist Teil davon, richtig zu sein, keine Ausrede.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-16. `DESK` — **Onboarding is one command, and everything after it is invisibly
-    correct.** `atelier runner join <token>` and nothing else, because security
-    with friction is worked around and invisible security is lived. This is the
-    desk's operational reading of rule 15's *funktionsfähig*. (5302587068.)
-
-17. `DESK` — **No PKI or identity framework of our own.** Standard mTLS tooling
-    is consumed now, workload identity after SPIFFE/SPIRE is the named end form
-    (auto-rotating short-lived identities instead of long-lived secrets), and
-    the convergence is deliberate: the in-toto agent predicate from the #104
-    research uses SPIFFE IDs, so dossier and runner identity end up speaking one
-    language. Humans authenticate by OIDC, which is 0002's subject, not this
-    one. (5302587068.)
-
-18. `DESK` — **Three principles hold across every stage of the ladder:** zero
-    trust — identity plus attestation, never network position; short-lived
-    rather than revocable; and fail-closed placement, which rule 11 states in
-    full. The ladder they hold across: stage 1 local loopback-only (done), stage
-    2 OS process separation on one host (#15, in progress — the miniature of the
-    remote case with the same invariants and no network), stage 3 pull runners
-    with mTLS enrolment, lease/heartbeat/fencing and an attested sandbox, stage
-    4 workload identity. The ladder is direction, not a schedule. (5302587068,
-    with 5302590978 for stage 2 being the runner protocol without the wire.)
-
-### Actor and channel, from the mandate
-
-19. `DESK` — **Every command carries a typed, authenticated actor**, and until
-    it does, nothing may be called attribution. The mandate names the actor and
-    attribution model for commands as an ADR obligation (#21 body @ 5c03ceb1,
-    feeding #7); the honest half is that today's reconcile actor is a
-    self-asserted label, so no surface may present it as attribution. (#21 body
-    @ 5c03ceb1; 5300894378 for the self-asserted-label finding.)
-
-20. `DESK` — **The terminal channel is a separately gated, default-off
-    capability**, with a per-attach step-up, short-lived tokens, and an attach
-    audit. It is the one channel that carries a human's keystrokes into a
-    credential-bearing process, so execution capability never implies it. (#21
-    body @ 5c03ceb1; 5300894378. The audit trail's general shape is 0002 rule
-    3.)
-
-### The durable half, in code
-
-21. `DESK` — **"Decision and enqueue are one transaction" must become
-    enforceable instead of hand-written.** The ADR 0001 invariant is
-    hand-written at every call site — the finding's headline says five and the
-    list under it names seven, across five modules — each with its own pre- and
-    post-conditions, so one more site that enqueues outside the transaction
-    violates it without any gate or test noticing. That is precisely the state
-    this boundary must exclude: a runner receiving an attempt that no committed
-    decision covers. Named smallest fix: one owner taking the decision write and
-    the enqueue in a single call, so "decision without enqueue" becomes a type
-    error rather than a review question. (5302132060, finding H4, HIGH, against
-    main `b9c7796e`.)
-
-22. `DESK` — **"Which executor modes can this runner enforce" needs exactly one
-    author.** Today the answer has two: a second composition root builds the
-    executor registry from factory lists in parallel to the application composer
-    (M8), and the registry itself carries resolution behaviour inside the
-    runtime-pure ports package, where an optional argument silently builds an
-    empty registry — a fail-open default that exists only to make tests cheaper
-    (M7). Both are the same defect for this subject: a trust boundary whose
-    central question has two authors cannot be attested. (5302132060, findings
-    M7 and M8, MED.)
-
-### Sequence
-
-23. `DESK` — **The gate for building remote is value, not calendar.** For
-    single-operator use the value of remote stays modest for a long time, so it
-    is built at the first real second-machine need — the named candidate being
-    the "from work" scenario of #79 — and "not priority one" is part of being
-    right rather than an excuse. (5302602114 §1.)
-
-24. `DESK` — **Managed provider sandboxes are a watch point, not a competitor to
-    build against.** If execution inside a provider's cloud under operator
-    policies matures, our runner shrinks to an adapter for those cases and the
-    placement seam — attested capability — survives unchanged; self-hosted
-    remains the sovereignty path. The instruction is to observe and to keep the
-    seam, not to pre-build either side. (5302602114 §3.)
+### REQ-REMOTE-24: Verwaltete Provider-Sandkästen sind ein Beobachtungspunkt, kein Wettbewerber, gegen den gebaut wird.
+Status:     DRAFT
+Quelle:     DESK — 5302602114 §3 (Regel 24)
+Begründung: Reift die Ausführung in der Cloud eines Providers unter Operator-Richtlinien, schrumpft unser Runner für diese Fälle zu einem Adapter, und die Platzierungsnaht — attestierte Fähigkeit — überlebt unverändert; selbst gehostet bleibt der Souveränitätspfad. Die Anweisung lautet, zu beobachten und die Naht zu halten, nicht eine der beiden Seiten vorzubauen.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
 ## Open questions
 
@@ -392,7 +337,7 @@ and these rules do not restate it:
   before any remote release.** The operator's rejection is the source: „das
   reicht ja nicht — ich kenne die Umgebung nicht; wo gebe ich Credentials an?
   ist das durchdacht?" (5302967786). What is decided is the *structure* —
-  declare, attest, match (rule 8) and the two credential places (rule 12). What
+  declare, attest, match (REQ-REMOTE-08) and the two credential places (REQ-REMOTE-12). What
   is missing is the *content*: the concrete requirement vocabulary beyond
   credentials, sandbox level, and provider version — tools (`docker`,
   `node@20`), resources (RAM, disk, GPU), network reachability — **each with its
@@ -408,7 +353,7 @@ and these rules do not restate it:
 
 - **The named open core before remote release** (5302584358 §4): the lease,
   heartbeat, and fencing contract; the transport; and the runner's packaging and
-  update channel. Until these are decided, rule 11 keeps remote bindings
+  update channel. Until these are decided, REQ-REMOTE-11 keeps remote bindings
   refused. Owner: the remote ADR, #9 part 3.
 
 - **Does an unplaceable binding wait or refuse? — closed by citation.** The

@@ -28,18 +28,22 @@ story = "https://github.com/FlexOr2/atelier-2/issues/131"
 
 [[sentence]]
 id = "the-workshop-opens-in-the-studio"
+requirement = "REQ-UI-01"
 text = "The atelier opens in the Studio — the level that shows what is happening across the whole workshop — and not in a list of runs."
 
 [[sentence]]
 id = "the-inbox-names-every-run-that-waits-for-a-human"
+requirement = "REQ-UI-01"
 text = "The inbox row names, across everything, every run that waits for a human — the durable states WAITING_INPUT and WAITING_RECONCILIATION — and leads there with one click."
 
 [[sentence]]
 id = "an-empty-area-names-the-one-next-action"
+requirement = "REQ-UI-16"
 text = "An area with nothing in it names the one next action that is possible today, instead of staying blank or hinting at a capability that does not exist."
 
 [[sentence]]
 id = "every-level-names-the-way-back-up"
+requirement = "REQ-UI-01"
 text = "From every level a named way leads exactly one level up: from the run to the project, and from the project into the studio — a way the operator can read, never the browser's back button."
 
 [[sentence]]
@@ -48,8 +52,10 @@ text = "The workshop reads the durable run list to its end instead of stopping a
 
 [[sentence]]
 id = "the-deepest-level-shows-the-whole-way-it-sits-on"
+requirement = "REQ-UI-01"
 text = "Standing in a run, the operator sees the whole way it sits on -- studio, project, run -- and can walk any step of it by name, while the level being looked at is named without being offered as somewhere to go."
 
 [[sentence]]
 id = "a-level-opens-from-a-pasted-link-and-survives-a-reload"
+requirement = "REQ-UI-01"
 text = "A level of the workshop opens from a pasted link and survives a reload: it is an address, not only something to click."

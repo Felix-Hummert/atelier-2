@@ -22,9 +22,9 @@ publishes a requirement issue, never this file.
 
 The thread quotes the operator in several places, and exactly one of those
 quotations states a rule. **Exactly one rule below is graded `OPERATOR`** —
-rule 1, on the sentence 5302769095 quotes from him. The other quotations are his
+REQ-UI-01, on the sentence 5302769095 quotes from him. The other quotations are his
 standard, reproduced under `Intent`; his nine words of dissatisfaction with the
-mockup's Settings screen, reproduced at rule 15; and the questions he asked,
+mockup's Settings screen, reproduced at REQ-UI-15; and the questions he asked,
 whose answers are the desk's. An earlier revision graded eleven rules
 `OPERATOR` on the strength of
 comment headers — "OPERATOR-VISION VERSCHÄRFT", "Operator-Feedback-Runde 2",
@@ -54,194 +54,169 @@ not add features. (5302788411.)
 
 ## Rules
 
-1. `OPERATOR` — **The project is the primary structure, not a topbar switch.**
-   Three levels (5302769095, quoting the operator at mockup v3: „das Studio hat
-   den Chat, es sollte die aktiven Projekte zeigen; das Projekt hat die
-   laufenden Workflows". The card and inbox detail below it is desk detail):
-   1. **Studio (home)** — chat with the conductor, global and context-aware,
-      plus the active projects as *living cards* ("`<project>` · n running · n
-      waiting for you · last landing X ago"), plus an inbox row across the top,
-      cross-project, carrying whatever needs the human.
-   2. **Project** — the queue (ready / running / waiting), the running workflows
-      as *mini graphs* (the "this is what is being done right now" glance),
-      rules and sources, pause ↔ resume.
-   3. **Run** — the full canvas with nodes, tiles, and intervention.
+Jede Regel unten ist die Regel, die dieses Dokument seit seiner Destillation
+trägt; neu ist der Bezeichner, damit ein Gate sie findet und ein Akzeptanz-Satz
+auf sie zurückzeigen kann. Die Nummerierung des Fadens steht in `Quelle`.
 
-   The chat is the same door at every level, carrying that level's context:
-   Studio = everything, Project = this one, Run = this one.
+### REQ-UI-01: Das Projekt ist die primäre Struktur, kein Topbar-Schalter.
+Status:     DRAFT
+Quelle:     OPERATOR — 5302769095 (Regel 1), das den Operator beim Mockup v3 zitiert:
 
-2. `DESK` — **Every screen answers exactly one question.** Studio: what is
-   happening? Project: what is happening here? Run: what is it doing? Library:
-   what do I have? Settings: what applies? Two questions ⇒ split the screen.
-   (5302788411, the desk's curation in answer to the operator's question „was
-   noch einbauen, ohne zu überladen?".)
+            > „das Studio hat den Chat, es sollte die aktiven Projekte zeigen; das Projekt hat die laufenden Workflows"
+Begründung: Drei Ebenen. Was der Grad deckt, ist genau dieser Satz; die Karten- und Posteingangs-Details darunter sind Desk-Detail. (1) **Studio (Zuhause)** — Chat mit dem Dirigenten, global und kontextbewusst, dazu die aktiven Projekte als *lebende Karten* („`<projekt>` · n laufend · n wartet auf dich · letzte Landung vor X"), dazu eine Posteingangs-Zeile quer über den Kopf, projektübergreifend, die trägt, was den Menschen braucht. (2) **Projekt** — die Queue (bereit / laufend / wartend), die laufenden Workflows als *Mini-Graphen* (der „das wird gerade getan"-Blick), Regeln und Quellen, Pause ↔ Fortsetzen. (3) **Run** — die volle Leinwand mit Knoten, Kacheln und Eingriff. Der Chat ist auf jeder Ebene dieselbe Tür und trägt den Kontext dieser Ebene: Studio = alles, Projekt = dieses, Run = dieser.
+Journeys:
+Beweis:     the-workshop-opens-in-the-studio
+            every-level-names-the-way-back-up
+            the-deepest-level-shows-the-whole-way-it-sits-on
+            a-level-opens-from-a-pasted-link-and-survives-a-reload
+            the-inbox-names-every-run-that-waits-for-a-human
+Offen:      - Die Ebene **Projekt** ist als Adresse und Weg bewiesen, ihr Inhalt (Queue, Mini-Graphen, Regeln, Pause ↔ Fortsetzen) nicht (Eigentümer: #131-Familie, Ziel: Projekt-Ebene)
 
-3. `DESK` — **Two doors lead to the same canvas.** Either the chat with the
-   conductor (#7) composes a graph and shows it *before* the start, or the
-   construction kit lets agents, skills, and subworkflows be dragged from the
-   library onto the canvas, connected, and configured by click — model, tools,
-   budget, prompt: everything settable, nothing that must be set. Both doors
-   produce the same object, the V3 graph. The conductor pre-fills; the human
-   adjusts. (5301898411 §2.)
+### REQ-UI-02: Jeder Bildschirm beantwortet genau eine Frage.
+Status:     DRAFT
+Quelle:     DESK — 5302788411 (Regel 2), die Kuratierung des Desks als Antwort auf die Operator-Frage „was noch einbauen, ohne zu überladen?"
+Begründung: Studio: was passiert? Projekt: was passiert hier? Run: was tut er? Bibliothek: was habe ich? Einstellungen: was gilt? Zwei Fragen ⇒ der Bildschirm wird geteilt.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-4. `DESK` — **Project choice comes first**; what the fleet is working on is
-   first class. (5301898411 §1.)
+### REQ-UI-03: Zwei Türen führen auf dieselbe Leinwand.
+Status:     DRAFT
+Quelle:     DESK — 5301898411 §2 (Regel 3)
+Begründung: Entweder komponiert der Chat mit dem Dirigenten (#7) einen Graphen und zeigt ihn *vor* dem Start, oder der Baukasten lässt Agenten, Skills und Subworkflows aus der Bibliothek auf die Leinwand ziehen, verbinden und per Klick konfigurieren — Modell, Werkzeuge, Budget, Prompt: alles setzbar, nichts, was gesetzt werden muss. Beide Türen erzeugen dasselbe Objekt, den V3-Graphen. Der Dirigent füllt vor, der Mensch justiert.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - 5301898411 ist „OPERATOR-VISION VERSCHÄRFT (Felix …)" überschrieben; der einzige daraus zitierte Operator-Satz ist der Standard unter `Intent`, §1 bis §5 sind Desk-Prosa. Diese Regel bleibt deshalb `DESK`, so getreu sie die Vision auch wiedergibt (Eigentümer: Operator, Ziel: Ruling)
 
-5. `DESK` — **The library shows names, never hashes.** Named, described,
-   versioned agents in the markdown format of #66, skills, and workflows with
-   their scorecard (#8). A hash is never again a selection option; #22 owns the
-   names. (5301898411 §3.)
+### REQ-UI-04: Die Projektwahl kommt zuerst.
+Status:     DRAFT
+Quelle:     DESK — 5301898411 §1 (Regel 4)
+Begründung: Woran die Flotte arbeitet, ist erstklassig. Dieselbe Grad-Feststellung wie bei REQ-UI-03 gilt hier: der Kommentarkopf nennt den Operator, der Rumpf zitiert ihn nicht.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-6. `DESK` — **The same graph is the live view.** Nodes light up working /
-   completed / failed; a click on a running agent opens its ephemeral tile with
-   live output and native intervention. A live run in the runs list opens that
-   same graph in its live state. (5301898411 §4, 5302066517 §2.)
+### REQ-UI-05: Die Bibliothek zeigt Namen, nie Hashes.
+Status:     DRAFT
+Quelle:     DESK — 5301898411 §3 (Regel 5)
+Begründung: Benannte, beschriebene, versionierte Agenten im Markdown-Format von #66, Skills und Workflows mit ihrer Scorecard (#8). Ein Hash ist nie wieder eine Auswahlmöglichkeit. Dieselbe Grad-Feststellung wie bei REQ-UI-03.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Die Namen besitzt heute [ADR 0007](../decisions/0007-catalog-identity.md); der Faden nannte #22, und das Item ist **geschlossen** (Eigentümer: ADR 0007, Ziel: Katalog-Oberfläche)
 
-   Rules 3 to 6 read the numbered sections of 5301898411, a comment headed
-   "OPERATOR-VISION VERSCHÄRFT (Felix …)". The one sentence it quotes from him
-   is the standard reproduced under `Intent`; §1 to §5 are the desk's prose, so
-   these four rules are `DESK` however faithfully they render the vision.
+### REQ-UI-06: Derselbe Graph ist die Live-Sicht.
+Status:     DRAFT
+Quelle:     DESK — 5301898411 §4, 5302066517 §2 (Regel 6)
+Begründung: Knoten leuchten arbeitend / abgeschlossen / gescheitert; ein Klick auf einen laufenden Agenten öffnet seine ephemere Kachel mit Live-Ausgabe und nativem Eingriff. Ein laufender Run in der Run-Liste öffnet denselben Graphen in seinem Live-Zustand. Zur Einordnung von REQ-UI-03 bis REQ-UI-06: sie lesen die nummerierten Abschnitte von 5301898411, einem Kommentar mit dem Kopf „OPERATOR-VISION VERSCHÄRFT (Felix …)". Der eine Satz, den er von ihm zitiert, ist der Standard unter `Intent`; §1 bis §5 sind Desk-Prosa, weshalb diese vier Regeln `DESK` sind, so getreu sie die Vision auch wiedergeben.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-7. `DESK` — **Mode is a capability declaration.** Headless is mandatory for
-   every provider; interactive is declared. A node that demands interactive
-   fails at *validation* on a provider that does not declare it — never
-   silently. The enum field belongs in the B0.1 binding, before the executor
-   contract freezes. (#9 body @ 36800d6e, which marks this paragraph
-   "OPERATOR-ENTSCHEIDUNG (bindend)", and comment 5294316639 on #5, which
-   records the same decision in the same words.)
+### REQ-UI-07: Der Modus ist eine Fähigkeits-Erklärung.
+Status:     DRAFT
+Quelle:     DESK — #9 body @ 36800d6e, das diesen Absatz „OPERATOR-ENTSCHEIDUNG (bindend)" markiert, und Kommentar 5294316639 auf #5, der dieselbe Entscheidung in denselben Worten festhält (Regel 7)
+Begründung: Headless ist für jeden Provider Pflicht; interaktiv wird erklärt. Ein Knoten, der interaktiv verlangt, scheitert bei der *Validierung* an einem Provider, der es nicht erklärt — nie stillschweigend. Das Enum-Feld gehört in die B0.1-Bindung, bevor der Executor-Vertrag einfriert. Der Grad ist `DESK`, weil beide Objekte Desk-Prosa sind, die die Entscheidung *als* die des Operators etikettiert; keines zitiert ihn. Das ist eine Aussage darüber, was dieser Faden belegt, keine Erlaubnis, die Entscheidung wieder zu öffnen: sie steht, wo sie getroffen wurde, die B0.1-Bindung folgt ihr, und wer sie geschlichtet braucht, fragt den Operator, statt aus dieser Datei eine Beglaubigung zu lesen.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-   The grade is `DESK` because both objects are desk prose *labelling* the
-   decision as the operator's; neither quotes him. That is a statement about
-   what this thread evidences, not a licence to reopen the decision: it stands
-   where it was made, the B0.1 binding follows it, and whoever needs it settled
-   asks the operator rather than reading a certification out of this file.
+### REQ-UI-08: Interaktives Attach ist in V1 nur lokal, und es markiert den Lauf.
+Status:     DRAFT
+Quelle:     DESK — #9 body @ 36800d6e Teil 2, 5302132001 §2 Schluss (Regel 8) — beides Desk-Text; der Rumpf etikettiert nur REQ-UI-07 als Operator-Entscheidung
+Begründung: Der Operator wählt den Modus je Knoten oder Lauf. Interaktive Attempts laufen in derselben isolierten Werkstatt mit derselben erklärten Fähigkeitsmenge; wo diese Gleichheit nicht erzwungen werden kann, ist interaktiv für den Knoten UNVERFÜGBAR — fail-closed. Ein interaktiver Knoten erklärt entweder keine typisierte Ausgabe (nur ohne nachgelagerte Zuordnung zulässig) oder endet mit einem ausdrücklich vom Operator bestätigten Artefakt. Der Lauf und seine nachgelagerten Ausgaben gelten als *operator-beeinflusst* und sind aus der #8-Bilanz ausgeschlossen. Die Grenze ist eine zustandsändernde Handlung zwischen Start und Terminal: **reine Beobachtung berührt nie** — eine Hover-Vorschau oder eine geöffnete Kachel ohne Eingabe markiert den Lauf nicht.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-8. `DESK` — **Interactive attach is V1 local-only, and it marks the run.** The
-   operator chooses the mode per node or run. Interactive attempts run in the
-   same isolated workspace with the same declared capability set; where that
-   equality cannot be enforced, interactive is UNAVAILABLE for the node —
-   fail-closed. An interactive node either declares no typed output (legal only
-   without downstream mapping) or ends with an explicitly operator-confirmed
-   artefact. The run and its downstream outputs count as *operator-influenced*
-   and are excluded from the #8 balance. The boundary is a state-changing
-   action between start and terminal: **pure observation never touches** — a
-   hover preview or an opened tile without input does not mark the run. (#9
-   body @ 36800d6e part 2, 5302132001 §2 closing — both desk text; the body
-   labels only rule 7 as an operator decision.)
+### REQ-UI-09: Die Live-Kachel liest den ephemeren Runner-Kanal; rohe Provider-Frames erreichen nie ein Ereignis oder ein Receipt.
+Status:     DRAFT
+Quelle:     DESK — 5302132001 §2 (Regel 9), das 5302066517 §3 und Teil 2 des Item-Rumpfes schärft
+Begründung: Die Invariante von Issue #1 ist absolut: rohe Provider-Frames erscheinen nie in Ereignis, Log, Receipt, Datenbank, Crash-Evidenz oder Werkstatt. **Live-Sicht = ephemerer Runner-Kanal:** Kachel und Hover-Vorschau lesen den ephemeren Kanal des Runners — denselben Weg, den ADR 0009 für Attach entscheidet, mit Ticket je Attach und Attach-Prüfspur. Was dort fließt, ist eine redigierte, nicht-durable Projektion: kein Ereignis, kein Receipt, nirgends gespeichert. Ein Zuschauer sieht die Arbeit; die Datenbank nie. **Durabel ist Hash plus begrenzte Ausgabe:** das Receipt trägt Hash und Ort, nie die Transkript-Bytes. Eine Archivkopie — falls es je eine gibt — liegt außerhalb des Receipts und unter der Aufbewahrungs-Entscheidung, die [ADR 0011](../decisions/0011-project-isolation.md) Entscheidung 3 besitzt und die `PROPOSED` ist, nicht gebaut. Bis sie gebaut ist, gibt es keine Archivkopie. Die Folge für die Roadmap ist ausdrücklich: eine Live-Sicht ist Architektur — ein Streaming-Modus, ein Runner-Kanal, Redaktion —, keine UI-Zeile.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-9. `DESK` — **The live tile reads the ephemeral runner channel; raw provider
-   frames never enter an event or a receipt.** (5302132001 §2, which sharpens
-   5302066517 §3 and part 2 of the item body, because Issue #1's invariant is
-   absolute: raw provider frames never appear in event, log, receipt, database,
-   crash evidence, or workspace.)
-   - **Live view = ephemeral runner channel.** The tile and the hover preview
-     read the runner's ephemeral channel — the same path ADR 0009 decides for
-     attach, with a per-attach ticket and attach audit. What flows there is a
-     redacted, non-durable projection: no event, no receipt, stored nowhere. A
-     watcher sees the work; the database never does.
-   - **Durable is hash plus bounded output.** The receipt carries hash and
-     location, never the transcript bytes. An archive copy — if one ever exists
-     — lies outside the receipt and under the retention decision, which
-     [ADR 0011](../decisions/0011-project-isolation.md) decision 3 owns and which
-     is `PROPOSED`, not built. Until it is built, there is no archive copy.
+### REQ-UI-10: Abgeschlossene Läufe bekommen Historien-Wiedergabe, keine byte-genaue.
+Status:     DRAFT
+Quelle:     DESK — 5302132001 §1 (Regel 10), das die Formulierung „byte-genau aus den Receipts nachspielbar" von 5302066517 §2 ersetzt
+Begründung: Die Schaltfläche spielt die durable Beweiskette nach: Knotenübergänge, gebundene Revisionen und Hashes, erklärte Ausgaben, terminale Receipts — und sie zählt neben sich auf, was wiedergebbar ist. Was nicht wiedergebbar ist, behauptet die Oberfläche nicht. Heute nicht durabel: Zwischenschritte, Werkzeugaufrufe, stderr und überhaupt jede Zeitachse. **Das verengt eine Zusage aus einem Kommentar, der als der des Operators überschrieben ist:** 5302066517 trägt den Kopf „Operator-Feedback-Runde 2" und verspricht in §2 byte-genaue Wiedergabe, zitiert aber keinen Operator-Satz — die Zusage ist damit Desk-Prosa, und diese Regel korrigiert eine Desk-Lesart mit einer anderen. Sie bleibt trotzdem markiert, weil die Zusage etwas wiedergeben könnte, das er am Mockup gesagt hat: die Lesart des Desks ist, dass nichts Durables heute sie erzeugen könnte, und diese Lesart ist ein Vorschlag an ihn, keine geschlichtete Korrektur.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-   The consequence for the roadmap is explicit: a live view is architecture — a
-   streaming mode, a runner channel, redaction — not a UI line.
+### REQ-UI-11: V1 baut Projekt-Gedächtnis; Gedächtnis je Benutzer hängt an #82.
+Status:     DRAFT
+Quelle:     DESK — 5302132001 §3 (Regel 11), das „Per-User/Projekt-Gedächtnis (später)" von 5301898411 §5 ersetzt
+Begründung: Eigene Agenten, Favoriten und Vorgaben hängen am Projekt, das ohnehin erstklassig ist, und das ist ohne einen Begriff von Identität definierbar. Gedächtnis je Benutzer ist ein benannter Nachfolger mit ausdrücklicher Abhängigkeit von Requirement 0002 (#82) — davor gibt es keinen Benutzer, an dem etwas hängen könnte. Dasselbe gilt für den Einstellungsbereich „Users / Audit": er ist #82-gebunden, nicht „später".
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Die Projekt-Erstklassigkeit besitzt heute [ADR 0011](../decisions/0011-project-isolation.md) zusammen mit #79; der Faden nannte #23, und das Item ist **geschlossen** (Eigentümer: ADR 0011, Ziel: Projekt-Bau)
 
-10. `DESK` — **Completed runs get history replay, not byte-exact replay.** The
-    button replays the durable chain of proof: node transitions, bound
-    revisions and hashes, declared outputs, terminal receipts — and it
-    enumerates next to itself what is replayable. What is not replayable, the
-    UI does not claim. Not durable today: intermediate steps, tool calls,
-    stderr, and any timeline at all. (5302132001 §1, replacing the "byte-genau
-    aus den Receipts nachspielbar" wording of 5302066517 §2.)
+### REQ-UI-12: Sprache und Benennung.
+Status:     DRAFT
+Quelle:     DESK — 5302066517 §1 (Regel 12)
+Begründung: Englisch als Vorgabe, Deutsch optional; kurze Namen — „Studio", nicht „Leinwand & Chat".
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-    **This narrows a promise made in a comment headed as the operator's.**
-    5302066517 is headed "Operator-Feedback-Runde 2" and its §2 promises
-    byte-exact replay, but quotes no operator sentence, so the promise is desk
-    prose and this rule corrects one desk reading with another. It is flagged
-    all the same, because the promise may render something he said at the
-    mockup: the desk's reading is that nothing durable today could produce it,
-    and that reading is a proposal to him, not a settled correction.
+### REQ-UI-13: Die Run-Liste zeigt Zweck und Ergebnis, nie nur Status.
+Status:     DRAFT
+Quelle:     DESK — 5302066517 §4 (Regel 13)
+Begründung: Ein Projekt-Chip in jeder Zeile plus ein Projektfilter, und Verbrauch oder Kosten je Zeile (#8).
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-11. `DESK` — **V1 builds project memory; per-user memory is gated on #82.** Own
-    agents, favourites, and defaults hang on the project, which #23 and #79
-    make first class anyway, and that is definable without a notion of
-    identity. Per-user memory is a named successor with an explicit dependency
-    on requirement 0002 (#82) — before it there is no user for anything to hang
-    on. The same holds for the "Users / Audit" settings area: it is #82-gated,
-    not "later". (5302132001 §3, replacing "Per-User/Projekt-Gedächtnis
-    (später)" of 5301898411 §5.)
+### REQ-UI-14: Ein austauschbares Design-Token-System.
+Status:     DRAFT
+Quelle:     DESK — 5302066517 §5 (Regel 14); die ⌘K-Befehlspalette aus demselben Kommentar ist nach 5302132001 zurückgestellt, bis es genug zu befehlen gibt
+Begründung: Hell / dunkel / automatisch überall, und Benachrichtigungen als Posteingang — Karten, wenn ein Lauf einen Menschen braucht.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-12. `DESK` — **Language and naming:** English by default, German optional;
-    short names — "Studio", not "Leinwand & Chat". (5302066517 §1.)
+### REQ-UI-15: Einstellungen sind eine professionelle Fläche ohne hartkodierte Provider-Zeilen.
+Status:     DRAFT
+Quelle:     DESK — 5302066517 §6 (Regel 15). Der Operator-Inhalt hinter dieser Regel ist ein Satz:
 
-13. `DESK` — **The runs list shows purpose and result, never only status.**
-    A project chip on every row plus a project filter, and consumption or cost
-    per row (#8). (5302066517 §4.)
+            > „wie sie aufgebaut ist mag ich noch nicht"
+Begründung: Neun Worte über den Einstellungs-Bildschirm des Mockups, und sie sagen nur, was er nicht will. Alles, was die Regel an ihre Stelle setzt, ist die Antwort des Desks und bindet nichts, bis er es entscheidet: „Providers" als Liste verbundener Provider („+ Add provider" → Provider → Login *oder* Token, die Methode ist die Wahl des Operators); dann Projekte (Repository + Tracker + Credential-Referenz + Regeln, Pause ↔ Fortsetzen), Agenten-Vorgaben (Modell je Rollenklasse — Tore und Urteile Opus, Stichproben Haiku; Budget-Rahmen, die nie im Weg und nie aus sind), Runner, Benachrichtigungen, Erscheinung / Sprache. Zur Einordnung von REQ-UI-12 bis REQ-UI-15: alle vier stammen aus 5302066517, dessen Kopf eine Operator-Feedback-Runde nennt; §1, §4 und §5 zitieren ihn nirgends, und §6 zitiert nur die Ablehnung oben.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-14. `DESK` — **One exchangeable design-token system**, light / dark / auto
-    everywhere, and notifications as an inbox — cards, when a run needs a
-    human. (5302066517 §5; the ⌘K command palette from the same comment is
-    deferred until there is enough to command, per 5302132001.)
+### REQ-UI-16: Vier Zutaten, die Arbeit wegnehmen.
+Status:     DRAFT
+Quelle:     DESK — 5302788411 (Regel 16), die Kuratierung des Desks; auch das Zulassungskriterium „nimmt Arbeit weg" ist die des Desks
+Begründung: (1) **Werkstatt-Puls** — eine immer sichtbare Kopfzeile: heute verbrauchtes Kontingent, Runner-Gesundheit, Queue-Tiefe. Kein Dashboard; sie schafft die Atelier-1-Überraschung ab, per Konstruktion in die 100-%-Grenze zu laufen. (2) **Das Receipt als Schmuckstück** — jedes ✓ öffnet eine schöne, menschenlesbare Receipt-Seite (was lief, was es sah, was es prüfte, die Hash-Kette als Grafik). Das Unterscheidungsmerkmal verdient Juwelier-Behandlung; es ist die spätere Heimat des Dossier-Exports (#104). (3) **Lehrende Leerzustände** — jeder leere Bildschirm zeigt *die eine* nächste Handlung. Onboarding ohne Tutorial. (4) **Rückgängig statt Nachfragen** — ein Fünf-Sekunden-Rückgängig-Hinweis statt Bestätigungsdialogen. Bewusst ausgeschlossen: Dashboards neben dem Puls, ein Benachrichtigungszentrum neben dem Posteingang, Diagramme auf der Startseite.
+Journeys:
+Beweis:     an-empty-area-names-the-one-next-action
+Offen:      - Bewiesen ist die dritte Zutat, die lehrenden Leerzustände. Puls, Receipt-Seite und Rückgängig-Hinweis haben keinen Satz (Eigentümer: #131-Familie, Ziel: eigene Sätze je Zutat)
 
-15. `DESK` — **Settings are a professional surface with no hardcoded provider
-    rows.** The operator content behind this rule is one sentence, quoted at
-    5302066517 §6:
+### REQ-UI-17: Authentifizierung erhöht die Komplexität keines Bildschirms.
+Status:     DRAFT
+Quelle:     DESK — 5302788411 (Regel 17)
+Begründung: Login ist die Seite davor; Identität ist das Avatar-Menü; Rollen ändern, was *gerendert* wird — ein Viewer sieht keine Start-Schaltfläche, statt Verweigerungen zu sammeln. Wegen dieser Regel darf Authentifizierung (Requirement 0002, #82) später kommen, ohne den Entwurf zu verbiegen.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-    > „wie sie aufgebaut ist mag ich noch nicht"
+### REQ-UI-18: Mockups sind Entwurfs-Vorlagen.
+Status:     DRAFT
+Quelle:     DESK — 5302769095, das dies als „Mockups sind Design-VORLAGEN (Operator ausdrücklich)" schreibt — eine Klammer-Zuschreibung, kein zitierter Satz, weshalb die Regel `DESK` ist, obwohl derselbe Kommentar ihn für REQ-UI-01 zitiert; 5302066517 Schluss (Regel 18)
+Begründung: Die gebaute Oberfläche darf besser oder anders aussehen; bindend sind die Informationshierarchie von REQ-UI-01 und dass jede Anzeige quittierte Wahrheit zeigt. Das referenzierte Artefakt ist Mockup v3, beim Operator, klickbar, unter derselben URL wie v1 und v2 — es liegt nicht in diesem Repository.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-    Nine words about the Settings screen of the mockup, and they say only what
-    he does not want. Everything the rule proposes in their place is the desk's
-    answer and binds nothing until he rules it: "Providers" as a list of
-    connected providers ("+ Add provider" → provider → login *or* token, the
-    method being the operator's choice); then Projects (repository + tracker +
-    credential reference + rules, pause ↔ resume), Agent defaults (model per
-    role class — gates and judgments opus, samples haiku; budget frames that are
-    never in the way and never off), Runners, Notifications, Appearance /
-    Language.
-
-    Rules 12 to 15 all come from 5302066517, whose header names an operator
-    feedback round; §1, §4 and §5 quote him nowhere, and §6 quotes only the
-    rejection above.
-
-16. `DESK` — **Four ingredients that remove work** (5302788411, the desk's
-    curation; the admission criterion "removes work" is the desk's too):
-    1. **Workshop pulse** — one always-visible header line: quota consumed
-       today, runner health, queue depth. Not a dashboard; it abolishes the
-       atelier-1 surprise of hitting the 100 % limit by design.
-    2. **The receipt as a jewel** — every ✓ opens a beautiful human-readable
-       receipt page (what ran, what it saw, what it checked, the hash chain as a
-       graphic). The differentiator deserves jeweller's treatment; it is the
-       later home of the dossier export (#104).
-    3. **Teaching empty states** — every empty screen shows *the one* next
-       action. Onboarding without a tutorial.
-    4. **Undo instead of asking** — a five-second undo toast instead of
-       confirmation dialogs.
-
-    Deliberately excluded: dashboards beside the pulse, a notification centre
-    beside the inbox, charts on home.
-
-17. `DESK` — **Auth adds complexity to no screen.** Login is the page before;
-    identity is the avatar menu; roles change what *renders* — a viewer sees no
-    start button rather than collecting refusals. Because of this rule,
-    authentication (requirement 0002, #82) may arrive later without contorting
-    the design. (5302788411.)
-
-18. `DESK` — **Mockups are design templates.** The built UI may look better or
-    different; what binds is the information hierarchy of rule 1 and that every
-    display shows receipted truth. (5302769095 writes this as "Mockups sind
-    Design-VORLAGEN (Operator ausdrücklich)" — a parenthetical attribution, not
-    a quoted sentence, so the rule is `DESK` even though the same comment quotes
-    him for rule 1. The referenced artefact is mockup v3, held by the operator,
-    clickable, at the same URL as v1 and v2 — it is not in this repository.
-    5302066517 closing.)
-
-19. `DESK` — **Atelier 1 is reused as concepts and lessons, never as ported
-    code.** The concrete lessons are kept as a prior-art note — ttyd version
-    and sha pinning, Codex per-directory trust, tmux ≥ 3.4 in containers
-    because of the argv0 output, capture-pane diagnosis — so that "reuse" never
-    smuggles the permanent-seat machinery back in. (#9 body @ 36800d6e.)
+### REQ-UI-19: Atelier 1 wird als Konzepte und Lehren wiederverwendet, nie als portierter Code.
+Status:     DRAFT
+Quelle:     DESK — #9 body @ 36800d6e (Regel 19)
+Begründung: Die konkreten Lehren werden als Vorwissens-Notiz gehalten — ttyd-Version und SHA-Pinning, Codex-Vertrauen je Verzeichnis, tmux ≥ 3.4 in Containern wegen der argv0-Ausgabe, Capture-Pane-Diagnose —, damit „Wiederverwendung" nie die Dauersitz-Maschinerie zurückschmuggelt.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
 ## Open questions
 
