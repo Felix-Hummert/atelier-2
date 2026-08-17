@@ -13,6 +13,15 @@ story = "https://github.com/FlexOr2/atelier-2/issues/26"
 # enforcement: no attempt is bounded by these values yet. ADR 0008 delivery
 # boundary 2 owns that, and waits on the #15 cutover, the V3 binding owners, #16's
 # durable failure vocabulary and an amended #63.
+#
+# Nor do they separate the two node kinds that may carry a budget. A budget bound
+# to a Subworkflow node resolves here exactly as one bound to an Agent node does:
+# the refusals below key on the document, never on the node that pins it. #26 asks
+# that a subworkflow budget never be treated silently like an agent budget, and
+# this slice does not yet honour that — its composition semantics, and the
+# `UNAVAILABLE` answer that should stand in until they exist, are Slice 3. The gap
+# is named here and on #26 rather than gated, because refusing or marking such a
+# reference is a design the desk owns, not a consequence of these two sentences.
 
 [[sentence]]
 id = "a-published-budget-bounds-an-attempt-or-is-refused-by-name"
