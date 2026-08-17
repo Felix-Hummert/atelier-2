@@ -1,0 +1,18 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/232"
+
+# The operator clicked the studio and got "Request failed — wire contract",
+# because one V3 run existed in the store. Not a corner: the studio is the level
+# the workshop opens on, so a single run of the newest format took the front door
+# off its hinges.
+#
+# The cause is a split that this repository's own history explains. #221 taught
+# the API to answer with a V3 run; #225 taught the run detail page to read one,
+# and stopped there. The listing decoder kept a union of V1 and V2, so a page
+# that merely names and links its runs refused to decode the one field it does
+# not even show. A listing has no business being strict about a format it only
+# shows: what a row renders is the identity and the state, which every format has.
+
+[[sentence]]
+id = "the-run-listing-holds-every-format-the-api-answers-with"
+text = "Every level that lists runs decodes each run the API can answer with, so a single run of the newest format cannot take down the page the workshop opens on; a listed V3 run carries the same identity, link and state a listed V1 or V2 run does, and is grouped by what it is waiting for exactly as they are."

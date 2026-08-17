@@ -1,10 +1,10 @@
 <script lang="ts">
-  import type { Run } from "../api/client";
+  import type { AnyRun } from "../api/client";
   import InfoHint from "./InfoHint.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
   import { countStanding, standingMarks } from "../lib/runState";
 
-  export let runs: readonly Run[];
+  export let runs: readonly AnyRun[];
   export let navigate: (path: string) => void;
 
   const label = THE_ONE_PROJECT;

@@ -584,3 +584,54 @@ describe("the graph a run is allowed to hold", () => {
     expect(executableGraph(graph)).toBe(graph);
   });
 });
+
+describe("the run listing the studio opens on", () => {
+  const v3Run = {
+    workflow_format_version: 3,
+    run_id: "run-1",
+    public_run_reference: publicReference,
+    workflow_revision_hash: digest,
+    agent_binding_set_hash: "b".repeat(64),
+    run_configuration_revision_hash: "c".repeat(64),
+    agent_bindings: [],
+    state_version: 1,
+    state: "STARTED",
+    current_node_id: "implement",
+    node_rail: [{ node_id: "implement", state: "working", attempt: null }],
+    terminal_hash: null,
+    latest_event_cursor: null
+  };
+
+  it("proves(the-run-listing-holds-every-format-the-api-answers-with): decodes a page that holds a version 3 run instead of failing the whole studio", async () => {
+    // The operator's own repro: one V3 run exists, and every level that lists
+    // runs -- the studio and the project -- answered "Request failed — wire
+    // contract" because the page decoder knew only V1 and V2. The detail page
+    // had been taught V3; the listing had not, so a single V3 run took down the
+    // page the workshop opens on.
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [v3Run], next_after: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const page = await createCockpitApi(fetcher).listRuns();
+
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]?.public_run_reference).toBe(publicReference);
+    expect(page.items[0]?.state).toBe("STARTED");
+  });
+
+  it("still lists a version 2 run beside it", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ items: [v3Run, startedRun()], next_after: null }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    const page = await createCockpitApi(fetcher).listRuns();
+
+    expect(page.items.map((run) => run.state)).toEqual(["STARTED", "STARTED"]);
+  });
+});
