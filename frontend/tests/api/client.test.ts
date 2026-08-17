@@ -579,6 +579,33 @@ describe("the saved-workflow listing the cockpit asks for", () => {
   });
 });
 
+describe("the published agent-configuration listing", () => {
+  it("asks the collection with the house page bound and decodes the item form", async () => {
+    const item = {
+      model: "sonnet",
+      auth_profile_revision_hash: digest,
+      executor_revision: "claude-subscription/v1",
+      provider_id: "anthropic",
+      auth_mode: "subscription",
+      requested_capability: "headless",
+      agent_configuration_revision_hash: digest
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [item], next_after_revision_hash: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const page = await createCockpitApi(fetcher).listAgentConfigurationRevisions();
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/agent-configuration-revisions?limit=50"
+    );
+    expect(page.items).toEqual([item]);
+  });
+});
+
 describe("the graph a run is allowed to hold", () => {
   it("refuses a published V3 graph by name instead of reading it as an empty workflow", () => {
     const published = {

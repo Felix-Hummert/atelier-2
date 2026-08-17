@@ -1,4 +1,6 @@
 import type {
+  AgentConfigurationRevision,
+  AgentConfigurationRevisionPage,
   AnyRun,
   RunPage,
   WorkflowRevisionPage,
@@ -31,6 +33,10 @@ export type RevisionReading =
   | { complete: true; revisions: WorkflowRevisionSummary[] }
   | { complete: false; revisions: WorkflowRevisionSummary[]; unreadable: string };
 
+export type AgentConfigurationReading =
+  | { complete: true; configurations: AgentConfigurationRevision[] }
+  | { complete: false; configurations: AgentConfigurationRevision[]; unreadable: string };
+
 export async function readEveryRun(
   listRuns: (after?: string) => Promise<RunPage>
 ): Promise<RunReading> {
@@ -60,6 +66,22 @@ export async function readEveryRevision(
   return read.complete
     ? { complete: true, revisions: read.items }
     : { complete: false, revisions: read.items, unreadable: read.unreadable };
+}
+
+/** The published agent configurations a binding picker may offer. */
+export async function readEveryAgentConfiguration(
+  listConfigurations: (after?: string) => Promise<AgentConfigurationRevisionPage>
+): Promise<AgentConfigurationReading> {
+  const read = await readEveryPage(
+    async (after) => {
+      const page = await listConfigurations(after);
+      return { items: page.items, next: page.next_after_revision_hash };
+    },
+    (configuration) => configuration.agent_configuration_revision_hash
+  );
+  return read.complete
+    ? { complete: true, configurations: read.items }
+    : { complete: false, configurations: read.items, unreadable: read.unreadable };
 }
 
 type PageReading<Item> =

@@ -22,13 +22,14 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await expect(page.getByText("Complete every field.")).toBeVisible();
   await page.screenshot({ path: "test-results/v2-bindings-error-desktop.png", fullPage: true });
 
+  const binding = page.getByRole("article", { name: "Binding builder" });
+  await binding.locator("summary").click();
   await page.getByLabel("Profile ID").fill("local");
   await page.getByLabel("Revision").fill("1");
   await page.getByLabel("Provider").fill("e2e");
   await page.getByLabel("Auth mode").selectOption("subscription");
   await page.getByLabel("Model").fill("test-model");
   await page.getByLabel("Executor").fill("blocking/v1");
-  const binding = page.getByRole("article", { name: "Binding builder" });
   await expect(page.getByText("Complete every field.")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v2-bindings-corrected-desktop.png", fullPage: true });
   let continueAuth = (): void => {};
@@ -410,6 +411,72 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   await page.screenshot({ path: "test-results/v3-run-mobile.png", fullPage: true });
 });
 
+test("starts a published V3 workflow by picking a named agent", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: {
+      profile_id: "named-picker",
+      revision_number: 1,
+      provider_id: "e2e-v3",
+      auth_mode: "subscription"
+    }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: "named-sonnet",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+
+  await page.goto("/atelier/new");
+  await page.getByLabel("Publish YAML").check();
+  await page.getByLabel("Exact workflow YAML").fill(
+    [
+      "format_version: 3",
+      "name: Started with a named agent",
+      "nodes:",
+      "  - id: implement",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: Do the one thing this chain is for.",
+      "  - id: review",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: Check what the node before you did.",
+      "    depends_on: [implement]",
+      ""
+    ].join("\n")
+  );
+  await page.getByRole("button", { name: "Review publication" }).click();
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+
+  const binding = page.getByRole("article", { name: "Binding builder" });
+  await expect(binding).toBeVisible();
+  const picker = binding.getByLabel("Agent for builder");
+  await expect(picker).toContainText("e2e-v3 · named-sonnet · Subscription");
+  await picker.selectOption({ label: "e2e-v3 · named-sonnet · Subscription" });
+  await page.screenshot({ path: "test-results/named-agent-picker-desktop.png", fullPage: true });
+
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: /^Run / })).toBeVisible();
+  await expect(page.getByLabel("Where this run stands")).toContainText("Done", {
+    timeout: 20_000
+  });
+  await page.screenshot({ path: "test-results/named-agent-run-desktop.png", fullPage: true });
+  await assertNoSeriousAccessibilityFindings(page);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("heading", { level: 1, name: /^Run / })).toBeVisible();
+  await assertMobileSurface(page);
+  await page.screenshot({ path: "test-results/named-agent-run-390x844.png", fullPage: true });
+});
+
 test("publishes a V3 workflow, binds its role, and watches the line it started", async ({ page }) => {
   await page.goto("/atelier/new");
   await page.getByLabel("Publish YAML").check();
@@ -439,6 +506,7 @@ test("publishes a V3 workflow, binds its role, and watches the line it started",
   // The role comes from the API, not from the operator re-reading their own YAML.
   const binding = page.getByRole("article", { name: "Binding builder" });
   await expect(binding).toBeVisible();
+  await binding.locator("summary").click();
   await page.getByLabel("Profile ID").fill("picker-v3");
   await page.getByLabel("Revision").fill("1");
   await page.getByLabel("Provider").fill("e2e-v3");

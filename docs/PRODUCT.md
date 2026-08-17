@@ -362,7 +362,12 @@ format, roles and node count where the V3 resource carries them, executability,
 and hash. The V3 graph also answers an excerpt of each node — id, kind, role,
 and the bounded start of an agent instruction. A wait has a prompt, not an
 instruction, so that field is empty there. The authored node stays in the
-document bytes. It opens in the Studio rather than in that list: one screen across the
+document bytes. Role bindings on `/new` offer published agent-configuration
+revisions by provider, model, and readable auth mode; the raw publication form
+stays as a collapsed expert fallback. Last choice per role is remembered in
+this browser only — that is not the project-configuration owner for a
+recommended occupancy. The list is empty until a configuration is published,
+and says so. It opens in the Studio rather than in that list: one screen across the
 whole workshop naming every run that waits for a human — the durable states
 `WAITING_INPUT` and `WAITING_RECONCILIATION` — beside the one project of this
 installation, where an area with nothing in it names the next action that is

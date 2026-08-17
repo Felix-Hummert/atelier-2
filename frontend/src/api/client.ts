@@ -257,6 +257,17 @@ const agentConfigurationRevisionSchema = agentConfigurationInputSchema
   })
   .strict();
 
+/**
+ * The listing of published agent configurations, in the item form publication
+ * already answers with. Held to the frozen document by servedVocabulary.
+ */
+export const agentConfigurationRevisionPageSchema = z
+  .object({
+    items: z.array(agentConfigurationRevisionSchema),
+    next_after_revision_hash: sha256.nullable()
+  })
+  .strict();
+
 const operatorFoundSchema = z
   .object({
     type: z.literal("operator_found"),
@@ -909,6 +920,9 @@ export type AuthProfileInput = z.infer<typeof authProfileInputSchema>;
 export type AuthProfileRevision = z.infer<typeof authProfileRevisionSchema>;
 export type AgentConfigurationInput = z.infer<typeof agentConfigurationInputSchema>;
 export type AgentConfigurationRevision = z.infer<typeof agentConfigurationRevisionSchema>;
+export type AgentConfigurationRevisionPage = z.infer<
+  typeof agentConfigurationRevisionPageSchema
+>;
 
 export interface HttpResult<T> {
   status: number;
@@ -918,6 +932,7 @@ export interface HttpResult<T> {
 export interface CockpitApi {
   listRuns(after?: string): Promise<RunPage>;
   listWorkflowRevisions(after?: string): Promise<WorkflowRevisionPage>;
+  listAgentConfigurationRevisions(after?: string): Promise<AgentConfigurationRevisionPage>;
   publish(mutation: PublishMutation): Promise<HttpResult<WorkflowRevisionDetail>>;
   publishAuthProfile(input: AuthProfileInput): Promise<HttpResult<AuthProfileRevision>>;
   publishAgentConfiguration(
@@ -982,6 +997,16 @@ export function createCockpitApi(
         {},
         [200],
         workflowRevisionPageSchema
+      ),
+    listAgentConfigurationRevisions: (after?: string) =>
+      requestJson(
+        fetcher,
+        after === undefined
+          ? "/atelier/api/v1/agent-configuration-revisions?limit=50"
+          : `/atelier/api/v1/agent-configuration-revisions?limit=50&after_revision_hash=${encodeURIComponent(after)}`,
+        {},
+        [200],
+        agentConfigurationRevisionPageSchema
       ),
     publish: async (mutation) =>
       requestJsonResult(
