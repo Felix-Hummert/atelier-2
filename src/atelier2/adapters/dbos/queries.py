@@ -21,6 +21,7 @@ from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
     event_from_record,
     graph_from_document,
+    load_run_inputs,
     run_from_record_with_bindings,
     validate_run_graph_binding,
 )
@@ -34,6 +35,7 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
@@ -281,12 +283,13 @@ def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
 def _current_attempt_projection(
     record: Mapping[Any, Any],
     *,
+    session: Connection,
     run: RunV2 | RunV3,
     graph: WorkflowGraphV2 | WorkflowGraphV3,
 ) -> AgentAttemptProjection:
     node = graph.node(run.current_node_id)
     if not isinstance(node, (AgentNodeV2, AgentNodeV3)):
-        raise RunTransitionConflict("current attempt does not belong to a V2 agent")
+        raise RunTransitionConflict("current attempt does not belong to an agent")
     binding = next(
         (binding for binding in run.agent_bindings if binding.role.value == node.role),
         None,
@@ -300,7 +303,9 @@ def _current_attempt_projection(
         run.run_id, run.revision_hash, run.current_node_id
     )
     authored_job = (
-        node.job if isinstance(node, AgentNodeV2) else node.instruction
+        node.job
+        if isinstance(node, AgentNodeV2)
+        else node_job(node.instruction, load_run_inputs(session, run.run_id, node))
     ).encode("utf-8")
     exact_request = AgentExecutionRequestV2(
         execution_id,
@@ -942,15 +947,16 @@ class DbosQueries:
             execution = current_agent_executions.get(run.run_id)
             if execution is not None:
                 if not isinstance(run, (RunV2, RunV3)):
-                    raise RunTransitionConflict("V2 agent node belongs to a V1 run")
+                    raise RunTransitionConflict("agent node belongs to a V1 run")
                 records_for_execution = attempt_records.get(execution.value, [])
                 if records_for_execution and run.state is not RunState.COMPLETED:
                     graph = graphs[run.revision_hash]
                     if not isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3)):
-                        raise RunTransitionConflict("V2 run has a V1 workflow graph")
+                        raise RunTransitionConflict("bound run has a V1 workflow graph")
                     attempt_projections = tuple(
                         _current_attempt_projection(
                             attempt_record,
+                            session=connection,
                             run=run,
                             graph=graph,
                         )
