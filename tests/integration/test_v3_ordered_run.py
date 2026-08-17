@@ -69,7 +69,10 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_scratch_root,
+)
 
 PORTIONS_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
@@ -114,7 +117,11 @@ def runtime(
     tmp_path: Path, cook: RecordingAgentExecutorFactoryV2
 ) -> Iterator[DbosRuntime]:
     started = DbosRuntime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "v3-order-test"),
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "v3-order-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),

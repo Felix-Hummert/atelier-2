@@ -76,8 +76,8 @@ from atelier2.application.start_published_run import (
     RunCreated,
     RunExisting,
     RunFormatNotExecutable,
-    RunInputRefused,
     RunIdentityConflict,
+    RunInputRefused,
 )
 from atelier2.application.start_published_run import (
     AgentExecutorBindingUnavailable as StartAgentExecutorBindingUnavailable,
