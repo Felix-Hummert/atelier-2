@@ -1,7 +1,8 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/111"
 
-# THIS HEAD ANSWERS A NAME. IT RUNS NOTHING, AND NO SENTENCE BELOW SAYS IT DOES.
+# THIS FILE HELD ONE HEAD THAT ONLY ANSWERED A NAME. IT NOW HOLDS TWO, AND THE
+# SECOND RUNS WHAT THE FIRST ANSWERS.
 #
 # #111 wants one command to start a named workflow. The measured distance to that
 # (comment 5310231752) is four doors, and this head opens the first: until now the
@@ -13,9 +14,15 @@ story = "https://github.com/FlexOr2/atelier-2/issues/111"
 #     class no production code constructs or even imports. Filling it here would
 #     author `context-package/v3` from a route, which is the forgery H1c refused
 #     from the store side. That owner is its own head.
-#   - NO CLI. That head is now here, and it is `resolve`, not `run --name`: a
-#     `run` that resolves without running would be a verb that lies, and running
-#     is what the record-truth owner still blocks.
+#   - NO CLI THAT RUNS. That head was `resolve`, not `run --name`: a `run` that
+#     resolved without running would have been a verb that lies, and running is
+#     what the record-truth owner blocked at the time.
+#
+# THAT BLOCK IS GONE, AND THE DOOR IS OPEN. A published V3 revision starts over
+# HTTP and the runtime drives it to its terminal hash (#216, #219), so `run
+# --name` can resolve and then actually run. The sentence below is that command:
+# the deferral above is answered rather than left standing as a claim about a
+# limit that no longer exists.
 #
 # ONE REFUSAL IS DECLARED WITHOUT A TEST, AND THAT IS SAID RATHER THAN HIDDEN.
 # `catalog-revision-not-a-member` answers the case where a name resolves but the
@@ -55,3 +62,19 @@ text = "An operator who knows a workflow name learns from one command which revi
 [[sentence]]
 id = "a-refused-name-ends-the-command-unsuccessfully"
 text = "A name the service refuses ends the command unsuccessfully and in the service's own words, with nothing written to standard output, so a refusal can never be mistaken for an answer by a script or by an eye."
+
+# WHAT THE COMMAND STILL DOES NOT DO, named rather than discovered:
+#
+#   - NO `--input`. A run's order as material belongs to the L6 family under #38,
+#     which is built and waiting for exactly this door. Until it lands a named run
+#     repeats the revision the name holds, so a distinct input still needs a
+#     distinct workflow -- the reflex #38 exists to end is not ended here.
+#   - NO ANSWERING A WAIT. A run that stops for a human ends the command
+#     unsuccessfully and says which capability is missing; there is no form here.
+#   - NO VERDICT EXIT CODE. Output contracts are #57. The exit code says whether
+#     the run ended and was read whole, and nothing about whether its work was
+#     good.
+
+[[sentence]]
+id = "one-command-runs-the-workflow-a-name-holds"
+text = "One command runs the workflow a catalog name holds: the operator names it, the service is asked which revision that name holds before anything is written, the run starts on exactly that revision without republishing it, and the command waits for the run to end -- printing the run's own output on standard output and, on standard error, the name it resolved together with the run, its revision and its terminal hash."
