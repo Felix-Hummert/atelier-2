@@ -13,6 +13,7 @@ from atelier2.contracts.agent_attempts import (
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     MAXIMUM_SIGNED_INT64,
     AgentExecutionCapability,
@@ -26,7 +27,6 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import AgentAttemptExecution
 
-MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
 MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = 49_152
 
 

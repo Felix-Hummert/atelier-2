@@ -356,16 +356,21 @@ def _agent_request_v2(
         raise RunBindingConflict(
             "runtime executor lacks the durably requested capability"
         )
-    resolved = ResolvedAgentBinding(AgentRole(binding["role"]), configuration, auth)
-    return AgentExecutionRequestV2(
-        NodeExecutionId.for_node(run_id, revision_hash, node_id),
-        run_id,
-        revision_hash,
-        node_id,
-        resolved,
-        operational_identity,
-        binding["job"].encode("utf-8"),
-    )
+    try:
+        resolved = ResolvedAgentBinding(AgentRole(binding["role"]), configuration, auth)
+        return AgentExecutionRequestV2(
+            NodeExecutionId.for_node(run_id, revision_hash, node_id),
+            run_id,
+            revision_hash,
+            node_id,
+            resolved,
+            operational_identity,
+            binding["job"].encode("utf-8"),
+        )
+    except (TypeError, ValueError) as error:
+        raise RunBindingConflict(
+            "V2 agent request contract carries an invalid combination"
+        ) from error
 
 
 def register_durable_run_workflow(
