@@ -130,7 +130,7 @@ class ApiUseCases:
         [
             RevisionKind,
             PublishedRevisionHash,
-            CatalogLineageDisplayName,
+            CatalogLineageDisplayName | None,
             CatalogActor,
             CatalogActivatedAt,
         ],
