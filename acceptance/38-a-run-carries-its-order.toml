@@ -23,11 +23,15 @@ story = "https://github.com/FlexOr2/atelier-2/issues/38"
 #      run and the agent receives it; what is absent is the node-record half --
 #      no runtime authors a `context-package/v3` or a `node-execution-request/v3`
 #      yet, so there is no package for it to be a member of. That is the record
-#      family's own head, not a wording this one may narrow.
+#      family's own head, not a wording this one may narrow. 2b moved to #295
+#      (18.08.): whether the record family gets its first honest writer or
+#      falls as deadweight is that item's decision, and this declaration
+#      travels with it rather than being narrowed here.
 #   4. The conductor loop needs no revision per turn. The CLI half of the order
 #      is `--input` / `--input-file`; the loop itself still belongs to #7.
 #
-# #38 is not verified and not retired while either of those is open.
+# #38's retire condition on 2b moved with it: that open half now lives, and is
+# tracked, at #295 -- not here.
 #
 # ALSO ABSENT ON PURPOSE, each because the start would otherwise ignore what an
 # author wrote: an `inputs` entry whose source is another node's output, a node
