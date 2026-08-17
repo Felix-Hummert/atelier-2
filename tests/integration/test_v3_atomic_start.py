@@ -657,6 +657,9 @@ def test_every_v3_start_write_failure_rolls_the_exact_set_back(
     assert isinstance(starter.start_v3_with_receipt(exact), DurableStateCorrupt)
     assert table_count(engine, published_revisions) == 0
     assert table_count(engine, workflow_revisions) == 0
+    assert table_count(engine, run_configuration_revisions) == 0
+    assert table_count(engine, context_packages_v3) == 0
+    assert table_count(engine, node_execution_requests_v3) == 0
     assert table_count(engine, runs) == 0
     assert table_count(engine, node_artifacts_v3) == 0
     assert table_count(engine, node_receipts_v3) == 0

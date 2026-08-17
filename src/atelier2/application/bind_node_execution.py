@@ -33,7 +33,7 @@ from atelier2.contracts.node_records_v3 import (
     DeclaredOutput,
     NodeExecutionRequest,
     NodeKindV3,
-    context_package_of,
+    declared_context_package_of,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_configuration_v3 import (
@@ -52,7 +52,7 @@ from atelier2.contracts.workflows_v3 import (
 
 @dataclass(frozen=True)
 class BoundNodeExecution:
-    """One node's manifest and the request that names it, bound together.
+    """One node's declared context package and the request that names it.
 
     They travel as one value because they are one decision: the request carries
     the package's hash, so a caller holding only the request could not prove what
@@ -107,7 +107,7 @@ def bind_node_execution(
         )
     node = graph.node(node_id)
     resolution = _ResolutionMatrix(run_configuration.resolutions, node_id)
-    package = context_package_of(
+    package = declared_context_package_of(
         workflow_revision_hash,
         run_id,
         node_id,

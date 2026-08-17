@@ -645,15 +645,6 @@ class DbosDurableRunStarter:
                         ),
                     )
                 )
-                if run_configuration is not None:
-                    connection.execute(
-                        run_configuration_revisions.insert()
-                        .prefix_with("OR IGNORE")
-                        .values(
-                            revision_hash=run_configuration.revision_hash.value,
-                            preimage=run_configuration.preimage,
-                        )
-                    )
                 existing_record = (
                     connection.execute(
                         sa.select(runs).where(runs.c.run_id == request.run_id.value)
@@ -683,24 +674,19 @@ class DbosDurableRunStarter:
                         str(existing_record["current_node_id"]),
                         int(existing_record["state_version"]),
                         int(existing_record["last_event_sequence"]),
-                        (
-                            None
-                            if terminal_hash is None
-                            else Sha256Hash(str(terminal_hash))
-                        ),
                     )
-                    run = (
-                        RunV2(*head)
-                        if isinstance(graph, WorkflowGraphV2)
-                        else RunV3(
-                            *head,
-                            run_configuration_revision_hash=(
-                                None
-                                if run_configuration is None
-                                else run_configuration.revision_hash
-                            ),
-                        )
+                    ended = (
+                        None
+                        if terminal_hash is None
+                        else Sha256Hash(str(terminal_hash))
                     )
+                    if isinstance(graph, WorkflowGraphV2):
+                        run = RunV2(*head, ended)
+                    else:
+                        # A V3 graph reached this seam, so the configuration was
+                        # bound above; the type refuses a V3 run without it.
+                        assert run_configuration is not None
+                        run = RunV3(*head, run_configuration.revision_hash, ended)
                 if inserted.rowcount == 0:
                     existing_set = existing_record["agent_binding_set_hash"]
                     requested_set = (

@@ -244,18 +244,19 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
         str(record["current_node_id"]),
         int(record["state_version"]),
         int(record["last_event_sequence"]),
-        None if terminal is None else Sha256Hash(str(terminal)),
     )
+    terminal_hash = None if terminal is None else Sha256Hash(str(terminal))
     if version == 2:
-        return RunV2(*head)
+        return RunV2(*head, terminal_hash)
     configuration = record["run_configuration_revision_hash"]
+    if configuration is None:
+        raise RunTransitionConflict(
+            "a format-3 run row carries no run configuration revision"
+        )
     return RunV3(
         *head,
-        run_configuration_revision_hash=(
-            None
-            if configuration is None
-            else RunConfigurationRevisionHash(str(configuration))
-        ),
+        RunConfigurationRevisionHash(str(configuration)),
+        terminal_hash,
     )
 
 

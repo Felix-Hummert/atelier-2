@@ -60,16 +60,14 @@ class RunV3:
     are the whole of what it was started with; a V3 run is additionally bound to
     the run configuration its document resolved, and carrying that hash here is
     what stops a V3 run from being read back as a V2 one that happens to fit.
-    Until a resolver exists the field is honestly absent rather than invented --
-    but the type is separate from the day it exists, because widening `RunV2`
-    later would mean every V2 reader had silently been reading V3 rows.
+    The type is separate from `RunV2` because widening that one later would mean
+    every V2 reader had silently been reading V3 rows.
 
-    `run_configuration_revision_hash` is therefore **unreconstructed today**: no
-    owner resolves or persists it yet, and a run that reads back without it is
-    telling the truth about what was stored rather than filling a gap. Anything
-    that needs the whole bound request -- a provider launch above all, which also
-    needs the context package and the node execution request persisted first --
-    is waiting on that owner, not on this field's absence.
+    `run_configuration_revision_hash` is **required**, and the store says the
+    same: every format-3 row carries it and no other format may. A V3 run
+    without the snapshot it was started under is not a run this type describes,
+    so it cannot be constructed -- one owner for that rule, not a type that
+    permits what the store refuses.
     """
 
     run_id: RunId
@@ -80,10 +78,14 @@ class RunV3:
     current_node_id: str
     state_version: int
     last_event_sequence: int
+    run_configuration_revision_hash: RunConfigurationRevisionHash
     terminal_hash: Sha256Hash | None = None
-    run_configuration_revision_hash: RunConfigurationRevisionHash | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(
+            self.run_configuration_revision_hash, RunConfigurationRevisionHash
+        ):
+            raise TypeError("a V3 run names the run configuration it was started under")
         Run.validate_head(
             self.current_node_id,
             self.state,

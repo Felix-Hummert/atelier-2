@@ -22,7 +22,7 @@ from atelier2.contracts.agents import AgentBindingSet, AgentExecutionCapability
 from atelier2.contracts.node_records_v3 import (
     ContextPackageMember,
     NodeKindV3,
-    context_package_of,
+    declared_context_package_of,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_configuration_v3 import (
@@ -110,7 +110,7 @@ def test_the_manifest_carries_the_declared_members_in_their_declared_order() -> 
         RUN, revision_hash(), graph(), "implement", fully_resolved()
     )
 
-    assert bound.context_package == context_package_of(
+    assert bound.context_package == declared_context_package_of(
         revision_hash(),
         RUN,
         "implement",
@@ -125,7 +125,7 @@ def test_the_manifest_carries_the_declared_members_in_their_declared_order() -> 
 @pytest.mark.proves("a-v3-node-execution-request-is-composed-not-supplied")
 def test_a_swapped_member_order_is_another_package() -> None:
     """A re-ordered member is visible in the package hash, as ADR 0006 requires."""
-    ordered = context_package_of(
+    ordered = declared_context_package_of(
         revision_hash(),
         RUN,
         "implement",
@@ -134,7 +134,7 @@ def test_a_swapped_member_order_is_another_package() -> None:
             ContextPackageMember("notes", KITCHEN_NOTES, "sections/timing"),
         ),
     )
-    swapped = context_package_of(
+    swapped = declared_context_package_of(
         revision_hash(),
         RUN,
         "implement",

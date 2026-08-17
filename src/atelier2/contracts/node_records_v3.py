@@ -96,21 +96,20 @@ class ContextPackage:
 
 @dataclass(frozen=True)
 class ContextPackageMember:
-    """One materialized `required_context` entry inside a manifest.
+    """One `required_context` entry a node declared, bound to what it resolved to.
 
-    ADR 0006 names a member `(name, source revision, selector, content hash)` and
-    keeps them in declared order, so a re-ordered, swapped or changed member is
-    visible alike in the package hash. `content_hash` is the one field no owner
-    fills yet: nothing materializes a selector against its source, so the field
-    is written empty. Its position is declared here rather than added later
-    because an absent optional value is the zero-length field in its own place --
-    filling it when a materializer lands is a value change, never a frame change.
+    This is the **declared** half of ADR 0006's package member, and deliberately
+    not the whole of it. The ADR's member is `(name, source revision, selector,
+    content hash)`, and the content hash is the one part no owner can produce:
+    nothing materializes a selector against its source. Carrying the field empty
+    would mint a complete identity out of an incomplete record, so it is absent
+    here and the frame says which half this is. Members keep their declared
+    order, so a re-ordered or swapped member is visible in the hash.
     """
 
     name: str
     source_revision: PublishedRevisionHash
     selector: str
-    content_hash: Sha256Hash | None = None
 
     def __post_init__(self) -> None:
         if self.name == "":
@@ -122,35 +121,44 @@ class ContextPackageMember:
 
     def framed(self) -> bytes:
         return frame(
-            "context-package-member/v3",
+            "context-package-declared-member/v3",
             self.name.encode("utf-8"),
             _ascii_hash(self.source_revision),
             self.selector.encode("utf-8"),
-            b"" if self.content_hash is None else _ascii_hash(self.content_hash),
         )
 
 
-def context_package_of(
+def declared_context_package_of(
     workflow_revision_hash: WorkflowRevisionHash,
     run_id: RunId,
     node_id: str,
     members: tuple[ContextPackageMember, ...],
 ) -> ContextPackage:
-    """The manifest one node was given, as the container ADR 0006 hashes.
+    """The declared context one node was assembled with, as its own container.
+
+    **This is not ADR 0006's complete package, and its frame says so.** The ADR
+    binds the manifest to material written once before START -- the selected
+    requirement, epic and story material, the decisions and contracts, the source
+    and target SHAs, the prior receipts and the provenance -- and no owner
+    produces any of that yet. What can be produced today is what the document
+    declared and the frozen configuration resolved, so that is what this frames,
+    under `context-package-declared/v3`. When the missing material and the
+    selector materializer land, the complete package is authored under its own
+    identity rather than by quietly widening this one.
 
     The container is what the hash covers, so the workflow revision and the node
-    it was assembled for are part of it: the same members reached for another node
-    are another package. Members keep their declared order.
+    it was assembled for are part of it: the same members reached for another
+    node are another package.
     """
     _require_node_id(node_id)
     return ContextPackage(
         frame(
-            "context-package-body/v3",
+            "context-package-declared/v3",
             _ascii_hash(workflow_revision_hash),
             run_id.value.encode("utf-8"),
             node_id.encode("utf-8"),
             frame(
-                "context-package-members/v3",
+                "context-package-declared-members/v3",
                 *(member.framed() for member in members),
             ),
         )
