@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from atelier2.contracts.agent_attempts import AgentAttemptState
 from atelier2.contracts.executions import RunEventKind
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
@@ -41,6 +41,7 @@ from atelier2.contracts.workflows import (
     AnyWorkflowNode,
 )
 from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
     AnyWorkflowDocument,
     WorkflowGraphV3,
     WorkflowNodeV3,
@@ -185,7 +186,7 @@ class _RailDerivation:
         attempt = self.projection.current_agent_attempt
         if (
             index == self.current_index
-            and isinstance(run, RunV2)
+            and isinstance(run, RunV2 | RunV3)
             and _is_agent(node)
             and attempt is not None
         ):
@@ -253,7 +254,7 @@ class _RailDerivation:
         self, node: _RailNode, last_event: PersistedRunEvent | None
     ) -> NodeRailAttempt | None:
         run = self.projection.run
-        if not isinstance(run, RunV2) or not _is_agent(node):
+        if not isinstance(run, RunV2 | RunV3) or not _is_agent(node):
             return None
         from_event = _attempt_the_event_proves(last_event)
         from_snapshot = (
@@ -304,7 +305,7 @@ def _walk_from_start(graph: AnyWorkflowDocument) -> tuple[_RailNode, ...]:
 
 
 def _is_agent(node: _RailNode) -> bool:
-    return isinstance(node, AgentNode | AgentNodeV2)
+    return isinstance(node, AgentNode | AgentNodeV2 | AgentNodeV3)
 
 
 def _state_the_event_ended_in(
@@ -319,7 +320,7 @@ def _state_the_event_ended_in(
 def _attempt_the_event_proves(
     persisted: PersistedRunEvent | None,
 ) -> NodeRailAttempt | None:
-    if persisted is None or persisted.workflow_format_version != 2:
+    if persisted is None or persisted.workflow_format_version not in (2, 3):
         return None
     ordinal = persisted.event.attempt_ordinal
     durable_state = _ATTEMPT_STATES_PROVEN_BY_EVENT.get(persisted.event.event_kind)
