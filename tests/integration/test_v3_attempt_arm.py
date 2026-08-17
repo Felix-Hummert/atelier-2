@@ -202,6 +202,51 @@ def test_restoring_v2_only_query_reds_the_prepared_v3_attempt(
     )
 
 
+def test_get_run_answers_a_completed_v3_sink_without_a_current_attempt(
+    runtime: DbosRuntime,
+) -> None:
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+    store.claim(execution)
+    store.complete_success(execution, AgentExecutionResult(b"the exact provider bytes"))
+
+    found = durable_queries(runtime.engine).get_run(RUN)
+
+    assert isinstance(found, RunFound)
+    assert found.projection.run.state is RunState.COMPLETED
+    assert found.projection.current_agent_attempt is None
+
+
+def test_projecting_attempts_on_a_completed_v3_sink_reds_the_completed_get(
+    runtime: DbosRuntime, tmp_path: Path
+) -> None:
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+    store.claim(execution)
+    store.complete_success(execution, AgentExecutionResult(b"the exact provider bytes"))
+    needle = "if records_for_execution and run.state is not RunState.COMPLETED:"
+    restored = "if records_for_execution:"
+    source = Path(queries_module.__file__).read_text(encoding="utf-8")
+    assert needle in source
+    mutated_path = tmp_path / "queries_completed_mutated.py"
+    mutated_path.write_text(source.replace(needle, restored, 1), encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "atelier2.adapters.dbos.queries_completed_mutated", mutated_path
+    )
+    assert spec is not None and spec.loader is not None
+    mutated = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mutated)
+    found = mutated.DbosQueries(runtime.engine, permissive_projection_limit()).get_run(
+        RUN
+    )
+
+    assert not (
+        isinstance(found, RunFound) and found.projection.current_agent_attempt is None
+    )
+
+
 @pytest.mark.proves("a-v3-agent-node-reaches-the-durable-attempt-path")
 def test_a_v3_attempt_is_admitted_by_the_attempt_store(runtime: DbosRuntime) -> None:
     """The door that refuses today: 'agent attempt requires a V2 run'."""

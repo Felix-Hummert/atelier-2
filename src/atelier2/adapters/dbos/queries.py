@@ -906,7 +906,7 @@ class DbosQueries:
                 if not isinstance(run, (RunV2, RunV3)):
                     raise RunTransitionConflict("V2 agent node belongs to a V1 run")
                 records_for_execution = attempt_records.get(execution.value, [])
-                if records_for_execution:
+                if records_for_execution and run.state is not RunState.COMPLETED:
                     graph = graphs[run.revision_hash]
                     if not isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3)):
                         raise RunTransitionConflict("V2 run has a V1 workflow graph")
