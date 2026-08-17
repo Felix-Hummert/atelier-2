@@ -53,8 +53,8 @@ Status:     DRAFT
 Quelle:     DESK — [ADR 0007](../decisions/0007-catalog-identity.md) Decision 1
 Begründung: Otherwise a typed name and a lineage id cannot be told apart. The refusal is at the name, not after a second discriminator.
 Journeys:
-Beweis:     UNGEBUNDEN
-Offen:      - Die Verweigerung ist implementiert (der Anzeigename-Vertrag verweigert 64 Hex), aber kein Akzeptanz-Satz spricht sie aus; er wird in dem Zug deklariert, der ihn beweist (Eigentümer: #22, Ziel: Akzeptanz-Deklaration)
+Beweis:     a-v3-workflow-with-a-64-hex-authored-name-is-refused-before-any-catalog-write
+Offen:
 
 ### REQ-KATALOG-04: Name und Beschreibung einer **publizierten** Revision kommen aus ihren authored Bytes, oder sie fehlen ehrlich.
 Status:     DRAFT
@@ -100,4 +100,4 @@ REQ-KATALOG-04 is bound to three sentences declared in
 `the-description-is-read-from-the-published-bytes-and-from-nowhere-else`.
 REQ-KATALOG-02 is bound to `a-name-reaches-exactly-the-bytes-it-resolved-to`,
 declared in `acceptance/63-a-named-workflow-starts-in-process.toml`.
-REQ-KATALOG-01, 03 and 05 are `UNGEBUNDEN`.
+REQ-KATALOG-01 and 05 are `UNGEBUNDEN`.

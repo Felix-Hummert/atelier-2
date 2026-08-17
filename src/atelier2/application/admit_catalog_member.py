@@ -13,23 +13,33 @@ an admission is legal; this layer owns that the revision handed to it is the one
 the caller named, and nothing else.
 
 **Founding is an admission, not a different act.** ADR 0007 Decision 3 keeps
-publication and admission apart; it does not split admission in two. The first
-admission of a lineage takes the name, every later one joins the name already
-held, and both refuse through the same vocabulary.
+publication and admission apart; it does not split admission in two. A V3
+revision supplies the name from its published bytes; an older format needs an
+explicit name because it carries none. Later V3 admissions append their own
+authored names as aliases, while older formats preserve the current name.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from atelier2.application.refusals import WriteUnavailable
+from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
     CatalogLineageDisplayName,
     CatalogLineageId,
 )
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
+from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
+from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
+from atelier2.ports.durable_runs import (
+    DurableStateCorrupt as PortDurableStateCorrupt,
+)
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.published_revisions import (
     AdmitCatalogMemberResult,
@@ -43,6 +53,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionResolver,
 )
+from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 
 
 @dataclass(frozen=True)
@@ -52,32 +63,61 @@ class CatalogRevisionUnpublished:
     revision_hash: PublishedRevisionHash
 
 
+@dataclass(frozen=True)
+class CatalogAuthoredNameRestated:
+    """A V3 request tried to become a second owner of its authored name."""
+
+
+@dataclass(frozen=True)
+class CatalogExplicitNameRequired:
+    """A format with no authored name needs the caller to provide one."""
+
+
+@dataclass(frozen=True)
+class CatalogDisplayNameInvalid:
+    """The authored or explicit name is outside the catalog name contract."""
+
+
 type FoundLineageResult = (
-    FoundCatalogLineageResult | CatalogRevisionUnpublished | WriteUnavailable
+    FoundCatalogLineageResult
+    | CatalogRevisionUnpublished
+    | CatalogAuthoredNameRestated
+    | CatalogExplicitNameRequired
+    | CatalogDisplayNameInvalid
+    | WriteUnavailable
+    | DurableStateCorrupt
 )
 type AdmitMemberResult = (
-    AdmitCatalogMemberResult | CatalogRevisionUnpublished | WriteUnavailable
+    AdmitCatalogMemberResult
+    | CatalogRevisionUnpublished
+    | CatalogDisplayNameInvalid
+    | WriteUnavailable
+    | DurableStateCorrupt
 )
 
 
 def found_catalog_lineage(
     kind: RevisionKind,
     revision_hash: PublishedRevisionHash,
-    display_name: CatalogLineageDisplayName,
+    explicit_display_name: CatalogLineageDisplayName | None,
     actor: CatalogActor,
     activated_at: CatalogActivatedAt,
     revisions: PublishedRevisionResolver,
     admissions: CatalogAdmissions,
+    parser: WorkflowDocumentParser,
 ) -> FoundLineageResult:
-    """Give one published revision a name, or say why the catalog refuses it."""
+    """Admit one published revision under its format-owned name."""
 
     match revisions.resolve(kind, revision_hash):
         case PublishedRevisionFound(revision):
-            founded = admissions.found_lineage(
-                revision, display_name, actor, activated_at
+            display_name = _founding_display_name(
+                revision, explicit_display_name, parser
             )
         case _:
             return CatalogRevisionUnpublished(revision_hash)
+    if not isinstance(display_name, CatalogLineageDisplayName):
+        return display_name
+    founded = admissions.found_lineage(revision, display_name, actor, activated_at)
     # A lineage id is derived from the revision, so founding the same revision
     # twice reaches the same lineage. That is the same answer only while the name
     # asked for is the name it holds: under a different name the caller is asking
@@ -99,22 +139,20 @@ def admit_catalog_member(
     activated_at: CatalogActivatedAt,
     catalog: CatalogResolver,
     admissions: CatalogAdmissions,
+    parser: WorkflowDocumentParser,
 ) -> AdmitMemberResult:
-    """Admit one published revision into a lineage that already holds a name.
-
-    The name is read from the lineage rather than taken from the caller: the
-    store appends an alias with whatever name it is handed, so a caller-supplied
-    one would let an admission rename the lineage. Renaming is a different act,
-    and this one does not smuggle it.
-    """
+    """Admit one revision, appending a V3 name only its bytes authored."""
 
     match catalog.resolve_name(kind, lineage_id, "head"):
-        case CatalogNameFound(current_display_name=display_name):
+        case CatalogNameFound(current_display_name=current_display_name):
             pass
         case _:
             return CatalogAdmissionLineageMissing(lineage_id)
     match catalog.resolve(kind, revision_hash):
         case PublishedRevisionFound(revision):
+            display_name = _member_display_name(revision, current_display_name, parser)
+            if not isinstance(display_name, CatalogLineageDisplayName):
+                return display_name
             return _application_answer(
                 admissions.admit_member(
                     lineage_id, revision, display_name, actor, activated_at
@@ -124,9 +162,71 @@ def admit_catalog_member(
             return CatalogRevisionUnpublished(revision_hash)
 
 
-def _application_answer[T](answer: T | DurableWriteUnavailable) -> T | WriteUnavailable:
+type _NameRefusal = (
+    CatalogAuthoredNameRestated
+    | CatalogExplicitNameRequired
+    | CatalogDisplayNameInvalid
+    | DurableStateCorrupt
+)
+
+
+def _founding_display_name(
+    revision: PublishedRevision,
+    explicit_display_name: CatalogLineageDisplayName | None,
+    parser: WorkflowDocumentParser,
+) -> CatalogLineageDisplayName | _NameRefusal:
+    parsed = _parsed_workflow(revision, parser)
+    if isinstance(parsed, DurableStateCorrupt):
+        return parsed
+    if isinstance(parsed, WorkflowGraphV3):
+        if explicit_display_name is not None:
+            return CatalogAuthoredNameRestated()
+        return _catalog_display_name(parsed.name)
+    if explicit_display_name is None:
+        return CatalogExplicitNameRequired()
+    return explicit_display_name
+
+
+def _member_display_name(
+    revision: PublishedRevision,
+    current_display_name: CatalogLineageDisplayName,
+    parser: WorkflowDocumentParser,
+) -> CatalogLineageDisplayName | CatalogDisplayNameInvalid | DurableStateCorrupt:
+    parsed = _parsed_workflow(revision, parser)
+    if isinstance(parsed, DurableStateCorrupt):
+        return parsed
+    if isinstance(parsed, WorkflowGraphV3):
+        return _catalog_display_name(parsed.name)
+    return current_display_name
+
+
+def _parsed_workflow(
+    revision: PublishedRevision, parser: WorkflowDocumentParser
+) -> AnyWorkflowDocument | None | DurableStateCorrupt:
+    if revision.kind is not RevisionKind.WORKFLOW:
+        return None
+    try:
+        return parser(revision.document)
+    except WorkflowDocumentInvalid:
+        return DurableStateCorrupt()
+
+
+def _catalog_display_name(
+    value: str,
+) -> CatalogLineageDisplayName | CatalogDisplayNameInvalid:
+    try:
+        return CatalogLineageDisplayName(value)
+    except (TypeError, ValueError):
+        return CatalogDisplayNameInvalid()
+
+
+def _application_answer[T](
+    answer: T | DurableWriteUnavailable | PortDurableStateCorrupt,
+) -> T | WriteUnavailable | DurableStateCorrupt:
     """Say "not now" in this layer's word, so a caller never names the store's."""
 
     if isinstance(answer, DurableWriteUnavailable):
         return WriteUnavailable()
+    if isinstance(answer, PortDurableStateCorrupt):
+        return DurableStateCorrupt()
     return answer
