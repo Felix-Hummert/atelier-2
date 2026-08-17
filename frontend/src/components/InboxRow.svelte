@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { Run } from "../api/client";
+  import type { AnyRun } from "../api/client";
   import { runPath } from "../lib/route";
   import { humanMove, standingMarks, waitsForAHuman } from "../lib/runState";
 
-  export let runs: readonly Run[];
+  export let runs: readonly AnyRun[];
   export let navigate: (path: string) => void;
 
   $: waiting = runs.filter((run) => waitsForAHuman(run.state));
