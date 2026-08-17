@@ -107,12 +107,22 @@ type AgentAttemptCancellationResult = (
 
 
 class AgentAttemptReader(Protocol):
-    """Read one durable attempt back: all that restart reconciliation needs."""
+    """Read one durable attempt back: all that workspace reconciliation needs."""
 
     def load(self, attempt_id: AgentAttemptId) -> AgentAttempt: ...
 
 
 class AgentAttemptStore(AgentAttemptReader, Protocol):
+    def driverless_attempts(self) -> tuple[AgentAttempt, ...]:
+        """Every nonterminal attempt no live workflow is driving any more.
+
+        Answered by the durable runtime, because only it knows which of its
+        workflows are still going to run. An attempt whose driver is merely
+        waiting to be recovered is *not* driverless: recovery will move it, and
+        stopping it would take work away from the machine that owns it.
+        """
+        ...
+
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt: ...
 
     def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimResult: ...

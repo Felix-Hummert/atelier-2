@@ -270,7 +270,7 @@ def main(root: Path, mode: str) -> None:
                 str(terminal.attempt.state_version), encoding="ascii"
             )
             os._exit(CRASHED)
-        if mode == "recover-after-missing-witness-restored":
+        if mode == "recover-without-witness":
             execution = agent_attempt_execution(exact_request)
             attempt = store.load(execution.attempt_id)
             cgroup = attempt_cgroup(lease, attempt)
@@ -280,16 +280,6 @@ def main(root: Path, mode: str) -> None:
             DbosAgentAttemptStore(
                 lease.engine, lease.settings.application_version
             ).request_cancellation(command)
-            assert (
-                continue_agent_attempt_cancellation(
-                    command,
-                    store,
-                    lease.agent_process_supervisor,
-                    runtime_workspace_owner(lease),
-                )
-                is None
-            )
-            cgroup.mkdir(mode=0o700)
             result = continue_agent_attempt_cancellation(
                 command,
                 store,
@@ -297,9 +287,25 @@ def main(root: Path, mode: str) -> None:
                 runtime_workspace_owner(lease),
             )
             if result is None:
-                raise AssertionError("second recovery remained poisoned")
-            (root / "second-recovery-state").write_text(
+                raise AssertionError("an absent witness left the attempt unattested")
+            (root / "witnessless-recovery-state").write_text(
                 result.attempt.state.value, encoding="ascii"
+            )
+            return
+        if mode.startswith("converge-driverless"):
+            execution = agent_attempt_execution(exact_request)
+            attempt = store.load(execution.attempt_id)
+            cgroup = attempt_cgroup(lease, attempt)
+            endpoint = attempt_endpoint(lease, attempt)
+            (root / "driverless-cgroup").write_text(str(cgroup), encoding="utf-8")
+            (root / "driverless-endpoint").write_text(str(endpoint), encoding="utf-8")
+            if mode == "converge-driverless-without-witness":
+                # What a restarting service unit does to its own subtree.
+                wait_for_empty_cgroup(cgroup)
+                cgroup.rmdir()
+            lease.launch()
+            (root / "converged-state").write_text(
+                store.load(execution.attempt_id).state.value, encoding="ascii"
             )
             return
         if mode == "recover-cancellation":

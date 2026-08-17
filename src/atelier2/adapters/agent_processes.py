@@ -298,6 +298,16 @@ class AgentProcessSupervisor:
         AgentProcessOwnerId,
         WatchdogGenerationId,
     ]:
+        """Attest what is left of an attempt this process never owned.
+
+        A cgroup that is not there holds no process, so there is nothing to kill
+        and the attestation stands on its own -- which is how `release` below has
+        always read an absent directory. Requiring it to exist read the same
+        absence as "ask again later", and later never came: a host that restarts
+        its serving unit takes the whole subtree with it, so exactly the attempts
+        a restart exists to converge were the ones it could never attest.
+        """
+
         if attempt.process_owner_id is None or attempt.watchdog_generation_id is None:
             raise AgentProcessOwnerNotLocal
         lock = self._attempt_lock(attempt.attempt_id)
@@ -305,9 +315,8 @@ class AgentProcessSupervisor:
             if self._owned.get(attempt.attempt_id) is not None:
                 raise AgentProcessOwnerNotLocal
             cgroup = self._cgroup_for(attempt)
-            if not cgroup.is_dir():
-                raise AgentProcessOwnerNotLocal
-            _kill_cgroup_and_wait_empty(cgroup, self._ready_timeout_seconds)
+            if cgroup.is_dir():
+                _kill_cgroup_and_wait_empty(cgroup, self._ready_timeout_seconds)
         return (
             AgentAttemptCancellationDisposition.OWNER_LOST_AFTER_PARENT_DEATH,
             attempt.process_owner_id,

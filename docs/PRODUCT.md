@@ -76,7 +76,15 @@ handles are never durable state. The API can durably request cancellation of the
 current exact attempt before signalling it. Its workflow sends `TERM`, waits one
 finite grace, escalates to `KILL`, reaps the process, and records the cleanup
 disposition. Recovery continues that cleanup from the cgroup witness without
-replaying the invocation. One explicit replacement creates a distinct ordinal-2
+replaying the invocation, and reads an absent witness as the cleanup it attests
+rather than as an answer it must wait for -- a host that restarts its serving
+unit takes the whole cgroup subtree with it. A serve start also stops every
+attempt no live workflow is driving any more: a workflow that ended without
+moving the attempt it drove is not pending, so nothing replays it, and the
+restart puts each such attempt under one durable `atelier2-driver-lost` command
+and lets that same cleanup path end it as `INTERRUPTED`. An attempt whose driver
+is merely waiting to be recovered is left alone. One explicit replacement
+creates a distinct ordinal-2
 attempt and workflow only after cleanup; ordinal 3 and automatic provider retry
 do not exist. A known reaped unsuccessful child becomes `FAILED`; a success
 records the non-secret operational identity and the exact output bytes in one
@@ -316,7 +324,11 @@ itself. The `node-artifact/v3` and `node-receipt/v3` tables exist and nothing
 writes them, so there is no `failed` receipt to carry the reason, and the one
 durable attempt-failure vocabulary the store enumerates carries no name for this
 refusal; a refused answer therefore leaves the run standing on the node that
-produced it, and the reason lives in the refusal rather than in the store.
+produced it, and the reason lives in the refusal rather than in the store. The
+refusal ends the node workflow, so the next serve start finds the attempt it
+left armed without a driver and converges it to `INTERRUPTED` -- the node then
+reads `interrupted` instead of `possibly ran` forever, which says the attempt
+was stopped, not why the answer was refused.
 
 An agent is authored as one markdown file. Its frontmatter is a closed set of
 `name`, `description`, an optional `model`, and an optional `tools` declaration;
