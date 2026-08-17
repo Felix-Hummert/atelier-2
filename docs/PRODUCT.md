@@ -349,7 +349,11 @@ contract.
 
 A narrow local cockpit can list runs, publish and start a workflow from `/new`,
 and project one durable run's bound revision, state, nodes, and resumable event
-history. It opens in the Studio rather than in that list: one screen across the
+history. The saved-workflow picker offers a named revision by the name its own
+bytes declare; Details repeats what the published graph already answers —
+format, roles and node count where the V3 resource carries them, executability,
+and hash. The graph resource publishes no nodes; a node view for a stored
+revision needs its own wire head. It opens in the Studio rather than in that list: one screen across the
 whole workshop naming every run that waits for a human — the durable states
 `WAITING_INPUT` and `WAITING_RECONCILIATION` — beside the one project of this
 installation, where an area with nothing in it names the next action that is

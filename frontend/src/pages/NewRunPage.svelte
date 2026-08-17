@@ -198,6 +198,50 @@
     return [];
   }
 
+  let publishedGraphs: Record<string, WorkflowRevisionDetail["graph"]> = {};
+  let revealingHash: string | null = null;
+
+  /**
+   * The graph resource publishes no nodes. A node view for a stored revision
+   * needs its own wire head.
+   */
+  function publishedNodeCount(graph: WorkflowRevisionDetail["graph"] | undefined): number | null {
+    return graph?.format_version === 3 ? graph.node_count : null;
+  }
+
+  function publishedAgentRoles(graph: WorkflowRevisionDetail["graph"] | undefined): string[] | null {
+    return graph?.format_version === 3 ? [...graph.agent_roles] : null;
+  }
+
+  function publishedRevisionFacts(
+    revision: WorkflowRevisionSummary,
+    graph: WorkflowRevisionDetail["graph"] | undefined
+  ): string {
+    const parts = [`format ${revision.format_version}`];
+    const nodeCount = publishedNodeCount(graph);
+    const roles = publishedAgentRoles(graph);
+    if (nodeCount !== null) parts.push(`${nodeCount} nodes`);
+    if (roles !== null) {
+      parts.push(`roles: ${roles.length === 0 ? "none" : roles.join(", ")}`);
+    }
+    if (revision.executable) parts.push("executable");
+    else parts.push(`Cannot be started: ${revision.not_executable_reason}`);
+    return parts.join(" · ");
+  }
+
+  async function revealPublishedGraph(revisionHash: string): Promise<void> {
+    if (publishedGraphs[revisionHash] !== undefined) return;
+    revealingHash = revisionHash;
+    try {
+      const revision = await cockpitApi.getWorkflowRevision(revisionHash);
+      publishedGraphs = { ...publishedGraphs, [revisionHash]: revision.graph };
+    } catch (error) {
+      showFailure(error, "The workflow could not be loaded.");
+    } finally {
+      if (revealingHash === revisionHash) revealingHash = null;
+    }
+  }
+
   async function startDraft(): Promise<void> {
     if (draft === null) return;
     const selected = draft;
@@ -461,7 +505,14 @@
           </span>
         </label>
         {#if revision.name !== null}
-          <details class="revision-details"><summary aria-label={`Details for ${revision.name}`}>Details</summary><code class="revision-hash">{revision.revision_hash}</code></details>
+          <details class="revision-details">
+            <summary aria-label={`Details for ${revision.name}`} onclick={() => { void revealPublishedGraph(revision.revision_hash); }}>Details</summary>
+            <p class="revision-facts">
+              {publishedRevisionFacts(revision, publishedGraphs[revision.revision_hash])}
+              {#if revealingHash === revision.revision_hash} · Loading workflow…{/if}
+            </p>
+            <code class="revision-hash">{revision.revision_hash}</code>
+          </details>
         {/if}
       {/each}
       {#if revisions.request.state === "loading"}<p class="status" role="status">Loading saved workflows…</p>{/if}

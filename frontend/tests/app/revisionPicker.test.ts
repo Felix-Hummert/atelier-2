@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,7 @@ import App from "../../src/App.svelte";
 import { workflowRevisionSummarySchema, type CockpitApi } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
+import { utf8Base64 } from "../support/exactBytes";
 
 /**
  * The rows this picker renders are decoded, never invented.
@@ -50,12 +51,42 @@ const unnamedRevision = () =>
     description: null
   });
 
-function api(items: ReturnType<typeof decodedRow>[]): CockpitApi {
+/**
+ * The graph the detail route already publishes for the named V3 row.
+ *
+ * Roles and node count live here, not on the listing. The document bytes are a
+ * trap: Details must repeat these fields and must not parse that payload.
+ */
+function namedGraph() {
+  return {
+    format_version: 3 as const,
+    executable: false as const,
+    not_executable_reason: "agent forms nothing binds yet: outputs",
+    node_count: 2,
+    agent_roles: ["builder", "reviewer"],
+    name: "Implement a candidate, then review it for defects",
+    description: "Builds the candidate, then reviews it for defects."
+  };
+}
+
+function namedDetail() {
+  return {
+    revision_hash: namedHash,
+    document_base64: utf8Base64("job: NEVER_PARSE_THIS_INSTRUCTION\n"),
+    graph: namedGraph()
+  };
+}
+
+function api(
+  items: ReturnType<typeof decodedRow>[],
+  overrides: Partial<CockpitApi> = {}
+): CockpitApi {
   return cockpitApiStub({
     listWorkflowRevisions: vi.fn(async () => ({
       items,
       next_after_revision_hash: null
-    }))
+    })),
+    ...overrides
   });
 }
 
@@ -94,6 +125,39 @@ describe("the saved-workflow picker", () => {
     expect(details?.open).toBe(false);
   });
 
+  it("opening Details for a named V3 revision shows the published roles and node count, not only the hash", async () => {
+    const graph = namedGraph();
+    const cockpitApi = api([namedRevision()], {
+      getWorkflowRevision: vi.fn(async () => namedDetail())
+    });
+    render(App, {
+      props: {
+        cockpitApi,
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("radio", {
+      name: /Implement a candidate, then review it for defects/
+    });
+
+    await fireEvent.click(screen.getByText("Details"));
+
+    const details = screen.getByText("Details").closest("details");
+    await waitFor(() => {
+      expect(details?.textContent).toContain("builder");
+      expect(details?.textContent).toContain("reviewer");
+    });
+    expect(details?.textContent).toMatch(new RegExp(`${graph.node_count}\\s*nodes`, "i"));
+    expect(details?.textContent).toMatch(/format\s*3/i);
+    expect(details?.textContent).toContain("Cannot be started: agent forms nothing binds yet: outputs");
+    expect(details?.textContent).toContain(namedHash);
+    expect(details?.textContent).not.toBe(namedHash);
+    expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_INSTRUCTION");
+    expect(vi.mocked(cockpitApi.getWorkflowRevision).mock.calls.map(([hash]) => hash)).toEqual([
+      namedHash
+    ]);
+  });
+
   it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries): says a revision cannot be started, and why, before it is chosen", async () => {
     renderPicker([namedRevision()]);
 
@@ -105,9 +169,11 @@ describe("the saved-workflow picker", () => {
     // Extension, named: this asserted the refusal said "format 3", which blamed
     // the version. The server names the authored form that is waiting now, and
     // the sentence asks for the reason -- so the stronger half is pinned here.
-    expect(screen.getByText(/cannot be started/i).textContent).toContain(
-      "agent forms nothing binds yet: outputs"
-    );
+    // Details now repeats the same published reason, so the row is no longer
+    // the only place the words appear.
+    for (const refusal of screen.getAllByText(/cannot be started/i)) {
+      expect(refusal.textContent).toContain("agent forms nothing binds yet: outputs");
+    }
   });
 
   it("keeps the hash as the label of a revision whose format declares no name", async () => {
