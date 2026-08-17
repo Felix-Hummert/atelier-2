@@ -74,6 +74,7 @@ Journeys:
 Beweis:     a-published-revision-becomes-a-named-lineage-over-the-api
             a-later-revision-joins-the-lineage-that-already-holds-its-name
             an-admission-the-catalog-refuses-is-named-by-its-own-reason
+            a-workflow-published-over-the-api-is-named-over-the-api
 Offen:      - Der Picker fehlt, der eine Mitgliedschaft und einen Namen anbietet (Eigentümer: #131-Familie, Ziel: Oberfläche)
 
 ## Open questions
@@ -97,9 +98,9 @@ REQ-KATALOG-04 is bound to three sentences declared in
 `the-description-is-read-from-the-published-bytes-and-from-nowhere-else`.
 REQ-KATALOG-02 is bound to `a-name-reaches-exactly-the-bytes-it-resolved-to`,
 declared in `acceptance/63-a-named-workflow-starts-in-process.toml`.
-REQ-KATALOG-05 is bound to three sentences declared in
-`acceptance/213-a-workflow-is-named-and-admitted-over-the-api.toml`:
-`a-published-revision-becomes-a-named-lineage-over-the-api`,
-`a-later-revision-joins-the-lineage-that-already-holds-its-name` and
-`an-admission-the-catalog-refuses-is-named-by-its-own-reason`.
+REQ-KATALOG-05 is bound to the three sentences declared in
+`acceptance/213-a-workflow-is-named-and-admitted-over-the-api.toml` and to
+`a-workflow-published-over-the-api-is-named-over-the-api` in
+`acceptance/228-a-published-workflow-can-be-named.toml`: the publication door
+the operator already has is enough to name the workflow.
 REQ-KATALOG-01 is `UNGEBUNDEN`.

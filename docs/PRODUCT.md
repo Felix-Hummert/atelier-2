@@ -263,8 +263,11 @@ else: no route, no rendering and no stored shape carries it. Behind that, nothin
 the registries are ports a caller supplies. A durable catalog adapter now
 publishes exact revision bytes, founds a named lineage through a typed writer
 that derives the lineage id, and resolves an admitted name or lineage id to
-those bytes; run-configuration binding is still lineage-free and a reference's
-`ref` is carried into that snapshot without calling `resolve_reference`. A
+those bytes. A workflow already published through `POST /workflow-revisions`
+is named through `POST /workflow-lineages` from those same bytes and the same
+hash; founding does not invent a second identity. Run-configuration binding is
+still lineage-free and a reference's `ref` is carried into that snapshot
+without calling `resolve_reference`. A
 64-hex query is a lineage id; anything else is a display name. A retired
 lineage is refused by id or any alias. There is no capability attestation, and
 no runtime executes a child.

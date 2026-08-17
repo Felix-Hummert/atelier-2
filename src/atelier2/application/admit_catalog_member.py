@@ -10,7 +10,9 @@ the catalog was a table only its own tests could fill.
 exact published bytes the caller named, then hand them to the catalog -- and a
 route that did it itself would decide what a revision is. The store owns whether
 an admission is legal; this layer owns that the revision handed to it is the one
-the caller named, and nothing else.
+the caller named, and nothing else. For kind WORKFLOW those bytes already live
+behind the publication door (`workflow_revisions`); founding does not invent a
+second hash and does not ask the caller for a hidden catalog publish.
 
 **Founding is an admission, not a different act.** ADR 0007 Decision 3 keeps
 publication and admission apart; it does not split admission in two. A V3
@@ -22,6 +24,7 @@ authored names as aliases, while older formats preserve the current name.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import assert_never
 
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.catalog_v3 import (
@@ -35,6 +38,7 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
+from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
 from atelier2.ports.durable_runs import (
@@ -53,7 +57,19 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionResolver,
 )
-from atelier2.ports.workflow_revisions import WorkflowDocumentParser
+from atelier2.ports.workflow_revisions import (
+    ProjectionTooLarge as PortProjectionTooLarge,
+)
+from atelier2.ports.workflow_revisions import (
+    QueryDurableStateCorrupt,
+    WorkflowDocumentParser,
+    WorkflowRevisionFound,
+    WorkflowRevisionMissing,
+    WorkflowRevisionQueries,
+)
+from atelier2.ports.workflow_revisions import (
+    ReadUnavailable as PortReadUnavailable,
+)
 
 
 @dataclass(frozen=True)
@@ -105,16 +121,14 @@ def found_catalog_lineage(
     revisions: PublishedRevisionResolver,
     admissions: CatalogAdmissions,
     parser: WorkflowDocumentParser,
+    workflows: WorkflowRevisionQueries,
 ) -> FoundLineageResult:
     """Admit one published revision under its format-owned name."""
 
-    match revisions.resolve(kind, revision_hash):
-        case PublishedRevisionFound(revision):
-            display_name = _founding_display_name(
-                revision, explicit_display_name, parser
-            )
-        case _:
-            return CatalogRevisionUnpublished(revision_hash)
+    revision = _named_revision(kind, revision_hash, revisions, workflows)
+    if not isinstance(revision, PublishedRevision):
+        return revision
+    display_name = _founding_display_name(revision, explicit_display_name, parser)
     if not isinstance(display_name, CatalogLineageDisplayName):
         return display_name
     founded = admissions.found_lineage(revision, display_name, actor, activated_at)
@@ -140,6 +154,7 @@ def admit_catalog_member(
     catalog: CatalogResolver,
     admissions: CatalogAdmissions,
     parser: WorkflowDocumentParser,
+    workflows: WorkflowRevisionQueries,
 ) -> AdmitMemberResult:
     """Admit one revision, appending a V3 name only its bytes authored."""
 
@@ -148,18 +163,56 @@ def admit_catalog_member(
             pass
         case _:
             return CatalogAdmissionLineageMissing(lineage_id)
-    match catalog.resolve(kind, revision_hash):
+    revision = _named_revision(kind, revision_hash, catalog, workflows)
+    if not isinstance(revision, PublishedRevision):
+        return revision
+    display_name = _member_display_name(revision, current_display_name, parser)
+    if not isinstance(display_name, CatalogLineageDisplayName):
+        return display_name
+    return _application_answer(
+        admissions.admit_member(lineage_id, revision, display_name, actor, activated_at)
+    )
+
+
+type _ResolvedRevision = (
+    PublishedRevision
+    | CatalogRevisionUnpublished
+    | WriteUnavailable
+    | DurableStateCorrupt
+)
+
+
+def _named_revision(
+    kind: RevisionKind,
+    revision_hash: PublishedRevisionHash,
+    revisions: PublishedRevisionResolver,
+    workflows: WorkflowRevisionQueries,
+) -> _ResolvedRevision:
+    """Hand the catalog the exact published bytes the caller named.
+
+    The catalog table is one publication door. For a workflow the operator
+    already published through POST /workflow-revisions, those same bytes live
+    in workflow_revisions under the same hash.
+    """
+
+    match revisions.resolve(kind, revision_hash):
         case PublishedRevisionFound(revision):
-            display_name = _member_display_name(revision, current_display_name, parser)
-            if not isinstance(display_name, CatalogLineageDisplayName):
-                return display_name
-            return _application_answer(
-                admissions.admit_member(
-                    lineage_id, revision, display_name, actor, activated_at
-                )
-            )
-        case _:
+            return revision
+    if kind is not RevisionKind.WORKFLOW:
+        return CatalogRevisionUnpublished(revision_hash)
+    match workflows.get_workflow_revision(WorkflowRevisionHash(revision_hash.value)):
+        case WorkflowRevisionFound(projection):
+            return PublishedRevision(kind, projection.revision.document)
+        case WorkflowRevisionMissing():
             return CatalogRevisionUnpublished(revision_hash)
+        case PortReadUnavailable(detail):
+            return WriteUnavailable(detail)
+        case PortProjectionTooLarge():
+            return WriteUnavailable()
+        case QueryDurableStateCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 type _NameRefusal = (
