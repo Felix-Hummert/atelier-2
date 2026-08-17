@@ -380,7 +380,9 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   const unreadable: string[] = [];
   await page.route("**/atelier/api/v1/**", async (route) => {
     const url = route.request().url();
-    if (url.includes("/events") || url.includes("/workflow-revisions/")) unreadable.push(url);
+    // The revision half is unchanged: a version 3 graph carries no nodes to
+    // walk. The events half moved to #270 -- the page subscribes now.
+    if (url.includes("/workflow-revisions/")) unreadable.push(url);
     await route.continue();
   });
 
@@ -393,7 +395,7 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   await expect(rail.nth(1)).toContainText("review");
   await expect(rail.nth(1)).toContainText("Done");
   await expect(page.getByLabel("Where this run stands")).toContainText("Done");
-  await expect(page.getByLabel("Where this run stands")).toContainText("Snapshot");
+  await expect(page.getByLabel("Where this run stands")).not.toContainText("Snapshot");
   await expect(page.getByText(terminal as unknown as string)).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
   // A version 3 run has no event stream and no nodes to walk, so the page must
@@ -451,17 +453,88 @@ test("publishes a V3 workflow, binds its role, and watches the line it started",
   const rail = page.getByRole("listitem");
   await expect(rail.nth(0)).toContainText("implement");
   await expect(rail.nth(1)).toContainText("review");
-  await expect(page.getByLabel("Where this run stands")).toContainText("Snapshot");
-  await expect(
-    page.getByRole("button", { name: /does not follow the run live/i })
-  ).toBeVisible();
-  await expect(async () => {
-    await page.reload();
-    await expect(page.getByLabel("Where this run stands")).toContainText("Done");
-  }).toPass({ timeout: 15_000 });
+  // The reload this used to need is gone with #270: the page follows the run it
+  // just started, so the same truth arrives without the operator asking twice.
+  await expect(page.getByLabel("Where this run stands")).toContainText("Done", {
+    timeout: 20_000
+  });
   await expect(rail.nth(1)).toContainText("Done");
   await page.screenshot({ path: "test-results/v3-picker-run-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
+});
+
+
+test("watches a V3 chain move, node by node, without a reload", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const workflowYaml = [
+    "format_version: 3",
+    "name: Two agents watched live",
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Do the one thing this chain is for.",
+    "  - id: review",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Check what the node before you did.",
+    "    depends_on: [implement]",
+    ""
+  ].join("\n");
+
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).revision_hash as string;
+
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: { profile_id: "v3-live", revision_number: 1, provider_id: "e2e-v3", auth_mode: "subscription" }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: "v3-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 2,
+      run_id: "v3/watched-live",
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [
+        {
+          role: "builder",
+          agent_configuration_revision_hash: (await configuration.json())
+            .agent_configuration_revision_hash
+        }
+      ]
+    }
+  });
+  expect(started.status()).toBe(201);
+  const reference = (await started.json()).public_run_reference as string;
+
+  // Opened straight after the start, without waiting for the run to end: the
+  // stream carries the line's events to the page as the runtime writes them,
+  // and it carries the ones already written the same way -- which is what makes
+  // this deterministic without making it a lie.
+  await page.goto(`/atelier/runs/${reference}`);
+
+  const arriving = page.getByRole("list", { name: "Events as they arrive" });
+  await expect(arriving.getByRole("listitem")).toHaveCount(2, { timeout: 20_000 });
+  await expect(arriving).toContainText("implement");
+  await expect(arriving).toContainText("review");
+  await expect(page.getByLabel("Where this run stands")).toContainText("Ended");
+
+  await page.screenshot({ path: "test-results/v3-run-live.png", fullPage: true });
 });
 
 test("clicking a stuck node says what stopped the run, and the node before it shows its whole log", async ({
@@ -572,8 +645,16 @@ test("clicking a stuck node says what stopped the run, and the node before it sh
   await page.screenshot({ path: "test-results/v3-node-refusal.png", fullPage: true });
 
   await page.getByRole("button", { name: /implement/ }).click();
-  await expect(page.getByText("Write three German sentences about code review.")).toBeVisible();
-  await expect(page.getByText("V3 provider bytes")).toBeVisible();
+  await expect(page.getByLabel("Asked")).toContainText(
+    "Write three German sentences about code review."
+  );
+  // The same value twice on one page, and that is the division of labour: the
+  // timeline keeps it short so movement stays readable, the panel shows the
+  // whole log the operator asked for.
+  await expect(page.getByLabel("Answered")).toContainText("V3 provider bytes");
+  await expect(page.getByLabel("Events as they arrive")).toContainText(
+    "V3 provider bytes"
+  );
   await expect(page.getByText(/not recorded yet/)).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v3-node-detail.png", fullPage: true });

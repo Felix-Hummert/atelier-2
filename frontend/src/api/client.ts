@@ -656,7 +656,37 @@ const runEventV2Schema = z
   ])
   .superRefine(validateEventCursor);
 
-export const runEventSchema = z.union([runEventV2Schema, runEventV1Schema]);
+/**
+ * A format-3 event, in the shape the service answers with.
+ *
+ * The forms are the served wire's own (#249), read here rather than invented a
+ * third time: the API answers them, the command reads them (#253), and this is
+ * the surface the operator actually watches. A version-3 line writes its agent
+ * events through the same attempt store as a version-2 one, so the attempt and
+ * the rail travel the same way; what is absent is absent on purpose, because no
+ * format-3 run persists a Wait, Action or Subworkflow event today.
+ */
+const v3EventBase = {
+  workflow_format_version: z.literal(3),
+  ...eventBase,
+  node_rail: z.array(nodeRailEntrySchema).min(1)
+};
+
+const runEventV3Schema = z
+  .discriminatedUnion("event", [
+    z.object({ ...v3EventBase, ...v2AttemptEvent, event: z.literal("AGENT_COMPLETED"), output_base64: standardBase64, output_hash: sha256 }).strict(),
+    z.object({ ...v3EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.literal("PROCESS_EXITED_UNSUCCESSFULLY") }).strict(),
+    z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
+    z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
+    z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict()
+  ])
+  .superRefine(validateEventCursor);
+
+export const runEventSchema = z.union([
+  runEventV3Schema,
+  runEventV2Schema,
+  runEventV1Schema
+]);
 
 function validateEventCursor(
   event: { cursor: string; public_run_reference: string; sequence: number },
