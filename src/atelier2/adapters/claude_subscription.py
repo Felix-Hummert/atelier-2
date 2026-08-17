@@ -164,8 +164,9 @@ _MAXIMUM_RETRIES_VARIABLE = "CLAUDE_CODE_MAX_RETRIES"
 _NO_RETRIES = "0"
 # Defence in depth for the child this invocation does not expect to have: set,
 # the CLI strips Anthropic and cloud-provider credentials from every subprocess
-# environment. Measured on every conformant version against the invocation
-# below: with it the tool-free call answers exactly as without it, and on a
+# environment. That the tool-free call answers exactly as it does unset is
+# recorded from the release this invocation was first measured against.
+# Measured on every conformant version against the invocation below: on a
 # search path where bubblewrap does not resolve the CLI refuses to start at all
 # rather than running unscrubbed -- which is why `ClaudeSubscriptionSettings`
 # proves bubblewrap is reachable before this deployment composes.
