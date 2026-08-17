@@ -20,6 +20,7 @@ from atelier2.adapters.claude_subscription import (
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -206,6 +207,7 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
         agent_attempt_canceller=DbosAgentAttemptStore(
             runtime.engine, runtime.settings.application_version
         ),
+        catalog_resolver=DbosCatalogStore(runtime.engine),
     )
 
 
