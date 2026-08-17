@@ -1,9 +1,12 @@
 <script lang="ts">
-  import type { CockpitApi, NodeDetail, RunV3 } from "../api/client";
+  import { onMount } from "svelte";
+
+  import type { CockpitApi, NodeDetail, RunV3, WorkflowRevisionDetail } from "../api/client";
   import type { StreamProjection } from "../lib/runProjection";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
   import StateMark from "./StateMark.svelte";
+  import WorkflowGraphDrawing from "./WorkflowGraphDrawing.svelte";
 
   export let run: RunV3;
   export let cockpitApi: CockpitApi;
@@ -72,15 +75,45 @@
   }
 
   /**
-   * The rail is rendered, not derived.
+   * The rail still owns state. The published excerpt owns the shape.
    *
    * A V1 or V2 run is folded here in the browser because its events arrive one
    * at a time and the page has to keep up. A V3 run carries the rail the server
-   * already walked, along the one edge its author declared, so recomputing it
-   * here would be a second owner of the same order -- and the browser's copy has
-   * no way to walk a V3 graph anyway, because the wire carries no nodes for one.
+   * already walked; recomputing that order here would be a second owner. The
+   * drawing reads `depends_on` from the published excerpt and paints each
+   * node's state from the rail — two facts, one picture.
    */
   $: rail = run.node_rail;
+
+  type GraphRequest =
+    | { state: "loading" }
+    | { state: "ready"; previews: Extract<WorkflowRevisionDetail["graph"], { format_version: 3 }>["node_previews"] }
+    | { state: "failed"; message: string };
+
+  let graphRequest: GraphRequest = { state: "loading" };
+
+  onMount(() => {
+    void loadGraph();
+  });
+
+  async function loadGraph(): Promise<void> {
+    graphRequest = { state: "loading" };
+    try {
+      const revision = await cockpitApi.getWorkflowRevision(run.workflow_revision_hash);
+      if (revision.revision_hash !== run.workflow_revision_hash) {
+        throw new Error("The workflow revision did not match the durable run.");
+      }
+      if (revision.graph.format_version !== 3) {
+        throw new Error("The bound revision is not a V3 graph.");
+      }
+      graphRequest = { state: "ready", previews: revision.graph.node_previews };
+    } catch (error) {
+      graphRequest = {
+        state: "failed",
+        message: error instanceof Error ? error.message : "The workflow graph could not be read."
+      };
+    }
+  }
 </script>
 
 <section class="v3-run" aria-labelledby="v3-run-title">
@@ -105,21 +138,34 @@
     </p>
   </header>
 
-  <ol class="rail">
-    {#each rail as entry (entry.node_id)}
-      <li class="rail-entry" class:current={entry.node_id === run.current_node_id}>
-        <button
-          type="button"
-          class="node-button"
-          aria-expanded={openNodeId === entry.node_id}
-          on:click={() => void openNode(entry.node_id)}
-        >
-          <StateMark state={entry.state} />
-          <span class="node-id">{entry.node_id}</span>
-        </button>
-      </li>
-    {/each}
-  </ol>
+  {#if graphRequest.state === "loading"}
+    <p class="muted" role="status">Looking…</p>
+  {:else if graphRequest.state === "failed"}
+    <ProblemNotice title="The graph could not be read" message={graphRequest.message} />
+    <ol class="rail">
+      {#each rail as entry (entry.node_id)}
+        <li class="rail-entry" class:current={entry.node_id === run.current_node_id}>
+          <button
+            type="button"
+            class="node-button"
+            aria-expanded={openNodeId === entry.node_id}
+            on:click={() => void openNode(entry.node_id)}
+          >
+            <StateMark state={entry.state} />
+            <span class="node-id">{entry.node_id}</span>
+          </button>
+        </li>
+      {/each}
+    </ol>
+  {:else}
+    <WorkflowGraphDrawing
+      previews={graphRequest.previews}
+      {rail}
+      currentNodeId={run.current_node_id}
+      selectedNodeId={openNodeId}
+      onSelect={(nodeId) => { void openNode(nodeId); }}
+    />
+  {/if}
 
   {#if openNodeId !== null}
     {#if failure !== null}
@@ -172,7 +218,7 @@
   .v3-run { display: grid; gap: 1rem; }
   .run-header { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: baseline; justify-content: space-between; }
   .standing { display: flex; align-items: center; gap: 0.75rem; margin: 0; }
-  .following { opacity: 0.75; }
+  .following { color: var(--muted); }
   .stream { display: grid; gap: 0.4rem; margin-top: 0.5rem; }
   .events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
   .event { display: flex; align-items: baseline; gap: 0.6rem; }
@@ -184,5 +230,5 @@
   .node-id { font-weight: 600; }
   .facts { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 1rem; margin: 0; }
   .facts dd { margin: 0; overflow-wrap: anywhere; }
-  .muted { opacity: 0.7; }
+  .muted { color: var(--muted); }
 </style>

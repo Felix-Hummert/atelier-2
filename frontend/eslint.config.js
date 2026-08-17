@@ -19,7 +19,10 @@ export default tseslint.config(
         Event: "readonly",
         KeyboardEvent: "readonly",
         HTMLButtonElement: "readonly",
-        HTMLDivElement: "readonly"
+        HTMLDivElement: "readonly",
+        HTMLElement: "readonly",
+        CSS: "readonly",
+        ResizeObserver: "readonly"
       }
     }
   }

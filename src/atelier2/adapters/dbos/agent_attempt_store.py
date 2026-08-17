@@ -21,6 +21,7 @@ from atelier2.adapters.dbos.run_store import (
     load_node_outputs,
     load_run,
     load_run_inputs,
+    refuse_an_output_its_schema_does_not_admit,
 )
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -593,6 +594,17 @@ class DbosAgentAttemptStore:
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
     ) -> AgentAttemptSucceeded:
+        """Write the one success this attempt is allowed, or refuse to write any.
+
+        A V3 node's declared output is what its author promised, so the exact
+        decoded bytes are read against the schema it pins before anything here is
+        written. The reading happens inside this transaction and before the first
+        insert, so bytes their own schema refuses leave no receipt, no
+        `AGENT_COMPLETED` event and no advanced run -- the refusal is the same
+        shape the durable output bound already has, and for the same reason: a
+        success nobody may take back must not be written for an answer this
+        product cannot honour.
+        """
         request = execution.request
         attempt_id = execution.attempt_id
         with canonical_write_transaction(self._engine) as connection:
@@ -606,6 +618,11 @@ class DbosAgentAttemptStore:
             ):
                 raise RunTransitionConflict(
                     "only the armed current attempt can succeed"
+                )
+            node = graph.node(request.node_id)
+            if isinstance(node, AgentNodeV3):
+                refuse_an_output_its_schema_does_not_admit(
+                    connection, node.id, node.outputs[0], result.output_bytes
                 )
             receipt = AgentReceiptV2.for_execution(
                 request, run.binding_set_hash, result

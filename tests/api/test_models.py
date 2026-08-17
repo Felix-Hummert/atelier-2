@@ -14,6 +14,8 @@ from atelier2.api.wire.resources import (
     WaitingInputResource,
     WaitingReconciliationResource,
     WaitNodeResource,
+    WorkflowGraphResourceV3,
+    WorkflowNodePreviewResourceV3,
 )
 
 HASH = "0" * 64
@@ -154,6 +156,77 @@ def test_run_resource_rejects_incongruent_state_shapes(
                 "terminal_hash": terminal_hash,
                 "latest_event_cursor": "event1.cnVu.2",
             }
+        )
+
+
+def _agent_preview(
+    node_id: str,
+    *,
+    role: str = "builder",
+    depends_on: tuple[str, ...] = (),
+) -> WorkflowNodePreviewResourceV3:
+    return WorkflowNodePreviewResourceV3(
+        id=node_id,
+        kind="agent",
+        role=role,
+        instruction_start="Do the one thing this chain is for.",
+        depends_on=depends_on,
+    )
+
+
+def test_v3_node_preview_carries_the_authored_depends_on() -> None:
+    preview = _agent_preview("review", depends_on=("implement",))
+
+    assert preview.depends_on == ("implement",)
+
+
+def test_v3_graph_accepts_depends_on_that_names_a_sibling_preview() -> None:
+    resource = WorkflowGraphResourceV3(
+        format_version=3,
+        executable=True,
+        not_executable_reason=None,
+        node_count=2,
+        agent_roles=("builder",),
+        orders=(),
+        node_previews=(
+            _agent_preview("implement"),
+            _agent_preview("review", depends_on=("implement",)),
+        ),
+        name="Two agents in a line",
+        description=None,
+    )
+
+    assert resource.node_previews[1].depends_on == ("implement",)
+
+
+def test_v3_graph_accepts_an_entry_preview_with_no_edges() -> None:
+    resource = WorkflowGraphResourceV3(
+        format_version=3,
+        executable=True,
+        not_executable_reason=None,
+        node_count=1,
+        agent_roles=("builder",),
+        orders=(),
+        node_previews=(_agent_preview("implement"),),
+        name="One agent",
+        description=None,
+    )
+
+    assert resource.node_previews[0].depends_on == ()
+
+
+def test_v3_graph_refuses_a_depends_on_that_names_no_preview() -> None:
+    with pytest.raises(ValidationError, match="depends_on"):
+        WorkflowGraphResourceV3(
+            format_version=3,
+            executable=True,
+            not_executable_reason=None,
+            node_count=1,
+            agent_roles=("builder",),
+            orders=(),
+            node_previews=(_agent_preview("review", depends_on=("implement",)),),
+            name="Broken edge",
+            description=None,
         )
 
 

@@ -17,7 +17,20 @@ from atelier2.contracts.workflows_v3 import (
     WorkflowGraphV3,
 )
 
-_ONE_NODE = b"""format_version: 3
+_ANY_JSON_REVISION = "e" * 64
+_DECLARED_OUTPUT = f"""    outputs:
+      - name: result
+        schema: {{ref: any-json, revision: "{_ANY_JSON_REVISION}"}}
+""".encode()
+"""The one output every executable agent node declares, as `single-json-output/v1`.
+
+These documents are parsed, never run, so the revision it pins is a placeholder
+of the right shape: what is under test is the form the executable admission
+requires, not the schema a run would resolve.
+"""
+
+_ONE_NODE = (
+    b"""format_version: 3
 name: One agent
 nodes:
   - id: implement
@@ -26,6 +39,8 @@ nodes:
     mode: headless
     instruction: Do the one thing.
 """
+    + _DECLARED_OUTPUT
+)
 
 _LINE = (
     _ONE_NODE
@@ -36,6 +51,7 @@ _LINE = (
     instruction: Judge the first thing.
     depends_on: [implement]
 """
+    + _DECLARED_OUTPUT
 )
 
 _FAN_OUT = (
@@ -47,6 +63,7 @@ _FAN_OUT = (
     instruction: Write it up.
     depends_on: [implement]
 """
+    + _DECLARED_OUTPUT
 )
 
 _DIAMOND = (
@@ -59,6 +76,7 @@ _DIAMOND = (
     depends_on: [review, document]
     join: all_succeeded
 """
+    + _DECLARED_OUTPUT
 )
 
 _FAN_IN = (
@@ -68,7 +86,9 @@ _FAN_IN = (
     role: researcher
     mode: headless
     instruction: Do the other first thing.
-  - id: review
+"""
+    + _DECLARED_OUTPUT
+    + b"""  - id: review
     type: agent
     role: reviewer
     mode: headless
@@ -76,6 +96,7 @@ _FAN_IN = (
     depends_on: [implement, research]
     join: all_succeeded
 """
+    + _DECLARED_OUTPUT
 )
 
 

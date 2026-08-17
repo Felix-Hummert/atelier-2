@@ -13,6 +13,7 @@ import sqlalchemy as sa
 from dbos import DBOS
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
@@ -59,6 +60,10 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.effects import EffectAdapter
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
@@ -69,9 +74,10 @@ from tests.scenarios.runs import (
     submit_reconcile_command,
     submit_wait_answer,
 )
+from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 CRASHED = 86
-V3_PROVIDER_OUTPUT = b"the exact provider bytes"
+V3_PROVIDER_OUTPUT = b'"the exact provider bytes"'
 _COUNTING_PROVIDER = (
     "from pathlib import Path; import os,sys; "
     "Path(sys.argv[1]).open('ab').write(b'x'); "
@@ -197,6 +203,10 @@ def seed_v3(
         assert isinstance(
             catalog.publish_agent_configuration_revision(configuration),
             AgentConfigurationRevisionCreated,
+        )
+        published = DbosCatalogStore(lease.engine).publish_revision(ANY_JSON_SCHEMA)
+        assert isinstance(
+            published, (PublishedRevisionCreated, PublishedRevisionExisting)
         )
         workflow = WorkflowRevision(document)
         DbosWorkflowRevisionPublisher(lease.engine).publish(workflow)

@@ -76,10 +76,13 @@ from tests.scenarios.agents import (
     failing_agent_executor_factory,
 )
 from tests.scenarios.api import durable_queries, permissive_projection_limit
+from tests.scenarios.workflows import declared_output
 
 RUN = RunId("v3/attempt")
 ORDERED_RUN = RunId("v3/ordered-query")
 INSTRUCTION = b"Do the one thing this chain is for."
+PROVIDER_OUTPUT = b'"the exact provider bytes"'
+"""One JSON value, because every executable agent node declares a schema for one."""
 
 
 @pytest.fixture
@@ -277,7 +280,7 @@ def test_get_run_answers_a_completed_v3_sink_without_a_current_attempt(
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     store.prepare(execution)
     store.claim(execution)
-    store.complete_success(execution, AgentExecutionResult(b"the exact provider bytes"))
+    store.complete_success(execution, AgentExecutionResult(PROVIDER_OUTPUT))
 
     found = durable_queries(runtime.engine).get_run(RUN)
 
@@ -293,7 +296,7 @@ def test_projecting_attempts_on_a_completed_v3_sink_reds_the_completed_get(
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     store.prepare(execution)
     store.claim(execution)
-    store.complete_success(execution, AgentExecutionResult(b"the exact provider bytes"))
+    store.complete_success(execution, AgentExecutionResult(PROVIDER_OUTPUT))
     needle = "if records_for_execution and run.state is not RunState.COMPLETED:"
     restored = "if records_for_execution:"
     source = Path(queries_module.__file__).read_text(encoding="utf-8")
@@ -369,9 +372,7 @@ def test_a_completed_v3_attempt_carries_its_run_to_the_terminal_hash(
     store.prepare(execution)
     store.claim(execution)
 
-    succeeded = store.complete_success(
-        execution, AgentExecutionResult(b"the exact provider bytes")
-    )
+    succeeded = store.complete_success(execution, AgentExecutionResult(PROVIDER_OUTPUT))
 
     assert succeeded.attempt.state is AgentAttemptState.SUCCEEDED
     assert succeeded.completion == RunCompletes()
@@ -406,7 +407,8 @@ def test_a_live_v3_run_with_a_running_attempt_names_it_on_the_rail(
     assert rail[0].attempt == NodeRailAttempt(1, PublicAgentAttemptState.POSSIBLY_RAN)
 
 
-LINE_DOCUMENT = b"""format_version: 3
+LINE_DOCUMENT = (
+    b"""format_version: 3
 name: A line of two agents
 nodes:
   - id: implement
@@ -414,13 +416,17 @@ nodes:
     role: builder
     mode: headless
     instruction: Do the first thing this chain is for.
-  - id: review
+"""
+    + declared_output()
+    + b"""  - id: review
     type: agent
     role: reviewer
     mode: headless
     instruction: Judge the first thing.
     depends_on: [implement]
 """
+    + declared_output()
+)
 LINE_ROLES = (
     ("implement", "builder", b"Do the first thing this chain is for."),
     ("review", "reviewer", b"Judge the first thing."),
@@ -497,7 +503,7 @@ def test_a_succeeded_non_sink_leaves_the_run_standing_on_its_declared_heir(
         store.prepare(execution)
         store.claim(execution)
         succeeded = store.complete_success(
-            execution, AgentExecutionResult(f"bytes from {node_id}".encode())
+            execution, AgentExecutionResult(f'"bytes from {node_id}"'.encode())
         )
         assert isinstance(succeeded, AgentAttemptSucceeded)
         completions.append(succeeded.completion)

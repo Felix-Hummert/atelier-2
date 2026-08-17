@@ -130,12 +130,14 @@ def _node_preview(node: WorkflowNodeV3) -> WorkflowNodePreviewResourceV3:
             instruction_start=node.instruction[
                 :MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS
             ],
+            depends_on=node.depends_on,
         )
     return WorkflowNodePreviewResourceV3(
         id=node.id,
         kind=node.type,
         role=None,
         instruction_start=None,
+        depends_on=node.depends_on,
     )
 
 

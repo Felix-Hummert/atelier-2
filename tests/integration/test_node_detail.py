@@ -26,7 +26,7 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.schema import run_events, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -46,10 +46,20 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventKind,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -71,7 +81,15 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import durable_queries
 
 TEXT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
+ANSWER = b'"Ein gutes Code-Review schuetzt vor fehlerhaftem Code."'
 PROSE = b"Ein gutes Code-Review schuetzt vor fehlerhaftem Code."
+"""The same sentence as bare prose: what a provider answered before #57 enforced.
+
+A run of this build never writes it -- the success write reads the bytes against
+the schema their node pinned first -- so the only way it reaches a store is to
+have been written by a build without that guard. That is the state the reader
+still has to judge, and where the refusal below comes from.
+"""
 RUN = RunId("v3/detail")
 
 
@@ -101,13 +119,18 @@ nodes:
         from:
           node: implement
           output: draft
+    outputs:
+      - name: findings
+        schema:
+          ref: text-schema
+          revision: {schema_hash}
 """.encode()
 
 
 @pytest.fixture
 def provider() -> RecordingAgentExecutorFactoryV2:
-    """A provider that answers in prose, exactly as the live one did."""
-    return RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", PROSE)
+    """A provider whose answer is the one JSON value its node's schema admits."""
+    return RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", ANSWER)
 
 
 @pytest.fixture
@@ -170,17 +193,15 @@ def publish_and_start(runtime: DbosRuntime) -> None:
     assert isinstance(created, DurableRunCreated), created
 
 
-def drive_until_the_chain_stops(runtime: DbosRuntime) -> None:
-    """Launch and wait until the first node has written and the run stands still.
+def drive_the_whole_chain(runtime: DbosRuntime) -> None:
+    """Launch and wait until both nodes have run, so both have something to read.
 
-    The run cannot complete: the value `implement` wrote is not what its own
-    schema admits, so the chain refuses to hand it on. Waiting for the durable
-    event rather than for a clock is what makes that deterministic.
+    Waiting for the durable terminal state rather than for a clock is what makes
+    it deterministic.
     """
     runtime.launch()
     deadline = time.monotonic() + 12
     state = ""
-    standing = ""
     while time.monotonic() < deadline:
         with runtime.engine.connect() as connection:
             state = str(
@@ -188,15 +209,53 @@ def drive_until_the_chain_stops(runtime: DbosRuntime) -> None:
                     sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
                 )
             )
-            standing = str(
-                connection.scalar(
-                    sa.select(runs.c.current_node_id).where(runs.c.run_id == RUN.value)
-                )
-            )
-        if standing == "review" and state == RunState.STARTED.value:
+        if state == RunState.COMPLETED.value:
             return
         time.sleep(0.025)
-    raise AssertionError(f"run stayed {state!r} on {standing!r}")
+    raise AssertionError(f"run stayed {state!r}, expected it to complete")
+
+
+def plant_the_value_a_build_without_the_guard_wrote(runtime: DbosRuntime) -> None:
+    """Put `implement`'s completion in the store carrying bytes its schema refuses.
+
+    This build cannot produce that state and that is the point: the success write
+    reads the exact decoded bytes against the schema their node pinned, so prose
+    never becomes a completion. A store written before that guard existed still
+    holds such values, and the node that reads one must still name the refusal
+    instead of handing it on -- so the event is written here exactly as the
+    earlier build left it, through the run-event contract that owns its hashes.
+    """
+    with runtime.engine.connect() as connection:
+        revision_hash = WorkflowRevisionHash(
+            str(
+                connection.scalar(
+                    sa.select(runs.c.revision_hash).where(runs.c.run_id == RUN.value)
+                )
+            )
+        )
+    written = RunEvent(
+        RUN,
+        revision_hash,
+        1,
+        "implement",
+        NodeExecutionId.for_node(RUN, revision_hash, "implement"),
+        RunEventKind.AGENT_COMPLETED,
+        PROSE,
+    )
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            run_events.insert().values(
+                run_id=written.run_id.value,
+                revision_hash=written.revision_hash.value,
+                event_sequence=written.event_sequence,
+                node_id=written.node_id,
+                node_execution_id=written.node_execution_id.value,
+                event_kind=written.event_kind.value,
+                payload=written.payload,
+                payload_hash=written.payload_hash.value,
+                event_hash=written.event_hash.value,
+            )
+        )
 
 
 @pytest.mark.proves("a-click-into-a-node-answers-what-it-was-asked-and-wrote")
@@ -205,7 +264,7 @@ def test_a_finished_node_answers_its_job_its_value_and_who_produced_it(
 ) -> None:
     """The three questions an operator asks about a node that has run."""
     publish_and_start(runtime)
-    drive_until_the_chain_stops(runtime)
+    drive_the_whole_chain(runtime)
 
     found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
 
@@ -224,8 +283,8 @@ def test_a_finished_node_answers_its_job_its_value_and_who_produced_it(
     assert detail.job == handed.job_bytes
     assert detail.job_hash == Sha256Hash.of(handed.job_bytes).value
     assert detail.answer is not None
-    assert detail.answer.value == PROSE
-    assert detail.answer.value_hash == Sha256Hash.of(PROSE)
+    assert detail.answer.value == ANSWER
+    assert detail.answer.value_hash == Sha256Hash.of(ANSWER)
     assert detail.provenance is not None
     assert detail.provenance.provider_id == "exact"
     assert detail.provenance.role == "builder"
@@ -247,9 +306,14 @@ def test_the_node_that_stops_the_run_names_the_refusal_that_stops_it(
     author pinned a text schema. Before this read, that reason lived only as an
     exception inside the driver and the operator saw a run standing still. The
     node detail names it, in the words the schema owner used.
+
+    Since #57 no run of this build writes such a draft -- the success write reads
+    it first -- so the value is planted as an older build left it. What is under
+    test is the reader: a stored value its own schema refuses is named, never
+    handed on.
     """
     publish_and_start(runtime)
-    drive_until_the_chain_stops(runtime)
+    plant_the_value_a_build_without_the_guard_wrote(runtime)
 
     found = durable_queries(runtime.engine).get_node_detail(RUN, "review")
 
@@ -316,7 +380,7 @@ def test_a_stored_value_that_no_longer_matches_its_hash_is_reported_as_corruptio
     the file -- which is exactly the situation the loud answer is for.
     """
     publish_and_start(runtime)
-    drive_until_the_chain_stops(runtime)
+    drive_the_whole_chain(runtime)
     with runtime.engine.begin() as connection:
         connection.execute(sa.text("DROP TRIGGER run_events_no_update"))
         connection.execute(

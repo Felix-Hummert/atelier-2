@@ -143,7 +143,10 @@ nodes:
     role: builder
     mode: headless
     instruction: Do the one thing this chain is for.
-"""
+    outputs:
+      - name: result
+        schema: {ref: any-json, revision: "%s"}
+""" % (b"e" * 64)
 
 
 @pytest.mark.proves("a-revision-says-which-form-it-waits-for-not-which-version-it-is")
@@ -175,6 +178,7 @@ def test_a_v3_revision_this_build_runs_reads_back_as_executable(
             "kind": "agent",
             "role": "builder",
             "instruction_start": "Do the one thing this chain is for.",
+            "depends_on": [],
         }
     ]
 
@@ -258,6 +262,7 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
                 "instruction_start": (
                     "Implement every acceptance sentence of the bound story."
                 ),
+                "depends_on": [],
             },
             {
                 "id": "review",
@@ -266,6 +271,7 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
                 "instruction_start": (
                     "Name every defect with the sentence it violates."
                 ),
+                "depends_on": ["implement"],
             },
         ],
         "name": V3_DOCUMENT_NAME,
@@ -306,6 +312,7 @@ def test_a_v3_revision_answers_an_instruction_start_not_the_authored_whole(
             "kind": "agent",
             "role": "builder",
             "instruction_start": authored[:bound],
+            "depends_on": [],
         }
     ]
     assert "TAIL-MUST-NOT-APPEAR" not in graph["node_previews"][0]["instruction_start"]
@@ -339,6 +346,7 @@ nodes:
             "kind": "wait",
             "role": None,
             "instruction_start": None,
+            "depends_on": [],
         }
     ]
     assert graph["agent_roles"] == []
