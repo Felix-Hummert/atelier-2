@@ -1,13 +1,16 @@
 """A V3 agent document of the one admitted shape becomes a started run.
 
-**What this head does not claim.** No provider is invoked, no attempt succeeds,
-no `AGENT_COMPLETED` is written, no V3 receipt exists and nothing reaches a
-terminal state. Those need the V3 arm in the attempt path (#194 H1c) and the
-run-level terminal condition (#194 H1b), and each is named where it is missing
-rather than implied by a green test here. What is proven is narrower and real:
-the document is admitted, the run carries its own V3 truth, and its agent node
-binds onto the durable attempt path with the exact role and configuration it was
-started with.
+**What this file claims, and where the rest lives.** These tests end at the
+durable shape a start writes: the document is admitted, the run carries its own
+V3 truth, and its agent node binds onto the attempt path with the exact role and
+configuration it was started with. They deliberately never launch the runtime, so
+no provider runs and nothing here reaches a terminal state.
+
+That is a boundary of scope now rather than of capability. While this file was
+written it was both: the attempt path was V2 to the bone and no runtime drove a
+V3 line, so these starts went through an internal foundation seam that enqueued
+nothing. H1b, H1c and H2 built the driver, the seam is gone, and every start here
+is the public one. What happens after it is `test_v3_self_driving_run`.
 """
 
 from __future__ import annotations
@@ -18,13 +21,11 @@ from typing import cast
 
 import pytest
 import sqlalchemy as sa
-from dbos import DBOSClient
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
-    run_agent_bindings,
     run_configuration_revisions,
     runs,
 )
@@ -35,7 +36,6 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.workflow import EncodedAgentBindingV2, _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -64,11 +64,11 @@ from atelier2.ports.agent_configurations import (
 from atelier2.ports.durable_runs import (
     DurableRunCreated,
     DurableRunExisting,
-    DurableRunFormatNotExecutable,
     StartPublishedRunRequestV2,
 )
+from atelier2.ports.run_queries import RunFound
 from tests.scenarios.agents import failing_agent_executor_factory
-from tests.scenarios.api import durable_api_client
+from tests.scenarios.api import durable_queries
 
 ONE_AGENT_DOCUMENT = b"""format_version: 3
 name: One agent
@@ -144,21 +144,20 @@ def publish(
 
 @pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
 def test_a_v3_agent_document_of_the_admitted_shape_starts(
-    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+    runtime: DbosRuntime,
 ) -> None:
-    """The foundation is durable and inert: a run exists, and nothing runs it."""
+    """The run this document becomes: its own format, its own entry node.
+
+    This asserts the durable shape a start writes, and stops there: the runtime
+    is never launched, so the run stands at STARTED with nothing terminal about
+    it. That it then moves under a launched runtime is the driver sentence's
+    claim, proven where the line actually runs.
+    """
     workflow, bindings = publish(runtime)
-
-    def unexpected_enqueue(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("the V3 foundation enqueued work no runtime executes")
-
-    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
 
     result = DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_v3_foundation(
-        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
-    )
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
     assert isinstance(result, DurableRunCreated)
     with runtime.engine.connect() as connection:
@@ -179,9 +178,7 @@ def test_a_started_v3_run_reads_back_as_its_own_shape(runtime: DbosRuntime) -> N
     workflow, bindings = publish(runtime)
     DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_v3_foundation(
-        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
-    )
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
     with runtime.engine.connect() as connection:
         record = (
@@ -204,9 +201,7 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
     workflow, bindings = publish(runtime)
     DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_v3_foundation(
-        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
-    )
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
     encoded = _node_binding(
         runtime.datasource, RUN, workflow.revision_hash, "implement"
@@ -227,87 +222,35 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
     )
 
 
-@pytest.mark.proves("a-public-start-refuses-a-v3-revision-before-any-write")
-def test_the_public_start_route_refuses_a_v3_revision_with_no_row_and_no_enqueue(
-    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The route that starts runs must not half-start one it cannot finish.
-
-    Admitting a V3 revision wrote the run and enqueued its bootstrap, and only
-    then failed on the missing wire resource -- a public 500 *after* durable
-    state existed, with the run left poisoning every later projection. The claim
-    is about the composed HTTP boundary, so it is asked of the route and not of a
-    starter called by hand.
-    """
-    workflow, bindings = publish(runtime)
-
-    def unexpected_enqueue(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("a refused start reached the durable queue")
-
-    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
-
-    refused = durable_api_client(runtime).post(
-        API_PREFIX + "/runs",
-        json={
-            "workflow_format_version": 2,
-            "run_id": RUN.value,
-            "workflow_revision_hash": workflow.revision_hash.value,
-            "agent_bindings": [
-                {
-                    "role": binding.role.value,
-                    "agent_configuration_revision_hash": (
-                        binding.agent_configuration_revision_hash.value
-                    ),
-                }
-                for binding in bindings.bindings
-            ],
-        },
-    )
-
-    assert refused.status_code == 409
-    assert refused.json()["type"].endswith(":workflow-format-not-executable")
-    with runtime.engine.connect() as connection:
-        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
-        assert (
-            connection.scalar(
-                sa.select(sa.func.count()).select_from(run_agent_bindings)
-            )
-            == 0
-        )
-        assert connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status")) == 0
-
-
-@pytest.mark.proves("a-public-start-refuses-a-v3-revision-before-any-write")
-def test_the_v3_foundation_seam_refuses_a_document_of_any_other_format(
+@pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
+def test_a_started_v3_run_reads_back_through_the_durable_query(
     runtime: DbosRuntime,
 ) -> None:
-    """The inner door is the outer one's mirror, not its opposite by convention.
+    """Reading a V3 run must answer it, not crash on a column nobody selected.
 
-    The public seam refuses V3; this one exists only for V3, and a document of
-    another format reaching it wrote a durable STARTED run that enqueues nothing
-    -- a run no runtime would ever pick up. The V1 request form cannot reach here
-    at all: the signature takes the bound form, so that half is a type error
-    rather than a runtime answer.
+    The run projection is what every read of a run is built from, and its column
+    list was written when no V3 run could reach one: it omitted the configuration
+    revision a `RunV3` is bound to, so projecting one raised `NoSuchColumnError`
+    from inside the adapter. Nothing noticed, because the public start refused the
+    family before a V3 run could ever be read.
+
+    The API above this still refuses to render a V3 run -- what one answers with
+    on the wire is #85's decision, and it is refused by name rather than dressed
+    up as a V2 shape. That refusal is the point: this layer must reach it instead
+    of crashing under it.
     """
-    _workflow, bindings = publish(runtime)
-    executable = WorkflowRevision(EXECUTABLE_V2_DOCUMENT)
-    DbosWorkflowRevisionPublisher(runtime.engine).publish(executable)
-
-    result = DbosDurableRunStarter(
+    workflow, bindings = publish(runtime)
+    DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_v3_foundation(
-        StartPublishedRunRequestV2(RUN, executable.revision_hash, bindings)
-    )
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
-    assert isinstance(result, DurableRunFormatNotExecutable)
-    with runtime.engine.connect() as connection:
-        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
-        assert (
-            connection.scalar(
-                sa.select(sa.func.count()).select_from(run_agent_bindings)
-            )
-            == 0
-        )
+    found = durable_queries(runtime.engine).get_run(RUN)
+
+    assert isinstance(found, RunFound)
+    run = found.projection.run
+    assert isinstance(run, RunV3)
+    assert run.run_id == RUN
+    assert run.current_node_id == "implement"
 
 
 @pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
@@ -321,8 +264,8 @@ def test_the_first_start_and_its_retry_answer_the_same_run_shape(
     )
     request = StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
 
-    created = starter.start_v3_foundation(request)
-    existing = starter.start_v3_foundation(request)
+    created = starter.start_published(request)
+    existing = starter.start_published(request)
 
     assert isinstance(created, DurableRunCreated)
     assert isinstance(existing, DurableRunExisting)
@@ -347,9 +290,7 @@ def test_the_v3_foundation_start_binds_the_exact_run_configuration(
     workflow, bindings = publish(runtime)
     DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_v3_foundation(
-        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
-    )
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     expected = RunConfigurationRevision(
         WorkflowRevisionHash(workflow.revision_hash.value),
         bindings.binding_set_hash,

@@ -43,9 +43,45 @@ text = "A V3 document of an admitted shape -- a line of agent nodes, each entere
 id = "every-v3-shape-no-runtime-binds-is-refused-by-name"
 text = "Every V3 document outside that shape is refused by name before anything starts, and the refusal says what it is waiting for -- a node kind nothing interprets, a branch nothing chooses between, or an authored form nothing binds -- rather than saying that version 3 is unsupported."
 
+# REPLACED, AND NAMED RATHER THAN DROPPED. This file used to declare
+# `a-public-start-refuses-a-v3-revision-before-any-write`: the public route
+# refused a V3 revision before any write, because admitting one would have
+# enqueued a bootstrap no runtime could pick up. That sentence was true for
+# exactly as long as its reason was, and the reason is now gone -- H1b, H1c and
+# H2 built the driver it was waiting for. Keeping it would have frozen the family
+# out of the runtime permanently, which is the opposite of what this story wants,
+# so it is replaced by its successor below rather than narrowed or deleted in
+# silence. The half of it that was never about V3 -- a document nothing can
+# execute must not become durable state -- still stands, and
+# `every-v3-shape-no-runtime-binds-is-refused-by-name` owns it, proven at the
+# parser one layer below the seam.
+#
+# The internal foundation start went with it. It existed so H1a could persist a
+# V3 run while nothing executed one, and it enqueued nothing on purpose; a second
+# door is only honest while the first cannot open. Every test it carried now
+# drives the public start instead, which is a stronger claim on the same
+# sentences, not a weaker one.
+
+# WHAT THIS HEAD STOPS SHORT OF, MEASURED RATHER THAN ASSUMED. The sentence below
+# is declared of the one public start, not of the HTTP route, and the difference
+# was found by writing the route test first and watching it fail. The route starts
+# the run correctly and then cannot answer: `run_resource` refuses a V3 run by
+# name, because what a V3 run renders as on the wire is #85's decision and the V1
+# and V2 shapes are frozen. That refusal is deliberate and stays. So an operator
+# cannot yet drive a V3 line over HTTP, and no line here says otherwise; the
+# runtime drives it, which is what this story asked for and what the driver test
+# proves end to end.
+#
+# One thing between the two was a real defect rather than a missing decision: the
+# run projection's column list omitted the configuration revision a `RunV3` is
+# bound to, so every read of a V3 run raised `NoSuchColumnError` from inside the
+# adapter -- the API crashed under its own honest refusal instead of reaching it.
+# Fixed here, and pinned by a query-layer test, because the driver makes V3 runs
+# something a read can now actually meet.
+
 [[sentence]]
-id = "a-public-start-refuses-a-v3-revision-before-any-write"
-text = "The public start route refuses a V3 revision before it writes anything: no run row, no agent binding row and no enqueued bootstrap, so a revision no runtime can execute never becomes durable state that a later read has to explain."
+id = "a-v3-run-drives-itself-through-the-runtime"
+text = "A V3 revision starts through the one public start like any other executable document -- its run row, its agent bindings and its enqueued bootstrap -- and the runtime then drives the line its author declared without any hand reaching in: each agent node's attempt runs and succeeds, the heir the author declared starts when its predecessor completes, and the sink carries the run to COMPLETED on a terminal hash that recomputes from the events the run itself wrote."
 
 [[sentence]]
 id = "a-v3-agent-node-reaches-the-durable-attempt-path"
@@ -100,4 +136,4 @@ text = "The node execution request and the manifest it names are composed on the
 
 [[sentence]]
 id = "a-supervised-v3-run-records-the-configuration-it-was-started-under"
-text = "Every V3 run binds the exact run configuration it was started under -- the supervised start and the foundation start alike -- and the store keeps the preimage of that snapshot, of the node execution request and of the manifest, each immutable and each reachable from the row that names it, so every hash a receipt carries recomputes from bytes the store kept, no run, receipt or request can name a record that does not exist, and a receipt can only carry the request of its own node execution."
+text = "Every V3 run binds the exact run configuration it was started under -- the supervised start and the public start alike -- and the store keeps the preimage of that snapshot, of the node execution request and of the manifest, each immutable and each reachable from the row that names it, so every hash a receipt carries recomputes from bytes the store kept, no run, receipt or request can name a record that does not exist, and a receipt can only carry the request of its own node execution."
