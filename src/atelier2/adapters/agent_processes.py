@@ -591,6 +591,10 @@ def _launch_request(invocation: AgentProcessInvocation) -> dict[str, object]:
         "standard_input": base64.b64encode(command.standard_input).decode("ascii"),
         "standard_output_frame_bytes": command.standard_output_frame_bytes,
         "working_directory": str(invocation.lease.working_directory),
+        # The identity travels because the watchdog opens the path itself, later
+        # and in another process: without it there is nothing to compare the
+        # directory it finds against.
+        "working_directory_identity": [invocation.lease.device, invocation.lease.inode],
     }
 
 

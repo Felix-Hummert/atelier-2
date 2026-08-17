@@ -274,7 +274,9 @@ class LocalAgentAttemptWorkspaceOwner:
                 "owner writes the mark that licenses a removal, and it never "
                 "adopts one it did not write"
             ) from error
-        return AgentAttemptWorkspaceLease(attempt_id, working_directory)
+        return AgentAttemptWorkspaceLease(
+            attempt_id, working_directory, created.st_dev, created.st_ino
+        )
 
     def release(self, attempt_id: AgentAttemptId) -> None:
         """Remove the directory this owner leased to that attempt, and only that.

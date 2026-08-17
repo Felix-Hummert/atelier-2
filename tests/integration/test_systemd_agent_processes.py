@@ -39,10 +39,10 @@ from atelier2.adapters.systemd_timespans import (
 from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGenerationId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.ports.agent_executions import (
-    AgentAttemptWorkspaceLease,
     AgentProcessCommand,
     AgentProcessInvocation,
 )
+from tests.scenarios.agents import leased_directory_identity
 
 
 def _configuration() -> DirectSystemdAgentProcessConfiguration:
@@ -64,7 +64,7 @@ def _configuration() -> DirectSystemdAgentProcessConfiguration:
 def _invocation(root: Path) -> AgentProcessInvocation:
     return AgentProcessInvocation(
         AgentProcessCommand(("provider",), standard_output_frame_bytes=17),
-        AgentAttemptWorkspaceLease(AgentAttemptId.of(b"attempt"), root),
+        leased_directory_identity(AgentAttemptId.of(b"attempt"), root),
     )
 
 
@@ -536,7 +536,7 @@ def test_a_command_that_never_started_removes_only_the_unstarted_source(
             generation,
             AgentProcessInvocation(
                 AgentProcessCommand(("changed",), standard_output_frame_bytes=17),
-                AgentAttemptWorkspaceLease(AgentAttemptId.of(b"attempt"), tmp_path),
+                leased_directory_identity(AgentAttemptId.of(b"attempt"), tmp_path),
             ),
         )
 

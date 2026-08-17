@@ -23,6 +23,10 @@ from atelier2.adapters.claude_subscription import ClaudeSubscriptionExecutorFact
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import PRODUCT_TABLE_NAMES, metadata
+from atelier2.adapters.leased_directory import (
+    LeasedDirectoryChanged,
+    entered_leased_directory,
+)
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
@@ -49,6 +53,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import (
+    AgentAttemptClaimedByThisCall,
     AgentAttemptPossiblyRan,
     AgentAttemptSucceeded,
 )
@@ -59,6 +64,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    AgentProcessOwnerNotLocal,
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_claude_subscription import INTROSPECTING_CLAUDE
@@ -1356,3 +1362,83 @@ def test_a_lease_mark_standing_without_its_directory_refuses_the_next_acquire(
         assert stale.read_bytes() == b""
     finally:
         runtime.close()
+
+
+@pytest.mark.proves("every-attempt-runs-in-a-blank-directory-of-its-own")
+def test_a_directory_swapped_after_the_lease_never_becomes_the_provider_ground(
+    tmp_path: Path,
+) -> None:
+    """The lease attests a directory; the launch must enter that one, not that path.
+
+    Between `acquire` and the launch there is a window. A peer of the same user
+    who replaces the leased directory in that window hands the provider somebody
+    else's ground -- with the operator's own files in it -- while every record
+    still says the attempt ran where it leased. The lease is an identity, and the
+    launch has to enter the identity rather than resolve the name again.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "lease/swapped-before-launch")
+        )
+        owner = runtime_workspace_owner(runtime)
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        store.prepare(execution)
+        lease = owner.acquire(execution.attempt_id)
+        leased = os.stat(lease.working_directory, follow_symlinks=False)
+
+        impostor = tmp_path / "impostor"
+        impostor.mkdir(mode=SCRATCH_ROOT_MODE)
+        (impostor / ".env").write_text("the operator's own secret", encoding="utf-8")
+        shutil.rmtree(lease.working_directory)
+        impostor.rename(lease.working_directory)
+        standing = os.stat(lease.working_directory, follow_symlinks=False)
+        assert (standing.st_dev, standing.st_ino) != (leased.st_dev, leased.st_ino)
+
+        executor = DirectoryReportingExecutor()
+        command = executor.prepare_process(execution.request)
+        runtime.agent_process_supervisor.prepare(execution)
+        assert isinstance(store.claim(execution), AgentAttemptClaimedByThisCall)
+
+        # The launch is refused before a process exists. It surfaces as the
+        # landed refusal for every malformed launch -- this call owns no
+        # process -- and what matters is that no provider ever started.
+        with pytest.raises(AgentProcessOwnerNotLocal):
+            runtime.agent_process_supervisor.launch_and_wait(
+                execution, AgentProcessInvocation(command, lease)
+            )
+
+        # The impostor is untouched: no provider was ever started in it.
+        standing_marker = lease.working_directory / ".env"
+        assert standing_marker.read_text(encoding="utf-8") == (
+            "the operator's own secret"
+        )
+    finally:
+        runtime.close()
+
+
+def test_the_launch_names_the_identity_that_changed_under_the_lease(
+    tmp_path: Path,
+) -> None:
+    """The refusal says which thing changed, not merely that something did."""
+
+    leased = tmp_path / "leased"
+    leased.mkdir(mode=SCRATCH_ROOT_MODE)
+    standing = os.stat(leased, follow_symlinks=False)
+
+    with entered_leased_directory(leased, standing.st_dev, standing.st_ino) as (
+        entry,
+        descriptor,
+    ):
+        assert entry == f"/proc/self/fd/{descriptor}"
+        assert os.stat(entry).st_ino == standing.st_ino
+
+    with (
+        pytest.raises(LeasedDirectoryChanged, match="identity changed"),
+        entered_leased_directory(leased, standing.st_dev, standing.st_ino + 1),
+    ):
+        pass

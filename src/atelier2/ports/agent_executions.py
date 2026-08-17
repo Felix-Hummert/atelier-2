@@ -127,14 +127,27 @@ class AgentAttemptWorkspaceLease:
     same node -- an ordinal-1 attempt and its deliberate ordinal-2 replacement
     -- never share a directory. It claims nothing about operating-system
     isolation: it is a blank directory this attempt owns, not a sandbox.
+
+    It carries the directory's own identity, not only its path, because a launch
+    happens later and elsewhere: between the attestation and the first process
+    there is a window in which a peer of this user can replace the directory the
+    path names. The launcher enters the identity -- open, `fstat`, compare, then
+    enter through the descriptor it checked -- so the name is never resolved a
+    second time.
     """
 
     attempt_id: AgentAttemptId
     working_directory: Path
+    device: int
+    inode: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt_id, AgentAttemptId):
             raise TypeError("agent attempt workspace lease identity must be typed")
+        if type(self.device) is not int or type(self.inode) is not int:
+            raise TypeError("agent attempt workspace identity must be typed")
+        if self.device < 0 or self.inode < 0:
+            raise ValueError("agent attempt workspace identity must be nonnegative")
         if not self.working_directory.is_absolute():
             raise ValueError("agent attempt workspace directory must be absolute")
         if (

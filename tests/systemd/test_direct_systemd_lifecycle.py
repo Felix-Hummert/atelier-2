@@ -33,10 +33,10 @@ from atelier2.adapters.systemd_timespans import DirectSystemdHostFailure
 from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGenerationId
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
-    AgentAttemptWorkspaceLease,
     AgentProcessCommand,
     AgentProcessInvocation,
 )
+from tests.scenarios.agents import leased_directory_identity
 
 pytestmark = pytest.mark.xdist_group("direct-systemd-user-manager")
 _SYSTEMCTL_TIMEOUT_SECONDS = 3
@@ -264,7 +264,7 @@ def _invocation(
         AgentProcessCommand(
             (str(provider), *arguments), standard_output_frame_bytes=output_limit
         ),
-        AgentAttemptWorkspaceLease(AgentAttemptId.of(b"lifecycle-attempt"), root),
+        leased_directory_identity(AgentAttemptId.of(b"lifecycle-attempt"), root),
     )
 
 
@@ -506,7 +506,7 @@ def test_systemd_255_loads_the_exact_maximum_launch_credential(
         AgentProcessCommand(
             arguments, empty_environment, standard_output_frame_bytes=17
         ),
-        AgentAttemptWorkspaceLease(AgentAttemptId.of(b"envelope-attempt"), tmp_path),
+        leased_directory_identity(AgentAttemptId.of(b"envelope-attempt"), tmp_path),
     )
     filler_bytes = MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES - len(
         encode_direct_systemd_launch_envelope(prototype)
@@ -521,7 +521,7 @@ def test_systemd_255_loads_the_exact_maximum_launch_credential(
         AgentProcessCommand(
             arguments, tuple(environment), standard_output_frame_bytes=17
         ),
-        AgentAttemptWorkspaceLease(AgentAttemptId.of(b"envelope-attempt"), tmp_path),
+        leased_directory_identity(AgentAttemptId.of(b"envelope-attempt"), tmp_path),
     )
     assert (
         len(encode_direct_systemd_launch_envelope(invocation))
@@ -773,7 +773,8 @@ def test_one_attempt_has_durable_preparation_and_handoff_syscall_order(
         f"{invocation.command.arguments!r},standard_output_frame_bytes="
         f"{invocation.command.standard_output_frame_bytes}),"
         f"AgentAttemptWorkspaceLease(AgentAttemptId.of(b'strace-attempt'),"
-        f"Path({str(invocation.lease.working_directory)!r})))\n"
+        f"Path({str(invocation.lease.working_directory)!r}),"
+        f"{invocation.lease.device},{invocation.lease.inode}))\n"
         f"DirectSystemdAgentProcessManager(configuration).start("
         f"AgentAttemptId.of(b'strace-attempt'),"
         f"WatchdogGenerationId('strace-attempt-generation'),"

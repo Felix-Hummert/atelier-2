@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -97,6 +98,23 @@ def runtime_workspace_owner(runtime: DbosRuntime) -> LocalAgentAttemptWorkspaceO
     return owner
 
 
+def leased_directory_identity(
+    attempt_id: AgentAttemptId, working_directory: Path
+) -> AgentAttemptWorkspaceLease:
+    """One lease over a directory a test houses itself, with its real identity.
+
+    The identity is read from the directory rather than invented, because that
+    is what the launcher compares against: a made-up device and inode would make
+    every test refuse, and a zero pair would make the comparison meaningless.
+    """
+
+    working_directory.mkdir(parents=True, exist_ok=True)
+    standing = os.stat(working_directory, follow_symlinks=False)
+    return AgentAttemptWorkspaceLease(
+        attempt_id, working_directory, standing.st_dev, standing.st_ino
+    )
+
+
 def process_invocation(
     attempt_id: AgentAttemptId,
     arguments: tuple[str, ...],
@@ -120,7 +138,7 @@ def process_invocation(
             standard_input,
             standard_output_frame_bytes=standard_output_frame_bytes,
         ),
-        AgentAttemptWorkspaceLease(attempt_id, working_directory),
+        leased_directory_identity(attempt_id, working_directory),
     )
 
 

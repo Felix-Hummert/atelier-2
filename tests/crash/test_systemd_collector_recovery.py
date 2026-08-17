@@ -20,11 +20,11 @@ from atelier2.adapters.systemd_generation_records import (
 from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGenerationId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.ports.agent_executions import (
-    AgentAttemptWorkspaceLease,
     AgentProcessCommand,
     AgentProcessInvocation,
 )
 from tests.crash.systemd_collector_harness import CRASHED
+from tests.scenarios.agents import leased_directory_identity
 
 HARNESS = Path(__file__).with_name("systemd_collector_harness.py")
 INVOCATION_ID = DirectSystemdInvocationId("0123456789abcdef0123456789abcdef")
@@ -44,7 +44,7 @@ def test_process_death_between_started_file_and_directory_fsync_never_runs_provi
             ),
             standard_output_frame_bytes=17,
         ),
-        AgentAttemptWorkspaceLease(AgentAttemptId.of(b"crash-attempt"), Path.cwd()),
+        leased_directory_identity(AgentAttemptId.of(b"crash-attempt"), Path.cwd()),
     )
     records = DirectSystemdGenerationRecords(tmp_path)
     launch_envelope_path = tmp_path / "launch-envelope"

@@ -53,7 +53,6 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionCreated,
 )
 from atelier2.ports.agent_executions import (
-    AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
     AgentProcessCommand,
     AgentProcessCompletion,
@@ -64,7 +63,11 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
-from tests.scenarios.agents import agent_attempt_execution, agent_scratch_root
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    agent_scratch_root,
+    leased_directory_identity,
+)
 
 MEASURED_GROK_VERSION = "1.0.4"
 HOST_DOCUMENT = b"""format_version: 2
@@ -195,7 +198,7 @@ def leased(command: AgentProcessCommand, workspace: Path) -> AgentProcessInvocat
 
     return AgentProcessInvocation(
         command,
-        AgentAttemptWorkspaceLease(
+        leased_directory_identity(
             agent_attempt_execution(subscription_request()).attempt_id, workspace
         ),
     )

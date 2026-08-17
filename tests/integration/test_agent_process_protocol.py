@@ -1098,3 +1098,24 @@ def _receive_control(connection: socket.socket) -> dict[str, object]:
     assert isinstance(response, dict)
     assert encode_control_frame(response) == bytes(response_bytes)
     return response
+
+
+def test_a_launch_request_without_the_directory_identity_is_refused_by_name() -> None:
+    """A request from an older build is refused rather than launched unchecked.
+
+    Both sides of this protocol land together, so this is the net under a mixed
+    state and not the ordinary path: a watchdog that accepted the older shape
+    would start a provider in a directory nobody compared against the lease.
+    """
+
+    older = {
+        "arguments": ["/bin/provider"],
+        "environment": [],
+        "operation": "LAUNCH",
+        "standard_input": "",
+        "standard_output_frame_bytes": 17,
+        "working_directory": "/leased",
+    }
+
+    with pytest.raises(ValueError, match="unexpected fields"):
+        watchdog_module._decode_launch_request(older)

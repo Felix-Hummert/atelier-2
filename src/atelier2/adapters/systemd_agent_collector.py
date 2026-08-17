@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.adapters.systemd_generation_records import (
     DirectSystemdGenerationRecords,
     DirectSystemdInvocationId,
@@ -74,6 +75,8 @@ class DirectSystemdLaunch:
 
     command: AgentProcessCommand
     working_directory: Path
+    device: int
+    inode: int
 
 
 def encode_direct_systemd_launch_envelope(
@@ -88,6 +91,8 @@ def encode_direct_systemd_launch_envelope(
         "type": "LAUNCH",
         "version": _LAUNCH_ENVELOPE_VERSION,
         "working_directory": str(invocation.lease.working_directory),
+        "working_directory_device": invocation.lease.device,
+        "working_directory_inode": invocation.lease.inode,
     }
     payload = encode_canonical_systemd_json(value)
     if len(payload) > MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES:
@@ -107,6 +112,8 @@ def decode_direct_systemd_launch_envelope(payload: bytes) -> DirectSystemdLaunch
         "type",
         "version",
         "working_directory",
+        "working_directory_device",
+        "working_directory_inode",
     }
     if (
         set(value) != fields
@@ -132,7 +139,16 @@ def decode_direct_systemd_launch_envelope(payload: bytes) -> DirectSystemdLaunch
         raise ValueError("direct systemd launch input exceeds its exact bound")
     working_directory = value["working_directory"]
     standard_output_limit = value["standard_output_limit"]
-    if type(working_directory) is not str or type(standard_output_limit) is not int:
+    device = value["working_directory_device"]
+    inode = value["working_directory_inode"]
+    if (
+        type(working_directory) is not str
+        or type(standard_output_limit) is not int
+        or type(device) is not int
+        or type(inode) is not int
+        or device < 0
+        or inode < 0
+    ):
         raise ValueError("direct systemd launch envelope values are malformed")
     return DirectSystemdLaunch(
         AgentProcessCommand(
@@ -142,6 +158,8 @@ def decode_direct_systemd_launch_envelope(payload: bytes) -> DirectSystemdLaunch
             standard_output_frame_bytes=standard_output_limit,
         ),
         Path(working_directory),
+        device,
+        inode,
     )
 
 
@@ -192,14 +210,19 @@ def collect_direct_systemd_agent_process(
     try:
         # A crash from durable STARTED onward deliberately sacrifices retry to
         # keep provider execution at most once.
-        process = popen(
-            launch.command.arguments,
-            cwd=launch.working_directory,
-            env=dict(launch.command.environment),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        entered = entered_leased_directory(
+            launch.working_directory, launch.device, launch.inode
         )
+        with entered as (leased_cwd, leased_descriptor):
+            process = popen(
+                launch.command.arguments,
+                cwd=leased_cwd,
+                pass_fds=(leased_descriptor,),
+                env=dict(launch.command.environment),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
     except (OSError, subprocess.SubprocessError, ValueError):
         result = DirectSystemdResult(
             started_hash,

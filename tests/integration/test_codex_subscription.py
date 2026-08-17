@@ -39,13 +39,15 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_executions import (
-    AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
-from tests.scenarios.agents import agent_attempt_execution
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    leased_directory_identity,
+)
 
 MEASURED_CODEX_VERSION = "0.147.0"
 
@@ -146,7 +148,7 @@ def leased(
 
     return AgentProcessInvocation(
         command,
-        AgentAttemptWorkspaceLease(
+        leased_directory_identity(
             agent_attempt_execution(request).attempt_id, workspace
         ),
     )

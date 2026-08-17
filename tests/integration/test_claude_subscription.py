@@ -70,7 +70,6 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptSucceeded,
 )
 from atelier2.ports.agent_executions import (
-    AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
     AgentProcessCommand,
     AgentProcessCompletion,
@@ -88,6 +87,7 @@ from tests.scenarios.agents import (
     claude_subscription_deployment,
     claude_subscription_runtime,
     claude_subscription_start,
+    leased_directory_identity,
     runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_api_client
@@ -228,7 +228,7 @@ def leased(
 
     return AgentProcessInvocation(
         command,
-        AgentAttemptWorkspaceLease(
+        leased_directory_identity(
             agent_attempt_execution(request).attempt_id, workspace
         ),
     )
