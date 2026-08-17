@@ -99,8 +99,14 @@ class ScriptedQueries:
     def get_run(self, run_id: Any, projection_limit: Any = None) -> Any:
         return self._record(run_id)
 
-    def list_runs(self, after: Any, limit: int, projection_limit: Any = None) -> Any:
-        return self._record(after, limit)
+    def list_runs(
+        self,
+        after: Any,
+        limit: int,
+        state: Any = None,
+        projection_limit: Any = None,
+    ) -> Any:
+        return self._record(after, limit, state)
 
     def get_node_detail(self, run_id: Any, node_id: str) -> Any:
         return self._record(run_id, node_id)
@@ -223,7 +229,7 @@ def test_a_read_asks_its_port_with_exactly_what_the_caller_named() -> None:
 
     list_runs(RUN_ID, 25, queries)
 
-    assert queries.asked == [(RUN_ID, 25)]
+    assert queries.asked == [(RUN_ID, 25, None)]
 
 
 def test_list_agent_configuration_revisions_becomes_this_layers_own_outcome() -> None:

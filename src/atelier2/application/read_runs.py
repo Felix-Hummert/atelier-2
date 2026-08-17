@@ -21,7 +21,7 @@ from atelier2.contracts.run_projections import (
     RunPage,
     RunProjection,
 )
-from atelier2.contracts.runs import RunId
+from atelier2.contracts.runs import RunId, RunState
 from atelier2.ports.run_queries import (
     NodeDetailFound,
     NodeQueryMissing,
@@ -130,8 +130,9 @@ def list_runs(
     after: RunId | None,
     limit: int,
     queries: RunQueries,
+    state: RunState | None = None,
 ) -> ListRunsResult:
-    match queries.list_runs(after, limit):
+    match queries.list_runs(after, limit, state):
         case RunPage(runs, next_after):
             return RunsListed(runs, next_after)
         case PortReadUnavailable(detail):

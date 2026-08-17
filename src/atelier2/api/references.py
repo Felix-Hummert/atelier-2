@@ -17,6 +17,10 @@ MAXIMUM_RUN_AGENT_BINDINGS = 100
 # whole instruction in UTF-8 bytes; this glance is a character count the
 # edge decides once, so two shapes cannot pick two lengths.
 MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS = 120
+# Wire-owned: a validation loc and its reason have no durable owner, so the
+# problem object decides the glance once.
+MAXIMUM_INVALID_FIELD_PATH_CHARACTERS = 256
+MAXIMUM_INVALID_FIELD_REASON_CHARACTERS = 512
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"
