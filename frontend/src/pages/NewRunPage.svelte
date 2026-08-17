@@ -64,15 +64,12 @@
   let selectionGeneration = 0;
 
   /**
-   * Whether this cockpit can carry a run of that revision, which is narrower
-   * than whether the server can start one.
+   * Whether this cockpit can carry a run of that revision.
    *
-   * The server answers a version 3 run now, and its own rule decides whether a
-   * document is executable. What this cockpit still lacks is a way to draw one:
-   * the wire carries no node list for a version 3 graph, so `executableGraph`
-   * refuses it and the run page has nothing to walk. Offering Start here would
-   * hand the operator a run the next screen cannot show, so the picker waits for
-   * the head that gives a version 3 graph its nodes.
+   * It asks one thing: can the server execute this document. The picker used to
+   * ask a second -- whether this cockpit could draw the run -- and refused every
+   * version 3 revision on that ground. The run page reads one now, so the extra
+   * condition is gone and this reads what it enforces.
    */
   function cockpitCanShow(revision: WorkflowRevisionSummary): boolean {
     return revision.executable;

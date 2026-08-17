@@ -12,6 +12,7 @@ from atelier2.contracts.node_records_v3 import (
     NodeExecutionRequest,
     NodeReceipt,
     NodeReceiptHash,
+    RunInput,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, PublishedRevisionHash
 from atelier2.contracts.run_bindings import AnyRun
@@ -86,6 +87,7 @@ type DurablePublishedRunResult = (
     | DurableAgentExecutorCapabilityUnavailable
     | DurableWriteUnavailable
     | DurableStateCorrupt
+    | DurableV3StartInputRefused
 )
 
 
@@ -102,7 +104,50 @@ class StartPublishedRunRequestV2:
     agent_bindings: AgentBindingSet
 
 
-type AnyStartPublishedRunRequest = StartPublishedRunRequest | StartPublishedRunRequestV2
+class V3InputRefusal(StrEnum):
+    """Every named way one order stops a start before anything is written."""
+
+    MISSING = "missing"
+    UNDECLARED = "undeclared"
+    DUPLICATED = "duplicated"
+    SCHEMA_MISMATCH = "schema-mismatch"
+    VALUE_REFUSED = "value-refused"
+
+
+@dataclass(frozen=True)
+class DurableV3StartInputRefused:
+    """One order the start cannot honour, named by the input it is about.
+
+    The name comes first because it is what an operator fixes: a refusal that
+    said only "schema violated" would send them to read the document to find out
+    which order they got wrong.
+    """
+
+    name: str
+    refusal: V3InputRefusal
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class StartPublishedRunRequestV3:
+    """A start that carries the orders the document declares, beside it.
+
+    It is a third shape rather than a field on the V2 one because an order only
+    exists for a V3 document, and a request that could carry one for a V1 or V2
+    run would describe something no graph can read. A V3 document that declares
+    no `graph_inputs` still starts through the V2 shape; what refuses a missing
+    order is the order itself being absent, not the shape of the request.
+    """
+
+    run_id: RunId
+    revision_hash: WorkflowRevisionHash
+    agent_bindings: AgentBindingSet
+    run_inputs: tuple[RunInput, ...] = ()
+
+
+type AnyStartPublishedRunRequest = (
+    StartPublishedRunRequest | StartPublishedRunRequestV2 | StartPublishedRunRequestV3
+)
 
 
 class DurablePublishedRunStarter(Protocol):

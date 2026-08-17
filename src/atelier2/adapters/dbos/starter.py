@@ -13,6 +13,7 @@ from atelier2.adapters.dbos.agent_catalog import (
     agent_configuration_from_record,
     auth_profile_from_record,
 )
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import (
     entry_node_of,
     run_from_record,
@@ -31,18 +32,19 @@ from atelier2.adapters.dbos.schema import (
     published_revisions,
     run_agent_bindings,
     run_configuration_revisions,
+    run_inputs_v3,
     runs,
     workflow_revisions,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.yaml_workflows import (
-    FORMAT_V3_NOT_EXECUTABLE,
     InvalidWorkflowDocument,
     WorkflowFormatNotExecutable,
     parse_executable_workflow_document,
     parse_workflow_document,
 )
+from atelier2.application.bind_run_configuration import bind_run_configuration
 from atelier2.contracts.agents import (
     AgentBindingSet,
     ResolvedAgentBinding,
@@ -52,12 +54,13 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
     PersistedReceiptDisposition,
     ReceiptOutput,
+    RunInput,
 )
-from atelier2.contracts.revisions_v3 import RevisionKind
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import (
+    ReferenceResolutionRefused,
     RunConfigurationRevision,
-    declared_references,
 )
 from atelier2.contracts.runs import (
     RunId,
@@ -65,6 +68,13 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.schemas_v3 import (
+    InstanceRefused,
+    SchemaRefused,
+    read_instance_document,
+    read_schema_document,
+)
+from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows import (
     AgentNodeV2,
     WorkflowGraph,
@@ -92,13 +102,17 @@ from atelier2.ports.durable_runs import (
     DurableV3RunExisting,
     DurableV3StartBindingInvalid,
     DurableV3StartConflict,
+    DurableV3StartInputRefused,
     DurableV3StartWithReceiptResult,
     DurableWriteUnavailable,
     StartPublishedRunRequest,
     StartPublishedRunRequestV2,
+    StartPublishedRunRequestV3,
     StartV3RunWithReceiptRequest,
+    V3InputRefusal,
     V3StartRecord,
 )
+from atelier2.ports.published_revisions import PublishedRevisionResolver
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
     DurableRevisionCreated,
@@ -371,22 +385,147 @@ def _v3_run_configuration(
     graph: WorkflowGraphV3,
     revision_hash: WorkflowRevisionHash,
     binding_set: AgentBindingSet,
+    resolver: PublishedRevisionResolver,
 ) -> RunConfigurationRevision:
-    """The exact snapshot a V3 run is bound to.
+    """The exact snapshot a V3 run is bound to, with every reference resolved.
 
-    The admitted shape declares no versioned reference at all -- every optional
-    form is refused before a run exists -- so the matrix is empty and complete,
-    and no registry is consulted because there is nothing to look up. A document
-    that ever declares one refuses here rather than persisting a run whose own
-    configuration nobody resolved.
+    This used to refuse any declared reference, because the admitted shape could
+    not carry one and no resolver stood on this path. A `graph_inputs` entry is a
+    declared `schema` reference, so admitting orders meant giving that resolution
+    its production caller rather than writing a second one: `bind_run_configuration`
+    already freezes the matrix, and a run whose own configuration nobody resolved
+    is exactly what it exists to prevent.
+
+    The binding is empty because the admitted shape has no subworkflow node. A
+    document that grows one resolves its child through the binder that read it,
+    which is the parameter this passes through untouched.
     """
-    declared = declared_references(graph)
-    if declared:
-        raise WorkflowFormatNotExecutable(
-            f"{FORMAT_V3_NOT_EXECUTABLE}: {len(declared)} declared references "
-            "that no resolver binds at this seam"
+    return bind_run_configuration(
+        revision_hash,
+        graph,
+        SubworkflowBinding(),
+        binding_set.binding_set_hash,
+        resolver,
+    )
+
+
+def _supplied_orders(request: AnyStartPublishedRunRequest) -> tuple[RunInput, ...]:
+    """The orders this start carries, for a request shape that can carry any."""
+    return request.run_inputs if isinstance(request, StartPublishedRunRequestV3) else ()
+
+
+def _refused_order(
+    connection: Connection,
+    graph: WorkflowGraphV3,
+    run_configuration: RunConfigurationRevision,
+    orders: tuple[RunInput, ...],
+) -> DurableV3StartInputRefused | None:
+    """The first order this start cannot honour, named by the input it is about.
+
+    ADR 0006 binds a root run to every `graph_input` its document declares, and a
+    missing one refuses the start naming the input. The same door refuses an order
+    the document never declared, one whose schema is not the schema the document
+    pinned, and a value that schema does not admit -- each before any row exists,
+    because an order nobody could read is not a run to clean up.
+
+    A schema that is not readable as a schema is not answered here. The reference
+    that pins it was already resolved to build the configuration this reads, and
+    that resolution refuses unusable schema bytes at the document -- so reaching
+    this point means the pinned schema is one this product enforces.
+    """
+    declared = {entry.name: entry for entry in graph.graph_inputs}
+    supplied = {order.name: order for order in orders}
+    if len(supplied) != len(orders):
+        duplicated = next(
+            order.name
+            for index, order in enumerate(orders)
+            if order.name in {other.name for other in orders[:index]}
         )
-    return RunConfigurationRevision(revision_hash, binding_set.binding_set_hash, ())
+        return DurableV3StartInputRefused(
+            duplicated,
+            V3InputRefusal.DUPLICATED,
+            "one name answers one order, and this start supplied it twice",
+        )
+    for name in declared:
+        if name not in supplied:
+            return DurableV3StartInputRefused(name, V3InputRefusal.MISSING)
+    for name, order in supplied.items():
+        if name not in declared:
+            return DurableV3StartInputRefused(name, V3InputRefusal.UNDECLARED)
+        pinned = _resolved_graph_input_schema(run_configuration, name)
+        if pinned != order.schema_revision:
+            return DurableV3StartInputRefused(
+                name,
+                V3InputRefusal.SCHEMA_MISMATCH,
+                f"the document pinned {'nothing' if pinned is None else pinned.value}",
+            )
+        document = connection.scalar(
+            sa.select(published_revisions.c.document).where(
+                published_revisions.c.kind == RevisionKind.SCHEMA.value,
+                published_revisions.c.revision_hash == order.schema_revision.value,
+            )
+        )
+        if document is None:
+            raise RuntimeError("a resolved schema revision is absent from the store")
+        match read_schema_document(bytes(document)):
+            case SchemaRefused() as unreadable:
+                # The reference that pins this schema resolved before the run
+                # configuration was built, and that resolution reads the bytes.
+                # Reaching this means the store answered differently twice.
+                raise RuntimeError(
+                    f"a resolved schema revision is not one: {unreadable}"
+                )
+            case schema:
+                verdict = read_instance_document(order.value, schema)
+        if isinstance(verdict, InstanceRefused):
+            return DurableV3StartInputRefused(
+                name, V3InputRefusal.VALUE_REFUSED, str(verdict)
+            )
+    return None
+
+
+def _requested_orders(orders: tuple[RunInput, ...]) -> tuple[tuple[str, str, str], ...]:
+    """The named order set a start asks for, as durable identity reads it.
+
+    Keyed by name rather than by arrival, because the caller's sequence is not
+    what the run keeps: `run_inputs_v3` has no position column on purpose, so two
+    starts that supply the same orders in different sequences are the same run.
+    """
+    return tuple(
+        sorted(
+            (order.name, order.schema_revision.value, order.value_hash.value)
+            for order in orders
+        )
+    )
+
+
+def _stored_orders(
+    connection: Connection, run_id: RunId
+) -> tuple[tuple[str, str, str], ...]:
+    """The named order set this run already carries, read the same way."""
+    return tuple(
+        sorted(
+            (
+                str(record["name"]),
+                str(record["schema_revision_hash"]),
+                str(record["value_hash"]),
+            )
+            for record in connection.execute(
+                sa.select(run_inputs_v3).where(run_inputs_v3.c.run_id == run_id.value)
+            ).mappings()
+        )
+    )
+
+
+def _resolved_graph_input_schema(
+    run_configuration: RunConfigurationRevision, name: str
+) -> PublishedRevisionHash | None:
+    """The schema revision the document's own resolution pinned for one order."""
+    for resolved in run_configuration.resolutions:
+        site = resolved.site
+        if site.field == "graph_inputs.schema" and site.entry == name:
+            return resolved.revision_hash
+    return None
 
 
 class DbosDurableRunStarter:
@@ -399,6 +538,7 @@ class DbosDurableRunStarter:
         self._engine = engine
         self._settings = settings
         self._agent_executor_registry = agent_executor_registry
+        self._published_revisions = DbosCatalogStore(engine)
 
     def start_published(
         self, request: AnyStartPublishedRunRequest
@@ -442,14 +582,21 @@ class DbosDurableRunStarter:
             graph = parse_executable_workflow_document(revision.document)
             run_configuration: RunConfigurationRevision | None = None
             if isinstance(graph, WorkflowGraphV3):
-                if not isinstance(request, StartPublishedRunRequestV2):
+                if not isinstance(
+                    request, (StartPublishedRunRequestV2, StartPublishedRunRequestV3)
+                ):
                     return DurableInvalidAgentBindings()
                 run_configuration = _v3_run_configuration(
                     graph,
                     WorkflowRevisionHash(revision.revision_hash.value),
                     request.agent_bindings,
+                    self._published_revisions,
                 )
-        except WorkflowFormatNotExecutable:
+        except (WorkflowFormatNotExecutable, ReferenceResolutionRefused):
+            # A reference the document pins that no published revision answers --
+            # or answers with bytes this product cannot read as a schema -- is a
+            # statement about the document, not about the store: the same answer
+            # an uninterpreted node kind gets, for the same reason.
             return DurableRunFormatNotExecutable()
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
@@ -489,7 +636,10 @@ class DbosDurableRunStarter:
                     # V3's Agent kind binds its role exactly as V2's does, so the
                     # resolution below is shared rather than copied. What differs
                     # is only where the run starts, which `entry_node_of` answers.
-                    if not isinstance(request, StartPublishedRunRequestV2):
+                    if not isinstance(
+                        request,
+                        (StartPublishedRunRequestV2, StartPublishedRunRequestV3),
+                    ):
                         return DurableInvalidAgentBindings()
                     expected_roles = {
                         node.role
@@ -518,6 +668,8 @@ class DbosDurableRunStarter:
                             != graph.format_version
                             or str(existing_record["agent_binding_set_hash"])
                             != binding_set.binding_set_hash.value
+                            or _stored_orders(connection, request.run_id)
+                            != _requested_orders(_supplied_orders(request))
                         ):
                             return DurableRunIdentityConflict()
                         return DurableRunExisting(
@@ -573,6 +725,19 @@ class DbosDurableRunStarter:
                     resolved_bindings = tuple(resolved)
                 else:
                     assert_never(graph)
+
+                orders = _supplied_orders(request)
+                if run_configuration is not None and isinstance(graph, WorkflowGraphV3):
+                    # Inside the serialized transaction and before the first row,
+                    # so a refused order leaves no run, no configuration and no
+                    # enqueue behind rather than a start to clean up.
+                    refused = _refused_order(
+                        connection, graph, run_configuration, orders
+                    )
+                    if refused is not None:
+                        return refused
+                elif orders:
+                    return DurableInvalidAgentBindings()
 
                 workflow_id = bootstrap_workflow_id_for(request.run_id)
                 if run_configuration is not None:
@@ -663,6 +828,8 @@ class DbosDurableRunStarter:
                         or int(existing_record["workflow_format_version"])
                         != graph.format_version
                         or existing_set != requested_set
+                        or _stored_orders(connection, request.run_id)
+                        != _requested_orders(orders)
                     ):
                         return DurableRunIdentityConflict()
                     return DurableRunExisting(run)
@@ -680,6 +847,23 @@ class DbosDurableRunStarter:
                                 ),
                             }
                             for binding in binding_set.bindings
+                        ],
+                    )
+                if orders:
+                    # Written beside the run rather than into it: the same
+                    # published revision serves every order, so the order belongs
+                    # to this run and the document belongs to all of them.
+                    connection.execute(
+                        run_inputs_v3.insert(),
+                        [
+                            {
+                                "run_id": request.run_id.value,
+                                "name": order.name,
+                                "schema_revision_hash": order.schema_revision.value,
+                                "value": order.value,
+                                "value_hash": order.value_hash.value,
+                            }
+                            for order in orders
                         ],
                     )
                 options: EnqueueOptions = {

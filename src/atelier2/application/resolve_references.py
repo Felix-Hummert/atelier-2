@@ -36,7 +36,7 @@ from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionMissing,
-    PublishedRevisionRegistry,
+    PublishedRevisionResolver,
 )
 
 type ReferenceResolution = ResolvedReference | ReferenceRefusal
@@ -58,7 +58,7 @@ def bound_children(binding: SubworkflowBinding) -> BoundChildren:
 
 def resolve_declared_reference(
     declared: DeclaredReference,
-    registry: PublishedRevisionRegistry,
+    resolver: PublishedRevisionResolver,
     children: BoundChildren,
 ) -> ReferenceResolution:
     """The published revision one declared reference binds, or the named refusal."""
@@ -72,7 +72,7 @@ def resolve_declared_reference(
             declared,
             "a pinned revision must be 64 lowercase hexadecimal characters",
         )
-    resolved = registry.resolve(declared.kind, revision_hash)
+    resolved = resolver.resolve(declared.kind, revision_hash)
     match resolved:
         case PublishedRevisionFound(revision):
             if revision.kind is not declared.kind:
