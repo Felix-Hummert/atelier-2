@@ -46,3 +46,23 @@ text = "Every V3 document outside that shape is refused by name before anything 
 [[sentence]]
 id = "a-public-start-refuses-a-v3-revision-before-any-write"
 text = "The public start route refuses a V3 revision before it writes anything: no run row, no agent binding row and no enqueued bootstrap, so a revision no runtime can execute never becomes durable state that a later read has to explain."
+
+[[sentence]]
+id = "a-v3-agent-node-reaches-the-durable-attempt-path"
+text = "A V3 agent node is admitted by the durable attempt store under the same role binding, attempt identity and provider contract a V2 node uses, while a run that does not exist is still refused by name."
+
+[[sentence]]
+id = "a-completed-v3-attempt-reaches-the-runs-terminal-hash"
+text = "A V3 agent attempt that succeeds records the provider's receipt and carries its own run to COMPLETED with a terminal hash, exactly as a V2 attempt does; a V3 node that is not its run's sink is refused by name instead of advanced, because choosing what runs next is the ready set's decision and not this one's."
+
+# OPEN, AND NAMED RATHER THAN NARROWED. The `node-receipt/v3` link from that
+# provider receipt into the event chain -- `NodeReceipt.agent_receipt_hash` and
+# `RunEvent.node_receipt_hash` -- is not written by this head, because a
+# `NodeReceipt` names a `node-execution-request/v3` hash and a
+# `context-package/v3` hash and no production code authors either record: ADR 0006
+# binds the manifest to material written once before START, and the request binds
+# the run configuration revision `RunV3` documents as unreconstructed. The attempt
+# path holds an `AgentExecutionRequestV2`, framed under a different domain, so
+# carrying its hash across would publish a receipt whose request hash recomputes
+# to nothing. The two durable columns wait on that author rather than landing
+# without a writer, and the schema stays at V12 until they have one.

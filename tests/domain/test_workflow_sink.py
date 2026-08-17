@@ -191,3 +191,22 @@ def test_v3_multi_sink_completion_is_refused_until_all_sinks_have_an_owner() -> 
         is_sink_node(graph, "first")
 
     assert refused.value.sink_node_ids == ("first", "second")
+
+
+@pytest.mark.proves("a-completed-v3-attempt-reaches-the-runs-terminal-hash")
+def test_a_v3_sink_completes_its_run_and_a_non_sink_is_refused_by_name() -> None:
+    """The V3 half this cut needs, and the half it declines to decide.
+
+    A finished V3 node used to reach for a V1 spelling that is not there, which
+    raised `AttributeError` from inside a durable transition. The sink half is
+    answered here; advancing past a node that is not a sink needs the ready set
+    and its join semantics, so it is refused by name instead of guessed.
+    """
+    graph = v3_graph()
+    sink = graph.sink_node_ids[0]
+    waiting = next(node.id for node in graph.nodes if node.id != sink)
+
+    assert completion_after_node(graph, sink) == RunCompletes()
+
+    with pytest.raises(ValueError, match="is not a sink"):
+        completion_after_node(graph, waiting)
