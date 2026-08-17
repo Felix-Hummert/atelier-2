@@ -26,6 +26,7 @@ from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
+    run_agent_bindings,
     run_configuration_revisions,
     runs,
 )
@@ -36,6 +37,7 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.workflow import EncodedAgentBindingV2, _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -68,7 +70,7 @@ from atelier2.ports.durable_runs import (
 )
 from atelier2.ports.run_queries import RunFound
 from tests.scenarios.agents import failing_agent_executor_factory
-from tests.scenarios.api import durable_queries
+from tests.scenarios.api import durable_api_client, durable_queries
 
 ONE_AGENT_DOCUMENT = b"""format_version: 3
 name: One agent
@@ -222,6 +224,56 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
     )
 
 
+@pytest.mark.proves("a-public-start-refuses-a-v3-revision-before-any-write")
+def test_the_public_start_route_refuses_a_v3_revision_with_no_row_and_no_enqueue(
+    runtime: DbosRuntime,
+) -> None:
+    """The route must not start what it cannot answer with.
+
+    The runtime drives a V3 line now, but the API still has no resource to render
+    one, so a start over HTTP wrote the run, enqueued its bootstrap, drove it to
+    completion in the background -- and then raised on the missing resource. The
+    caller was told the request failed while a run of its making was already
+    running: durable state on one side, a 500 on the other.
+
+    That is the half of the original refusal whose reason never expired. It is
+    re-declared here as a named stopgap at the layer that actually lacks
+    something, and it is removed by the head that gives a V3 run its own wire
+    resource -- not by anyone widening what the API pretends to serve.
+    """
+    workflow, bindings = publish(runtime)
+
+    refused = durable_api_client(runtime).post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 2,
+            "run_id": RUN.value,
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+                for binding in bindings.bindings
+            ],
+        },
+    )
+
+    assert refused.status_code == 409
+    assert refused.json()["type"].endswith(":run-resource-unavailable-for-format")
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(run_agent_bindings)
+            )
+            == 0
+        )
+        assert connection.scalar(sa.text("SELECT COUNT(*) FROM workflow_status")) == 0
+
+
 @pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
 def test_a_started_v3_run_reads_back_through_the_durable_query(
     runtime: DbosRuntime,
@@ -234,10 +286,9 @@ def test_a_started_v3_run_reads_back_through_the_durable_query(
     from inside the adapter. Nothing noticed, because the public start refused the
     family before a V3 run could ever be read.
 
-    The API above this still refuses to render a V3 run -- what one answers with
-    on the wire is #85's decision, and it is refused by name rather than dressed
-    up as a V2 shape. That refusal is the point: this layer must reach it instead
-    of crashing under it.
+    The API above this still cannot render a V3 run, and the route refuses a start
+    it could not answer rather than dressing one up as a V2 shape. That refusal is
+    the point: this layer must reach it instead of crashing under it.
     """
     workflow, bindings = publish(runtime)
     DbosDurableRunStarter(

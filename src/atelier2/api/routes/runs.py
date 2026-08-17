@@ -51,6 +51,7 @@ from atelier2.application.answer_wait import (
 )
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
 from atelier2.application.read_runs import RunsListed
+from atelier2.application.read_workflow_revisions import WorkflowRevisionRead
 from atelier2.application.reconcile_effect import (
     ReconciliationAcceptedPending,
     ReconciliationCommandConflict,
@@ -95,7 +96,10 @@ from atelier2.contracts.effects import (
     ReconcileActor,
     ReconcileCommandId,
 )
-from atelier2.contracts.runs import RunId
+from atelier2.contracts.run_configuration_v3 import declared_references
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
+from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
@@ -138,6 +142,7 @@ async def start_run_route(
             )
             for binding in body.agent_bindings
         )
+    await _refuse_a_format_this_api_cannot_answer_with(revision_hash, context)
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.start_published_run(run_id, revision_hash, bindings),
@@ -166,6 +171,57 @@ async def start_run_route(
         case _ as unreachable:
             assert_never(unreachable)
     return resource_response(await _run_resource_of(run_id, context), status)
+
+
+async def _refuse_a_format_this_api_cannot_answer_with(
+    revision_hash: WorkflowRevisionHash, context: ApiContext
+) -> None:
+    """A NAMED STOPGAP, removed by the head that gives a V3 run a wire resource.
+
+    The runtime drives a V3 line end to end, and `run_resource` still has nothing
+    to render one with: the V1 and V2 shapes are frozen and a V3 run stands on an
+    agent sink their state rules forbid. Started over HTTP, that combination wrote
+    the run, enqueued its bootstrap and drove it to completion -- and then raised
+    on the missing resource, so the caller read a 500 while a run of its making
+    was already running.
+
+    Refusing before the write is the bridge, not the answer. It restores the one
+    guarantee that survived the family seam's removal -- a start this API cannot
+    answer leaves nothing behind -- and it disappears the moment a V3 run can be
+    served, which is the successor's whole job. Widening what the API pretends to
+    serve would be the dishonest way out of the same defect.
+
+    It refuses only what would otherwise be started and then be unanswerable, so
+    it mirrors the conditions a successful start needs rather than the format
+    alone: a document that does not parse as executable, or that declares a
+    reference the start seam binds nothing for, falls through and is named by the
+    start path -- an uninterpreted node kind, a branch nothing chooses between, an
+    authored form nothing binds. Those answers are more informative than this one
+    and must keep winning, which is how `every-v3-shape-no-runtime-binds-is-
+    refused-by-name` stays true rather than being quietly traded for a vaguer
+    refusal. Mirroring another module's conditions is a cost this bridge pays
+    knowingly, and it is paid off by deleting the bridge, not by growing it.
+
+    Every other outcome falls through untouched: the start path keeps owning
+    missing revisions, bad bindings and the rest.
+    """
+    read = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.get_workflow_revision(revision_hash),
+    )
+    if not isinstance(read, WorkflowRevisionRead):
+        return
+    if not isinstance(read.projection.graph, WorkflowGraphV3):
+        return
+    try:
+        graph = context.ports.workflow_document_parser(
+            read.projection.revision.document
+        )
+    except WorkflowDocumentInvalid:
+        return
+    if not isinstance(graph, WorkflowGraphV3) or declared_references(graph):
+        return
+    raise ApiProblem("run-resource-unavailable-for-format")
 
 
 @router.get(API_PREFIX + "/runs", response_model=AnyRunPageResource)
