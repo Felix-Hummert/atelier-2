@@ -263,8 +263,11 @@ else: no route, no rendering and no stored shape carries it. Behind that, nothin
 the registries are ports a caller supplies. A durable catalog adapter now
 publishes exact revision bytes, founds a named lineage through a typed writer
 that derives the lineage id, and resolves an admitted name or lineage id to
-those bytes; run-configuration binding is still lineage-free and a reference's
-`ref` is carried into that snapshot without calling `resolve_reference`. A
+those bytes. A workflow already published through `POST /workflow-revisions`
+is named through `POST /workflow-lineages` from those same bytes and the same
+hash; founding does not invent a second identity. Run-configuration binding is
+still lineage-free and a reference's `ref` is carried into that snapshot
+without calling `resolve_reference`. A
 64-hex query is a lineage id; anything else is a display name. A retired
 lineage is refused by id or any alias. There is no capability attestation, and
 no runtime executes a child.
@@ -375,17 +378,30 @@ a decision the command cannot make — a waiting node, an unknown effect outcome
 failed agent attempt — ends it by name with a nonzero exit code instead of
 waiting. Exit 0 says the command read that run's history as far as the run's own
 latest event, so a history that broke off is refused by name and a truncated or
-empty output is never dressed as a receipt. The
-job still travels inside the published document, so one distinct input burns one
-revision, and neither a run-level input, a workflow name, nor an output contract
-that could decide an exit code exists yet.
+empty output is never dressed as a receipt. A
+run started through `start_published` now carries its order beside the document:
+the exact bytes are stored under the run and the name its author declared,
+immutably, and the agent whose node reads that order is handed it -- so one
+published revision serves every order instead of one revision per distinct input.
+An order is refused before any row exists when it is missing, undeclared,
+supplied twice, pinned to another schema than the document named, or is a value
+that schema does not admit. Only an order the graph declares binds today; an
+input reading another node's output, a node receipt, a context entry or an
+authored constant is refused by the source it named. A workflow name is no
+longer among what is missing either: `--name` runs the revision a catalog name
+holds, asked of the service before anything is written and at the lineage member
+`--position` names, so an operator starts named work without translating a name
+into a hash by hand. The command does not yet carry an order of its own -- that
+seam is `start_published` -- and an output contract that could decide an exit
+code still does not exist.
 
-The canonical store is schema V13. A fresh store is created as exact V13 and
+The canonical store is schema V14. A fresh store is created as exact V14 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
 access bindings, and the immutable declared context packages, node-execution request
-preimages and run configuration snapshots those receipts name. A typed in-process writer can commit that exact
+preimages and run configuration snapshots those receipts name, and the immutable
+orders a run was started with. A typed in-process writer can commit that exact
 supervised V3 start as one atomic set. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An

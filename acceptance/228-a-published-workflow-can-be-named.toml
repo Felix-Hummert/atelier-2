@@ -1,0 +1,20 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/228"
+
+# THE HTTP PUBLICATION DOOR IS ENOUGH TO NAME A WORKFLOW.
+#
+# POST /workflow-revisions writes workflow_revisions. POST /workflow-lineages
+# then asked the catalog's published_revisions table and 409'd a revision the
+# operator had already published. This sentence binds the live hole: the
+# founding door reads those already-published bytes and admits them. It does
+# not invent a second hash and it does not ask the client for a hidden catalog
+# publish. Re-POST is the same answer.
+#
+# Requirement owner: `docs/requirements/0005-katalog-und-benannte-workflows.md`,
+# REQ-KATALOG-05. Publication and admission stay two acts; the first act is
+# the publication door the operator already has.
+
+[[sentence]]
+id = "a-workflow-published-over-the-api-is-named-over-the-api"
+requirement = "REQ-KATALOG-05"
+text = "A V3 workflow published through POST /workflow-revisions is named through POST /workflow-lineages with that exact hash, actor and activation time, and repeating the founding is the same answer."

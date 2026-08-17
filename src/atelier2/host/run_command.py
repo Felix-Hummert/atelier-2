@@ -9,8 +9,9 @@ not obtain from the same service by hand.
 The API exposes no lookup for a published auth profile or agent configuration,
 so `run` publishes each of them from the operator's own files on every
 invocation. A workflow revision can be looked up by the name its lineage
-carries, which is what `resolve` asks and what a later `run --name` will use;
-`run --workflow` still publishes the document it was handed. All three publications are idempotent: identical
+carries, which is what `resolve` asks and what `run --name` runs, through the
+same question so the two cannot disagree; `run --workflow` publishes the document
+it was handed instead. All three publications are idempotent: identical
 bytes answer with the same hash and change nothing. The run identity is derived
 from those hashes for the same reason, so repeating the command reports the
 first run again instead of starting - and paying for - a second one.
@@ -20,7 +21,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import IO, Final
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
@@ -215,6 +216,23 @@ class RunReport:
     workflow_revision_hash: str
     terminal_hash: str
     outputs: tuple[AgentOutput, ...]
+    resolved_name: NameResolution | None = None
+    """The name this run was started by, where a name is how it was asked for.
+
+    A run started from a document has none, and the receipt says nothing about
+    one rather than inventing a label for bytes the operator handed over.
+    """
+
+
+@dataclass(frozen=True)
+class NamedRunOrder:
+    """Run the workflow a catalog name holds, without naming a document at all."""
+
+    service_url: str
+    name: str
+    bindings: tuple[AgentBindingSource, ...]
+    run_id: str | None
+    position: str = "head"
 
 
 @dataclass(frozen=True)
@@ -272,7 +290,44 @@ def execute_run(order: RunOrder) -> RunReport:
     api = _api_url(order.service_url)
     bindings = tuple(_published_binding(api, source) for source in order.bindings)
     revision_hash = _published_workflow_revision(api, order.workflow_document)
-    run_id = order.run_id or derived_run_id(revision_hash, bindings)
+    return _run_published_revision(api, revision_hash, bindings, order.run_id)
+
+
+def execute_named_run(order: NamedRunOrder) -> RunReport:
+    """Run the workflow a name holds: ask the catalog, then start what it answered.
+
+    The name is resolved before anything is written, and by the same question
+    `resolve` asks -- one owner for what a name means, so this command cannot
+    disagree with that one about which revision an operator meant. Nothing is
+    published: the revision the name holds is already in the store, and
+    republishing it would mint a second identity for the same bytes.
+    """
+
+    api = _api_url(order.service_url)
+    resolution = resolve_published_name(
+        NameOrder(order.service_url, order.name, order.position)
+    )
+    bindings = tuple(_published_binding(api, source) for source in order.bindings)
+    report = _run_published_revision(
+        api, resolution.revision_hash, bindings, order.run_id
+    )
+    return replace(report, resolved_name=resolution)
+
+
+def _run_published_revision(
+    api: str,
+    revision_hash: str,
+    bindings: tuple[AgentRoleBinding, ...],
+    asked_run_id: str | None,
+) -> RunReport:
+    """Start one published revision and report the run that ended.
+
+    Both ways in share this: a run is the same thing whether its revision was
+    published from a document or resolved from a name, and one owner of the start,
+    the reading and the refusals is what keeps the two from drifting apart.
+    """
+
+    run_id = asked_run_id or derived_run_id(revision_hash, bindings)
     started = _decoded(
         _run_resource,
         _post(api + RUN_PATH, _start_request(run_id, revision_hash, bindings)),
@@ -326,6 +381,11 @@ def describe_receipt(report: RunReport) -> str:
 
     lines = [
         f"run: {report.public_run_reference}",
+        *(
+            []
+            if report.resolved_name is None
+            else [f"name: {describe_resolution(report.resolved_name)}"]
+        ),
         f"run identity: {report.run_id}",
         f"workflow revision: {report.workflow_revision_hash}",
         f"terminal hash: {report.terminal_hash}",

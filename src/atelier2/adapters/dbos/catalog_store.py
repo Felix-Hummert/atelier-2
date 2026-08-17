@@ -14,6 +14,7 @@ from atelier2.adapters.dbos.schema import (
     catalog_lineage_retirements,
     catalog_lineages,
     published_revisions,
+    workflow_revisions,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.catalog_v3 import (
@@ -110,6 +111,57 @@ def _published(
     if record is None:
         return None
     return published_revision_from_record(record)
+
+
+def _workflow_publication(
+    connection: sa.Connection, revision: PublishedRevision
+) -> PublishedRevision | None:
+    if revision.kind is not RevisionKind.WORKFLOW:
+        return None
+    record = (
+        connection.execute(
+            sa.select(workflow_revisions).where(
+                workflow_revisions.c.revision_hash == revision.revision_hash.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None:
+        return None
+    stored = PublishedRevision(RevisionKind.WORKFLOW, bytes(record["document"]))
+    if stored.revision_hash.value != record["revision_hash"]:
+        raise ValueError("durable workflow revision hash disagrees with its bytes")
+    if stored != revision:
+        raise ValueError("handed workflow revision disagrees with its published bytes")
+    return stored
+
+
+def _record_publication(
+    connection: sa.Connection, revision: PublishedRevision
+) -> PublishedRevision | None:
+    """The catalog FK needs published_revisions; reuse the existing publication.
+
+    A workflow already published through workflow_revisions keeps that hash.
+    This writes the same bytes under the same hash; it is not a second identity.
+    """
+
+    existing = _published(connection, revision)
+    if existing is not None:
+        if existing != revision:
+            raise ValueError("handed revision disagrees with catalog published bytes")
+        return existing
+    workflow = _workflow_publication(connection, revision)
+    if workflow is None:
+        return None
+    connection.execute(
+        published_revisions.insert().values(
+            kind=workflow.kind.value,
+            revision_hash=workflow.revision_hash.value,
+            document=workflow.document,
+        )
+    )
+    return workflow
 
 
 def _lineage_record(
@@ -393,7 +445,7 @@ class DbosCatalogStore:
             return CatalogLineageIdMismatch(claimed_lineage_id, lineage.lineage_id)
         try:
             with canonical_write_transaction(self._engine) as connection:
-                if _published(connection, revision) is None:
+                if _record_publication(connection, revision) is None:
                     return CatalogAdmissionUnpublished(revision.revision_hash)
                 existing = _lineage_record(connection, lineage.lineage_id)
                 if existing is not None:
@@ -469,7 +521,7 @@ class DbosCatalogStore:
                     )
                 if _is_retired(connection, lineage.lineage_id):
                     return CatalogAdmissionRetired(lineage.lineage_id)
-                if _published(connection, revision) is None:
+                if _record_publication(connection, revision) is None:
                     return CatalogAdmissionUnpublished(revision.revision_hash)
                 existing_member = _member(
                     connection, lineage.lineage_id, revision.revision_hash

@@ -67,6 +67,7 @@ nodes:
   - {id: build, type: agent, role: builder, job: implement, next: done}
 """
 LINEAGES = f"{API_PREFIX}/workflow-lineages"
+REVISIONS = f"{API_PREFIX}/workflow-revisions"
 
 
 @pytest.fixture
@@ -110,6 +111,18 @@ def founding(revision: PublishedRevision, name: str | None = None) -> dict[str, 
     return request
 
 
+def published_over_http(api: TestClient, document: bytes = DOCUMENT) -> str:
+    """The operator door: YAML in, hash out. Not the catalog's second table."""
+
+    response = api.post(
+        REVISIONS,
+        content=document,
+        headers={"content-type": "application/yaml"},
+    )
+    assert response.status_code == 201, response.text
+    return str(response.json()["revision_hash"])
+
+
 def catalog_snapshot(runtime: DbosRuntime) -> dict[str, tuple[tuple[object, ...], ...]]:
     tables = (
         catalog_lineages,
@@ -124,6 +137,33 @@ def catalog_snapshot(runtime: DbosRuntime) -> dict[str, tuple[tuple[object, ...]
             )
             for table in tables
         }
+
+
+@pytest.mark.proves("a-workflow-published-over-the-api-is-named-over-the-api")
+def test_a_workflow_published_over_the_api_is_named_over_the_api(
+    runtime: DbosRuntime,
+) -> None:
+    """The live hole: POST /workflow-revisions then POST /workflow-lineages."""
+
+    api = client(runtime)
+    revision_hash = published_over_http(api)
+    request = {
+        "revision_hash": revision_hash,
+        "actor": "operator",
+        "activated_at": "2026-08-17T00:00:00Z",
+    }
+
+    response = api.post(LINEAGES, json=request)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["display_name"] == NAME
+    assert body["revision_hash"] == revision_hash
+    assert body["revision_number"] == 1
+
+    repeated = api.post(LINEAGES, json=request)
+    assert repeated.status_code == 201, repeated.text
+    assert repeated.json() == body
 
 
 @pytest.mark.proves("a-published-revision-becomes-a-named-lineage-over-the-api")
@@ -155,6 +195,39 @@ def test_the_name_the_api_founded_answers_the_read_door(runtime: DbosRuntime) ->
 
     assert answered.status_code == 200, answered.text
     assert answered.json()["revision_hash"] == revision.revision_hash.value
+
+
+@pytest.mark.proves("a-later-revision-joins-the-lineage-that-already-holds-its-name")
+def test_a_later_http_published_revision_joins_the_named_lineage(
+    runtime: DbosRuntime,
+) -> None:
+    api = client(runtime)
+    first_hash = published_over_http(api)
+    founded = api.post(
+        LINEAGES,
+        json={
+            "revision_hash": first_hash,
+            "actor": "operator",
+            "activated_at": "2026-08-17T00:00:00Z",
+        },
+    )
+    assert founded.status_code == 201, founded.text
+    second_hash = published_over_http(api, RENAMED_DOCUMENT)
+
+    response = api.post(
+        f"{LINEAGES}/{founded.json()['lineage_id']}/members",
+        json={
+            "revision_hash": second_hash,
+            "actor": "operator",
+            "activated_at": "2026-08-17T00:01:00Z",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["revision_number"] == 2
+    assert body["display_name"] == SECOND_NAME
+    assert body["revision_hash"] == second_hash
 
 
 @pytest.mark.proves("a-later-revision-joins-the-lineage-that-already-holds-its-name")
@@ -340,7 +413,12 @@ def test_a_revision_nobody_published_is_refused_by_name(runtime: DbosRuntime) ->
     response = client(runtime).post(LINEAGES, json=founding(unpublished))
 
     assert response.status_code == 409
-    assert response.json()["type"].endswith("catalog-revision-unpublished")
+    problem = response.json()
+    assert problem["type"].endswith("catalog-revision-unpublished")
+    assert problem["detail"] == (
+        "Publish the revision through POST /atelier/api/v1/workflow-revisions "
+        "before giving it a name."
+    )
 
 
 @pytest.mark.proves("an-admission-the-catalog-refuses-is-named-by-its-own-reason")

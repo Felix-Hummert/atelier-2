@@ -71,10 +71,12 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
+from atelier2.ports.run_events import RunEventPage, StreamReady
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
 )
+from tests.scenarios.api import durable_queries
 
 TWO_NODE_DOCUMENT = b"""format_version: 3
 name: Two agents in a line
@@ -268,3 +270,43 @@ def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
         str(run["terminal_hash"])
         == terminal_hash_for(workflow.revision_hash, event_hashes).value
     )
+
+
+def test_the_finished_line_can_have_its_events_read_back(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """A run that ended is a run whose history opens, not one reported corrupt.
+
+    The stream's pre-flight decides whether the head event is the one that ended
+    the run. It knew a single spelling of an ending -- the subworkflow completion
+    a V1 or V2 line ends on -- and a V3 line ends on its **agent** sink, because
+    #194 H1b lifted the terminal condition off the subworkflow node onto the run.
+    So every finished V3 run answered `durable-state-corrupt`: the loudest thing
+    this system can say, about a store that is intact.
+
+    Measured on the operator's own first V3 run before this repair, where the run
+    itself read back at 200 while its events answered 500. The cockpit opens this
+    stream for the run it is showing, so the page rendered and its live view fell
+    straight to disconnected.
+    """
+    started, _ = runtime
+    workflow, bindings = publish_two_node_line(started)
+    DbosDurableRunStarter(
+        started.engine, started.settings, started.agent_executor_registry
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    started.launch()
+    wait_for_state(started, RunState.COMPLETED)
+
+    queries = durable_queries(started.engine)
+    prepared = queries.prepare_run_event_stream(RUN, 0)
+    page = queries.read_run_event_page(RUN, 0, 50)
+
+    assert isinstance(prepared, StreamReady), prepared
+    assert prepared.terminal is True
+    assert prepared.head_sequence == 2
+    # The pre-flight only buys the 200 and the stream headers; this page is what
+    # carries the events to the browser, so a real finished line is read here
+    # rather than only admitted one call earlier.
+    assert isinstance(page, RunEventPage), page
+    assert page.terminal_seen is True
+    assert [event.event.node_id for event in page.events] == ["implement", "review"]

@@ -24,11 +24,12 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
 _VERSION_TWELVE = 12
+_VERSION_THIRTEEN = 13
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -37,7 +38,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V12 adds append-only catalog alias and retirement histories. V13 gives the
 # context-package manifest, the node-execution-request preimage and the run
 # configuration snapshot durable, immutable homes, and records the run
-# configuration revision a supervised V3 run was started under.
+# configuration revision a supervised V3 run was started under. V14 gives the
+# order a run was started with a durable, immutable home, so one published
+# revision serves every order instead of one revision per distinct input.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -46,6 +49,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     11: "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef",
     12: "feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7",
     13: "5782fdc1331c52f3f04097f6a2a6d416ab528d6ee8a6546a7d6435ae9d11c175",
+    14: "6cf56491322e716fce9be2310584ed2b92533961b8fda341bfcc317182432f0a",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -62,6 +66,10 @@ V11_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V12_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWELVE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWELVE],
+)
+V13_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTEEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1013,6 +1021,22 @@ node_receipts_v3 = sa.Table(
         ),
     ),
 )
+run_inputs_v3 = sa.Table(
+    "run_inputs_v3",
+    metadata,
+    sa.Column("run_id", sa.Text, sa.ForeignKey("runs.run_id"), nullable=False),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column("schema_revision_hash", sa.Text, nullable=False),
+    sa.Column("value", sa.LargeBinary, nullable=False),
+    sa.Column("value_hash", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("run_id", "name"),
+    sa.CheckConstraint("length(name) > 0"),
+    sa.CheckConstraint(
+        "length(schema_revision_hash) = 64 "
+        "AND schema_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"),
+)
 run_configuration_revisions = sa.Table(
     "run_configuration_revisions",
     metadata,
@@ -1143,6 +1167,18 @@ _PRODUCT_TRIGGERS = {
                          run_configuration_revision_hash
         ON runs BEGIN
           SELECT RAISE(ABORT, 'run bindings are immutable');
+        END
+    """,
+    "run_inputs_v3_no_update": """
+        CREATE TRIGGER run_inputs_v3_no_update
+        BEFORE UPDATE ON run_inputs_v3 BEGIN
+          SELECT RAISE(ABORT, 'run inputs are immutable');
+        END
+    """,
+    "run_inputs_v3_no_delete": """
+        CREATE TRIGGER run_inputs_v3_no_delete
+        BEFORE DELETE ON run_inputs_v3 BEGIN
+          SELECT RAISE(ABORT, 'run inputs are immutable');
         END
     """,
     "run_configuration_revisions_no_update": """
