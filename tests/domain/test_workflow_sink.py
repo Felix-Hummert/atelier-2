@@ -159,6 +159,19 @@ def test_a_reentered_completed_run_must_stand_on_the_sink() -> None:
         )
 
 
+def test_a_durable_run_head_absent_from_its_graph_is_a_transition_conflict() -> None:
+    graph = _graph(_V1_DOCUMENT)
+    revision = WorkflowRevision(_V1_DOCUMENT)
+
+    with pytest.raises(
+        RunTransitionConflict,
+        match="run current node is absent from its workflow graph",
+    ):
+        validate_run_graph_binding(
+            _completed_run(revision.revision_hash, "not-in-the-graph"), graph
+        )
+
+
 def test_a_one_node_document_completes_on_its_only_node() -> None:
     graph = _graph(_SINGLE_NODE_DOCUMENT)
     revision = WorkflowRevision(_SINGLE_NODE_DOCUMENT)
