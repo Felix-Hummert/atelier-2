@@ -34,7 +34,9 @@ The runtime creates schema V14 only in a truly empty canonical store and reopens
 only an exact V14 product schema. V9, V10, V11, V12, and V13 remain published
 predecessor objects (`V9_SCHEMA_HANDOFF`, `V10_SCHEMA_HANDOFF`,
 `V11_SCHEMA_HANDOFF`, `V12_SCHEMA_HANDOFF`, and `V13_SCHEMA_HANDOFF`) and are not
-opened or migrated. Older, future, malformed, or nonempty unowned stores are
+opened or migrated by runtime. An exact V13 store advances to V14 only through
+the offline `atelier2 migrate` command; older published predecessors stay
+refused by name. Older, future, malformed, or nonempty unowned stores are
 rejected without mutation. There is no runtime downgrade. The published
 `PRODUCT_SCHEMA_HANDOFF` is version 14 with
 product-schema fingerprint
@@ -183,8 +185,10 @@ concurrency simulations, so the exploratory probe is no longer retained.
 Until a named maturity, the product does not promise store compatibility.
 [#16 comment 5307892458](https://github.com/FlexOr2/atelier-2/issues/16#issuecomment-5307892458)
 rules that preserving hops, compatibility layers, and keeping old store shapes
-openable are unnecessary while the store is a prototype. V14 replaces the
-prototype; it does not preserve V13 rows.
+openable are unnecessary while the store is a prototype. Runtime still refuses
+every predecessor. The offline migrate command is the one exception: an exact
+V13 store is raised to V14, preserving product rows, because the hop is
+additive (`run_inputs_v3` was empty in V13).
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the
