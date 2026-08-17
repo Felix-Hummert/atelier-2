@@ -168,6 +168,14 @@ _RECEIPT_FIELD_COLUMNS = frozenset(
 )
 
 
+def _unique_terminal_event_kind(workflow_format_version: int) -> str | None:
+    # V1/V2 complete on one SUBWORKFLOW_COMPLETED sink. A V3 agent line
+    # completes on AGENT_COMPLETED and may carry that kind more than once.
+    if workflow_format_version == 3:
+        return None
+    return RunEventKind.SUBWORKFLOW_COMPLETED.value
+
+
 def _bounded_projection_select(
     table: sa.Table,
     projection_limit: DurableProjectionLimit,
@@ -932,9 +940,11 @@ class DbosQueries:
             with self._connection() as connection:
                 record = (
                     connection.execute(
-                        sa.select(runs.c.state, runs.c.last_event_sequence).where(
-                            runs.c.run_id == run_id.value
-                        )
+                        sa.select(
+                            runs.c.state,
+                            runs.c.last_event_sequence,
+                            runs.c.workflow_format_version,
+                        ).where(runs.c.run_id == run_id.value)
                     )
                     .mappings()
                     .one_or_none()
@@ -973,10 +983,15 @@ class DbosQueries:
                 }
                 if set(endpoint_records) != required_sequences:
                     return EventHistoryCorrupt()
-                terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value
-                if (endpoint_records[head] == terminal_kind) != terminal or any(
-                    sequence < head and kind == terminal_kind
-                    for sequence, kind in endpoint_records.items()
+                terminal_kind = _unique_terminal_event_kind(
+                    int(record["workflow_format_version"])
+                )
+                if terminal_kind is not None and (
+                    (endpoint_records[head] == terminal_kind) != terminal
+                    or any(
+                        sequence < head and kind == terminal_kind
+                        for sequence, kind in endpoint_records.items()
+                    )
                 ):
                     return EventHistoryCorrupt()
                 return StreamReady(head, terminal, after_sequence)
@@ -1042,18 +1057,24 @@ class DbosQueries:
                 )
                 if sequences != expected_sequences:
                     return EventHistoryCorrupt()
-                terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value
-                terminal_sequences = tuple(
-                    int(record["event_sequence"])
-                    for record in records
-                    if str(record["event_kind"]) == terminal_kind
-                )
                 terminal = str(run_record["state"]) == RunState.COMPLETED.value
                 reached_head = bool(sequences) and sequences[-1] == head
-                if terminal_sequences not in ((), (head,)) or (
-                    reached_head and ((terminal_sequences == (head,)) != terminal)
-                ):
-                    return EventHistoryCorrupt()
+                terminal_kind = _unique_terminal_event_kind(
+                    int(run_record["workflow_format_version"])
+                )
+                if terminal_kind is None:
+                    terminal_seen = reached_head and terminal
+                else:
+                    terminal_sequences = tuple(
+                        int(record["event_sequence"])
+                        for record in records
+                        if str(record["event_kind"]) == terminal_kind
+                    )
+                    if terminal_sequences not in ((), (head,)) or (
+                        reached_head and ((terminal_sequences == (head,)) != terminal)
+                    ):
+                        return EventHistoryCorrupt()
+                    terminal_seen = terminal_sequences == (head,)
                 events = tuple(
                     self._event_projection(
                         connection,
@@ -1065,7 +1086,7 @@ class DbosQueries:
                 )
                 return RunEventPage(
                     events,
-                    terminal_sequences == (head,),
+                    terminal_seen,
                 )
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()

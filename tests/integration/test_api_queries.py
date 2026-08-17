@@ -25,6 +25,7 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     initialize_schema,
     reconcile_commands,
+    run_configuration_revisions,
     run_events,
     runs,
     workflow_revisions,
@@ -36,6 +37,7 @@ from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import EffectIntentState, ReconcileCommandState
 from atelier2.contracts.executions import (
     NodeExecutionId,
+    RunEvent,
     RunEventKind,
     logical_effect_key_for,
 )
@@ -145,6 +147,7 @@ def _seed_history(
     missing_sequences: frozenset[int] = frozenset(),
     state: RunState = RunState.STARTED,
     terminal_event: bool = False,
+    workflow_format_version: int = 1,
 ) -> WorkflowRevision:
     revision = WorkflowRevision(_workflow_document())
     event_records = []
@@ -156,22 +159,32 @@ def _seed_history(
             if terminal_event and sequence == head
             else RunEventKind.AGENT_COMPLETED
         )
-        payload = str(sequence).encode()
+        node_id = f"node-{sequence}"
+        event = RunEvent(
+            run_id,
+            revision.revision_hash,
+            sequence,
+            node_id,
+            NodeExecutionId.for_node(run_id, revision.revision_hash, node_id),
+            event_kind,
+            str(sequence).encode(),
+        )
         event_records.append(
             {
-                "run_id": run_id.value,
-                "revision_hash": revision.revision_hash.value,
-                "event_sequence": sequence,
-                "node_id": f"node-{sequence}",
-                "node_execution_id": _digest(f"execution-{run_id.value}-{sequence}"),
-                "event_kind": event_kind.value,
-                "payload": payload,
-                "payload_hash": hashlib.sha256(payload).hexdigest(),
+                "run_id": event.run_id.value,
+                "revision_hash": event.revision_hash.value,
+                "event_sequence": event.event_sequence,
+                "node_id": event.node_id,
+                "node_execution_id": event.node_execution_id.value,
+                "event_kind": event.event_kind.value,
+                "payload": event.payload,
+                "payload_hash": event.payload_hash.value,
                 "receipt_logical_key": None,
                 "receipt_result_hash": None,
-                "event_hash": _digest(f"event-{run_id.value}-{sequence}"),
+                "event_hash": event.event_hash.value,
             }
         )
+    configuration_hash = _digest(f"configuration-{run_id.value}")
     with engine.begin() as connection:
         connection.execute(
             workflow_revisions.insert().values(
@@ -179,13 +192,24 @@ def _seed_history(
                 document=revision.document,
             )
         )
+        if workflow_format_version == 3:
+            connection.execute(
+                run_configuration_revisions.insert().values(
+                    revision_hash=configuration_hash,
+                    preimage=f"configuration-{run_id.value}".encode(),
+                )
+            )
         connection.execute(
             runs.insert().values(
                 run_id=run_id.value,
                 bootstrap_workflow_id=f"workflow-{run_id.value}",
                 revision_hash=revision.revision_hash.value,
-                workflow_format_version=1,
-                agent_binding_set_hash=None,
+                workflow_format_version=workflow_format_version,
+                agent_binding_set_hash=(
+                    _digest(f"bindings-{run_id.value}")
+                    if workflow_format_version == 2
+                    else None
+                ),
                 current_node_id="final" if state is RunState.COMPLETED else "agent",
                 state=state.value,
                 state_version=head,
@@ -193,6 +217,9 @@ def _seed_history(
                 terminal_hash=_digest("terminal")
                 if state is RunState.COMPLETED
                 else None,
+                run_configuration_revision_hash=(
+                    configuration_hash if workflow_format_version == 3 else None
+                ),
             )
         )
         if event_records:
@@ -634,22 +661,77 @@ def test_prepare_rejects_missing_history_endpoint_before_stream_headers(
     )
 
 
+@pytest.mark.parametrize("workflow_format_version", [1, 2])
 def test_prepare_rejects_terminal_run_without_terminal_head_event(
-    engine: Engine,
+    engine: Engine, workflow_format_version: int
 ) -> None:
-    run_id = RunId("terminal-head-mismatch")
+    run_id = RunId(f"terminal-head-mismatch-v{workflow_format_version}")
     _seed_history(
         engine,
         run_id=run_id,
         head=5,
         state=RunState.COMPLETED,
         terminal_event=False,
+        workflow_format_version=workflow_format_version,
     )
+    queries = durable_queries(engine)
 
     assert isinstance(
-        durable_queries(engine).prepare_run_event_stream(run_id, 0),
+        queries.prepare_run_event_stream(run_id, 0),
         EventHistoryCorrupt,
     )
+    assert isinstance(queries.read_run_event_page(run_id, 0, 5), EventHistoryCorrupt)
+
+
+def test_format_3_completed_line_of_agent_completions_is_readable(
+    engine: Engine,
+) -> None:
+    run_id = RunId("v3-completed-line")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=2,
+        state=RunState.COMPLETED,
+        terminal_event=False,
+        workflow_format_version=3,
+    )
+    queries = durable_queries(engine)
+
+    assert queries.prepare_run_event_stream(run_id, 0) == StreamReady(2, True, 0)
+    page = queries.read_run_event_page(run_id, 0, 5)
+    assert isinstance(page, queries_module.RunEventPage)
+    assert tuple(
+        (
+            event.event.event_sequence,
+            event.event.event_kind,
+            event.workflow_format_version,
+        )
+        for event in page.events
+    ) == (
+        (1, RunEventKind.AGENT_COMPLETED, 3),
+        (2, RunEventKind.AGENT_COMPLETED, 3),
+    )
+    assert page.terminal_seen is True
+
+
+def test_format_3_started_run_may_head_on_agent_completed(engine: Engine) -> None:
+    run_id = RunId("v3-started-after-first-agent")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=1,
+        state=RunState.STARTED,
+        workflow_format_version=3,
+    )
+    queries = durable_queries(engine)
+
+    assert queries.prepare_run_event_stream(run_id, 0) == StreamReady(1, False, 0)
+    page = queries.read_run_event_page(run_id, 0, 5)
+    assert isinstance(page, queries_module.RunEventPage)
+    assert tuple(event.event.event_kind for event in page.events) == (
+        RunEventKind.AGENT_COMPLETED,
+    )
+    assert page.terminal_seen is False
 
 
 def _seed_runs(
