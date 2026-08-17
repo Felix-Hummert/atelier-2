@@ -512,6 +512,29 @@ that cannot be talked out of is not built. Neither is the static capability
 attestation of a build -- declared, resolved, redeemed and proven is the whole of
 the claim.
 
+A node's `budget` is content now, not a word. A `budget_policy` revision is
+published through `POST /budget-revisions` and carries exactly four bounds: the
+hard `attempt_deadline_seconds` every budget states, an optional hard
+`maximum_assistant_turns`, and the two `reported_*_token_threshold` values a
+provider can only report after the work it measures. The names carry that
+difference, so no surface can offer a post-hoc number as a maximum, a cap or a
+ceiling. Every present value is a positive signed 64-bit integer, an absent
+optional is not zero, and money is absent by decision: an authentication mode
+selects a credential path and measures no charge. Bytes that bound nothing are
+refused by their own name -- an unknown field such as a cost ceiling or a run
+budget, an explicit null, a zero, a fraction, a boolean, a value past signed
+int64, prose -- at the publication door and again at the reference that pins
+them, so no run starts under a budget nobody could read. A budget revision is
+identified twice, on purpose: the registry and the node pin the exact bytes,
+while the four bounds have their own `budget-revision/v1` content identity, which
+catalog lineage, display name and revision position never enter. What this does
+not claim is enforcement. No attempt is stopped by these values yet: the deadline
+does not run a clock, the turn limit reaches no executor, the thresholds judge no
+usage report, and the executor-side declaration of which dimensions a revision
+requires and what ceiling it attests is not built. That is ADR 0008's second
+delivery boundary, and it waits on the V3 attempt cutover, the durable failure
+vocabulary and an amended receipt.
+
 Whoever recomputes a finished run's terminal hash now also proves under which
 binding it ran. The agent receipt already folded provider, auth mode, auth
 profile revision, model, executor revision, configuration revision and request

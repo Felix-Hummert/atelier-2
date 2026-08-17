@@ -1,0 +1,32 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/26"
+
+# A NODE BUDGET IS CONTENT WITH ONE OWNER, NOT A NUMBER A CALLER ASSERTS.
+#
+# ADR 0006 let an Agent or Subworkflow node pin a versioned `budget` reference and
+# left its units to ADR 0008. Until this slice the registry answered a
+# `budget_policy` reference on identity alone: any bytes at all — prose, a money
+# field no charge meter measures, a `run_budget` nobody decided, a deadline of
+# zero — resolved, and an author reading "budget" on a node was told nothing.
+#
+# These two sentences bind the content half of that decision. They do not claim
+# enforcement: no attempt is bounded by these values yet. ADR 0008 delivery
+# boundary 2 owns that, and waits on the #15 cutover, the V3 binding owners, #16's
+# durable failure vocabulary and an amended #63.
+#
+# Nor do they separate the two node kinds that may carry a budget. A budget bound
+# to a Subworkflow node resolves here exactly as one bound to an Agent node does:
+# the refusals below key on the document, never on the node that pins it. #26 asks
+# that a subworkflow budget never be treated silently like an agent budget, and
+# this slice does not yet honour that — its composition semantics, and the
+# `UNAVAILABLE` answer that should stand in until they exist, are Slice 3. The gap
+# is named here and on #26 rather than gated, because refusing or marking such a
+# reference is a design the desk owns, not a consequence of these two sentences.
+
+[[sentence]]
+id = "a-published-budget-bounds-an-attempt-or-is-refused-by-name"
+text = "A `budget-revision/v1` document is published only when every field it carries is one of the four bounds ADR 0008 names, each a positive signed 64-bit integer with `attempt_deadline_seconds` always present, and bytes that are not — prose, an unknown field such as money or a run budget, an explicit null, a zero, a fraction, a boolean, or a value past signed int64 — are refused by their own name at the publication door and again at the reference that pins them, before any run starts."
+
+[[sentence]]
+id = "a-changed-budget-bound-is-a-different-budget-revision"
+text = "The content identity of a budget revision is exactly its four bounds: changing one, withdrawing an optional one, or writing a bound where none was, each mints a different `budget-revision/v1` hash, while the same bounds serialised differently keep it — and an absent optional is never read as zero."

@@ -16,6 +16,10 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from typing import assert_never
 
+from atelier2.contracts.budgets_v3 import (
+    BudgetRevisionRefused,
+    read_budget_revision_document,
+)
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -113,12 +117,15 @@ def _unreadable_document(
     """Whether a revision resolved to bytes that are not the thing it was read as.
 
     Most kinds resolve on identity alone, because nothing here knows what their
-    bytes must say. Two kinds this product must read to do its job at all are the
-    exception, and the reference that pins them is where the reading belongs: a
-    `schema`, which a value is read against, and a `tool` grant, whose capability
-    decides what an attempt is going to redeem. A grant naming a capability
-    nothing performs is refused here rather than at the attempt, because a run
-    that started under it has already told its author it would be honoured.
+    bytes must say. Three kinds this product must read to do its job at all are
+    the exception, and the reference that pins them is where the reading belongs:
+    a `schema`, which a value is read against, a `tool` grant, whose capability
+    decides what an attempt is going to redeem, and a `budget_policy`, whose
+    bounds decide how far an attempt may run. Each is refused here rather than at
+    the attempt, because a run that started under it has already told its author
+    it would be honoured -- and for a budget that promise is the whole point: an
+    unreadable one would leave an attempt unbounded while its author reads a
+    bound.
     """
     if declared.kind is RevisionKind.SCHEMA:
         verdict = read_schema_document(revision.document)
@@ -138,6 +145,15 @@ def _unreadable_document(
                 declared,
                 "the published revision is not a tool grant this runtime "
                 f"redeems ({grant})",
+            )
+        return None
+    if declared.kind is RevisionKind.BUDGET_POLICY:
+        budget = read_budget_revision_document(revision.document)
+        if isinstance(budget, BudgetRevisionRefused):
+            return _refusal(
+                ReferenceRefusalReason.UNUSABLE_BUDGET_DOCUMENT,
+                declared,
+                f"the published revision bounds no attempt this runtime runs ({budget})",
             )
         return None
     return None

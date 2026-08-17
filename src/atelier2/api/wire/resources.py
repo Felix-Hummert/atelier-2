@@ -55,6 +55,17 @@ class SchemaRevisionResource(ApiModel):
     revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
 
+class BudgetRevisionResource(ApiModel):
+    """The hash of one published budget revision, and nothing else.
+
+    Publication is bytes in, hash out, exactly as a schema's is. The bounds are
+    not echoed: the caller already holds the exact bytes they posted, and the
+    hash is what a node pins.
+    """
+
+    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+
+
 class AuthProfileRevisionResource(ApiModel):
     profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)

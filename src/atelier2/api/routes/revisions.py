@@ -18,6 +18,7 @@ from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import (
     PROJECTION_LIMIT_DETAIL,
     ApiProblem,
+    budget_document_problem_code,
     schema_document_problem_code,
 )
 from atelier2.api.projection.workflows import (
@@ -32,6 +33,7 @@ from atelier2.api.wire.requests import (
 )
 from atelier2.api.wire.resources import (
     AnyWorkflowRevisionPageResource,
+    BudgetRevisionResource,
     CatalogAdmissionResource,
     CatalogNameResolutionResource,
     SchemaRevisionResource,
@@ -45,6 +47,12 @@ from atelier2.application.admit_catalog_member import (
     CatalogDisplayNameInvalid,
     CatalogExplicitNameRequired,
     CatalogRevisionUnpublished,
+)
+from atelier2.application.publish_budget_revision import (
+    BudgetPublicationCollision,
+    BudgetPublicationCreated,
+    BudgetPublicationExisting,
+    BudgetPublicationInvalid,
 )
 from atelier2.application.publish_schema_revision import (
     SchemaPublicationCollision,
@@ -135,6 +143,41 @@ async def publish_schema_revision_route(
             assert_never(unreachable)
     return resource_response(
         SchemaRevisionResource(revision_hash=revision.revision_hash.value), status
+    )
+
+
+@router.post(
+    API_PREFIX + "/budget-revisions",
+    response_model=BudgetRevisionResource,
+    status_code=HTTPStatus.CREATED,
+    responses={HTTPStatus.OK: {"model": BudgetRevisionResource}},
+)
+async def publish_budget_revision_route(
+    request: Request, context: ApiContext = api_context_dependency
+) -> JSONResponse:
+    require_media_type(request, "application/json")
+    document = await request.body()
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.publish_budget_revision(document),
+    )
+    match result:
+        case BudgetPublicationCreated(revision):
+            status = HTTPStatus.CREATED
+        case BudgetPublicationExisting(revision):
+            status = HTTPStatus.OK
+        case BudgetPublicationInvalid(verdict):
+            raise ApiProblem(budget_document_problem_code(verdict.reason), str(verdict))
+        case BudgetPublicationCollision():
+            raise ApiProblem("budget-revision-collision")
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return resource_response(
+        BudgetRevisionResource(revision_hash=revision.revision_hash.value), status
     )
 
 
