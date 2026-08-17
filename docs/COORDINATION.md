@@ -106,9 +106,12 @@ head then carries a claim nobody checked.
   probe, diff the two heads — a review that forwards a builder's number has
   checked nothing.
 - **A head showing no checks at all is a merge state, not a CI outage.** A
-  conflicting head gets no merge ref, and there is nothing for a workflow to run
-  against — so read `mergeable` first, because an empty commit pushed to "wake
-  Actions" only hides the conflict that is the real answer. (Source: #221.)
+  conflicting head stops getting a fresh merge ref, so a workflow has nothing
+  current to run against — and an empty commit pushed to "wake Actions" only
+  hides the conflict that is the real answer. Read the merge state first, and
+  recompute it rather than read it off: a stale merge ref can still be lying
+  there, and `git merge-tree --write-tree main HEAD` cannot go stale where
+  GitHub's `mergeable` can. (Source: #221.)
 
 ## Workplaces
 
