@@ -47,7 +47,12 @@ from atelier2.host.run_command import (
     execute_run,
     resolve_published_name,
 )
-from atelier2.host.serving import HostSettings, serve
+from atelier2.host.serving import (
+    HostSettings,
+    api_limits,
+    event_poll_backoff,
+    serve,
+)
 
 RESOLVE_DESCRIPTION = """\
 Ask a served Atelier which published revision a workflow name holds, and print
@@ -110,9 +115,45 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.error("a command is required")
 
 
+def _given[ValueT](**flags: ValueT | None) -> dict[str, ValueT]:
+    """Only the answers the operator actually gave.
+
+    A flag nobody passed is not an answer, so it is left out and the field's own
+    default stands. That keeps one named place for every default instead of
+    repeating each of them here as `or DEFAULT`.
+    """
+
+    return {name: value for name, value in flags.items() if value is not None}
+
+
 def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
     try:
+        limits = api_limits(
+            **_given(
+                event_page_size=parsed.event_page_size,
+                maximum_control_queries=parsed.maximum_control_queries,
+                maximum_event_poll_queries=parsed.maximum_event_poll_queries,
+                maximum_query_admission_wait_milliseconds=(
+                    parsed.query_admission_wait_milliseconds
+                ),
+            )
+        )
+        backoff = event_poll_backoff(
+            **_given(
+                initial_delay_seconds=parsed.initial_event_poll_delay_seconds,
+                maximum_delay_seconds=parsed.maximum_event_poll_delay_seconds,
+                multiplier=parsed.event_poll_delay_multiplier,
+            )
+        )
         settings = HostSettings(
+            limits=limits,
+            event_poll_backoff=backoff,
+            **_given(
+                sqlite_lock_timeout_seconds=parsed.sqlite_lock_timeout_seconds,
+                agent_termination_grace_seconds=(
+                    parsed.agent_termination_grace_seconds
+                ),
+            ),
             database_path=parsed.database,
             effect_store_path=parsed.effect_store,
             effect_adapter_revision=parsed.effect_adapter_revision,
@@ -349,6 +390,19 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--source-commit", required=True)
     serve_parser.add_argument("--source-tree", required=True)
     serve_parser.add_argument("--frontend-dist", type=Path, required=True)
+    # The instance's own answers. Everything above this line says which store,
+    # which port, which executable; these say how this instance behaves once
+    # those are settled, and they are the values a second machine honestly wants
+    # differently. Each is refused by its owner when it is out of range.
+    serve_parser.add_argument("--event-page-size", type=int)
+    serve_parser.add_argument("--maximum-control-queries", type=int)
+    serve_parser.add_argument("--maximum-event-poll-queries", type=int)
+    serve_parser.add_argument("--query-admission-wait-milliseconds", type=int)
+    serve_parser.add_argument("--initial-event-poll-delay-seconds", type=float)
+    serve_parser.add_argument("--maximum-event-poll-delay-seconds", type=float)
+    serve_parser.add_argument("--event-poll-delay-multiplier", type=float)
+    serve_parser.add_argument("--sqlite-lock-timeout-seconds", type=float)
+    serve_parser.add_argument("--agent-termination-grace-seconds", type=float)
     serve_parser.add_argument("--host", default=DEFAULT_HOST)
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve_parser.add_argument("--agent-scratch-root", type=Path)

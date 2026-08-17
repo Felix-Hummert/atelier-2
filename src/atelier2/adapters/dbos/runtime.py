@@ -53,11 +53,11 @@ from atelier2.ports.agent_executions import (
 from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
 
 EXECUTOR_ID = "atelier2-local"
-_SQLITE_LOCK_TIMEOUT_SECONDS = 30.0
+SQLITE_LOCK_TIMEOUT_SECONDS = 30.0
 _SQLITE_WAL_RETRY_SECONDS = 0.01
 _SQLITE_RETRYABLE_ERRORS = frozenset((sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
 _SHUTDOWN_WORKFLOW_COMPLETION_SECONDS = 1
-_DEFAULT_AGENT_TERMINATION_GRACE_SECONDS = 2.0
+AGENT_TERMINATION_GRACE_SECONDS = 2.0
 
 
 class DbosRuntimeBindingConflict(RuntimeError):
@@ -94,13 +94,16 @@ class DbosRuntimeSettings:
     agent_process_control_root: Path | None = None
     agent_process_cgroup_root: Path | None = None
     agent_scratch_root: Path | None = None
-    agent_termination_grace_seconds: float = _DEFAULT_AGENT_TERMINATION_GRACE_SECONDS
+    agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
+    sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
         if not self.application_version.strip():
             raise ValueError("application_version must be nonempty")
         if self.agent_termination_grace_seconds <= 0:
             raise ValueError("agent termination grace must be positive")
+        if self.sqlite_lock_timeout_seconds <= 0:
+            raise ValueError("the SQLite lock timeout must be positive")
 
     def process_control_root(self) -> Path:
         root = self.agent_process_control_root
@@ -139,30 +142,45 @@ def sqlite_url(database_path: Path) -> str:
     return f"sqlite:///{database_path.resolve()}"
 
 
-def create_canonical_engine(database_path: Path) -> Engine:
+def create_canonical_engine(
+    database_path: Path,
+    lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS,
+) -> Engine:
+    """The one engine every durable path shares, waiting as long as it was told.
+
+    How long to wait for a busy store is the instance's answer, not the code's:
+    a laptop and a loaded host disagree honestly, and the serving host passes what
+    it was configured with.
+
+    The default is the named owner itself rather than a second number, so a caller
+    that says nothing still waits the one documented wait. It stays a default
+    because making it required buys nothing here and costs every test that opens a
+    store a line of noise: the value has one home either way.
+    """
+
     database_path.parent.mkdir(parents=True, exist_ok=True)
     engine = sa.create_engine(
         sqlite_url(database_path),
         connect_args={
             "check_same_thread": False,
-            "timeout": _SQLITE_LOCK_TIMEOUT_SECONDS,
+            "timeout": lock_timeout_seconds,
         },
     )
 
     @event.listens_for(engine, "connect")
     def configure(connection: Any, _record: Any) -> None:
         connection.isolation_level = "IMMEDIATE"
-        connection.execute(
-            f"PRAGMA busy_timeout={int(_SQLITE_LOCK_TIMEOUT_SECONDS * 1000)}"
-        )
+        connection.execute(f"PRAGMA busy_timeout={int(lock_timeout_seconds * 1000)}")
         connection.execute("PRAGMA foreign_keys=ON")
-        _establish_wal_journal_mode(connection)
+        _establish_wal_journal_mode(connection, lock_timeout_seconds)
 
     return engine
 
 
-def _establish_wal_journal_mode(connection: Any) -> None:
-    deadline = time.monotonic() + _SQLITE_LOCK_TIMEOUT_SECONDS
+def _establish_wal_journal_mode(
+    connection: Any, lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS
+) -> None:
+    deadline = time.monotonic() + lock_timeout_seconds
     while True:
         try:
             journal_mode = connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
@@ -229,7 +247,9 @@ def _open_binding(
             "serving a provider executor requires an agent scratch root, because "
             "every attempt is started in a workspace of its own"
         )
-    engine = create_canonical_engine(settings.database_path)
+    engine = create_canonical_engine(
+        settings.database_path, settings.sqlite_lock_timeout_seconds
+    )
     agent_executor: AgentExecutor | None = None
     agent_executors_v2: list[tuple[AgentExecutorManifestEntry, AgentExecutorV2]] = []
     adapter: EffectAdapter | None = None
