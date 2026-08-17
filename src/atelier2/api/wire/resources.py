@@ -9,9 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from atelier2.api.references import (
     EVENT_CURSOR_PATTERN,
     MAX_SIGNED_INT64,
+    MAXIMUM_RUN_AGENT_BINDINGS,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
+)
+from atelier2.contracts.agent_attempts import REPLACEMENT_AGENT_ATTEMPT_ORDINAL
+from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_PROVIDER_ID_CHARACTERS,
 )
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
@@ -30,18 +36,20 @@ class HealthResource(ApiModel):
 
 
 class AuthProfileRevisionResource(ApiModel):
-    profile_id: str = Field(min_length=1, max_length=1_024)
+    profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    provider_id: str = Field(min_length=1, max_length=64)
+    provider_id: str = Field(min_length=1, max_length=MAXIMUM_PROVIDER_ID_CHARACTERS)
     auth_mode: Literal["subscription", "api_key"]
     auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
 class AgentConfigurationRevisionResource(ApiModel):
-    model: str = Field(min_length=1, max_length=1_024)
+    model: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    executor_revision: str = Field(min_length=1, max_length=1_024)
-    provider_id: str = Field(min_length=1, max_length=64)
+    executor_revision: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
+    )
+    provider_id: str = Field(min_length=1, max_length=MAXIMUM_PROVIDER_ID_CHARACTERS)
     auth_mode: Literal["subscription", "api_key"]
     requested_capability: Literal["headless", "interactive"]
     agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
@@ -284,15 +292,17 @@ class RunResource(ApiModel):
 
 
 class AgentBindingResourceV2(ApiModel):
-    role: str = Field(min_length=1, max_length=1_024)
+    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     auth_profile_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    profile_id: str = Field(min_length=1, max_length=1_024)
+    profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    provider_id: str = Field(min_length=1, max_length=64)
+    provider_id: str = Field(min_length=1, max_length=MAXIMUM_PROVIDER_ID_CHARACTERS)
     auth_mode: Literal["subscription", "api_key"]
-    model: str = Field(min_length=1, max_length=1_024)
-    executor_revision: str = Field(min_length=1, max_length=1_024)
+    model: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    executor_revision: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
+    )
 
 
 class NoWaitingResourceV2(ApiModel):
@@ -357,7 +367,7 @@ class AgentAttemptResourceV2(ApiModel):
 
 
 class AgentAttemptCancellationResourceV2(ApiModel):
-    command_id: str = Field(min_length=1, max_length=1_024)
+    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     replacement: Literal["NONE", "ONE"]
     redrive_state: Literal["PENDING", "OWNER_NOT_LOCAL", "CLEANUP_ATTESTED"]
     disposition: (
@@ -425,12 +435,16 @@ class RunResourceV2(ApiModel):
     public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     agent_binding_set_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    agent_bindings: tuple[AgentBindingResourceV2, ...] = Field(max_length=100)
+    agent_bindings: tuple[AgentBindingResourceV2, ...] = Field(
+        max_length=MAXIMUM_RUN_AGENT_BINDINGS
+    )
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]
     current_node: NodeResourceV2
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
-    agent_attempts: tuple[AgentAttemptResourceV2, ...] = Field(max_length=2)
+    agent_attempts: tuple[AgentAttemptResourceV2, ...] = Field(
+        max_length=REPLACEMENT_AGENT_ATTEMPT_ORDINAL
+    )
     waiting: WaitingResourceV2
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
     latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
