@@ -729,6 +729,8 @@ def test_an_address_that_is_not_a_served_api_is_refused(
 
 
 NAME = "review-bounded-diff"
+LINEAGE_ID = "b" * 64
+REVISION_NUMBER = 2
 BY_NAME_URL_PATH = f"{API_PREFIX}{WORKFLOW_REVISION_PATH}/by-name/{NAME}"
 
 
@@ -737,9 +739,9 @@ def name_answer() -> Answer:
         json.dumps(
             {
                 "display_name": NAME,
-                "lineage_id": "b" * 64,
+                "lineage_id": LINEAGE_ID,
                 "revision_hash": REVISION_HASH,
-                "revision_number": 2,
+                "revision_number": REVISION_NUMBER,
             }
         ).encode()
     )
@@ -801,9 +803,16 @@ def test_the_command_shows_what_the_name_holds_and_ends_successfully(
         exit_code = main(["resolve", "--name", NAME, "--service", service.url])
 
     shown = capsys.readouterr()
+    # One line, and every value in it distinct: a name, a lineage id, a member
+    # number and a revision hash that cannot stand in for one another. Asserting
+    # the whole line is what makes a swapped or dropped field fail here rather
+    # than read plausibly to an operator.
     assert exit_code == 0
-    assert REVISION_HASH in shown.out
-    assert NAME in shown.out
+    assert shown.out == (
+        f"{NAME} is revision {REVISION_NUMBER} "
+        f"of lineage {LINEAGE_ID}: {REVISION_HASH}\n"
+    )
+    assert shown.err == ""
 
 
 @pytest.mark.proves("a-refused-name-ends-the-command-unsuccessfully")
