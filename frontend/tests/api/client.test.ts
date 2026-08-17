@@ -587,6 +587,14 @@ describe("the graph a run is allowed to hold", () => {
       not_executable_reason: "agent forms nothing binds yet: outputs" as const,
       agent_roles: [],
       node_count: 1,
+      node_previews: [
+        {
+          id: "only",
+          kind: "agent" as const,
+          role: "builder",
+          instruction_start: "Sweep the suite."
+        }
+      ],
       name: "Nightly regression sweep",
       description: null
     };

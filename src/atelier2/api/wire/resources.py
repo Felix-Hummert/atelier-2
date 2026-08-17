@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from atelier2.api.references import (
     EVENT_CURSOR_PATTERN,
     MAX_SIGNED_INT64,
+    MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
@@ -128,12 +129,47 @@ class WorkflowGraphResourceV2(ApiModel):
     nodes: tuple[NodeResourceV2, ...]
 
 
+class WorkflowNodePreviewResourceV3(ApiModel):
+    """One node of a published V3 revision, as an excerpt, never as the node.
+
+    Full nodes would republish instruction, inputs, outputs, tools, and the rest.
+    This resource answers only what a picker has to show: which node, which kind,
+    which role, and a bounded start of the instruction. A node that declares no
+    role or no instruction answers those fields empty -- the node's own answer,
+    not a named refusal and not a stand-in invented to fill the column. A wait
+    prompt is not an instruction and is not projected here.
+    """
+
+    id: str = Field(min_length=1)
+    kind: Literal["agent", "deterministic", "wait", "subworkflow", "action"]
+    role: str | None = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    instruction_start: str | None = Field(
+        min_length=1, max_length=MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS
+    )
+
+    @model_validator(mode="after")
+    def validate_preview_shape(self) -> WorkflowNodePreviewResourceV3:
+        """An agent names its role and instruction start; every other kind names neither."""
+        has_role = self.role is not None
+        has_start = self.instruction_start is not None
+        if self.kind == "agent":
+            if not has_role or not has_start:
+                raise ValueError(
+                    "an agent preview names its role and instruction start"
+                )
+        elif has_role or has_start:
+            raise ValueError(
+                "a node without an authored instruction answers with no excerpt"
+            )
+        return self
+
+
 # A docstring here is published as this component's description, so the reason
 # the two authored fields carry no column of their own stays a comment: ADR 0007
 # decision 4 has them parsed out of the published bytes on the way to the wire,
 # which is what keeps this resource able only to repeat what the author wrote.
 class WorkflowGraphResourceV3(ApiModel):
-    """A published V3 revision: its format, its size, and whether this build runs it.
+    """A published V3 revision: its format, its size, whether this build runs it, and an excerpt of each node.
 
     `executable` used to be the constant `false`, which was true while no runtime
     executed the format at all. It is derived now, from the one rule the start
@@ -142,6 +178,11 @@ class WorkflowGraphResourceV3(ApiModel):
     kind waits, which branch nothing chooses between, which authored form nothing
     binds -- because "not executable" alone leaves an author guessing at what to
     change.
+
+    `node_previews` is that excerpt, not the authored document a second time.
+    Full nodes stay refused: this resource has no column for instruction, inputs,
+    outputs, or tools. A caller that wants the document already holds
+    `document_base64`.
     """
 
     format_version: Literal[3]
@@ -154,11 +195,12 @@ class WorkflowGraphResourceV3(ApiModel):
     A caller that wants to start this revision has to say which agent answers
     each role, and until now it could not learn the roles from the API at all --
     only by reading the document itself. The roles are the smallest thing that
-    answers that: not the nodes, which would put the whole authored document on
-    the wire a second time, and not the count, which says nothing about what to
-    bind.
+    answers that: not the full nodes, which would put the whole authored
+    document on the wire a second time, and not the count, which says nothing
+    about what to bind. The excerpts sit beside this bind list.
     """
 
+    node_previews: tuple[WorkflowNodePreviewResourceV3, ...] = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str | None
 
@@ -174,6 +216,13 @@ class WorkflowGraphResourceV3(ApiModel):
             raise ValueError(
                 "a V3 revision names a reason exactly when it is not executable"
             )
+        if self.node_count != len(self.node_previews):
+            raise ValueError("every published node has one preview")
+        preview_roles = tuple(
+            sorted({node.role for node in self.node_previews if node.role is not None})
+        )
+        if preview_roles != self.agent_roles:
+            raise ValueError("agent roles and node excerpts disagree")
         return self
 
 

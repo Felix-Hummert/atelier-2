@@ -21,6 +21,20 @@ function v3Revision(hash: string, documentBase64: string) {
       not_executable_reason: null,
       node_count: 2,
       agent_roles: ["builder"],
+      node_previews: [
+        {
+          id: "implement",
+          kind: "agent" as const,
+          role: "builder",
+          instruction_start: "Do the one thing this chain is for."
+        },
+        {
+          id: "review",
+          kind: "agent" as const,
+          role: "builder",
+          instruction_start: "Check what the node before you did."
+        }
+      ],
       name: "Seen from the picker",
       description: null
     }

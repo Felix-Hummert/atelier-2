@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   NODE_STATES,
   PUBLIC_ATTEMPT_STATES,
+  workflowNodePreviewSchema,
   workflowRevisionSummarySchema
 } from "../../src/api/client";
 
@@ -67,5 +68,34 @@ describe("the served vocabulary", () => {
       Object.keys(served?.properties ?? {}).sort()
     );
     expect(workflowRevisionSummarySchema.parse(sample)).toEqual(sample);
+  });
+
+  it("bounds the node-preview instruction start to the length the document serves", () => {
+    const served = servedDocument.components.schemas.WorkflowNodePreviewResourceV3;
+    const instruction = (
+      served?.properties as {
+        instruction_start?: { anyOf?: Array<{ maxLength?: number }> };
+      } | undefined
+    )?.instruction_start;
+    const maxLength = instruction?.anyOf?.find((option) => option.maxLength !== undefined)
+      ?.maxLength;
+
+    expect(maxLength).toBe(120);
+    expect(
+      workflowNodePreviewSchema.parse({
+        id: "implement",
+        kind: "agent",
+        role: "builder",
+        instruction_start: "ä".repeat(maxLength ?? 0)
+      }).instruction_start
+    ).toHaveLength(maxLength ?? 0);
+    expect(() =>
+      workflowNodePreviewSchema.parse({
+        id: "implement",
+        kind: "agent",
+        role: "builder",
+        instruction_start: "ä".repeat((maxLength ?? 0) + 1)
+      })
+    ).toThrow();
   });
 });
