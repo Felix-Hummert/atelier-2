@@ -36,20 +36,22 @@ story = "https://github.com/FlexOr2/atelier-2/issues/111"
 # `catalog-revision-not-a-member` answers the case where a name resolves but the
 # lineage does not admit the revision it resolved to. No sequence of store calls
 # reaches it: the same write that admits a member is what makes the name resolve.
-# It is the corrupt-store class -- the shape #190 named for
-# `NamedRunRevisionUnbound` -- so the route keeps the branch and the code stays
-# declared, because the alternative is a route that meets a torn store and
-# answers with an internal error instead of the reason. Reaching it in a test
-# would mean writing a torn store by hand, which proves the fixture, not the code.
+# It is the corrupt-store class #190 named -- so the route keeps the branch and
+# the code stays declared, because the alternative is a route that meets a torn
+# store and answers with an internal error instead of the reason. Reaching it in
+# a test would mean writing a torn store by hand, which proves the fixture, not
+# the code.
 
-# Related sentences that are NOT duplicated here: #63 owns "a name reaches exactly
-# the bytes it resolved to" for the in-process path; #22 owns how named revisions
-# are listed. This head owns one thing neither does -- the same question asked
-# over HTTP.
+# #63 used to own an in-process "name reaches exactly the bytes it resolved to"
+# sentence on a callerless supervised start. That door is gone. REQ-KATALOG-02
+# is bound here, on the public name path: the API answers which revision a name
+# holds, and `run --name` starts exactly those bytes. #22 owns how named
+# revisions are listed.
 
 [[sentence]]
 id = "a-name-is-answerable-over-the-api"
 text = "A caller who knows a catalog name, and nothing else, learns over the API which revision that name holds -- its lineage, its member number and the exact revision hash -- so a name no longer has to be translated into a hash by hand before the rest of the API can be used."
+requirement = "REQ-KATALOG-02"
 
 [[sentence]]
 id = "a-name-the-catalog-cannot-honour-is-refused-by-its-own-reason"
@@ -86,3 +88,4 @@ text = "A name the service refuses ends the command unsuccessfully and in the se
 [[sentence]]
 id = "one-command-runs-the-workflow-a-name-holds"
 text = "One command runs the workflow a catalog name holds: the operator names it, the service is asked which revision that name holds before anything is written, the run starts on exactly that revision without republishing it, and the command waits for the run to end -- printing the run's own output on standard output and, on standard error, the name it resolved together with the run, its revision and its terminal hash."
+requirement = "REQ-KATALOG-02"

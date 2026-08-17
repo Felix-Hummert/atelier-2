@@ -60,10 +60,10 @@ text = "After a successful attempt on a V3 node that is not its run's sink, the 
 id = "a-completed-v3-attempt-reaches-the-runs-terminal-hash"
 text = "A V3 agent attempt that succeeds records the provider's receipt and carries its own run to COMPLETED with a terminal hash, exactly as a V2 attempt does; a V3 node that is not its run's sink hands on to the one heir its author declared, and a node with several dependents is refused in typed words instead of advanced, because choosing between them is the ready set's decision and not this one's."
 
-# OPEN, AND NAMED RATHER THAN NARROWED. V13 durably owns the run-configuration,
-# `node-execution-request/v3` and declared-context-package preimages before start.
-# The package is still only the declared half: no owner materializes a
-# `required_context` selector into ADR 0006's complete package.
+# OPEN, AND NAMED RATHER THAN NARROWED. V13 durably owns the run-configuration
+# snapshot the public start writes. The package is still only the declared half:
+# no owner materializes a `required_context` selector into ADR 0006's complete
+# package.
 #
 # The live provider path still writes `AgentReceiptV2`. It does not connect that
 # result to `NodeReceipt.agent_receipt_hash`, and `RunEvent.node_receipt_hash`
@@ -71,14 +71,24 @@ text = "A V3 agent attempt that succeeds records the provider's receipt and carr
 # later work; this file neither calls the existing prelaunch NodeReceipt a live
 # provider receipt nor claims a complete context package.
 
-[[sentence]]
-id = "a-supervised-v3-start-leaves-the-manifest-its-receipt-names"
-text = "A supervised V3 start writes the declared context package in the same transaction as the run and its receipt, so the package hash a receipt carries reaches the exact bytes it was taken over, and those bytes can never be changed or removed afterwards; what it carries is what the document declared and the configuration resolved, under its own identity inside and out, never ADR 0006's complete package that no owner can yet produce."
+# RETIRED WITH THE CALLERLESS SUPERVISED DOOR. This file declared
+# `a-supervised-v3-start-leaves-the-manifest-its-receipt-names` for a private
+# start that wrote a receipt-named manifest in the same transaction as the run.
+# That door had no production caller after the #216 seam collapse, and the public
+# start does not write that manifest. The claim is open on the record family
+# (#110), not proven here.
 
 [[sentence]]
 id = "a-v3-node-execution-request-is-composed-not-supplied"
 text = "The node execution request and the manifest it names are composed on the real start path from the document and the run configuration the run is bound to, never resolved a second time and never taken from the caller: a decided truth carrying a request this document does not compose is refused by both hashes before anything durable exists, a declared reference the frozen configuration does not carry is refused by its site rather than dropped, and a node declaring more revisions of one kind than the request can bind is refused by that count rather than bound in part."
 
+# NARROWED WITH THE CALLERLESS SUPERVISED DOOR, SAME ID. This sentence used to
+# claim the supervised start and the public start alike, plus the preimages of
+# the node-execution request and the manifest, receipt recomputation from kept
+# bytes, and that a receipt can only carry the request of its own node
+# execution. Those clauses described the deleted door. What remains is the
+# snapshot the public start actually stores.
+
 [[sentence]]
 id = "a-supervised-v3-run-records-the-configuration-it-was-started-under"
-text = "Every V3 run binds the exact run configuration it was started under -- the supervised start and the public start alike -- and the store keeps the preimage of that snapshot, of the node execution request and of the manifest, each immutable and each reachable from the row that names it, so every hash a receipt carries recomputes from bytes the store kept, no run, receipt or request can name a record that does not exist, and a receipt can only carry the request of its own node execution."
+text = "Every V3 run binds the exact run configuration it was started under, and the store keeps the preimage of that snapshot, immutable and reachable from the row that names it."
