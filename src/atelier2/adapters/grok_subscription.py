@@ -47,6 +47,7 @@ from atelier2.contracts.agents import (
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorKey,
+    AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
@@ -522,9 +523,7 @@ class GrokSubscriptionExecutor:
         default_factory=threading.Event, init=False, compare=False, repr=False
     )
 
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
+    def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
         if binding.auth_profile.auth_mode is not AuthMode.SUBSCRIPTION:
             raise GrokSubscriptionAuthModeUnsupported(
@@ -535,7 +534,7 @@ class GrokSubscriptionExecutor:
         registered = False
         try:
             attest_grok_containment(settings, state_directory)
-            invocation = AgentProcessInvocation(
+            command = AgentProcessCommand(
                 (
                     str(settings.executable),
                     _PRINT_FLAG,
@@ -554,7 +553,6 @@ class GrokSubscriptionExecutor:
                     _MAXIMUM_TURNS_FLAG,
                     _HEARTBEAT_MAXIMUM_TURNS,
                 ),
-                state_directory,
                 _child_environment(settings, state_directory),
                 b"",
                 standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
@@ -564,7 +562,7 @@ class GrokSubscriptionExecutor:
                     raise RuntimeError("the Grok executor is closed")
                 self._invocation_directories.add(state_directory)
                 registered = True
-            return invocation
+            return command
         finally:
             if not registered:
                 try:
@@ -594,8 +592,16 @@ class GrokSubscriptionExecutor:
             return _UNUSABLE_PROVIDER_ANSWER
         return AgentExecutionResult(output_bytes)
 
-    def release_process(self, invocation: AgentProcessInvocation) -> None:
-        environment = dict(invocation.environment)
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        """Take back the private home this invocation handed the provider.
+
+        The directory holds a copy of the operator's own `auth.json`, so it is
+        taken back on every path rather than with the attempt's workspace: the
+        workspace keeps what a provider left behind until the attempt is
+        durably terminal, and a credential must not wait that long.
+        """
+
+        environment = dict(command.environment)
         home = environment.get(_HOME_VARIABLE)
         grok_home = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
         if home is None or home != grok_home:

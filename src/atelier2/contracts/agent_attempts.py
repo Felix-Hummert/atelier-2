@@ -53,6 +53,17 @@ class AgentAttemptState(StrEnum):
     FAILED = "FAILED"
 
 
+TERMINAL_AGENT_ATTEMPT_STATES = frozenset(
+    (
+        AgentAttemptState.SUCCEEDED,
+        AgentAttemptState.FAILED,
+        AgentAttemptState.CANCELLED,
+        AgentAttemptState.INTERRUPTED,
+    )
+)
+"""Every state a durable attempt can no longer leave."""
+
+
 class AgentAttemptFailureCode(StrEnum):
     PROCESS_EXITED_UNSUCCESSFULLY = "PROCESS_EXITED_UNSUCCESSFULLY"
 
@@ -247,13 +258,7 @@ class AgentAttempt:
             raise ValueError(
                 "prepared agent process requires its exact owner generation"
             )
-        terminal = self.state in {
-            AgentAttemptState.SUCCEEDED,
-            AgentAttemptState.FAILED,
-            AgentAttemptState.CANCELLED,
-            AgentAttemptState.INTERRUPTED,
-        }
-        if terminal and self.state_version < 2:
+        if self.state in TERMINAL_AGENT_ATTEMPT_STATES and self.state_version < 2:
             raise ValueError("terminal agent attempt requires state version at least 2")
         if self.state is AgentAttemptState.PREPARED:
             valid = (

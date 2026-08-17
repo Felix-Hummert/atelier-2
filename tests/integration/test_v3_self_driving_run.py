@@ -71,7 +71,10 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_scratch_root,
+)
 
 TWO_NODE_DOCUMENT = b"""format_version: 3
 name: Two agents in a line
@@ -102,7 +105,11 @@ def runtime(
         "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
     )
     started = DbosRuntime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "v3-driver-test"),
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "v3-driver-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),

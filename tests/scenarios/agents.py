@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Never
 
+from atelier2.adapters.agent_workspaces import (
+    SCRATCH_ROOT_MODE,
+    LocalAgentAttemptWorkspaceOwner,
+)
 from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
@@ -55,8 +60,10 @@ from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflows import AgentNode
 from atelier2.ports.agent_executions import (
+    AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
     AgentExecutorKey,
+    AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
@@ -68,6 +75,71 @@ from atelier2.ports.durable_runs import (
 
 SCENARIO_PROVIDER_FRAME_BYTES = 49_152
 """The raw stdout frame a scenario provider declares when it is not the subject."""
+
+
+def agent_scratch_root(directory: Path) -> Path:
+    """One blank scratch root of the exact shape the workspace owner accepts."""
+
+    root = directory / "agent-scratch"
+    # A crash scenario restarts against the same root, exactly as a server does.
+    root.mkdir(mode=SCRATCH_ROOT_MODE, parents=True, exist_ok=True)
+    return root
+
+
+def agent_workspace_owner(directory: Path) -> LocalAgentAttemptWorkspaceOwner:
+    return LocalAgentAttemptWorkspaceOwner(agent_scratch_root(directory))
+
+
+def runtime_workspace_owner(runtime: DbosRuntime) -> LocalAgentAttemptWorkspaceOwner:
+    """The workspace owner a runtime serving provider executors always has."""
+
+    owner = runtime.agent_workspace_owner
+    assert owner is not None
+    return owner
+
+
+def leased_directory_identity(
+    attempt_id: AgentAttemptId, working_directory: Path
+) -> AgentAttemptWorkspaceLease:
+    """One lease over a directory a test houses itself, with its real identity.
+
+    The identity is read from the directory rather than invented, because that
+    is what the launcher compares against: a made-up device and inode would make
+    every test refuse, and a zero pair would make the comparison meaningless.
+    """
+
+    working_directory.mkdir(parents=True, exist_ok=True)
+    standing = os.stat(working_directory, follow_symlinks=False)
+    return AgentAttemptWorkspaceLease(
+        attempt_id, working_directory, standing.st_dev, standing.st_ino
+    )
+
+
+def process_invocation(
+    attempt_id: AgentAttemptId,
+    arguments: tuple[str, ...],
+    working_directory: Path,
+    environment: tuple[tuple[str, str], ...] = (),
+    standard_input: bytes = b"",
+    *,
+    standard_output_frame_bytes: int = SCENARIO_PROVIDER_FRAME_BYTES,
+) -> AgentProcessInvocation:
+    """One invocation for a test that supervises a process it houses itself.
+
+    Tests of the process seam own the directory they run a child in, so they
+    lease it by hand rather than standing up the scratch root the application
+    layer leases from.
+    """
+
+    return AgentProcessInvocation(
+        AgentProcessCommand(
+            arguments,
+            environment,
+            standard_input,
+            standard_output_frame_bytes=standard_output_frame_bytes,
+        ),
+        leased_directory_identity(attempt_id, working_directory),
+    )
 
 
 def configured_agent_request(
@@ -164,8 +236,6 @@ def claude_subscription_deployment(
         encoding="utf-8",
     )
     executable.chmod(0o755)
-    workspace = directory / "workspace"
-    workspace.mkdir()
     credentials = directory / "credentials"
     credentials.mkdir()
     # The credential record an authenticated CLI would have left behind.
@@ -174,7 +244,7 @@ def claude_subscription_deployment(
         encoding="utf-8",
     )
     return ClaudeSubscriptionSettings(
-        executable, workspace, credentials, claude_search_path(directory)
+        executable, credentials, claude_search_path(directory)
     )
 
 
@@ -192,7 +262,11 @@ def claude_subscription_runtime(
     """The production runtime, serving exactly the Claude subscription executor."""
 
     return DbosRuntime(
-        DbosRuntimeSettings(root / "atelier.sqlite", "claude-subscription-test"),
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "claude-subscription-test",
+            agent_scratch_root=agent_scratch_root(root),
+        ),
         LoopbackEffectAdapterFactory(
             root / "effects.sqlite",
             AdapterRevision("loopback-v1"),
@@ -293,7 +367,7 @@ def agent_attempt_execution(
     )
 
 
-AgentProcessCommand = Callable[[AgentExecutionRequestV2], AgentProcessInvocation]
+AgentCommandFactory = Callable[[AgentExecutionRequestV2], AgentProcessCommand]
 """How a scenario executor turns a request into the process it launches."""
 
 AgentCompletionDecoder = Callable[
@@ -309,14 +383,12 @@ _PROVIDER_WRITES_HEX_AFTER_DELAY = (
 
 def launching(
     *arguments: str, frame_bytes: int = SCENARIO_PROVIDER_FRAME_BYTES
-) -> AgentProcessCommand:
+) -> AgentCommandFactory:
     """A command launching exactly these arguments, whatever the request says."""
 
-    def command(request: AgentExecutionRequestV2) -> AgentProcessInvocation:
+    def command(request: AgentExecutionRequestV2) -> AgentProcessCommand:
         del request
-        return AgentProcessInvocation(
-            arguments, Path.cwd(), standard_output_frame_bytes=frame_bytes
-        )
+        return AgentProcessCommand(arguments, standard_output_frame_bytes=frame_bytes)
 
     return command
 
@@ -326,7 +398,7 @@ def emitting(
     *,
     delay_seconds: float = 0,
     frame_bytes: int = SCENARIO_PROVIDER_FRAME_BYTES,
-) -> AgentProcessCommand:
+) -> AgentCommandFactory:
     """A command whose process writes exactly these bytes to standard output."""
 
     return launching(
@@ -395,7 +467,7 @@ class RecordingAgentExecutorV2:
     lifecycle: list[str] = field(default_factory=list)
     name: str = "recording"
     closes: int = 0
-    command: AgentProcessCommand | None = None
+    command: AgentCommandFactory | None = None
     """How the process is launched; by default it writes `output` and exits."""
     decoder: AgentCompletionDecoder = decode_process_exit
     close_failure: BaseException | None = None
@@ -404,11 +476,9 @@ class RecordingAgentExecutorV2:
     results: list[AgentExecutionResult | AgentExecutionFailure] = field(
         default_factory=list
     )
-    released_invocations: list[AgentProcessInvocation] = field(default_factory=list)
+    released_commands: list[AgentProcessCommand] = field(default_factory=list)
 
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
+    def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         self.requests.append(request)
         self.lifecycle.append(f"execute:{self.name}")
         return (self.command or emitting(self.output))(request)
@@ -421,8 +491,8 @@ class RecordingAgentExecutorV2:
         self.results.append(result)
         return result
 
-    def release_process(self, invocation: AgentProcessInvocation) -> None:
-        self.released_invocations.append(invocation)
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        self.released_commands.append(command)
 
     def close(self) -> None:
         self.closes += 1
@@ -445,7 +515,7 @@ class RecordingAgentExecutorFactoryV2:
     identity_reads: int = 0
     opens: int = 0
     opened: RecordingAgentExecutorV2 | None = None
-    command: AgentProcessCommand | None = None
+    command: AgentCommandFactory | None = None
     decoder: AgentCompletionDecoder = decode_process_exit
     open_failure: BaseException | None = None
     """Raised once the open has been recorded, for open-failure scenarios."""

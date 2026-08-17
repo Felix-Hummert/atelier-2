@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.adapters.systemd_generation_records import (
     DirectSystemdGenerationRecords,
     DirectSystemdInvocationId,
@@ -27,6 +28,7 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    AgentProcessCommand,
     AgentProcessInvocation,
 )
 
@@ -61,17 +63,36 @@ def _popen(arguments: tuple[str, ...], **keywords: Any) -> subprocess.Popen[byte
     return cast(subprocess.Popen[bytes], subprocess.Popen(arguments, **keywords))
 
 
+@dataclass(frozen=True)
+class DirectSystemdLaunch:
+    """What a launcher needs: one command and the directory it is started in.
+
+    The attempt's lease owns that directory. This record carries only the path,
+    because a launcher never owns an attempt -- it starts a process where
+    somebody else leased the ground, and the envelope's bytes are unchanged by
+    the split that gave the lease its own type.
+    """
+
+    command: AgentProcessCommand
+    working_directory: Path
+    device: int
+    inode: int
+
+
 def encode_direct_systemd_launch_envelope(
     invocation: AgentProcessInvocation,
 ) -> bytes:
+    command = invocation.command
     value = {
-        "arguments": list(invocation.arguments),
-        "environment": [list(entry) for entry in invocation.environment],
-        "standard_input": base64.b64encode(invocation.standard_input).decode("ascii"),
-        "standard_output_limit": invocation.standard_output_frame_bytes,
+        "arguments": list(command.arguments),
+        "environment": [list(entry) for entry in command.environment],
+        "standard_input": base64.b64encode(command.standard_input).decode("ascii"),
+        "standard_output_limit": command.standard_output_frame_bytes,
         "type": "LAUNCH",
         "version": _LAUNCH_ENVELOPE_VERSION,
-        "working_directory": str(invocation.working_directory),
+        "working_directory": str(invocation.lease.working_directory),
+        "working_directory_device": invocation.lease.device,
+        "working_directory_inode": invocation.lease.inode,
     }
     payload = encode_canonical_systemd_json(value)
     if len(payload) > MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES:
@@ -79,7 +100,7 @@ def encode_direct_systemd_launch_envelope(
     return payload
 
 
-def decode_direct_systemd_launch_envelope(payload: bytes) -> AgentProcessInvocation:
+def decode_direct_systemd_launch_envelope(payload: bytes) -> DirectSystemdLaunch:
     if len(payload) > MAXIMUM_DIRECT_SYSTEMD_LAUNCH_ENVELOPE_BYTES:
         raise ValueError("direct systemd launch envelope exceeds its exact bound")
     value = decode_canonical_systemd_json(payload)
@@ -91,6 +112,8 @@ def decode_direct_systemd_launch_envelope(payload: bytes) -> AgentProcessInvocat
         "type",
         "version",
         "working_directory",
+        "working_directory_device",
+        "working_directory_inode",
     }
     if (
         set(value) != fields
@@ -116,14 +139,27 @@ def decode_direct_systemd_launch_envelope(payload: bytes) -> AgentProcessInvocat
         raise ValueError("direct systemd launch input exceeds its exact bound")
     working_directory = value["working_directory"]
     standard_output_limit = value["standard_output_limit"]
-    if type(working_directory) is not str or type(standard_output_limit) is not int:
+    device = value["working_directory_device"]
+    inode = value["working_directory_inode"]
+    if (
+        type(working_directory) is not str
+        or type(standard_output_limit) is not int
+        or type(device) is not int
+        or type(inode) is not int
+        or device < 0
+        or inode < 0
+    ):
         raise ValueError("direct systemd launch envelope values are malformed")
-    return AgentProcessInvocation(
-        tuple(raw_arguments),
+    return DirectSystemdLaunch(
+        AgentProcessCommand(
+            tuple(raw_arguments),
+            tuple((entry[0], entry[1]) for entry in raw_environment),
+            standard_input,
+            standard_output_frame_bytes=standard_output_limit,
+        ),
         Path(working_directory),
-        tuple((entry[0], entry[1]) for entry in raw_environment),
-        standard_input=standard_input,
-        standard_output_frame_bytes=standard_output_limit,
+        device,
+        inode,
     )
 
 
@@ -144,8 +180,8 @@ def collect_direct_systemd_agent_process(
     )
     if Sha256Hash.of(envelope) != intent.launch_envelope_hash:
         raise ValueError("direct systemd launch envelope differs from INTENT")
-    invocation = decode_direct_systemd_launch_envelope(envelope)
-    if invocation.standard_output_frame_bytes != intent.standard_output_limit:
+    launch = decode_direct_systemd_launch_envelope(envelope)
+    if launch.command.standard_output_frame_bytes != intent.standard_output_limit:
         raise ValueError(
             "direct systemd launch envelope output bound differs from INTENT"
         )
@@ -174,14 +210,19 @@ def collect_direct_systemd_agent_process(
     try:
         # A crash from durable STARTED onward deliberately sacrifices retry to
         # keep provider execution at most once.
-        process = popen(
-            invocation.arguments,
-            cwd=invocation.working_directory,
-            env=dict(invocation.environment),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        entered = entered_leased_directory(
+            launch.working_directory, launch.device, launch.inode
         )
+        with entered as (leased_cwd, leased_descriptor):
+            process = popen(
+                launch.command.arguments,
+                cwd=leased_cwd,
+                pass_fds=(leased_descriptor,),
+                env=dict(launch.command.environment),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
     except (OSError, subprocess.SubprocessError, ValueError):
         result = DirectSystemdResult(
             started_hash,
@@ -194,14 +235,14 @@ def collect_direct_systemd_agent_process(
             False,
         )
     else:
-        result = _collect_process(process, invocation, started_hash, invocation_id)
+        result = _collect_process(process, launch.command, started_hash, invocation_id)
     records.publish_result(result)
     return result
 
 
 def _collect_process(
     process: subprocess.Popen[bytes],
-    invocation: AgentProcessInvocation,
+    command: AgentProcessCommand,
     started_hash: Sha256Hash,
     invocation_id: DirectSystemdInvocationId,
 ) -> DirectSystemdResult:
@@ -222,7 +263,7 @@ def _collect_process(
     standard_error = bytearray()
     standard_output_overflow = False
     standard_error_overflow = False
-    if not invocation.standard_input:
+    if not command.standard_input:
         _close_stream(selector, streams, "stdin")
     try:
         while "stdout" in streams or "stderr" in streams:
@@ -238,7 +279,7 @@ def _collect_process(
                         streams,
                         name,
                         standard_output if name == "stdout" else standard_error,
-                        invocation.standard_output_frame_bytes
+                        command.standard_output_frame_bytes
                         if name == "stdout"
                         else MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
                     )
@@ -253,18 +294,18 @@ def _collect_process(
                     try:
                         written = os.write(
                             key.fd,
-                            invocation.standard_input[standard_input_offset:],
+                            command.standard_input[standard_input_offset:],
                         )
                     except BrokenPipeError:
                         _close_stream(selector, streams, name)
                     else:
                         standard_input_offset += written
-                        if standard_input_offset == len(invocation.standard_input):
+                        if standard_input_offset == len(command.standard_input):
                             _close_stream(selector, streams, name)
                     continue
                 target = standard_output if name == "stdout" else standard_error
                 limit = (
-                    invocation.standard_output_frame_bytes
+                    command.standard_output_frame_bytes
                     if name == "stdout"
                     else MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
                 )

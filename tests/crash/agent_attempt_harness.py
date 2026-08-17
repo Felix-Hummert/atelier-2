@@ -46,21 +46,20 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.agent_attempts import AgentAttemptCancellationAccepted
-from atelier2.ports.agent_executions import (
-    AgentProcessInvocation,
-)
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
 from atelier2.ports.run_queries import (
     RunFound,
 )
 from tests.scenarios.agents import (
-    SCENARIO_PROVIDER_FRAME_BYTES,
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
     agent_attempt_execution,
+    agent_scratch_root,
     decoding_to,
     launching,
+    process_invocation,
     refusing,
+    runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_queries
 
@@ -111,7 +110,11 @@ def run_controlled_process(counter: Path) -> None:
 
 def runtime(root: Path) -> DbosRuntime:
     return DbosRuntime(
-        DbosRuntimeSettings(root / "atelier.sqlite", "agent-attempt-crash"),
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "agent-attempt-crash",
+            agent_scratch_root=agent_scratch_root(root),
+        ),
         LoopbackEffectAdapterFactory(
             root / "effects.sqlite",
             AdapterRevision("loopback-v1"),
@@ -279,13 +282,19 @@ def main(root: Path, mode: str) -> None:
             ).request_cancellation(command)
             assert (
                 continue_agent_attempt_cancellation(
-                    command, store, lease.agent_process_supervisor
+                    command,
+                    store,
+                    lease.agent_process_supervisor,
+                    runtime_workspace_owner(lease),
                 )
                 is None
             )
             cgroup.mkdir(mode=0o700)
             result = continue_agent_attempt_cancellation(
-                command, store, lease.agent_process_supervisor
+                command,
+                store,
+                lease.agent_process_supervisor,
+                runtime_workspace_owner(lease),
             )
             if result is None:
                 raise AssertionError("second recovery remained poisoned")
@@ -326,6 +335,7 @@ def main(root: Path, mode: str) -> None:
                 controlled_process_executor(root / "counter"),
                 store,
                 lease.agent_process_supervisor,
+                runtime_workspace_owner(lease),
             )
             found = durable_queries(lease.engine).get_run(exact_request.run_id)
             if isinstance(found, RunFound):
@@ -351,7 +361,8 @@ def launch_attempt(
     store.prepare(execution)
     lease.agent_process_supervisor.prepare(execution)
     store.claim(execution)
-    invocation = AgentProcessInvocation(
+    invocation = process_invocation(
+        execution.attempt_id,
         arguments
         or (
             sys.executable,
@@ -360,7 +371,6 @@ def launch_attempt(
             str(ready),
         ),
         Path.cwd(),
-        standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
     )
     threading.Thread(
         target=lease.agent_process_supervisor.launch_and_wait,

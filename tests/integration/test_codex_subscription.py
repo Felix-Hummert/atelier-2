@@ -40,8 +40,13 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
+    AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
+)
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    leased_directory_identity,
 )
 
 MEASURED_CODEX_VERSION = "0.147.0"
@@ -89,7 +94,7 @@ raise SystemExit(int(os.environ.get("FAKE_EXIT", "0")))
 """
 
 
-def _contained_doctor_report(settings_home: Path, workspace: Path) -> dict[str, object]:
+def _contained_doctor_report(settings_home: Path) -> dict[str, object]:
     """What `codex doctor --json` reports for a profile that loads nothing."""
 
     return {
@@ -101,7 +106,6 @@ def _contained_doctor_report(settings_home: Path, workspace: Path) -> dict[str, 
                 "details": {
                     "CODEX_HOME": str(settings_home),
                     "config.toml": [str(settings_home / "config.toml"), "missing"],
-                    "cwd": str(workspace),
                     "mcp servers": "0",
                 },
             },
@@ -122,16 +126,31 @@ def codex_subscription_deployment(
     sandbox: CodexSandboxMode = CodexSandboxMode.READ_ONLY,
 ) -> CodexSubscriptionSettings:
     executable = _write_executable(tmp_path / "codex", source)
-    workspace = tmp_path / "workspace"
     credentials = tmp_path / "codex-home"
-    workspace.mkdir()
     credentials.mkdir()
     return CodexSubscriptionSettings(
-        executable,
-        workspace,
-        credentials,
-        os.environ.get("PATH", "/usr/bin"),
-        sandbox,
+        executable, credentials, os.environ.get("PATH", "/usr/bin"), sandbox
+    )
+
+
+def leased_workspace(root: Path) -> Path:
+    """The blank directory an attempt's lease starts this provider in."""
+
+    workspace = root / "attempt-workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
+def leased(
+    request: AgentExecutionRequestV2, command: AgentProcessCommand, workspace: Path
+) -> AgentProcessInvocation:
+    """One invocation for a test that houses the leased directory itself."""
+
+    return AgentProcessInvocation(
+        command,
+        leased_directory_identity(
+            agent_attempt_execution(request).attempt_id, workspace
+        ),
     )
 
 
@@ -162,13 +181,15 @@ def subscription_request(
 
 
 def launched(
-    invocation: AgentProcessInvocation, **provider_behaviour: str
+    command: AgentProcessCommand, workspace: Path, **provider_behaviour: str
 ) -> AgentProcessCompletion:
+    """Run one prepared command exactly where the attempt leased its ground."""
+
     completed = subprocess.run(
-        invocation.arguments,
-        cwd=invocation.working_directory,
-        env=dict(invocation.environment) | provider_behaviour,
-        input=invocation.standard_input,
+        command.arguments,
+        cwd=workspace,
+        env=dict(command.environment) | provider_behaviour,
+        input=command.standard_input,
         capture_output=True,
         check=False,
     )
@@ -186,16 +207,11 @@ def test_a_headless_run_carries_the_bound_model_and_sandbox_with_the_job_off_arg
     executor = CodexSubscriptionExecutorFactory(settings).open()
     request = subscription_request(model="gpt-5.3-codex", job=b"draw the owl")
 
-    invocation = executor.prepare_process(request)
-    # The answer path is private per execution, so it is read back from the
-    # vector rather than recomputed: a predictable name is what a symlink
-    # preys on.
-    answer_file = Path(
-        invocation.arguments[invocation.arguments.index("--output-last-message") + 1]
-    )
+    workspace = leased_workspace(tmp_path)
+    command = executor.prepare_process(request)
+    invocation = leased(request, command, workspace)
 
-    assert answer_file.parent.parent == settings.workspace
-    assert invocation.arguments == (
+    assert command.arguments == (
         str(settings.executable),
         "exec",
         "--ignore-user-config",
@@ -208,14 +224,13 @@ def test_a_headless_run_carries_the_bound_model_and_sandbox_with_the_job_off_arg
         "gpt-5.3-codex",
         "--sandbox",
         "workspace-write",
-        "--cd",
-        str(settings.workspace),
+        # A bare name, not a path: the CLI writes it into the directory it is
+        # started in, which is the attempt's lease and nowhere else.
         "--output-last-message",
-        str(answer_file),
+        "last-message",
         "-",
     )
-    assert invocation.working_directory == settings.workspace
-    assert invocation.environment == (
+    assert command.environment == (
         # HOME is containment, not convenience: a child without it resolves the
         # invoking account's own profile and loads that profile's trust.
         ("HOME", str(settings.credential_directory)),
@@ -224,17 +239,19 @@ def test_a_headless_run_carries_the_bound_model_and_sandbox_with_the_job_off_arg
     )
     # `codex exec` takes its prompt on stdin, so the job never reaches the
     # argument vector, where any account on the host could read it.
-    assert invocation.standard_input == b"draw the owl"
-    assert b"draw the owl" not in " ".join(invocation.arguments).encode()
-    assert invocation.standard_output_frame_bytes == CODEX_SUBSCRIPTION_FRAME_BYTES
+    assert command.standard_input == b"draw the owl"
+    assert b"draw the owl" not in " ".join(command.arguments).encode()
+    assert command.standard_output_frame_bytes == CODEX_SUBSCRIPTION_FRAME_BYTES
 
-    result = executor.decode_process_completion(invocation, launched(invocation))
+    result = executor.decode_process_completion(
+        invocation, launched(command, workspace)
+    )
 
     assert isinstance(result, AgentExecutionResult)
     observed = json.loads(result.output_bytes)
     assert observed["arguments"][0] == str(settings.executable)
     assert observed["stdin"] == "draw the owl"
-    assert observed["working_directory"] == str(settings.workspace)
+    assert observed["working_directory"] == str(workspace)
     assert observed["environment"]["CODEX_HOME"] == str(settings.credential_directory)
     assert observed["environment"]["HOME"] == str(settings.credential_directory)
     assert "OPENAI_API_KEY" not in observed["environment"]
@@ -319,10 +336,12 @@ def test_a_broken_provider_answer_is_a_typed_refusal_not_an_invented_result(
 ) -> None:
     settings = codex_subscription_deployment(tmp_path)
     executor = CodexSubscriptionExecutorFactory(settings).open()
-    invocation = executor.prepare_process(subscription_request())
+    workspace = leased_workspace(tmp_path)
+    request = subscription_request()
+    command = executor.prepare_process(request)
 
     result = executor.decode_process_completion(
-        invocation, launched(invocation, **broken)
+        leased(request, command, workspace), launched(command, workspace, **broken)
     )
 
     assert result == AgentExecutionFailure(
@@ -333,38 +352,72 @@ def test_a_broken_provider_answer_is_a_typed_refusal_not_an_invented_result(
 def test_the_answer_is_the_exact_bytes_the_provider_wrote(tmp_path: Path) -> None:
     settings = codex_subscription_deployment(tmp_path)
     executor = CodexSubscriptionExecutorFactory(settings).open()
-    invocation = executor.prepare_process(subscription_request())
+    workspace = leased_workspace(tmp_path)
+    request = subscription_request()
+    command = executor.prepare_process(request)
 
     result = executor.decode_process_completion(
-        invocation, launched(invocation, FAKE_ANSWER="  pong  \n")
+        leased(request, command, workspace),
+        launched(command, workspace, FAKE_ANSWER="  pong  \n"),
     )
 
     assert result == AgentExecutionResult(b"  pong  \n")
 
 
-def _answer_path(invocation: AgentProcessInvocation) -> Path:
-    return Path(
-        invocation.arguments[invocation.arguments.index("--output-last-message") + 1]
-    )
+def test_the_answer_lands_in_the_directory_the_process_was_started_in(
+    tmp_path: Path,
+) -> None:
+    """The whole reason the command may name the answer without a path.
 
+    `--output-last-message last-message` is relative, so where it lands is
+    decided by the directory the process is started in -- the attempt's lease.
+    If the CLI resolved it against its credential home, or against whatever
+    directory the server happens to run in, the answer would leave the lease and
+    survive the attempt that owns it.
+    """
 
-def test_job_and_answer_bytes_outlive_no_execution(tmp_path: Path) -> None:
     settings = codex_subscription_deployment(tmp_path)
     executor = CodexSubscriptionExecutorFactory(settings).open()
-    invocation = executor.prepare_process(subscription_request())
-    answer_file = _answer_path(invocation)
-    completion = launched(invocation)
+    workspace = leased_workspace(tmp_path)
+    request = subscription_request()
+    command = executor.prepare_process(request)
 
-    assert answer_file.parent.exists()
-    executor.decode_process_completion(invocation, completion)
+    result = executor.decode_process_completion(
+        leased(request, command, workspace),
+        launched(command, workspace, FAKE_ANSWER="pong"),
+    )
 
-    # The promise is per execution, not per executor: a long-lived server keeps
-    # one executor open for its whole life, so answer bytes that only fall at
-    # close() would lie readable in the workspace beside every later attempt.
-    assert not answer_file.parent.exists()
-    assert list(settings.workspace.iterdir()) == []
+    assert result == AgentExecutionResult(b"pong")
+    assert (workspace / "last-message").read_bytes() == b"pong"
+    assert not (settings.credential_directory / "last-message").exists()
+    assert not (tmp_path / "last-message").exists()
+
+
+def test_the_executor_writes_nothing_outside_the_leased_directory(
+    tmp_path: Path,
+) -> None:
+    """Answer bytes outlive no attempt, because the lease is what removes them.
+
+    The executor keeps no directory of its own: everything it produces lands
+    inside the leased directory, and `AgentAttemptWorkspaceOwner.release` takes
+    that directory and its contents away. One directory regime, and the owner of
+    the ground is the owner of the cleanup.
+    """
+
+    settings = codex_subscription_deployment(tmp_path)
+    executor = CodexSubscriptionExecutorFactory(settings).open()
+    workspace = leased_workspace(tmp_path)
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    before = sorted(entry.name for entry in tmp_path.iterdir())
+
+    executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
     executor.close()
-    assert list(settings.workspace.iterdir()) == []
+
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == before
+    assert [entry.name for entry in workspace.iterdir()] == ["last-message"]
 
 
 def test_two_overlapping_attempts_each_decode_their_own_answer(
@@ -375,10 +428,24 @@ def test_two_overlapping_attempts_each_decode_their_own_answer(
     # must read the answer its own invocation named.
     settings = codex_subscription_deployment(tmp_path)
     executor = CodexSubscriptionExecutorFactory(settings).open()
-    first = executor.prepare_process(subscription_request(job=b"attempt one"))
-    second = executor.prepare_process(subscription_request(job=b"attempt two"))
-    _answer_path(first).write_bytes(b"ANSWER-FOR-ATTEMPT-ONE")
-    _answer_path(second).write_bytes(b"ANSWER-FOR-ATTEMPT-TWO")
+    first_request = subscription_request(job=b"attempt one")
+    second_request = subscription_request(job=b"attempt two")
+    first = leased(
+        first_request,
+        executor.prepare_process(first_request),
+        leased_workspace(tmp_path / "one"),
+    )
+    second = leased(
+        second_request,
+        executor.prepare_process(second_request),
+        leased_workspace(tmp_path / "two"),
+    )
+    (first.lease.working_directory / "last-message").write_bytes(
+        b"ANSWER-FOR-ATTEMPT-ONE"
+    )
+    (second.lease.working_directory / "last-message").write_bytes(
+        b"ANSWER-FOR-ATTEMPT-TWO"
+    )
 
     answered = AgentProcessCompletion(0, b"", b"")
 
@@ -392,7 +459,7 @@ def test_two_overlapping_attempts_each_decode_their_own_answer(
 
 def test_a_contained_profile_attests(tmp_path: Path) -> None:
     settings = codex_subscription_deployment(tmp_path)
-    report = _contained_doctor_report(settings.credential_directory, settings.workspace)
+    report = _contained_doctor_report(settings.credential_directory)
 
     attest_codex_containment(
         settings, environment_overrides={"FAKE_DOCTOR_REPORT": json.dumps(report)}
@@ -413,7 +480,7 @@ def test_a_profile_that_loads_foreign_trust_is_refused_before_serving(
     tmp_path: Path, surface: str
 ) -> None:
     settings = codex_subscription_deployment(tmp_path)
-    report = _contained_doctor_report(settings.credential_directory, settings.workspace)
+    report = _contained_doctor_report(settings.credential_directory)
     configuration = report["checks"]["config.load"]  # type: ignore[index]
     details = configuration["details"]
     overrides = {}
@@ -440,7 +507,7 @@ def test_a_contained_profile_attests_even_when_unrelated_checks_fail(
     # and on a contained deployment the failing ones are auth and network
     # reachability. Neither is containment, so an offline host still serves.
     settings = codex_subscription_deployment(tmp_path)
-    report = _contained_doctor_report(settings.credential_directory, settings.workspace)
+    report = _contained_doctor_report(settings.credential_directory)
 
     attest_codex_containment(
         settings,
@@ -457,7 +524,7 @@ def test_a_sandboxed_mode_whose_sandbox_cannot_run_here_is_refused(
     settings = codex_subscription_deployment(
         tmp_path, sandbox=CodexSandboxMode.WORKSPACE_WRITE
     )
-    report = _contained_doctor_report(settings.credential_directory, settings.workspace)
+    report = _contained_doctor_report(settings.credential_directory)
 
     # Measured on this host: `codex sandbox -- /bin/true` exits 1 with
     # `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` where the
@@ -480,7 +547,7 @@ def test_full_access_does_not_claim_a_sandbox_it_never_asked_for(
     settings = codex_subscription_deployment(
         tmp_path, sandbox=CodexSandboxMode.DANGER_FULL_ACCESS
     )
-    report = _contained_doctor_report(settings.credential_directory, settings.workspace)
+    report = _contained_doctor_report(settings.credential_directory)
 
     attest_codex_containment(
         settings,

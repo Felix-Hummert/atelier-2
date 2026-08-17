@@ -38,7 +38,11 @@ from atelier2.adapters.systemd_timespans import (
 )
 from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGenerationId
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.ports.agent_executions import AgentProcessInvocation
+from atelier2.ports.agent_executions import (
+    AgentProcessCommand,
+    AgentProcessInvocation,
+)
+from tests.scenarios.agents import leased_directory_identity
 
 
 def _configuration() -> DirectSystemdAgentProcessConfiguration:
@@ -58,7 +62,10 @@ def _configuration() -> DirectSystemdAgentProcessConfiguration:
 
 
 def _invocation(root: Path) -> AgentProcessInvocation:
-    return AgentProcessInvocation(("provider",), root, standard_output_frame_bytes=17)
+    return AgentProcessInvocation(
+        AgentProcessCommand(("provider",), standard_output_frame_bytes=17),
+        leased_directory_identity(AgentAttemptId.of(b"attempt"), root),
+    )
 
 
 def _seed_generation(
@@ -78,7 +85,8 @@ def _seed_generation(
         generation_id,
         direct_systemd_unit_name(attempt_id, generation_id),
         Sha256Hash.of(envelope),
-        invocation.standard_output_frame_bytes,
+        invocation.command.standard_output_frame_bytes,
+        invocation.lease.working_directory,
     )
     records.publish_intent(intent)
     if started:
@@ -527,7 +535,8 @@ def test_a_command_that_never_started_removes_only_the_unstarted_source(
             WatchdogGenerationId("generation"),
             generation,
             AgentProcessInvocation(
-                ("changed",), tmp_path, standard_output_frame_bytes=17
+                AgentProcessCommand(("changed",), standard_output_frame_bytes=17),
+                leased_directory_identity(AgentAttemptId.of(b"attempt"), tmp_path),
             ),
         )
 

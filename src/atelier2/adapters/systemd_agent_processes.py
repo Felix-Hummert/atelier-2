@@ -398,7 +398,8 @@ class DirectSystemdAgentProcessManager:
             generation_id,
             direct_systemd_unit_name(attempt_id, generation_id),
             Sha256Hash.of(envelope),
-            invocation.standard_output_frame_bytes,
+            invocation.command.standard_output_frame_bytes,
+            invocation.lease.working_directory,
         )
         if os.path.lexists(records.intent_path):
             if _inspect(records).intent != intent:
@@ -598,6 +599,10 @@ class DirectSystemdAgentProcessManager:
             f"--property=TimeoutStopSec={configuration.timeout_stop_seconds}s",
             f"--property=RuntimeMaxSec={configuration.runtime_max_seconds}s",
             "--property=SendSIGKILL=yes",
+            # The unit's own working directory addresses the collector: it reads
+            # its INTENT, ENVELOPE, STARTED and RESULT from where it is started.
+            # The provider runs one level below, in the directory the attempt
+            # leased, which the collector takes from the launch envelope.
             f"--property=WorkingDirectory={generation_directory}",
             f"--property=LoadCredential={DIRECT_SYSTEMD_LAUNCH_CREDENTIAL_NAME}:{source}",
             *self._collector,
