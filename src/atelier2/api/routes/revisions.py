@@ -24,6 +24,7 @@ from atelier2.api.references import InvalidRevisionHash, parse_revision_hash
 from atelier2.api.wire.requests import RevisionListingView
 from atelier2.api.wire.resources import (
     AnyWorkflowRevisionPageResource,
+    CatalogNameResolutionResource,
     VersionedWorkflowRevisionPageResource,
     WorkflowRevisionDetailResource,
     WorkflowRevisionPageResource,
@@ -47,6 +48,15 @@ from atelier2.application.refusals import (
     ReadUnavailable,
     WriteUnavailable,
 )
+from atelier2.application.resolve_catalog_name import (
+    CatalogNameInvalidPosition,
+    CatalogNameLineageRetired,
+    CatalogNameMissing,
+    CatalogNameResolved,
+    CatalogReferenceNonMember,
+)
+from atelier2.contracts.catalog_v3 import catalog_lineage_query
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowRefusal
 
@@ -162,6 +172,62 @@ async def _described_page(
             raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _asked_position(position: str) -> object:
+    try:
+        return int(position)
+    except ValueError:
+        return position
+
+
+@router.get(
+    API_PREFIX + "/workflow-revisions/by-name/{name}",
+    response_model=CatalogNameResolutionResource,
+)
+async def get_revision_by_name(
+    name: str,
+    position: str = "head",
+    context: ApiContext = api_context_dependency,
+) -> CatalogNameResolutionResource:
+    """Answer which revision a catalog name holds, and nothing about running it.
+
+    Registered before `/{revision_hash}` on purpose: that path would otherwise
+    claim `by-name` and refuse every name as a malformed hash.
+    """
+
+    try:
+        query = catalog_lineage_query(name)
+    except ValueError as error:
+        raise ApiProblem("catalog-name-not-found") from error
+    # The application owns which positions are legal; the route only turns the
+    # query string into the value it judges, so "7" and "head" travel as the
+    # types that rule reads and "later" arrives as the string it refuses.
+    asked: object = position if position == "head" else _asked_position(position)
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.resolve_catalog_name(
+            RevisionKind.WORKFLOW, query, asked
+        ),
+    )
+    match result:
+        case CatalogNameResolved(lineage_id, revision, revision_number, display_name):
+            return CatalogNameResolutionResource(
+                display_name=display_name.value,
+                lineage_id=lineage_id.value,
+                revision_hash=revision.revision_hash.value,
+                revision_number=revision_number,
+            )
+        case CatalogNameLineageRetired():
+            raise ApiProblem("catalog-lineage-retired")
+        case CatalogNameMissing():
+            raise ApiProblem("catalog-name-not-found")
+        case CatalogNameInvalidPosition():
+            raise ApiProblem("invalid-catalog-position")
+        case CatalogReferenceNonMember():
+            raise ApiProblem("catalog-revision-not-a-member")
         case _ as unreachable:
             assert_never(unreachable)
 

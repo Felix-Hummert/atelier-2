@@ -39,6 +39,7 @@ from atelier2.application.read_workflow_revisions import (
     list_workflow_revisions,
 )
 from atelier2.application.reconcile_run import reconcile_run
+from atelier2.application.resolve_catalog_name import resolve_catalog_name
 from atelier2.application.start_published_run import start_published_run
 from atelier2.contracts.workflow_projections import (
     EnrichedPageBudget,
@@ -54,6 +55,9 @@ def bound_use_cases(
     return ApiUseCases(
         get_workflow_revision=lambda revision_hash: get_workflow_revision(
             revision_hash, ports.workflow_revision_queries
+        ),
+        resolve_catalog_name=lambda kind, query, position: resolve_catalog_name(
+            kind, query, position, ports.catalog_resolver
         ),
         list_workflow_revisions=lambda after, limit: list_workflow_revisions(
             after, limit, ports.workflow_revision_queries

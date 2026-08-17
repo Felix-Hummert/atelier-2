@@ -111,6 +111,14 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (API_PREFIX + "/workflow-revisions/by-name/{name}", "get"): (
+        "catalog-name-not-found",
+        "catalog-lineage-retired",
+        "catalog-revision-not-a-member",
+        "invalid-catalog-position",
+        "temporarily-unavailable",
+        "internal-error",
+    ),
     (API_PREFIX + "/workflow-revisions/{revision_hash}", "get"): (
         "invalid-revision-hash",
         "workflow-revision-not-found",

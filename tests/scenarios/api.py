@@ -9,6 +9,7 @@ from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -273,6 +274,7 @@ def api_ports(**overrides: object) -> ApiPorts:
         "workflow_document_parser": parse_workflow_document,
         "agent_configuration_catalog": unused,
         "agent_attempt_canceller": unused,
+        "catalog_resolver": unused,
     }
     ports.update(overrides)
     return ApiPorts(**ports)
@@ -359,6 +361,7 @@ def durable_api_client(
                 agent_attempt_canceller=DbosAgentAttemptStore(
                     runtime.engine, runtime.settings.application_version
                 ),
+                catalog_resolver=DbosCatalogStore(runtime.engine),
             ),
             limits=api_limits() if limits is None else limits,
             event_poll_backoff=event_poll_backoff(),

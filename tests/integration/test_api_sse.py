@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import (
@@ -208,6 +209,7 @@ def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
                 runtime.engine, runtime.agent_executor_registry
             ),
             DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version),
+            DbosCatalogStore(runtime.engine),
         ),
         limits=api_limits(event_page_size=page_size),
         event_poll_backoff=event_poll_backoff(),

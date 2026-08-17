@@ -92,9 +92,19 @@ class CatalogRetirementState(StrEnum):
     RETIRED = "retired"
 
 
+type CatalogLineageQuery = CatalogLineageId | CatalogLineageDisplayName
+"""How an author names one lineage: by its id, or by the name it carries.
+
+The union of two contract types is a contract concept. It lived in the port
+that first answered such a query, which made every caller naming an authoring
+query name a port -- including the API's own use-case record, where that is the
+evasion `check_architecture.py` reads annotations for.
+"""
+
+
 def catalog_lineage_query(
     value: str,
-) -> CatalogLineageId | CatalogLineageDisplayName:
+) -> CatalogLineageQuery:
     """Split an authoring query by the ADR 0007 syntactic rule.
 
     A 64-hex input is a lineage id and can be nothing else; every other input is
