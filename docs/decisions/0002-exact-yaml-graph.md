@@ -46,7 +46,16 @@ run's state version and event cursor with one immutable event; `WAITING_INPUT`
 and reconciliation transitions deliberately retain the current node. An
 `ACTION_RECONCILIATION_REQUIRED` event records the durable reason without a
 receipt, while `ACTION_RECONCILIATION_RESOLVED` and `ACTION_COMPLETED` bind the
-exact receipt. A terminal hash covers the ordered event hashes. Wait answers
+exact receipt. An `AGENT_COMPLETED` event binds the hash of the agent receipt its
+attempt produced, so the chain carries the provider, auth profile, model,
+executor revision and configuration an answer was produced under rather than the
+answer alone; no other kind may carry that field. A terminal hash covers the
+ordered event hashes. The event-hash domain is chosen by the content of the
+event: `node-event-hash/v3` where a receipt is bound, `/v2` where a cancellation
+or an ordinal-2 attempt is, `/v1` otherwise. Each domain nests the one before it
+and the chosen name is itself inside the preimage, so an event keeps whatever
+hash it had when it was written and a verifier picks the domain from fields it
+already holds. Wait answers
 have their own deterministic workflow identity; identical concurrent
 submissions converge, while a different answer loses with a typed conflict.
 
@@ -71,7 +80,7 @@ semantics.
 
 | Proof | What it establishes |
 | --- | --- |
-| Domain and YAML tests | Closed safe syntax, frozen collections, graph invariants, and literal identity/hash vectors. |
+| Domain and YAML tests | Closed safe syntax, frozen collections, graph invariants, and literal identity/hash vectors, including the frozen vector that pins a completion carrying no receipt binding to the hash it had before the binding existed. |
 | Schema and start tests | Exact V3 shape, immutable composite bindings, parse-before-write, and idempotent exact run start. |
 | Runtime graph tests | YAML edges alone drive Agent, Action, Wait, and Subworkflow; event order, terminal hash, reconciliation visibility, shared continuation, and concurrent answers are durable. |
 | Crash graph tests | Answer commit, Action continuation, and successor scheduling resume after process death without duplicate transitions or a changed terminal result. |
