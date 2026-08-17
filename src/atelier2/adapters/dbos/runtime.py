@@ -149,8 +149,13 @@ def create_canonical_engine(
     """The one engine every durable path shares, waiting as long as it was told.
 
     How long to wait for a busy store is the instance's answer, not the code's:
-    a laptop and a loaded host disagree honestly. The default is the value this
-    module has always used, so an unconfigured instance waits exactly as before.
+    a laptop and a loaded host disagree honestly, and the serving host passes what
+    it was configured with.
+
+    The default is the named owner itself rather than a second number, so a caller
+    that says nothing still waits the one documented wait. It stays a default
+    because making it required buys nothing here and costs every test that opens a
+    store a line of noise: the value has one home either way.
     """
 
     database_path.parent.mkdir(parents=True, exist_ok=True)

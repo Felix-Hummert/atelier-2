@@ -653,9 +653,37 @@ def test_a_served_instance_reads_the_page_size_it_was_configured_with(
         runtime.close()
 
 
+@pytest.mark.parametrize(
+    ("flag", "value", "refusal"),
+    [
+        # One case per owner that holds a rule, because a single case only proves
+        # the owner it happens to reach. The last two travelled a different path
+        # and escaped as a traceback until the record asked their owner early.
+        (
+            "--event-poll-delay-multiplier",
+            "1.0",
+            "multiplier must be greater than one",
+        ),
+        ("--event-page-size", "0", "event_page_size must be a positive integer"),
+        (
+            "--sqlite-lock-timeout-seconds",
+            "-1",
+            "SQLite lock timeout must be positive",
+        ),
+        (
+            "--agent-termination-grace-seconds",
+            "0",
+            "agent termination grace must be positive",
+        ),
+    ],
+)
 @pytest.mark.proves("an-instance-value-outside-its-range-is-refused-by-name")
 def test_the_operator_reads_the_owners_words_when_a_knob_is_out_of_range(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    flag: str,
+    value: str,
+    refusal: str,
 ) -> None:
     """A refusal is only a refusal if it reaches the person who typed the value."""
     frontend = tmp_path / "frontend"
@@ -682,12 +710,14 @@ def test_the_operator_reads_the_owners_words_when_a_knob_is_out_of_range(
                 "t",
                 "--frontend-dist",
                 str(frontend),
-                "--event-poll-delay-multiplier",
-                "1.0",
+                flag,
+                value,
             ]
         )
 
-    assert "multiplier must be greater than one" in capsys.readouterr().err
+    printed = capsys.readouterr().err
+    assert refusal in printed
+    assert "Traceback" not in printed
 
 
 @pytest.mark.proves("an-instance-value-is-set-where-the-instance-is-configured")

@@ -185,6 +185,25 @@ class HostSettings:
         )
         return tuple(name for name, settings in configured if settings is not None)
 
+    def runtime_settings(self) -> DbosRuntimeSettings:
+        """The durable runtime's own answers, built by the record that holds them.
+
+        Built rather than re-checked, and built here rather than deep inside the
+        composition: the range rules live on `DbosRuntimeSettings`, and asking it
+        early is what puts its refusal on the same path as every other one --
+        where the command line can turn it into a named error instead of a
+        traceback. Copying the rules up here would have been the other way, and
+        the wrong one.
+        """
+
+        return DbosRuntimeSettings(
+            self.database_path,
+            self.application_version,
+            agent_scratch_root=self.agent_scratch_root,
+            agent_termination_grace_seconds=self.agent_termination_grace_seconds,
+            sqlite_lock_timeout_seconds=self.sqlite_lock_timeout_seconds,
+        )
+
     def __post_init__(self) -> None:
         database_path = self.database_path.resolve()
         effect_store_path = self.effect_store_path.resolve()
@@ -230,6 +249,11 @@ class HostSettings:
                 "unauthenticated on this API, so the billed boundary stays on this "
                 "machine until an authenticated boundary exists"
             )
+        # Asked last, once every path this record resolves is settled. Its
+        # refusals belong to the durable runtime and are raised here so they
+        # travel the same way as the ones above -- the command line catches this
+        # constructor, and nothing below it.
+        self.runtime_settings()
 
 
 def _is_loopback(host: str) -> bool:
@@ -267,13 +291,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         ),
     )
     runtime = DbosRuntime(
-        DbosRuntimeSettings(
-            settings.database_path,
-            settings.application_version,
-            agent_scratch_root=settings.agent_scratch_root,
-            agent_termination_grace_seconds=settings.agent_termination_grace_seconds,
-            sqlite_lock_timeout_seconds=settings.sqlite_lock_timeout_seconds,
-        ),
+        settings.runtime_settings(),
         LoopbackEffectAdapterFactory(
             settings.effect_store_path,
             AdapterRevision(settings.effect_adapter_revision),
@@ -283,8 +301,9 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         subscription_executors,
     )
     try:
-        # One set of limits configures both the reader's bound and the API's own,
-        # so the two cannot describe different numbers for the same deployment.
+        # One expression feeds both the reader's bound and the API's own, so the
+        # promise that they cannot describe different numbers holds by
+        # construction rather than by two readings agreeing today.
         limits = settings.limits
         queries = DbosQueries(runtime.engine, durable_projection_limit(limits))
         app = create_app(
@@ -318,7 +337,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 catalog_resolver=DbosCatalogStore(runtime.engine),
                 catalog_admissions=DbosCatalogStore(runtime.engine),
             ),
-            limits=settings.limits,
+            limits=limits,
             event_poll_backoff=settings.event_poll_backoff,
             frontend_dist=settings.frontend_dist,
         )
