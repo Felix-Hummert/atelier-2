@@ -1,0 +1,42 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/60"
+
+# THE DOOR THAT WAS CUT AND LOCKED. `AgentNodeV3.tools` has carried a versioned
+# reference since the format landed, and the executable admission refused it as
+# "agent forms nothing binds yet". A document could therefore say which tool its
+# node needs, and no run could ever act on it. This is where saying it starts to
+# mean something.
+#
+# WHAT A TOOL IS, AND WHAT IT IS NOT. ADR 0006 makes a `tools` entry a published
+# revision the document pins by hash, not a mark an author writes -- so what a
+# node may do is byte-pinned like every other material it names. The one
+# capability this head redeems is `run-project-verification`, and the command it
+# runs belongs to the project's own manifest, never to the agent and never to
+# the atelier.
+#
+# WHAT THIS HEAD CLAIMS, EXACTLY: declared -- resolved -- redeemed -- attested by
+# its own durable receipt. It does NOT claim attestation in the sense of #62:
+# `RuntimeCapability`/`AttestedCapabilities` want a manifest that no build writes,
+# and that static reading is that item's.
+#
+# WHAT THIS HEAD DOES NOT CLAIM AT ALL: isolation. The lease says honestly that it
+# is "a blank directory this attempt owns, not a sandbox", and that sentence is
+# left standing rather than quietly overwritten -- the verification runs as this
+# process's own user, with its environment. Enforcement at a boundary that cannot
+# be talked out of is #242's.
+#
+# STILL REFUSED BY NAME: a second grant on one node (one attempt leaves one
+# redemption receipt, so two would have one answering for the other), and every
+# `tools` entry whose published revision is not a grant this runtime redeems.
+
+[[sentence]]
+id = "a-granted-node-gets-its-project-verification-run-and-proven"
+text = "A node whose author pinned a published run-project-verification grant has the command its project's own manifest declares run in that attempt's own directory, and the run leaves durable proof that exactly this command ran, how it ended, and what it wrote -- while the bytes the provider itself produced stay the agent receipt's, unchanged."
+
+[[sentence]]
+id = "a-tool-grant-this-runtime-cannot-redeem-is-refused-by-name"
+text = "A tools entry whose published revision names a capability nothing here performs, or is not a readable grant at all, refuses the run at the reference that pinned it rather than starting a run that would silently never redeem it; and a node pinning more grants than one attempt redeems is refused by that count."
+
+[[sentence]]
+id = "a-project-that-declares-no-verification-refuses-before-anything-runs"
+text = "Where the project states no verification command of its own, the attempt of a node that pinned a grant is refused in the words of the manifest that should have stated it, before any provider process starts and before any durable attempt is claimed."

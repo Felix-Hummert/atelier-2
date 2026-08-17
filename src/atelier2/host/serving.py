@@ -171,6 +171,7 @@ class HostSettings:
     agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
     agent_scratch_root: Path | None = None
+    project_root: Path | None = None
     claude_subscription: ClaudeSubscriptionSettings | None = None
     grok_subscription: GrokSubscriptionSettings | None = None
     codex_subscription: CodexSubscriptionSettings | None = None
@@ -201,6 +202,7 @@ class HostSettings:
             self.database_path,
             self.application_version,
             agent_scratch_root=self.agent_scratch_root,
+            project_root=self.project_root,
             agent_termination_grace_seconds=self.agent_termination_grace_seconds,
             sqlite_lock_timeout_seconds=self.sqlite_lock_timeout_seconds,
         )

@@ -1158,6 +1158,12 @@ def test_a_line_of_agent_nodes_is_executable() -> None:
 # what it now means is "no dependency", which is exactly what an entry node is.
 DECIDED_EXECUTABLE: dict[str, bytes] = {
     "an empty authored depends_on": ONE_AGENT_DOCUMENT + b"    depends_on: []\n",
+    # `tools` joined it when an attempt began redeeming the grant a node pins.
+    # What the grant grants is the published revision's word, read where the
+    # reference is resolved; the count is all this pure reading can judge.
+    "one pinned tool grant": ONE_AGENT_DOCUMENT
+    + b"    tools: [{ref: verify, revision: %s}]\n" % (b"c" * 64),
+    "an empty authored tools list": ONE_AGENT_DOCUMENT + b"    tools: []\n",
 }
 
 
@@ -1185,6 +1191,12 @@ NOT_YET_EXECUTABLE: dict[str, bytes] = {
     # empty list is a statement it obeys rather than one it drops, and it is
     # admitted below with the sources nothing binds yet still refused.
     "an empty authored skills list": ONE_AGENT_DOCUMENT + b"    skills: []\n",
+    "a second tool grant on one node": ONE_AGENT_DOCUMENT
+    + b"""    tools:
+      - {ref: verify, revision: %s}
+      - {ref: publish, revision: %s}
+"""
+    % (b"c" * 64, b"d" * 64),
     "an empty authored context list": ONE_AGENT_DOCUMENT
     + b"    required_context: []\n",
     "a fan-out": TWO_AGENT_CHAIN

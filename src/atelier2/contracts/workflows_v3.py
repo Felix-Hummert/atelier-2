@@ -965,7 +965,6 @@ V3_UNBOUND_AGENT_FORMS = (
     "join",
     "profile",
     "skills",
-    "tools",
     "policy",
     "budget",
     "retry",
@@ -976,13 +975,25 @@ V3_UNBOUND_AGENT_FORMS = (
 """Every authored form of a V3 Agent node that nothing binds at run start yet.
 
 Naming the forms rather than the kinds is the point. "Only Agent nodes" would
-still admit a document declaring skills, tools or a budget, and the run would
+still admit a document declaring skills, a policy or a budget, and the run would
 start having silently ignored what its author wrote. A document is executable
 only when nothing in it is waiting for an owner.
 
 `inputs` left this list when the start began binding one: it is admitted per
 source by `V3_BOUND_INPUT_SOURCES` rather than as a whole form, because only an
-order the graph declares has an owner at the start today.
+order the graph declares has an owner at the start today. `tools` left it the
+same way: an attempt now redeems the grant a node pins, one grant at a time, and
+`MAXIMUM_REDEEMED_TOOL_GRANTS` is where that "one" is refused rather than
+silently narrowed.
+"""
+
+MAXIMUM_REDEEMED_TOOL_GRANTS = 1
+"""How many tool grants one node may pin, because an attempt redeems that many.
+
+A redemption leaves exactly one receipt per node execution, so a second grant on
+the same node would either go unredeemed or answer for the first. Which of the
+two happened is not something an author should have to guess, so the document is
+refused by the count it wrote.
 """
 
 V3_BOUND_INPUT_SOURCES = (GraphInputSource, NodeOutputSource)
@@ -1004,7 +1015,7 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     dependency and followed by at most one dependent, ending in a single sink,
     declaring nothing else optional. It is checked as a form rather than as a
     list of kinds, because a kind check would admit a document whose skills,
-    tools or budget the run start then ignores in silence.
+    policy or budget the run start then ignores in silence.
 
     A branch is still refused on purpose. `depends_on` is bound only where it
     names one edge; where a node has several dependents, choosing between them is
@@ -1035,10 +1046,34 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     )
     if declared:
         return f"agent forms nothing binds yet: {', '.join(declared)}"
+    unredeemed = _unredeemed_tool_grants(graph)
+    if unredeemed is not None:
+        return unredeemed
     unbound_output = _unbound_output_forms(graph)
     if unbound_output is not None:
         return unbound_output
     return _unbound_input_sources(graph)
+
+
+def _unredeemed_tool_grants(graph: WorkflowGraphV3) -> str | None:
+    """What an authored `tools` entry pins that no attempt of this run redeems.
+
+    `tools` left the blanket refusal when an attempt began redeeming the grant a
+    node pins: the revision is resolved before the run exists, read as a grant
+    where it is pinned, and the redemption leaves its own durable receipt. What
+    the grant grants is decided by the published revision rather than here, so
+    the only part of the form this pure reading can judge is how many were
+    written -- and more than one is refused by its count.
+    """
+    for node in graph.nodes:
+        if not isinstance(node, AgentNodeV3):
+            continue
+        if len(node.tools) > MAXIMUM_REDEEMED_TOOL_GRANTS:
+            return (
+                f"{len(node.tools)} tool grants on node {node.id!r}, and one "
+                "attempt redeems one grant"
+            )
+    return None
 
 
 def _unbound_output_forms(graph: WorkflowGraphV3) -> str | None:

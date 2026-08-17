@@ -21,6 +21,7 @@ from atelier2.adapters.dbos.schema import (
     V11_SCHEMA_HANDOFF,
     V12_SCHEMA_HANDOFF,
     V13_SCHEMA_HANDOFF,
+    V14_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -172,7 +173,9 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
-def test_empty_database_creates_exact_v14_and_reopens(tmp_path: Path) -> None:
+def test_empty_database_creates_the_exact_current_schema_and_reopens(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
 
@@ -227,7 +230,7 @@ def test_empty_database_creates_exact_v14_and_reopens(tmp_path: Path) -> None:
     engine.dispose()
 
 
-def test_published_handoffs_pin_v9_v10_v11_v12_v13_and_v14_current() -> None:
+def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> None:
     assert V9_SCHEMA_HANDOFF.version == 9
     assert (
         V9_SCHEMA_HANDOFF.fingerprint_sha256
@@ -259,15 +262,21 @@ def test_published_handoffs_pin_v9_v10_v11_v12_v13_and_v14_current() -> None:
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[13]
         == "5782fdc1331c52f3f04097f6a2a6d416ab528d6ee8a6546a7d6435ae9d11c175"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 14
+    assert V14_SCHEMA_HANDOFF.version == 14
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V14_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[14]
         == "6cf56491322e716fce9be2310584ed2b92533961b8fda341bfcc317182432f0a"
     )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 15
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[15]
+        == "375e81d1c8967053951d1be0cab19cee274e35272f364feae15ec3413eb3c9b9"
+    )
 
 
-@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12, 13])
+@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12, 13, 14])
 def test_predecessor_store_is_refused_without_mutation(
     tmp_path: Path, version: int
 ) -> None:

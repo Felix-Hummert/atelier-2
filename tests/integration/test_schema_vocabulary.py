@@ -47,6 +47,7 @@ from atelier2.contracts.node_records_v3 import (
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
+from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 
 _LENGTH_BOUND = re.compile(
     r"length\(([a-z_0-9]+)\)\s*(?:BETWEEN\s+\d+\s+AND\s+(\d+)|<=\s*(\d+)|=\s*(\d+))"
@@ -374,6 +375,7 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "wait_answers.state": _values(WaitAnswerState),
     "node_receipts_v3.disposition": _values(PersistedReceiptDisposition),
     "published_revisions.kind": _values(RevisionKind),
+    "tool_redemptions.capability": _values(ToolGrantCapability),
     "catalog_lineages.kind": _values(RevisionKind),
     "catalog_lineage_retirements.state": _values(CatalogRetirementState),
 }
@@ -433,6 +435,12 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "agent_receipts_v2.output_hash",
         "agent_receipts_v2.receipt_hash",
         "agent_receipts_v2.request_hash",
+        "tool_redemptions.attempt_id",
+        "tool_redemptions.node_execution_id",
+        "tool_redemptions.receipt_hash",
+        "tool_redemptions.standard_output_hash",
+        "tool_redemptions.tool_revision_hash",
+        "tool_redemptions.workflow_revision_hash",
         "agent_receipts_v2.workflow_revision_hash",
         "auth_profile_revisions.revision_hash",
         "context_packages_v3.package_hash",
@@ -501,6 +509,7 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "auth_profile_revisions.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "auth_profile_revisions.provider_id": PROVIDER_ID_BOUND,
     "run_agent_bindings.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "tool_redemptions.node_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "run_events.cancellation_command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "catalog_lineages.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
     "published_revisions.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,

@@ -28,6 +28,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, register_durable_run_workflow
+from atelier2.adapters.project_verification import LocalProjectVerificationRunner
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutorBinding,
@@ -84,6 +85,7 @@ class DbosRuntimeBinding:
     agent_process_control_root: Path
     agent_process_cgroup_root: Path
     agent_scratch_root: Path | None
+    project_root: Path | None
     agent_termination_grace_seconds: float
 
 
@@ -94,6 +96,7 @@ class DbosRuntimeSettings:
     agent_process_control_root: Path | None = None
     agent_process_cgroup_root: Path | None = None
     agent_scratch_root: Path | None = None
+    project_root: Path | None = None
     agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS
 
@@ -134,6 +137,7 @@ class DbosRuntimeSettings:
             None
             if self.agent_scratch_root is None
             else self.agent_scratch_root.resolve(),
+            None if self.project_root is None else self.project_root.resolve(),
             self.agent_termination_grace_seconds,
         )
 
@@ -383,6 +387,9 @@ def _open_binding(
             attempt_store,
             agent_process_supervisor,
             agent_workspace_owner,
+            None
+            if settings.project_root is None
+            else LocalProjectVerificationRunner(settings.project_root.resolve()),
             adapter,
             effect_binding,
         )

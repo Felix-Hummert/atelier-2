@@ -31,6 +31,7 @@ from atelier2.adapters.dbos.schema import (
     run_configuration_revisions,
     run_inputs_v3,
     runs,
+    tool_redemptions,
     workflow_revisions,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineage
@@ -48,11 +49,11 @@ def _logical_dump(database_path: Path) -> tuple[str, ...]:
 def _create_populated_v13_store(database_path: Path) -> None:
     """An exact V13 product store, not a version-row witness.
 
-    V14 is the current create path and is strictly additive: a fresh V14
-    store with `run_inputs_v3` and its triggers removed is the published
-    V13 shape. That is the same method as the #240 Z2 testimony (predecessor
-    schema from before the V14 head), expressed through today's owner so
-    the fixture cannot drift from the create path the hop will reopen.
+    Every published step since V13 is strictly additive, so a fresh store of the
+    current schema with each later table and its triggers removed is the
+    published V13 shape. That is the same method as the #240 Z2 testimony
+    (predecessor schema from before the V14 head), expressed through today's
+    owner so the fixture cannot drift from the create path the hop will reopen.
     """
 
     engine = create_canonical_engine(database_path)
@@ -65,9 +66,10 @@ def _create_populated_v13_store(database_path: Path) -> None:
     execution = "11" * 32
     receipt = "ef" * 32
     with engine.connect() as connection:
-        connection.execute(sa.text("DROP TRIGGER run_inputs_v3_no_update"))
-        connection.execute(sa.text("DROP TRIGGER run_inputs_v3_no_delete"))
-        connection.execute(sa.text("DROP TABLE run_inputs_v3"))
+        for table in (run_inputs_v3.name, tool_redemptions.name):
+            connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
+            connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
+            connection.execute(sa.text(f"DROP TABLE {table}"))
         connection.execute(
             atelier_schema_versions.update()
             .where(atelier_schema_versions.c.version == SCHEMA_VERSION)
@@ -150,8 +152,8 @@ def _create_populated_v13_store(database_path: Path) -> None:
         _require_product_shape(connection, V13_SCHEMA_HANDOFF.version)
 
 
-@pytest.mark.proves("an-exact-v13-store-migrates-and-opens-as-v14")
-def test_an_exact_v13_store_migrates_and_opens_as_v14(
+@pytest.mark.proves("an-exact-v13-store-migrates-and-opens-as-the-current-schema")
+def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -164,7 +166,7 @@ def test_an_exact_v13_store_migrates_and_opens_as_v14(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "13" in shown.out and "14" in shown.out
+    assert all(str(step) in shown.out for step in range(13, SCHEMA_VERSION + 1))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -173,7 +175,6 @@ def test_an_exact_v13_store_migrates_and_opens_as_v14(
         assert (
             connection.scalar(sa.select(atelier_schema_versions.c.version))
             == SCHEMA_VERSION
-            == 14
         )
         assert (
             connection.scalar(
@@ -188,6 +189,10 @@ def test_an_exact_v13_store_migrates_and_opens_as_v14(
             connection.scalar(sa.select(sa.func.count()).select_from(run_inputs_v3))
             == 0
         )
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(tool_redemptions))
+            == 0
+        )
     engine.dispose()
 
 
@@ -200,14 +205,16 @@ def test_an_unknown_or_future_schema_is_refused_by_name(
     initialize_schema(engine)
     with engine.begin() as connection:
         connection.execute(atelier_schema_versions.delete())
-        connection.execute(atelier_schema_versions.insert().values(version=15))
+        connection.execute(
+            atelier_schema_versions.insert().values(version=SCHEMA_VERSION + 1)
+        )
     engine.dispose()
     before = _logical_dump(database_path)
 
     assert main(["migrate", "--database", str(database_path)]) == 1
 
     shown = capsys.readouterr()
-    assert "15" in shown.err
+    assert str(SCHEMA_VERSION + 1) in shown.err
     assert "will not alter" in shown.err
     assert _logical_dump(database_path) == before
 

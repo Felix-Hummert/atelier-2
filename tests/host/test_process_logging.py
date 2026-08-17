@@ -24,21 +24,10 @@ from atelier2.contracts.agent_attempts import (
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
-    AgentConfigurationRevision,
-    AgentConfigurationRevisionFormatVersion,
-    AgentExecutionCapability,
-    AgentExecutionRequestV2,
     AgentExecutionResult,
-    AgentExecutorOperationalIdentity,
-    AgentExecutorRevision,
-    AgentRole,
-    AuthMode,
-    AuthProfileRevision,
-    ProviderId,
-    ResolvedAgentBinding,
 )
-from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.host.logging import PROCESS_LOGGER_NAME, configure_process_logging
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
@@ -54,7 +43,11 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
-from tests.scenarios.agents import agent_attempt_execution
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    agent_execution_request_v2,
+    prepared_agent_attempt,
+)
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 ALWAYS_KEYS = ("ts", "level", "logger", "message")
@@ -222,27 +215,11 @@ def _logger_snapshot(
 
 
 def _failed_attempt_execution() -> AgentAttemptExecution:
-    run_id = RunId("diagnose/failed-attempt")
-    revision = WorkflowRevisionHash("2" * 64)
-    node_id = "builder"
-    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
-    configuration = AgentConfigurationRevision(
-        "opus",
-        auth.revision_hash,
-        AgentExecutorRevision("claude-cli/v1"),
-        AgentExecutionCapability.HEADLESS,
-        AgentConfigurationRevisionFormatVersion.V2,
+    return agent_attempt_execution(
+        agent_execution_request_v2(
+            "diagnose/failed-attempt", "builder", "claude-cli/v1"
+        )
     )
-    request = AgentExecutionRequestV2(
-        NodeExecutionId.for_node(run_id, revision, node_id),
-        run_id,
-        revision,
-        node_id,
-        ResolvedAgentBinding(AgentRole("builder"), configuration, auth),
-        AgentExecutorOperationalIdentity("controlled-process"),
-        b"build",
-    )
-    return agent_attempt_execution(request)
 
 
 class _FailingExecutor:
@@ -267,7 +244,7 @@ class _FailingExecutor:
 
 class _FailingAttemptStore:
     def __init__(self, execution: AgentAttemptExecution) -> None:
-        self._attempt = _prepared(execution)
+        self._attempt = prepared_agent_attempt(execution)
 
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
         del execution
@@ -300,9 +277,12 @@ class _FailingAttemptStore:
         return self._attempt
 
     def complete_success(
-        self, execution: AgentAttemptExecution, result: AgentExecutionResult
+        self,
+        execution: AgentAttemptExecution,
+        result: AgentExecutionResult,
+        redemption: ToolRedemptionReceipt | None = None,
     ) -> AgentAttemptSucceeded:
-        raise AssertionError((execution, result))
+        raise AssertionError((execution, result, redemption))
 
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
@@ -344,7 +324,7 @@ class _FailingAttemptStore:
 
 class _SilentSupervisor:
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
-        return _prepared(execution)
+        return prepared_agent_attempt(execution)
 
     def launch_and_wait(
         self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
@@ -394,18 +374,3 @@ class _MemoryWorkspaces:
 
     def release(self, attempt_id: AgentAttemptId) -> None:
         del attempt_id
-
-
-def _prepared(execution: AgentAttemptExecution) -> AgentAttempt:
-    return AgentAttempt(
-        execution.attempt_id,
-        execution.request.node_execution_id,
-        execution.request.request_hash,
-        execution.request.executor_operational_identity,
-        execution.request.run_id,
-        execution.request.workflow_revision_hash,
-        execution.request.node_id,
-        execution.ordinal,
-        AgentAttemptState.PREPARED,
-        0,
-    )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -85,6 +86,10 @@ from atelier2.contracts.schemas_v3 import (
     read_instance_document,
     read_schema_document,
 )
+from atelier2.contracts.tool_grants_v3 import (
+    ToolGrantCapability,
+    ToolRedemptionReceipt,
+)
 from atelier2.contracts.workflows import (
     ActionNode,
     AgentNodeV2,
@@ -119,6 +124,10 @@ class RunTransitionConflict(RuntimeError):
 
 class AgentReceiptConflict(RunTransitionConflict):
     """One stable node execution contradicts its durable agent receipt."""
+
+
+class ToolRedemptionConflict(RunTransitionConflict):
+    """One stable node execution contradicts its durable tool redemption."""
 
 
 def load_graph(
@@ -873,6 +882,54 @@ def _agent_receipt_v2_from_record(record: Mapping[Any, Any]) -> AgentReceiptV2:
     except ValueError as error:
         raise AgentReceiptConflict(
             "durable V2 agent receipt hash binding disagrees"
+        ) from error
+
+
+def _tool_redemption_values(receipt: ToolRedemptionReceipt) -> dict[str, object]:
+    """One redemption as its row, with the argv in this adapter's own encoding.
+
+    The exact argv is a sequence and the row holds one value, so it travels as
+    the JSON array this store reads back; nothing outside this adapter has a
+    contract with that spelling, and the receipt hash is taken over the typed
+    arguments rather than over the text.
+    """
+    return {
+        "node_execution_id": receipt.node_execution_id.value,
+        "run_id": receipt.run_id.value,
+        "workflow_revision_hash": receipt.workflow_revision_hash.value,
+        "node_id": receipt.node_id,
+        "attempt_id": receipt.attempt_id.value,
+        "tool_revision_hash": receipt.tool_revision_hash.value,
+        "capability": receipt.capability.value,
+        "command": json.dumps(list(receipt.command), ensure_ascii=False),
+        "exit_code": receipt.exit_code,
+        "standard_output_hash": receipt.standard_output_hash.value,
+        "receipt_hash": receipt.receipt_hash.value,
+    }
+
+
+def _tool_redemption_from_record(record: Mapping[Any, Any]) -> ToolRedemptionReceipt:
+    try:
+        arguments = json.loads(str(record["command"]))
+        if not isinstance(arguments, list) or not all(
+            isinstance(argument, str) for argument in arguments
+        ):
+            raise ValueError("a durable redemption command is a list of arguments")
+        return ToolRedemptionReceipt(
+            NodeExecutionId(str(record["node_execution_id"])),
+            RunId(str(record["run_id"])),
+            WorkflowRevisionHash(str(record["workflow_revision_hash"])),
+            str(record["node_id"]),
+            AgentAttemptId(str(record["attempt_id"])),
+            PublishedRevisionHash(str(record["tool_revision_hash"])),
+            ToolGrantCapability(str(record["capability"])),
+            tuple(str(argument) for argument in arguments),
+            int(record["exit_code"]),
+            Sha256Hash(str(record["standard_output_hash"])),
+        )
+    except ValueError as error:
+        raise ToolRedemptionConflict(
+            "durable tool redemption hash binding disagrees"
         ) from error
 
 
