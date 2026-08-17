@@ -1,5 +1,5 @@
 import type {
-  Run,
+  AnyRun,
   RunPage,
   WorkflowRevisionPage,
   WorkflowRevisionSummary
@@ -24,8 +24,8 @@ import type {
  * take the surface down instead of letting it report what went wrong.
  */
 export type RunReading =
-  | { complete: true; runs: Run[] }
-  | { complete: false; runs: Run[]; unreadable: string };
+  | { complete: true; runs: AnyRun[] }
+  | { complete: false; runs: AnyRun[]; unreadable: string };
 
 export type RevisionReading =
   | { complete: true; revisions: WorkflowRevisionSummary[] }
