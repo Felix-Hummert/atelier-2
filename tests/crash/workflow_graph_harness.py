@@ -59,7 +59,11 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.effects import EffectAdapter
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2, launching
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_scratch_root,
+    launching,
+)
 from tests.scenarios.runs import (
     start_published_v1_run,
     submit_reconcile_command,
@@ -126,7 +130,11 @@ def runtime(
         ),
     )
     return DbosRuntime(
-        DbosRuntimeSettings(database, version),
+        DbosRuntimeSettings(
+            database,
+            version,
+            agent_scratch_root=agent_scratch_root(database.parent),
+        ),
         HarnessEffectAdapterFactory(external, force_unknown_marker),
         ExactOutputAgentExecutorFactory(),
         (provider,),
