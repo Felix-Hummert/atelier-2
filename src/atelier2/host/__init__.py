@@ -53,10 +53,11 @@ RESOLVE_DESCRIPTION = """\
 Ask a served Atelier which published revision a workflow name holds, and print
 the lineage, the member number and the exact revision hash.
 
-This command starts nothing. It answers the question `run --workflow` needs
-answered by hand today: which bytes a name stands for. Every refusal is the
-service's own - an unadmitted name, a retired lineage, a position the lineage
-does not hold - and each one ends this command unsuccessfully.
+This command starts nothing, which is the whole of what separates it from `run
+--name`: that one asks this same question and then runs the answer, so use this
+one to look before you leap. Every refusal is the service's own - an unadmitted
+name, a retired lineage, a position the lineage does not hold - and each one ends
+this command unsuccessfully, there and in `run --name` alike.
 """
 
 RUN_DESCRIPTION = """\

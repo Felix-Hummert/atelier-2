@@ -1,7 +1,8 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/111"
 
-# THIS HEAD ANSWERS A NAME. IT RUNS NOTHING, AND NO SENTENCE BELOW SAYS IT DOES.
+# THIS FILE HELD ONE HEAD THAT ONLY ANSWERED A NAME. IT NOW HOLDS TWO, AND THE
+# SECOND RUNS WHAT THE FIRST ANSWERS.
 #
 # #111 wants one command to start a named workflow. The measured distance to that
 # (comment 5310231752) is four doors, and this head opens the first: until now the

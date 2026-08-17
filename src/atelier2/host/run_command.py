@@ -9,8 +9,9 @@ not obtain from the same service by hand.
 The API exposes no lookup for a published auth profile or agent configuration,
 so `run` publishes each of them from the operator's own files on every
 invocation. A workflow revision can be looked up by the name its lineage
-carries, which is what `resolve` asks and what a later `run --name` will use;
-`run --workflow` still publishes the document it was handed. All three publications are idempotent: identical
+carries, which is what `resolve` asks and what `run --name` runs, through the
+same question so the two cannot disagree; `run --workflow` publishes the document
+it was handed instead. All three publications are idempotent: identical
 bytes answer with the same hash and change nothing. The run identity is derived
 from those hashes for the same reason, so repeating the command reports the
 first run again instead of starting - and paying for - a second one.
