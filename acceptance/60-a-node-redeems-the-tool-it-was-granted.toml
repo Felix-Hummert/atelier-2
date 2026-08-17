@@ -25,6 +25,14 @@ story = "https://github.com/FlexOr2/atelier-2/issues/60"
 # process's own user, with its environment. Enforcement at a boundary that cannot
 # be talked out of is #242's.
 #
+# ALSO ABSENT, AND NAMED SO NOBODY READS MORE THAN IS THERE: the project tree.
+# The command runs in the attempt's own leased directory, and nothing yet
+# materialises a checkout into it -- so redeeming `run-project-verification`
+# against this repository today produces a receipt proving the command could
+# not start. The tree is the pinned input of the #60 design note (repo@commit)
+# and arrives with H2/#242; until then the capability proves the mechanism,
+# not this repository.
+#
 # STILL REFUSED BY NAME: a second grant on one node (one attempt leaves one
 # redemption receipt, so two would have one answering for the other), and every
 # `tools` entry whose published revision is not a grant this runtime redeems.
