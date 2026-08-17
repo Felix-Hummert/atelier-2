@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { CockpitApi, NodeDetail, RunV3 } from "../api/client";
   import type { StreamProjection } from "../lib/runProjection";
-  import InfoHint from "./InfoHint.svelte";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
   import StateMark from "./StateMark.svelte";
