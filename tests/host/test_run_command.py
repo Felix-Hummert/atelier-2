@@ -7,7 +7,9 @@ the shape of an internal call.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -24,6 +26,7 @@ from atelier2.api.references import encode_canonical_base64
 from atelier2.api.wire.events import (
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
+    AgentCompletedEventResourceV3,
     AgentFailedEventResourceV2,
     WaitingInputEventResourceV2,
 )
@@ -45,6 +48,7 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
+from atelier2.host import run_command as run_command_module
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
     AUTH_PROFILE_PATH,
@@ -359,6 +363,27 @@ def agent_completed() -> str:
     ).model_dump_json()
 
 
+def agent_completed_v3() -> str:
+    """The format-3 family a chain writes: version 3, rail, bytes, and attempt."""
+
+    return AgentCompletedEventResourceV3(
+        workflow_format_version=3,
+        node_rail=node_rail(NodeState.WORKING),
+        cursor=EVENT_CURSOR,
+        sequence=1,
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        node_id=AGENT_NODE_ID,
+        node_execution_id=NODE_EXECUTION_ID,
+        event_hash=EVENT_HASH,
+        event="AGENT_COMPLETED",
+        output_base64=encode_canonical_base64(AGENT_OUTPUT),
+        output_hash=OUTPUT_HASH,
+        attempt_id=ATTEMPT_ID,
+        attempt_ordinal=1,
+    ).model_dump_json()
+
+
 def unbound_agent_completed() -> str:
     """The version-1 event: the output travels as text, and no attempt names it."""
 
@@ -486,6 +511,57 @@ def test_the_output_of_a_run_that_ended_is_printed_with_what_binds_it_to_that_ru
     assert TERMINAL_HASH in reported
     assert OUTPUT_HASH in reported
     assert ATTEMPT_ID in reported
+
+
+def test_the_output_of_a_format_3_run_that_ended_is_printed_with_what_binds_it(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """A chain writes format-3 events; the command must read the family it started."""
+
+    with ScriptedService(
+        serving_answers(events=event_stream(agent_completed_v3()))
+    ) as service:
+        exit_code = run_command(order, service)
+
+    printed = capsysbinary.readouterr()
+    assert (exit_code, printed.out) == (0, AGENT_OUTPUT)
+    reported = printed.err.decode()
+    assert PUBLIC_RUN_REFERENCE in reported
+    assert TERMINAL_HASH in reported
+    assert OUTPUT_HASH in reported
+    assert ATTEMPT_ID in reported
+
+
+def test_dropping_v3_from_the_acted_union_refuses_the_format_3_completion(
+    tmp_path: Path,
+) -> None:
+    """The union is what admits the family; without it the decoder fails as today."""
+
+    source = Path(run_command_module.__file__).read_text(encoding="utf-8")
+    restored = source.replace("    | AgentCompletedEventResourceV3\n", "").replace(
+        "    | AgentFailedEventResourceV3\n", ""
+    )
+    assert restored != source, "the V3 union members the mutation removes are missing"
+    mutated = tmp_path / "run_command_without_v3.py"
+    mutated.write_text(restored, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "atelier2.host.run_command_without_v3", mutated
+    )
+    assert spec is not None and spec.loader is not None
+    restored_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = restored_module
+    try:
+        spec.loader.exec_module(restored_module)
+        with pytest.raises(
+            restored_module.UnreadableServiceAnswer, match="cannot read as a run event"
+        ):
+            restored_module._decoded(
+                restored_module._acted_event_resource,
+                agent_completed_v3().encode(),
+                "a run event",
+            )
+    finally:
+        del sys.modules[spec.name]
 
 
 def test_an_event_kind_this_command_knows_nothing_about_is_passed_over(

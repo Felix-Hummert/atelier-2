@@ -377,9 +377,10 @@ is owned by [OPERATIONS.md](OPERATIONS.md). Network hardening remains
 That API now has a command-line client of its own, so starting real work costs
 one command instead of four ceremonies. `atelier2 run` publishes one workflow
 document and one agent file per bound role, starts the run they describe,
-follows its event history to the end, and writes the agent output that run
-produced to standard output, with the run, its revision, its terminal hash and
-one hash per output on standard error. Every publication is idempotent and the
+follows its event history to the end — the same V1, V2 and format-3 families
+the API publishes — and writes the agent output that run produced to standard
+output, with the run, its revision, its terminal hash and one hash per output
+on standard error. Every publication is idempotent and the
 run identity is derived from the published hashes unless the operator names one,
 so the same command run twice reports the first run instead of paying for a
 second. The client owns nothing: it holds no durable state, adds no route, and

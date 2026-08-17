@@ -36,7 +36,9 @@ from atelier2.api.wire.events import (
     ActionReconciliationRequiredEventResourceV2,
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
+    AgentCompletedEventResourceV3,
     AgentFailedEventResourceV2,
+    AgentFailedEventResourceV3,
     WaitingInputEventResource,
     WaitingInputEventResourceV2,
 )
@@ -79,7 +81,9 @@ RUN_IDENTITY_DOMAIN = "atelier2-command-line-run"
 ActedEventResource = (
     AgentCompletedEventResource
     | AgentCompletedEventResourceV2
+    | AgentCompletedEventResourceV3
     | AgentFailedEventResourceV2
+    | AgentFailedEventResourceV3
     | WaitingInputEventResource
     | WaitingInputEventResourceV2
     | ActionReconciliationRequiredEventResource
@@ -513,7 +517,7 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                             attempt_id=None,
                         )
                     )
-                case AgentCompletedEventResourceV2():
+                case AgentCompletedEventResourceV2() | AgentCompletedEventResourceV3():
                     outputs.append(
                         AgentOutput(
                             node_id=event.node_id,
@@ -522,7 +526,7 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                             attempt_id=event.attempt_id,
                         )
                     )
-                case AgentFailedEventResourceV2():
+                case AgentFailedEventResourceV2() | AgentFailedEventResourceV3():
                     raise RunNeedsAnotherActor(
                         f"agent attempt {event.attempt_id} of node {event.node_id} "
                         f"failed with {event.failure_code}; only an operator "
