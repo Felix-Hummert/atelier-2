@@ -21,14 +21,16 @@ the run ended on a terminal hash that recomputes from the events it wrote.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.run_store import _agent_receipt_v2_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -50,6 +52,8 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
     AgentExecutorRevision,
+    AgentReceiptHash,
+    AgentReceiptV2,
     AgentRole,
     AuthMode,
     AuthProfileRevision,
@@ -58,12 +62,18 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
+    RunEvent,
     RunEventKind,
     node_workflow_id_for,
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -284,6 +294,135 @@ def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
     assert (
         str(run["terminal_hash"])
         == terminal_hash_for(workflow.revision_hash, event_hashes).value
+    )
+
+
+def _receipt_hash_a_verifier_recomputes(
+    receipt: AgentReceiptV2, *, model: str
+) -> AgentReceiptHash:
+    """The receipt hash folded out of the fields a verifier was handed.
+
+    Every dimension comes from the presented receipt except the model, which the
+    caller states -- that is the one binding this test tampers with to see
+    whether the chain notices.
+    """
+    return AgentReceiptV2.hash_for(
+        receipt.request_hash,
+        receipt.node_execution_id,
+        receipt.run_id,
+        receipt.workflow_revision_hash,
+        receipt.node_id,
+        receipt.role,
+        receipt.binding_set_hash,
+        receipt.agent_configuration_revision_hash,
+        receipt.auth_profile_revision_hash,
+        receipt.profile_id,
+        receipt.revision_number,
+        receipt.provider_id,
+        receipt.auth_mode,
+        model,
+        receipt.executor_revision,
+        receipt.executor_operational_identity,
+        receipt.output_bytes,
+        receipt.output_hash,
+    )
+
+
+def _terminal_hash_a_verifier_recomputes(
+    revision_hash: WorkflowRevisionHash,
+    events: Sequence[Mapping[str, Any]],
+    receipt_hashes: Mapping[str, AgentReceiptHash],
+) -> Sha256Hash:
+    """Fold the chain out of presented fields, reading no hash the store wrote."""
+    rebuilt = tuple(
+        RunEvent(
+            RunId(str(record["run_id"])),
+            revision_hash,
+            int(record["event_sequence"]),
+            str(record["node_id"]),
+            NodeExecutionId.for_node(
+                RunId(str(record["run_id"])), revision_hash, str(record["node_id"])
+            ),
+            RunEventKind(str(record["event_kind"])),
+            bytes(record["payload"]),
+            agent_attempt_id=str(record["agent_attempt_id"]),
+            attempt_ordinal=int(record["attempt_ordinal"]),
+            agent_receipt_hash=receipt_hashes[str(record["node_id"])],
+        )
+        for record in events
+    )
+    return terminal_hash_for(
+        revision_hash, tuple(event.event_hash for event in rebuilt)
+    )
+
+
+@pytest.mark.proves("a-terminal-hash-proves-the-binding-its-run-worked-under")
+def test_the_terminal_hash_recomputes_only_under_the_binding_the_run_had(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """Whoever recomputes the terminal hash also proves under which binding it ran.
+
+    The recomputation below reads fields, never the hashes the store wrote: the
+    receipt hash is folded out of the presented receipt and the event hashes out
+    of the presented events. Handing the same fold a receipt whose model differs
+    by one string has to miss the terminal hash -- otherwise the chain would be
+    proving the ordered output bytes and nothing about the provider, profile,
+    model or executor that produced them.
+    """
+    started, _ = runtime
+    workflow, bindings = publish_two_node_line(started)
+    DbosDurableRunStarter(
+        started.engine, started.settings, started.agent_executor_registry
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    started.launch()
+    wait_for_state(started, RunState.COMPLETED)
+
+    with started.engine.connect() as connection:
+        terminal_hash = str(
+            connection.scalar(
+                sa.select(runs.c.terminal_hash).where(runs.c.run_id == RUN.value)
+            )
+        )
+        events = [
+            dict(record)
+            for record in connection.execute(
+                sa.select(run_events)
+                .where(run_events.c.run_id == RUN.value)
+                .order_by(run_events.c.event_sequence)
+            ).mappings()
+        ]
+        receipts = [
+            _agent_receipt_v2_from_record(record)
+            for record in connection.execute(sa.select(agent_receipts_v2)).mappings()
+        ]
+
+    honest = {
+        receipt.node_id: _receipt_hash_a_verifier_recomputes(
+            receipt, model=receipt.model
+        )
+        for receipt in receipts
+    }
+    tampered = {
+        receipt.node_id: _receipt_hash_a_verifier_recomputes(
+            receipt, model="a model this run never ran under"
+        )
+        for receipt in receipts
+    }
+
+    assert [str(event["agent_receipt_hash"]) for event in events] == [
+        honest[str(event["node_id"])].value for event in events
+    ]
+    assert (
+        _terminal_hash_a_verifier_recomputes(
+            workflow.revision_hash, events, honest
+        ).value
+        == terminal_hash
+    )
+    assert (
+        _terminal_hash_a_verifier_recomputes(
+            workflow.revision_hash, events, tampered
+        ).value
+        != terminal_hash
     )
 
 

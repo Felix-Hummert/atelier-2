@@ -688,6 +688,7 @@ class DbosAgentAttemptStore:
                 terminal=terminal,
                 agent_attempt_id=attempt_id,
                 attempt_ordinal=execution.ordinal,
+                agent_receipt_hash=receipt.receipt_hash,
             )
             return AgentAttemptSucceeded(durable_success, completion)
 

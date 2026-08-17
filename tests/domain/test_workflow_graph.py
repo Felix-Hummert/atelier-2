@@ -5,6 +5,7 @@ from typing import cast
 import pytest
 
 from atelier2.adapters.dbos.continuation import action_continuation_workflow_id_for
+from atelier2.contracts.agents import AgentReceiptHash
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -138,6 +139,134 @@ def test_event_hash_vector_with_receipt_fields_is_frozen() -> None:
     assert event.event_hash.value == (
         "4b4bccd5c7537a9144cc8425762c8e1de702b65f6c2815c8e015076d2f2a4138"
     )
+
+
+def _agent_completion(
+    revision: WorkflowRevision,
+    run_id: RunId,
+    node_id: str,
+    *,
+    ordinal: int = 1,
+    agent_receipt_hash: AgentReceiptHash | None = None,
+) -> RunEvent:
+    return RunEvent(
+        run_id,
+        revision.revision_hash,
+        7,
+        node_id,
+        NodeExecutionId.for_node(run_id, revision.revision_hash, node_id),
+        RunEventKind.AGENT_COMPLETED,
+        b"5",
+        agent_attempt_id="b" * 64,
+        attempt_ordinal=ordinal,
+        agent_receipt_hash=agent_receipt_hash,
+    )
+
+
+@pytest.mark.proves("an-agent-completion-without-a-receipt-binding-keeps-its-hash")
+def test_an_agent_completion_without_a_receipt_binding_keeps_its_frozen_hash() -> None:
+    """The freeze vector: what the chain said before v3 exists, it still says.
+
+    Measured against `main` 8d56658 before the domain was added, so the literal
+    is the predecessor's own answer rather than this head's.
+    """
+    revision = WorkflowRevision(b"format_version: 1\nstart: agent\nnodes: []\n")
+    run_id = RunId("r\N{LATIN SMALL LETTER U WITH ACUTE}n-1")
+
+    event = _agent_completion(
+        revision, run_id, "n\N{LATIN SMALL LETTER O WITH ACUTE}de"
+    )
+
+    assert event.agent_receipt_hash is None
+    assert event.event_hash.value == (
+        "3e2e7a04215f832950fa53430b9b97ba72bf1c3a6b39e92e6228636a11fd5422"
+    )
+    assert terminal_hash_for(revision.revision_hash, (event.event_hash,)).value == (
+        "2d265fadf195e51404dda804b83bfdfaa998f7711625219d353bfb8c65be7568"
+    )
+
+
+def test_a_bound_agent_completion_carries_its_receipt_into_the_terminal_hash() -> None:
+    """The binding vector: the receipt hash is a position in the preimage.
+
+    Strike `agent_receipt_hash` out of the preimage and the two events below
+    collapse onto one hash, which is exactly the fraud an offline recomputation
+    has to see.
+    """
+    revision = WorkflowRevision(b"format_version: 1\nstart: agent\nnodes: []\n")
+    run_id = RunId("r\N{LATIN SMALL LETTER U WITH ACUTE}n-1")
+    node_id = "n\N{LATIN SMALL LETTER O WITH ACUTE}de"
+
+    bound = _agent_completion(
+        revision, run_id, node_id, agent_receipt_hash=AgentReceiptHash("c" * 64)
+    )
+    otherwise_bound = _agent_completion(
+        revision, run_id, node_id, agent_receipt_hash=AgentReceiptHash("d" * 64)
+    )
+
+    assert bound.event_hash.value == (
+        "03fd0bb92cc6383fc52d37ea2b1f1a2635b359219fe67bf81594d282372aa202"
+    )
+    assert terminal_hash_for(revision.revision_hash, (bound.event_hash,)).value == (
+        "59d2d2703a2f2288e2ee8daf12067816d904b51e72c88951f4f4cf97be6a1f1b"
+    )
+    assert bound.event_hash != otherwise_bound.event_hash
+    assert terminal_hash_for(
+        revision.revision_hash, (bound.event_hash,)
+    ) != terminal_hash_for(revision.revision_hash, (otherwise_bound.event_hash,))
+
+
+def test_a_bound_completion_still_distinguishes_the_attempt_it_ran_as() -> None:
+    """v3 nests v2: binding a receipt never drops the attempt dimension.
+
+    A retry carries the same receipt when it produced the same answer under the
+    same binding, so the ordinal is what keeps the second run visible.
+    """
+    revision = WorkflowRevision(b"format_version: 1\nstart: agent\nnodes: []\n")
+    run_id = RunId("run")
+    receipt_hash = AgentReceiptHash("c" * 64)
+
+    first = _agent_completion(
+        revision, run_id, "node", ordinal=1, agent_receipt_hash=receipt_hash
+    )
+    retry = _agent_completion(
+        revision, run_id, "node", ordinal=2, agent_receipt_hash=receipt_hash
+    )
+
+    assert first.event_hash != retry.event_hash
+
+
+@pytest.mark.parametrize(
+    "event_kind",
+    [
+        RunEventKind.AGENT_FAILED,
+        RunEventKind.ACTION_RECONCILIATION_REQUIRED,
+        RunEventKind.WAITING_INPUT,
+        RunEventKind.WAIT_ANSWERED,
+        RunEventKind.SUBWORKFLOW_COMPLETED,
+    ],
+)
+def test_only_an_agent_completion_may_carry_a_receipt_hash(
+    event_kind: RunEventKind,
+) -> None:
+    revision = WorkflowRevision(b"workflow")
+    run_id = RunId("run")
+    execution = NodeExecutionId.for_node(run_id, revision.revision_hash, "node")
+    attempt_bound = event_kind is RunEventKind.AGENT_FAILED
+
+    with pytest.raises(ValueError, match="receipt hash"):
+        RunEvent(
+            run_id,
+            revision.revision_hash,
+            1,
+            "node",
+            execution,
+            event_kind,
+            b"result",
+            agent_attempt_id="b" * 64 if attempt_bound else None,
+            attempt_ordinal=1 if attempt_bound else None,
+            agent_receipt_hash=AgentReceiptHash("c" * 64),
+        )
 
 
 @pytest.mark.parametrize(
