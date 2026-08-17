@@ -16,6 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
@@ -341,6 +342,7 @@ class Watchdog:
             (
                 arguments,
                 working_directory,
+                working_directory_identity,
                 environment,
                 standard_input,
                 standard_output_frame_bytes,
@@ -357,22 +359,29 @@ class Watchdog:
                 "--",
                 *arguments,
             )
-            process = subprocess.Popen(
-                guarded,
-                cwd=working_directory,
-                env={
-                    **os.environ,
-                    "ATELIER2_AGENT_ENVIRONMENT_B64": base64.b64encode(
-                        json.dumps(
-                            sorted(environment.items()), separators=(",", ":")
-                        ).encode("utf-8")
-                    ).decode("ascii"),
-                },
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
+            device, inode = working_directory_identity
+            child_environment = {
+                **os.environ,
+                "ATELIER2_AGENT_ENVIRONMENT_B64": base64.b64encode(
+                    json.dumps(
+                        sorted(environment.items()), separators=(",", ":")
+                    ).encode("utf-8")
+                ).decode("ascii"),
+            }
+            with entered_leased_directory(Path(working_directory), device, inode) as (
+                leased_cwd,
+                leased_descriptor,
+            ):
+                process = subprocess.Popen(
+                    guarded,
+                    cwd=leased_cwd,
+                    pass_fds=(leased_descriptor,),
+                    env=child_environment,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
             self._process = process
             self._standard_input = standard_input
             launch_response = encode_control_frame({"type": "STARTED"})
@@ -760,7 +769,7 @@ class Watchdog:
 
 def _decode_launch_request(
     request: dict[str, Any],
-) -> tuple[tuple[str, ...], str, dict[str, str], bytes, int]:
+) -> tuple[tuple[str, ...], str, tuple[int, int], dict[str, str], bytes, int]:
     if set(request) != {
         "arguments",
         "environment",
@@ -768,7 +777,11 @@ def _decode_launch_request(
         "standard_input",
         "standard_output_frame_bytes",
         "working_directory",
+        "working_directory_identity",
     }:
+        # A watchdog of an older build refuses a request carrying the identity
+        # rather than launching without checking it. Both sides land together;
+        # this is the net under the mixed state, not the ordinary path.
         raise ValueError("launch request has unexpected fields")
     arguments_value = request["arguments"]
     if (
@@ -783,6 +796,13 @@ def _decode_launch_request(
         or not Path(working_directory_value).is_absolute()
     ):
         raise ValueError("launch working directory is malformed")
+    identity_value = request["working_directory_identity"]
+    if (
+        type(identity_value) is not list
+        or len(identity_value) != 2
+        or any(type(value) is not int or value < 0 for value in identity_value)
+    ):
+        raise ValueError("launch working directory identity is malformed")
     environment_value = request["environment"]
     if type(environment_value) is not list:
         raise ValueError("launch environment is malformed")
@@ -812,6 +832,7 @@ def _decode_launch_request(
     return (
         tuple(arguments_value),
         working_directory_value,
+        (identity_value[0], identity_value[1]),
         environment,
         standard_input,
         standard_output_frame_bytes,

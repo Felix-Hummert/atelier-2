@@ -68,7 +68,10 @@ from atelier2.ports.durable_runs import (
     StartPublishedRunRequestV2,
 )
 from atelier2.ports.run_queries import RunFound
-from tests.scenarios.agents import failing_agent_executor_factory
+from tests.scenarios.agents import (
+    agent_scratch_root,
+    failing_agent_executor_factory,
+)
 from tests.scenarios.api import durable_api_client, durable_queries
 
 ONE_AGENT_DOCUMENT = b"""format_version: 3
@@ -94,7 +97,11 @@ RUN = RunId("v3/one-agent")
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     started = DbosRuntime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "v3-start-test"),
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "v3-start-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),

@@ -13,6 +13,7 @@ from atelier2.adapters.systemd_generation_records import (
     DirectSystemdGenerationRecords,
     DirectSystemdIntent,
     DirectSystemdInvocationId,
+    DirectSystemdRecordOutdated,
     DirectSystemdRecoveryState,
     DirectSystemdResult,
     DirectSystemdResultOutcome,
@@ -20,6 +21,7 @@ from atelier2.adapters.systemd_generation_records import (
     decode_direct_systemd_intent,
     decode_direct_systemd_result,
     decode_direct_systemd_started,
+    encode_canonical_systemd_json,
     encode_direct_systemd_intent,
     encode_direct_systemd_result,
     encode_direct_systemd_started,
@@ -40,6 +42,7 @@ def intent() -> DirectSystemdIntent:
         r"atelier2:_.-\attempt.service",
         Sha256Hash.of(b"launch-envelope"),
         17,
+        Path("/leased/attempt-17"),
     )
 
 
@@ -135,6 +138,7 @@ def test_every_port_valid_intent_shape_fits_its_derived_record_bound(
         f"{'\\' * 247}.service",
         Sha256Hash.of(b"maximum-envelope"),
         MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+        Path("/" + "w" * 4_000),
     )
 
     records.publish_intent(maximum)
@@ -166,6 +170,7 @@ def test_result_bound_admits_largest_valid_shape_and_refuses_one_byte_more(
         "maximum-result.service",
         Sha256Hash.of(b"maximum-envelope"),
         MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+        Path("/leased/maximum-result"),
     )
     records.publish_intent(maximum_intent)
     exact_started = started(maximum_intent)
@@ -235,6 +240,7 @@ def test_exclusive_record_publication_never_repairs_or_replaces_evidence(
                 original.unit_name,
                 Sha256Hash.of(b"changed"),
                 original.standard_output_limit,
+                original.working_directory,
             )
         )
 
@@ -377,3 +383,27 @@ def test_valid_but_mismatching_result_fails_loud_and_preserves_evidence(
         records.inspect()
 
     assert records.result_path.read_bytes() == original_bytes
+
+
+def test_an_intent_written_before_this_field_existed_is_refused_by_its_name(
+    tmp_path: Path,
+) -> None:
+    """A record older than its reader is named, never guessed at.
+
+    This record decides whether a live provider process may be stopped: the
+    unit's identity attestation compares systemd's own `WorkingDirectory`
+    against what the intent says was meant. Defaulting a missing field would
+    attest an identity nobody ever wrote, so the reader refuses and says which
+    field it lacked -- and it changes nothing on the way out.
+    """
+
+    records = DirectSystemdGenerationRecords(tmp_path)
+    current = json.loads(encode_direct_systemd_intent(intent()))
+    del current["working_directory"]
+    older = encode_canonical_systemd_json(current)
+    records.intent_path.write_bytes(older)
+
+    with pytest.raises(DirectSystemdRecordOutdated, match="working_directory"):
+        records.read_intent()
+
+    assert records.intent_path.read_bytes() == older

@@ -24,13 +24,13 @@ from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
-    AgentProcessInvocation,
     AgentProcessOwnerNotLocal,
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
     agent_attempt_execution,
+    process_invocation,
 )
 
 
@@ -48,7 +48,8 @@ def test_concurrent_local_waiters_share_one_process_completion(
         )
         supervisor = runtime.agent_process_supervisor
         counter = tmp_path / "provider-count"
-        invocation = AgentProcessInvocation(
+        invocation = process_invocation(
+            execution.attempt_id,
             (
                 sys.executable,
                 "-c",
@@ -121,7 +122,8 @@ def test_changed_launch_refuses_without_stopping_the_valid_process(
         counter = tmp_path / "provider-count"
         ready = tmp_path / "provider-ready"
         finish = tmp_path / "provider-finish"
-        invocation = AgentProcessInvocation(
+        invocation = process_invocation(
+            execution.attempt_id,
             (
                 sys.executable,
                 "-c",
@@ -153,7 +155,8 @@ def test_changed_launch_refuses_without_stopping_the_valid_process(
         with pytest.raises(RuntimeError, match="invocation changed"):
             supervisor.launch_and_wait(
                 execution,
-                AgentProcessInvocation(
+                process_invocation(
+                    execution.attempt_id,
                     (sys.executable, "-c", "pass"),
                     Path.cwd(),
                     standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,

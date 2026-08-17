@@ -19,8 +19,12 @@ from atelier2.adapters.systemd_generation_records import (
 )
 from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGenerationId
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.ports.agent_executions import AgentProcessInvocation
+from atelier2.ports.agent_executions import (
+    AgentProcessCommand,
+    AgentProcessInvocation,
+)
 from tests.crash.systemd_collector_harness import CRASHED
+from tests.scenarios.agents import leased_directory_identity
 
 HARNESS = Path(__file__).with_name("systemd_collector_harness.py")
 INVOCATION_ID = DirectSystemdInvocationId("0123456789abcdef0123456789abcdef")
@@ -31,14 +35,16 @@ def test_process_death_between_started_file_and_directory_fsync_never_runs_provi
 ) -> None:
     provider_marker = tmp_path / "provider-ran"
     invocation = AgentProcessInvocation(
-        (
-            sys.executable,
-            "-c",
-            "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
-            str(provider_marker),
+        AgentProcessCommand(
+            (
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
+                str(provider_marker),
+            ),
+            standard_output_frame_bytes=17,
         ),
-        Path.cwd(),
-        standard_output_frame_bytes=17,
+        leased_directory_identity(AgentAttemptId.of(b"crash-attempt"), Path.cwd()),
     )
     records = DirectSystemdGenerationRecords(tmp_path)
     launch_envelope_path = tmp_path / "launch-envelope"
@@ -49,7 +55,8 @@ def test_process_death_between_started_file_and_directory_fsync_never_runs_provi
             WatchdogGenerationId("crash-generation"),
             "atelier2-crash-attempt.service",
             Sha256Hash.of(envelope),
-            invocation.standard_output_frame_bytes,
+            invocation.command.standard_output_frame_bytes,
+            invocation.lease.working_directory,
         )
     )
     launch_envelope_path.write_bytes(envelope)

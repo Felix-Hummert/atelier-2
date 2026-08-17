@@ -74,21 +74,19 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
-from atelier2.ports.run_queries import (
-    RunFound,
-)
-from atelier2.ports.workflow_revisions import (
-    QueryDurableStateCorrupt,
-)
+from atelier2.ports.run_queries import RunFound
+from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
 from tests.scenarios.agents import (
     AgentCompletionDecoder,
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
     agent_attempt_execution,
+    agent_scratch_root,
     answering,
     decode_process_exit,
     emitting,
     launching,
+    runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_queries
 
@@ -108,6 +106,7 @@ def attempt_runtime(
             root / "atelier.sqlite",
             "attempt-test",
             agent_process_cgroup_root=agent_process_cgroup_root,
+            agent_scratch_root=agent_scratch_root(root),
         ),
         LoopbackEffectAdapterFactory(
             root / "effects.sqlite",
@@ -225,6 +224,7 @@ def test_attempt_is_prepared_before_controlled_executor_invocation(
             executor,
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
@@ -250,6 +250,7 @@ def test_thirty_two_claims_invoke_one_controlled_executor(tmp_path: Path) -> Non
                     executor,
                     store,
                     runtime.agent_process_supervisor,
+                    runtime_workspace_owner(runtime),
                 )
                 for _ in range(32)
             ]
@@ -280,19 +281,21 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
             executor,
             store,
             runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
         )
         recovered = execute_agent_attempt(
             agent_attempt_execution(request),
             executor,
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
         )
 
         assert isinstance(first, AgentAttemptSucceeded)
         assert first.completion == RunContinues("done")
         assert recovered == first
         assert len(executor.results) == 1
-        assert len(executor.released_invocations) == 2
+        assert len(executor.released_commands) == 2
     finally:
         runtime.close()
 
@@ -337,12 +340,14 @@ def test_terminal_agent_success_is_one_durable_write_and_exact_reentry(
             executor,
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
         )
         recovered = execute_agent_attempt(
             execution,
             executor,
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
         )
 
         with runtime.engine.connect() as connection:
@@ -416,11 +421,12 @@ def test_a_claim_replayed_from_a_lost_incarnation_never_authorizes_invocation(
             executor,
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
         )
 
         assert isinstance(outcome, AgentAttemptPossiblyRan)
         assert not counter.exists()
-        assert len(executor.released_invocations) == 1
+        assert len(executor.released_commands) == 1
     finally:
         runtime.close()
 
@@ -541,8 +547,9 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
             terminal,
             store,
             runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
         )
-        assert len(terminal.released_invocations) == 1
+        assert len(terminal.released_commands) == 1
         with runtime.engine.connect() as connection:
             attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
             event = connection.execute(sa.select(run_events)).mappings().one()
@@ -773,7 +780,11 @@ def test_reentry_after_a_terminal_success_refuses_a_run_head_that_disagrees(
         store = DbosAgentAttemptStore(runtime.engine)
 
         first = execute_agent_attempt(
-            execution, executor, store, runtime.agent_process_supervisor
+            execution,
+            executor,
+            store,
+            runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
         )
         assert isinstance(first, AgentAttemptSucceeded)
         assert first.completion == RunCompletes()
@@ -789,6 +800,7 @@ def test_reentry_after_a_terminal_success_refuses_a_run_head_that_disagrees(
                 executor,
                 DbosAgentAttemptStore(runtime.engine),
                 runtime.agent_process_supervisor,
+                runtime_workspace_owner(runtime),
             )
 
         assert len(executor.results) == 1

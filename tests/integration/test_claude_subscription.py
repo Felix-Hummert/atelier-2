@@ -71,6 +71,7 @@ from atelier2.ports.agent_attempts import (
 )
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
+    AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
@@ -81,10 +82,13 @@ from atelier2.ports.durable_runs import (
 from tests.scenarios.agents import (
     CLAUDE_SUBSCRIPTION_WORKFLOW,
     MEASURED_CLAUDE_VERSION,
+    agent_attempt_execution,
     claude_subscription_attempt,
     claude_subscription_deployment,
     claude_subscription_runtime,
     claude_subscription_start,
+    leased_directory_identity,
+    runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_api_client
 
@@ -209,14 +213,37 @@ def subscription_request(
     )
 
 
-def launched(invocation: AgentProcessInvocation) -> AgentProcessCompletion:
-    """Run one prepared invocation exactly as the supervisor's watchdog does."""
+def provider_workspace(root: Path) -> Path:
+    """The blank directory an attempt's lease starts this provider in."""
+
+    workspace = root / "attempt-workspace"
+    workspace.mkdir(exist_ok=True)
+    return workspace
+
+
+def leased(
+    request: AgentExecutionRequestV2, command: AgentProcessCommand, workspace: Path
+) -> AgentProcessInvocation:
+    """One invocation for a test that houses the leased directory itself."""
+
+    return AgentProcessInvocation(
+        command,
+        leased_directory_identity(
+            agent_attempt_execution(request).attempt_id, workspace
+        ),
+    )
+
+
+def launched(
+    command: AgentProcessCommand, working_directory: Path
+) -> AgentProcessCompletion:
+    """Run one prepared command exactly as the supervisor's watchdog does."""
 
     completed = subprocess.run(
-        invocation.arguments,
-        cwd=invocation.working_directory,
-        env=dict(invocation.environment),
-        input=invocation.standard_input,
+        command.arguments,
+        cwd=working_directory,
+        env=dict(command.environment),
+        input=command.standard_input,
         capture_output=True,
         check=False,
     )
@@ -232,9 +259,9 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
     request = subscription_request(model="claude-sonnet-4-6", job=b"draw the owl")
 
-    invocation = executor.prepare_process(request)
+    command = executor.prepare_process(request)
 
-    assert invocation.arguments == (
+    assert command.arguments == (
         str(settings.executable),
         "-p",
         "--output-format",
@@ -253,20 +280,23 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         "--max-turns",
         "1",
     )
-    assert invocation.working_directory == settings.workspace
-    assert invocation.environment == (
+    assert command.environment == (
         ("CLAUDE_CONFIG_DIR", str(settings.credential_directory)),
         ("PATH", settings.search_path),
         ("CLAUDE_CODE_SKIP_PROMPT_HISTORY", "1"),
         ("CLAUDE_CODE_MAX_RETRIES", "0"),
         ("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1"),
     )
-    result = executor.decode_process_completion(invocation, launched(invocation))
+    workspace = provider_workspace(tmp_path)
+    invocation = leased(request, command, workspace)
+    result = executor.decode_process_completion(
+        invocation, launched(command, workspace)
+    )
     assert isinstance(result, AgentExecutionResult)
     observed = json.loads(result.output_bytes)
     assert observed["arguments"][0] == str(settings.executable)
-    assert observed["arguments"][1:] == list(invocation.arguments[1:])
-    assert observed["working_directory"] == str(settings.workspace)
+    assert observed["arguments"][1:] == list(command.arguments[1:])
+    assert observed["working_directory"] == str(workspace)
     assert observed["environment"]["CLAUDE_CONFIG_DIR"] == str(
         settings.credential_directory
     )
@@ -284,8 +314,12 @@ def test_a_successful_envelope_becomes_the_exact_output_bytes_of_one_receipt(
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
     request = subscription_request()
 
-    invocation = executor.prepare_process(request)
-    result = executor.decode_process_completion(invocation, launched(invocation))
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+    invocation = leased(request, command, workspace)
+    result = executor.decode_process_completion(
+        invocation, launched(command, workspace)
+    )
 
     assert isinstance(result, AgentExecutionResult)
     assert result.output_bytes == answer.encode("utf-8")
@@ -316,8 +350,13 @@ def test_an_answer_at_the_durable_output_bound_still_completes(tmp_path: Path) -
     )
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
 
-    invocation = executor.prepare_process(subscription_request())
-    result = executor.decode_process_completion(invocation, launched(invocation))
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+    invocation = leased(request, command, workspace)
+    result = executor.decode_process_completion(
+        invocation, launched(command, workspace)
+    )
 
     assert result == AgentExecutionResult(answer.encode("utf-8"))
 
@@ -363,8 +402,13 @@ def test_an_unusable_provider_answer_fails_the_attempt(
     )
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
 
-    invocation = executor.prepare_process(subscription_request())
-    result = executor.decode_process_completion(invocation, launched(invocation))
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+    invocation = leased(request, command, workspace)
+    result = executor.decode_process_completion(
+        invocation, launched(command, workspace)
+    )
 
     assert result == UNUSABLE_ANSWER
 
@@ -376,8 +420,13 @@ def test_stdout_that_is_not_text_fails_the_attempt(tmp_path: Path) -> None:
     )
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
 
-    invocation = executor.prepare_process(subscription_request())
-    result = executor.decode_process_completion(invocation, launched(invocation))
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+    invocation = leased(request, command, workspace)
+    result = executor.decode_process_completion(
+        invocation, launched(command, workspace)
+    )
 
     assert result == UNUSABLE_ANSWER
 
@@ -417,21 +466,19 @@ def test_the_containment_flags_reach_the_seam_without_an_empty_argument(
     settings = claude_subscription_deployment(tmp_path, INTROSPECTING_CLAUDE)
     executor = ClaudeSubscriptionExecutorFactory(settings).open()
 
-    invocation = executor.prepare_process(subscription_request())
+    command = executor.prepare_process(subscription_request())
 
-    assert "--tools=" in invocation.arguments
-    assert "--setting-sources=" in invocation.arguments
-    assert all(argument for argument in invocation.arguments)
+    assert "--tools=" in command.arguments
+    assert "--setting-sources=" in command.arguments
+    assert all(argument for argument in command.arguments)
     with pytest.raises(ValueError, match="nonempty"):
-        AgentProcessInvocation(
+        AgentProcessCommand(
             (str(settings.executable), "--tools", ""),
-            settings.workspace,
             standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
         )
     with pytest.raises(ValueError, match="nonempty"):
-        AgentProcessInvocation(
+        AgentProcessCommand(
             ("", "--tools"),
-            settings.workspace,
             standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
         )
 
@@ -441,7 +488,6 @@ def test_the_containment_flags_reach_the_seam_without_an_empty_argument(
     [
         pytest.param("executable", "executable file", id="no executable is installed"),
         pytest.param("permission", "executable file", id="the CLI cannot be executed"),
-        pytest.param("workspace", "workspace", id="no workspace exists"),
         pytest.param("credentials", "credential", id="no credential directory exists"),
         pytest.param("search_path", "search path", id="no search path is declared"),
         pytest.param(
@@ -464,8 +510,6 @@ def test_an_unusable_claude_deployment_is_refused_at_configuration(
         settings.executable.unlink()
     if broken == "permission":
         settings.executable.chmod(0o644)
-    if broken == "workspace":
-        settings.workspace.rmdir()
     if broken == "credentials":
         shutil.rmtree(settings.credential_directory)
     search_path = {
@@ -475,10 +519,7 @@ def test_an_unusable_claude_deployment_is_refused_at_configuration(
 
     with pytest.raises(ValueError, match=refusal):
         ClaudeSubscriptionSettings(
-            settings.executable,
-            settings.workspace,
-            settings.credential_directory,
-            search_path,
+            settings.executable, settings.credential_directory, search_path
         )
 
 
@@ -553,7 +594,7 @@ def test_the_version_probe_hands_the_executable_nothing_of_this_host(
     ):
         assert absent not in observed["environment"]
     probed_directory = Path(observed["working_directory"])
-    assert probed_directory not in (Path.cwd(), settings.workspace, tmp_path)
+    assert probed_directory not in (Path.cwd(), tmp_path)
     assert not probed_directory.exists()
 
 
@@ -735,14 +776,13 @@ def test_an_executable_that_refuses_to_report_its_version_is_refused(
         verify_claude_capability(settings.executable)
 
 
-def test_a_relative_deployment_path_becomes_the_absolute_launch_directory(
+def test_a_relative_deployment_path_becomes_an_absolute_one(
     tmp_path: Path,
 ) -> None:
     settings = claude_subscription_deployment(tmp_path, INTROSPECTING_CLAUDE)
 
     relative = ClaudeSubscriptionSettings(
         Path(os.path.relpath(settings.executable)),
-        Path(os.path.relpath(settings.workspace)),
         Path(os.path.relpath(settings.credential_directory)),
         settings.search_path,
     )
@@ -766,6 +806,7 @@ def durably_attempted(
             ClaudeSubscriptionExecutorFactory(settings).open(),
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
         )
         with runtime.engine.connect() as connection:
             receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()
@@ -1372,7 +1413,7 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
     credential_directory = Path(os.environ[REAL_CLAUDE_CREDENTIAL_DIRECTORY_VARIABLE])
     executable = Path(os.environ[REAL_CLAUDE_EXECUTABLE_VARIABLE])
     settings = ClaudeSubscriptionSettings(
-        executable, workspace, credential_directory, os.environ["PATH"]
+        executable, credential_directory, os.environ["PATH"]
     )
 
     assert verify_claude_capability(executable) in CONFORMANT_CLAUDE_VERSIONS
@@ -1389,13 +1430,15 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
             "and nothing else."
         ).encode(),
     )
-    invocation = executor.prepare_process(request)
+    command = executor.prepare_process(request)
 
     with exclusive_conformance_lease():
         before = credential_directory_state(credential_directory)
-        completion = launched(invocation)
+        completion = launched(command, workspace)
         after = credential_directory_state(credential_directory)
-    result = executor.decode_process_completion(invocation, completion)
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), completion
+    )
 
     assert isinstance(result, AgentExecutionResult)
     # BANANA is the project prompt's answer, so pong proves the workspace's

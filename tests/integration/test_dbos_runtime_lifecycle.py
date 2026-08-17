@@ -50,6 +50,7 @@ from atelier2.ports.agent_executions import (
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
+    agent_scratch_root,
     commit_configured_agent,
     failing_agent_executor_factory,
 )
@@ -565,7 +566,11 @@ def _runtime_with_v2(
     application_version: str = "v2-life",
 ) -> DbosRuntime:
     return DbosRuntime(
-        DbosRuntimeSettings(root / "atelier.sqlite", application_version),
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            application_version,
+            agent_scratch_root=agent_scratch_root(root),
+        ),
         LoopbackEffectAdapterFactory(
             root / "effects.sqlite",
             AdapterRevision("loopback-v1"),
@@ -932,7 +937,11 @@ def test_effect_open_base_exception_closes_provider_and_releases_owner(
 
     with pytest.raises(KeyboardInterrupt) as captured:
         DbosRuntime(
-            DbosRuntimeSettings(tmp_path / "atelier.sqlite", "effect-open"),
+            DbosRuntimeSettings(
+                tmp_path / "atelier.sqlite",
+                "effect-open",
+                agent_scratch_root=agent_scratch_root(tmp_path),
+            ),
             effect_factory,
             ExactOutputAgentExecutorFactory(),
             (factory,),

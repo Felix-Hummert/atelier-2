@@ -16,6 +16,7 @@ from atelier2.adapters.agent_processes import (
     AgentProcessSupervisor,
     delegated_cgroup_root,
 )
+from atelier2.adapters.agent_workspaces import LocalAgentAttemptWorkspaceOwner
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
@@ -82,6 +83,7 @@ class DbosRuntimeBinding:
     effect_adapter: EffectAdapterBinding
     agent_process_control_root: Path
     agent_process_cgroup_root: Path
+    agent_scratch_root: Path | None
     agent_termination_grace_seconds: float
 
 
@@ -91,6 +93,7 @@ class DbosRuntimeSettings:
     application_version: str
     agent_process_control_root: Path | None = None
     agent_process_cgroup_root: Path | None = None
+    agent_scratch_root: Path | None = None
     agent_termination_grace_seconds: float = _DEFAULT_AGENT_TERMINATION_GRACE_SECONDS
 
     def __post_init__(self) -> None:
@@ -125,6 +128,9 @@ class DbosRuntimeSettings:
             effect_adapter,
             self.process_control_root(),
             self.process_cgroup_root(),
+            None
+            if self.agent_scratch_root is None
+            else self.agent_scratch_root.resolve(),
             self.agent_termination_grace_seconds,
         )
 
@@ -185,6 +191,7 @@ class _BoundRuntime:
     effect_adapter_binding: EffectAdapterBinding
     effect_adapter: EffectAdapter
     agent_process_supervisor: AgentProcessSupervisor
+    agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None
     leases: int = 0
     launched: bool = False
     storage_ready: bool = False
@@ -217,11 +224,17 @@ def _open_binding(
         raise DbosRuntimeBindingConflict(
             "canonical and external effect stores must be distinct"
         )
+    if agent_registry.keys and settings.agent_scratch_root is None:
+        raise DbosRuntimeBindingConflict(
+            "serving a provider executor requires an agent scratch root, because "
+            "every attempt is started in a workspace of its own"
+        )
     engine = create_canonical_engine(settings.database_path)
     agent_executor: AgentExecutor | None = None
     agent_executors_v2: list[tuple[AgentExecutorManifestEntry, AgentExecutorV2]] = []
     adapter: EffectAdapter | None = None
     agent_process_supervisor: AgentProcessSupervisor | None = None
+    agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None = None
     try:
         initialize_schema(engine)
         with engine.connect() as connection:
@@ -327,6 +340,14 @@ def _open_binding(
             settings.process_cgroup_root(),
             grace_seconds=settings.agent_termination_grace_seconds,
         )
+        if settings.agent_scratch_root is not None:
+            agent_workspace_owner = LocalAgentAttemptWorkspaceOwner(
+                settings.agent_scratch_root
+            )
+            # Binding the durable database is the moment a restart can tell an
+            # abandoned workspace from a live one, so it is where the workspaces
+            # of attempts that ended before the restart are removed.
+            agent_workspace_owner.reconcile(attempt_store)
         register_durable_run_workflow(
             datasource,
             agent_executor,
@@ -341,6 +362,7 @@ def _open_binding(
             },
             attempt_store,
             agent_process_supervisor,
+            agent_workspace_owner,
             adapter,
             effect_binding,
         )
@@ -349,6 +371,11 @@ def _open_binding(
         if agent_process_supervisor is not None:
             try:
                 agent_process_supervisor.close()
+            except BaseException as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+        if agent_workspace_owner is not None:
+            try:
+                agent_workspace_owner.close()
             except BaseException as cleanup_error:
                 cleanup_errors.append(cleanup_error)
         resources: list[EffectAdapter | AgentExecutorV2 | AgentExecutor] = []
@@ -382,6 +409,7 @@ def _open_binding(
         effect_binding,
         adapter,
         agent_process_supervisor,
+        agent_workspace_owner,
     )
 
 
@@ -476,6 +504,11 @@ class _DbosProcessOwner:
                     bound.agent_process_supervisor.close()
                 except BaseException as error:
                     errors.append(error)
+                if bound.agent_workspace_owner is not None:
+                    try:
+                        bound.agent_workspace_owner.close()
+                    except BaseException as error:
+                        errors.append(error)
                 resources.extend(
                     executor for _entry, executor in reversed(bound.agent_executors_v2)
                 )
@@ -574,6 +607,10 @@ class DbosRuntime:
     @property
     def agent_process_supervisor(self) -> AgentProcessSupervisor:
         return self._held().agent_process_supervisor
+
+    @property
+    def agent_workspace_owner(self) -> LocalAgentAttemptWorkspaceOwner | None:
+        return self._held().agent_workspace_owner
 
     @property
     def effect_adapter_binding(self) -> EffectAdapterBinding:

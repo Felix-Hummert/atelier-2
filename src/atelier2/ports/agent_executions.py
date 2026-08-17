@@ -8,6 +8,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
+    AgentAttemptId,
     AgentProcessOwnerId,
     WatchdogGenerationId,
 )
@@ -61,17 +62,20 @@ class AgentExecutionFailure:
 
 
 @dataclass(frozen=True)
-class AgentProcessInvocation:
-    """One provider process invocation whose secrets remain reference-only.
+class AgentProcessCommand:
+    """What one provider asks to be run, whose secrets remain reference-only.
 
     The executor declares `standard_output_frame_bytes`: the raw stdout frame
-    this exact invocation may produce before supervision refuses it. The port
+    this exact command may produce before supervision refuses it. The port
     owns the field and its validity; the value belongs to the provider whose
     wire format produces the frame, so no provider's number lives here. It is
     a different bound from the durable result bound a decoded execution result
     must satisfy.
 
-    Direct process adapters may durably retain this invocation while proving
+    The command carries no working directory. Where a provider runs is an
+    attempt's decision, not a provider's, so it arrives as a separate lease.
+
+    Direct process adapters may durably retain this command while proving
     at-most-once launch. Its ordered environment may therefore contain only
     non-secret paths, references and toggles, and it is the child's complete
     environment rather than an overlay on the controller's environment.
@@ -80,7 +84,6 @@ class AgentProcessInvocation:
     """
 
     arguments: tuple[str, ...]
-    working_directory: Path
     environment: tuple[tuple[str, str], ...] = ()
     standard_input: bytes = b""
     standard_output_frame_bytes: int = field(kw_only=True)
@@ -88,8 +91,6 @@ class AgentProcessInvocation:
     def __post_init__(self) -> None:
         if not self.arguments or any(not value for value in self.arguments):
             raise ValueError("agent process arguments must be nonempty")
-        if not self.working_directory.is_absolute():
-            raise ValueError("agent process working directory must be absolute")
         names = tuple(name for name, _value in self.environment)
         if len(set(names)) != len(names) or any(not name for name in names):
             raise ValueError(
@@ -111,6 +112,75 @@ class AgentProcessInvocation:
             )
 
 
+# Linux refuses a path longer than PATH_MAX including its terminator, so a
+# leased directory that could not be opened is not a directory this port may
+# promise. The bound is the port's because durable records derive theirs from
+# it: a record whose size bound is derived must know what it may hold.
+MAXIMUM_AGENT_ATTEMPT_WORKSPACE_PATH_BYTES = 4_095
+
+
+@dataclass(frozen=True)
+class AgentAttemptWorkspaceLease:
+    """One attempt's own scratch working directory, held only in live memory.
+
+    The lease is bound to exactly one `AgentAttemptId`, so two attempts of the
+    same node -- an ordinal-1 attempt and its deliberate ordinal-2 replacement
+    -- never share a directory. It claims nothing about operating-system
+    isolation: it is a blank directory this attempt owns, not a sandbox.
+
+    It carries the directory's own identity, not only its path, because a launch
+    happens later and elsewhere: between the attestation and the first process
+    there is a window in which a peer of this user can replace the directory the
+    path names. The launcher enters the identity -- open, `fstat`, compare, then
+    enter through the descriptor it checked -- so the name is never resolved a
+    second time.
+    """
+
+    attempt_id: AgentAttemptId
+    working_directory: Path
+    device: int
+    inode: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.attempt_id, AgentAttemptId):
+            raise TypeError("agent attempt workspace lease identity must be typed")
+        if type(self.device) is not int or type(self.inode) is not int:
+            raise TypeError("agent attempt workspace identity must be typed")
+        if self.device < 0 or self.inode < 0:
+            raise ValueError("agent attempt workspace identity must be nonnegative")
+        if not self.working_directory.is_absolute():
+            raise ValueError("agent attempt workspace directory must be absolute")
+        if (
+            len(str(self.working_directory).encode("utf-8"))
+            > MAXIMUM_AGENT_ATTEMPT_WORKSPACE_PATH_BYTES
+        ):
+            raise ValueError("agent attempt workspace directory exceeds the path bound")
+
+
+@dataclass(frozen=True)
+class AgentProcessInvocation:
+    """One provider process invocation: a provider's command in one lease."""
+
+    command: AgentProcessCommand
+    lease: AgentAttemptWorkspaceLease
+
+
+class AgentAttemptWorkspaceOwner(Protocol):
+    """The provider-neutral owner of every attempt's scratch directory."""
+
+    def preflight(self) -> None:
+        """Refuse an unusable scratch root without mutating anything."""
+        ...
+
+    def acquire(self, attempt_id: AgentAttemptId) -> AgentAttemptWorkspaceLease:
+        """Create this attempt's own directory. Invoke only after its claim won."""
+        ...
+
+    def release(self, attempt_id: AgentAttemptId) -> None:
+        """Remove this attempt's directory and its contents, idempotently."""
+        ...
+
+
 @dataclass(frozen=True)
 class AgentProcessCompletion:
     return_code: int
@@ -125,10 +195,8 @@ class AgentProcessCompletion:
 
 
 class AgentExecutorV2(Protocol):
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
-        """Prepare a live-only invocation without starting a child."""
+    def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
+        """Prepare a live-only command without starting a child."""
         ...
 
     def decode_process_completion(
@@ -145,8 +213,20 @@ class AgentExecutorV2(Protocol):
         """
         ...
 
-    def release_process(self, invocation: AgentProcessInvocation) -> None:
-        """Release live-only resources owned by this exact invocation."""
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        """Take back the secret channel this invocation handed its provider.
+
+        A provider that reads its credentials from a directory gets one made for
+        this command alone, and it is taken back on every path -- success,
+        refusal, a claim this call lost, or an exception. It takes the command
+        rather than the invocation because the channel is made while the command
+        is prepared, which is before the attempt is claimed and therefore before
+        any workspace is leased. That is deliberately not the discipline of the
+        attempt's workspace: the workspace falls only once the attempt is
+        durably terminal, because what a provider left behind is evidence. A
+        copy of the operator's credentials is not evidence, and the shortest
+        life it can have is the one it gets.
+        """
         ...
 
     def close(self) -> None: ...
