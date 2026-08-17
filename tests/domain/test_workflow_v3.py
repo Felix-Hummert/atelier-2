@@ -1150,6 +1150,32 @@ def test_a_line_of_agent_nodes_is_executable() -> None:
     assert parsed.sink_node_ids == ("review",)
 
 
+# The other side of the same boundary. `depends_on` is the one authored form
+# this list lost: it was refused with its siblings while nothing advanced, and it
+# is admitted now because the linear rule binds it. Pinning the admission where
+# the refusals live is what makes it a decision someone made rather than a hole
+# that opened -- the empty authored form still means what the author wrote, and
+# what it now means is "no dependency", which is exactly what an entry node is.
+DECIDED_EXECUTABLE: dict[str, bytes] = {
+    "an empty authored depends_on": ONE_AGENT_DOCUMENT + b"    depends_on: []\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("document"), DECIDED_EXECUTABLE.values(), ids=DECIDED_EXECUTABLE
+)
+@pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
+def test_a_form_a_runtime_now_binds_is_admitted_rather_than_refused(
+    document: bytes,
+) -> None:
+    """A shape that stopped being refused says so here, beside the refusals."""
+    parsed = parse_executable_workflow_document(document)
+
+    assert isinstance(parsed, WorkflowGraphV3)
+    assert parsed.entry_node_ids == ("implement",)
+    assert parsed.sink_node_ids == ("implement",)
+
+
 NOT_YET_EXECUTABLE: dict[str, bytes] = {
     "a form nothing binds": ONE_AGENT_DOCUMENT
     + b"    budget: {ref: build_budget, revision: budget-1}\n",
