@@ -20,23 +20,40 @@ const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
  * The frozen OpenAPI document is the one object both sides can read. The
  * schema-* problems are generated from SchemaDocumentRefusal, so a new enum
  * member publishes a type without anyone editing this file. Collecting every
- * type.const with the problem prefix is what makes that drift fail here.
+ * type.const with the problem prefix, and the title.const and status.const
+ * that sit beside it, is what makes that drift fail here.
  */
 const servedDocument = JSON.parse(
   readFileSync(resolve(process.cwd(), "..", "tests", "api", "openapi_frozen.json"), "utf8")
 ) as {
   components: {
-    schemas: Record<string, { properties?: Record<string, { const?: string }> }>;
+    schemas: Record<
+      string,
+      {
+        properties?: {
+          type?: { const?: string };
+          title?: { const?: string };
+          status?: { const?: number };
+        };
+      }
+    >;
   };
 };
 
-function publishedProblemCodes(document: typeof servedDocument): string[] {
-  return Object.values(document.components.schemas).flatMap((schema) => {
-    const type = schema.properties?.type?.const;
-    return typeof type === "string" && type.startsWith(PROBLEM_TYPE_PREFIX)
-      ? [type.slice(PROBLEM_TYPE_PREFIX.length)]
-      : [];
-  });
+function publishedProblemDefinitions(document: typeof servedDocument) {
+  return Object.fromEntries(
+    Object.values(document.components.schemas).flatMap((schema) => {
+      const type = schema.properties?.type?.const;
+      return typeof type === "string" && type.startsWith(PROBLEM_TYPE_PREFIX)
+        ? [
+            [
+              type.slice(PROBLEM_TYPE_PREFIX.length),
+              { status: schema.properties?.status?.const, title: schema.properties?.title?.const }
+            ]
+          ]
+        : [];
+    })
+  );
 }
 
 type Equal<Left, Right> =
@@ -400,8 +417,8 @@ describe("closed API decoders", () => {
     }
   );
 
-  it("decodes exactly the problem types the document publishes", () => {
-    expect(Object.keys(problemDefinitions).sort()).toEqual(publishedProblemCodes(servedDocument).sort());
+  it("decodes exactly the problem definitions the document publishes", () => {
+    expect(problemDefinitions).toEqual(publishedProblemDefinitions(servedDocument));
   });
 });
 
