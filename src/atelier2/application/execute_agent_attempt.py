@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
 )
@@ -18,6 +20,8 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
     AgentProcessRunner,
 )
+
+_LOG = logging.getLogger("atelier2")
 
 
 def execute_agent_attempt(
@@ -54,6 +58,18 @@ def execute_agent_attempt(
         if isinstance(result, AgentExecutionFailure):
             if result.code is not AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY:
                 raise ValueError("executor returned an unsupported known failure")
+            _LOG.warning(
+                "Agent attempt %s on node %s of run %s failed.",
+                execution.attempt_id.value,
+                execution.request.node_id,
+                execution.request.run_id.value,
+                extra={
+                    "event": "agent_attempt_failed",
+                    "run_id": execution.request.run_id.value,
+                    "node_id": execution.request.node_id,
+                    "attempt_id": execution.attempt_id.value,
+                },
+            )
             outcome = store.complete_known_failure(execution)
         else:
             outcome = store.complete_success(execution, result)

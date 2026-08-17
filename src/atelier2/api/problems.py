@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import traceback
 from dataclasses import dataclass
 from http import HTTPStatus
 
@@ -21,6 +23,7 @@ the wire.
 """
 
 PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:"
+_LOG = logging.getLogger("atelier2")
 
 
 def schema_document_problem_code(refusal: SchemaDocumentRefusal) -> str:
@@ -356,5 +359,19 @@ def install_problem_handlers(app: FastAPI, *, versioned_run_start_path: str) -> 
         return problem_response("internal-error")
 
     @app.exception_handler(Exception)
-    async def unexpected_error(_request: Request, _error: Exception) -> JSONResponse:
+    async def unexpected_error(_request: Request, error: Exception) -> JSONResponse:
+        detail = str(error).strip()
+        sentence = (
+            f"The HTTP request failed with an unhandled {type(error).__name__}: "
+            f"{detail}."
+            if detail
+            else f"The HTTP request failed with an unhandled {type(error).__name__}."
+        )
+        _LOG.error(
+            sentence,
+            extra={
+                "event": "http_internal_error",
+                "exception": "".join(traceback.format_exception(error)),
+            },
+        )
         return problem_response("internal-error")

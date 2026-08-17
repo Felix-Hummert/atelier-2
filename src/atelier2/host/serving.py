@@ -52,6 +52,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
+from atelier2.host.logging import configure_process_logging
 
 # The edge must admit exactly the largest result the durable agent contract
 # accepts, and nothing larger: a tighter bound refuses work the store would
@@ -350,10 +351,17 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
 
 
 def serve(settings: HostSettings) -> None:
+    configure_process_logging()
     app, runtime = compose_application(settings)
     try:
         uvicorn.Server(
-            uvicorn.Config(app, host=settings.host, port=settings.port)
+            uvicorn.Config(
+                app,
+                host=settings.host,
+                port=settings.port,
+                log_config=None,
+                access_log=False,
+            )
         ).run()
     finally:
         runtime.close()
