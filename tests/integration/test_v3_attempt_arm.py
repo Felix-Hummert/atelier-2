@@ -46,6 +46,7 @@ from atelier2.adapters.dbos.workflow import EncodedAgentBindingV2, _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.compose_node_job import node_job
+from atelier2.application.project_node_rail import NodeRailAttempt, project_node_rail
 from atelier2.contracts.agent_attempts import AgentAttemptId, AgentAttemptState
 from atelier2.contracts.agents import (
     AgentExecutionRequestV2,
@@ -382,6 +383,27 @@ def test_a_completed_v3_attempt_carries_its_run_to_the_terminal_hash(
         )
     assert run["state"] == RunState.COMPLETED.value
     assert run["terminal_hash"] is not None
+
+
+def test_a_live_v3_run_with_a_running_attempt_names_it_on_the_rail(
+    runtime: DbosRuntime,
+) -> None:
+    """The cockpit path, not a hand-built projection.
+
+    The rail already knew the V3 attempt vocabulary. get_run still collected
+    only AgentNodeV2, so a real V3 run arrived with node states and no attempt.
+    """
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+    store.claim(execution)
+
+    found = durable_queries(runtime.engine).get_run(RUN)
+
+    assert isinstance(found, RunFound)
+    rail = project_node_rail(found.projection, ())
+    assert rail[0].node_id == "implement"
+    assert rail[0].attempt == NodeRailAttempt(1, PublicAgentAttemptState.POSSIBLY_RAN)
 
 
 LINE_DOCUMENT = b"""format_version: 3
