@@ -5,7 +5,9 @@ import {
   NODE_STATES,
   PUBLIC_ATTEMPT_STATES,
   agentConfigurationRevisionPageSchema,
+  workflowDeclaredOrderSchema,
   workflowNodePreviewSchema,
+  workflowRevisionDetailSchema,
   workflowRevisionSummarySchema
 } from "../../src/api/client";
 
@@ -98,6 +100,48 @@ describe("the served vocabulary", () => {
         instruction_start: "ä".repeat((maxLength ?? 0) + 1)
       })
     ).toThrow();
+  });
+
+  it("decodes exactly the fields the published V3 graph serves", () => {
+    const served = servedDocument.components.schemas.WorkflowGraphResourceV3;
+    const sample = {
+      revision_hash: "a".repeat(64),
+      document_base64: "YQ==",
+      graph: {
+        format_version: 3 as const,
+        executable: true,
+        not_executable_reason: null,
+        node_count: 1,
+        agent_roles: ["cook"],
+        orders: [
+          {
+            name: "portions",
+            schema_ref: "portions-schema",
+            schema_revision: "schema-portions"
+          }
+        ],
+        node_previews: [
+          {
+            id: "cook",
+            kind: "agent" as const,
+            role: "cook",
+            instruction_start: "Cook exactly what the order says."
+          }
+        ],
+        name: "Cook to order",
+        description: null
+      }
+    };
+
+    expect(Object.keys(sample.graph).sort()).toEqual(
+      Object.keys(served?.properties ?? {}).sort()
+    );
+    expect(Object.keys(workflowDeclaredOrderSchema.shape).sort()).toEqual(
+      Object.keys(
+        servedDocument.components.schemas.WorkflowDeclaredOrderResourceV3?.properties ?? {}
+      ).sort()
+    );
+    expect(workflowRevisionDetailSchema.parse(sample)).toEqual(sample);
   });
 
   it("decodes exactly the fields the agent-configuration listing serves", () => {

@@ -177,6 +177,19 @@ class WorkflowNodePreviewResourceV3(ApiModel):
         return self
 
 
+class WorkflowDeclaredOrderResourceV3(ApiModel):
+    """One order this document demands at start: its name and the schema it pinned.
+
+    The schema columns are the author's own `ref` and `revision`, not the schema
+    document. A caller that wants those bytes already holds the published
+    revision the reference names.
+    """
+
+    name: str = Field(min_length=1)
+    schema_ref: str = Field(min_length=1)
+    schema_revision: str = Field(min_length=1)
+
+
 # A docstring here is published as this component's description, so the reason
 # the two authored fields carry no column of their own stays a comment: ADR 0007
 # decision 4 has them parsed out of the published bytes on the way to the wire,
@@ -213,6 +226,16 @@ class WorkflowGraphResourceV3(ApiModel):
     about what to bind. The excerpts sit beside this bind list.
     """
 
+    orders: tuple[WorkflowDeclaredOrderResourceV3, ...]
+    """Every order this document demands at start, in the order the author wrote.
+
+    A caller that wants to start this revision has to supply each one, and until
+    now it could not learn the names from the API at all -- only by reading the
+    document itself. The names and the schema they pin are the smallest thing
+    that answers that: not the schema bytes, which the published revision already
+    holds, and not an empty list dressed as a placeholder.
+    """
+
     node_previews: tuple[WorkflowNodePreviewResourceV3, ...] = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str | None
@@ -236,6 +259,9 @@ class WorkflowGraphResourceV3(ApiModel):
         )
         if preview_roles != self.agent_roles:
             raise ValueError("agent roles and node excerpts disagree")
+        names = tuple(order.name for order in self.orders)
+        if len(set(names)) != len(names):
+            raise ValueError("each declared order has one name")
         return self
 
 

@@ -144,6 +144,7 @@ describe("mobile run entry", () => {
             executable: false as const,
             not_executable_reason: "agent forms nothing binds yet: outputs" as const,
             agent_roles: [],
+            orders: [],
             node_count: 1,
             node_previews: [
               {
