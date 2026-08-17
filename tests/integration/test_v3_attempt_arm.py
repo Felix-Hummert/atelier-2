@@ -58,7 +58,10 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.workflows import RunCompletes
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
 from tests.integration.test_v3_agent_start import publish
-from tests.scenarios.agents import failing_agent_executor_factory
+from tests.scenarios.agents import (
+    agent_scratch_root,
+    failing_agent_executor_factory,
+)
 
 RUN = RunId("v3/attempt")
 INSTRUCTION = b"Do the one thing this chain is for."
@@ -67,7 +70,11 @@ INSTRUCTION = b"Do the one thing this chain is for."
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     started = DbosRuntime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "h1c-test"),
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "h1c-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
