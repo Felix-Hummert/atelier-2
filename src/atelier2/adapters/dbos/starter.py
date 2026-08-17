@@ -484,6 +484,39 @@ def _refused_order(
     return None
 
 
+def _requested_orders(orders: tuple[RunInput, ...]) -> tuple[tuple[str, str, str], ...]:
+    """The named order set a start asks for, as durable identity reads it.
+
+    Keyed by name rather than by arrival, because the caller's sequence is not
+    what the run keeps: `run_inputs_v3` has no position column on purpose, so two
+    starts that supply the same orders in different sequences are the same run.
+    """
+    return tuple(
+        sorted(
+            (order.name, order.schema_revision.value, order.value_hash.value)
+            for order in orders
+        )
+    )
+
+
+def _stored_orders(
+    connection: Connection, run_id: RunId
+) -> tuple[tuple[str, str, str], ...]:
+    """The named order set this run already carries, read the same way."""
+    return tuple(
+        sorted(
+            (
+                str(record["name"]),
+                str(record["schema_revision_hash"]),
+                str(record["value_hash"]),
+            )
+            for record in connection.execute(
+                sa.select(run_inputs_v3).where(run_inputs_v3.c.run_id == run_id.value)
+            ).mappings()
+        )
+    )
+
+
 def _resolved_graph_input_schema(
     run_configuration: RunConfigurationRevision, name: str
 ) -> PublishedRevisionHash | None:
@@ -635,6 +668,8 @@ class DbosDurableRunStarter:
                             != graph.format_version
                             or str(existing_record["agent_binding_set_hash"])
                             != binding_set.binding_set_hash.value
+                            or _stored_orders(connection, request.run_id)
+                            != _requested_orders(_supplied_orders(request))
                         ):
                             return DurableRunIdentityConflict()
                         return DurableRunExisting(
@@ -793,6 +828,8 @@ class DbosDurableRunStarter:
                         or int(existing_record["workflow_format_version"])
                         != graph.format_version
                         or existing_set != requested_set
+                        or _stored_orders(connection, request.run_id)
+                        != _requested_orders(orders)
                     ):
                         return DurableRunIdentityConflict()
                     return DurableRunExisting(run)

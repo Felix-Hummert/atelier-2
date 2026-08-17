@@ -60,7 +60,9 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.durable_runs import (
     DurableRunCreated,
+    DurableRunExisting,
     DurableRunFormatNotExecutable,
+    DurableRunIdentityConflict,
     DurableV3StartInputRefused,
     StartPublishedRunRequestV3,
     V3InputRefusal,
@@ -395,3 +397,136 @@ def test_one_name_answers_one_order(runtime: DbosRuntime) -> None:
     assert refused.refusal is V3InputRefusal.DUPLICATED
     with runtime.engine.connect() as connection:
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
+SIDE_NAME = "side"
+
+
+def two_reader_document(schema_hash: PublishedRevisionHash) -> bytes:
+    """Two orders and two readers: one node reads one, the next reads both."""
+    return f"""format_version: 3
+name: Cook and plate to order
+graph_inputs:
+  - name: {ORDER_NAME}
+    schema:
+      ref: portions-schema
+      revision: {schema_hash.value}
+  - name: {SIDE_NAME}
+    schema:
+      ref: portions-schema
+      revision: {schema_hash.value}
+nodes:
+  - id: cook
+    type: agent
+    role: cook
+    mode: headless
+    instruction: Cook exactly what the order says.
+    inputs:
+      - name: {ORDER_NAME}
+        from:
+          graph_input: {ORDER_NAME}
+  - id: plate
+    type: agent
+    role: cook
+    mode: headless
+    instruction: Plate what was cooked, with the side.
+    depends_on: [cook]
+    inputs:
+      - name: {ORDER_NAME}
+        from:
+          graph_input: {ORDER_NAME}
+      - name: {SIDE_NAME}
+        from:
+          graph_input: {SIDE_NAME}
+""".encode()
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_each_node_is_handed_the_orders_it_reads_in_one_stable_order(
+    runtime: DbosRuntime, cook: RecordingAgentExecutorFactoryV2
+) -> None:
+    """A node is handed what it declared, and always spelled the same way.
+
+    Two promises live here that one order and one reader cannot tell apart, and
+    both are load-bearing once a run carries more than one order.
+
+    **What it reads, not what the run carries.** `cook` declares one of the two
+    orders. Handing it the other as well would tell an agent something its author
+    never asked for -- and would carry it into the request hash, so the node's
+    durable identity would depend on an order it does not read.
+
+    **One spelling, whatever the caller's order.** `plate` reads both, and this
+    start supplies them in the opposite order. The job is composed by name so a
+    retry of the same run asks the same thing: a job that followed arrival order
+    would give one node two identities.
+    """
+    publish(runtime, PORTIONS_SCHEMA)
+    workflow = WorkflowRevision(two_reader_document(PORTIONS_SCHEMA.revision_hash))
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    bindings = bind_cook(runtime)
+    supper = RunInput(SIDE_NAME, PORTIONS_SCHEMA.revision_hash, b'{"portions": 9}')
+    main = order(b'{"portions": 4}')
+
+    created = start(runtime, workflow, bindings, RunId("v3/two-readers"), supper, main)
+    assert isinstance(created, DurableRunCreated), created
+
+    runtime.launch()
+    wait_for_state(runtime, RunId("v3/two-readers"), RunState.COMPLETED)
+
+    cooked, plated = jobs_handed_to(cook)
+    assert b'{"portions": 4}' in cooked
+    assert b'{"portions": 9}' not in cooked
+    assert plated.index(b"--- order: order ---") < plated.index(b"--- order: side ---")
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_the_same_run_started_with_another_order_is_never_the_same_run(
+    runtime: DbosRuntime,
+) -> None:
+    """The exact-retry answer is exact, or it is a lie about what was stored.
+
+    A start that repeats a run id is answered as the run that already exists, and
+    that answer is a promise: what you asked for is what is there. Revision,
+    format and bindings were compared for exactly that reason -- the order was
+    not, so a second start of the same id with a different order was told its run
+    exists while the stored order was still the first one, and the agent would
+    keep cooking the first order forever.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    run_id = RunId("v3/same-id")
+    assert isinstance(
+        start(runtime, workflow, bindings, run_id, order(b'{"portions": 2}')),
+        DurableRunCreated,
+    )
+
+    answer = start(runtime, workflow, bindings, run_id, order(b'{"portions": 4}'))
+
+    assert isinstance(answer, DurableRunIdentityConflict), answer
+    with runtime.engine.connect() as connection:
+        stored = (
+            connection.execute(
+                sa.select(run_inputs_v3.c.value).where(
+                    run_inputs_v3.c.run_id == run_id.value
+                )
+            )
+            .scalars()
+            .one()
+        )
+    assert bytes(stored) == b'{"portions": 2}'
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_the_same_run_started_with_the_same_order_stays_idempotent(
+    runtime: DbosRuntime,
+) -> None:
+    """A repeat that really is a repeat is still answered as the same run."""
+    workflow, bindings = publish_ordered_workflow(runtime)
+    run_id = RunId("v3/same-order")
+    assert isinstance(
+        start(runtime, workflow, bindings, run_id, order(b'{"portions": 2}')),
+        DurableRunCreated,
+    )
+
+    answer = start(runtime, workflow, bindings, run_id, order(b'{"portions": 2}'))
+
+    assert isinstance(answer, DurableRunExisting), answer
