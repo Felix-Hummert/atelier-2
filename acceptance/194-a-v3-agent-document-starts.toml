@@ -37,7 +37,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/194"
 
 [[sentence]]
 id = "a-v3-agent-document-starts-and-binds-its-node"
-text = "A V3 document of the one admitted shape -- a single agent node that is its own entry and sink, declaring nothing no runtime binds -- starts as a run of its own format, reads back as a V3 run rather than a V2 one wearing a new number, and binds its node onto the durable attempt path with exactly the role, model, executor revision and capability it was started with."
+text = "A V3 document of an admitted shape -- a line of agent nodes, each entered by at most one dependency and followed by at most one dependent, declaring nothing no runtime binds -- starts as a run of its own format, reads back as a V3 run rather than a V2 one wearing a new number, and binds each node onto the durable attempt path -- with exactly the role, model, executor revision and capability it was started with -- as the run reaches it."
 
 [[sentence]]
 id = "every-v3-shape-no-runtime-binds-is-refused-by-name"
@@ -50,6 +50,10 @@ text = "The public start route refuses a V3 revision before it writes anything: 
 [[sentence]]
 id = "a-v3-agent-node-reaches-the-durable-attempt-path"
 text = "A V3 agent node is admitted by the durable attempt store under the same role binding, attempt identity and provider contract a V2 node uses, while a run that does not exist is still refused by name."
+
+[[sentence]]
+id = "a-v3-run-follows-the-edge-its-author-declared"
+text = "After a successful attempt on a V3 node that is not its run's sink, the durable head the next attempt reads stands on the one heir its author declared, and the last node of the line carries the run to COMPLETED with its terminal hash, so a line is executed in the order it was written rather than one node at a time by whoever asks."
 
 [[sentence]]
 id = "a-completed-v3-attempt-reaches-the-runs-terminal-hash"

@@ -109,7 +109,12 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
         started.close()
 
 
-def publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
+def publish(
+    runtime: DbosRuntime,
+    document: bytes = ONE_AGENT_DOCUMENT,
+    roles: tuple[str, ...] = ("builder",),
+) -> tuple[WorkflowRevision, AgentBindingSet]:
+    """Publish one V3 document and bind every role its nodes declare."""
     catalog = DbosAgentConfigurationCatalog(
         runtime.engine, runtime.agent_executor_registry
     )
@@ -128,10 +133,12 @@ def publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
     )
-    workflow = WorkflowRevision(ONE_AGENT_DOCUMENT)
+    workflow = WorkflowRevision(document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(
-        (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+        tuple(
+            AgentBinding(AgentRole(role), configuration.revision_hash) for role in roles
+        )
     )
 
 
