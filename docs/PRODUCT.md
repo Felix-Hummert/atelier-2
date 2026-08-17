@@ -377,8 +377,11 @@ waiting. Exit 0 says the command read that run's history as far as the run's own
 latest event, so a history that broke off is refused by name and a truncated or
 empty output is never dressed as a receipt. The
 job still travels inside the published document, so one distinct input burns one
-revision, and neither a run-level input, a workflow name, nor an output contract
-that could decide an exit code exists yet.
+revision. A workflow name is no longer among what is missing: `--name` runs the
+revision a catalog name holds, asked of the service before anything is written
+and at the lineage member `--position` names, so an operator starts named work
+without translating a name into a hash by hand. A run-level input and an output
+contract that could decide an exit code still do not exist.
 
 The canonical store is schema V13. A fresh store is created as exact V13 and
 carries published revisions of the closed kind set, lineage membership bound
