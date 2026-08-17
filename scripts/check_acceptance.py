@@ -19,8 +19,13 @@ ACCEPTANCE_DIRECTORY = Path("acceptance")
 DECLARATION_SUFFIX = ".toml"
 SUPPORTED_SCHEMA_VERSION = 1
 DECLARATION_KEYS = frozenset({"schema_version", "story", "sentence"})
-SENTENCE_KEYS = frozenset({"id", "text"})
+SENTENCE_KEYS = frozenset({"id", "text", "requirement"})
 SENTENCE_IDENTIFIER = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+REQUIREMENTS_DIRECTORY = Path("docs/requirements")
+# The identifier the requirement template publishes, and only it. The template's
+# own `REQ-<bereich>-<nn>` placeholder is not an identifier and never matches.
+REQUIREMENT_IDENTIFIER = re.compile(r"^REQ-[A-Z0-9]+-[0-9]{2}$")
+REQUIREMENT_HEADING = re.compile(r"^### (REQ-[A-Z0-9]+-[0-9]{2}):", re.MULTILINE)
 
 PROOF_MARKER = "proves"
 PYTHON_MARKER_NAMESPACE = "mark"
@@ -63,8 +68,11 @@ HONESTY_BOUND = (
     "proves: every claim in this repository names a sentence some story declared",
     "proves: every claim was honoured by a passing test in this pipeline's reports",
     "proves: a proposed landing states its sentences by identifier, or why it has none",
+    "proves: a sentence that names a requirement names one a document declares",
     "does not prove: that a test carries its sentence in meaning - review judges that",
     "does not prove: that a stated exemption is honest - review judges that",
+    "does not prove: that a bound sentence serves its requirement - review judges that",
+    "does not measure: how much of the shelf is bound - it counts and says so",
     "does not prove: that a body edited after this run still says what it said - review sees the edit",
     "does not measure: any ratio, case count, or coverage target",
     "```",
@@ -104,6 +112,7 @@ class AcceptanceSentence:
     text: str
     story: str
     declared_in: Path
+    requirement: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +200,17 @@ def read_declaration_document(declaration: Path, location: Path) -> dict[str, An
         raise AcceptanceGateError(f"{location} is not readable: {error}") from error
 
 
+def read_declared_requirements(project_root: Path) -> frozenset[str]:
+    """Every rule identifier the requirement documents publish."""
+
+    directory = project_root / REQUIREMENTS_DIRECTORY
+    return frozenset(
+        match
+        for document in sorted(directory.glob("*.md"))
+        for match in REQUIREMENT_HEADING.findall(document.read_text(encoding="utf-8"))
+    )
+
+
 def read_sentence_entry(entry: Any, story: str, location: Path) -> AcceptanceSentence:
     if not isinstance(entry, dict):
         raise AcceptanceGateError(f"{location} declares a sentence that is not a table")
@@ -210,7 +230,16 @@ def read_sentence_entry(entry: Any, story: str, location: Path) -> AcceptanceSen
         raise AcceptanceGateError(
             f"{location} declares sentence {identifier!r} without text"
         )
-    return AcceptanceSentence(identifier, text, story, location)
+    requirement = entry.get("requirement")
+    if requirement is not None and (
+        not isinstance(requirement, str)
+        or REQUIREMENT_IDENTIFIER.match(requirement) is None
+    ):
+        raise AcceptanceGateError(
+            f"{location} binds sentence {identifier!r} to {requirement!r}; "
+            "a requirement is named REQ-<AREA>-<nn>"
+        )
+    return AcceptanceSentence(identifier, text, story, location, requirement)
 
 
 def read_junit_proofs(report: Path) -> Iterator[ReportedProof]:
@@ -612,10 +641,29 @@ def claims_without_distinct_proofs(
     )
 
 
+def require_declared_requirements(
+    sentences: tuple[AcceptanceSentence, ...], declared: frozenset[str]
+) -> None:
+    """Refuse a sentence that points at a rule no requirement document publishes.
+
+    A link nobody can follow is worse than an absent one: it reads as filed and
+    answers wrongly, which is exactly the drawer this field exists to close.
+    """
+
+    for sentence in sentences:
+        if sentence.requirement is not None and sentence.requirement not in declared:
+            raise AcceptanceGateError(
+                f"{sentence.declared_in} binds sentence {sentence.identifier!r} to "
+                f"{sentence.requirement}, which no document in "
+                f"{REQUIREMENTS_DIRECTORY} declares"
+            )
+
+
 def trace_acceptance(
     project_root: Path, reports_directory: Path, pull_request_body: Path | None
 ) -> AcceptanceTrace:
     sentences = read_declared_sentences(project_root)
+    require_declared_requirements(sentences, read_declared_requirements(project_root))
     claims = read_source_claims(project_root)
     proofs = read_passing_proofs(reports_directory)
     landing = (
@@ -625,6 +673,24 @@ def trace_acceptance(
         () if landing is None else landing_problems(landing, sentences)
     )
     return AcceptanceTrace(sentences, claims, proofs, landing, problems)
+
+
+def render_requirement_coverage(sentences: tuple[AcceptanceSentence, ...]) -> str:
+    """Say how much of the acceptance shelf reaches a requirement, and how much does not.
+
+    Reported rather than refused: almost nothing is filed yet, and a gate that
+    went red over that would stop the workshop to do paperwork. What it must not
+    do is stay silent, because a silent count is the one nobody lowers.
+    """
+
+    unbound = tuple(sentence for sentence in sentences if sentence.requirement is None)
+    bound = len(sentences) - len(unbound)
+    if not unbound:
+        return f"Requirement coverage: all {bound} sentence(s) name a requirement"
+    return (
+        f"Requirement coverage: {bound} of {len(sentences)} sentence(s) name a "
+        f"requirement; {len(unbound)} bind no requirement"
+    )
 
 
 def render_landing(landing: LandingBinding | None) -> str:
@@ -679,6 +745,7 @@ def main() -> int:
         f"{len(REQUIRED_REPORTS)} run reports",
         flush=True,
     )
+    print(render_requirement_coverage(trace.sentences), flush=True)
     print(render_landing(trace.landing), flush=True)
     print(render_honesty_bound(), flush=True)
     return 0
