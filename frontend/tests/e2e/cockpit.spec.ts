@@ -1076,3 +1076,104 @@ test("a declared order is a material field on start, and the typed value travels
   await page.screenshot({ path: "test-results/v3-material-390x844.png", fullPage: true });
 });
 
+test("two revisions of one lineage are one picker row; the older choice changes startability", async ({
+  page
+}) => {
+  const api = "/atelier/api/v1";
+  const lineageName = "lineage-grouping-271";
+  const schemaHash = await anyJsonSchema(page);
+  const olderYaml = [
+    "format_version: 3",
+    `name: ${lineageName}`,
+    "description: The first admitted member.",
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Write the first admitted draft.",
+    ...declaredOutput(schemaHash),
+    ""
+  ].join("\n");
+  const newestYaml = [
+    "format_version: 3",
+    `name: ${lineageName}`,
+    "description: The catalog head.",
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Write the later admitted draft.",
+    ""
+  ].join("\n");
+
+  const olderPublished = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: olderYaml
+  });
+  expect(olderPublished.status()).toBe(201);
+  const olderHash = (await olderPublished.json()).revision_hash as string;
+  const newestPublished = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: newestYaml
+  });
+  expect(newestPublished.status()).toBe(201);
+  const newestHash = (await newestPublished.json()).revision_hash as string;
+
+  const founded = await page.request.post(`${api}/workflow-lineages`, {
+    data: {
+      revision_hash: olderHash,
+      actor: "e2e",
+      activated_at: "2026-08-17T00:00:00Z"
+    }
+  });
+  expect(founded.status()).toBe(201);
+  const lineageId = (await founded.json()).lineage_id as string;
+  const admitted = await page.request.post(`${api}/workflow-lineages/${lineageId}/members`, {
+    data: {
+      revision_hash: newestHash,
+      actor: "e2e",
+      activated_at: "2026-08-17T00:00:01Z"
+    }
+  });
+  expect(admitted.status()).toBe(201);
+  const head = await page.request.get(`${api}/workflow-revisions/by-name/${lineageName}`);
+  expect(head.status()).toBe(200);
+  expect((await head.json()).revision_hash).toBe(newestHash);
+
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: "Saved workflow" }).check();
+  const row = page.getByRole("article", { name: lineageName });
+  await expect(row.getByRole("radio")).toHaveCount(1);
+  await expect(row.getByRole("radio")).toBeDisabled();
+  await expect(row).toContainText("The catalog head.");
+  await expect(row).toContainText("Cannot be started");
+  await expect(row).not.toContainText("The first admitted member.");
+  await expect(row.getByLabel(`Revisions of ${lineageName}`)).toBeVisible();
+
+  await row.getByText("Revisions", { exact: true }).click();
+  await row.getByLabel(`Revision of ${lineageName}`).selectOption({ label: "Earlier" });
+  await expect(row.getByRole("radio")).toBeEnabled();
+  await expect(row).toContainText("The first admitted member.");
+  await expect(row).not.toContainText("Cannot be started");
+
+  await row.getByText("Details", { exact: true }).click();
+  const details = row.locator("details.revision-details");
+  await expect(details).toContainText("Write the first admitted draft.");
+  await expect(details).toContainText(olderHash);
+  await expect(details).not.toContainText(newestHash);
+
+  await page.screenshot({
+    path: "test-results/v3-picker-lineage-desktop.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(row.getByRole("radio")).toBeVisible();
+  await assertMobileSurface(page);
+  await page.screenshot({
+    path: "test-results/v3-picker-lineage-390x844.png",
+    fullPage: true
+  });
+});
+

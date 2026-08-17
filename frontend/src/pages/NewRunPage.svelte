@@ -31,6 +31,13 @@
   } from "../lib/namedAgentChoice";
   import { readEveryAgentConfiguration, readEveryRevision } from "../lib/runPages";
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
+  import {
+    groupSavedWorkflows,
+    namesWithSeveralRevisions,
+    revisionChoiceLabel,
+    selectedRevisionOf,
+    type SavedWorkflowRow
+  } from "../lib/savedWorkflows";
 
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
@@ -81,6 +88,10 @@
   let operation: "load" | "publish" | "start" | "retry" | null = null;
   $: busy = operation !== null;
   let selectionGeneration = 0;
+  let newestByName: Record<string, string> = {};
+  let selectedHashByKey: Record<string, string> = {};
+  let chosenRowKey: string | null = null;
+  $: savedRows = groupSavedWorkflows(revisions.confirmed?.items ?? [], newestByName);
 
   /**
    * Whether this cockpit can carry a run of that revision.
@@ -92,6 +103,41 @@
    */
   function cockpitCanShow(revision: WorkflowRevisionSummary): boolean {
     return revision.executable;
+  }
+
+  function setRowRevision(row: SavedWorkflowRow, revisionHash: string): void {
+    selectedHashByKey = { ...selectedHashByKey, [row.key]: revisionHash };
+    if (chosenRowKey === row.key) {
+      void chooseSaved(revisionHash);
+    }
+  }
+
+  async function resolveNewestByName(
+    items: readonly WorkflowRevisionSummary[]
+  ): Promise<Record<string, string>> {
+    const resolved: Record<string, string> = {};
+    const listed = new Set(items.map((item) => item.revision_hash));
+    await Promise.all(
+      namesWithSeveralRevisions(items).map(async (name) => {
+        try {
+          const head = await cockpitApi.getRevisionByName(name);
+          if (listed.has(head.revision_hash)) resolved[name] = head.revision_hash;
+        } catch (error) {
+          if (!isAbsentCatalogName(error)) {
+            showFailure(error, "Some saved workflow names could not be resolved.");
+          }
+        }
+      })
+    );
+    return resolved;
+  }
+
+  function isAbsentCatalogName(error: unknown): boolean {
+    if (!(error instanceof CockpitRequestError) || error.problem === null) return false;
+    return (
+      error.problem.type === "urn:atelier2:problem:v1:catalog-name-not-found" ||
+      error.problem.type === "urn:atelier2:problem:v1:catalog-lineage-retired"
+    );
   }
 
   async function chooseSaved(revisionHash: string): Promise<void> {
@@ -113,6 +159,7 @@
     operation = null;
     draft = null;
     failureMessage = null;
+    chosenRowKey = null;
   }
 
   onMount(async () => {
@@ -123,6 +170,7 @@
     revisions = startLoading(revisions);
     try {
       const reading = await readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after));
+      newestByName = await resolveNewestByName(reading.revisions);
       revisions = confirmResource(revisions, {
         items: reading.revisions,
         next_after_revision_hash: null
@@ -621,38 +669,58 @@
   {#if mode === "saved"}
     <fieldset class="revision-picker">
       <legend>Saved workflow</legend>
-      {#each revisions.confirmed?.items ?? [] as revision (revision.revision_hash)}
-        <label class="revision-option" class:unstartable={!cockpitCanShow(revision)}>
-          <input type="radio" name="saved-revision" value={revision.revision_hash} disabled={busy || !cockpitCanShow(revision)} onchange={() => { void chooseSaved(revision.revision_hash); }} />
-          <span class="revision-label">
-            {#if revision.name === null}
+      {#each savedRows as row (row.key)}
+        {@const revision = selectedRevisionOf(row, selectedHashByKey[row.key])}
+        <article class="saved-workflow" aria-label={row.name ?? revision.revision_hash}>
+          <label class="revision-option" class:unstartable={!cockpitCanShow(revision)}>
+            <input type="radio" name="saved-revision" value={row.key} disabled={busy || !cockpitCanShow(revision)} onchange={() => { chosenRowKey = row.key; void chooseSaved(revision.revision_hash); }} />
+            <span class="revision-label">
+              {#if revision.name === null}
+                <code class="revision-hash">{revision.revision_hash}</code>
+                <span class="muted">unnamed — format {revision.format_version} declares no name</span>
+              {:else}
+                <strong class="revision-name">{revision.name}</strong>
+                {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
+              {/if}
+              {#if !revision.executable}
+                <span class="revision-refusal">Cannot be started: {revision.not_executable_reason}</span>
+              {/if}
+            </span>
+          </label>
+          {#if row.revisions.length > 1 && row.name !== null}
+            <details class="revision-history">
+              <summary aria-label={`Revisions of ${row.name}`}>Revisions</summary>
+              <label class="revision-choice">
+                <select
+                  value={revision.revision_hash}
+                  onchange={(event) => setRowRevision(row, event.currentTarget.value)}
+                  disabled={busy}
+                  aria-label={`Revision of ${row.name}`}
+                >
+                  {#each row.revisions as choice (choice.revision_hash)}
+                    <option value={choice.revision_hash}>{revisionChoiceLabel(choice, row.revisions[0]?.revision_hash ?? choice.revision_hash)}</option>
+                  {/each}
+                </select>
+              </label>
+            </details>
+          {/if}
+          {#if revision.name !== null}
+            <details class="revision-details">
+              <summary aria-label={`Details for ${revision.name}`} onclick={() => { void revealPublishedGraph(revision.revision_hash); }}>Details</summary>
+              <p class="revision-facts">
+                {publishedRevisionFacts(revision, publishedGraphs[revision.revision_hash])}
+                {#if revealingHash === revision.revision_hash} · Loading workflow…{/if}
+              </p>
+              {#if publishedNodePreviews(publishedGraphs[revision.revision_hash]) !== null}
+                <WorkflowGraphDrawing
+                  previews={publishedNodePreviews(publishedGraphs[revision.revision_hash]) ?? []}
+                  showExcerpt={true}
+                />
+              {/if}
               <code class="revision-hash">{revision.revision_hash}</code>
-              <span class="muted">unnamed — format {revision.format_version} declares no name</span>
-            {:else}
-              <strong class="revision-name">{revision.name}</strong>
-              {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
-            {/if}
-            {#if !revision.executable}
-              <span class="revision-refusal">Cannot be started: {revision.not_executable_reason}</span>
-            {/if}
-          </span>
-        </label>
-        {#if revision.name !== null}
-          <details class="revision-details">
-            <summary aria-label={`Details for ${revision.name}`} onclick={() => { void revealPublishedGraph(revision.revision_hash); }}>Details</summary>
-            <p class="revision-facts">
-              {publishedRevisionFacts(revision, publishedGraphs[revision.revision_hash])}
-              {#if revealingHash === revision.revision_hash} · Loading workflow…{/if}
-            </p>
-            {#if publishedNodePreviews(publishedGraphs[revision.revision_hash]) !== null}
-              <WorkflowGraphDrawing
-                previews={publishedNodePreviews(publishedGraphs[revision.revision_hash]) ?? []}
-                showExcerpt={true}
-              />
-            {/if}
-            <code class="revision-hash">{revision.revision_hash}</code>
-          </details>
-        {/if}
+            </details>
+          {/if}
+        </article>
       {/each}
       {#if revisions.request.state === "loading"}<p class="status" role="status">Loading saved workflows…</p>{/if}
       {#if operation === "load"}<p class="status" role="status">Loading workflow…</p>{/if}
