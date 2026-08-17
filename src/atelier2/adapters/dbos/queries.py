@@ -707,11 +707,12 @@ class DbosQueries:
         """One node of one run, answered from what the run really kept.
 
         Three of the four answers are read; the fourth is recomputed. The job is
-        not stored anywhere -- only its hash is, inside the attempt's request --
-        so it is composed again through the one owner that composed it for the
-        provider, and the stored hash is what a reader checks it against. Doing
-        it any other way would mean keeping a second copy of a value that already
-        has an identity.
+        not stored anywhere, so it is composed again through the one owner that
+        composed it for the provider. Its plain byte hash travels as job_hash;
+        the hash a reader holds against the receipt is provenance.request_hash,
+        which frames execution identity, revision, binding and operational
+        identity around those bytes. Doing it any other way would mean keeping
+        a second copy of a value that already has an identity.
 
         A refusal is recomputed for the same reason and is the point of this read:
         when a node's own output does not satisfy the schema its author pinned,
