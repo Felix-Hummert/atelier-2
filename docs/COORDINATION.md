@@ -169,6 +169,18 @@ Distilled from the review classes of 2026-08-17 (anchored on #111,
   loud-corruption**. A read surface renders each as itself.
 - **Claim before build**, candidate search before claim — including the desk
   when commissioning: check the item's claims before assigning a builder.
+- A pull request is born **draft**, and its body binds the **final head** at
+  creation — checked commit, tree, and a self-recomputed merge result. A body
+  describing an older head costs the update-rebind-reopen cycle; a body born
+  bound costs nothing. (Sources: #283/#284 landings, 18.08.)
+- **UI proof is a browser run that actually ran**: the builder drives the real
+  E2E locally before the PR, with locators scoped to the objects the test
+  itself created — a page-global locator meets strict mode and every other
+  test's leftovers. (Source: REVISE 5317898796 on #281.)
+- On a failing GitHub call or check, read the **outage class first** (429/503,
+  empty check list) and retry with backoff — never diagnose repository code
+  from an infrastructure error. (Sources: action-download outages 17.08.,
+  503 waves 18.08.)
 
 ### Named-healing rule
 
