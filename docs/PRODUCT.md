@@ -372,7 +372,9 @@ only the Claude executable is admitted, with isolated `HOME` and a single
 mounted `.credentials.json`. Durable store and scratch are a host volume.
 The live host unit `atelier2-live.service` is still the running serve; the
 container path is documented, not switched live. How to start and redeploy it
-is owned by [OPERATIONS.md](OPERATIONS.md). Network hardening remains
+is owned by [OPERATIONS.md](OPERATIONS.md). The served process writes JSON
+lines to stderr for a failed agent attempt and an unhandled HTTP exception;
+the access log is off. Network hardening remains
 [ADR 0009](decisions/0009-runner-trust.md).
 
 That API now has a command-line client of its own, so starting real work costs
@@ -418,7 +420,8 @@ and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
 founding, unpublished member, wrong kind, or retired lineage is refused by
-name. Measurements and policy activations are not in this profile. V11 remains a
-published predecessor object; exact V7 through V11 files are refused without
-mutation, with no runtime migration or downgrade. Until a named maturity
-there is no compatibility promise.
+name. Measurements and policy activations are not in this profile. V13 remains a
+published predecessor object; exact V7 through V13 files are refused by
+runtime without mutation, with no runtime migration or downgrade. An offline
+`atelier2 migrate` command raises an exact V13 store to V14. Until a named
+maturity there is no compatibility promise.

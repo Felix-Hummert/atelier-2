@@ -1,0 +1,26 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/244"
+
+# THE OFFLINE HOP THAT THE LIVE REDEPLOY DID NOT HAVE.
+#
+# A V13 live store met V14 and was archived, because MigrationRequired refused
+# loudly and no migrate command existed. Runtime still refuses every predecessor.
+# This story is the missing tool: one offline command, one additive step
+# (V13 -> V14), the published fingerprint after every step, and a loud stop
+# that never leaves a half-written store.
+#
+# Older published predecessors stay refused by name. A future or unknown
+# version stays refused by name. A store already on the current schema is a
+# named no-op. The command does not start, stop, or talk to a running serve.
+
+[[sentence]]
+id = "an-exact-v13-store-migrates-and-opens-as-v14"
+text = "An exact populated V13 store raised by atelier2 migrate --database opens as exact V14: every predecessor product row survives, and the published V14 fingerprint is the one ADR 0001 names."
+
+[[sentence]]
+id = "an-unknown-or-future-schema-is-refused-by-name"
+text = "A store whose schema version is unknown or newer than the current schema is refused by that version's name and left unaltered."
+
+[[sentence]]
+id = "a-current-schema-store-is-a-named-noop"
+text = "A store already on the current schema is left unaltered, and the command says it is already current."

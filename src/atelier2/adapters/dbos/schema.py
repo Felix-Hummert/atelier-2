@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import sqlite as sqlite_dialect
 from sqlalchemy.engine import Engine
+from sqlalchemy.schema import CreateTable
 
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -1629,6 +1631,26 @@ class MigrationRequired(UnsupportedSchemaVersion):
         )
 
 
+class StoreMigrationRefused(RuntimeError):
+    """The offline migrate command will not alter this store."""
+
+
+class StoreInUse(StoreMigrationRefused):
+    def __init__(self) -> None:
+        super().__init__(
+            "the database is in use; stop the process that holds it and retry"
+        )
+
+
+@dataclass(frozen=True)
+class StoreMigrationReport:
+    source_version: int
+    target_version: int
+    fingerprint_sha256: str
+    already_current: bool
+    steps: tuple[tuple[int, int, str], ...]
+
+
 def _require_supported_versions(versions: Sequence[int]) -> int:
     normalized = tuple(versions)
     if len(normalized) == 1 and normalized[0] in _OFFLINE_CUTOVER_VERSIONS:
@@ -1694,14 +1716,17 @@ def _normalized_sql(value: object) -> str:
 
 
 def _table_fingerprint(
-    connection: sqlite3.Connection, table_name: str
+    connection: sqlite3.Connection,
+    table_name: str,
+    *,
+    version: int = SCHEMA_VERSION,
 ) -> _TableSchemaFingerprint:
     create_record = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
     ).fetchone()
     if create_record is None or create_record[0] is None:
         raise UnsupportedSchemaVersion(
-            f"malformed v{SCHEMA_VERSION} product table {table_name}"
+            f"malformed v{version} product table {table_name}"
         )
     quoted_table = _quoted_identifier(table_name)
     columns = tuple(
@@ -1745,20 +1770,32 @@ def _table_fingerprint(
     )
 
 
+def _table_names_for_version(version: int) -> frozenset[str]:
+    if version == SCHEMA_VERSION:
+        return PRODUCT_TABLE_NAMES
+    if version == _VERSION_THIRTEEN:
+        return PRODUCT_TABLE_NAMES - {run_inputs_v3.name}
+    raise UnsupportedSchemaVersion(version)
+
+
 def _product_schema_fingerprint(
     connection: sqlite3.Connection,
+    table_names: frozenset[str] | None = None,
+    *,
+    version: int = SCHEMA_VERSION,
 ) -> _ProductSchemaFingerprint:
+    names = PRODUCT_TABLE_NAMES if table_names is None else table_names
     tables = tuple(
-        _table_fingerprint(connection, table_name)
-        for table_name in sorted(PRODUCT_TABLE_NAMES)
+        _table_fingerprint(connection, table_name, version=version)
+        for table_name in sorted(names)
     )
-    placeholders = ",".join("?" for _ in PRODUCT_TABLE_NAMES)
+    placeholders = ",".join("?" for _ in names)
     triggers = tuple(
         (str(record[0]), str(record[1]), _normalized_sql(record[2]))
         for record in connection.execute(
             "SELECT name,tbl_name,sql FROM sqlite_master "
             f"WHERE type='trigger' AND tbl_name IN ({placeholders}) ORDER BY name",
-            tuple(sorted(PRODUCT_TABLE_NAMES)),
+            tuple(sorted(names)),
         )
     )
     return _ProductSchemaFingerprint(tables, triggers)
@@ -1785,15 +1822,15 @@ def _product_schema_fingerprint_sha256(
 
 def _require_product_shape(connection: sqlite3.Connection, version: int) -> None:
     try:
-        observed = _product_schema_fingerprint(connection)
+        observed = _product_schema_fingerprint(
+            connection, _table_names_for_version(version), version=version
+        )
     except UnsupportedSchemaVersion as error:
         raise UnsupportedSchemaVersion(
             f"malformed v{version} product schema fingerprint"
         ) from error
-    if (
-        _product_schema_fingerprint_sha256(observed)
-        != (_PRODUCT_SCHEMA_FINGERPRINT_SHA256[version])
-    ):
+    expected = _PRODUCT_SCHEMA_FINGERPRINT_SHA256.get(version)
+    if expected is None or _product_schema_fingerprint_sha256(observed) != expected:
         raise UnsupportedSchemaVersion(
             f"malformed v{version} product schema fingerprint"
         )
@@ -1892,3 +1929,221 @@ def initialize_schema(engine: Engine) -> None:
         except BaseException:
             connection.rollback()
             raise
+
+
+def _read_declared_schema_version(connection: sqlite3.Connection) -> int:
+    table_names = {
+        str(record[0])
+        for record in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if atelier_schema_versions.name not in table_names:
+        raise StoreMigrationRefused(
+            "missing version owner; this command will not alter it"
+        )
+    rows = connection.execute(
+        f"SELECT version FROM {atelier_schema_versions.name}"
+    ).fetchall()
+    if len(rows) != 1 or not isinstance(rows[0][0], int):
+        raise StoreMigrationRefused(
+            f"schema version {tuple(row[0] for row in rows)!r} is unreadable; "
+            "this command will not alter it"
+        )
+    return int(rows[0][0])
+
+
+def _is_sqlite_lock(error: BaseException) -> bool:
+    text = str(error).lower()
+    return "locked" in text or "busy" in text
+
+
+def _apply_v13_to_v14(connection: sqlite3.Connection) -> None:
+    existing = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (run_inputs_v3.name,),
+    ).fetchone()
+    if existing is not None:
+        raise StoreMigrationRefused(
+            "schema version 13 already has run_inputs_v3; "
+            "this command will not alter it"
+        )
+    connection.execute(
+        str(CreateTable(run_inputs_v3).compile(dialect=sqlite_dialect.dialect()))
+    )
+    connection.execute(_PRODUCT_TRIGGERS["run_inputs_v3_no_update"])
+    connection.execute(_PRODUCT_TRIGGERS["run_inputs_v3_no_delete"])
+    changed = connection.execute(
+        f"UPDATE {atelier_schema_versions.name} SET version = ? WHERE version = ?",
+        (SCHEMA_VERSION, _VERSION_THIRTEEN),
+    ).rowcount
+    if changed != 1:
+        raise StoreMigrationRefused(
+            "schema version CAS 13 -> 14 changed nothing; "
+            "this command will not alter it"
+        )
+
+
+@dataclass(frozen=True)
+class _SchemaMigrationStep:
+    source_version: int
+    target_version: int
+    apply: Callable[[sqlite3.Connection], None]
+
+
+_SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
+    _SchemaMigrationStep(_VERSION_THIRTEEN, SCHEMA_VERSION, _apply_v13_to_v14),
+)
+_SCHEMA_MIGRATION_BY_SOURCE = {
+    step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
+}
+
+
+def _fingerprint_for_version(connection: sqlite3.Connection, version: int) -> str:
+    _require_product_shape(connection, version)
+    return _product_schema_fingerprint_sha256(
+        _product_schema_fingerprint(
+            connection, _table_names_for_version(version), version=version
+        )
+    )
+
+
+def _inspect_store_readonly(database_path: Path) -> tuple[int, str | None]:
+    """Read the version, and the fingerprint when this command can honour it.
+
+    A refuse path must not open the file for write: converting journal mode or
+    taking a write lock would mutate a store we then claim we left alone.
+    """
+
+    try:
+        with sqlite3.connect(
+            f"{database_path.resolve().as_uri()}?mode=ro", uri=True
+        ) as connection:
+            version = _read_declared_schema_version(connection)
+            if version == SCHEMA_VERSION or version in _SCHEMA_MIGRATION_BY_SOURCE:
+                try:
+                    return version, _fingerprint_for_version(connection, version)
+                except UnsupportedSchemaVersion as error:
+                    raise StoreMigrationRefused(str(error)) from error
+            return version, None
+    except StoreMigrationRefused:
+        raise
+    except sqlite3.DatabaseError as error:
+        if _is_sqlite_lock(error):
+            raise StoreInUse() from error
+        raise StoreMigrationRefused(
+            "the database is unreadable; this command will not alter it"
+        ) from error
+
+
+def migrate_store(database_path: Path) -> StoreMigrationReport:
+    """Raise one existing store to SCHEMA_VERSION, or refuse it unaltered.
+
+    The hop is a SQLite transaction on the named file: additive DDL and a
+    version CAS, then the published fingerprint. A copy-then-swap would have
+    to checkpoint WAL, copy the sidecar files, and still risk a torn rename;
+    the object's native atomicity is the transaction. Each committed step is
+    a complete published schema, never a half-written one.
+    """
+
+    if database_path.is_dir():
+        raise StoreMigrationRefused(
+            f"{database_path} is a directory, not a database file"
+        )
+    if not database_path.is_file() or database_path.stat().st_size == 0:
+        raise StoreMigrationRefused(
+            f"{database_path} is not a database file; "
+            "this command does not create a store"
+        )
+
+    source_version, preview_fingerprint = _inspect_store_readonly(database_path)
+    if source_version == SCHEMA_VERSION:
+        if preview_fingerprint is None:
+            raise StoreMigrationRefused(
+                f"schema version {SCHEMA_VERSION} fingerprint could not be read; "
+                "this command will not alter it"
+            )
+        return StoreMigrationReport(
+            source_version,
+            SCHEMA_VERSION,
+            preview_fingerprint,
+            True,
+            (),
+        )
+    step = _SCHEMA_MIGRATION_BY_SOURCE.get(source_version)
+    if step is None:
+        if source_version in _OFFLINE_CUTOVER_VERSIONS:
+            raise StoreMigrationRefused(
+                f"schema version {source_version} has no migration step; "
+                f"only version {_VERSION_THIRTEEN} can be raised to {SCHEMA_VERSION}. "
+                "runtime startup still refuses it without mutation"
+            )
+        raise StoreMigrationRefused(
+            f"schema version {source_version} is unknown; "
+            "this command will not alter it"
+        )
+
+    connection = sqlite3.connect(str(database_path.resolve()), timeout=0)
+    try:
+        connection.execute("PRAGMA busy_timeout=0")
+        connection.execute("PRAGMA foreign_keys=ON")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as error:
+            if _is_sqlite_lock(error):
+                raise StoreInUse() from error
+            raise StoreMigrationRefused(
+                "the database could not be locked; this command will not alter it"
+            ) from error
+        try:
+            locked_version = _read_declared_schema_version(connection)
+            if locked_version != source_version:
+                raise StoreMigrationRefused(
+                    f"schema version changed from {source_version} to "
+                    f"{locked_version} before the hop; this command will not alter it"
+                )
+            try:
+                _fingerprint_for_version(connection, locked_version)
+            except UnsupportedSchemaVersion as error:
+                raise StoreMigrationRefused(str(error)) from error
+            completed: list[tuple[int, int, str]] = []
+            current = locked_version
+            while current != SCHEMA_VERSION:
+                current_step = _SCHEMA_MIGRATION_BY_SOURCE.get(current)
+                if current_step is None:
+                    raise StoreMigrationRefused(
+                        f"schema version {current} has no migration step; "
+                        "this command will not alter it"
+                    )
+                current_step.apply(connection)
+                try:
+                    fingerprint = _fingerprint_for_version(
+                        connection, current_step.target_version
+                    )
+                except UnsupportedSchemaVersion as error:
+                    raise StoreMigrationRefused(str(error)) from error
+                completed.append(
+                    (
+                        current_step.source_version,
+                        current_step.target_version,
+                        fingerprint,
+                    )
+                )
+                current = current_step.target_version
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        try:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.DatabaseError:
+            pass
+        return StoreMigrationReport(
+            source_version,
+            SCHEMA_VERSION,
+            completed[-1][2],
+            False,
+            tuple(completed),
+        )
+    finally:
+        connection.close()
