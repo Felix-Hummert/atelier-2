@@ -507,7 +507,11 @@ def read_landing_binding(body: Path) -> LandingBinding:
     if field is None:
         return LandingBinding((), None)
     stated = field.group("stated")
-    exempted = LANDING_EXEMPTION.match(stated)
+    # The template writes the exemption as `none` in backticks, so the gate reads
+    # it that way: markdown emphasis around the word is not a second meaning, and
+    # a gate that refused the spelling its own template teaches would cost every
+    # author a red run to learn one.
+    exempted = LANDING_EXEMPTION.match(stated.strip().strip("`").strip())
     if exempted is not None:
         return LandingBinding((), exempted.group("reason").strip() or None)
     return LandingBinding(
@@ -535,11 +539,32 @@ def landing_problems(
             ),
         )
     declared = {sentence.identifier for sentence in sentences}
+    unknown = tuple(named for named in landing.named_sentences if named not in declared)
+    malformed = tuple(
+        named
+        for named in landing.named_sentences
+        if SENTENCE_IDENTIFIER.match(named) is None
+    )
+    if malformed:
+        # Something in the answer is not shaped like an identifier at all, so the
+        # field was answered in neither accepted form -- prose, most often. Naming
+        # every word it contains is ten true complaints that never state the rule.
+        # One problem instead, and it says which two forms the field takes. A
+        # single misspelt identifier is a different thing and keeps its own line.
+        return (
+            (
+                "the pull request answers the acceptance field in neither form: it "
+                f"names no identifier declared in {ACCEPTANCE_DIRECTORY} and it does "
+                "not begin with 'none'. Answer it with the identifiers this landing "
+                "proves, separated by commas, or with 'none' followed by one line "
+                "saying why this change declares none. It read: "
+                f"{' '.join(landing.named_sentences)!r}"
+            ),
+        )
     return tuple(
         f"the pull request names {named!r} as an acceptance sentence of this "
         "landing, which no story declares"
-        for named in landing.named_sentences
-        if named not in declared
+        for named in unknown
     )
 
 
