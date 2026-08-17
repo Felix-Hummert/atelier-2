@@ -155,6 +155,10 @@ Distilled from the review classes of 2026-08-17 (anchored on #111,
   the removal of its subject proves the fixture, not the behavior.
 - Deletions are **two-sided**: SPEC/acceptance ids, ignore entries, and prose
   pointers fall with the code they held.
+- Every change has a **second side**: a rename, alias, or second reader of
+  the same question must speak the new language, **including the error path**.
+  (The class behind #239, #252, and #264: one reader learned the new spelling,
+  the other kept the old one.)
 - Three truths are never conflated: **honestly-empty ≠ named-refusal ≠
   loud-corruption**. A read surface renders each as itself.
 - **Claim before build**, candidate search before claim — including the desk
@@ -169,8 +173,9 @@ delta.
 
 ### Model tiers
 
-Contract and schema depth builds on Opus/Fable-class seats with witnesses
-staffed by risk (double for durable truth). Narrow, well-specified heads and
+Assign contract and schema depth to Opus/Fable-class seats. Witness staffing
+follows the ceremony list above (double witnesses **only** for the cases it
+names) — this section adds no second ceremony. Narrow, well-specified heads and
 light witnessing may run on Sonnet-class headless seats. Mechanical sweeps,
 restacks, and measured audits go to the cheapest worker who can do them
 honestly — one build assignment per external CLI worker at a time, claims

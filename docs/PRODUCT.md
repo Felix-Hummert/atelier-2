@@ -153,7 +153,11 @@ executor declares that bound on the invocation it prepares, since the frame is a
 property of its own wire format, and supervision holds the process to exactly
 that declaration: a frame past it is terminated and refused before the executor
 ever decodes it, so no answer is recorded. It is sized so no answer the durable
-contract accepts can be refused as a frame.
+contract accepts can be refused as a frame. The job those processes receive —
+stdin for Claude and Codex, a job file for Grok — is held to the process-input
+bound, a separate decision from the durable answer bound. After a chain the job
+can carry the instruction, the run's orders, and earlier results; a composition
+past that bound is refused by name.
 
 The call itself is deliberately the barest one its authentication allows: no
 tools, no hooks, no MCP servers, no plugins or skills, no project configuration

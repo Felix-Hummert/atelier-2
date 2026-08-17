@@ -208,6 +208,14 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (API_PREFIX + "/runs/{public_ref}/nodes/{node_id}", "get"): (
+        "invalid-public-run-reference",
+        "run-not-found",
+        "node-not-found",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (CANCELLATION_PATH, "post"): (
         "invalid-public-run-reference",
         "invalid-agent-attempt-id",
@@ -480,6 +488,12 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
         "PublicRunReference": (
             (API_PREFIX + "/runs", "get", "after", "query"),
             (API_PREFIX + "/runs/{public_ref}", "get", "public_ref", "path"),
+            (
+                API_PREFIX + "/runs/{public_ref}/nodes/{node_id}",
+                "get",
+                "public_ref",
+                "path",
+            ),
             (CANCELLATION_PATH, "post", "public_ref", "path"),
             (
                 API_PREFIX + "/runs/{public_ref}/answers",
