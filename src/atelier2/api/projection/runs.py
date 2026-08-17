@@ -26,6 +26,7 @@ from atelier2.api.wire.resources import (
     PublicAttemptStateName,
     RunResource,
     RunResourceV2,
+    RunResourceV3,
     WaitingInputResource,
     WaitingInputResourceV2,
     WaitingReconciliationResource,
@@ -34,7 +35,7 @@ from atelier2.api.wire.resources import (
     WaitingResourceV2,
 )
 from atelier2.application.project_node_rail import NodeRailEntry, project_node_rail
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_projections import (
     RunProjection,
 )
@@ -45,7 +46,6 @@ from atelier2.contracts.workflows import (
     WorkflowNode,
     WorkflowNodeV2,
 )
-from atelier2.contracts.workflows_v3 import WorkflowNodeV3Kinds
 
 
 def node_rail_resources(
@@ -71,13 +71,11 @@ def node_rail_resources(
 
 def run_resource(projection: RunProjection) -> AnyRunResource:
     run = projection.run
-    node = projection.graph.node(run.current_node_id)
-    # A V3 run has no wire resource yet: the V1 and V2 shapes are frozen, and what
-    # a V3 run answers with is #85's to decide. Refused by name so the API says
-    # what is missing instead of rendering a V3 node as a V2 one.
-    serves_a_v3_node = isinstance(node, WorkflowNodeV3Kinds)
-    if serves_a_v3_node:
-        raise ValueError("a V3 run has no API resource yet")
+    if isinstance(run, RunV3):
+        return _run_resource_v3(projection, run)
+    node = cast(
+        WorkflowNode | WorkflowNodeV2, projection.graph.node(run.current_node_id)
+    )
     if isinstance(run, RunV2):
         return _run_resource_v2(projection, run, node)
     if run.state is RunState.WAITING_INPUT:
@@ -114,6 +112,46 @@ def run_resource(projection: RunProjection) -> AnyRunResource:
         state=run.state.value,
         current_node=cast(NodeResource, node_resource(node)),
         waiting=waiting,
+        terminal_hash=None if run.terminal_hash is None else run.terminal_hash.value,
+        latest_event_cursor=(
+            None
+            if run.last_event_sequence == 0
+            else encode_event_cursor(run.run_id, run.last_event_sequence)
+        ),
+    )
+
+
+def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
+    """One V3 run rendered in its own shape, along the edge its author declared."""
+    return RunResourceV3(
+        workflow_format_version=3,
+        run_id=run.run_id.value,
+        public_run_reference=encode_public_run_reference(run.run_id),
+        workflow_revision_hash=run.revision_hash.value,
+        agent_binding_set_hash=run.binding_set_hash.value,
+        run_configuration_revision_hash=run.run_configuration_revision_hash.value,
+        agent_bindings=tuple(
+            AgentBindingResourceV2(
+                role=binding.role.value,
+                agent_configuration_revision_hash=(
+                    binding.configuration.revision_hash.value
+                ),
+                auth_profile_revision_hash=binding.auth_profile.revision_hash.value,
+                profile_id=binding.auth_profile.profile_id,
+                revision_number=binding.auth_profile.revision_number,
+                provider_id=binding.auth_profile.provider_id.value,
+                auth_mode=binding.auth_profile.auth_mode.value,
+                model=binding.configuration.model,
+                executor_revision=binding.configuration.executor_revision.value,
+            )
+            for binding in run.agent_bindings
+        ),
+        state_version=run.state_version,
+        state=cast(Literal["STARTED", "COMPLETED"], run.state.value),
+        current_node_id=run.current_node_id,
+        # A run resource says where the snapshot stands, so no event has
+        # overtaken it here; the event stream carries its own rail.
+        node_rail=node_rail_resources(project_node_rail(projection, ())),
         terminal_hash=None if run.terminal_hash is None else run.terminal_hash.value,
         latest_event_cursor=(
             None

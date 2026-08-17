@@ -7,9 +7,13 @@ author declared (H2). Each was measured by calling the piece directly, because
 the runtime refused the family at the start seam and no line could move on its
 own.
 
-This is the head where nothing is held. The run is started through the public
-route, `launch()` hands it to the real DBOS queue, and no test code touches
-`start_node`, `durable_node` or the attempt store afterwards. What is asserted is
+This is the head where nothing is held. The run is started through the one public
+start seam, `launch()` hands it to the real DBOS queue, and no test code touches
+`start_node`, `durable_node` or the attempt store afterwards. This line said "the
+public route" while a named stopgap refused a V3 revision over HTTP, which made it
+false; #219 removed that refusal, so the route would answer now too. It still says
+seam rather than route, because that is what this test drives -- the HTTP claim is
+proven where the route is actually called. What is asserted is
 what an operator would see: both nodes ran, in the order the author declared, and
 the run ended on a terminal hash that recomputes from the events it wrote.
 """

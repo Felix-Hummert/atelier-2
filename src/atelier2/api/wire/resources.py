@@ -123,13 +123,37 @@ class WorkflowGraphResourceV2(ApiModel):
 # decision 4 has them parsed out of the published bytes on the way to the wire,
 # which is what keeps this resource able only to repeat what the author wrote.
 class WorkflowGraphResourceV3(ApiModel):
-    """A published V3 revision: its format, its size, and that nothing runs it."""
+    """A published V3 revision: its format, its size, and whether this build runs it.
+
+    `executable` used to be the constant `false`, which was true while no runtime
+    executed the format at all. It is derived now, from the one rule the start
+    path applies, so a reader is told about this document rather than about
+    version 3. `not_executable_reason` carries that rule's own words -- which node
+    kind waits, which branch nothing chooses between, which authored form nothing
+    binds -- because "not executable" alone leaves an author guessing at what to
+    change.
+    """
 
     format_version: Literal[3]
-    executable: Literal[False]
+    executable: bool
+    not_executable_reason: str | None
     node_count: int = Field(ge=1)
     name: str = Field(min_length=1)
     description: str | None
+
+    @model_validator(mode="after")
+    def validate_reason_shape(self) -> WorkflowGraphResourceV3:
+        """A reason exists exactly when there is something to explain.
+
+        The two fields are one answer, so they are checked as one: an executable
+        revision carrying a reason, or a refused one carrying none, would each be
+        a document the reader cannot act on.
+        """
+        if self.executable == (self.not_executable_reason is not None):
+            raise ValueError(
+                "a V3 revision names a reason exactly when it is not executable"
+            )
+        return self
 
 
 AnyWorkflowGraphResource = Annotated[
@@ -186,8 +210,18 @@ class WorkflowRevisionSummaryResourceV2(ApiModel):
     revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     format_version: Literal[1, 2, 3]
     executable: bool
+    not_executable_reason: str | None
     name: str | None
     description: str | None
+
+    @model_validator(mode="after")
+    def validate_reason_shape(self) -> WorkflowRevisionSummaryResourceV2:
+        """The listing answers with the same rule the detail does, reason and all."""
+        if self.executable == (self.not_executable_reason is not None):
+            raise ValueError(
+                "a listed revision names a reason exactly when it is not executable"
+            )
+        return self
 
 
 class VersionedWorkflowRevisionPageResource(ApiModel):
@@ -494,7 +528,54 @@ class RunResourceV2(ApiModel):
         return self
 
 
-AnyRunResource = RunResource | RunResourceV2
+class RunResourceV3(ApiModel):
+    """One V3 run as it reads back: its own format, never a V2 one renumbered.
+
+    It is a separate resource rather than a widened V2 one because the two
+    disagree about what a state means. `RunResourceV2.validate_state_shape` ties
+    COMPLETED to a subworkflow node and WAITING_INPUT to a Wait node; a V3 run
+    ends on an **agent** sink, because #194 H1b lifted the terminal condition off
+    the subworkflow node onto the run. Rendering a V3 run through those rules
+    would have to call it something it is not.
+
+    Two fields the V2 shape carries are absent on purpose rather than empty. A V3
+    run surfaces no `agent_attempts`: the run projection fetches attempts only for
+    a V2 agent node, so there is nothing to show, and a field that always answered
+    the same would read as "no attempt ran". The rail's own `attempt` stays null
+    for the same reason -- null already means "nothing to tell" in this vocabulary,
+    not "no attempt exists". Surfacing V3 attempts is its own head with its own
+    query change; it is a named gap here, not a claim.
+
+    There is no `waiting` either: a V3 run cannot wait, because no runtime
+    interprets a Wait node in this format yet, so the document that could reach
+    that state is refused before it starts.
+    """
+
+    workflow_format_version: Literal[3]
+    run_id: str = Field(min_length=1)
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    agent_binding_set_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    run_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    agent_bindings: tuple[AgentBindingResourceV2, ...] = Field(
+        max_length=MAXIMUM_RUN_AGENT_BINDINGS
+    )
+    state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
+    state: Literal["STARTED", "COMPLETED"]
+    current_node_id: str = Field(min_length=1)
+    node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
+    terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
+    latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
+
+    @model_validator(mode="after")
+    def validate_state_shape(self) -> RunResourceV3:
+        """A terminal hash exists exactly when the run has ended, and never before."""
+        if (self.state == "COMPLETED") != (self.terminal_hash is not None):
+            raise ValueError("V3 run state and terminal hash disagree")
+        return self
+
+
+AnyRunResource = RunResource | RunResourceV2 | RunResourceV3
 
 
 # No handler builds this: /runs returns VersionedRunPageResource. It stays

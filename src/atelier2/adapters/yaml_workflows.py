@@ -36,38 +36,15 @@ from atelier2.contracts.workflows import (
     WorkflowGraphV2,
 )
 from atelier2.contracts.workflows_v3 import (
-    AgentNodeV3,
     AnyWorkflowDocument,
     WorkflowGraphV3,
-    is_linear_chain,
     validate_workflow_graph_v3,
+    what_a_v3_document_still_waits_for,
 )
 
 FORMAT_V3_NOT_EXECUTABLE = (
     "workflow format version 3 parses, but no runtime executes these node kinds"
 )
-
-V3_UNBOUND_AGENT_FORMS = (
-    "join",
-    "profile",
-    "skills",
-    "tools",
-    "policy",
-    "budget",
-    "retry",
-    "cancellation",
-    "required_context",
-    "available_context",
-    "inputs",
-    "outputs",
-)
-"""Every authored form of a V3 Agent node that nothing binds at run start yet.
-
-Naming the forms rather than the kinds is the point. "Only Agent nodes" would
-still admit a document declaring skills, tools or a budget, and the run would
-start having silently ignored what its author wrote. A document is executable
-only when nothing in it is waiting for an owner.
-"""
 
 MAXIMUM_DOCUMENT_DEPTH = 32
 """How deep a workflow document may nest, well above the deepest authored form.
@@ -274,48 +251,7 @@ def parse_executable_workflow_document(document: bytes) -> AnyWorkflowDocument:
     """
     graph = parse_workflow_document(document)
     if isinstance(graph, WorkflowGraphV3):
-        waiting = _what_a_v3_document_still_waits_for(graph)
+        waiting = what_a_v3_document_still_waits_for(graph)
         if waiting is not None:
             raise WorkflowFormatNotExecutable(f"{FORMAT_V3_NOT_EXECUTABLE}: {waiting}")
     return graph
-
-
-def _what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
-    """What this document declares that no runtime binds yet, or None if nothing.
-
-    The executable shape is a line of Agent nodes: each entered by at most one
-    dependency and followed by at most one dependent, ending in a single sink,
-    declaring nothing else optional. It is checked as a form rather than as a
-    list of kinds, because a kind check would admit a document whose skills,
-    tools or budget the run start then ignores in silence.
-
-    A branch is still refused on purpose. `depends_on` is bound only where it
-    names one edge; where a node has several dependents, choosing between them is
-    the ready set ADR 0006 hands the scheduler, with fan-out and join semantics
-    decided in passing. #86 owns that, so this shape stops at the line.
-    """
-    foreign = sorted(
-        {node.type for node in graph.nodes if not isinstance(node, AgentNodeV3)}
-    )
-    if foreign:
-        return f"node kinds no runtime interprets: {', '.join(foreign)}"
-    if not is_linear_chain(graph):
-        return (
-            f"{len(graph.nodes)} nodes that do not form one line, and choosing "
-            "between them needs the ready set no runtime has yet"
-        )
-    # Authored, not truthy. `skills: []` and `depends_on: []` are things the
-    # author wrote, and a run that ignored them would ignore a statement rather
-    # than an absence -- so presence in the parsed document decides, and an empty
-    # authored form is refused exactly like a filled one.
-    declared = sorted(
-        {
-            form
-            for node in graph.nodes
-            for form in V3_UNBOUND_AGENT_FORMS
-            if form in node.model_fields_set
-        }
-    )
-    if declared:
-        return f"agent forms nothing binds yet: {', '.join(declared)}"
-    return None

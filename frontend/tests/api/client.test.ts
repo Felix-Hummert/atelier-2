@@ -529,6 +529,7 @@ function servingRevisionsByView() {
           revision_hash: digest,
           format_version: 3,
           executable: false,
+          not_executable_reason: "agent forms nothing binds yet: outputs",
           name: "Nightly regression sweep",
           description: "Runs the sweep and files what it finds."
         }
@@ -552,6 +553,7 @@ describe("the saved-workflow listing the cockpit asks for", () => {
         revision_hash: digest,
         format_version: 3,
         executable: false,
+        not_executable_reason: "agent forms nothing binds yet: outputs",
         name: "Nightly regression sweep",
         description: "Runs the sweep and files what it finds."
       }
@@ -564,6 +566,7 @@ describe("the graph a run is allowed to hold", () => {
     const published = {
       format_version: 3 as const,
       executable: false as const,
+      not_executable_reason: "agent forms nothing binds yet: outputs" as const,
       node_count: 1,
       name: "Nightly regression sweep",
       description: null
