@@ -1,0 +1,31 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/224"
+
+# The last pane of glass. #216 made a V3 line drive itself and #219 made it
+# answer over HTTP; until this head the cockpit threw when asked to draw one,
+# because `executableGraph` refuses a V3 graph and the wire carries no nodes for
+# it.
+#
+# WHAT THIS HEAD DOES NOT CLAIM, and why each is absent rather than unfinished:
+#
+#   - NO GRAPH DRAWING. The wire gives a V3 revision a node count, not nodes, so
+#     there is nothing to draw a shape from. What is shown is the rail the server
+#     already walked, which is the run's real path; the drawing needs a V3 node
+#     shape in the wire and is its own head.
+#   - NO LIVE FOLLOWING. The event resource is pinned to format 2, so a V3 run
+#     has no event stream. The page says so instead of opening a connection that
+#     would answer nothing, and no test here pretends a frame arrived.
+#   - NO START FROM THE PICKER. The picker still offers only what this cockpit
+#     can draw. Opening a run by its address is what this head gives; offering to
+#     begin one is the head that follows.
+#   - NO WAIT OR RECONCILE FORMS. A V3 run cannot reach those states, because no
+#     runtime interprets a Wait or Action node in the format yet.
+#
+# The rail is rendered rather than recomputed. The browser folds a V1 or V2 rail
+# itself because its events arrive one at a time; a V3 run carries the rail the
+# server walked, and a second derivation here would be a second owner of the same
+# order -- one that could not walk a V3 graph in any case.
+
+[[sentence]]
+id = "a-v3-run-is-visible-in-the-cockpit"
+text = "An operator who opens a V3 run by its address sees the line its author declared -- every node in the order the run walks them, which one has finished and which is running now -- together with where the run stands and, once it has ended, the terminal hash it closed on; and the page tells the operator that it is not following the run live rather than implying that it is."
