@@ -929,6 +929,7 @@ test("a declared order is a material field on start, and the typed value travels
   });
   expect(configuration.status()).toBe(201);
 
+  const answerSchemaHash = await anyJsonSchema(page);
   const workflowYaml = [
     "format_version: 3",
     "name: Cook to order",
@@ -947,6 +948,7 @@ test("a declared order is a material field on start, and the typed value travels
     "      - name: portions",
     "        from:",
     "          graph_input: portions",
+    ...declaredOutput(answerSchemaHash),
     ""
   ].join("\n");
   const published = await page.request.post(`${api}/workflow-revisions`, {
