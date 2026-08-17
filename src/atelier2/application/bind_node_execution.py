@@ -31,8 +31,11 @@ from atelier2.contracts.node_records_v3 import (
     ContextPackageMember,
     DeclaredContextPackage,
     DeclaredOutput,
+    InputEnvelope,
     NodeExecutionRequest,
     NodeKindV3,
+    ProjectedDeliveryStatus,
+    RunInput,
     declared_context_package_of,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
@@ -44,6 +47,7 @@ from atelier2.contracts.run_configuration_v3 import (
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
+    GraphInputSource,
     SubworkflowNodeV3,
     WorkflowGraphV3,
     WorkflowNodeV3,
@@ -94,6 +98,7 @@ def bind_node_execution(
     graph: WorkflowGraphV3,
     node_id: str,
     run_configuration: RunConfigurationRevision,
+    run_inputs: tuple[RunInput, ...] = (),
 ) -> BoundNodeExecution:
     """What this node was asked to do, as the two records that say it.
 
@@ -107,11 +112,13 @@ def bind_node_execution(
         )
     node = graph.node(node_id)
     resolution = _ResolutionMatrix(run_configuration.resolutions, node_id)
+    orders = _orders_read_by(node, run_inputs)
     package = declared_context_package_of(
         workflow_revision_hash,
         run_id,
         node_id,
         _members_of(node, resolution),
+        orders,
     )
     request = NodeExecutionRequest(
         workflow_revision_hash=workflow_revision_hash,
@@ -126,7 +133,7 @@ def bind_node_execution(
             if isinstance(node, AgentNodeV3)
             else None
         ),
-        inputs=(),
+        inputs=_envelopes_of(orders),
         bound_revisions=_bound_revisions_of(node, resolution),
         declared_outputs=_declared_outputs_of(node, resolution),
     )
@@ -173,6 +180,42 @@ class _ResolutionMatrix:
             if resolved.site.field == field
             and (entry is None or resolved.site.entry == entry)
         )
+
+
+def _orders_read_by(
+    node: WorkflowNodeV3, run_inputs: tuple[RunInput, ...]
+) -> tuple[RunInput, ...]:
+    """The orders this node reads, in the order the author declared them.
+
+    A node reads a graph input by name, so the run's orders are filtered to the
+    ones this node asked for: another node's order is not context this one was
+    given, and putting it in the package would say it was.
+    """
+    supplied = {order.name: order for order in run_inputs}
+    return tuple(
+        supplied[entry.source.graph_input]
+        for entry in node.inputs
+        if isinstance(entry.source, GraphInputSource)
+        and entry.source.graph_input in supplied
+    )
+
+
+def _envelopes_of(orders: tuple[RunInput, ...]) -> tuple[InputEnvelope, ...]:
+    """Each order as the succeeded envelope ADR 0006's request already declares.
+
+    No contract changes here and none is needed: `inputs` exists and has been
+    framed empty since the record landed, so filling it moves a value inside an
+    unchanged frame rather than the frame itself.
+    """
+    return tuple(
+        InputEnvelope(
+            status=ProjectedDeliveryStatus.SUCCEEDED,
+            name=order.name,
+            schema_revision=order.schema_revision,
+            value_hash=order.value_hash,
+        )
+        for order in orders
+    )
 
 
 def _members_of(

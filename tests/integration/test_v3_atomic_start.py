@@ -169,6 +169,7 @@ def request(
         frozen,
         node_request,
         bound.context_package,
+        (),
         (artifact, sauce_artifact),
         receipt,
     )

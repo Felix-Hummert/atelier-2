@@ -114,5 +114,5 @@ def decided_truth_for(
             ),
         )
     return StartV3RunWithReceiptRequest(
-        revision, frozen, node_request, bound.context_package, (artifact,), receipt
+        revision, frozen, node_request, bound.context_package, (), (artifact,), receipt
     )

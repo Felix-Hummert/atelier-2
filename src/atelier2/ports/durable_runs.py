@@ -12,6 +12,7 @@ from atelier2.contracts.node_records_v3 import (
     NodeExecutionRequest,
     NodeReceipt,
     NodeReceiptHash,
+    RunInput,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, PublishedRevisionHash
 from atelier2.contracts.run_bindings import AnyRun
@@ -126,6 +127,7 @@ class StartV3RunWithReceiptRequest:
     run_configuration: RunConfigurationRevision
     node_request: NodeExecutionRequest
     context_package: DeclaredContextPackage
+    run_inputs: tuple[RunInput, ...]
     artifacts: tuple[NodeArtifact, ...]
     receipt: NodeReceipt
 
@@ -149,6 +151,30 @@ class DurableV3StartBindingInvalid:
     """The typed request objects do not describe one exact node execution."""
 
 
+class V3InputRefusal(StrEnum):
+    """Every named way one order stops a start before anything is written."""
+
+    MISSING = "missing"
+    UNDECLARED = "undeclared"
+    SCHEMA_MISMATCH = "schema-mismatch"
+    SCHEMA_UNREADABLE = "schema-unreadable"
+    VALUE_REFUSED = "value-refused"
+
+
+@dataclass(frozen=True)
+class DurableV3StartInputRefused:
+    """One order the start cannot honour, named by the input it is about.
+
+    The name comes first because it is what an operator fixes: a refusal that
+    said only "schema violated" would send them to read the document to find out
+    which order they got wrong.
+    """
+
+    name: str
+    refusal: V3InputRefusal
+    detail: str | None = None
+
+
 class V3StartRecord(StrEnum):
     PUBLISHED_REVISION = "published_revision"
     WORKFLOW_BACKING = "workflow_backing"
@@ -156,6 +182,7 @@ class V3StartRecord(StrEnum):
     ARTIFACT = "artifact"
     RECEIPT = "receipt"
     CONTEXT_PACKAGE = "context_package"
+    RUN_INPUT = "run_input"
     RUN_CONFIGURATION = "run_configuration"
     NODE_EXECUTION_REQUEST = "node_execution_request"
 
@@ -171,6 +198,7 @@ type DurableV3StartWithReceiptResult = (
     DurableV3RunCreated
     | DurableV3RunExisting
     | DurableV3StartBindingInvalid
+    | DurableV3StartInputRefused
     | DurableV3StartConflict
     | DurableWriteUnavailable
     | DurableStateCorrupt

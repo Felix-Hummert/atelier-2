@@ -142,11 +142,50 @@ class ContextPackageMember:
         )
 
 
+@dataclass(frozen=True)
+class RunInput:
+    """One order a run was started with: a name, its schema, and exact bytes.
+
+    This is material, not a revision. #38's first sentence is that a published
+    workflow serves every order without a new revision, and that is only true
+    while the order travels beside the document rather than inside it.
+
+    It is a **separate member form** from `ContextPackageMember` on purpose. That
+    one is `required_context`-shaped -- a source revision and a selector into it
+    -- and an order has neither: it has a schema it satisfies and bytes somebody
+    supplied. Writing an order into that shape would put a source revision where
+    a schema revision is, which is a lie in a preimage rather than a reuse.
+    """
+
+    name: str
+    schema_revision: PublishedRevisionHash
+    value: bytes
+    value_hash: Sha256Hash = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("a run input names a nonempty order")
+        if not isinstance(self.schema_revision, PublishedRevisionHash):
+            raise TypeError("a run input names a typed schema revision")
+        if not isinstance(self.value, bytes):
+            raise TypeError("a run input carries exact bytes")
+        object.__setattr__(self, "value_hash", Sha256Hash.of(self.value))
+
+    def framed(self) -> bytes:
+        return frame(
+            "context-package-order/v3",
+            self.name.encode("utf-8"),
+            _ascii_hash(self.schema_revision),
+            _ascii_hash(self.value_hash),
+        )
+
+
 def declared_context_package_of(
     workflow_revision_hash: WorkflowRevisionHash,
     run_id: RunId,
     node_id: str,
     members: tuple[ContextPackageMember, ...],
+    orders: tuple[RunInput, ...] = (),
 ) -> DeclaredContextPackage:
     """The declared context one node was assembled with, as its own container.
 
@@ -163,6 +202,11 @@ def declared_context_package_of(
     The container is what the hash covers, so the workflow revision and the node
     it was assembled for are part of it: the same members reached for another
     node are another package.
+
+    Orders sit in **their own framed section** beside the declared members, in
+    the order the node reads them. They are a different kind of thing -- material
+    a caller supplied, not a slice of a source -- and giving them their own form
+    is what keeps the members section honest about what it is.
     """
     _require_node_id(node_id)
     return DeclaredContextPackage(
@@ -174,6 +218,10 @@ def declared_context_package_of(
             frame(
                 "context-package-declared-members/v3",
                 *(member.framed() for member in members),
+            ),
+            frame(
+                "context-package-orders/v3",
+                *(order.framed() for order in orders),
             ),
         )
     )

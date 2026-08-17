@@ -437,7 +437,7 @@ def test_current_schema_opens_idempotently(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_concurrent_first_schema_initializers_converge_on_version_thirteen(
+def test_concurrent_first_schema_initializers_converge_on_version_fourteen(
     tmp_path: Path,
 ) -> None:
     participants = 4

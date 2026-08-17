@@ -14,12 +14,17 @@ story = "https://github.com/FlexOr2/atelier-2/issues/38"
 # rather than quietly dropped:
 #
 #   1. A published workflow is reusable with different run inputs, without a new
-#      revision.
+#      revision.  -- DECLARED BELOW, for the supervised start.
 #   2b. The supplied value is hash-bound in the run snapshot as a context-package
-#      member, and visible with its provenance.
+#      member, and visible with its provenance.  -- DECLARED BELOW.
 #   3b. A run start with a missing, schema-violating or oversized input is refused
 #      by name, leaving no run, context, attempt, event, enqueue or process behind.
-#   4. The conductor loop needs no revision per turn.
+#      -- DECLARED BELOW for the supervised start. The executable start still
+#      refuses a document that declares `inputs`, so there is no attempt, event,
+#      enqueue or process for an order to leave behind yet; that door is the next
+#      head, and this sentence widens with it rather than being counted as done.
+#   4. The conductor loop needs no revision per turn.  -- still open: it needs the
+#      command, which is the head after that one.
 #
 # Sentence 2 was split into 2a (declared below) and 2b; sentence 3 into 3a
 # (declared below) and 3b. 3a is a document-level refusal and is EXPLICITLY NOT a
@@ -41,3 +46,27 @@ text = "An order the parent graph declares reaches a subworkflow: it binds as a 
 [[sentence]]
 id = "the-preview-names-every-declared-graph-input-with-its-schema"
 text = "Before any start, the preview names every declared graph input with its name and schema revision, at the graph that declared it."
+
+# THE ORDER BECOMES MATERIAL. Until this head the job travelled inside the
+# document, so one distinct input burned one published revision -- the reflex
+# this story exists to end. The supervised start now carries the order beside the
+# document: stored under the run, named in the node's declared context package,
+# and bound into its request as a succeeded input envelope.
+#
+# Deliberately absent, and named rather than implied:
+#
+#   - THE EXECUTABLE DOOR. `inputs` is still a form the executable admission
+#     refuses, so a run an engine executes cannot yet take an order. That widening
+#     and the `--input` flag are the next head.
+#   - NON-TEXT ORDERS. One order is exact bytes against a published schema. What
+#     an attachment or a file reference would mean is its own wish.
+#   - THE SELECTOR MATERIALIZER. `required_context` slices a source; an order
+#     carries its own bytes and needs no selector at all.
+
+[[sentence]]
+id = "a-run-carries-its-order-as-material-not-as-a-new-revision"
+text = "A supervised start carries the order it was given as material: the exact bytes are stored under the run and the name its author declared, immutably, and the node's own records name them -- the declared context package by the hash of those bytes, the request as a succeeded input envelope -- so the same published revision serves every order instead of one revision per distinct input."
+
+[[sentence]]
+id = "an-order-the-start-cannot-honour-is-refused-by-its-own-name"
+text = "An order the start cannot honour is refused by the name of the input it is about -- a declared order nobody supplied, an order the document never declared, one whose schema is not the schema the document pinned, and a value that schema refuses or that is too large to be read -- and nothing is written."

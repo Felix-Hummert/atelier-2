@@ -362,12 +362,14 @@ job still travels inside the published document, so one distinct input burns one
 revision, and neither a run-level input, a workflow name, nor an output contract
 that could decide an exit code exists yet.
 
-The canonical store is schema V13. A fresh store is created as exact V13 and
+The canonical store is schema V14. A fresh store is created as exact V14 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
 access bindings, and the immutable declared context packages, node-execution request
-preimages and run configuration snapshots those receipts name. A typed in-process writer can commit that exact
+preimages and run configuration snapshots those receipts name, and the order a
+run was started with -- so one published workflow serves every order instead of
+burning a revision per distinct input. A typed in-process writer can commit that exact
 supervised V3 start as one atomic set. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An

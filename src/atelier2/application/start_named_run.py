@@ -21,9 +21,10 @@ What this composes, and nothing else:
 2. the caller's already-decided terminal truth is checked to be about *those*
    bytes,
 3. the node execution request and the context package are **composed here**,
-   from the resolved bytes and the run configuration the caller froze, and a
-   decided truth that describes them differently is refused. The caller states
-   the outcome; what the node was asked to do is not a caller's to assert,
+   from the resolved bytes, the run configuration the caller froze and the orders
+   the caller supplied, and a decided truth that describes them differently is
+   refused. The caller states what happened and what it ordered; what the node
+   was asked to do is not a caller's to assert,
 4. Cut B's supervised start records the published revision, its workflow
    backing, every record those hashes name, the run, its artifacts and its
    terminal receipt in one transaction, or records none of them.
@@ -174,6 +175,7 @@ def start_named_run(
             graph,
             decided.node_request.node_id,
             decided.run_configuration,
+            decided.run_inputs,
         )
     except (WorkflowDocumentInvalid, KeyError, ValueError) as refused:
         return NamedRunUnexecutableDocument(str(refused))
@@ -188,6 +190,7 @@ def start_named_run(
             decided.run_configuration,
             composed.request,
             composed.context_package,
+            decided.run_inputs,
             decided.artifacts,
             decided.receipt,
         )

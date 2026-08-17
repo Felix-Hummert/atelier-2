@@ -271,6 +271,8 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "reconcile_commands.found_result_hash",
         "run_agent_bindings.agent_configuration_revision_hash",
         "run_configuration_revisions.revision_hash",
+        "run_inputs_v3.schema_revision_hash",
+        "run_inputs_v3.value_hash",
         "run_agent_bindings.binding_set_hash",
         "run_agent_bindings.revision_hash",
         "run_events.agent_attempt_id",

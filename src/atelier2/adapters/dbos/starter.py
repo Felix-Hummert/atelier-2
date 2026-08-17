@@ -32,6 +32,7 @@ from atelier2.adapters.dbos.schema import (
     published_revisions,
     run_agent_bindings,
     run_configuration_revisions,
+    run_inputs_v3,
     runs,
     workflow_revisions,
 )
@@ -54,7 +55,7 @@ from atelier2.contracts.node_records_v3 import (
     PersistedReceiptDisposition,
     ReceiptOutput,
 )
-from atelier2.contracts.revisions_v3 import RevisionKind
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import (
     RunConfigurationRevision,
@@ -65,6 +66,12 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevision,
     WorkflowRevisionHash,
+)
+from atelier2.contracts.schemas_v3 import (
+    InstanceRefused,
+    SchemaRefused,
+    read_instance_document,
+    read_schema_document,
 )
 from atelier2.contracts.workflows import (
     AgentNodeV2,
@@ -94,11 +101,13 @@ from atelier2.ports.durable_runs import (
     DurableV3RunExisting,
     DurableV3StartBindingInvalid,
     DurableV3StartConflict,
+    DurableV3StartInputRefused,
     DurableV3StartWithReceiptResult,
     DurableWriteUnavailable,
     StartPublishedRunRequest,
     StartPublishedRunRequestV2,
     StartV3RunWithReceiptRequest,
+    V3InputRefusal,
     V3StartRecord,
 )
 from atelier2.ports.workflow_revisions import (
@@ -409,6 +418,71 @@ def _seam_of(graph: AnyWorkflowDocument) -> _StartSeam:
     if isinstance(graph, WorkflowGraphV3):
         return _StartSeam.V3_FOUNDATION
     return _StartSeam.EXECUTED_BY_THE_RUNTIME
+
+
+def _refused_order(
+    connection: Connection,
+    graph: WorkflowGraphV3,
+    request: StartV3RunWithReceiptRequest,
+) -> DurableV3StartInputRefused | None:
+    """The first order this start cannot honour, named by the input it is about.
+
+    ADR 0006 binds a root run to every `graph_input` its document declares, and a
+    missing one refuses the start naming the input. The same door refuses an
+    order the document never declared, one whose schema is not the schema the
+    document pinned, and a value that schema does not admit -- each before any
+    row exists, because an order nobody could read is not a run to clean up.
+    """
+    declared = {entry.name: entry for entry in graph.graph_inputs}
+    supplied = {order.name: order for order in request.run_inputs}
+    for name in declared:
+        if name not in supplied:
+            return DurableV3StartInputRefused(name, V3InputRefusal.MISSING)
+    for name, order in supplied.items():
+        entry = declared.get(name)
+        if entry is None:
+            return DurableV3StartInputRefused(name, V3InputRefusal.UNDECLARED)
+        pinned = _resolved_graph_input_schema(request.run_configuration, name)
+        if pinned != order.schema_revision:
+            return DurableV3StartInputRefused(
+                name,
+                V3InputRefusal.SCHEMA_MISMATCH,
+                f"the document pinned {'nothing' if pinned is None else pinned.value}",
+            )
+        document = connection.scalar(
+            sa.select(published_revisions.c.document).where(
+                published_revisions.c.kind == RevisionKind.SCHEMA.value,
+                published_revisions.c.revision_hash == order.schema_revision.value,
+            )
+        )
+        if document is None:
+            return DurableV3StartInputRefused(
+                name,
+                V3InputRefusal.SCHEMA_UNREADABLE,
+                "no published schema revision carries this hash",
+            )
+        schema = read_schema_document(bytes(document))
+        if isinstance(schema, SchemaRefused):
+            return DurableV3StartInputRefused(
+                name, V3InputRefusal.SCHEMA_UNREADABLE, str(schema)
+            )
+        verdict = read_instance_document(order.value, schema)
+        if isinstance(verdict, InstanceRefused):
+            return DurableV3StartInputRefused(
+                name, V3InputRefusal.VALUE_REFUSED, str(verdict)
+            )
+    return None
+
+
+def _resolved_graph_input_schema(
+    run_configuration: RunConfigurationRevision, name: str
+) -> PublishedRevisionHash | None:
+    """The schema revision the document's own resolution pinned for one order."""
+    for resolved in run_configuration.resolutions:
+        site = resolved.site
+        if site.field == "graph_inputs.schema" and site.entry == name:
+            return resolved.revision_hash
+    return None
 
 
 class DbosDurableRunStarter:
@@ -751,6 +825,13 @@ class DbosDurableRunStarter:
         receipt = request.receipt
         try:
             with canonical_write_transaction(self._engine) as connection:
+                # The order is judged before any row exists, because an order
+                # nobody can read is not a run to clean up afterwards.
+                graph = parse_workflow_document(revision.document)
+                assert isinstance(graph, WorkflowGraphV3)
+                refused_order = _refused_order(connection, graph, request)
+                if refused_order is not None:
+                    return refused_order
                 matching_runs = (
                     connection.execute(
                         sa.select(runs).where(
@@ -948,6 +1029,20 @@ class DbosDurableRunStarter:
                         ),
                     )
                 )
+                if request.run_inputs:
+                    connection.execute(
+                        run_inputs_v3.insert(),
+                        [
+                            {
+                                "run_id": node_request.run_id.value,
+                                "name": order.name,
+                                "schema_revision_hash": order.schema_revision.value,
+                                "value": order.value,
+                                "value_hash": order.value_hash.value,
+                            }
+                            for order in request.run_inputs
+                        ],
+                    )
                 if request.artifacts:
                     connection.execute(
                         node_artifacts_v3.insert(),
