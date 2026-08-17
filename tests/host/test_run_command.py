@@ -52,7 +52,11 @@ from atelier2.host.run_command import (
     RUN_PATH,
     WORKFLOW_REVISION_PATH,
     AgentRoleBinding,
+    NameOrder,
+    ServiceRefused,
     derived_run_id,
+    describe_resolution,
+    resolve_published_name,
 )
 
 PROBLEM_MEDIA_TYPE = "application/problem+json"
@@ -722,3 +726,100 @@ def test_an_address_that_is_not_a_served_api_is_refused(
     printed = capsysbinary.readouterr()
     assert exit_code == 1
     assert b"file:///etc/passwd" in printed.err
+
+
+NAME = "review-bounded-diff"
+BY_NAME_URL_PATH = f"{API_PREFIX}{WORKFLOW_REVISION_PATH}/by-name/{NAME}"
+
+
+def name_answer() -> Answer:
+    return Answer(
+        json.dumps(
+            {
+                "display_name": NAME,
+                "lineage_id": "b" * 64,
+                "revision_hash": REVISION_HASH,
+                "revision_number": 2,
+            }
+        ).encode()
+    )
+
+
+@pytest.mark.proves("one-command-answers-what-a-name-holds")
+def test_a_name_is_resolved_through_the_service_and_shown_with_what_binds_it() -> None:
+    with ScriptedService({("GET", BY_NAME_URL_PATH): [name_answer()]}) as service:
+        resolution = resolve_published_name(NameOrder(service.url, NAME))
+
+    assert resolution.revision_hash == REVISION_HASH
+    assert resolution.revision_number == 2
+    shown = describe_resolution(resolution)
+    assert NAME in shown
+    assert REVISION_HASH in shown
+    assert "2" in shown
+
+
+@pytest.mark.proves("one-command-answers-what-a-name-holds")
+def test_resolving_a_name_starts_nothing() -> None:
+    with ScriptedService({("GET", BY_NAME_URL_PATH): [name_answer()]}) as service:
+        resolve_published_name(NameOrder(service.url, NAME))
+
+        assert service.sent("POST", RUNS_URL_PATH) == []
+        assert [call.method for call in service.calls] == ["GET"]
+
+
+def test_a_position_is_asked_of_the_service_rather_than_chosen_here() -> None:
+    path = f"{BY_NAME_URL_PATH}?position=1"
+    with ScriptedService({("GET", path): [name_answer()]}) as service:
+        resolve_published_name(NameOrder(service.url, NAME, position="1"))
+
+        assert [call.path for call in service.calls] == [path]
+
+
+@pytest.mark.proves("a-refused-name-ends-the-command-unsuccessfully")
+def test_a_name_the_service_refuses_is_handed_on_in_its_own_words() -> None:
+    refused = problem_answer(
+        HTTPStatus.NOT_FOUND,
+        "urn:atelier2:problem:v1:catalog-name-not-found",
+        "Catalog name not found",
+        "No lineage of this kind holds that name at that position.",
+    )
+    with (
+        ScriptedService({("GET", BY_NAME_URL_PATH): [refused]}) as service,
+        pytest.raises(ServiceRefused) as refusal,
+    ):
+        resolve_published_name(NameOrder(service.url, NAME))
+
+    assert "catalog-name-not-found" in str(refusal.value)
+    assert "No lineage of this kind holds that name" in str(refusal.value)
+
+
+@pytest.mark.proves("one-command-answers-what-a-name-holds")
+def test_the_command_shows_what_the_name_holds_and_ends_successfully(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with ScriptedService({("GET", BY_NAME_URL_PATH): [name_answer()]}) as service:
+        exit_code = main(["resolve", "--name", NAME, "--service", service.url])
+
+    shown = capsys.readouterr()
+    assert exit_code == 0
+    assert REVISION_HASH in shown.out
+    assert NAME in shown.out
+
+
+@pytest.mark.proves("a-refused-name-ends-the-command-unsuccessfully")
+def test_a_refused_name_ends_the_command_unsuccessfully(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    refused = problem_answer(
+        HTTPStatus.GONE,
+        "urn:atelier2:problem:v1:catalog-lineage-retired",
+        "Catalog lineage retired",
+        "This name was retired; it resolves to no revision a run may use.",
+    )
+    with ScriptedService({("GET", BY_NAME_URL_PATH): [refused]}) as service:
+        exit_code = main(["resolve", "--name", NAME, "--service", service.url])
+
+    shown = capsys.readouterr()
+    assert exit_code == 1
+    assert shown.out == ""
+    assert "catalog-lineage-retired" in shown.err
