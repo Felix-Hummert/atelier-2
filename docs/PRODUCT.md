@@ -79,8 +79,11 @@ disposition. Recovery continues that cleanup from the cgroup witness without
 replaying the invocation. One explicit replacement creates a distinct ordinal-2
 attempt and workflow only after cleanup; ordinal 3 and automatic provider retry
 do not exist. A known reaped unsuccessful child becomes `FAILED`; a success
-records the non-secret operational identity and arbitrary output bytes in one
-atomic attempt/receipt/event/run transition.
+records the non-secret operational identity and the exact output bytes in one
+atomic attempt/receipt/event/run transition. Which bytes may become that success
+is the declaring node's decision: a V2 node bounds them and nothing else, while a
+V3 node's answer is read against the schema its own output pins before any of
+that transition is written.
 
 Every attempt is started in a scratch working directory of its own. The operator
 declares one provider-neutral scratch root, and the runtime leases from it a
@@ -245,9 +248,9 @@ through an applicator that descends into the instance, so `{"$ref": "#"}` alone 
 refused while a tree whose child is `{"$ref": "#"}` under `properties` stays legal,
 because that recursion ends on any finite instance. So nothing this profile accepts
 can fail at first evaluation for want of a target, which would be an outage rather
-than a refusal. What still waits for the owner that first evaluates an instance
-against a schema (#57) is that evaluation itself: whether an agent's output
-satisfies the schema its node declared. Bytes that fall outside the profile are
+than a refusal. That profile is now applied to values as well as to schemas: an
+agent's answer is read against the schema its node declared, by that one owner,
+before the answer can become anything. Bytes that fall outside the profile are
 refused by name, so the whole snapshot fails rather than binding a type nobody can
 read, and the preview says so instead of drawing it.
 A subworkflow's own `workflow` reference is one of them and resolves through the
@@ -292,6 +295,23 @@ documents keep their exact meaning under their own models, and their wire bytes 
 unchanged.
 [ADR 0006](decisions/0006-node-vocabulary.md) owns this vocabulary and the staging
 rule behind it.
+
+What makes a V3 agent node executable now includes the shape of its answer. The
+one enforced shape is `single-json-output/v1`: exactly one declared output, whose
+whole decoded bytes are its value. A node declaring none — bytes no schema could
+judge — or several — one value answered by another — is refused under the name
+`agent-output-shape-unavailable`, before the run is written and before any
+provider process starts, while the document itself stays publishable. What comes
+back from the provider is then read against that schema by the profile owner
+above, inside the transaction that would have written the success and before its
+first row: an answer the schema refuses leaves no receipt, no completion event
+and no advanced run, so a run can no longer end successfully on work its own
+contract rejects. What that refusal does not yet do is leave a durable record of
+itself. The `node-artifact/v3` and `node-receipt/v3` tables exist and nothing
+writes them, so there is no `failed` receipt to carry the reason, and the one
+durable attempt-failure vocabulary the store enumerates carries no name for this
+refusal; a refused answer therefore leaves the run standing on the node that
+produced it, and the reason lives in the refusal rather than in the store.
 
 An agent is authored as one markdown file. Its frontmatter is a closed set of
 `name`, `description`, an optional `model`, and an optional `tools` declaration;

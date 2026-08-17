@@ -16,6 +16,7 @@ from atelier2.adapters.yaml_workflows import (
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflow_refusals import WorkflowRefusal, WorkflowRefusalReason
 from atelier2.contracts.workflows_v3 import (
+    AGENT_OUTPUT_SHAPE_UNAVAILABLE,
     MAXIMUM_DOCUMENT_DESCRIPTION_BYTES,
     MAXIMUM_DOCUMENT_NAME_BYTES,
     MAXIMUM_INSTRUCTION_BYTES,
@@ -1091,7 +1092,19 @@ def test_a_document_nested_past_the_bound_is_refused_instead_of_exhausting_the_s
     assert refusal.reason is WorkflowRefusalReason.DOCUMENT_TOO_DEEP
 
 
-ONE_AGENT_DOCUMENT = b"""format_version: 3
+DECLARED_OUTPUT = b"""    outputs:
+      - name: result
+        schema: {ref: any-json, revision: "%s"}
+""" % (b"e" * 64)
+"""The one output `single-json-output/v1` requires, in the form an author writes.
+
+These documents are parsed rather than run, so the revision it pins is a
+placeholder of the right shape: what is under test is the form the executable
+admission requires, not the schema a run would resolve.
+"""
+
+ONE_AGENT_DOCUMENT = (
+    b"""format_version: 3
 name: One agent
 nodes:
   - id: implement
@@ -1100,6 +1113,8 @@ nodes:
     mode: headless
     instruction: Do the one thing this chain is for.
 """
+    + DECLARED_OUTPUT
+)
 
 
 @pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
@@ -1114,7 +1129,8 @@ def test_a_v3_document_whose_kinds_no_runtime_interprets_is_still_refused() -> N
         parse_executable_workflow_document(DOCUMENT)
 
 
-TWO_AGENT_CHAIN = b"""format_version: 3
+TWO_AGENT_CHAIN = (
+    b"""format_version: 3
 name: Two agents
 nodes:
   - id: implement
@@ -1122,13 +1138,17 @@ nodes:
     role: builder
     mode: headless
     instruction: Do the first thing.
-  - id: review
+"""
+    + DECLARED_OUTPUT
+    + b"""  - id: review
     type: agent
     role: reviewer
     mode: headless
     instruction: Judge the first thing.
     depends_on: [implement]
 """
+    + DECLARED_OUTPUT
+)
 
 
 @pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
@@ -1206,14 +1226,16 @@ NOT_YET_EXECUTABLE: dict[str, bytes] = {
     mode: headless
     instruction: Write the first thing up.
     depends_on: [implement]
-""",
+"""
+    + DECLARED_OUTPUT,
     "two entry nodes": ONE_AGENT_DOCUMENT
     + b"""  - id: second_entry
     type: agent
     role: other
     mode: headless
     instruction: Start independently.
-""",
+"""
+    + DECLARED_OUTPUT,
 }
 
 
@@ -1244,7 +1266,8 @@ nodes:
 """ % (b"a" * 64)
 
 
-UNBOUND_SOURCE_DOCUMENT = b"""format_version: 3
+UNBOUND_SOURCE_DOCUMENT = (
+    b"""format_version: 3
 name: One agent reading something nothing produces
 nodes:
   - id: prepare
@@ -1252,7 +1275,9 @@ nodes:
     role: builder
     mode: headless
     instruction: Go first.
-  - id: implement
+"""
+    + DECLARED_OUTPUT
+    + b"""  - id: implement
     type: agent
     role: builder
     mode: headless
@@ -1262,6 +1287,8 @@ nodes:
       - name: thing
         from: {node: prepare, receipt: terminal}
 """
+    + DECLARED_OUTPUT
+)
 
 AUTHORED_VALUE_DOCUMENT = (
     ONE_AGENT_DOCUMENT
@@ -1300,6 +1327,45 @@ def test_an_input_reading_what_nothing_supplies_is_refused_by_its_source(
         InvalidWorkflowDocument, match=f"input sources nothing binds yet: {named}"
     ):
         parse_executable_workflow_document(document)
+
+
+NO_OUTPUT_DOCUMENT = ONE_AGENT_DOCUMENT.replace(DECLARED_OUTPUT, b"")
+TWO_OUTPUT_DOCUMENT = (
+    ONE_AGENT_DOCUMENT
+    + b"""      - name: notes
+        schema: {ref: any-json, revision: "%s"}
+"""
+    % (b"e" * 64)
+)
+
+
+@pytest.mark.proves(
+    "an-agent-node-whose-output-shape-has-no-owner-refuses-before-a-run"
+)
+@pytest.mark.parametrize(
+    ("document", "counted"),
+    [
+        pytest.param(NO_OUTPUT_DOCUMENT, "0 outputs", id="no declared output"),
+        pytest.param(TWO_OUTPUT_DOCUMENT, "2 outputs", id="two declared outputs"),
+    ],
+)
+def test_an_agent_output_shape_no_runtime_enforces_is_refused_by_one_name(
+    document: bytes, counted: str
+) -> None:
+    """Both directions of the same missing shape, refused under one name.
+
+    `single-json-output/v1` is the one shape a run enforces: exactly one declared
+    output, whose whole decoded bytes are its value. A node declaring none would
+    produce bytes no schema judges -- the completion this item exists to end --
+    and a node declaring several would leave one of its values answered by
+    another. Neither has an owner, so both are refused before the run exists
+    rather than started under a contract nothing keeps.
+    """
+    with pytest.raises(InvalidWorkflowDocument) as refused:
+        parse_executable_workflow_document(document)
+
+    assert AGENT_OUTPUT_SHAPE_UNAVAILABLE in str(refused.value)
+    assert counted in str(refused.value)
 
 
 def test_the_worked_example_of_the_record_parses_unchanged() -> None:

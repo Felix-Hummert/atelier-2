@@ -78,6 +78,7 @@ from tests.scenarios.agents import (
     agent_scratch_root,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 PORTIONS_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
@@ -91,7 +92,8 @@ ORDER_NAME = "order"
 
 def ordered_document(schema_hash: PublishedRevisionHash) -> bytes:
     """One agent that reads one order the graph declares."""
-    return f"""format_version: 3
+    return (
+        f"""format_version: 3
 name: Cook to order
 graph_inputs:
   - name: {ORDER_NAME}
@@ -109,12 +111,14 @@ nodes:
         from:
           graph_input: {ORDER_NAME}
 """.encode()
+        + declared_output()
+    )
 
 
 @pytest.fixture
 def cook() -> RecordingAgentExecutorFactoryV2:
     """The provider this run reaches, kept so the job it was handed can be read."""
-    return RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", b"cooked")
+    return RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", b'"cooked"')
 
 
 @pytest.fixture
@@ -184,7 +188,7 @@ def bind_cook(runtime: DbosRuntime) -> AgentBindingSet:
 def publish_ordered_workflow(
     runtime: DbosRuntime, schema: PublishedRevision = PORTIONS_SCHEMA
 ) -> tuple[WorkflowRevision, AgentBindingSet]:
-    publish(runtime, schema)
+    publish(runtime, schema, ANY_JSON_SCHEMA)
     workflow = WorkflowRevision(ordered_document(schema.revision_hash))
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, bind_cook(runtime)
@@ -483,7 +487,8 @@ SIDE_NAME = "side"
 
 def two_reader_document(schema_hash: PublishedRevisionHash) -> bytes:
     """Two orders and two readers: one node reads one, the next reads both."""
-    return f"""format_version: 3
+    return (
+        f"""format_version: 3
 name: Cook and plate to order
 graph_inputs:
   - name: {ORDER_NAME}
@@ -504,7 +509,7 @@ nodes:
       - name: {ORDER_NAME}
         from:
           graph_input: {ORDER_NAME}
-  - id: plate
+{declared_output().decode()}  - id: plate
     type: agent
     role: cook
     mode: headless
@@ -518,6 +523,8 @@ nodes:
         from:
           graph_input: {SIDE_NAME}
 """.encode()
+        + declared_output()
+    )
 
 
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
@@ -539,7 +546,7 @@ def test_each_node_is_handed_the_orders_it_reads_in_one_stable_order(
     retry of the same run asks the same thing: a job that followed arrival order
     would give one node two identities.
     """
-    publish(runtime, PORTIONS_SCHEMA)
+    publish(runtime, PORTIONS_SCHEMA, ANY_JSON_SCHEMA)
     workflow = WorkflowRevision(two_reader_document(PORTIONS_SCHEMA.revision_hash))
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     bindings = bind_cook(runtime)

@@ -143,12 +143,22 @@ nodes:
         from:
           node: review
           output: findings
+    outputs:
+      - name: patch
+        schema:
+          ref: text-schema
+          revision: {schema_hash.value}
 """.encode()
 
 
-def blind_document() -> bytes:
-    """The same three nodes with nothing handed on -- the contrast case."""
-    return b"""format_version: 3
+def blind_document(schema_hash: PublishedRevisionHash) -> bytes:
+    """The same two nodes with nothing handed on -- the contrast case.
+
+    Each still declares the one output its own schema judges, because that is the
+    shape any executable agent node has. What it declares is no *input*: nothing
+    here asks for the value the node before it wrote.
+    """
+    return f"""format_version: 3
 name: iterate-v1 without a hand-off
 nodes:
   - id: code
@@ -156,13 +166,23 @@ nodes:
     role: builder
     mode: headless
     instruction: Write the thing this chain is for.
+    outputs:
+      - name: draft
+        schema:
+          ref: text-schema
+          revision: {schema_hash.value}
   - id: review
     type: agent
     role: builder
     mode: headless
     instruction: Review what the previous node produced.
     depends_on: [code]
-"""
+    outputs:
+      - name: findings
+        schema:
+          ref: text-schema
+          revision: {schema_hash.value}
+""".encode()
 
 
 @pytest.fixture
@@ -293,7 +313,9 @@ def test_a_line_that_hands_nothing_on_still_tells_each_node_only_its_own_sentenc
     is the shape `iterate-v1` was stuck in, and it stays available for a line
     whose nodes really are independent.
     """
-    workflow, bindings = publish_chain(runtime, blind_document())
+    workflow, bindings = publish_chain(
+        runtime, blind_document(TEXT_SCHEMA.revision_hash)
+    )
 
     created = DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
