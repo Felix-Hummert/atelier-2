@@ -5,7 +5,10 @@ that reference proves the registry carries the pinned revision. It cannot prove
 the revision says anything: bytes published under the name `schema` are a schema
 only because someone called them one. This module is the proof that was missing,
 and it is deliberately a pure function over bytes so that both the reference
-resolution and, later, the instance evaluation ask exactly one owner.
+resolution and the instance evaluation ask exactly one owner. Both halves live
+here: `read_schema_document` says whether published bytes are a schema this
+product can enforce, and `read_instance_document` says whether exact bytes are a
+value one of those schemas admits.
 
 The profile is a closed subset of JSON Schema Draft 2020-12, and every bound in
 it exists to keep evaluation decidable, local and cheap:
@@ -55,6 +58,11 @@ from referencing import Registry
 from referencing.jsonschema import Schema
 
 MAXIMUM_SCHEMA_DOCUMENT_BYTES = 16_384
+# One value's own bound. It is the same number as a schema's today and still its
+# own decision: a value is bounded because a run must not be asked to carry an
+# order nobody can read, a schema because a published revision must not cost
+# unbounded work to read.
+MAXIMUM_INSTANCE_DOCUMENT_BYTES = 16_384
 MAXIMUM_SCHEMA_CONTAINER_DEPTH = 32
 MAXIMUM_SCHEMA_VALUES = 4_096
 
@@ -70,6 +78,13 @@ _BYTE_ORDER_MARK = "﻿"
 _IN_PLACE_SUBSCHEMAS = ("not", "if", "then", "else")
 _IN_PLACE_SUBSCHEMA_LISTS = ("allOf", "anyOf", "oneOf")
 _IN_PLACE_SUBSCHEMA_MAPS = ("dependentSchemas",)
+
+# What `json.loads` produces, written down once so both halves can say it. The
+# decoder refuses every non-canonical literal, so nothing outside this shape
+# reaches a caller.
+type JsonValue = (
+    None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+)
 
 
 class SchemaDocumentRefusal(StrEnum):
@@ -89,6 +104,20 @@ class SchemaDocumentRefusal(StrEnum):
     NON_TERMINATING_REFERENCE_CYCLE = "non-terminating-reference-cycle"
     UNSUPPORTED_DIALECT = "unsupported-dialect"
     NOT_A_SCHEMA = "not-a-schema"
+
+
+class InstanceRefusal(StrEnum):
+    """Every named way exact bytes fail to be a value one schema admits."""
+
+    INSTANCE_TOO_LARGE = "instance-too-large"
+    INSTANCE_NOT_UTF8 = "instance-not-utf8"
+    INSTANCE_CARRIES_BYTE_ORDER_MARK = "instance-carries-byte-order-mark"
+    INSTANCE_NOT_JSON = "instance-not-json"
+    NON_CANONICAL_NUMBER = "non-canonical-number"
+    DUPLICATE_OBJECT_KEY = "duplicate-object-key"
+    INSTANCE_TOO_DEEP = "instance-too-deep"
+    TOO_MANY_VALUES = "too-many-values"
+    SCHEMA_VIOLATED = "schema-violated"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +140,28 @@ class SchemaRefused:
 
 
 type SchemaDocumentVerdict = SchemaAccepted | SchemaRefused
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceAccepted:
+    """The bytes are a value the schema admits, decoded once for the caller."""
+
+    value: JsonValue
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceRefused:
+    """One named refusal, with the exact thing it is about when there is one."""
+
+    refusal: InstanceRefusal
+    subject: str | None = None
+
+    def __str__(self) -> str:
+        named = "" if self.subject is None else f": {self.subject}"
+        return f"{self.refusal.value}{named}"
+
+
+type InstanceVerdict = InstanceAccepted | InstanceRefused
 
 
 class SchemaRetrievalAttempted(Exception):
@@ -163,6 +214,107 @@ def read_schema_document(document: bytes) -> SchemaDocumentVerdict:
     return _validated_against_the_draft(decoded.value)
 
 
+def read_instance_document(instance: bytes, schema: SchemaAccepted) -> InstanceVerdict:
+    """Whether these exact bytes are a value that accepted schema admits.
+
+    It takes an accepted schema rather than bytes on purpose: evaluating against
+    a revision nobody vetted is the outage this module exists to prevent, and a
+    caller that cannot name an accepted schema has nothing to evaluate against.
+
+    The order is the schema half's, for the schema half's reasons: the byte
+    bound first, then decoding, then the depth and value bounds, and only then
+    the evaluation. Hostile input costs a length check rather than a walk, and
+    nothing reaches the evaluator that has not already been measured.
+    """
+    if len(instance) > MAXIMUM_INSTANCE_DOCUMENT_BYTES:
+        return InstanceRefused(
+            InstanceRefusal.INSTANCE_TOO_LARGE,
+            f"{len(instance)} bytes exceeds {MAXIMUM_INSTANCE_DOCUMENT_BYTES}",
+        )
+    try:
+        text = instance.decode("utf-8")
+    except UnicodeDecodeError as broken:
+        return InstanceRefused(InstanceRefusal.INSTANCE_NOT_UTF8, broken.reason)
+    if text.startswith(_BYTE_ORDER_MARK):
+        return InstanceRefused(InstanceRefusal.INSTANCE_CARRIES_BYTE_ORDER_MARK)
+    decoded = _decoded_json(text)
+    if isinstance(decoded, SchemaRefused):
+        return _as_instance_refusal(decoded)
+    bounded = _bounded_instance(decoded.value)
+    if bounded is not None:
+        return bounded
+    violation = _first_violation(decoded.value, schema.schema)
+    if violation is not None:
+        return violation
+    return InstanceAccepted(decoded.value)
+
+
+_DECODING_REFUSALS = {
+    SchemaDocumentRefusal.DOCUMENT_NOT_JSON: InstanceRefusal.INSTANCE_NOT_JSON,
+    SchemaDocumentRefusal.NON_CANONICAL_NUMBER: InstanceRefusal.NON_CANONICAL_NUMBER,
+    SchemaDocumentRefusal.DUPLICATE_OBJECT_KEY: InstanceRefusal.DUPLICATE_OBJECT_KEY,
+}
+
+
+def _as_instance_refusal(refused: SchemaRefused) -> InstanceRefused:
+    """The decoder is shared, so its three refusals arrive under instance names.
+
+    One decoder for both halves means a value and a schema are read by the same
+    rules -- canonical numbers, unique keys -- and a caller still hears which of
+    the two it handed in.
+    """
+    return InstanceRefused(_DECODING_REFUSALS[refused.refusal], refused.subject)
+
+
+def _bounded_instance(value: JsonValue) -> InstanceRefused | None:
+    """Depth and value count, bounded exactly as the schema half bounds them.
+
+    The two walk together during evaluation, so one unbounded side would make
+    the pair unbounded; the bounds are therefore the same decision, taken once.
+    """
+    counted = 0
+    pending: list[tuple[object, int]] = [(value, 1)]
+    while pending:
+        current, depth = pending.pop()
+        counted += 1
+        if counted > MAXIMUM_SCHEMA_VALUES:
+            return InstanceRefused(
+                InstanceRefusal.TOO_MANY_VALUES,
+                f"more than {MAXIMUM_SCHEMA_VALUES} JSON values",
+            )
+        if not isinstance(current, (dict, list)):
+            continue
+        if depth > MAXIMUM_SCHEMA_CONTAINER_DEPTH:
+            return InstanceRefused(
+                InstanceRefusal.INSTANCE_TOO_DEEP,
+                f"more than {MAXIMUM_SCHEMA_CONTAINER_DEPTH} container levels",
+            )
+        entries = current if isinstance(current, list) else list(current.values())
+        pending.extend((entry, depth + 1) for entry in entries)
+    return None
+
+
+def _first_violation(value: JsonValue, schema: Schema) -> InstanceRefused | None:
+    """The one violation this refusal names, chosen by a stated rule.
+
+    The evaluator promises no order over its errors, so naming "the first" would
+    hand the operator a different answer for the same bytes. The rule is the
+    earliest place in the value, then the message, so one input always reads
+    back one refusal.
+    """
+    validator = Draft202012Validator(schema, registry=schema_registry())
+    errors = sorted(
+        validator.iter_errors(value),
+        key=lambda error: ([str(part) for part in error.absolute_path], error.message),
+    )
+    if not errors:
+        return None
+    first = errors[0]
+    located = "/".join(str(part) for part in first.absolute_path)
+    place = "the value itself" if located == "" else located
+    return InstanceRefused(InstanceRefusal.SCHEMA_VIOLATED, f"{place}: {first.message}")
+
+
 def _refused_dialect(schema: Schema) -> SchemaRefused | None:
     """A document declaring another dialect is refused rather than reinterpreted.
 
@@ -213,12 +365,12 @@ def _refuse_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
 class _Decoded:
     """One decoded JSON value, before anything has claimed it is a schema."""
 
-    value: object
+    value: JsonValue
 
 
 def _decoded_json(text: str) -> _Decoded | SchemaRefused:
     try:
-        value: object = json.loads(
+        value: JsonValue = json.loads(
             text,
             parse_constant=_refuse_constant,
             object_pairs_hook=_refuse_duplicate_keys,

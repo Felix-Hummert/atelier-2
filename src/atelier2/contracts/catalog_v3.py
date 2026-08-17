@@ -6,9 +6,20 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from atelier2.contracts.hashing import SHA256_HEX_DIGEST, Sha256Hash, frame
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 
 MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS = 128
+# An actor reaches the catalog from outside and is written into an append-only
+# event, so its bound belongs to the catalog rather than to whichever caller
+# happens to arrive first.
+MAXIMUM_CATALOG_ACTOR_CHARACTERS = 128
+CATALOG_ACTIVATED_AT_PATTERN = (
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+)
 _LINEAGE_DISPLAY_NAME = re.compile(r"[a-z][a-z0-9._-]*")
 _CATALOG_ACTIVATED_AT = re.compile(
     r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z"
@@ -52,8 +63,11 @@ class CatalogActor:
     def __post_init__(self) -> None:
         if not isinstance(self.value, str):
             raise TypeError("a catalog actor must be text")
-        if self.value == "":
-            raise ValueError("a catalog actor must be nonempty")
+        if not 1 <= len(self.value) <= MAXIMUM_CATALOG_ACTOR_CHARACTERS:
+            raise ValueError(
+                "a catalog actor must contain 1 to "
+                f"{MAXIMUM_CATALOG_ACTOR_CHARACTERS} characters"
+            )
 
 
 @dataclass(frozen=True)
@@ -145,3 +159,66 @@ class CatalogLineage:
                 )
             ),
         )
+
+
+@dataclass(frozen=True)
+class CatalogLineageFounded:
+    lineage: CatalogLineage
+    revision: PublishedRevision
+    display_name: CatalogLineageDisplayName
+
+
+@dataclass(frozen=True)
+class CatalogMemberAdmitted:
+    lineage: CatalogLineage
+    revision: PublishedRevision
+    revision_number: int
+    display_name: CatalogLineageDisplayName
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionExisting:
+    lineage: CatalogLineage
+    revision: PublishedRevision
+    revision_number: int
+    display_name: CatalogLineageDisplayName
+
+
+@dataclass(frozen=True)
+class CatalogLineageIdMismatch:
+    claimed: CatalogLineageId
+    derived: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionUnpublished:
+    revision_hash: PublishedRevisionHash
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionNameHeld:
+    name: CatalogLineageDisplayName
+    holder: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionRevisionOwned:
+    revision_hash: PublishedRevisionHash
+    owner: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionRetired:
+    lineage_id: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionLineageMissing:
+    lineage_id: CatalogLineageId
+
+
+@dataclass(frozen=True)
+class CatalogAdmissionKindMismatch:
+    lineage_id: CatalogLineageId
+    expected: RevisionKind
+    actual: RevisionKind

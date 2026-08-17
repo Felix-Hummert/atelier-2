@@ -10,7 +10,7 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
     AvailableContextGrant,
     BoundNodeRevisions,
-    ContextPackage,
+    DeclaredContextPackage,
     DeclaredOutput,
     InputEnvelope,
     InputReceiptBinding,
@@ -36,16 +36,16 @@ VALUE = Sha256Hash("ff" * 32)
 RUN = RunId("run-v3")
 NODE = "build"
 MANIFEST = b"context-manifest\x00"
-PACKAGE_HASH = "6876523ded4e24ff8cd5a8b6a7adc591aab480fdb1e2ea231369bc56e24d9c31"
-REQUEST_HASH = "0d6cc5fb3793364b040038326c54068794e1cb2daf288d6e235ccd910b2be296"
+PACKAGE_HASH = "32508a7d4553d5af0dedf0710b0bce660fc4294e6c07709426081be8a6e219cb"
+REQUEST_HASH = "1a15122cbe7914197904af684a951b8d3a42180cb417ed1072756d81a98344e4"
 ARTIFACT_HASH = "6dfc8742c2ea8d216481dafb31294010c0586c4cbcb87a6641ee4f73e816cd10"
-RECEIPT_HASH = "054ab05dc7c929f7d56f3ec692e1fd513c8c4e2bccb3ed7490cfbcde3747db32"
+RECEIPT_HASH = "9f582bf8b4a9583de77ff8bf7f36b5e4211847f31543e9f62392609bf29144ab"
 RESULT_BYTES = b"result-bytes"
 RESULT_VALUE_HASH = "4796ef914c847f1124994597d49d513b96882c4176bf1ccb0bc4f4c5b18ee95a"
 
 
-def _package() -> ContextPackage:
-    return ContextPackage(MANIFEST)
+def _package() -> DeclaredContextPackage:
+    return DeclaredContextPackage(MANIFEST)
 
 
 def _request(
@@ -57,9 +57,9 @@ def _request(
 ) -> NodeExecutionRequest:
     package_hash = _package().package_hash
     if context_package_hash is not None:
-        from atelier2.contracts.node_records_v3 import ContextPackageHash
+        from atelier2.contracts.node_records_v3 import DeclaredContextPackageHash
 
-        package_hash = ContextPackageHash(context_package_hash)
+        package_hash = DeclaredContextPackageHash(context_package_hash)
     return NodeExecutionRequest(
         WORKFLOW,
         RUN_CONFIGURATION,
@@ -88,7 +88,10 @@ def test_context_package_hash_is_the_literal_v3_vector() -> None:
 
 
 def test_changing_context_package_bytes_changes_the_hash() -> None:
-    assert ContextPackage(b"context-manifest\x01").package_hash.value != PACKAGE_HASH
+    assert (
+        DeclaredContextPackage(b"context-manifest\x01").package_hash.value
+        != PACKAGE_HASH
+    )
 
 
 def test_node_execution_request_hash_is_the_literal_v3_vector() -> None:

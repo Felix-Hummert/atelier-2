@@ -20,6 +20,7 @@ ACCEPTANCE = Path("acceptance")
 DECLARATION = ACCEPTANCE / "94-acceptance-trace-in-ci.toml"
 SECOND_STORY_DECLARATION = ACCEPTANCE / "89-a-second-story.toml"
 CONFTEST = Path("tests/conftest.py")
+PULL_REQUEST_TEMPLATE = Path(".github/pull_request_template.md")
 DOCUMENTATION = Path("docs/requirements/README.md")
 REQUIREMENTS = Path("docs/requirements")
 A_DECLARED_REQUIREMENT = "REQ-KATALOG-04"
@@ -1079,3 +1080,85 @@ def test_sentences_binding_no_requirement_are_listed_rather_than_refused(
 
     assert result.returncode == 0, result.stderr
     assert "bind no requirement" in result.stdout
+
+
+# The two answers that broke the gate in one night, kept verbatim: both read
+# perfectly to a person, and both were the field's two ways of being wrong.
+PROSE_ANSWER = (
+    "the nine sentences of `acceptance/58-every-attempt-runs-in-its-own-workspace"
+    ".toml`, each bound by @pytest.mark.proves"
+)
+EMPHASISED_EXEMPTION = "`none`. This head adds a check and a count to the gate"
+
+
+def test_a_prose_answer_is_named_once_with_the_form_the_field_expects(
+    tmp_path: Path,
+) -> None:
+    """Ten true complaints about ten words say less than one about the answer.
+
+    A field answered in prose produced one `names 'the' … which no story
+    declares` per word. Every line was true and none of them said what was
+    actually wrong, so the reader had to infer the rule the gate was applying.
+    """
+
+    result = run_gate(copied_project(tmp_path), a_pull_request_stating(PROSE_ANSWER))
+
+    assert result.returncode != 0
+    problems = [line for line in result.stderr.splitlines() if line.startswith("  - ")]
+    assert len(problems) == 1, problems
+    assert "identifier" in problems[0]
+    assert "none" in problems[0]
+
+
+def test_an_exemption_a_body_wrote_in_backticks_is_read_as_the_exemption_it_is(
+    tmp_path: Path,
+) -> None:
+    """The template itself shows `none` in backticks; the gate must read it.
+
+    Markdown emphasis around the word is not a second meaning. Refusing it would
+    make the template teach the one spelling the gate rejects, and every author
+    pays a red run and a forced push to learn that.
+    """
+
+    result = run_gate(
+        copied_project(tmp_path), a_pull_request_stating(EMPHASISED_EXEMPTION)
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Landing binding: exempt" in result.stdout
+
+
+def test_one_misspelt_identifier_still_gets_its_own_line(tmp_path: Path) -> None:
+    """A typo is not a form error, and collapsing the two would lose the name.
+
+    An answer shaped like identifiers is read as identifiers: the one that no
+    story declares is named, because that is the thing the author has to fix.
+    """
+
+    result = run_gate(
+        copied_project(tmp_path),
+        a_pull_request_stating(f"{MOVABLE_SENTENCE}, a-sentence-nobody-declared"),
+    )
+
+    assert result.returncode != 0
+    assert "'a-sentence-nobody-declared'" in result.stderr
+    assert "which no story declares" in result.stderr
+    assert "neither form" not in result.stderr
+
+
+def test_the_template_asks_for_a_form_the_gate_can_read() -> None:
+    """The template is where an author learns the form; it must teach a true one.
+
+    Both of the night's failures began in a body written from this template. A
+    template whose acceptance line the field reader cannot find, or which shows a
+    spelling the gate refuses, teaches the error it then punishes.
+    """
+
+    gate = load_acceptance_script()
+    template = (PROJECT_ROOT / PULL_REQUEST_TEMPLATE).read_text(encoding="utf-8")
+
+    field = gate.LANDING_FIELD.search(template)
+
+    assert field is not None, "the field reader cannot find the template's own line"
+    assert field.group("stated") == "", "the template's field is filled in"
+    assert "the word none" in template

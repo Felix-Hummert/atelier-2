@@ -1,7 +1,7 @@
 ## Story binding
 
 - HumanRequirement Issue URL:
-- Literal acceptance sentence(s), by their identifier in `acceptance/`, or `none` and why this change declares none:
+- Literal acceptance sentence(s), by their identifier in `acceptance/` and comma separated, or the word none followed by why this change declares none:
 - Context sources consulted:
 - Existing decision record(s), or `none`:
 

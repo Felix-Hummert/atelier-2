@@ -8,6 +8,7 @@ from enum import IntEnum, StrEnum
 
 import pytest
 import sqlalchemy as sa
+from sqlglot import Expr, exp, parse_one
 
 from atelier2.adapters.dbos import schema
 from atelier2.contracts.agent_attempts import (
@@ -47,10 +48,6 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
 
-_DECLARATION = re.compile(r"^([a-z_][a-z_0-9]*) IN \(([^()]*)\)$")
-_MEMBERSHIP = re.compile(r"\b([a-z_][a-z_0-9]*)\s+(?:NOT\s+)?IN\s*\(([^()]*)\)")
-_EQUALITY = re.compile(r"\b([a-z_][a-z_0-9]*)\s*(?:=|<>)\s*('[^']*'|\d+)")
-_LITERAL = re.compile(r"'([^']*)'|(\d+)")
 _LENGTH_BOUND = re.compile(
     r"length\(([a-z_0-9]+)\)\s*(?:BETWEEN\s+\d+\s+AND\s+(\d+)|<=\s*(\d+)|=\s*(\d+))"
 )
@@ -59,12 +56,42 @@ _HEXADECIMAL_DIGITS = "NOT GLOB '*[^0-9a-f]*'"
 Conditions = tuple[tuple[str, str], ...]
 
 
-def _literals(compared: str) -> frozenset[str | int]:
-    found: set[str | int] = set()
-    for match in _LITERAL.finditer(compared):
-        text, number = match.group(1), match.group(2)
-        found.add(text if text is not None else int(number))
-    return frozenset(found)
+class UnsupportedVocabularyPredicate(ValueError):
+    """A CHECK names an owned vocabulary through grammar the guard cannot prove."""
+
+
+def _parse_condition(condition: str) -> Expr:
+    return parse_one(condition, read="sqlite")
+
+
+def _without_parentheses(expression: Expr) -> Expr:
+    while isinstance(expression, exp.Paren):
+        expression = expression.this
+    return expression
+
+
+def _literal_value(expression: Expr) -> str | int:
+    expression = _without_parentheses(expression)
+    if not isinstance(expression, exp.Literal):
+        raise TypeError(f"not a literal: {expression.sql(dialect='sqlite')}")
+    if not expression.is_string and not expression.is_int:
+        raise TypeError(f"not an integer literal: {expression.sql(dialect='sqlite')}")
+    return expression.this if expression.is_string else int(expression.this)
+
+
+def _canonical_declaration(
+    expression: Expr,
+) -> tuple[str, frozenset[str | int]] | None:
+    expression = _without_parentheses(expression)
+    if not isinstance(expression, exp.In) or not isinstance(
+        expression.this, exp.Column
+    ):
+        return None
+    try:
+        members = frozenset(_literal_value(member) for member in expression.expressions)
+    except TypeError:
+        return None
+    return expression.this.name, members
 
 
 def _check_conditions() -> Conditions:
@@ -92,12 +119,11 @@ def _declared_vocabularies(
 
     declared: dict[str, frozenset[str | int]] = {}
     for table_name, condition in conditions:
-        spelled = _DECLARATION.match(condition)
-        if spelled is None:
+        declaration = _canonical_declaration(_parse_condition(condition))
+        if declaration is None:
             continue
-        column, members = spelled.groups()
+        column, admitted = declaration
         qualified = f"{table_name}.{column}"
-        admitted = _literals(members)
         still_admitted = declared.get(qualified)
         declared[qualified] = (
             admitted if still_admitted is None else still_admitted & admitted
@@ -110,14 +136,162 @@ def _compared_literals(conditions: Conditions) -> Mapping[str, frozenset[str | i
 
     compared: dict[str, set[str | int]] = {}
     for table_name, condition in conditions:
-        if _DECLARATION.match(condition) is not None:
+        expression = _parse_condition(condition)
+        if _canonical_declaration(expression) is not None:
             continue
-        for pattern in (_MEMBERSHIP, _EQUALITY):
-            for column, mentioned in pattern.findall(condition):
-                compared.setdefault(f"{table_name}.{column}", set()).update(
-                    _literals(mentioned)
+        for comparison in expression.walk():
+            if isinstance(comparison, exp.In) and isinstance(
+                comparison.this, exp.Column
+            ):
+                try:
+                    literals = {
+                        _literal_value(member) for member in comparison.expressions
+                    }
+                except TypeError:
+                    continue
+                compared.setdefault(
+                    f"{table_name}.{comparison.this.name}", set()
+                ).update(literals)
+            elif isinstance(comparison, (exp.EQ, exp.NEQ)):
+                left = _without_parentheses(comparison.this)
+                right = _without_parentheses(comparison.expression)
+                column_and_literal = (
+                    (left, right)
+                    if isinstance(left, exp.Column) and isinstance(right, exp.Literal)
+                    else (right, left)
                 )
+                column, literal = column_and_literal
+                if isinstance(column, exp.Column) and isinstance(literal, exp.Literal):
+                    compared.setdefault(f"{table_name}.{column.name}", set()).add(
+                        _literal_value(literal)
+                    )
     return {column: frozenset(literals) for column, literals in compared.items()}
+
+
+def _mentions_column(expression: Expr, column: str) -> bool:
+    return any(
+        isinstance(candidate, exp.Column) and candidate.name == column
+        for candidate in expression.walk()
+    )
+
+
+def _referenced_columns(expression: Expr) -> frozenset[str]:
+    return frozenset(
+        candidate.name
+        for candidate in expression.walk()
+        if isinstance(candidate, exp.Column)
+    )
+
+
+def _target_comparison(expression: exp.Binary, column: str) -> str | int | None:
+    left = _without_parentheses(expression.this)
+    right = _without_parentheses(expression.expression)
+    if isinstance(left, exp.Column) and left.name == column:
+        try:
+            return _literal_value(right)
+        except TypeError:
+            return None
+    if isinstance(right, exp.Column) and right.name == column:
+        try:
+            return _literal_value(left)
+        except TypeError:
+            return None
+    return None
+
+
+def _target_only_between_values(
+    expression: exp.Between,
+    column: str,
+    owned: frozenset[str | int],
+) -> frozenset[str | int]:
+    if _referenced_columns(expression) != {column}:
+        raise UnsupportedVocabularyPredicate(expression.sql(dialect="sqlite"))
+    sql = expression.sql(dialect="sqlite")
+    quoted_column = column.replace('"', '""')
+    admitted: set[str | int] = set()
+    with closing(sqlite3.connect(":memory:")) as database:
+        for member in owned:
+            result = database.execute(
+                f'SELECT ({sql}) FROM (SELECT ? AS "{quoted_column}")',
+                (member,),
+            ).fetchone()
+            if result is not None and result[0] != 0:
+                admitted.add(member)
+    return frozenset(admitted)
+
+
+def _possible_owned_values(
+    expression: Expr,
+    column: str,
+    owned: frozenset[str | int],
+) -> frozenset[str | int]:
+    expression = _without_parentheses(expression)
+    if not _mentions_column(expression, column):
+        return owned
+    if isinstance(expression, exp.And):
+        return _possible_owned_values(expression.this, column, owned) & (
+            _possible_owned_values(expression.expression, column, owned)
+        )
+    if isinstance(expression, exp.Or):
+        return _possible_owned_values(expression.this, column, owned) | (
+            _possible_owned_values(expression.expression, column, owned)
+        )
+    if (
+        isinstance(expression, exp.In)
+        and isinstance(expression.this, exp.Column)
+        and expression.this.name == column
+    ):
+        try:
+            return owned & frozenset(
+                _literal_value(member) for member in expression.expressions
+            )
+        except TypeError as error:
+            raise UnsupportedVocabularyPredicate(
+                expression.sql(dialect="sqlite")
+            ) from error
+    if isinstance(expression, (exp.EQ, exp.NEQ)):
+        comparison = _target_comparison(expression, column)
+        if comparison is not None:
+            matched = owned & {comparison}
+            return matched if isinstance(expression, exp.EQ) else owned - matched
+    if isinstance(expression, exp.Is):
+        target = _without_parentheses(expression.this)
+        if (
+            isinstance(target, exp.Column)
+            and target.name == column
+            and isinstance(expression.expression, exp.Null)
+        ):
+            return frozenset()
+    if isinstance(expression, exp.Not):
+        negated = _without_parentheses(expression.this)
+        if isinstance(negated, exp.In):
+            return owned - _possible_owned_values(negated, column, owned)
+        if isinstance(negated, exp.Is):
+            target = _without_parentheses(negated.this)
+            if (
+                isinstance(target, exp.Column)
+                and target.name == column
+                and isinstance(negated.expression, exp.Null)
+            ):
+                return owned
+    if isinstance(expression, exp.Between):
+        return _target_only_between_values(expression, column, owned)
+    raise UnsupportedVocabularyPredicate(
+        f"{column}: {expression.sql(dialect='sqlite')}"
+    )
+
+
+def _admitted_vocabularies(
+    conditions: Conditions,
+) -> Mapping[str, frozenset[str | int]]:
+    admitted = dict(OWNED_VOCABULARIES)
+    for table_name, condition in conditions:
+        expression = _parse_condition(condition)
+        for qualified, owned in OWNED_VOCABULARIES.items():
+            owner_table, column = qualified.split(".", maxsplit=1)
+            if owner_table == table_name and _mentions_column(expression, column):
+                admitted[qualified] &= _possible_owned_values(expression, column, owned)
+    return admitted
 
 
 def _conditions_with_declaration_rewritten(
@@ -127,9 +301,9 @@ def _conditions_with_declaration_rewritten(
 
     rewritten: list[tuple[str, str]] = []
     for table_name, condition in SCHEMA_CONDITIONS:
-        declared = _DECLARATION.match(condition)
+        declared = _canonical_declaration(_parse_condition(condition))
         declares_column = (
-            declared is not None and f"{table_name}.{declared.group(1)}" == column
+            declared is not None and f"{table_name}.{declared[0]}" == column
         )
         rewritten.append(
             (
@@ -160,8 +334,6 @@ def _values(vocabulary: Iterable[StrEnum | IntEnum]) -> frozenset[str | int]:
 
 
 SCHEMA_CONDITIONS = _check_conditions()
-DECLARED_VOCABULARIES = _declared_vocabularies(SCHEMA_CONDITIONS)
-COMPARED_LITERALS = _compared_literals(SCHEMA_CONDITIONS)
 HASH_LENGTH_BOUNDS, FIELD_LENGTH_BOUNDS = _schema_length_bounds()
 PROVIDER_ID_BOUND = FIELD_LENGTH_BOUNDS["auth_profile_revisions.provider_id"]
 
@@ -237,6 +409,10 @@ UNOWNED_VOCABULARIES: Mapping[str, str] = {
     ),
 }
 
+DECLARED_VOCABULARIES = _declared_vocabularies(SCHEMA_CONDITIONS)
+COMPARED_LITERALS = _compared_literals(SCHEMA_CONDITIONS)
+ADMITTED_VOCABULARIES = _admitted_vocabularies(SCHEMA_CONDITIONS)
+
 OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
     {
         "agent_attempts.attempt_id",
@@ -259,6 +435,10 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "agent_receipts_v2.request_hash",
         "agent_receipts_v2.workflow_revision_hash",
         "auth_profile_revisions.revision_hash",
+        "context_packages_v3.package_hash",
+        "node_execution_requests_v3.context_package_hash",
+        "node_execution_requests_v3.node_execution_id",
+        "node_execution_requests_v3.request_hash",
         "effect_intents.request_hash",
         "effect_intents.workflow_revision_hash",
         "effect_receipts.request_hash",
@@ -266,6 +446,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "effect_receipts.workflow_revision_hash",
         "reconcile_commands.found_result_hash",
         "run_agent_bindings.agent_configuration_revision_hash",
+        "run_configuration_revisions.revision_hash",
         "run_agent_bindings.binding_set_hash",
         "run_agent_bindings.revision_hash",
         "run_events.agent_attempt_id",
@@ -274,6 +455,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "run_events.payload_hash",
         "run_events.receipt_result_hash",
         "runs.agent_binding_set_hash",
+        "runs.run_configuration_revision_hash",
         "runs.terminal_hash",
         "wait_answers.answer_hash",
         "wait_answers.node_execution_id",
@@ -407,6 +589,76 @@ def test_a_second_check_narrowing_a_column_is_drift_though_the_first_names_every
     assert _declared_vocabularies(narrowed)["run_events.event_kind"] == {
         RunEventKind.AGENT_COMPLETED.value
     }
+
+
+@pytest.mark.parametrize(
+    ("condition", "admitted"),
+    [
+        (
+            "event_kind IN (('AGENT_COMPLETED'))",
+            frozenset({RunEventKind.AGENT_COMPLETED.value}),
+        ),
+        (
+            "event_kind = 'AGENT_COMPLETED'",
+            frozenset({RunEventKind.AGENT_COMPLETED.value}),
+        ),
+        (
+            "'AGENT_COMPLETED' = event_kind",
+            frozenset({RunEventKind.AGENT_COMPLETED.value}),
+        ),
+        (
+            "event_kind NOT IN ('AGENT_COMPLETED')",
+            OWNED_VOCABULARIES["run_events.event_kind"]
+            - {RunEventKind.AGENT_COMPLETED.value},
+        ),
+        (
+            "event_kind <> 'AGENT_COMPLETED'",
+            OWNED_VOCABULARIES["run_events.event_kind"]
+            - {RunEventKind.AGENT_COMPLETED.value},
+        ),
+        (
+            "event_kind != 'AGENT_COMPLETED'",
+            OWNED_VOCABULARIES["run_events.event_kind"]
+            - {RunEventKind.AGENT_COMPLETED.value},
+        ),
+    ],
+)
+def test_every_sqlite_spelling_that_narrows_an_owned_vocabulary_is_drift(
+    condition: str, admitted: frozenset[str | int]
+) -> None:
+    narrowed = (*SCHEMA_CONDITIONS, ("run_events", condition))
+
+    assert _admitted_vocabularies(narrowed)["run_events.event_kind"] == admitted
+
+
+@pytest.mark.proves("a-schema-check-cannot-silently-narrow-an-owned-vocabulary")
+@pytest.mark.parametrize("column", sorted(OWNED_VOCABULARIES))
+def test_every_check_preserves_the_complete_vocabulary_its_contract_owns(
+    column: str,
+) -> None:
+    assert ADMITTED_VOCABULARIES[column] == OWNED_VOCABULARIES[column]
+
+
+def test_exhaustive_boolean_branches_preserve_the_complete_vocabulary() -> None:
+    exhaustive = (
+        *SCHEMA_CONDITIONS,
+        (
+            "run_events",
+            "event_kind = 'AGENT_COMPLETED' OR event_kind != 'AGENT_COMPLETED'",
+        ),
+    )
+
+    assert (
+        _admitted_vocabularies(exhaustive)["run_events.event_kind"]
+        == (OWNED_VOCABULARIES["run_events.event_kind"])
+    )
+
+
+def test_an_unrecognised_owned_vocabulary_predicate_fails_by_name() -> None:
+    unrecognised = (*SCHEMA_CONDITIONS, ("run_events", "event_kind LIKE 'AGENT_%'"))
+
+    with pytest.raises(UnsupportedVocabularyPredicate, match="event_kind"):
+        _admitted_vocabularies(unrecognised)
 
 
 def test_every_persisted_hash_column_is_bounded_at_the_length_of_a_real_digest() -> (

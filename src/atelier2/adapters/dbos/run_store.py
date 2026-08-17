@@ -66,6 +66,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
+from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.runs import (
     RevisionHashCollision,
     Run,
@@ -234,8 +235,7 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
     # A V3 row is read back as a V3 run, not as a V2 one wearing a new number:
     # the two are different truths, and a shared shape would mean every V2 reader
     # had silently been reading V3 rows all along.
-    shape = RunV2 if version == 2 else RunV3
-    return shape(
+    head = (
         run_id,
         revision_hash,
         binding_set_hash,
@@ -244,7 +244,19 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
         str(record["current_node_id"]),
         int(record["state_version"]),
         int(record["last_event_sequence"]),
-        None if terminal is None else Sha256Hash(str(terminal)),
+    )
+    terminal_hash = None if terminal is None else Sha256Hash(str(terminal))
+    if version == 2:
+        return RunV2(*head, terminal_hash)
+    configuration = record["run_configuration_revision_hash"]
+    if configuration is None:
+        raise RunTransitionConflict(
+            "a format-3 run row carries no run configuration revision"
+        )
+    return RunV3(
+        *head,
+        RunConfigurationRevisionHash(str(configuration)),
+        terminal_hash,
     )
 
 

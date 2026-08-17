@@ -80,6 +80,32 @@ verdict, naming who was waited for and how long. A head that repairs an
 object stops being that object's independent reviewer and says that too.
 (Sources: fleet fallback exercised on #174 and #179, 16.08.)
 
+### Updating a head and rebinding its body is one handgrip
+
+The pull-request body is the landing binding the acceptance gate reads, so a
+body describing an older head is a false record at the moment it lands. Rebind
+it in the same move that updates the branch — head, tree, merge result,
+measurements — because the update is the only event that makes the gate read
+the body again.
+
+Answer the acceptance field in the form the template shows; a body the gate
+cannot read costs a red run and a fresh event, never a rerun.
+
+## Reading your own tools
+
+A gate that is read wrongly is worse than one that was never run, because the
+head then carries a claim nobody checked.
+
+- **Read a gate's whole output, never its last line.** `ruff check .` prints its
+  findings before the summary, so `| tail -1` can report success over real
+  errors.
+- **Never `git checkout -- <path>` to undo a mutation.** It restores from the
+  index, so unstaged work in that file is discarded silently; keep a copy and
+  restore from it, and stage finished work so an accident cannot reach it.
+- **Verify a claim you are about to repeat.** Recompute the fingerprint, run the
+  probe, diff the two heads — a review that forwards a builder's number has
+  checked nothing.
+
 ## Workplaces
 
 The shared checkout of this repository stays clean on `main` — it is the common
