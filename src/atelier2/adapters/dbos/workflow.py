@@ -95,9 +95,11 @@ from atelier2.contracts.workflows import (
     RunCompletes,
     RunContinues,
     SubworkflowNode,
-    WaitNode,
 )
-from atelier2.contracts.workflows_v3 import AgentNodeV3, WaitNodeV3
+from atelier2.contracts.workflows_v3 import (
+    ANY_WAIT_NODE_KINDS,
+    AgentNodeV3,
+)
 from atelier2.ports.agent_attempts import AgentAttemptStore, AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceOwner,
@@ -316,7 +318,7 @@ def _node_binding(
             return encoded
         if isinstance(node, ActionNode):
             return {"type": "action"}
-        if isinstance(node, (WaitNode, WaitNodeV3)):
+        if isinstance(node, ANY_WAIT_NODE_KINDS):
             # A V3 Wait binds through the same durable path as a V1 or V2 one:
             # the pause carries no material of its own, so what the two formats
             # disagree about is only which answer the node admits, and that is
@@ -863,10 +865,13 @@ def register_durable_run_workflow(
             return [transition.current_node_id, transition.state.value]
 
         # The step reports the state as well as the head, because an answered Wait
-        # node that is its run's sink ends the run: starting a node after that
-        # would drive a completed run. Recording two values is why the step name
-        # carries a version -- a recovered step of the earlier shape would be read
-        # as a head alone.
+        # node that is its run's sink ends the run, and after a terminal transition
+        # correctness must not rest on DBOS deduplicating a workflow id: starting
+        # the sink's own node again is harmless only for as long as that id happens
+        # to collide. The state is what says "there is nothing left to start", so
+        # the decision is read from the run rather than borrowed from the runtime.
+        # Recording two values is why the step name carries a version -- a
+        # recovered step of the earlier shape would be read as a head alone.
         head, state = cast(
             tuple[str, str],
             tuple(datasource.run_tx_step({"name": ANSWER_COMMIT_STEP_NAME}, apply)),

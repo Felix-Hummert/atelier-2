@@ -129,7 +129,7 @@ def test_format_3_wait_answered_carries_the_exact_bytes_a_person_sent() -> None:
 
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
 def test_a_v3_run_cannot_answer_with_a_kind_its_nodes_never_write() -> None:
-    """A V3 node is an Agent, so a subworkflow completion is a store that lies."""
+    """A V3 node is an Agent or a Wait, so a subworkflow completion is a lie."""
     subworkflow = PersistedRunEvent(
         event=RunEvent(
             run_id=RUN_ID,

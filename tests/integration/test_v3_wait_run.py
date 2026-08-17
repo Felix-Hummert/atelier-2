@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from dbos import DBOS
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
@@ -31,6 +32,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.workflow import ANSWER_WORKFLOW_NAME
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.runs import run_resource
@@ -54,8 +56,10 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
+    NodeExecutionId,
     RunEventKind,
     WaitAnswerState,
+    node_workflow_id_for,
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -256,6 +260,35 @@ def answer(runtime: DbosRuntime, workflow: WorkflowRevision, value: bytes) -> ob
     )
 
 
+def what_the_answer_workflow_recorded(
+    runtime: DbosRuntime,
+) -> tuple[str, tuple[str, ...]]:
+    """The answer workflow's own durable record: its result, and what it started.
+
+    Read through DBOS rather than off the run, because recovery replays exactly
+    this record. The started ids are the child workflows the answer drove.
+    """
+    with runtime.engine.connect() as connection:
+        workflow_id = str(
+            connection.scalar(
+                sa.select(wait_answers.c.answer_workflow_id).where(
+                    wait_answers.c.run_id == RUN.value,
+                    wait_answers.c.node_id == WAIT_NODE,
+                )
+            )
+        )
+    status = DBOS.get_workflow_status(workflow_id)
+    assert status is not None and status.name == ANSWER_WORKFLOW_NAME
+    return (
+        str(DBOS.retrieve_workflow(workflow_id).get_result()),
+        tuple(
+            str(step["child_workflow_id"])
+            for step in DBOS.list_workflow_steps(workflow_id)
+            if step["child_workflow_id"] is not None
+        ),
+    )
+
+
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
 def test_a_v3_line_holds_at_its_wait_node_until_a_person_answers_it(
     runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
@@ -419,6 +452,54 @@ def test_an_answered_wait_standing_last_completes_its_own_run(
     assert (
         str(run["terminal_hash"])
         == terminal_hash_for(workflow.revision_hash, event_hashes).value
+    )
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_the_answer_that_ends_a_run_reports_completion_and_starts_nothing_after_it(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """The answer workflow of a sink records COMPLETED and drives no node after it.
+
+    This is the record recovery replays, so it is what has to be honest rather
+    than merely harmless. Reporting STARTED for a finished run would be the
+    workflow misdescribing itself, and starting a node after a terminal
+    transition is only free while DBOS happens to deduplicate the sink's own
+    workflow id -- correctness after the run has ended must not rest on that.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_AS_THE_SINK)
+    wait_for_state(started, RunState.WAITING_INPUT)
+
+    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+
+    wait_for_state(started, RunState.COMPLETED)
+    assert what_the_answer_workflow_recorded(started) == (RunState.COMPLETED.value, ())
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_the_answer_that_carries_a_run_on_reports_it_started_the_next_node(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """Where a successor is owed, the same record says STARTED and names its child.
+
+    The counterpart of the sink case: the two branches of the answer workflow are
+    told apart by what each one records, so neither reading can be reached by the
+    other run's shape.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+
+    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+
+    wait_for_state(started, RunState.COMPLETED)
+    result, started_children = what_the_answer_workflow_recorded(started)
+    assert result == RunState.STARTED.value
+    assert started_children == (
+        node_workflow_id_for(
+            NodeExecutionId.for_node(RUN, workflow.revision_hash, "review")
+        ),
     )
 
 
