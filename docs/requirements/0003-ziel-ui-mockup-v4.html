@@ -1,0 +1,998 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}</style></head><body>
+<title>Atelier 2 — Target UI (clickable mockup)</title>
+<style>
+  /* ================= Tokens ================= */
+  :root{
+    --ground:#12151a; --panel:#191e25; --panel2:#1f252e; --line:#2a323d;
+    --ink:#e8e6df; --ink-dim:#9aa3ad; --ink-faint:#5c6670;
+    --accent:#4ce0a4; --accent-deep:#17604a; --accent-ink:#0c1f18;
+    --amber:#e8b34b; --red:#e06a5a; --blue:#6aa8e0;
+    --chip:#232b35; --shadow:0 10px 30px rgba(0,0,0,.35);
+    --r:10px; --r-lg:16px;
+    --serif:'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;
+    --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --mono:ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --ground:#f2efe7; --panel:#faf8f2; --panel2:#ffffff; --line:#ddd8cb;
+      --ink:#1d2320; --ink-dim:#5b655f; --ink-faint:#98a09a;
+      --accent:#17604a; --accent-deep:#17604a; --accent-ink:#f2efe7;
+      --amber:#b07d1e; --red:#b8462f; --blue:#2d6da8;
+      --chip:#ece8dd; --shadow:0 10px 30px rgba(60,55,40,.12);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#12151a; --panel:#191e25; --panel2:#1f252e; --line:#2a323d;
+    --ink:#e8e6df; --ink-dim:#9aa3ad; --ink-faint:#5c6670;
+    --accent:#4ce0a4; --accent-deep:#17604a; --accent-ink:#0c1f18;
+    --amber:#e8b34b; --red:#e06a5a; --blue:#6aa8e0;
+    --chip:#232b35; --shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"]{
+    --ground:#f2efe7; --panel:#faf8f2; --panel2:#ffffff; --line:#ddd8cb;
+    --ink:#1d2320; --ink-dim:#5b655f; --ink-faint:#98a09a;
+    --accent:#17604a; --accent-deep:#17604a; --accent-ink:#f2efe7;
+    --amber:#b07d1e; --red:#b8462f; --blue:#2d6da8;
+    --chip:#ece8dd; --shadow:0 10px 30px rgba(60,55,40,.12);
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.45}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  .app{display:grid;grid-template-columns:210px 1fr;grid-template-rows:56px 1fr;height:100vh;min-height:640px}
+
+  /* ================= Topbar ================= */
+  .topbar{grid-column:1/3;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .wordmark{font-family:var(--serif);font-size:20px;letter-spacing:.02em}
+  .wordmark b{color:var(--accent);font-weight:600}
+  .proj{display:flex;align-items:center;gap:8px;background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:5px 14px 5px 10px;font-size:13.5px}
+  .proj .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+  .proj small{color:var(--ink-dim)}
+  .topbar .grow{flex:1}
+  .cmdk{display:flex;align-items:center;gap:8px;color:var(--ink-faint);font-size:13px;border:1px solid var(--line);border-radius:var(--r);padding:6px 12px;background:var(--panel2)}
+  .cmdk kbd{font-family:var(--mono);font-size:11px;background:var(--chip);border-radius:5px;padding:1px 6px}
+  .theme{border:1px solid var(--line);border-radius:var(--r);padding:6px 10px;font-size:13px;color:var(--ink-dim)}
+  .theme:hover{color:var(--ink);border-color:var(--accent)}
+  .mocknote{font-size:11px;color:var(--ink-faint);letter-spacing:.06em;text-transform:uppercase}
+  .avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--accent-deep),var(--accent));display:grid;place-items:center;color:var(--accent-ink);font-weight:700;font-size:13px}
+
+  /* ================= Rail ================= */
+  .rail{border-right:1px solid var(--line);background:var(--panel);padding:14px 10px;display:flex;flex-direction:column;gap:4px}
+  .navbtn{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;border-radius:var(--r);color:var(--ink-dim);font-size:14px}
+  .navbtn:hover{background:var(--chip);color:var(--ink)}
+  .navbtn.active{background:var(--chip);color:var(--ink);box-shadow:inset 2px 0 0 var(--accent)}
+  .navbtn .ico{width:18px;text-align:center;opacity:.9}
+  .navbtn .live{margin-left:auto;font-size:11px;background:var(--accent);color:var(--accent-ink);border-radius:999px;padding:1px 8px;font-weight:600}
+  .rail .foot{margin-top:auto;font-size:12px;color:var(--ink-faint);padding:10px}
+  .rail .foot code{font-family:var(--mono);font-size:11px}
+  .rail .sep{height:1px;background:var(--line);margin:8px 6px}
+
+  /* ================= Stage ================= */
+  .stage{overflow:auto;position:relative}
+  .screen{display:none;height:100%}
+  .screen.on{display:block}
+
+  /* ---- Studio: chat + canvas ---- */
+  .studio{display:grid;grid-template-columns:320px 1fr;height:100%}
+  .chat{border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel)}
+  .chat-head{padding:14px 16px;border-bottom:1px solid var(--line)}
+  .chat-head h2{margin:0;font-family:var(--serif);font-size:17px;font-weight:600}
+  .chat-head p{margin:2px 0 0;font-size:12.5px;color:var(--ink-dim)}
+  .chat-log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+  .msg{max-width:92%;padding:10px 13px;border-radius:14px;font-size:13.5px}
+  .msg.user{align-self:flex-end;background:var(--accent-deep);color:#eef7f2;border-bottom-right-radius:4px}
+  .msg.leo{align-self:flex-start;background:var(--panel2);border:1px solid var(--line);border-bottom-left-radius:4px}
+  .msg.leo .who{font-family:var(--serif);font-style:italic;color:var(--accent);font-size:12px;margin-bottom:3px}
+  .chat-input{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
+  .chat-input input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:9px 16px;color:var(--ink);font:inherit;font-size:13.5px}
+  .chat-input .send{background:var(--accent);color:var(--accent-ink);border-radius:999px;padding:9px 16px;font-weight:600}
+
+  .canvas{position:relative;overflow:hidden;background:
+    radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 1.5px);
+    background-size:26px 26px}
+  .canvas-tools{position:absolute;top:14px;left:16px;right:16px;display:flex;align-items:center;gap:10px;z-index:5}
+  .canvas-tools h2{margin:0;font-size:15px;font-weight:600}
+  .canvas-tools .wfchip{font-size:12px;color:var(--ink-dim);background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
+  .canvas-tools .wfchip b{font-family:var(--mono);font-size:11.5px;font-weight:600;color:var(--ink)}
+  .canvas-tools .grow{flex:1}
+  .btn{border:1px solid var(--line);background:var(--panel2);border-radius:var(--r);padding:8px 14px;font-size:13.5px}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:650}
+  .btn.primary:hover{filter:brightness(1.07)}
+
+  svg.edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  svg.edges path{fill:none;stroke:var(--ink-faint);stroke-width:1.6;opacity:.7}
+  svg.edges path.hot{stroke:var(--accent);opacity:1}
+
+  .node{position:absolute;width:186px;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);cursor:pointer;transition:border-color .2s}
+  .node:hover{border-color:var(--ink-faint)}
+  .node.sel{border-color:var(--accent)}
+  .node .nhead{display:flex;align-items:center;gap:8px;padding:10px 12px 6px}
+  .node .glyph{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:13px;background:var(--chip)}
+  .node.agent .glyph{background:var(--accent-deep);color:#eef7f2}
+  .node.skill .glyph{background:var(--blue);color:#0d1b28}
+  .node .nname{font-weight:650;font-size:14px}
+  .node .nkind{font-size:11px;color:var(--ink-faint);letter-spacing:.08em;text-transform:uppercase}
+  .node .nmeta{padding:0 12px 10px;font-size:12px;color:var(--ink-dim);display:flex;gap:6px;flex-wrap:wrap}
+  .node .tag{background:var(--chip);border-radius:6px;padding:1px 7px;font-family:var(--mono);font-size:11px}
+  .node .status{height:4px;border-radius:0 0 var(--r-lg) var(--r-lg);background:transparent}
+  .node.working .status{background:var(--amber);animation:pulse 1.2s ease-in-out infinite}
+  .node.done .status{background:var(--accent)}
+  .node.working{border-color:var(--amber)}
+  .node.done{border-color:var(--accent-deep)}
+  @keyframes pulse{50%{opacity:.35}}
+  @media (prefers-reduced-motion: reduce){ .node.working .status{animation:none} }
+
+  /* hover preview: mini tile */
+  .peek{position:absolute;left:0;top:calc(100% + 8px);width:250px;background:#0b0e12;border:1px solid var(--amber);border-radius:var(--r);padding:9px 11px;font-family:var(--mono);font-size:10.5px;line-height:1.55;color:#c9d4cf;display:none;z-index:30;pointer-events:none;white-space:pre-wrap;box-shadow:var(--shadow)}
+  .peek .ok{color:var(--accent)} .peek .dim{color:#5c6670}
+  .node.working:hover .peek{display:block}
+  .node.working:focus .peek{display:block}
+
+  .hint{position:absolute;bottom:16px;left:16px;font-size:12.5px;color:var(--ink-faint);z-index:5;max-width:440px}
+  .hint b{color:var(--ink-dim)}
+
+  /* ---- Side panel ---- */
+  .side{position:absolute;top:0;right:0;bottom:0;width:360px;background:var(--panel);border-left:1px solid var(--line);box-shadow:var(--shadow);transform:translateX(105%);transition:transform .25s ease;z-index:20;display:flex;flex-direction:column}
+  @media (prefers-reduced-motion: reduce){ .side{transition:none} }
+  .side.open{transform:none}
+  .side-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .side-head h3{margin:0;font-size:15.5px}
+  .side-head .x{margin-left:auto;color:var(--ink-dim);font-size:18px;padding:2px 8px;border-radius:8px}
+  .side-head .x:hover{background:var(--chip)}
+  .side-body{padding:16px;overflow:auto;display:flex;flex-direction:column;gap:14px}
+  .field label{display:block;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:5px}
+  .field .val,.field input,.field select,.field textarea{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;font-size:13.5px;color:var(--ink);font-family:inherit}
+  .field textarea{font-family:var(--mono);font-size:12.5px;min-height:74px;resize:vertical}
+  .toolrow{display:flex;flex-wrap:wrap;gap:6px}
+  .toolrow .t{background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:3px 11px;font-size:12.5px}
+  .toolrow .t.on{background:var(--accent-deep);border-color:var(--accent-deep);color:#eef7f2}
+  .side .note{font-size:12px;color:var(--ink-faint)}
+
+  .tile-term{background:#0b0e12;border:1px solid var(--line);border-radius:var(--r);padding:12px;font-family:var(--mono);font-size:12px;line-height:1.6;color:#c9d4cf;min-height:170px;white-space:pre-wrap}
+  .tile-term .ok{color:var(--accent)}
+  .tile-term .dim{color:#5c6670}
+  .tile-actions{display:flex;gap:8px}
+  .receipt{font-size:12px;color:var(--ink-dim);border:1px dashed var(--line);border-radius:var(--r);padding:10px 12px}
+  .receipt code{font-family:var(--mono);font-size:11px;color:var(--ink-dim)}
+  .receipt .vok{color:var(--accent);font-weight:650}
+
+  /* ---- Studio home: inbox strip + living project cards ---- */
+  .home{padding:22px 26px;overflow:auto}
+  .home .row-lbl:first-child{margin-top:0}
+  .inbox{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+  .inbox-card{display:flex;align-items:center;gap:12px;background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--amber);border-radius:var(--r-lg);padding:12px 14px;box-shadow:var(--shadow)}
+  .inbox-card .ic{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;background:var(--chip);font-size:14px;flex:none}
+  .inbox-card .what{flex:1;font-size:13.5px}
+  .inbox-card .what small{display:block;color:var(--ink-dim);font-size:12px;margin-top:2px}
+  .inbox-card .btn{padding:6px 13px;font-size:12.5px;flex:none}
+
+  .projcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
+  .pcard{display:block;width:100%;text-align:left;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px;box-shadow:var(--shadow);cursor:pointer}
+  .pcard:hover{border-color:var(--accent)}
+  .pcard .ptitle{display:flex;align-items:center;gap:10px;font-size:16.5px;font-weight:650}
+  .pcard .beat{position:relative;width:9px;height:9px;border-radius:50%;background:var(--accent);flex:none}
+  .pcard .beat.idle{background:var(--ink-faint)}
+  .pcard.live .beat::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:1px solid var(--accent);animation:beat 1.8s ease-out infinite}
+  @keyframes beat{0%{transform:scale(.5);opacity:.85}100%{transform:scale(2.2);opacity:0}}
+  @media (prefers-reduced-motion: reduce){ .pcard.live .beat::after{animation:none;opacity:0} }
+  .pcard .plines{margin-top:11px;display:flex;flex-direction:column;gap:5px;font-size:13.5px;color:var(--ink-dim)}
+  .pcard .plines b{color:var(--ink);font-weight:600}
+  .pcard .plines .amb{color:var(--amber)}
+  .pcard .plines .acc{color:var(--accent)}
+  .pcard .pfoot{margin-top:13px;font-size:12px;color:var(--ink-faint)}
+
+  /* ---- Project ---- */
+  .project{padding:26px 30px;max-width:1060px}
+  .phead{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .phead h2{margin:0}
+  .pchips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px}
+  .qrow{display:flex;align-items:center;gap:12px;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:9px 14px;margin-bottom:7px;font-size:13.5px}
+  .qrow:hover{border-color:var(--ink-faint)}
+  .qrow .what{flex:1}
+  .qrow .what small{color:var(--ink-dim);font-size:12.5px;margin-left:8px}
+  .qrow .when{font-size:12px;color:var(--ink-faint);font-variant-numeric:tabular-nums;flex:none}
+  .sdot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--ink-faint)}
+  .sdot.ready{background:var(--blue)}
+  .sdot.run{background:var(--amber);animation:pulse 1.2s infinite}
+  .sdot.human{background:var(--red)}
+  .hchip{font-size:11px;border-radius:999px;padding:2px 9px;background:var(--chip);border:1px solid var(--red);color:var(--red);flex:none}
+
+  .wfcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px}
+  .wfcard{display:block;width:100%;text-align:left;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 16px;box-shadow:var(--shadow);cursor:pointer}
+  .wfcard:hover{border-color:var(--accent)}
+  .wfcard h4{margin:0;font-size:14.5px}
+  .wfcard .wsub{font-size:12px;color:var(--ink-dim)}
+  .wfcard .wfoot{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink-faint)}
+  .mini{display:block;width:100%;height:58px;margin:10px 0 6px}
+  .mini line{stroke:var(--ink-faint);stroke-width:1.4;opacity:.55}
+  .mini line.hot{stroke:var(--accent);opacity:1}
+  .mini circle{fill:var(--panel);stroke:var(--ink-faint);stroke-width:1.6}
+  .mini circle.done{fill:var(--accent);stroke:var(--accent)}
+  .mini circle.work{fill:var(--amber);stroke:var(--amber);animation:pulse 1.2s ease-in-out infinite}
+  .mini text{fill:var(--ink-faint);font-family:var(--sans);font-size:8.5px;text-anchor:middle}
+  @media (prefers-reduced-motion: reduce){ .mini circle.work,.sdot.run{animation:none} }
+
+  .ruleline{display:flex;align-items:center;flex-wrap:wrap;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:11px 14px}
+  .ruleline .rl-note{font-size:12px;color:var(--ink-faint);margin-left:auto}
+  .backlink{font-size:12.5px;color:var(--ink-dim);border:1px solid var(--line);border-radius:999px;padding:4px 11px;background:var(--panel2);flex:none}
+  .backlink:hover{border-color:var(--accent);color:var(--ink)}
+
+  /* ---- Library ---- */
+  .lib{padding:26px 30px;max-width:1060px}
+  .lib h2,.runs h2,.settings h2,.project h2{font-family:var(--serif);font-size:24px;margin:0 0 4px;font-weight:600}
+  .lib .sub,.runs .sub,.settings .sub,.project .sub{color:var(--ink-dim);margin:0 0 20px;font-size:14px}
+  .row-lbl{font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);margin:22px 0 10px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 16px;box-shadow:var(--shadow);cursor:grab}
+  .card:hover{border-color:var(--accent)}
+  .card .chead{display:flex;align-items:center;gap:9px;margin-bottom:6px}
+  .card .glyph{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:var(--chip);font-size:14px}
+  .card.agent .glyph{background:var(--accent-deep);color:#eef7f2}
+  .card.skill .glyph{background:var(--blue);color:#0d1b28}
+  .card.wf .glyph{background:var(--amber);color:#221a08}
+  .card h4{margin:0;font-size:14.5px}
+  .card .kind{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint)}
+  .card p{margin:4px 0 8px;font-size:12.5px;color:var(--ink-dim)}
+  .card .foot{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink-faint)}
+  .score{display:inline-flex;gap:2px;align-items:flex-end}
+  .score i{width:5px;border-radius:2px;background:var(--chip)}
+  .score i.f{background:var(--accent)}
+  .score i:nth-child(1){height:7px}.score i:nth-child(2){height:9px}.score i:nth-child(3){height:11px}.score i:nth-child(4){height:13px}.score i:nth-child(5){height:15px}
+  .card .ver{font-family:var(--mono)}
+  .card .drag{margin-left:auto;color:var(--ink-faint)}
+  .card .docname{font-family:var(--mono);font-size:11.5px;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:1px 7px;display:inline-block;margin:2px 0 0}
+  .card .src{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin:0 0 8px}
+
+  /* ---- Runs ---- */
+  .runs{padding:26px 30px;max-width:1000px}
+  .runfilters{display:flex;gap:8px;margin-bottom:14px}
+  .runfilters .f{font-size:12.5px;border:1px solid var(--line);border-radius:999px;padding:4px 12px;color:var(--ink-dim)}
+  .runfilters .f.on{background:var(--chip);color:var(--ink);border-color:var(--ink-faint)}
+  .runrow{display:flex;align-items:center;gap:14px;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:13px 16px;margin-bottom:10px;cursor:pointer}
+  .runrow:hover{border-color:var(--accent)}
+  .runrow[hidden]{display:none}
+  .runrow .st{width:9px;height:9px;border-radius:50%;flex:none}
+  .runrow .st.done{background:var(--accent)}
+  .runrow .st.work{background:var(--amber);animation:pulse 1.2s infinite}
+  .runrow .st.fail{background:var(--red)}
+  .runrow .what{flex:1}
+  .runrow .what b{font-size:14.5px}
+  .runrow .what small{display:block;color:var(--ink-dim);font-size:12.5px;margin-top:1px}
+  .pchip{font-size:11px;background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:var(--ink-dim);flex:none}
+  .runrow .meta{text-align:right;font-size:12px;color:var(--ink-faint);font-variant-numeric:tabular-nums;flex:none}
+  .runrow .meta .v{color:var(--accent);font-weight:650}
+  .runrow .meta .replay{color:var(--blue)}
+  .runrow .use{display:block;margin-top:5px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);font-variant-numeric:tabular-nums}
+  .runrow .use i{font-style:normal;color:var(--ink-dim)}
+  .targetnote{font-size:12px;color:var(--ink-faint);border-left:2px dashed var(--line);padding:2px 0 2px 11px;margin:0 0 16px;max-width:640px}
+  .targetnote b{color:var(--ink-dim)}
+
+  /* ---- Settings ---- */
+  .settings{padding:26px 30px;max-width:840px}
+  .setgrp{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:4px 18px;margin-bottom:14px}
+  .setrow{display:flex;align-items:center;gap:14px;padding:13px 0;border-bottom:1px solid var(--line)}
+  .setrow:last-child{border-bottom:none}
+  .setrow .s-what{flex:1}
+  .setrow .s-what b{font-size:14px}
+  .setrow .s-what small{display:block;color:var(--ink-dim);font-size:12.5px}
+  .setrow .s-val{font-size:13px;color:var(--ink-dim)}
+  .setrow .s-val code{font-family:var(--mono);font-size:12px}
+  .pill{font-size:11.5px;border-radius:999px;padding:2px 10px;background:var(--chip);border:1px solid var(--line)}
+  .pill.ok{color:var(--accent);border-color:var(--accent-deep)}
+  .pill.warn{color:var(--amber);border-color:var(--amber)}
+
+  /* settings: list rows, add affordances, inline mock flows */
+  .setrow .s-sub{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px}
+  .tag-s{font-size:11px;background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:1px 9px;color:var(--ink-dim)}
+  .tag-s.mono{font-family:var(--mono);font-size:10.5px}
+  .setrow .s-glyph{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:var(--chip);font-size:14px;flex:none}
+  .addbtn{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:13px 0;font-size:13.5px;font-weight:600;color:var(--accent)}
+  .addbtn:hover{color:var(--ink)}
+  .flow{border:1px dashed var(--line);border-radius:var(--r-lg);background:var(--panel);padding:16px 18px;margin:0 0 14px}
+  .flow .sl{display:block;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:7px}
+  .flow .step{margin-bottom:14px}
+  .flow .step:last-child{margin-bottom:0}
+  .flow .picks{display:flex;flex-wrap:wrap;gap:8px}
+  .flow .pick{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:5px 13px;font-size:13px;color:var(--ink-dim)}
+  .flow .pick:hover{border-color:var(--accent);color:var(--ink)}
+  .flow .pick.on{background:var(--accent-deep);border-color:var(--accent-deep);color:#eef7f2}
+  .flow .auth{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .flow .auth button{border:1px solid var(--line);background:var(--panel2);border-radius:var(--r);padding:11px 13px;text-align:left}
+  .flow .auth button:hover{border-color:var(--accent)}
+  .flow .auth button.on{border-color:var(--accent)}
+  .flow .auth b{display:block;font-size:13.5px}
+  .flow .auth small{display:block;font-size:12px;color:var(--ink-dim);margin-top:2px}
+  .flow .result{font-size:12.5px;color:var(--accent);margin:12px 0 0}
+  .flow .note{font-size:12px;color:var(--ink-faint);margin:10px 0 0}
+  .flow .actions{display:flex;align-items:center;gap:10px;margin-top:14px}
+  .cmdline{display:flex;align-items:center;gap:12px;background:var(--ground);border:1px solid var(--line);border-radius:var(--r);padding:8px 12px;margin-top:8px}
+  .cmdline code{font-family:var(--mono);font-size:12px;color:var(--ink-dim)}
+  .cmdline .cp{margin-left:auto;font-size:11.5px;color:var(--ink-faint)}
+  .cmdline .cp:hover{color:var(--accent)}
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <span class="wordmark">atelier<b>·2</b></span>
+    <button class="proj" title="Switch project" data-go="project"><span class="dot" id="topproj-dot"></span><span id="topproj-name">atelier-2</span><small>▾ project</small></button>
+    <div class="grow"></div>
+    <span class="cmdk">Search or command… <kbd>⌘K</kbd></span>
+    <button class="theme" id="themebtn" title="Toggle theme">◐ theme</button>
+    <span class="mocknote">target UI · mockup v4 · Design-Vorlage</span>
+    <span class="avatar">F</span>
+  </header>
+
+  <nav class="rail">
+    <button class="navbtn active" data-go="studio"><span class="ico">✳</span> Studio</button>
+    <button class="navbtn" data-go="project"><span class="ico">▣</span> Projekte</button>
+    <button class="navbtn" data-go="runs"><span class="ico">▷</span> Runs <span class="live" id="livebadge" hidden>1 live</span></button>
+    <button class="navbtn" data-go="lib"><span class="ico">❖</span> Library</button>
+    <button class="navbtn" disabled title="Vision #8"><span class="ico">≡</span> Scorecards</button>
+    <div class="sep"></div>
+    <button class="navbtn" data-go="settings"><span class="ico">⚙</span> Settings</button>
+    <div class="foot">Every value byte-verified.<br><code>main · 7decbdc</code></div>
+  </nav>
+
+  <main class="stage">
+
+    <!-- ============ STUDIO ============ -->
+    <section class="screen on" id="scr-studio">
+      <div class="studio">
+        <div class="chat">
+          <div class="chat-head">
+            <h2>Leonardo</h2>
+            <p>about everything — or open a project</p>
+          </div>
+          <div class="chat-log">
+            <div class="msg user">Was liegt an?</div>
+            <div class="msg leo"><div class="who">Leonardo</div>Zwei Dinge warten auf dich: der <i>reviewer</i> fragt, ob der strenge Prompt bleibt, und in <b>work-test</b> hat ein Lauf den Budget-Stop erreicht. Beide liegen rechts in der Inbox.</div>
+            <div class="msg user">Und atelier-2?</div>
+            <div class="msg leo"><div class="who">Leonardo</div>Drei Läufe unterwegs, die letzte Landung vor 12 Minuten. Öffne das Projekt, wenn du die Queue sehen willst — hier reden wir über alles.</div>
+          </div>
+          <div class="chat-input">
+            <input placeholder="What should the workshop do?" aria-label="Message Leonardo">
+            <button class="send">Send</button>
+          </div>
+        </div>
+
+        <div class="home">
+          <div class="row-lbl">Inbox · 2 warten auf dich</div>
+          <div class="inbox">
+            <div class="inbox-card">
+              <span class="ic">⚖</span>
+              <div class="what"><b>reviewer fragt: strenger Prompt ok?</b><small>code · review · fix · Lauf hält bei Knoten 2</small></div>
+              <span class="pchip">atelier-2</span>
+              <button class="btn primary" data-go="canvas">Answer</button>
+            </div>
+            <div class="inbox-card">
+              <span class="ic">⏱</span>
+              <div class="what"><b>Budget-Stop: run X bei Turn 8</b><small>abgelehnt, nicht gekappt · Lauf ist resumierbar</small></div>
+              <span class="pchip">work-test</span>
+              <button class="btn" data-open-project="work-test">Ansehen</button>
+            </div>
+          </div>
+
+          <div class="row-lbl">Projekte</div>
+          <div class="projcards">
+            <button class="pcard live" data-open-project="atelier-2">
+              <div class="ptitle"><span class="beat"></span>atelier-2</div>
+              <div class="plines">
+                <span><b>▷ 3 laufen</b></span>
+                <span class="amb">⏳ 1 wartet auf dich</span>
+                <span class="acc">✓ letzte Landung vor 12 min</span>
+              </div>
+              <div class="pfoot">git · felix-hummert/atelier · main — Projekt öffnen →</div>
+            </button>
+            <button class="pcard" data-open-project="work-test">
+              <div class="ptitle"><span class="beat idle"></span>work-test</div>
+              <div class="plines">
+                <span><b>⏸ pausiert</b></span>
+                <span>4 Items im Backlog-Filter</span>
+                <span class="acc">✓ letzte Landung gestern 18:40</span>
+              </div>
+              <div class="pfoot">git · felix-hummert/work-test · main — Projekt öffnen →</div>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PROJEKT ============ -->
+    <section class="screen" id="scr-project">
+      <div class="project">
+
+        <div class="pbody" data-project="atelier-2">
+          <div class="phead">
+            <h2>atelier-2</h2>
+            <button class="pill ok" data-pause>▷ running</button>
+          </div>
+          <p class="sub">Das Projekt ist das Zuhause der Arbeit: Queue, laufende Workflows, Regeln und Quellen.</p>
+          <div class="pchips">
+            <span class="tag-s">tracker: atelier board</span>
+            <span class="tag-s mono">git · felix-hummert/atelier · main</span>
+            <span class="tag-s mono">cred: claude-personal</span>
+          </div>
+
+          <div class="row-lbl">Queue</div>
+          <div class="runfilters">
+            <button class="f on">alle</button>
+            <button class="f">bereit</button>
+            <button class="f">läuft</button>
+            <button class="f">⚑ wartet auf dich</button>
+          </div>
+          <div class="qrow">
+            <span class="sdot run"></span>
+            <div class="what"><b>Review PR #74 — build, check, fix</b><small>code-review-fix/v12 · Knoten 2 von 4</small></div>
+            <span class="when">seit 41 s</span>
+          </div>
+          <div class="qrow">
+            <span class="sdot human"></span>
+            <div class="what"><b>Strenger Reviewer-Prompt: bleibt v3?</b><small>Antwort entscheidet, ob der Lauf weiterläuft</small></div>
+            <span class="hchip">⚑ wartet auf dich</span>
+            <span class="when">seit 4 min</span>
+          </div>
+          <div class="qrow">
+            <span class="sdot ready"></span>
+            <div class="what"><b>Budget-Zeile im Run-Header zeigen</b><small>bereit · Regel „review vor build“ greift</small></div>
+            <span class="when">bereit</span>
+          </div>
+          <div class="qrow">
+            <span class="sdot ready"></span>
+            <div class="what"><b>Zweitmeinung zum Budget-Entwurf wiederholen</b><small>bereit · second-opinion/v1</small></div>
+            <span class="when">bereit</span>
+          </div>
+
+          <div class="row-lbl">Laufende Workflows</div>
+          <div class="wfcards">
+            <button class="wfcard" data-go="canvas">
+              <h4>code · review · fix</h4>
+              <div class="wsub">code-review-fix/v12 · gebunden an PR #74</div>
+              <svg class="mini" viewBox="0 0 240 58" aria-label="builder fertig, reviewer arbeitet, fixer und report offen">
+                <line class="hot" x1="34" y1="22" x2="86" y2="22"/>
+                <line x1="94" y1="22" x2="146" y2="22"/>
+                <line x1="154" y1="22" x2="206" y2="22"/>
+                <circle class="done" cx="30" cy="22" r="8"/>
+                <circle class="work" cx="90" cy="22" r="8"/>
+                <circle cx="150" cy="22" r="8"/>
+                <circle cx="210" cy="22" r="8"/>
+                <text x="30" y="46">builder</text>
+                <text x="90" y="46">reviewer</text>
+                <text x="150" y="46">fixer</text>
+                <text x="210" y="46">report</text>
+              </svg>
+              <div class="wfoot"><span>Knoten 2 von 4 · 41 s</span><span style="margin-left:auto">Lauf öffnen →</span></div>
+            </button>
+            <button class="wfcard" data-go="canvas">
+              <h4>second opinion</h4>
+              <div class="wsub">second-opinion/v1 · Budget-Entwurf</div>
+              <svg class="mini" viewBox="0 0 240 58" aria-label="leser fertig, kritiker arbeitet, urteil offen">
+                <line class="hot" x1="64" y1="22" x2="116" y2="22"/>
+                <line x1="124" y1="22" x2="176" y2="22"/>
+                <circle class="done" cx="60" cy="22" r="8"/>
+                <circle class="work" cx="120" cy="22" r="8"/>
+                <circle cx="180" cy="22" r="8"/>
+                <text x="60" y="46">leser</text>
+                <text x="120" y="46">kritiker</text>
+                <text x="180" y="46">urteil</text>
+              </svg>
+              <div class="wfoot"><span>Knoten 2 von 3 · 18 s</span><span style="margin-left:auto">Lauf öffnen →</span></div>
+            </button>
+            <button class="wfcard" data-go="canvas">
+              <h4>heartbeat</h4>
+              <div class="wsub">heartbeat/v1 · beweist die Maschine</div>
+              <svg class="mini" viewBox="0 0 240 58" aria-label="ping arbeitet, echo offen">
+                <line x1="94" y1="22" x2="146" y2="22"/>
+                <circle class="work" cx="90" cy="22" r="8"/>
+                <circle cx="150" cy="22" r="8"/>
+                <text x="90" y="46">ping</text>
+                <text x="150" y="46">echo</text>
+              </svg>
+              <div class="wfoot"><span>Knoten 1 von 2 · 2 s</span><span style="margin-left:auto">Lauf öffnen →</span></div>
+            </button>
+          </div>
+
+          <div class="row-lbl">Regeln &amp; Quellen</div>
+          <div class="ruleline">
+            <span class="tag-s">4 Workflow-Regeln</span>
+            <span class="tag-s mono">quelle: git · felix-hummert/atelier-agents</span>
+            <span class="tag-s mono">quelle: atelier/starter-pack</span>
+            <span class="rl-note">Regeln entscheiden, was von selbst startet — Quellen liefern die Bausteine.</span>
+          </div>
+        </div>
+
+        <div class="pbody" data-project="work-test" hidden>
+          <div class="phead">
+            <h2>work-test</h2>
+            <button class="pill warn" data-pause>⏸ paused</button>
+          </div>
+          <p class="sub">Pausiert: kein neuer Lauf startet, angefangene Versuche laufen zu Ende und bleiben resumierbar.</p>
+          <div class="pchips">
+            <span class="tag-s">tracker: GitHub Issues</span>
+            <span class="tag-s mono">git · felix-hummert/work-test · main</span>
+            <span class="tag-s mono">cred: openai-work</span>
+          </div>
+
+          <div class="row-lbl">Queue</div>
+          <div class="runfilters">
+            <button class="f">alle</button>
+            <button class="f on">Backlog-Filter</button>
+            <button class="f">⚑ wartet auf dich</button>
+          </div>
+          <div class="qrow">
+            <span class="sdot human"></span>
+            <div class="what"><b>Budget-Stop: run X bei Turn 8</b><small>abgelehnt, nicht gekappt · resumierbar</small></div>
+            <span class="hchip">⚑ wartet auf dich</span>
+            <span class="when">seit 2 h</span>
+          </div>
+          <div class="qrow">
+            <span class="sdot"></span>
+            <div class="what"><b>Output-Contract-Probe wiederholen</b><small>wartet auf Resume des Projekts</small></div>
+            <span class="when">pausiert</span>
+          </div>
+          <div class="qrow">
+            <span class="sdot"></span>
+            <div class="what"><b>Startseite: Kopfzeile kürzen</b><small>wartet auf Resume des Projekts</small></div>
+            <span class="when">pausiert</span>
+          </div>
+          <div class="qrow">
+            <span class="sdot"></span>
+            <div class="what"><b>Link-Check über alle Seiten</b><small>wartet auf Resume des Projekts</small></div>
+            <span class="when">pausiert</span>
+          </div>
+
+          <div class="row-lbl">Laufende Workflows</div>
+          <p class="targetnote">Nichts läuft — das Projekt ist pausiert. Auf <b>▷ running</b> stellen, und die vier Items aus dem Backlog-Filter starten nach ihren Regeln.</p>
+
+          <div class="row-lbl">Regeln &amp; Quellen</div>
+          <div class="ruleline">
+            <span class="tag-s">1 Workflow-Regel</span>
+            <span class="tag-s mono">quelle: atelier/starter-pack</span>
+            <span class="rl-note">Regeln entscheiden, was von selbst startet — Quellen liefern die Bausteine.</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============ CANVAS (ein Lauf) ============ -->
+    <section class="screen" id="scr-canvas">
+      <div class="studio">
+        <div class="chat">
+          <div class="chat-head">
+            <h2>Leonardo</h2>
+            <p>über diesen Lauf</p>
+          </div>
+          <div class="chat-log">
+            <div class="msg user">Review open PR #74 — build, check, fix until green, then report.</div>
+            <div class="msg leo"><div class="who">Leonardo</div>Took <b>code · review · fix</b> from the library (92 % success) and bound it to PR #74: 3 agents, budget 8 turns / 300 s per attempt. The graph is on the right — <i>builder</i> runs on Opus; say the word if Haiku is enough.</div>
+            <div class="msg user">Fine. But make the reviewer strict.</div>
+            <div class="msg leo"><div class="who">Leonardo</div>Done — <i>reviewer</i> got the adversarial prompt v3 and may only reject with named findings. Ready to start.</div>
+          </div>
+          <div class="chat-input">
+            <input placeholder="Was soll in diesem Lauf passieren?" aria-label="Message Leonardo">
+            <button class="send">Send</button>
+          </div>
+        </div>
+
+        <div class="canvas" id="canvas">
+          <div class="canvas-tools">
+            <button class="backlink" data-open-project="atelier-2">‹ atelier-2</button>
+            <h2>code · review · fix</h2>
+            <span class="wfchip"><b>code-review-fix/v12</b> · from library · bound to PR #74</span>
+            <div class="grow"></div>
+            <button class="btn" id="btn-reset" hidden>Reset</button>
+            <button class="btn primary" id="btn-start">▷ Start</button>
+          </div>
+
+          <svg class="edges" aria-hidden="true">
+            <path id="e1" d="M 300 205 C 360 205 380 205 440 205"/>
+            <path id="e2" d="M 630 205 C 700 205 700 330 630 330"/>
+            <path id="e3" d="M 440 330 C 380 330 380 258 348 230"/>
+            <path id="e4" d="M 630 178 C 720 150 780 150 830 168"/>
+          </svg>
+
+          <div class="node agent" style="left:110px;top:160px" data-node="builder" tabindex="0">
+            <div class="nhead"><span class="glyph">⚒</span><div><div class="nname">builder</div><div class="nkind">Agent</div></div></div>
+            <div class="nmeta"><span class="tag">opus</span><span class="tag">all tools</span></div>
+            <div class="status"></div>
+            <div class="peek"><span class="dim">live preview</span>
+worktree ready · PR #74 checked out
+running gates…
+<span class="ok">1095 passed</span></div>
+          </div>
+
+          <div class="node agent" style="left:440px;top:160px" data-node="reviewer" tabindex="0">
+            <div class="nhead"><span class="glyph">⚖</span><div><div class="nname">reviewer</div><div class="nkind">Agent · verdict</div></div></div>
+            <div class="nmeta"><span class="tag">opus</span><span class="tag">read-only</span><span class="tag">strict v3</span></div>
+            <div class="status"></div>
+            <div class="peek"><span class="dim">live preview — click to open tile</span>
+reading demands D1–D6…
+probe: base 0.06s · head 0.07s
+<span class="ok">✓ no hang</span></div>
+          </div>
+
+          <div class="node agent" style="left:440px;top:295px" data-node="fixer" tabindex="0">
+            <div class="nhead"><span class="glyph">✎</span><div><div class="nname">fixer</div><div class="nkind">Agent · on red</div></div></div>
+            <div class="nmeta"><span class="tag">haiku</span><span class="tag">edit + test</span></div>
+            <div class="status"></div>
+          </div>
+
+          <div class="node skill" style="left:830px;top:130px" data-node="report" tabindex="0">
+            <div class="nhead"><span class="glyph">✉</span><div><div class="nname">report</div><div class="nkind">Skill</div></div></div>
+            <div class="nmeta"><span class="tag">markdown</span></div>
+            <div class="status"></div>
+          </div>
+
+          <p class="hint"><b>Feel:</b> drag nodes from the library, connect, click to configure. While running: <b>hover</b> a working node for a live preview, <b>click</b> it to open the full tile. Press <b>▷ Start</b> to see it come alive.</p>
+        </div>
+      </div>
+
+      <!-- Side panel: node config -->
+      <aside class="side" id="panel-config" aria-label="Node configuration">
+        <div class="side-head"><h3 id="cfg-title">builder</h3><button class="x" data-close="panel-config" aria-label="Close">×</button></div>
+        <div class="side-body">
+          <div class="field"><label>Definition (markdown file)</label>
+            <textarea readonly>---
+name: builder
+description: Builds exactly the described cut
+model: opus
+# no tools key → default: everything allowed
+---
+Build exactly the described cut.
+Only this — no side work.</textarea></div>
+          <div class="field"><label>Model</label>
+            <select><option>opus</option><option>sonnet</option><option>haiku</option></select></div>
+          <div class="field"><label>Tools <span style="text-transform:none;letter-spacing:0">(default: all — restrict only if you want)</span></label>
+            <div class="toolrow"><span class="t on">Read</span><span class="t on">Edit</span><span class="t on">Test</span><span class="t on">Grep</span><span class="t">Network</span><span class="t">Deploy</span></div></div>
+          <div class="field"><label>Budget per attempt</label><div class="val">8 turns · 300 s · refused, never clamped</div></div>
+          <p class="note">Changes publish as a new revision — identity stays a hash, the name stays for humans.</p>
+        </div>
+      </aside>
+
+      <!-- Side panel: live tile -->
+      <aside class="side" id="panel-tile" aria-label="Live tile">
+        <div class="side-head"><h3 id="tile-title">reviewer · <span style="color:var(--amber)">working</span></h3><button class="x" data-close="panel-tile" aria-label="Close">×</button></div>
+        <div class="side-body">
+          <div class="tile-term" id="term"><span class="dim">attempt 1 · claude-subscription · opus</span>
+</div>
+          <div class="tile-actions">
+            <button class="btn">⏎ Intervene</button>
+            <button class="btn">⏸ Pause</button>
+          </div>
+          <div class="receipt">
+            <span class="vok">✓ verified</span> · receipt <code>bfbfd70e…</code><br>
+            output <code>sha-256 · 9578…3cc</code> · 1 attempt · no retry
+          </div>
+          <p class="note">The tile is ephemeral — it shows the real process. Intervening is native (tmux-style), not a rebuilt channel.</p>
+        </div>
+      </aside>
+    </section>
+
+    <!-- ============ RUNS ============ -->
+    <section class="screen" id="scr-runs">
+      <div class="runs">
+        <h2>Runs</h2>
+        <p class="sub">Every run belongs to a project, shows what it did and what came out — and opens as a live graph.</p>
+        <div class="runfilters">
+          <button class="f on">All projects</button>
+          <button class="f">atelier-2</button>
+          <button class="f">work-test</button>
+          <button class="f">· live only</button>
+        </div>
+        <p class="targetnote"><b>Zuhause der Runs ist ihr Projekt — dies ist der Querblick.</b> Gruppiert nach Projekt; ein Klick öffnet den Lauf als Graph.</p>
+        <p class="targetnote"><b>Target state (vision #8):</b> every run carries what it consumed — tokens in/out and wall time per attempt, summed over the graph. Today the list shows duration only; the consumption line below is the shape it takes once attempts are metered.</p>
+
+        <div class="row-lbl">atelier-2</div>
+        <div class="runrow" id="liverun" hidden data-go="canvas">
+          <span class="st work"></span>
+          <div class="what"><b>Review PR #74 — build, check, fix</b><small>code-review-fix/v12 · started by you · node 2/4 working</small>
+            <span class="use"><i>41 s</i> · 62.4k in · 3.1k out · 3 of 4 nodes</span></div>
+          <span class="pchip">atelier-2</span>
+          <div class="meta">live now<br><span class="v">open live graph →</span></div>
+        </div>
+        <div class="runrow">
+          <span class="st done"></span>
+          <div class="what"><b>Adversarial check of the budget draft</b><small>second-opinion/v1 · result: weakest claim named ("a ledger, not a gate")</small>
+            <span class="use"><i>1 m 12 s</i> · 48.9k in · 2.4k out · 1 attempt</span></div>
+          <span class="pchip">atelier-2</span>
+          <div class="meta">today 02:13 · <span class="v">✓ verified</span><br><span class="replay">↺ replay on graph</span></div>
+        </div>
+        <div class="runrow">
+          <span class="st done"></span>
+          <div class="what"><b>Heartbeat from main</b><small>heartbeat/v1 · answer byte-exact <code style="font-family:var(--mono)">PONG</code> · containment held</small>
+            <span class="use"><i>2.8 s</i> · 0.9k in · 0.1k out · 1 attempt</span></div>
+          <span class="pchip">atelier-2</span>
+          <div class="meta">today 00:52 · <span class="v">✓ verified</span><br><span class="replay">↺ replay on graph</span></div>
+        </div>
+
+        <div class="row-lbl">work-test</div>
+        <div class="runrow">
+          <span class="st fail"></span>
+          <div class="what"><b>Output-contract probe</b><small>one-turn-verdict/v2 · prose instead of JSON — finding became issue #57</small>
+            <span class="use"><i>19 s</i> · 12.7k in · 0.8k out · 1 attempt · budget refused at turn 8</span></div>
+          <span class="pchip">work-test</span>
+          <div class="meta">yesterday 18:04<br>honestly red</div>
+        </div>
+        <div class="runrow">
+          <span class="st done"></span>
+          <div class="what"><b>Link check across all pages</b><small>heartbeat/v1 · 84 links, none dead</small>
+            <span class="use"><i>34 s</i> · 6.2k in · 0.3k out · 1 attempt</span></div>
+          <span class="pchip">work-test</span>
+          <div class="meta">yesterday 18:40 · <span class="v">✓ verified</span><br><span class="replay">↺ replay on graph</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ LIBRARY ============ -->
+    <section class="screen" id="scr-lib">
+      <div class="lib">
+        <h2>Library</h2>
+        <p class="sub">Named, versioned, scored building blocks. Drag onto the canvas — done. Every agent is a markdown file that comes from a named source; editing publishes a new revision.</p>
+
+        <div class="row-lbl">Agents</div>
+        <div class="cards">
+          <div class="card agent" draggable="true"><div class="chead"><span class="glyph">⚒</span><div><h4>builder</h4><span class="kind">Agent</span></div><span class="drag">⠿</span></div>
+            <p>Builds exactly the described cut, no side work.</p>
+            <div class="src">source: git · felix-hummert/atelier-agents</div>
+            <div class="foot"><span class="score"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i></span><span>92 % · 41 runs</span><span class="ver">v7</span></div></div>
+          <div class="card agent" draggable="true"><div class="chead"><span class="glyph">⚖</span><div><h4>reviewer</h4><span class="kind">Agent · verdict</span></div><span class="drag">⠿</span></div>
+            <p>Adversarial: rejects only with named findings.</p>
+            <div class="src">source: git · atelier/starter-pack</div>
+            <div class="foot"><span class="score"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i></span><span>96 % · 58 runs</span><span class="ver">v3</span></div></div>
+          <div class="card agent" draggable="true"><div class="chead"><span class="glyph">✎</span><div><h4>fixer</h4><span class="kind">Agent</span></div><span class="drag">⠿</span></div>
+            <p>Fixes exactly the findings named in review.</p>
+            <div class="src">source: git · felix-hummert/atelier-agents</div>
+            <div class="foot"><span class="score"><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i></span><span>84 % · 29 runs</span><span class="ver">v5</span></div></div>
+          <div class="card agent" draggable="true" style="border-style:dashed;opacity:.85"><div class="chead"><span class="glyph">＋</span><div><h4>New agent</h4><span class="kind">write markdown</span></div></div>
+            <p>Name, description, prompt — capable of everything by default; restrict only what you want.</p>
+            <div class="foot"><span>your building block</span></div></div>
+        </div>
+
+        <div class="row-lbl">Workflows</div>
+        <div class="cards">
+          <div class="card wf" draggable="true"><div class="chead"><span class="glyph">↻</span><div><h4>code · review · fix</h4><span class="kind">Workflow</span></div><span class="drag">⠿</span></div>
+            <span class="docname">code-review-fix/v12</span>
+            <p>Build → adversarial review → fix until green → report.</p>
+            <div class="foot"><span class="score"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i></span><span>92 % · 34 runs</span></div></div>
+          <div class="card wf" draggable="true"><div class="chead"><span class="glyph">◉</span><div><h4>one-turn-verdict</h4><span class="kind">Workflow</span></div><span class="drag">⠿</span></div>
+            <span class="docname">one-turn-verdict/v3</span>
+            <p>One question, one turn, one receipted verdict.</p>
+            <div class="foot"><span class="score"><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i></span><span>81 % · 12 runs</span></div></div>
+          <div class="card wf" draggable="true"><div class="chead"><span class="glyph">◑</span><div><h4>second opinion</h4><span class="kind">Workflow</span></div><span class="drag">⠿</span></div>
+            <span class="docname">second-opinion/v1</span>
+            <p>Names the weakest claim, why it fails under pressure, and the one fix.</p>
+            <div class="foot"><span class="score"><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i></span><span>new · 4 runs</span></div></div>
+          <div class="card wf" draggable="true"><div class="chead"><span class="glyph">♥</span><div><h4>heartbeat</h4><span class="kind">Workflow</span></div><span class="drag">⠿</span></div>
+            <span class="docname">heartbeat/v1</span>
+            <p>Proves the machine: one ping, byte-exact back.</p>
+            <div class="foot"><span class="score"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i></span><span>100 % · 3 runs</span></div></div>
+        </div>
+
+        <div class="row-lbl">Skills</div>
+        <div class="cards">
+          <div class="card skill" draggable="true"><div class="chead"><span class="glyph">✉</span><div><h4>report</h4><span class="kind">Skill</span></div><span class="drag">⠿</span></div>
+            <p>Summarizes a run as a compact markdown report.</p>
+            <div class="foot"><span class="ver">v2</span></div></div>
+          <div class="card skill" draggable="true"><div class="chead"><span class="glyph">⌕</span><div><h4>code-search</h4><span class="kind">Skill</span></div><span class="drag">⠿</span></div>
+            <p>Finds owners, paths and evidence before any change.</p>
+            <div class="foot"><span class="ver">v4</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section class="screen" id="scr-settings">
+      <div class="settings">
+        <h2>Settings</h2>
+        <p class="sub">Everything adjustable — nothing you must adjust. Sensible defaults, visible truth.</p>
+
+        <div class="row-lbl">Providers</div>
+        <div class="setgrp">
+          <div class="setrow"><span class="s-glyph">◈</span><div class="s-what"><b>Claude</b><small>personal subscription · flat rate, no per-token bill</small>
+            <div class="s-sub"><span class="tag-s">subscription</span><span class="tag-s mono">ref: claude-personal</span><span class="tag-s">CLI 2.1.221</span></div></div><span class="pill ok">✓ attested</span></div>
+          <div class="setrow"><span class="s-glyph">◇</span><div class="s-what"><b>OpenAI</b><small>API key · metered, real cost lands on every run</small>
+            <div class="s-sub"><span class="tag-s">api key</span><span class="tag-s mono">ref: openai-work</span><span class="tag-s mono">sk-…4f2a</span></div></div><span class="pill ok">✓ attested</span></div>
+          <button class="addbtn" data-flow="flow-provider-add">＋ Add provider</button>
+        </div>
+
+        <div class="flow" id="flow-provider-add" hidden>
+          <div class="step">
+            <span class="sl">Step 1 · which provider</span>
+            <div class="picks" id="flow-provider-picks">
+              <button class="pick">Claude</button>
+              <button class="pick">OpenAI</button>
+              <button class="pick">Google</button>
+              <button class="pick">Local (Ollama)</button>
+            </div>
+          </div>
+          <div class="step" id="flow-auth" hidden>
+            <span class="sl">Step 2 · how <span id="flow-provider-name">it</span> is authorized</span>
+            <div class="auth">
+              <button data-auth="subscription"><b>Sign in with subscription</b><small>Opens the provider's own login. Nothing metered, nothing to paste.</small></button>
+              <button data-auth="key"><b>Paste API key</b><small>Metered mode — tokens and cost show up on every run.</small></button>
+            </div>
+            <div class="field" id="flow-key" hidden style="margin-top:12px"><label>API key</label><input placeholder="sk-…" aria-label="API key"></div>
+            <p class="result" id="flow-result" hidden></p>
+          </div>
+          <p class="note">Your choice, not ours: subscription and key are equal ways in. The secret goes to the OS keychain — the workshop keeps only the reference name and never prints it.</p>
+          <div class="actions"><button class="btn primary">Add provider</button><button class="btn" data-flow-close="flow-provider-add">Cancel</button></div>
+        </div>
+
+        <div class="row-lbl">Projects</div>
+        <div class="setgrp">
+          <div class="setrow"><span class="s-glyph">▣</span><div class="s-what"><b>atelier-2</b><small>git · felix-hummert/atelier · branch main</small>
+            <div class="s-sub"><span class="tag-s">tracker: atelier board</span><span class="tag-s mono">cred: claude-personal</span><span class="tag-s">4 workflow rules</span></div></div><button class="pill ok" data-pause>▷ running</button></div>
+          <div class="setrow"><span class="s-glyph">▣</span><div class="s-what"><b>work-test</b><small>git · felix-hummert/work-test · branch main</small>
+            <div class="s-sub"><span class="tag-s">tracker: GitHub Issues</span><span class="tag-s mono">cred: openai-work</span><span class="tag-s">1 workflow rule</span></div></div><button class="pill warn" data-pause>⏸ paused</button></div>
+          <button class="addbtn" data-flow="flow-project-add">＋ Connect project</button>
+        </div>
+        <div class="flow" id="flow-project-add" hidden>
+          <div class="field"><label>Repository</label><input placeholder="https://github.com/felix-hummert/website" aria-label="Repository URL"></div>
+          <div class="field" style="margin-top:12px"><label>Access token</label><input placeholder="ghp_… — paste once" aria-label="Access token"></div>
+          <p class="note">Issues and pull requests, read and write. Pasted once, stored in the keychain, referenced by name from then on — the tracker is a plugin, so a project can just as well point at the atelier board.</p>
+          <div class="actions"><button class="btn primary">Connect</button><button class="btn" data-flow-close="flow-project-add">Cancel</button></div>
+        </div>
+        <p class="targetnote"><b>Pause is per project (#79):</b> no new run starts, attempts already running finish and stay resumable — the work is picked up where it stopped, not thrown away.</p>
+
+        <div class="row-lbl">Defaults</div>
+        <div class="setgrp">
+          <div class="setrow"><div class="s-what"><b>Model per role class</b><small>gating verdicts: opus · builders: opus · probes &amp; format checks: haiku</small></div><span class="s-val">edit ▾</span></div>
+          <div class="setrow"><div class="s-what"><b>Budget per attempt</b><small>refused when exceeded, never clamped — visible on every run</small></div><span class="s-val"><code>8 turns · 300 s</code></span></div>
+          <div class="setrow"><div class="s-what"><b>Default project</b><small>where new runs go unless chosen</small></div><span class="s-val">atelier-2 ▾</span></div>
+        </div>
+
+        <div class="row-lbl">Runners</div>
+        <div class="setgrp">
+          <div class="setrow"><span class="s-glyph">▤</span><div class="s-what"><b>This machine</b><small>where agents execute today · 12 seats · containment on</small>
+            <div class="s-sub"><span class="tag-s mono">felix-desktop</span><span class="tag-s">local</span></div></div><span class="pill ok">local ✓</span></div>
+          <div class="setrow"><div class="s-what"><b>Join a runner</b><small>a second machine joins the workshop with one line and gets its own trust contract (ADR 0009)</small>
+            <div class="cmdline"><code id="join-cmd">atelier runner join 7K2F-9QX4-TDMB</code><button class="cp" data-copy>copy</button></div></div></div>
+        </div>
+
+        <div class="row-lbl">Preferences</div>
+        <div class="setgrp">
+          <div class="setrow"><div class="s-what"><b>Notifications</b><small>a question, a gate, a red result — collected in the inbox, badged on the rail</small></div><span class="s-val">inbox + badge ▾</span></div>
+          <div class="setrow"><div class="s-what"><b>Appearance</b><small>one design system, swappable — follows your OS or your choice</small></div><span class="s-val"><button class="btn" data-theme-set="light">light</button> <button class="btn" data-theme-set="dark">dark</button> <button class="btn" data-theme-set="">auto</button></span></div>
+          <div class="setrow"><div class="s-what"><b>Language</b><small>English default · Deutsch optional</small></div><span class="s-val">English ▾</span></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+  // ---- Navigation: studio → project → canvas (a run) ----
+  const screens = {studio:'scr-studio', project:'scr-project', canvas:'scr-canvas', runs:'scr-runs', lib:'scr-lib', settings:'scr-settings'};
+  const railOf = {canvas:'project'};            // the run lives under its project
+  const stage = document.querySelector('.stage');
+  function go(name){
+    const rail = railOf[name] || name;
+    document.querySelectorAll('.navbtn[data-go]').forEach(n=>n.classList.toggle('active', n.dataset.go===rail));
+    document.querySelectorAll('.screen').forEach(s=>s.classList.remove('on'));
+    document.getElementById(screens[name]).classList.add('on');
+    stage.scrollTop=0;
+  }
+  document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.go)));
+
+  // project card → that project's screen; the rail entry reopens whichever is active
+  const activeBody = () => [...document.querySelectorAll('.pbody')].find(b=>!b.hidden);
+  function syncTopbar(){
+    const body=activeBody();
+    document.getElementById('topproj-name').textContent=body.dataset.project;
+    document.getElementById('topproj-dot').style.background =
+      body.querySelector('[data-pause]').classList.contains('warn') ? 'var(--ink-faint)' : 'var(--accent)';
+  }
+  document.querySelectorAll('[data-open-project]').forEach(c=>c.addEventListener('click',()=>{
+    const name=c.dataset.openProject;
+    document.querySelectorAll('.pbody').forEach(b=>{b.hidden = b.dataset.project!==name;});
+    syncTopbar();
+    go('project');
+  }));
+
+  // ---- Theme ----
+  const root=document.documentElement;
+  document.getElementById('themebtn').addEventListener('click',()=>{
+    const cur=root.dataset.theme||'';
+    root.dataset.theme = cur==='dark' ? 'light' : (cur==='light' ? '' : 'dark');
+  });
+  document.querySelectorAll('[data-theme-set]').forEach(b=>b.addEventListener('click',()=>{
+    if(b.dataset.themeSet) root.dataset.theme=b.dataset.themeSet; else delete root.dataset.theme;
+  }));
+
+  // ---- Settings: inline mock flows ----
+  document.querySelectorAll('[data-flow]').forEach(b=>b.addEventListener('click',()=>{
+    const f=document.getElementById(b.dataset.flow);
+    f.hidden=!f.hidden;
+  }));
+  document.querySelectorAll('[data-flow-close]').forEach(b=>b.addEventListener('click',()=>{
+    document.getElementById(b.dataset.flowClose).hidden=true;
+  }));
+  document.querySelectorAll('#flow-provider-picks .pick').forEach(p=>p.addEventListener('click',()=>{
+    document.querySelectorAll('#flow-provider-picks .pick').forEach(o=>o.classList.remove('on'));
+    p.classList.add('on');
+    document.getElementById('flow-provider-name').textContent=p.textContent;
+    document.getElementById('flow-auth').hidden=false;
+  }));
+  document.querySelectorAll('#flow-auth .auth button').forEach(a=>a.addEventListener('click',()=>{
+    document.querySelectorAll('#flow-auth .auth button').forEach(o=>o.classList.remove('on'));
+    a.classList.add('on');
+    const byKey = a.dataset.auth==='key';
+    document.getElementById('flow-key').hidden = !byKey;
+    const result=document.getElementById('flow-result');
+    result.hidden=false;
+    result.textContent = byKey
+      ? 'Mockup: the key lands in the OS keychain — the workshop stores the reference name only.'
+      : 'Mockup: the provider’s own sign-in opens — the workshop never sees a password.';
+  }));
+  document.querySelectorAll('[data-pause]').forEach(t=>t.addEventListener('click',()=>{
+    const paused=t.classList.toggle('warn');
+    t.classList.toggle('ok',!paused);
+    t.textContent = paused ? '⏸ paused' : '▷ running';
+    syncTopbar();
+  }));
+  document.querySelectorAll('[data-copy]').forEach(c=>c.addEventListener('click',()=>{
+    navigator.clipboard?.writeText(document.getElementById('join-cmd').textContent);
+    c.textContent='copied ✓';
+    setTimeout(()=>{c.textContent='copy';},1600);
+  }));
+
+  // ---- Panels ----
+  const cfg = document.getElementById('panel-config');
+  const tile = document.getElementById('panel-tile');
+  document.querySelectorAll('[data-close]').forEach(x=>x.addEventListener('click',()=>document.getElementById(x.dataset.close).classList.remove('open')));
+
+  let running=false;
+  document.querySelectorAll('.node').forEach(n=>{
+    n.addEventListener('click',()=>{
+      document.querySelectorAll('.node').forEach(m=>m.classList.remove('sel'));
+      n.classList.add('sel');
+      if(n.classList.contains('working')||n.classList.contains('done')&&running){
+        cfg.classList.remove('open');
+        document.getElementById('tile-title').innerHTML = n.dataset.node+' · '+(n.classList.contains('working')?'<span style="color:var(--amber)">working</span>':'<span style="color:var(--accent)">done ✓</span>');
+        tile.classList.add('open');
+      } else {
+        tile.classList.remove('open');
+        document.getElementById('cfg-title').textContent=n.dataset.node;
+        cfg.classList.add('open');
+      }
+    });
+  });
+
+  // ---- Start: the graph comes alive ----
+  const term = document.getElementById('term');
+  const lines = [
+    ['dim','worktree ready · PR #74 checked out'],
+    ['','Reading review demands D1–D6 …'],
+    ['','D1: probe running — base 0.06s, head 0.07s'],
+    ['ok','✓ no hang, regression fixed'],
+    ['','Budget: turn 3/8 · 41s/300s'],
+    ['ok','VERDICT: PASS — all six demands met']
+  ];
+  function play(i){
+    if(i>=lines.length) return;
+    const [cls,txt]=lines[i];
+    term.innerHTML += (cls?('<span class="'+cls+'">'+txt+'</span>'):txt)+'\n';
+    term.scrollTop=term.scrollHeight;
+    setTimeout(()=>play(i+1), 650);
+  }
+  const byName=n=>document.querySelector('[data-node="'+n+'"]');
+  document.getElementById('btn-start').addEventListener('click',()=>{
+    if(running) return; running=true;
+    document.getElementById('btn-start').textContent='running …';
+    document.getElementById('btn-reset').hidden=false;
+    document.getElementById('livebadge').hidden=false;
+    document.getElementById('liverun').hidden=false;
+    cfg.classList.remove('open');
+    byName('builder').classList.add('working');
+    setTimeout(()=>{ byName('builder').classList.replace('working','done'); document.getElementById('e1').classList.add('hot'); byName('reviewer').classList.add('working'); tile.classList.add('open'); play(0); },1200);
+    setTimeout(()=>{ byName('reviewer').classList.replace('working','done'); document.getElementById('e4').classList.add('hot'); byName('report').classList.add('working'); },6200);
+    setTimeout(()=>{ byName('report').classList.replace('working','done');
+      document.getElementById('tile-title').innerHTML='reviewer · <span style="color:var(--accent)">done ✓</span>';
+      document.getElementById('btn-start').textContent='✓ done'; },7600);
+  });
+  document.getElementById('btn-reset').addEventListener('click',()=>location.reload());
+</script>
+
+</body></html>
