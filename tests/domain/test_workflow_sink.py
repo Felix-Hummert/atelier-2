@@ -24,6 +24,7 @@ from atelier2.contracts.workflows import (
     completion_after_node,
 )
 from atelier2.contracts.workflows_v3 import (
+    BranchingAdvanceUnsupported,
     MultipleSinkCompletionUnsupported,
     is_sink_node,
 )
@@ -195,18 +196,27 @@ def test_v3_multi_sink_completion_is_refused_until_all_sinks_have_an_owner() -> 
 
 @pytest.mark.proves("a-completed-v3-attempt-reaches-the-runs-terminal-hash")
 def test_a_v3_sink_completes_its_run_and_a_non_sink_is_refused_by_name() -> None:
-    """The V3 half this cut needs, and the half it declines to decide.
+    """The V3 halves this cut answers, and the one it still declines to decide.
 
     A finished V3 node used to reach for a V1 spelling that is not there, which
     raised `AttributeError` from inside a durable transition. The sink half is
-    answered here; advancing past a node that is not a sink needs the ready set
-    and its join semantics, so it is refused by name instead of guessed.
+    answered here, and so is the line: after a node with exactly one declared
+    heir, that heir is next. Where a node has several dependents, choosing
+    between them is the ready set's decision, and it is refused in typed words
+    rather than guessed.
     """
     graph = v3_graph()
     sink = graph.sink_node_ids[0]
-    waiting = next(node.id for node in graph.nodes if node.id != sink)
+    branching = next(
+        node.id
+        for node in graph.nodes
+        if len([other for other in graph.nodes if node.id in other.depends_on]) > 1
+    )
 
     assert completion_after_node(graph, sink) == RunCompletes()
 
-    with pytest.raises(ValueError, match="is not a sink"):
-        completion_after_node(graph, waiting)
+    with pytest.raises(BranchingAdvanceUnsupported) as refused:
+        completion_after_node(graph, branching)
+
+    assert refused.value.node_id == branching
+    assert len(refused.value.dependents) > 1
