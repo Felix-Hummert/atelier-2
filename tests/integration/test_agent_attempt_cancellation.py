@@ -44,7 +44,7 @@ from tests.integration.test_agent_attempts import (
     attempt_runtime,
     inspecting_executor,
 )
-from tests.scenarios.agents import agent_attempt_execution
+from tests.scenarios.agents import agent_attempt_execution, runtime_workspace_owner
 
 
 def test_cancel_commits_before_signal_and_exact_retry_is_idempotent(
@@ -204,6 +204,7 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
                     executor,
                     store,
                     runtime.agent_process_supervisor,
+                    runtime_workspace_owner(runtime),
                 )
             except RuntimeError as error:
                 failures.append(error)
@@ -240,7 +241,7 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
         }
         assert len(failures) == 1
         assert isinstance(failures[0], RunTransitionConflict)
-        assert len(executor.released_invocations) == 1
+        assert len(executor.released_commands) == 1
     finally:
         runtime.close()
 

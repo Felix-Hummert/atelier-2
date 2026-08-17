@@ -54,6 +54,7 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
+    AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
@@ -61,6 +62,11 @@ from atelier2.ports.durable_runs import (
     DurableAgentExecutorCapabilityUnavailable,
     DurableRunCreated,
     StartPublishedRunRequestV2,
+)
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    agent_scratch_root,
+    leased_directory_identity,
 )
 
 MEASURED_GROK_VERSION = "1.0.4"
@@ -179,12 +185,33 @@ def subscription_request(
     )
 
 
-def launched(invocation: AgentProcessInvocation) -> AgentProcessCompletion:
+def leased_workspace(root: Path, name: str = "attempt-workspace") -> Path:
+    """The blank directory an attempt's lease starts this provider in."""
+
+    workspace = root / name
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
+def leased(command: AgentProcessCommand, workspace: Path) -> AgentProcessInvocation:
+    """One invocation for a test that houses the leased directory itself."""
+
+    return AgentProcessInvocation(
+        command,
+        leased_directory_identity(
+            agent_attempt_execution(subscription_request()).attempt_id, workspace
+        ),
+    )
+
+
+def launched(command: AgentProcessCommand, workspace: Path) -> AgentProcessCompletion:
+    """Run one prepared command exactly where the attempt leased its ground."""
+
     completed = subprocess.run(
-        invocation.arguments,
-        cwd=invocation.working_directory,
-        env=dict(invocation.environment),
-        input=invocation.standard_input,
+        command.arguments,
+        cwd=workspace,
+        env=dict(command.environment),
+        input=command.standard_input,
         capture_output=True,
         check=False,
     )
@@ -200,15 +227,15 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     executor = GrokSubscriptionExecutorFactory(settings).open()
     request = subscription_request(model="grok-4", job=b"draw the owl")
 
-    invocation = executor.prepare_process(request)
+    workspace = leased_workspace(tmp_path)
+    command = executor.prepare_process(request)
+    invocation = leased(command, workspace)
     # The job path is private per execution, so it is read back from the vector
     # rather than recomputed: a predictable name is what a symlink preys on.
-    job_file = Path(
-        invocation.arguments[invocation.arguments.index("--prompt-file") + 1]
-    )
+    job_file = Path(command.arguments[command.arguments.index("--prompt-file") + 1])
 
     assert job_file.parent.parent == settings.workspace
-    assert invocation.arguments == (
+    assert command.arguments == (
         str(settings.executable),
         "-p",
         "--output-format",
@@ -226,11 +253,14 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         "--max-turns",
         "1",
     )
-    invocation_home = Path(dict(invocation.environment)["GROK_HOME"])
-    assert invocation.working_directory == invocation_home
+    invocation_home = Path(dict(command.environment)["GROK_HOME"])
+    # The secret channel keeps its own directory; the ground the provider stands
+    # on is the attempt's lease, and the two are deliberately not one place.
+    assert invocation.lease.working_directory == workspace
+    assert invocation_home != workspace
     assert invocation_home != settings.credential_directory
     assert invocation_home.parent == settings.workspace
-    assert invocation.environment == (
+    assert command.environment == (
         # HOME is named on purpose: measured on grok 1.0.4, a child without it
         # resolves the invoking account's home and loads that profile's
         # plugins, hooks and skills.
@@ -238,10 +268,12 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         ("GROK_HOME", str(invocation_home)),
         ("PATH", settings.search_path),
     )
-    assert invocation.standard_input == b""
-    assert invocation.standard_output_frame_bytes == GROK_SUBSCRIPTION_FRAME_BYTES
-    assert b"draw the owl" not in " ".join(invocation.arguments).encode()
-    result = executor.decode_process_completion(invocation, launched(invocation))
+    assert command.standard_input == b""
+    assert command.standard_output_frame_bytes == GROK_SUBSCRIPTION_FRAME_BYTES
+    assert b"draw the owl" not in " ".join(command.arguments).encode()
+    result = executor.decode_process_completion(
+        invocation, launched(command, workspace)
+    )
     assert isinstance(result, AgentExecutionResult)
     observed = json.loads(result.output_bytes)
     assert observed["arguments"][0] == str(settings.executable)
@@ -252,7 +284,7 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert observed["environment"]["HOME"] == str(invocation_home)
     assert "XAI_API_KEY" not in observed["environment"]
     assert (invocation_home / "sessions" / "headless" / "updates.jsonl").exists()
-    executor.release_process(invocation)
+    executor.release_credential_channel(command)
     assert not invocation_home.exists()
     assert (settings.credential_directory / "auth.json").read_bytes() == b"{}"
 
@@ -271,8 +303,12 @@ def test_a_non_subscription_profile_is_refused_before_any_invocation(
 def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
-    invocation = AgentProcessInvocation(
-        ("grok",), tmp_path, standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES
+    invocation = leased(
+        AgentProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
     )
 
     assert executor.decode_process_completion(
@@ -399,8 +435,10 @@ def test_job_bytes_outlive_neither_a_completion_nor_a_close(tmp_path: Path) -> N
     )
     assert job_file.exists()
 
-    executor.decode_process_completion(invocation, AgentProcessCompletion(1, b"", b""))
-    executor.release_process(invocation)
+    executor.decode_process_completion(
+        leased(invocation, tmp_path), AgentProcessCompletion(1, b"", b"")
+    )
+    executor.release_credential_channel(invocation)
 
     assert not job_file.exists()
     assert not job_file.parent.exists()
@@ -425,7 +463,7 @@ def test_releasing_one_concurrent_invocation_preserves_the_other(
     first_home = Path(dict(first.environment)["GROK_HOME"])
     second_home = Path(dict(second.environment)["GROK_HOME"])
 
-    executor.release_process(first)
+    executor.release_credential_channel(first)
 
     assert not first_home.exists()
     assert second_home.is_dir()
@@ -433,7 +471,7 @@ def test_releasing_one_concurrent_invocation_preserves_the_other(
         Path(second.arguments[second.arguments.index("--prompt-file") + 1]).read_bytes()
         == b"second"
     )
-    executor.release_process(second)
+    executor.release_credential_channel(second)
     assert list(settings.workspace.iterdir()) == []
 
 
@@ -485,6 +523,7 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
         "source_commit": "proof",
         "source_tree": "proof",
         "frontend_dist": frontend,
+        "agent_scratch_root": agent_scratch_root(tmp_path),
         "grok_subscription": resolved,
     }
     with pytest.raises(ValueError, match="loopback"):
@@ -594,7 +633,7 @@ def test_an_inert_profile_is_attested(tmp_path: Path) -> None:
 
     invocation = executor.prepare_process(subscription_request())
 
-    executor.release_process(invocation)
+    executor.release_credential_channel(invocation)
 
 
 @pytest.mark.parametrize(
@@ -664,3 +703,35 @@ def test_an_unreadable_attestation_refuses_rather_than_assuming_containment(
         executor.prepare_process(subscription_request())
 
     assert list(settings.workspace.iterdir()) == []
+
+
+def test_the_credential_channel_dies_while_the_leased_workspace_stands(
+    tmp_path: Path,
+) -> None:
+    """Two owners, two disciplines, and the secret's is the shorter one.
+
+    The attempt's workspace keeps what a provider left behind until the attempt
+    is durably terminal, because that is evidence. The private home holding a
+    copy of the operator's `auth.json` is not evidence, and it falls on every
+    path -- after a decoded answer and after a refused one alike -- while the
+    workspace it ran in is untouched.
+    """
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    workspace = leased_workspace(tmp_path)
+
+    for outcome in (AgentProcessCompletion(0, b'{"text":"ok"}', b""), None):
+        command = executor.prepare_process(subscription_request())
+        channel = Path(dict(command.environment)["GROK_HOME"])
+        (workspace / "provider-left-this").write_text("kept", encoding="utf-8")
+        assert channel.is_dir()
+        assert (channel / "auth.json").exists()
+
+        if outcome is not None:
+            executor.decode_process_completion(leased(command, workspace), outcome)
+        executor.release_credential_channel(command)
+
+        assert not channel.exists()
+        assert (workspace / "provider-left-this").read_text() == "kept"
+    executor.close()

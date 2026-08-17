@@ -15,6 +15,7 @@ import pytest
 import atelier2.adapters.systemd_agent_collector as collector_module
 from atelier2.adapters.systemd_agent_collector import (
     DirectSystemdCollectorBarriers,
+    DirectSystemdLaunch,
     collect_direct_systemd_agent_process,
     decode_direct_systemd_launch_envelope,
     encode_direct_systemd_launch_envelope,
@@ -30,8 +31,10 @@ from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGeneration
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    AgentProcessCommand,
     AgentProcessInvocation,
 )
+from tests.scenarios.agents import leased_directory_identity
 
 _WRITE_STREAMS = """
 import os, sys
@@ -96,7 +99,7 @@ def invocation(
     *,
     output_limit: int = 17,
 ) -> AgentProcessInvocation:
-    return AgentProcessInvocation(
+    return collector_invocation(
         (
             sys.executable,
             "-c",
@@ -105,7 +108,30 @@ def invocation(
             str(standard_error_bytes),
         ),
         Path.cwd(),
-        standard_output_frame_bytes=output_limit,
+        frame_bytes=output_limit,
+    )
+
+
+def collector_invocation(
+    arguments: tuple[str, ...],
+    working_directory: Path,
+    environment: tuple[tuple[str, str], ...] = (),
+    standard_input: bytes = b"",
+    *,
+    frame_bytes: int,
+) -> AgentProcessInvocation:
+    """One invocation for a test that houses the leased directory itself."""
+
+    return AgentProcessInvocation(
+        AgentProcessCommand(
+            arguments,
+            environment,
+            standard_input,
+            standard_output_frame_bytes=frame_bytes,
+        ),
+        leased_directory_identity(
+            AgentAttemptId.of(b"collector-attempt"), working_directory
+        ),
     )
 
 
@@ -121,7 +147,8 @@ def prepared_records(
             WatchdogGenerationId("collector-generation"),
             "atelier2-collector-attempt.service",
             Sha256Hash.of(envelope),
-            process_invocation.standard_output_frame_bytes,
+            process_invocation.command.standard_output_frame_bytes,
+            process_invocation.lease.working_directory,
         )
     )
     launch_envelope_path.write_bytes(envelope)
@@ -129,34 +156,47 @@ def prepared_records(
     return records, launch_envelope_path
 
 
-def test_launch_envelope_roundtrips_exact_live_only_invocation_bytes() -> None:
-    process_invocation = AgentProcessInvocation(
+def test_launch_envelope_roundtrips_exact_live_only_invocation_bytes(
+    tmp_path: Path,
+) -> None:
+    process_invocation = collector_invocation(
         ("/bin/provider", "argument"),
-        Path("/workspace"),
+        tmp_path / "leased",
         standard_input=b"input\x00\xff",
-        standard_output_frame_bytes=29,
+        frame_bytes=29,
     )
 
     encoded = encode_direct_systemd_launch_envelope(process_invocation)
 
-    assert decode_direct_systemd_launch_envelope(encoded) == process_invocation
+    # A launcher gets the command and the leased ground, never the lease: the
+    # envelope's bytes are the same, and what it decodes to says who needs what.
+    assert decode_direct_systemd_launch_envelope(encoded) == DirectSystemdLaunch(
+        process_invocation.command,
+        process_invocation.lease.working_directory,
+        process_invocation.lease.device,
+        process_invocation.lease.inode,
+    )
     with pytest.raises(ValueError, match="canonical"):
         decode_direct_systemd_launch_envelope(encoded.replace(b",", b", ", 1))
 
 
-def test_launch_envelope_roundtrips_exact_ordered_secret_free_environment() -> None:
-    process_invocation = AgentProcessInvocation(
+def test_launch_envelope_roundtrips_exact_ordered_secret_free_environment(
+    tmp_path: Path,
+) -> None:
+    process_invocation = collector_invocation(
         ("/bin/provider",),
-        Path("/workspace"),
+        tmp_path / "leased",
         (("CLAUDE_CONFIG_DIR", "/credentials/claude"), ("PATH", "/usr/bin")),
-        standard_output_frame_bytes=29,
+        frame_bytes=29,
     )
 
-    assert (
-        decode_direct_systemd_launch_envelope(
-            encode_direct_systemd_launch_envelope(process_invocation)
-        )
-        == process_invocation
+    assert decode_direct_systemd_launch_envelope(
+        encode_direct_systemd_launch_envelope(process_invocation)
+    ) == DirectSystemdLaunch(
+        process_invocation.command,
+        process_invocation.lease.working_directory,
+        process_invocation.lease.device,
+        process_invocation.lease.inode,
     )
 
 
@@ -263,10 +303,13 @@ def test_collector_reads_each_stream_to_exactly_its_bound_plus_one(
     )
 
     assert result.outcome is outcome
-    assert len(result.standard_output) <= process_invocation.standard_output_frame_bytes
+    assert (
+        len(result.standard_output)
+        <= process_invocation.command.standard_output_frame_bytes
+    )
     assert len(result.standard_error) <= MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
     assert result.standard_output_overflow is (
-        standard_output_bytes > process_invocation.standard_output_frame_bytes
+        standard_output_bytes > process_invocation.command.standard_output_frame_bytes
     )
     assert result.standard_error_overflow is (
         standard_error_bytes > MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
@@ -300,10 +343,10 @@ def test_overflow_has_no_completion_and_cannot_reach_the_provider_decoder(
 def test_both_streams_at_limit_plus_one_are_bounded_and_bypass_decode(
     tmp_path: Path,
 ) -> None:
-    process_invocation = AgentProcessInvocation(
+    process_invocation = collector_invocation(
         (sys.executable, "-c", _WRITE_BOTH_STREAMS_AFTER_STDOUT_CLOSE),
         Path.cwd(),
-        standard_output_frame_bytes=17,
+        frame_bytes=17,
     )
     records, launch_envelope_path = prepared_records(tmp_path, process_invocation)
     processes: list[subprocess.Popen[bytes]] = []
@@ -325,7 +368,10 @@ def test_both_streams_at_limit_plus_one_are_bounded_and_bypass_decode(
 
     assert processes[0].wait(timeout=5) == 0
     assert result.outcome is DirectSystemdResultOutcome.OUTPUT_LIMIT_EXCEEDED
-    assert len(result.standard_output) <= process_invocation.standard_output_frame_bytes
+    assert (
+        len(result.standard_output)
+        <= process_invocation.command.standard_output_frame_bytes
+    )
     assert len(result.standard_error) <= MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
     assert result.standard_output_overflow
     assert result.standard_error_overflow
@@ -337,7 +383,7 @@ def test_provider_exit_is_not_delayed_by_a_pipe_inheriting_descendant(
 ) -> None:
     release = tmp_path / "release-descendant"
     descendant_ready = tmp_path / "descendant-ready"
-    process_invocation = AgentProcessInvocation(
+    process_invocation = collector_invocation(
         (
             sys.executable,
             "-c",
@@ -346,7 +392,7 @@ def test_provider_exit_is_not_delayed_by_a_pipe_inheriting_descendant(
             str(descendant_ready),
         ),
         Path.cwd(),
-        standard_output_frame_bytes=17,
+        frame_bytes=17,
     )
     records, launch_envelope_path = prepared_records(tmp_path, process_invocation)
 
@@ -425,11 +471,11 @@ def test_popen_runs_only_after_started_is_durable_and_envelope_unlink_is_durable
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("INHERITED", "must-not-reach-child")
-    process_invocation = AgentProcessInvocation(
+    process_invocation = collector_invocation(
         (sys.executable, "-c", _PRINT_ENV),
         Path.cwd(),
         (("DECLARED", "yes"),),
-        standard_output_frame_bytes=32,
+        frame_bytes=32,
     )
     records, source_path = prepared_records(tmp_path, process_invocation)
     credential_path = tmp_path / "credential"
@@ -557,3 +603,63 @@ def _crashing_barriers(
     if name == "after_envelope_directory_fsync":
         return DirectSystemdCollectorBarriers(after_envelope_directory_fsync=crash)
     raise AssertionError(f"unknown barrier {name}")
+
+
+def test_a_directory_swapped_after_the_envelope_never_becomes_the_provider_ground(
+    tmp_path: Path,
+) -> None:
+    """The collector enters the identity the envelope carries, not the path.
+
+    The systemd side has the same window as the supervisor's, and a wider one:
+    the envelope is written, the unit is started, and only then does the
+    collector open the directory. A peer that replaces it in between would hand
+    the provider somebody else's ground while every record still named the lease.
+    """
+
+    leased = tmp_path / "leased"
+    leased.mkdir()
+    process_invocation = collector_invocation(
+        (sys.executable, "-c", "import os; print(os.getcwd(), end='')"),
+        leased,
+        frame_bytes=4_096,
+    )
+    records, launch_envelope_path = prepared_records(tmp_path, process_invocation)
+    impostor = tmp_path / "impostor"
+    impostor.mkdir()
+    (impostor / ".env").write_text("the operator's own secret", encoding="utf-8")
+    leased.rmdir()
+    impostor.rename(leased)
+
+    result = collect_direct_systemd_agent_process(
+        records,
+        DirectSystemdInvocationId("0123456789abcdef0123456789abcdef"),
+        launch_credential_path=launch_envelope_path,
+        source_envelope_path=launch_envelope_path,
+    )
+
+    assert result.outcome is DirectSystemdResultOutcome.PROCESS_BOUNDARY_FAILED
+    assert result.standard_output == b""
+    assert (leased / ".env").read_text(encoding="utf-8") == "the operator's own secret"
+
+
+def test_an_envelope_without_the_directory_identity_is_refused_by_name() -> None:
+    """An envelope written before the identity existed is refused, never launched.
+
+    Same net as the watchdog's, one layer down and durable: the envelope is a
+    file, so an older one can outlive the process that wrote it.
+    """
+
+    older = collector_module.encode_canonical_systemd_json(
+        {
+            "arguments": ["/bin/provider"],
+            "environment": [],
+            "standard_input": "",
+            "standard_output_limit": 17,
+            "type": "LAUNCH",
+            "version": collector_module._LAUNCH_ENVELOPE_VERSION,
+            "working_directory": "/leased",
+        }
+    )
+
+    with pytest.raises(ValueError, match="malformed"):
+        decode_direct_systemd_launch_envelope(older)

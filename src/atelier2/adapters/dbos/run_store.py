@@ -369,7 +369,12 @@ def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
         }
         if expected_roles != {binding.role.value for binding in run.agent_bindings}:
             raise RunTransitionConflict("run agent roles differ from workflow graph")
-    node = graph.node(run.current_node_id)
+    try:
+        node = graph.node(run.current_node_id)
+    except KeyError as error:
+        raise RunTransitionConflict(
+            "run current node is absent from its workflow graph"
+        ) from error
     if run.state is RunState.WAITING_INPUT and not isinstance(node, WaitNode):
         raise RunTransitionConflict("WAITING_INPUT must name a Wait node")
     if run.state is RunState.WAITING_RECONCILIATION and not isinstance(

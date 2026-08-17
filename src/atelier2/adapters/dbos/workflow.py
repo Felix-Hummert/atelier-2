@@ -90,6 +90,7 @@ from atelier2.contracts.workflows import (
 from atelier2.contracts.workflows_v3 import AgentNodeV3
 from atelier2.ports.agent_attempts import AgentAttemptStore, AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
+    AgentAttemptWorkspaceOwner,
     AgentExecutor,
     AgentExecutorKey,
     AgentExecutorV2,
@@ -119,6 +120,16 @@ CANCELLATION_REDRIVE_SECONDS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0)
 
 class RunBindingConflict(RuntimeError):
     pass
+
+
+def _declared_workspace_owner(
+    owner: AgentAttemptWorkspaceOwner | None,
+) -> AgentAttemptWorkspaceOwner:
+    if owner is None:
+        raise RunBindingConflict(
+            "a V2 agent node requires the declared agent scratch root"
+        )
+    return owner
 
 
 class EncodedAgentBinding(TypedDict):
@@ -367,6 +378,7 @@ def register_durable_run_workflow(
     ],
     agent_attempt_store: AgentAttemptStore,
     agent_process_supervisor: AgentProcessSupervisor,
+    agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
     adapter: EffectAdapter,
     effect_binding: EffectAdapterBinding,
 ) -> None:
@@ -411,7 +423,10 @@ def register_durable_run_workflow(
         redrive_index = 0
         while (
             continue_agent_attempt_cancellation(
-                request, agent_attempt_store, agent_process_supervisor
+                request,
+                agent_attempt_store,
+                agent_process_supervisor,
+                _declared_workspace_owner(agent_workspace_owner),
             )
             is None
         ):
@@ -462,6 +477,7 @@ def register_durable_run_workflow(
             executor,
             agent_attempt_store,
             agent_process_supervisor,
+            _declared_workspace_owner(agent_workspace_owner),
         )
         if isinstance(outcome, AgentAttemptSucceeded):
             match outcome.completion:
@@ -534,6 +550,7 @@ def register_durable_run_workflow(
                 executor,
                 agent_attempt_store,
                 agent_process_supervisor,
+                _declared_workspace_owner(agent_workspace_owner),
             )
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value

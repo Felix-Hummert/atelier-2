@@ -14,11 +14,12 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
 )
-from atelier2.ports.agent_executions import AgentProcessInvocation, AgentProcessRunner
+from atelier2.ports.agent_executions import AgentProcessRunner
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
     agent_attempt_execution,
+    process_invocation,
 )
 
 
@@ -52,7 +53,8 @@ def test_supervisor_reaps_a_process_that_exits_on_term(tmp_path: Path) -> None:
             target=lambda: result.append(
                 supervisor.launch_and_wait(
                     execution,
-                    AgentProcessInvocation(
+                    process_invocation(
+                        execution.attempt_id,
                         (
                             sys.executable,
                             "-c",
@@ -99,7 +101,8 @@ def test_supervisor_kills_and_reaps_a_process_that_ignores_term(
             target=lambda: result.append(
                 supervisor.launch_and_wait(
                     execution,
-                    AgentProcessInvocation(
+                    process_invocation(
+                        execution.attempt_id,
                         (
                             sys.executable,
                             "-c",
@@ -159,7 +162,8 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
             target=lambda: result.append(
                 supervisor.launch_and_wait(
                     execution,
-                    AgentProcessInvocation(
+                    process_invocation(
+                        execution.attempt_id,
                         (
                             sys.executable,
                             "-c",

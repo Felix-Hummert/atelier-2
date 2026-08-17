@@ -15,6 +15,7 @@ from atelier2.contracts.agent_attempts import AgentAttemptId, WatchdogGeneration
 from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.ports.agent_executions import (
+    MAXIMUM_AGENT_ATTEMPT_WORKSPACE_PATH_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     AgentProcessCompletion,
@@ -41,13 +42,33 @@ class DirectSystemdInvocationId:
             )
 
 
+class DirectSystemdRecordOutdated(ValueError):
+    """A durable systemd record was written before a field this reader needs."""
+
+
 @dataclass(frozen=True)
 class DirectSystemdIntent:
+    """The durable truth about what was meant to start, and where.
+
+    `working_directory` is the attempt's leased directory -- the ground the
+    provider itself runs on, which the collector gives it from the launch
+    envelope. It is durable because a record of what was meant to start is
+    incomplete without where it was meant to run, and the envelope that carried
+    it is deleted before the unit starts.
+
+    It is deliberately **not** what the unit's identity attestation compares.
+    The unit's own `WorkingDirectory` is the generation directory, because that
+    is how the collector is told where its records are -- it reads them from its
+    own working directory -- and the manager derives that value itself rather
+    than reading it back from here.
+    """
+
     attempt_id: AgentAttemptId
     generation_id: WatchdogGenerationId
     unit_name: str
     launch_envelope_hash: Sha256Hash
     standard_output_limit: int
+    working_directory: Path
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt_id, AgentAttemptId):
@@ -67,6 +88,8 @@ class DirectSystemdIntent:
             or self.standard_output_limit > MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
         ):
             raise ValueError("systemd intent output limit exceeds the portable bound")
+        if not self.working_directory.is_absolute():
+            raise ValueError("systemd intent working directory must be absolute")
 
 
 @dataclass(frozen=True)
@@ -275,6 +298,7 @@ def encode_direct_systemd_intent(intent: DirectSystemdIntent) -> bytes:
             "type": _INTENT_NAME,
             "unit_name": intent.unit_name,
             "version": _RECORD_VERSION,
+            "working_directory": str(intent.working_directory),
         }
     )
 
@@ -291,6 +315,7 @@ def decode_direct_systemd_intent(payload: bytes) -> DirectSystemdIntent:
             "type",
             "unit_name",
             "version",
+            "working_directory",
         },
         _INTENT_NAME,
     )
@@ -300,6 +325,7 @@ def decode_direct_systemd_intent(payload: bytes) -> DirectSystemdIntent:
         _require_string(value, "unit_name"),
         Sha256Hash(_require_string(value, "launch_envelope_sha256")),
         _require_integer(value, "standard_output_limit"),
+        Path(_require_string(value, "working_directory")),
     )
 
 
@@ -403,6 +429,16 @@ def decode_canonical_systemd_json(payload: bytes) -> dict[str, Any]:
 
 
 def _require_fields(value: dict[str, Any], fields: set[str], kind: str) -> None:
+    missing = fields - set(value)
+    if missing:
+        # A record written before a field existed is refused by the name of what
+        # it lacks. It is never defaulted or guessed: this record decides whether
+        # a provider process may be stopped, and a guessed field would attest an
+        # identity nobody wrote.
+        raise DirectSystemdRecordOutdated(
+            f"systemd {kind} predates this reader and lacks "
+            + ", ".join(sorted(missing))
+        )
     if set(value) != fields:
         raise ValueError(f"systemd {kind} fields are malformed")
     if value["type"] != kind or value["version"] != _RECORD_VERSION:
@@ -452,6 +488,8 @@ def _maximum_intent_bytes() -> int:
                 "type": _INTENT_NAME,
                 "unit_name": f"{'\\' * 247}.service",
                 "version": _RECORD_VERSION,
+                "working_directory": "/"
+                + "w" * (MAXIMUM_AGENT_ATTEMPT_WORKSPACE_PATH_BYTES - 1),
             }
         )
     )

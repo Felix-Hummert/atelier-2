@@ -13,6 +13,7 @@ from atelier2.ports.agent_attempts import (
     TransactionalAgentAttemptCanceller,
 )
 from atelier2.ports.agent_executions import (
+    AgentAttemptWorkspaceOwner,
     AgentProcessOwnerNotLocal,
     AgentProcessRunner,
 )
@@ -29,8 +30,14 @@ def continue_agent_attempt_cancellation(
     request: CancelAgentAttemptRequest,
     store: AgentAttemptStore,
     supervisor: AgentProcessRunner,
+    workspaces: AgentAttemptWorkspaceOwner,
 ) -> AgentAttemptCancellationAccepted | None:
-    """Attest one exact cleanup, or leave a durable redrive marker."""
+    """Attest one exact cleanup, or leave a durable redrive marker.
+
+    A cancelled attempt's workspace is removed only behind its durable cleanup
+    attestation, so a run whose cleanup could not yet be attested keeps its
+    directory for the recovery that will own it.
+    """
 
     attempt = store.load(request.attempt_id)
     if attempt.state in {AgentAttemptState.CANCELLED, AgentAttemptState.INTERRUPTED}:
@@ -38,6 +45,7 @@ def continue_agent_attempt_cancellation(
         if not isinstance(result, AgentAttemptCancellationAccepted):
             raise RuntimeError("terminal cancellation retry lost its exact command")
         supervisor.release(result.attempt)
+        workspaces.release(request.attempt_id)
         return result
     if (
         attempt.process_phase is AgentAttemptProcessPhase.NONE
@@ -50,6 +58,7 @@ def continue_agent_attempt_cancellation(
             None,
         )
         supervisor.release(terminal.attempt)
+        workspaces.release(request.attempt_id)
         return terminal
     try:
         disposition, owner, generation = supervisor.cancel(attempt)
@@ -64,4 +73,5 @@ def continue_agent_attempt_cancellation(
         request, disposition, owner, generation
     )
     supervisor.release(terminal.attempt)
+    workspaces.release(request.attempt_id)
     return terminal

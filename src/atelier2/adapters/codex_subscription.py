@@ -18,10 +18,10 @@ Because that answer arrives beside the process rather than inside it, decoding
 takes the invocation it prepared: the runtime opens one executor per registry
 key and hands that same object to every attempt, so an executor correlating
 through its own state would let overlapping attempts decode each other's
-answers into durable results. This executor therefore holds none. The answer
-file lives in a private per-execution directory that is removed as soon as it
-is read, not when the executor closes -- a server keeps its executors open for
-its whole life.
+answers into durable results. This executor therefore holds none. The answer is
+asked for under a bare name, so the CLI writes it into the directory the attempt
+leased, and the workspace owner removes it with everything else the attempt
+left behind. One directory regime, not two.
 
 Flags alone do not bound what the CLI discovers or what it may do. `codex
 doctor --json` reports the config layer, credential home and MCP servers a
@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -60,6 +59,7 @@ from atelier2.contracts.agents import (
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorKey,
+    AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
@@ -106,7 +106,6 @@ _COLOR_FLAG = "--color"
 _NEVER = "never"
 _MODEL_FLAG = "--model"
 _SANDBOX_FLAG = "--sandbox"
-_WORKING_ROOT_FLAG = "--cd"
 _LAST_MESSAGE_FLAG = "--output-last-message"
 # `codex exec` reads its instructions from standard input when the prompt
 # argument is `-`. A prompt given as an argument would additionally append
@@ -130,9 +129,8 @@ _NO_MCP_SERVERS = "0"
 _SANDBOX_COMMAND = "sandbox"
 _SANDBOX_PROBE_ARGUMENTS = ("--", "/bin/true")
 
-_JOB_DIRECTORY_PREFIX = "atelier2-codex-answer-"
+_PROBE_DIRECTORY_PREFIX = "atelier2-codex-probe-"
 _ANSWER_FILE_NAME = "last-message"
-_JOB_DIRECTORY_MODE = 0o700
 
 _HOME_VARIABLE = "HOME"
 _CREDENTIAL_DIRECTORY_VARIABLE = "CODEX_HOME"
@@ -241,22 +239,17 @@ def verify_codex_capability(
 @dataclass(frozen=True)
 class CodexSubscriptionSettings:
     executable: Path
-    workspace: Path
     credential_directory: Path
     search_path: str
     sandbox: CodexSandboxMode
 
     def __post_init__(self) -> None:
         executable = self.executable.resolve()
-        workspace = self.workspace.resolve()
         credential_directory = self.credential_directory.resolve()
         object.__setattr__(self, "executable", executable)
-        object.__setattr__(self, "workspace", workspace)
         object.__setattr__(self, "credential_directory", credential_directory)
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise ValueError("the Codex executable must be an executable file")
-        if not workspace.is_dir():
-            raise ValueError("the Codex workspace must be an existing directory")
         if not credential_directory.is_dir():
             raise ValueError(
                 "the Codex credential directory must be an existing directory"
@@ -288,26 +281,30 @@ def _probe(
 ) -> tuple[int, bytes]:
     """Run one non-billed CLI subcommand with the environment a job would get."""
 
-    try:
-        process = subprocess.Popen(
-            (str(settings.executable), *arguments),
-            cwd=settings.workspace,
-            env=dict(_child_environment(settings)) | environment_overrides,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-    except OSError as error:
-        raise CodexContainmentUnattested(
-            f"the Codex executable did not answer {arguments[0]}: {error}"
-        ) from error
-    try:
-        return bounded_process_answer(process, timeout_seconds, output_bytes)
-    except OSError as error:
-        raise CodexContainmentUnattested(
-            f"the Codex executable did not answer {arguments[0]}: {error}"
-        ) from error
+    # A probe attests the profile a job would get -- its home, its config layer
+    # and its MCP servers -- never a directory, so it runs in one of its own
+    # rather than in an attempt's lease, which does not exist yet at composition.
+    with tempfile.TemporaryDirectory(prefix=_PROBE_DIRECTORY_PREFIX) as probe_root:
+        try:
+            process = subprocess.Popen(
+                (str(settings.executable), *arguments),
+                cwd=probe_root,
+                env=dict(_child_environment(settings)) | environment_overrides,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise CodexContainmentUnattested(
+                f"the Codex executable did not answer {arguments[0]}: {error}"
+            ) from error
+        try:
+            return bounded_process_answer(process, timeout_seconds, output_bytes)
+        except OSError as error:
+            raise CodexContainmentUnattested(
+                f"the Codex executable did not answer {arguments[0]}: {error}"
+            ) from error
 
 
 def _uncontained_surfaces(
@@ -409,38 +406,30 @@ def attest_codex_containment(
         )
 
 
-def _open_answer_directory(settings: CodexSubscriptionSettings) -> Path:
-    """Give one execution a private directory for the answer the CLI writes."""
-
-    directory = Path(
-        tempfile.mkdtemp(prefix=_JOB_DIRECTORY_PREFIX, dir=settings.workspace)
-    )
-    os.chmod(directory, _JOB_DIRECTORY_MODE)
-    return directory
-
-
 def _answer_file_of(invocation: AgentProcessInvocation) -> Path:
-    """Recover the answer path this executor wrote into its own command."""
+    """Name the answer file inside the directory this attempt leased.
 
-    arguments = invocation.arguments
-    return Path(arguments[arguments.index(_LAST_MESSAGE_FLAG) + 1])
+    The command asks for the answer under a bare name, so the CLI writes it
+    into the directory it is started in -- the attempt's own lease. There is no
+    second private directory to create, hand over or remove: the lease is that
+    directory, and the workspace owner removes it with everything in it.
+    """
+
+    return invocation.lease.working_directory / _ANSWER_FILE_NAME
 
 
 @dataclass(frozen=True)
 class CodexSubscriptionExecutor:
     settings: CodexSubscriptionSettings
 
-    def prepare_process(
-        self, request: AgentExecutionRequestV2
-    ) -> AgentProcessInvocation:
+    def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
         if binding.auth_profile.auth_mode is not AuthMode.SUBSCRIPTION:
             raise CodexSubscriptionAuthModeUnsupported(
                 "the Codex subscription executor serves subscription profiles only"
             )
         settings = self.settings
-        answer_file = _open_answer_directory(settings) / _ANSWER_FILE_NAME
-        return AgentProcessInvocation(
+        return AgentProcessCommand(
             (
                 str(settings.executable),
                 _EXEC_COMMAND,
@@ -454,13 +443,10 @@ class CodexSubscriptionExecutor:
                 binding.configuration.model,
                 _SANDBOX_FLAG,
                 settings.sandbox.value,
-                _WORKING_ROOT_FLAG,
-                str(settings.workspace),
                 _LAST_MESSAGE_FLAG,
-                str(answer_file),
+                _ANSWER_FILE_NAME,
                 _PROMPT_FROM_STANDARD_INPUT,
             ),
-            settings.workspace,
             _child_environment(settings),
             request.job_bytes,
             standard_output_frame_bytes=CODEX_SUBSCRIPTION_FRAME_BYTES,
@@ -469,15 +455,12 @@ class CodexSubscriptionExecutor:
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
-        """Read the answer this exact invocation named, then discard it."""
+        """Read the answer this exact invocation's lease holds."""
 
-        answer_file = _answer_file_of(invocation)
         try:
-            answer = answer_file.read_bytes()
+            answer = _answer_file_of(invocation).read_bytes()
         except OSError:
             answer = None
-        finally:
-            shutil.rmtree(answer_file.parent, ignore_errors=True)
         if completion.return_code != 0:
             return _UNUSABLE_PROVIDER_ANSWER
         if len(completion.standard_output) > CODEX_SUBSCRIPTION_FRAME_BYTES:
@@ -486,14 +469,19 @@ class CodexSubscriptionExecutor:
             return _UNUSABLE_PROVIDER_ANSWER
         return AgentExecutionResult(answer)
 
-    def release_process(self, invocation: AgentProcessInvocation) -> None:
-        try:
-            shutil.rmtree(_answer_file_of(invocation).parent)
-        except FileNotFoundError:
-            pass
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        """Nothing to take back: this executor copies no credential anywhere.
+
+        `CODEX_HOME` names the operator's own credential directory rather than a
+        copy made for one invocation, and the answer lives in the attempt's
+        leased directory, which the workspace owner takes away. Removing
+        anything here would remove the lease itself.
+        """
+
+        del command
 
     def close(self) -> None:
-        """Nothing outlives an execution, so a closing executor owns nothing."""
+        """The lease owns every byte this executor produced, so it owns nothing."""
 
 
 @dataclass(frozen=True)

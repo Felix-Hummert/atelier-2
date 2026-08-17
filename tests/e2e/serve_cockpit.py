@@ -4,8 +4,10 @@ import hashlib
 import os
 import shutil
 import sys
+import tempfile
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -222,7 +224,19 @@ def main() -> None:
         agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
     ) -> DbosRuntime:
         factories = (*agent_factories_v2, factory, immediate)
-        return DbosRuntime(settings, effect_factory, agent_factory, factories)
+        # The e2e runtime root lives inside the repository checkout, which no
+        # scratch root may, so the leased workspaces stand outside it.
+        return DbosRuntime(
+            replace(
+                settings,
+                agent_scratch_root=Path(
+                    tempfile.mkdtemp(prefix="atelier2-e2e-scratch-")
+                ),
+            ),
+            effect_factory,
+            agent_factory,
+            factories,
+        )
 
     settings = HostSettings(
         database_path=database,

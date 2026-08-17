@@ -105,7 +105,13 @@ type AgentAttemptCancellationResult = (
 )
 
 
-class AgentAttemptStore(Protocol):
+class AgentAttemptReader(Protocol):
+    """Read one durable attempt back: all that restart reconciliation needs."""
+
+    def load(self, attempt_id: AgentAttemptId) -> AgentAttempt: ...
+
+
+class AgentAttemptStore(AgentAttemptReader, Protocol):
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt: ...
 
     def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimResult: ...
@@ -147,8 +153,6 @@ class AgentAttemptStore(Protocol):
         process_owner_id: AgentProcessOwnerId,
         watchdog_generation_id: WatchdogGenerationId,
     ) -> AgentAttempt: ...
-
-    def load(self, attempt_id: AgentAttemptId) -> AgentAttempt: ...
 
 
 class TransactionalAgentAttemptCanceller(Protocol):

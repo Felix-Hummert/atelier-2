@@ -29,7 +29,12 @@ import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
+from atelier2.adapters.dbos.schema import (
+    agent_attempts,
+    agent_receipts_v2,
+    run_events,
+    runs,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -50,7 +55,12 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.executions import RunEventKind, terminal_hash_for
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEventKind,
+    node_workflow_id_for,
+    terminal_hash_for,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_configurations import (
@@ -61,7 +71,10 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_scratch_root,
+)
 
 TWO_NODE_DOCUMENT = b"""format_version: 3
 name: Two agents in a line
@@ -84,25 +97,30 @@ PROVIDER_OUTPUT = b"the exact provider bytes"
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+def runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
     """A runtime whose agent executor succeeds, so the line can actually move."""
+    recording = RecordingAgentExecutorFactoryV2(
+        "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
+    )
     started = DbosRuntime(
-        DbosRuntimeSettings(tmp_path / "atelier.sqlite", "v3-driver-test"),
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "v3-driver-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
         ExactOutputAgentExecutorFactory(),
-        (
-            RecordingAgentExecutorFactoryV2(
-                "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
-            ),
-        ),
+        (recording,),
     )
     started.initialize_storage()
     try:
-        yield started
+        yield started, recording
     finally:
         started.close()
 
@@ -153,7 +171,7 @@ def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
 
 @pytest.mark.proves("a-v3-run-drives-itself-through-the-runtime")
 def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
-    runtime: DbosRuntime,
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
 ) -> None:
     """The whole point of the family: started once, it finishes by itself.
 
@@ -162,17 +180,20 @@ def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
     own chain: the bootstrap picks up the entry node, the attempt runs, the
     completion asks for the heir the author declared, and the sink ends the run.
     """
-    workflow, bindings = publish_two_node_line(runtime)
+    started_runtime, recording = runtime
+    workflow, bindings = publish_two_node_line(started_runtime)
 
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated)
 
-    runtime.launch()
-    wait_for_state(runtime, RunState.COMPLETED)
+    started_runtime.launch()
+    wait_for_state(started_runtime, RunState.COMPLETED)
 
-    with runtime.engine.connect() as connection:
+    with started_runtime.engine.connect() as connection:
         run = (
             connection.execute(sa.select(runs).where(runs.c.run_id == RUN.value))
             .mappings()
@@ -207,6 +228,17 @@ def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
                 .order_by(run_events.c.event_sequence)
             ).scalars()
         )
+        receipt_count = connection.scalar(
+            sa.select(sa.func.count()).select_from(agent_receipts_v2)
+        )
+        node_workflows = tuple(
+            connection.execute(
+                sa.text(
+                    "SELECT workflow_uuid FROM workflow_status "
+                    "WHERE name='atelier2_graph_node' ORDER BY workflow_uuid"
+                )
+            ).scalars()
+        )
 
     assert events == [
         (1, "implement", RunEventKind.AGENT_COMPLETED.value, PROVIDER_OUTPUT),
@@ -216,6 +248,20 @@ def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
         ("implement", AgentAttemptState.SUCCEEDED.value),
         ("review", AgentAttemptState.SUCCEEDED.value),
     ]
+    assert recording.opened is not None
+    assert [request.node_id for request in recording.opened.requests] == [
+        "implement",
+        "review",
+    ]
+    assert receipt_count == 2
+    assert node_workflows == tuple(
+        sorted(
+            node_workflow_id_for(
+                NodeExecutionId.for_node(RUN, workflow.revision_hash, node_id)
+            )
+            for node_id in ("implement", "review")
+        )
+    )
     assert str(run["current_node_id"]) == "review"
     assert int(str(run["workflow_format_version"])) == 3
     assert (

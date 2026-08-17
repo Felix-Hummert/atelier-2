@@ -43,7 +43,10 @@ from atelier2.host.serving import (
     compose_application,
     event_poll_backoff,
 )
-from tests.scenarios.agents import claude_subscription_deployment
+from tests.scenarios.agents import (
+    agent_scratch_root,
+    claude_subscription_deployment,
+)
 from tests.scenarios.api import api_limits as scenario_api_limits
 from tests.scenarios.api import durable_queries
 from tests.scenarios.api import event_poll_backoff as scenario_event_poll_backoff
@@ -271,6 +274,7 @@ def served_settings(
     tmp_path: Path,
     claude_subscription: ClaudeSubscriptionSettings | None = None,
     host: str = DEFAULT_HOST,
+    scratch_root: Path | None = None,
 ) -> HostSettings:
     frontend = tmp_path / "frontend"
     if not frontend.is_dir():
@@ -286,6 +290,11 @@ def served_settings(
         source_tree="tree",
         frontend_dist=frontend,
         host=host,
+        agent_scratch_root=(
+            scratch_root
+            if scratch_root is not None or claude_subscription is None
+            else agent_scratch_root(tmp_path)
+        ),
         claude_subscription=claude_subscription,
     )
 
@@ -348,6 +357,115 @@ def serve_arguments(tmp_path: Path, *extra: str) -> list[str]:
     ]
 
 
+def claude_serve_arguments(
+    tmp_path: Path, settings: ClaudeSubscriptionSettings, *extra: str
+) -> list[str]:
+    return serve_arguments(
+        tmp_path,
+        "--agent-scratch-root",
+        str(agent_scratch_root(tmp_path)),
+        "--claude-executable",
+        str(settings.executable),
+        "--claude-credential-directory",
+        str(settings.credential_directory),
+        *extra,
+    )
+
+
+def test_a_declared_deployment_leases_workspaces_from_the_declared_root(
+    tmp_path: Path,
+) -> None:
+    """A complete configuration binds the exact root the operator named."""
+
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    scratch_root = agent_scratch_root(tmp_path)
+    settings = served_settings(
+        tmp_path,
+        claude_subscription=claude_subscription_deployment(deployment, INERT_CLAUDE),
+        scratch_root=scratch_root,
+    )
+
+    _app, runtime = compose_application(settings)
+
+    try:
+        owner = runtime.agent_workspace_owner
+        assert owner is not None
+        assert owner.scratch_root == scratch_root
+    finally:
+        runtime.close()
+
+
+def test_a_provider_deployment_without_a_scratch_root_refuses_to_serve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every attempt runs in a workspace, so serving one needs somewhere to lease."""
+
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = claude_subscription_deployment(deployment, INERT_CLAUDE)
+    monkeypatch.setenv("PATH", settings.search_path)
+
+    with pytest.raises(SystemExit) as refusal:
+        main(
+            serve_arguments(
+                tmp_path,
+                "--claude-executable",
+                str(settings.executable),
+                "--claude-credential-directory",
+                str(settings.credential_directory),
+            )
+        )
+
+    assert refusal.value.code == 2
+    assert "--agent-scratch-root" in capsys.readouterr().err
+
+
+def test_a_scratch_root_without_any_provider_executor_refuses_to_serve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as refusal:
+        main(
+            serve_arguments(
+                tmp_path, "--agent-scratch-root", str(agent_scratch_root(tmp_path))
+            )
+        )
+
+    assert refusal.value.code == 2
+    assert "serves nothing" in capsys.readouterr().err
+
+
+def test_a_scratch_root_inside_a_git_worktree_refuses_to_serve_and_says_why(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whoever first points this at a checkout reads the reason, not a traceback."""
+
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = claude_subscription_deployment(deployment, INERT_CLAUDE)
+    monkeypatch.setenv("PATH", settings.search_path)
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    scratch_root = checkout / "scratch"
+    scratch_root.mkdir(mode=0o700)
+
+    with pytest.raises(SystemExit) as refusal:
+        main(
+            serve_arguments(
+                tmp_path,
+                "--agent-scratch-root",
+                str(scratch_root),
+                "--claude-executable",
+                str(settings.executable),
+                "--claude-credential-directory",
+                str(settings.credential_directory),
+            )
+        )
+
+    assert refusal.value.code == 2
+    assert "git worktree" in capsys.readouterr().err
+
+
 def test_a_partly_declared_claude_deployment_refuses_to_serve(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as refusal:
         main(serve_arguments(tmp_path, "--claude-executable", str(tmp_path / "claude")))
@@ -371,19 +489,7 @@ def test_a_claude_deployment_off_loopback_refuses_to_serve(
     monkeypatch.setenv("PATH", settings.search_path)
 
     with pytest.raises(SystemExit) as refusal:
-        main(
-            serve_arguments(
-                tmp_path,
-                "--host",
-                bind,
-                "--claude-executable",
-                str(settings.executable),
-                "--claude-workspace",
-                str(settings.workspace),
-                "--claude-credential-directory",
-                str(settings.credential_directory),
-            )
-        )
+        main(claude_serve_arguments(tmp_path, settings, "--host", bind))
 
     assert refusal.value.code == 2
     assert "loopback" in capsys.readouterr().err
@@ -402,17 +508,7 @@ def test_a_claude_deployment_on_an_unconformant_executable_refuses_to_serve(
     monkeypatch.setenv("PATH", settings.search_path)
 
     with pytest.raises(SystemExit) as refusal:
-        main(
-            serve_arguments(
-                tmp_path,
-                "--claude-executable",
-                str(settings.executable),
-                "--claude-workspace",
-                str(settings.workspace),
-                "--claude-credential-directory",
-                str(settings.credential_directory),
-            )
-        )
+        main(claude_serve_arguments(tmp_path, settings))
 
     assert refusal.value.code == 2
     assert "not 2.1.222" in capsys.readouterr().err
@@ -429,17 +525,7 @@ def test_a_claude_deployment_without_bubblewrap_refuses_to_serve(
     monkeypatch.setenv("PATH", str(tmp_path / "no-tools-here"))
 
     with pytest.raises(SystemExit) as refusal:
-        main(
-            serve_arguments(
-                tmp_path,
-                "--claude-executable",
-                str(settings.executable),
-                "--claude-workspace",
-                str(settings.workspace),
-                "--claude-credential-directory",
-                str(settings.credential_directory),
-            )
-        )
+        main(claude_serve_arguments(tmp_path, settings))
 
     assert refusal.value.code == 2
     assert "bwrap" in capsys.readouterr().err
