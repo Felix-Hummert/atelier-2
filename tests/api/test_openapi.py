@@ -71,6 +71,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/auth-profile-revisions",
     API_PREFIX + "/agent-configuration-revisions",
     API_PREFIX + "/workflow-revisions",
+    API_PREFIX + "/workflow-revisions/by-name/{name}",
     API_PREFIX + "/workflow-revisions/{revision_hash}",
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
@@ -94,6 +95,11 @@ EXPECTED_ROUTE_SEQUENCE = (
     ),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
+    (
+        "GET",
+        API_PREFIX + "/workflow-revisions/by-name/{name}",
+        "get_revision_by_name",
+    ),
     ("GET", API_PREFIX + "/workflow-revisions/{revision_hash}", "get_revision"),
     ("POST", API_PREFIX + "/runs", "start_run_route"),
     ("GET", API_PREFIX + "/runs", "list_runs"),
@@ -176,10 +182,11 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was last regenerated when the V2 run resource gained its
-    `node_rail` field, which brought the `NodeRailResource` component and the
-    node-state vocabulary into the document. Regenerating it is a wire change and
-    needs its own decision, not a refresh alongside a refactor.
+    The artefact was last regenerated when the catalog gained its read route,
+    which brought `/workflow-revisions/by-name/{name}`, the
+    `CatalogNameResolutionResource` component and four catalog problem codes into
+    the document. That regeneration is the wire change this head declares;
+    refreshing it alongside a refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
