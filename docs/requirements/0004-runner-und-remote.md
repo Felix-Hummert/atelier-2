@@ -375,7 +375,7 @@ Offen:
 
 - **The secrets-channel decision is shared with #24 and must be taken once.**
   The audit's recommended order is the graph interpreter's move into the core
-  (#86) first, then rules 21 and 22, then the secrets-channel decision that #21
+  (#86) first, then REQ-REMOTE-21 and REQ-REMOTE-22, then the secrets-channel decision that #21
   and #24 both need — decided once, not twice. (5302132060, closing.)
 
 ## Acceptance

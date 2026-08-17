@@ -24,13 +24,13 @@
   record serves: several external projects, each its own token, each its own queue).
   The landed requirement documents this record must not contradict — each `DRAFT`,
   and a requirement never outranks a landed decision record:
-  [0001](../requirements/0001-queue-und-autonomie.md) rule 9 (a project is a
+  [0001](../requirements/0001-queue-und-autonomie.md) REQ-QUEUE-09 (a project is a
   configured bundle) and its open retention question, which names this decision as
-  the owner; [0002](../requirements/0002-teams-und-zugang.md) rules 8, 9 and 14 (the
+  the owner; [0002](../requirements/0002-teams-und-zugang.md) REQ-ZUGANG-08, -09 and -14 (the
   project is the sharing unit; sharing libraries and workflows means sharing git
   sources, and there is no second sharing channel; credentials stay references and
-  are never transported); [0004](../requirements/0004-runner-und-remote.md) rules 6
-  and 7 (`allowed-projects` is an enrolment fact placement matches on, never a claim
+  are never transported); [0004](../requirements/0004-runner-und-remote.md) REQ-REMOTE-06
+  and REQ-REMOTE-07 (`allowed-projects` is an enrolment fact placement matches on, never a claim
   a connecting process makes).
 - Depends on: [ADR 0001](0001-durable-runtime.md) (the canonical store, the
   process-global DBOS binding, the append-only ledgers this record partitions),

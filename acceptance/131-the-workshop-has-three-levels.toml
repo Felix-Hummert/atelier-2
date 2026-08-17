@@ -21,8 +21,9 @@ story = "https://github.com/FlexOr2/atelier-2/issues/131"
 #
 # Desk reading, marked so a later operator ruling can change it without looking
 # like a narrowed promise: requirement 0003 grades exactly one rule OPERATOR —
-# rule 1, the three levels. The inbox row and the teaching empty state come from
-# DESK rules (1.1's card detail and 16.3) and were taken up only because they
+# REQ-UI-01, the three levels. The inbox row and the teaching empty state come
+# from DESK detail (REQ-UI-01's card clause and REQ-UI-16's third ingredient) and
+# were taken up only because they
 # meet the document's own admission criterion: they remove work rather than add
 # a feature.
 
