@@ -73,26 +73,21 @@ def decided_truth_for(
     execution_id = NodeExecutionId.for_node(PROOF_RUN_ID, workflow_hash, "cook")
     graph = parse_workflow_document(revision.document)
     assert isinstance(graph, WorkflowGraphV3)
-    bound = bind_node_execution(
-        PROOF_RUN_ID,
+    frozen = RunConfigurationRevision(
         workflow_hash,
-        graph,
-        "cook",
-        RunConfigurationRevision(
-            workflow_hash,
-            AgentBindingSet(()).binding_set_hash,
-            (
-                ResolvedReference(
-                    ReferenceSite("outputs.schema", "cook", "meal"),
-                    RevisionKind.SCHEMA,
-                    VersionedReference(
-                        ref="meal-schema", revision=PROOF_SCHEMA_REVISION.value
-                    ),
-                    PROOF_SCHEMA_REVISION,
+        AgentBindingSet(()).binding_set_hash,
+        (
+            ResolvedReference(
+                ReferenceSite("outputs.schema", "cook", "meal"),
+                RevisionKind.SCHEMA,
+                VersionedReference(
+                    ref="meal-schema", revision=PROOF_SCHEMA_REVISION.value
                 ),
+                PROOF_SCHEMA_REVISION,
             ),
         ),
     )
+    bound = bind_node_execution(PROOF_RUN_ID, workflow_hash, graph, "cook", frozen)
     node_request = bound.request
     artifact = NodeArtifact(
         run_id=PROOF_RUN_ID,
@@ -119,5 +114,5 @@ def decided_truth_for(
             ),
         )
     return StartV3RunWithReceiptRequest(
-        revision, node_request, bound.context_package, (artifact,), receipt
+        revision, frozen, node_request, bound.context_package, (artifact,), receipt
     )

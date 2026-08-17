@@ -132,6 +132,7 @@ def start_named_run(
     started = starter.start_v3_with_receipt(
         StartV3RunWithReceiptRequest(
             revision,
+            decided.run_configuration,
             decided.node_request,
             decided.context_package,
             decided.artifacts,

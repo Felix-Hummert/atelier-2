@@ -119,20 +119,15 @@ def request(
     run_id = RunId("run-lasagne")
     graph = parse_workflow_document(published.document)
     assert isinstance(graph, WorkflowGraphV3)
-    bound = bind_node_execution(
-        run_id,
+    frozen = RunConfigurationRevision(
         workflow_hash,
-        graph,
-        "cook",
-        RunConfigurationRevision(
-            workflow_hash,
-            AgentBindingSet(()).binding_set_hash,
-            (
-                _resolved("outputs.schema", "meal", SCHEMA_REVISION),
-                _resolved("outputs.schema", "sauce", SAUCE_SCHEMA_REVISION),
-            ),
+        AgentBindingSet(()).binding_set_hash,
+        (
+            _resolved("outputs.schema", "meal", SCHEMA_REVISION),
+            _resolved("outputs.schema", "sauce", SAUCE_SCHEMA_REVISION),
         ),
     )
+    bound = bind_node_execution(run_id, workflow_hash, graph, "cook", frozen)
     node_request = bound.request
     artifact = NodeArtifact(
         run_id=run_id,
@@ -168,6 +163,7 @@ def request(
     )
     return StartV3RunWithReceiptRequest(
         published,
+        frozen,
         node_request,
         bound.context_package,
         (artifact, sauce_artifact),

@@ -34,8 +34,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V9 product tables equal V8. V10 adds the thin catalog/receipt foundation. V11
 # closes the artifact/output/access store shape that Cut B writes atomically.
 # V12 adds append-only catalog alias and retirement histories. V13 gives the
-# context-package manifest a durable home and records the run configuration
-# revision a supervised V3 run was started under.
+# context-package manifest, the node-execution-request preimage and the run
+# configuration snapshot durable, immutable homes, and records the run
+# configuration revision a supervised V3 run was started under.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -43,7 +44,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     10: "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7",
     11: "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef",
     12: "feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7",
-    13: "56143b0baed1e545fc72f93d09cbee731baf77843ac520cea6e8d0884feb7a2f",
+    13: "407a56375d5a7875a3d75c25060850aa2f9baf1291f0cdc06ac0c51030ce3cd2",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -984,6 +985,24 @@ node_receipts_v3 = sa.Table(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
+run_configuration_revisions = sa.Table(
+    "run_configuration_revisions",
+    metadata,
+    sa.Column("revision_hash", sa.Text, primary_key=True),
+    sa.Column("preimage", sa.LargeBinary, nullable=False),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
+node_execution_requests_v3 = sa.Table(
+    "node_execution_requests_v3",
+    metadata,
+    sa.Column("request_hash", sa.Text, primary_key=True),
+    sa.Column("preimage", sa.LargeBinary, nullable=False),
+    sa.CheckConstraint(
+        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
 context_packages_v3 = sa.Table(
     "context_packages_v3",
     metadata,
@@ -1077,6 +1096,30 @@ _PRODUCT_TRIGGERS = {
                          run_configuration_revision_hash
         ON runs BEGIN
           SELECT RAISE(ABORT, 'run bindings are immutable');
+        END
+    """,
+    "run_configuration_revisions_no_update": """
+        CREATE TRIGGER run_configuration_revisions_no_update
+        BEFORE UPDATE ON run_configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'run configuration revisions are immutable');
+        END
+    """,
+    "run_configuration_revisions_no_delete": """
+        CREATE TRIGGER run_configuration_revisions_no_delete
+        BEFORE DELETE ON run_configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'run configuration revisions are immutable');
+        END
+    """,
+    "node_execution_requests_v3_no_update": """
+        CREATE TRIGGER node_execution_requests_v3_no_update
+        BEFORE UPDATE ON node_execution_requests_v3 BEGIN
+          SELECT RAISE(ABORT, 'node execution requests are immutable');
+        END
+    """,
+    "node_execution_requests_v3_no_delete": """
+        CREATE TRIGGER node_execution_requests_v3_no_delete
+        BEFORE DELETE ON node_execution_requests_v3 BEGIN
+          SELECT RAISE(ABORT, 'node execution requests are immutable');
         END
     """,
     "context_packages_v3_no_update": """

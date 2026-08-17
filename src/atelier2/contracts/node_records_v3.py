@@ -326,6 +326,7 @@ class NodeExecutionRequest:
     inputs: tuple[InputEnvelope, ...]
     bound_revisions: BoundNodeRevisions
     declared_outputs: tuple[DeclaredOutput, ...]
+    preimage: bytes = field(init=False)
     request_hash: NodeExecutionRequestHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -350,35 +351,31 @@ class NodeExecutionRequest:
             raise ValueError("an agent request binds a mode")
         if self.kind is not NodeKindV3.AGENT and self.mode is not None:
             raise ValueError("only an agent request binds a mode")
-        object.__setattr__(
-            self,
-            "request_hash",
-            NodeExecutionRequestHash.of(
-                frame(
-                    "node-execution-request/v3",
-                    _ascii_hash(self.workflow_revision_hash),
-                    _ascii_hash(self.run_configuration_revision_hash),
-                    self.run_id.value.encode("utf-8"),
-                    self.node_id.encode("utf-8"),
-                    _ascii_hash(self.context_package_hash),
-                    frame(
-                        "available-context/v3",
-                        *(grant.framed() for grant in self.available_context),
-                    ),
-                    self.kind.value.encode("ascii"),
-                    b"" if self.mode is None else self.mode.value.encode("ascii"),
-                    frame(
-                        "input-envelopes/v3",
-                        *(envelope.framed() for envelope in self.inputs),
-                    ),
-                    *self.bound_revisions.framed_fields(),
-                    frame(
-                        "declared-outputs/v3",
-                        *(output.framed() for output in self.declared_outputs),
-                    ),
-                )
+        preimage = frame(
+            "node-execution-request/v3",
+            _ascii_hash(self.workflow_revision_hash),
+            _ascii_hash(self.run_configuration_revision_hash),
+            self.run_id.value.encode("utf-8"),
+            self.node_id.encode("utf-8"),
+            _ascii_hash(self.context_package_hash),
+            frame(
+                "available-context/v3",
+                *(grant.framed() for grant in self.available_context),
+            ),
+            self.kind.value.encode("ascii"),
+            b"" if self.mode is None else self.mode.value.encode("ascii"),
+            frame(
+                "input-envelopes/v3",
+                *(envelope.framed() for envelope in self.inputs),
+            ),
+            *self.bound_revisions.framed_fields(),
+            frame(
+                "declared-outputs/v3",
+                *(output.framed() for output in self.declared_outputs),
             ),
         )
+        object.__setattr__(self, "preimage", preimage)
+        object.__setattr__(self, "request_hash", NodeExecutionRequestHash.of(preimage))
 
 
 @dataclass(frozen=True)

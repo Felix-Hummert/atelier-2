@@ -25,11 +25,13 @@ from atelier2.adapters.dbos.schema import (
     auth_profile_revisions,
     context_packages_v3,
     node_artifacts_v3,
+    node_execution_requests_v3,
     node_receipt_access_v3,
     node_receipt_outputs_v3,
     node_receipts_v3,
     published_revisions,
     run_agent_bindings,
+    run_configuration_revisions,
     runs,
     workflow_revisions,
 )
@@ -140,6 +142,10 @@ def _v3_start_is_bound(request: StartV3RunWithReceiptRequest) -> bool:
         or receipt.request_hash != node_request.request_hash
         or receipt.context_package_hash != node_request.context_package_hash
         or node_request.context_package_hash != request.context_package.package_hash
+        or node_request.run_configuration_revision_hash
+        != request.run_configuration.revision_hash
+        or request.run_configuration.workflow_revision_hash
+        != node_request.workflow_revision_hash
     ):
         return False
     artifacts = request.artifacts
@@ -226,15 +232,41 @@ def _stored_v3_start_matches(
         .mappings()
         .one_or_none()
     )
-    stored_manifest = connection.scalar(
-        sa.select(context_packages_v3.c.manifest).where(
-            context_packages_v3.c.package_hash
-            == request.context_package.package_hash.value
-        )
-    )
-    if run_record is None or receipt_record is None or stored_manifest is None:
+    stored_records = {
+        V3StartRecord.CONTEXT_PACKAGE: (
+            connection.scalar(
+                sa.select(context_packages_v3.c.manifest).where(
+                    context_packages_v3.c.package_hash
+                    == request.context_package.package_hash.value
+                )
+            ),
+            request.context_package.manifest,
+        ),
+        V3StartRecord.RUN_CONFIGURATION: (
+            connection.scalar(
+                sa.select(run_configuration_revisions.c.preimage).where(
+                    run_configuration_revisions.c.revision_hash
+                    == request.run_configuration.revision_hash.value
+                )
+            ),
+            request.run_configuration.preimage,
+        ),
+        V3StartRecord.NODE_EXECUTION_REQUEST: (
+            connection.scalar(
+                sa.select(node_execution_requests_v3.c.preimage).where(
+                    node_execution_requests_v3.c.request_hash
+                    == node_request.request_hash.value
+                )
+            ),
+            node_request.preimage,
+        ),
+    }
+    if run_record is None or receipt_record is None:
         return False
-    if bytes(stored_manifest) != request.context_package.manifest:
+    if any(
+        stored is None or bytes(stored) != expected
+        for stored, expected in stored_records.values()
+    ):
         return False
     if not _v3_run_record_matches(run_record, request):
         return False
@@ -836,6 +868,22 @@ class DbosDurableRunStarter:
                     .values(
                         package_hash=request.context_package.package_hash.value,
                         manifest=request.context_package.manifest,
+                    )
+                )
+                connection.execute(
+                    run_configuration_revisions.insert()
+                    .prefix_with("OR IGNORE")
+                    .values(
+                        revision_hash=request.run_configuration.revision_hash.value,
+                        preimage=request.run_configuration.preimage,
+                    )
+                )
+                connection.execute(
+                    node_execution_requests_v3.insert()
+                    .prefix_with("OR IGNORE")
+                    .values(
+                        request_hash=node_request.request_hash.value,
+                        preimage=node_request.preimage,
                     )
                 )
                 if request.artifacts:

@@ -78,7 +78,10 @@ text = "A V3 agent attempt that succeeds records the provider's receipt and carr
 # Still honestly open, and named where it is written: no owner materializes a
 # `required_context` selector against its source, so a member carries its name,
 # its resolved source revision and the selector the author wrote, and the content
-# hash stays the zero-length field in its declared position.
+# hash stays the zero-length field in its declared position. The receipt/event
+# link of the chain -- `NodeReceipt.agent_receipt_hash` and
+# `RunEvent.node_receipt_hash` -- is still a later head; what changes here is that
+# it now has records to point at.
 
 [[sentence]]
 id = "a-supervised-v3-start-leaves-the-manifest-its-receipt-names"
@@ -86,8 +89,8 @@ text = "A supervised V3 start writes the context-package manifest in the same tr
 
 [[sentence]]
 id = "a-v3-node-execution-request-is-composed-not-supplied"
-text = "The node execution request and the manifest it names are composed in production from the document and the run configuration the run is bound to, never resolved a second time and never assembled by the caller, and a declared reference the frozen configuration does not carry is refused by its site rather than dropped."
+text = "The node execution request and the manifest it names are composed in production from the document and the run configuration the run is bound to, never resolved a second time and never assembled by the caller; a declared reference the frozen configuration does not carry is refused by its site rather than dropped, and a node declaring more revisions of one kind than the request can bind is refused by that count rather than bound in part."
 
 [[sentence]]
 id = "a-supervised-v3-run-records-the-configuration-it-was-started-under"
-text = "A supervised V3 run records the run configuration revision its request was bound to, and reads back carrying it, so the run's own truth no longer stops at the format number."
+text = "A supervised V3 run stores the exact preimage of its node execution request and of the run configuration snapshot it was bound to, beside the manifest, so every hash the receipt carries recomputes from bytes the store kept; the run reads back carrying that configuration, and a truth naming a record it does not carry writes nothing."

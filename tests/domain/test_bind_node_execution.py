@@ -14,6 +14,7 @@ import pytest
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.bind_node_execution import (
+    NodeExecutionBindingUnsupported,
     NodeExecutionUnresolved,
     bind_node_execution,
 )
@@ -187,3 +188,60 @@ def test_a_configuration_frozen_for_another_revision_is_refused() -> None:
 
     with pytest.raises(ValueError, match="another workflow revision"):
         bind_node_execution(RUN, revision_hash(), graph(), "implement", other)
+
+
+TWO_SKILL_DOCUMENT = f"""format_version: 3
+name: One agent with two skills
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Cook the one thing this package is for.
+    skills:
+      - ref: plating
+        revision: {HOUSE_STYLE.value}
+      - ref: timing
+        revision: {KITCHEN_NOTES.value}
+""".encode()
+
+
+@pytest.mark.proves("a-v3-node-execution-request-is-composed-not-supplied")
+def test_more_bound_revisions_of_one_kind_than_the_record_holds_is_refused() -> None:
+    """A record that cannot carry them must say so, never bind fewer in silence.
+
+    ADR 0006 binds one resolved skill id and one tool id per request, while the
+    document may declare a sequence of each. Two skills therefore cannot be
+    written down, and the answer is the node's name and the count -- dropping
+    them would run an agent under capabilities its author declared and the
+    receipt would never show it.
+    """
+    parsed = parse_workflow_document(TWO_SKILL_DOCUMENT)
+    assert isinstance(parsed, WorkflowGraphV3)
+    revision = WorkflowRevisionHash(
+        WorkflowRevision(TWO_SKILL_DOCUMENT).revision_hash.value
+    )
+    frozen = RunConfigurationRevision(
+        revision,
+        AgentBindingSet(()).binding_set_hash,
+        (
+            ResolvedReference(
+                ReferenceSite("skills", "implement"),
+                RevisionKind.SKILL,
+                VersionedReference(ref="plating", revision=HOUSE_STYLE.value),
+                HOUSE_STYLE,
+            ),
+            ResolvedReference(
+                ReferenceSite("skills", "implement"),
+                RevisionKind.SKILL,
+                VersionedReference(ref="timing", revision=KITCHEN_NOTES.value),
+                KITCHEN_NOTES,
+            ),
+        ),
+    )
+
+    with pytest.raises(NodeExecutionBindingUnsupported) as refused:
+        bind_node_execution(RUN, revision, parsed, "implement", frozen)
+
+    assert refused.value.kind is RevisionKind.SKILL
+    assert refused.value.declared == 2

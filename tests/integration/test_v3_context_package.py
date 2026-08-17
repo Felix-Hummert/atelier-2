@@ -23,11 +23,20 @@ from atelier2.adapters.dbos.runtime import DbosRuntimeSettings, create_canonical
 from atelier2.adapters.dbos.schema import (
     context_packages_v3,
     initialize_schema,
+    node_execution_requests_v3,
     node_receipts_v3,
+    run_configuration_revisions,
     runs,
 )
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
-from atelier2.contracts.node_records_v3 import ContextPackage
+from atelier2.contracts.node_records_v3 import (
+    ContextPackage,
+    NodeExecutionRequestHash,
+)
+from atelier2.contracts.run_configuration_v3 import (
+    RunConfigurationRevision,
+    RunConfigurationRevisionHash,
+)
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     DurableV3RunCreated,
@@ -151,3 +160,71 @@ def test_a_truth_naming_a_package_it_does_not_carry_is_refused_without_a_write(
             == 0
         )
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
+@pytest.mark.proves("a-v3-node-execution-request-is-composed-not-supplied")
+def test_the_stored_records_recompute_the_hashes_the_receipt_carries(
+    storage: tuple[Engine, DbosDurableRunStarter],
+) -> None:
+    """A reader can walk from the receipt to the exact bytes, trusting nothing.
+
+    The receipt names a request hash and a package hash; the request names the
+    run configuration. Each of those is stored as the preimage its identity was
+    taken over, so recomputing it from the store must give the same name back --
+    that is the difference between a record and a number.
+    """
+    engine, starter = storage
+    decided = request()
+    assert isinstance(starter.start_v3_with_receipt(decided), DurableV3RunCreated)
+
+    with engine.connect() as connection:
+        receipt = connection.execute(sa.select(node_receipts_v3)).mappings().one()
+        stored_request = connection.scalar(
+            sa.select(node_execution_requests_v3.c.preimage).where(
+                node_execution_requests_v3.c.request_hash == receipt["request_hash"]
+            )
+        )
+        stored_configuration = connection.scalar(
+            sa.select(run_configuration_revisions.c.preimage).where(
+                run_configuration_revisions.c.revision_hash
+                == decided.run_configuration.revision_hash.value
+            )
+        )
+
+    assert stored_request is not None and stored_configuration is not None
+    assert (
+        NodeExecutionRequestHash.of(bytes(stored_request)).value
+        == receipt["request_hash"]
+    )
+    assert (
+        RunConfigurationRevisionHash.of(bytes(stored_configuration))
+        == decided.run_configuration.revision_hash
+    )
+
+
+@pytest.mark.proves(
+    "a-supervised-v3-run-records-the-configuration-it-was-started-under"
+)
+def test_a_truth_naming_a_configuration_it_does_not_carry_is_refused(
+    storage: tuple[Engine, DbosDurableRunStarter],
+) -> None:
+    """Every record the truth names travels with it, or nothing is written."""
+    engine, starter = storage
+    decided = request()
+    other = RunConfigurationRevision(
+        decided.run_configuration.workflow_revision_hash,
+        decided.run_configuration.binding_set_hash,
+        (),
+    )
+
+    refused = starter.start_v3_with_receipt(replace(decided, run_configuration=other))
+
+    assert isinstance(refused, DurableV3StartBindingInvalid)
+    with engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(run_configuration_revisions)
+            )
+            == 0
+        )

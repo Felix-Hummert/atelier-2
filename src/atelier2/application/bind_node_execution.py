@@ -75,6 +75,19 @@ class NodeExecutionUnresolved(Exception):
         self.kind = kind
 
 
+class NodeExecutionBindingUnsupported(Exception):
+    """The node declares more revisions of one kind than the request can bind."""
+
+    def __init__(self, kind: RevisionKind, declared: int) -> None:
+        super().__init__(
+            f"the node declares {declared} {kind.value} revisions, and one "
+            "node-execution-request/v3 binds exactly one resolved id of that "
+            "kind, so nothing here can carry them"
+        )
+        self.kind = kind
+        self.declared = declared
+
+
 def bind_node_execution(
     run_id: RunId,
     workflow_revision_hash: WorkflowRevisionHash,
@@ -209,8 +222,8 @@ def _bound_revisions_of(
     """
     return BoundNodeRevisions(
         profile=resolution.optional_revision("profile"),
-        skill=_single(resolution.all_of("skills")),
-        tool=_single(resolution.all_of("tools")),
+        skill=_single(resolution.all_of("skills"), RevisionKind.SKILL),
+        tool=_single(resolution.all_of("tools"), RevisionKind.TOOL),
         policy=resolution.optional_revision("policy"),
         budget=resolution.optional_revision("budget"),
         retry=resolution.optional_revision("retry"),
@@ -219,15 +232,19 @@ def _bound_revisions_of(
 
 
 def _single(
-    revisions: tuple[PublishedRevisionHash, ...],
+    revisions: tuple[PublishedRevisionHash, ...], kind: RevisionKind
 ) -> PublishedRevisionHash | None:
-    """The one revision a single-valued bound field carries, or none.
+    """The one revision a single-valued bound field carries, or a named refusal.
 
     `skills` and `tools` are authored sequences while ADR 0006's request binds one
-    id each. Until that record carries a sequence, a node declaring more than one
-    binds none of them here rather than silently binding the first.
+    resolved id each. A node declaring more than one cannot be written down, and
+    the answer is its count rather than a quieter request: binding fewer would run
+    an agent under capabilities its author declared, and the receipt would carry
+    no trace of the ones that went missing.
     """
-    return revisions[0] if len(revisions) == 1 else None
+    if len(revisions) > 1:
+        raise NodeExecutionBindingUnsupported(kind, len(revisions))
+    return revisions[0] if revisions else None
 
 
 def _declared_outputs_of(

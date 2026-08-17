@@ -15,6 +15,7 @@ from atelier2.contracts.node_records_v3 import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, PublishedRevisionHash
 from atelier2.contracts.run_bindings import AnyRun
+from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 
@@ -114,13 +115,15 @@ class DurablePublishedRunStarter(Protocol):
 class StartV3RunWithReceiptRequest:
     """One supervised V3 start and its already-decided terminal node truth.
 
-    The `context_package` is the manifest itself and not only its hash, because
-    ADR 0006 binds that material to be written once, immutably, before START. A
-    request that named a package it did not carry would leave a receipt pointing
-    at bytes nobody kept, so the manifest travels with the truth that names it.
+    The `context_package` and the `run_configuration` are the records themselves
+    and not only their hashes, because ADR 0006 binds that material to be written
+    once, immutably, before START. A request that named a record it did not carry
+    would leave a receipt pointing at bytes nobody kept, so every preimage a
+    receipt's hashes reach travels with the truth that names it.
     """
 
     revision: PublishedRevision
+    run_configuration: RunConfigurationRevision
     node_request: NodeExecutionRequest
     context_package: ContextPackage
     artifacts: tuple[NodeArtifact, ...]
@@ -153,6 +156,8 @@ class V3StartRecord(StrEnum):
     ARTIFACT = "artifact"
     RECEIPT = "receipt"
     CONTEXT_PACKAGE = "context_package"
+    RUN_CONFIGURATION = "run_configuration"
+    NODE_EXECUTION_REQUEST = "node_execution_request"
 
 
 @dataclass(frozen=True)
