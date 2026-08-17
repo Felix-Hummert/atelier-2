@@ -567,6 +567,7 @@ describe("the graph a run is allowed to hold", () => {
       format_version: 3 as const,
       executable: false as const,
       not_executable_reason: "agent forms nothing binds yet: outputs" as const,
+      agent_roles: [],
       node_count: 1,
       name: "Nightly regression sweep",
       description: null

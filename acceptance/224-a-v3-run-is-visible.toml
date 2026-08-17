@@ -15,9 +15,10 @@ story = "https://github.com/FlexOr2/atelier-2/issues/224"
 #   - NO LIVE FOLLOWING. The event resource is pinned to format 2, so a V3 run
 #     has no event stream. The page says so instead of opening a connection that
 #     would answer nothing, and no test here pretends a frame arrived.
-#   - NO START FROM THE PICKER. The picker still offers only what this cockpit
-#     can draw. Opening a run by its address is what this head gives; offering to
-#     begin one is the head that follows.
+#   - THE PICKER NOW STARTS ONE, and the sentence below says so. It was named
+#     absent here while the cockpit could not draw a V3 run; it can, so the gate
+#     fell. What the picker needed was never the nodes -- it was the roles, which
+#     the revision resource now answers with.
 #   - NO WAIT OR RECONCILE FORMS. A V3 run cannot reach those states, because no
 #     runtime interprets a Wait or Action node in the format yet.
 #
@@ -29,3 +30,12 @@ story = "https://github.com/FlexOr2/atelier-2/issues/224"
 [[sentence]]
 id = "a-v3-run-is-visible-in-the-cockpit"
 text = "An operator who opens a V3 run by its address sees the line its author declared -- every node in the order the run walks them, which one has finished and which is running now -- together with where the run stands and, once it has ended, the terminal hash it closed on; and the page tells the operator that it is not following the run live rather than implying that it is."
+
+# WHAT THE PICKER STILL DOES NOT DO. The graph is not drawn: a version 3 revision
+# answers with its roles and its node count, not its nodes, so there is no shape
+# to render and none is invented. Live following stays absent for the same reason
+# as above -- a version 3 run has no event stream.
+
+[[sentence]]
+id = "a-v3-workflow-is-started-from-the-picker"
+text = "An operator who publishes a V3 workflow is offered exactly the agent roles that document declares -- learnt from the API rather than by re-reading the YAML -- and binding them starts the run through the same bound request a V2 workflow uses, landing the operator on the run they just began."
