@@ -231,16 +231,20 @@ def test_no_wire_field_writes_a_bound_it_does_not_take_from_its_owner() -> None:
         # in the one place it had to see.
         (
             "a name assigned in the class body that holds the field",
-            "class R(ApiModel):\n"
-            "    WIRE_BOUND = 1_024\n"
-            "    role: str = Field(max_length=WIRE_BOUND)\n",
+            (
+                "class R(ApiModel):\n"
+                "    WIRE_BOUND = 1_024\n"
+                "    role: str = Field(max_length=WIRE_BOUND)\n"
+            ),
             True,
         ),
         (
             "a class-body alias of the owner",
-            "class R(ApiModel):\n"
-            "    WIRE_BOUND = MAXIMUM_AGENT_FIELD_CHARACTERS\n"
-            "    role: str = Field(max_length=WIRE_BOUND)\n",
+            (
+                "class R(ApiModel):\n"
+                "    WIRE_BOUND = MAXIMUM_AGENT_FIELD_CHARACTERS\n"
+                "    role: str = Field(max_length=WIRE_BOUND)\n"
+            ),
             True,
         ),
         (
@@ -250,9 +254,11 @@ def test_no_wire_field_writes_a_bound_it_does_not_take_from_its_owner() -> None:
         ),
         (
             "an annotated assignment in the class body",
-            "class R(ApiModel):\n"
-            "    WIRE_BOUND: int = 1_024\n"
-            "    role: str = Field(max_length=WIRE_BOUND)\n",
+            (
+                "class R(ApiModel):\n"
+                "    WIRE_BOUND: int = 1_024\n"
+                "    role: str = Field(max_length=WIRE_BOUND)\n"
+            ),
             True,
         ),
         # Reading the owner through the module that holds it is still reading the
@@ -264,8 +270,10 @@ def test_no_wire_field_writes_a_bound_it_does_not_take_from_its_owner() -> None:
         ),
         (
             "the owner inside a class body",
-            "class R(ApiModel):\n"
-            "    role: str = Field(max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)\n",
+            (
+                "class R(ApiModel):\n"
+                "    role: str = Field(max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)\n"
+            ),
             False,
         ),
     ],
