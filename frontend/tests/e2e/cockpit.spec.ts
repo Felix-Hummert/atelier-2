@@ -407,3 +407,59 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/v3-run-mobile.png", fullPage: true });
 });
+
+test("publishes a V3 workflow, binds its role, and watches the line it started", async ({ page }) => {
+  await page.goto("/atelier/new");
+  await page.getByLabel("Publish YAML").check();
+  await page.getByLabel("Exact workflow YAML").fill(
+    [
+      "format_version: 3",
+      "name: Seen from the picker",
+      "nodes:",
+      "  - id: implement",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: Do the one thing this chain is for.",
+      "  - id: review",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: Check what the node before you did.",
+      "    depends_on: [implement]",
+      ""
+    ].join("\n")
+  );
+  await page.getByRole("button", { name: "Review publication" }).click();
+  await expect(page.getByRole("dialog", { name: "Publish this exact workflow?" })).toBeVisible();
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+
+  // The role comes from the API, not from the operator re-reading their own YAML.
+  const binding = page.getByRole("article", { name: "Binding builder" });
+  await expect(binding).toBeVisible();
+  await page.getByLabel("Profile ID").fill("picker-v3");
+  await page.getByLabel("Revision").fill("1");
+  await page.getByLabel("Provider").fill("e2e-v3");
+  await page.getByLabel("Auth mode").selectOption("subscription");
+  await page.getByLabel("Model").fill("v3-model");
+  await page.getByLabel("Executor").fill("immediate/v1");
+  await page.screenshot({ path: "test-results/v3-picker-bindings-desktop.png", fullPage: true });
+
+  await page.getByRole("button", { name: "Start" }).click();
+
+  await expect(page.getByRole("heading", { level: 1, name: /^Run / })).toBeVisible();
+  const rail = page.getByRole("listitem");
+  await expect(rail.nth(0)).toContainText("implement");
+  await expect(rail.nth(1)).toContainText("review");
+  await expect(page.getByLabel("Where this run stands")).toContainText("Snapshot");
+  await expect(
+    page.getByRole("button", { name: /does not follow the run live/i })
+  ).toBeVisible();
+  await expect(async () => {
+    await page.reload();
+    await expect(page.getByLabel("Where this run stands")).toContainText("Done");
+  }).toPass({ timeout: 15_000 });
+  await expect(rail.nth(1)).toContainText("Done");
+  await page.screenshot({ path: "test-results/v3-picker-run-desktop.png", fullPage: true });
+  await assertNoSeriousAccessibilityFindings(page);
+});

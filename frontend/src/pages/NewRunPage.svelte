@@ -64,18 +64,15 @@
   let selectionGeneration = 0;
 
   /**
-   * Whether this cockpit can carry a run of that revision, which is narrower
-   * than whether the server can start one.
+   * Whether this cockpit can carry a run of that revision.
    *
-   * The server answers a version 3 run now, and its own rule decides whether a
-   * document is executable. What this cockpit still lacks is a way to draw one:
-   * the wire carries no node list for a version 3 graph, so `executableGraph`
-   * refuses it and the run page has nothing to walk. Offering Start here would
-   * hand the operator a run the next screen cannot show, so the picker waits for
-   * the head that gives a version 3 graph its nodes.
+   * It asks one thing: can the server execute this document. The picker used to
+   * ask a second -- whether this cockpit could draw the run -- and refused every
+   * version 3 revision on that ground. The run page reads one now, so the extra
+   * condition is gone and this reads what it enforces.
    */
   function cockpitCanShow(revision: WorkflowRevisionSummary): boolean {
-    return revision.executable && revision.format_version !== 3;
+    return revision.executable;
   }
 
   async function chooseSaved(revisionHash: string): Promise<void> {
@@ -168,11 +165,44 @@
     }
   }
 
+  /**
+   * Whether a run of this revision is started by binding agent roles.
+   *
+   * Version 2 and version 3 both are, through the same bound start request; a
+   * version 1 document names no roles at all. Asking that rather than asking for
+   * a version number is what let version 3 through here: the three places below
+   * were each written as "is this version 2", and each was really asking this.
+   */
+  function bindsAgentRoles(graph: WorkflowRevisionDetail["graph"]): boolean {
+    return graph.format_version === 2 || graph.format_version === 3;
+  }
+
+  /**
+   * Every agent role this revision declares, once each.
+   *
+   * A version 3 revision answers with them directly; a version 2 one is read out
+   * of the nodes it puts on the wire; a version 1 one declares none. This is a
+   * different question from `bindsAgentRoles` above and stays its own: a version 2
+   * document with no agent node still starts through the bound request, so "which
+   * roles" and "which start request" must not be collapsed into one answer.
+   */
+  function agentRolesOf(graph: WorkflowRevisionDetail["graph"]): string[] {
+    if (graph.format_version === 3) return [...graph.agent_roles];
+    if (graph.format_version === 2) {
+      return [
+        ...new Set(
+          graph.nodes.filter((node) => node.type === "agent").map((node) => node.role)
+        )
+      ];
+    }
+    return [];
+  }
+
   async function startDraft(): Promise<void> {
     if (draft === null) return;
     const selected = draft;
     let mutation: StartMutation | null = null;
-    if (selected.revision.graph.format_version === 2) {
+    if (bindsAgentRoles(selected.revision.graph)) {
       if (!validateBindings(selected.bindings)) return;
       operation = "start";
       failureMessage = null;
@@ -244,9 +274,7 @@
   }
 
   function prepareDraft(revision: WorkflowRevisionDetail): void {
-    const roles = revision.graph.format_version === 2
-      ? [...new Set(revision.graph.nodes.filter((node) => node.type === "agent").map((node) => node.role))]
-      : [];
+    const roles = agentRolesOf(revision.graph);
     draft = {
       revision,
       runId: createRunId(),
@@ -429,8 +457,6 @@
             {/if}
             {#if !revision.executable}
               <span class="revision-refusal">Cannot be started: {revision.not_executable_reason}</span>
-            {:else if revision.format_version === 3}
-              <span class="revision-refusal">Runs, but this cockpit cannot show a version 3 run yet.</span>
             {/if}
           </span>
         </label>
@@ -454,7 +480,7 @@
   {:else if operation === "retry"}<p class="status" role="status">Retrying exact request…</p>{/if}
 
   {#if draft !== null}
-    {#if draft.revision.graph.format_version === 2 && draft.bindings.length > 0}
+    {#if bindsAgentRoles(draft.revision.graph) && draft.bindings.length > 0}
       <section class="binding-list" aria-labelledby="binding-list-title">
         <p class="eyebrow">Agent setup</p>
         <h2 id="binding-list-title">Bindings</h2>
@@ -476,17 +502,15 @@
         {/each}
       </section>
     {/if}
-    {#if draft.revision.graph.format_version === 3}
+    <!-- Only a version 3 revision can be unexecutable: the older formats carry no
+         such field, because everything they can express this build runs. -->
+    {#if draft.revision.graph.format_version === 3 && !draft.revision.graph.executable}
       <section class="start-card unstartable" aria-labelledby="start-title">
         <div>
           <p class="eyebrow">Published</p>
           <h2 id="start-title">{draft.revision.graph.name}</h2>
           {#if draft.revision.graph.description !== null}<p class="muted">{draft.revision.graph.description}</p>{/if}
-          {#if !draft.revision.graph.executable}
-            <p class="revision-refusal">Cannot be started: {draft.revision.graph.not_executable_reason}</p>
-          {:else}
-            <p class="revision-refusal">Runs, but this cockpit cannot show a version 3 run yet.</p>
-          {/if}
+          <p class="revision-refusal">Cannot be started: {draft.revision.graph.not_executable_reason}</p>
         </div>
       </section>
     {:else}
