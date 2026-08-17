@@ -309,7 +309,7 @@ def _supplied_orders(
         seen.add(name)
         try:
             json.loads(value)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             parser.error(f"input {name!r} is not valid JSON for the pinned schema")
         orders.append(SuppliedOrder(name, value))
     return tuple(orders)

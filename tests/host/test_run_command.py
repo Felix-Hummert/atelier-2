@@ -1106,9 +1106,7 @@ def test_a_named_run_forwards_the_order_and_publishes_nothing_for_it(
 ) -> None:
     """`--name` plus `--input` is one run of the named revision, not a new one.
 
-    Until this lands the help text itself refuses `--input` (`run input follows
-    issue #38`), so a distinct order still burns a distinct workflow. The
-    command publishes nothing for the order: it hands the name and the exact
+    The command publishes nothing for the order: it hands the name and the exact
     bytes to `POST /runs`.
     """
     with ScriptedService(named_serving_answers()) as service:
@@ -1192,6 +1190,30 @@ def test_a_value_that_is_not_json_is_refused_before_any_request(
         pytest.raises(SystemExit),
     ):
         run_command(named_order, service, "--input", f"{ORDER_NAME}=not-json")
+
+    printed = capsysbinary.readouterr()
+    assert b"not valid JSON for the pinned schema" in printed.err
+    assert b"order" in printed.err
+
+
+def test_an_input_file_that_is_not_utf8_is_refused_by_name(
+    named_order: list[str],
+    tmp_path: Path,
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    """`json.loads` on bytes decodes UTF-8 first; latin-1 is not a JSON error.
+
+    A file of `{"greeting": "grüße"}` in latin-1 raises `UnicodeDecodeError`,
+    which is not a `JSONDecodeError`. That used to escape as a traceback.
+    """
+    order_file = tmp_path / "order.json"
+    order_file.write_bytes('{"greeting": "grüße"}'.encode("latin-1"))
+
+    with (
+        ScriptedService(named_serving_answers()) as service,
+        pytest.raises(SystemExit),
+    ):
+        run_command(named_order, service, "--input-file", f"{ORDER_NAME}={order_file}")
 
     printed = capsysbinary.readouterr()
     assert b"not valid JSON for the pinned schema" in printed.err

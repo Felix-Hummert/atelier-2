@@ -125,7 +125,7 @@ class StartRunRequestResourceV3(ApiModel):
     agent_bindings: tuple[StartRunAgentBindingResourceV2, ...] = Field(
         max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
     )
-    orders: tuple[StartRunOrderResource, ...]
+    orders: tuple[StartRunOrderResource, ...] = Field(strict=False)
 
 
 AnyStartRunRequestResource = (

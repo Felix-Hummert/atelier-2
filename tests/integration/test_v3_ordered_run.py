@@ -34,6 +34,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -59,6 +60,7 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionCreated,
 )
 from atelier2.ports.durable_runs import (
+    AuthoredOrder,
     DurableRunCreated,
     DurableRunExisting,
     DurableRunFormatNotExecutable,
@@ -75,6 +77,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
 )
+from tests.scenarios.api import durable_api_client
 
 PORTIONS_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
@@ -256,6 +259,82 @@ def test_the_order_reaches_the_agent_and_is_stored_under_the_run(
     ]
 
     assert b'{"portions": 4}' in jobs_handed_to(cook)[0]
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_an_authored_order_reaches_the_agent(
+    runtime: DbosRuntime, cook: RecordingAgentExecutorFactoryV2
+) -> None:
+    """The operator door: a name and bytes, schema pin owned by the document.
+
+    The #240 starts speak `run_inputs` (name, schema hash, bytes). After this
+    head that field has no production producer. The public start and the CLI
+    both send `orders`. A start that never reaches `_pin_authored_orders`
+    stores nothing the agent can read.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    run_id = RunId("v3/authored")
+
+    created = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV3(
+            run_id,
+            workflow.revision_hash,
+            bindings,
+            orders=(AuthoredOrder(ORDER_NAME, b'{"portions": 7}'),),
+        )
+    )
+    assert isinstance(created, DurableRunCreated), created
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.COMPLETED)
+
+    assert b'{"portions": 7}' in jobs_handed_to(cook)[0]
+
+
+@pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
+def test_the_public_start_route_posts_the_order_the_document_declared(
+    runtime: DbosRuntime,
+) -> None:
+    """The HTTP half: an `orders` body really reaches the start.
+
+    This document declares a graph input, so a route that threw the body
+    away would refuse the start as missing rather than store the value.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    binding = bindings.bindings[0]
+
+    started = durable_api_client(runtime).post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": "v3/route-order",
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [{"name": ORDER_NAME, "value": '{"portions": 7}'}],
+        },
+    )
+
+    assert started.status_code == 201
+    with runtime.engine.connect() as connection:
+        stored = (
+            connection.execute(
+                sa.select(run_inputs_v3.c.value).where(
+                    run_inputs_v3.c.run_id == "v3/route-order"
+                )
+            )
+            .scalars()
+            .one()
+        )
+    assert bytes(stored) == b'{"portions": 7}'
 
 
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
