@@ -372,7 +372,9 @@ only the Claude executable is admitted, with isolated `HOME` and a single
 mounted `.credentials.json`. Durable store and scratch are a host volume.
 The live host unit `atelier2-live.service` is still the running serve; the
 container path is documented, not switched live. How to start and redeploy it
-is owned by [OPERATIONS.md](OPERATIONS.md). Network hardening remains
+is owned by [OPERATIONS.md](OPERATIONS.md). The served process writes JSON
+lines to stderr for a failed agent attempt and an unhandled HTTP exception;
+the access log is off. Network hardening remains
 [ADR 0009](decisions/0009-runner-trust.md).
 
 That API now has a command-line client of its own, so starting real work costs
