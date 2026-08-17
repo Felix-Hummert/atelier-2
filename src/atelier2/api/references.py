@@ -9,6 +9,9 @@ from atelier2.contracts.hashing import SHA256_HEX_DIGEST
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 MAX_SIGNED_INT64 = 9_223_372_036_854_775_807
+# The wire's own bound: no durable owner caps how many roles one run binds, so
+# the edge decides it, once, rather than twice in two request shapes.
+MAXIMUM_RUN_AGENT_BINDINGS = 100
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"

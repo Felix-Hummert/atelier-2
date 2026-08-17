@@ -15,7 +15,12 @@ MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
 # each invocation still declares its exact lower limit at the process port.
 MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 MAXIMUM_SIGNED_INT64 = 2**63 - 1
-_PROVIDER_ID = re.compile(r"[a-z][a-z0-9._-]{0,63}")
+MAXIMUM_PROVIDER_ID_CHARACTERS = 64
+# The slug's own width, so the pattern, the store's CHECK and the wire cannot
+# drift apart: one leading letter and the rest of the allowed characters.
+_PROVIDER_ID = re.compile(
+    rf"[a-z][a-z0-9._-]{{0,{MAXIMUM_PROVIDER_ID_CHARACTERS - 1}}}"
+)
 
 
 def _require_bounded_text(value: str, owner: str) -> None:
