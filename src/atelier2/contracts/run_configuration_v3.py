@@ -124,25 +124,24 @@ class RunConfigurationRevision:
     workflow_revision_hash: WorkflowRevisionHash
     binding_set_hash: AgentBindingSetHash
     resolutions: tuple[ResolvedReference, ...] = ()
+    preimage: bytes = field(init=False)
     revision_hash: RunConfigurationRevisionHash = field(init=False)
 
     def __post_init__(self) -> None:
         references = tuple(sorted(self.resolutions, key=_framed_reference))
         object.__setattr__(self, "resolutions", references)
-        object.__setattr__(
-            self,
-            "revision_hash",
-            RunConfigurationRevisionHash.of(
-                frame(
-                    "run-configuration-revision/v1",
-                    self.workflow_revision_hash.value.encode("ascii"),
-                    self.binding_set_hash.value.encode("ascii"),
-                    frame(
-                        "run-configuration-references/v1",
-                        *(_framed_reference(entry) for entry in references),
-                    ),
-                )
+        preimage = frame(
+            "run-configuration-revision/v1",
+            self.workflow_revision_hash.value.encode("ascii"),
+            self.binding_set_hash.value.encode("ascii"),
+            frame(
+                "run-configuration-references/v1",
+                *(_framed_reference(entry) for entry in references),
             ),
+        )
+        object.__setattr__(self, "preimage", preimage)
+        object.__setattr__(
+            self, "revision_hash", RunConfigurationRevisionHash.of(preimage)
         )
 
 
