@@ -71,7 +71,7 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
-from atelier2.ports.run_events import StreamReady
+from atelier2.ports.run_events import RunEventPage, StreamReady
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
@@ -297,8 +297,16 @@ def test_the_finished_line_can_have_its_events_read_back(
     started.launch()
     wait_for_state(started, RunState.COMPLETED)
 
-    prepared = durable_queries(started.engine).prepare_run_event_stream(RUN, 0)
+    queries = durable_queries(started.engine)
+    prepared = queries.prepare_run_event_stream(RUN, 0)
+    page = queries.read_run_event_page(RUN, 0, 50)
 
     assert isinstance(prepared, StreamReady), prepared
     assert prepared.terminal is True
     assert prepared.head_sequence == 2
+    # The pre-flight only buys the 200 and the stream headers; this page is what
+    # carries the events to the browser, so a real finished line is read here
+    # rather than only admitted one call earlier.
+    assert isinstance(page, RunEventPage), page
+    assert page.terminal_seen is True
+    assert [event.event.node_id for event in page.events] == ["implement", "review"]

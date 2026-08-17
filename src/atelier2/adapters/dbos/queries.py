@@ -231,28 +231,39 @@ def _validate_bounded_record(
 
 
 _V3_WORKFLOW_FORMAT_VERSION = 3
+_AGENT_FAILURE_FORMATS = frozenset((2, _V3_WORKFLOW_FORMAT_VERSION))
+"""Which families reach the agent attempt path, and so can record its failure."""
 
 
 def _run_ending_event_predicate(
     workflow_format_version: int, current_node_id: str
 ) -> Callable[[tuple[str, str]], bool]:
-    """Whether one endpoint event is the event that ended this run.
+    """Whether one event is the event that ended this run.
 
-    Two families spell an ending differently, and the stream's pre-flight has to
-    ask the question rather than name one spelling. A V1 or V2 line ends on the
-    subworkflow completion of its final node, so the kind alone identifies it. A
-    V3 line ends on its **agent** sink -- #194 H1b lifted the terminal condition
-    off the subworkflow node onto the run -- and there the kind identifies
-    nothing, because every agent node completes with the same kind. What is
-    unambiguous there is the node: the store keeps a completed run standing on
-    its sink, and refuses a terminal state anywhere else.
+    Two families spell an ending differently, and both readers have to ask the
+    question rather than name one spelling. A V1 or V2 line ends on the
+    subworkflow completion of its final node, so the kind alone identifies it.
 
-    Asking the run row rather than parsing its document keeps this check as cheap
-    as it was: it is a pre-flight before stream headers, not a projection.
+    A V3 line ends on its **agent** sink -- #194 H1b lifted the terminal
+    condition off the subworkflow node onto the run -- and there neither half
+    identifies it alone. The kind cannot, because every agent node completes with
+    the same one. The node cannot either, and that is the less obvious half: an
+    attempt event is written at the node the run is standing on and advances the
+    run's head without moving it, so a healthy running history would have its
+    last event sitting on the current node and be read as an ending. What ends a
+    V3 run is the **completion** of the node it stands on, so both halves are
+    asked.
+
+    Asking the run row rather than parsing its document keeps this cheap: it is a
+    pre-flight before stream headers and a check beside a page read, never a
+    projection.
     """
 
     if workflow_format_version == _V3_WORKFLOW_FORMAT_VERSION:
-        return lambda endpoint: endpoint[1] == current_node_id
+        completed = RunEventKind.AGENT_COMPLETED.value
+        return lambda endpoint: (
+            endpoint[0] == completed and endpoint[1] == current_node_id
+        )
     terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value
     return lambda endpoint: endpoint[0] == terminal_kind
 
@@ -1038,6 +1049,7 @@ class DbosQueries:
                             runs.c.state,
                             runs.c.last_event_sequence,
                             runs.c.workflow_format_version,
+                            runs.c.current_node_id,
                         ).where(runs.c.run_id == run_id.value)
                     )
                     .mappings()
@@ -1079,11 +1091,16 @@ class DbosQueries:
                 )
                 if sequences != expected_sequences:
                     return EventHistoryCorrupt()
-                terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value
+                ended_the_run = _run_ending_event_predicate(
+                    int(run_record["workflow_format_version"]),
+                    str(run_record["current_node_id"]),
+                )
                 terminal_sequences = tuple(
                     int(record["event_sequence"])
                     for record in records
-                    if str(record["event_kind"]) == terminal_kind
+                    if ended_the_run(
+                        (str(record["event_kind"]), str(record["node_id"]))
+                    )
                 )
                 terminal = str(run_record["state"]) == RunState.COMPLETED.value
                 reached_head = bool(sequences) and sequences[-1] == head
@@ -1128,9 +1145,9 @@ class DbosQueries:
         event = event_from_record(record)
         if (
             event.event_kind is RunEventKind.AGENT_FAILED
-            and workflow_format_version != 2
+            and workflow_format_version not in _AGENT_FAILURE_FORMATS
         ):
-            raise RunTransitionConflict("V1 run carries a V2 agent failure event")
+            raise RunTransitionConflict("V1 run carries an agent failure event")
         if event.event_kind is RunEventKind.AGENT_FAILED and event.payload != (
             AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value.encode("ascii")
         ):

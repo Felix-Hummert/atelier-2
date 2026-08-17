@@ -20,8 +20,8 @@ class PersistedRunEvent:
     workflow_format_version: int = 1
 
     def __post_init__(self) -> None:
-        if self.workflow_format_version not in (1, 2):
-            raise ValueError("persisted event workflow format must be V1 or V2")
+        if self.workflow_format_version not in (1, 2, 3):
+            raise ValueError("persisted event workflow format must be V1, V2, or V3")
 
 
 @dataclass(frozen=True)
