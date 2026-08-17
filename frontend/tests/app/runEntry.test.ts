@@ -143,6 +143,7 @@ describe("mobile run entry", () => {
             format_version: 3 as const,
             executable: false as const,
             not_executable_reason: "agent forms nothing binds yet: outputs" as const,
+            agent_roles: [],
             node_count: 1,
             name: "Nightly regression sweep",
             description: "Runs the sweep and files what it finds."

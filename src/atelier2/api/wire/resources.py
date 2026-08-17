@@ -138,6 +138,17 @@ class WorkflowGraphResourceV3(ApiModel):
     executable: bool
     not_executable_reason: str | None
     node_count: int = Field(ge=1)
+    agent_roles: tuple[str, ...] = Field(max_length=MAXIMUM_RUN_AGENT_BINDINGS)
+    """Every agent role this document binds, once each, in a stable order.
+
+    A caller that wants to start this revision has to say which agent answers
+    each role, and until now it could not learn the roles from the API at all --
+    only by reading the document itself. The roles are the smallest thing that
+    answers that: not the nodes, which would put the whole authored document on
+    the wire a second time, and not the count, which says nothing about what to
+    bind.
+    """
+
     name: str = Field(min_length=1)
     description: str | None
 

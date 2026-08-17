@@ -23,6 +23,7 @@ recomputes to nothing. The chain waits on that author, not on this door.
 
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -30,9 +31,12 @@ from typing import cast
 import pytest
 import sqlalchemy as sa
 
+from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
+    load_graph,
+    load_run_inputs,
     run_from_record_with_bindings,
 )
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -41,6 +45,7 @@ from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.dbos.workflow import EncodedAgentBindingV2, _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agent_attempts import AgentAttemptId, AgentAttemptState
 from atelier2.contracts.agents import (
     AgentExecutionRequestV2,
@@ -51,6 +56,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -58,15 +64,20 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.workflows import RunCompletes, RunContinues
+from atelier2.contracts.workflows_v3 import AgentNodeV3
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
-from atelier2.ports.durable_runs import StartPublishedRunRequestV2
+from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
+from atelier2.ports.run_queries import RunFound
 from tests.integration.test_v3_agent_start import publish
+from tests.integration.test_v3_ordered_run import order, publish_ordered_workflow, start
 from tests.scenarios.agents import (
     agent_scratch_root,
     failing_agent_executor_factory,
 )
+from tests.scenarios.api import durable_queries, permissive_projection_limit
 
 RUN = RunId("v3/attempt")
+ORDERED_RUN = RunId("v3/ordered-query")
 INSTRUCTION = b"Do the one thing this chain is for."
 
 
@@ -126,6 +137,181 @@ def started_v3_attempt(
         1,
     )
     return workflow, execution
+
+
+def started_ordered_v3_attempt(runtime: DbosRuntime) -> AgentAttemptExecution:
+    """One started V3 run that carries an order, and the attempt its cook would run.
+
+    The stored request hash is taken over the composed job the attempt store
+    already uses. The query must recompute that same job; the instruction alone
+    is a different identity.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    created = start(runtime, workflow, bindings, ORDERED_RUN, order(b'{"portions": 4}'))
+    assert isinstance(created, DurableRunCreated)
+    revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
+    with runtime.engine.connect() as connection:
+        record = (
+            connection.execute(
+                sa.select(runs).where(runs.c.run_id == ORDERED_RUN.value)
+            )
+            .mappings()
+            .one()
+        )
+        run = run_from_record_with_bindings(connection, record)
+        assert isinstance(run, RunV3)
+        graph = load_graph(connection, run.revision_hash)
+        node = graph.node(run.current_node_id)
+        assert isinstance(node, AgentNodeV3)
+        authored_job = node_job(
+            node.instruction, load_run_inputs(connection, run.run_id, node)
+        ).encode("utf-8")
+        binding = run.agent_bindings[0]
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(ORDERED_RUN, revision_hash, run.current_node_id),
+        ORDERED_RUN,
+        revision_hash,
+        run.current_node_id,
+        ResolvedAgentBinding(binding.role, binding.configuration, binding.auth_profile),
+        AgentExecutorOperationalIdentity("exact-operation"),
+        authored_job,
+    )
+    return AgentAttemptExecution(
+        request,
+        AgentAttemptId.for_execution(request.node_execution_id, request.request_hash),
+        1,
+    )
+
+
+def test_get_run_attaches_a_prepared_v3_attempt(runtime: DbosRuntime) -> None:
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+
+    found = durable_queries(runtime.engine).get_run(RUN)
+
+    assert isinstance(found, RunFound)
+    attempt = found.projection.current_agent_attempt
+    assert attempt is not None
+    assert attempt.attempt_ordinal == 1
+    assert attempt.state is PublicAgentAttemptState.PREPARED
+
+
+def test_get_run_attaches_a_prepared_v3_attempt_that_carries_an_order(
+    runtime: DbosRuntime,
+) -> None:
+    """A stored hash includes the order; the query must recompute it the same way."""
+    execution = started_ordered_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+
+    found = durable_queries(runtime.engine).get_run(ORDERED_RUN)
+
+    assert isinstance(found, RunFound)
+    attempt = found.projection.current_agent_attempt
+    assert attempt is not None
+    assert attempt.attempt_ordinal == 1
+    assert attempt.state is PublicAgentAttemptState.PREPARED
+
+
+def test_get_run_answers_a_v3_agent_run_with_no_attempt_rows(
+    runtime: DbosRuntime,
+) -> None:
+    started_v3_attempt(runtime)
+
+    found = durable_queries(runtime.engine).get_run(RUN)
+
+    assert isinstance(found, RunFound)
+    assert found.projection.current_agent_attempt is None
+    assert found.projection.agent_attempts == ()
+
+
+@pytest.mark.parametrize(
+    ("needle", "restored"),
+    (
+        (
+            (
+                "graphs[run.revision_hash].node(run.current_node_id),\n"
+                "                (AgentNodeV2, AgentNodeV3),"
+            ),
+            "graphs[run.revision_hash].node(run.current_node_id), AgentNodeV2",
+        ),
+        (
+            "if not isinstance(run, (RunV2, RunV3)):",
+            "if not isinstance(run, RunV2):",
+        ),
+    ),
+    ids=("collect-v2-only", "refuse-non-run-v2"),
+)
+def test_restoring_v2_only_query_reds_the_prepared_v3_attempt(
+    runtime: DbosRuntime, tmp_path: Path, needle: str, restored: str
+) -> None:
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+    source = Path(queries_module.__file__).read_text(encoding="utf-8")
+    assert needle in source
+    mutated_path = tmp_path / "queries_mutated.py"
+    mutated_path.write_text(source.replace(needle, restored, 1), encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "atelier2.adapters.dbos.queries_mutated", mutated_path
+    )
+    assert spec is not None and spec.loader is not None
+    mutated = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mutated)
+    found = mutated.DbosQueries(runtime.engine, permissive_projection_limit()).get_run(
+        RUN
+    )
+
+    assert not (
+        isinstance(found, RunFound)
+        and found.projection.current_agent_attempt is not None
+    )
+
+
+def test_get_run_answers_a_completed_v3_sink_without_a_current_attempt(
+    runtime: DbosRuntime,
+) -> None:
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+    store.claim(execution)
+    store.complete_success(execution, AgentExecutionResult(b"the exact provider bytes"))
+
+    found = durable_queries(runtime.engine).get_run(RUN)
+
+    assert isinstance(found, RunFound)
+    assert found.projection.run.state is RunState.COMPLETED
+    assert found.projection.current_agent_attempt is None
+
+
+def test_projecting_attempts_on_a_completed_v3_sink_reds_the_completed_get(
+    runtime: DbosRuntime, tmp_path: Path
+) -> None:
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+    store.claim(execution)
+    store.complete_success(execution, AgentExecutionResult(b"the exact provider bytes"))
+    needle = "if records_for_execution and run.state is not RunState.COMPLETED:"
+    restored = "if records_for_execution:"
+    source = Path(queries_module.__file__).read_text(encoding="utf-8")
+    assert needle in source
+    mutated_path = tmp_path / "queries_completed_mutated.py"
+    mutated_path.write_text(source.replace(needle, restored, 1), encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "atelier2.adapters.dbos.queries_completed_mutated", mutated_path
+    )
+    assert spec is not None and spec.loader is not None
+    mutated = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mutated)
+    found = mutated.DbosQueries(runtime.engine, permissive_projection_limit()).get_run(
+        RUN
+    )
+
+    assert not (
+        isinstance(found, RunFound) and found.projection.current_agent_attempt is None
+    )
 
 
 @pytest.mark.proves("a-v3-agent-node-reaches-the-durable-attempt-path")
