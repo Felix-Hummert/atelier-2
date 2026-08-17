@@ -126,7 +126,8 @@ class AgentAttemptWorkspaceLease:
     The lease is bound to exactly one `AgentAttemptId`, so two attempts of the
     same node -- an ordinal-1 attempt and its deliberate ordinal-2 replacement
     -- never share a directory. It claims nothing about operating-system
-    isolation: it is a blank directory this attempt owns, not a sandbox.
+    isolation: it is the directory this attempt owns, holding whatever its
+    binding pinned, not a sandbox.
 
     It carries the directory's own identity, not only its path, because a launch
     happens later and elsewhere: between the attestation and the first process
