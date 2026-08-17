@@ -18,10 +18,10 @@ from atelier2.api.wire.events import (
     AgentCompletedEventResourceV3,
 )
 from atelier2.api.wire.resources import NodeRailResource
-from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_events import PersistedRunEvent
+from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 RUN = RunId("v3/events")
