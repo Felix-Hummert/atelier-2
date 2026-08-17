@@ -45,7 +45,11 @@ from atelier2.contracts.workflows import (
     WorkflowNode,
     WorkflowNodeV2,
 )
-from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import (
+    AnyWorkflowDocument,
+    WorkflowGraphV3,
+    what_a_v3_document_still_waits_for,
+)
 
 
 def node_resource(node: WorkflowNode | WorkflowNodeV2) -> NodeResource | NodeResourceV2:
@@ -87,13 +91,32 @@ def node_resource(node: WorkflowNode | WorkflowNodeV2) -> NodeResource | NodeRes
     raise AssertionError("closed workflow node union was extended without API mapping")
 
 
+def _executability_of(graph: AnyWorkflowDocument) -> tuple[bool, str | None]:
+    """Whether this build interprets every form the document declares, and why not.
+
+    One owner answers it: the same rule the executable parse applies before a run
+    is admitted. The API derives, and never decides for itself which formats run --
+    a second list here would drift from the starter's the first time either moved,
+    and the reader would have no way to tell which one was lying.
+
+    A V1 or V2 document has no waiting list at all: the rule exists because V3
+    declares forms nothing binds yet, and those two formats are executed whole.
+    """
+    if not isinstance(graph, WorkflowGraphV3):
+        return True, None
+    waiting = what_a_v3_document_still_waits_for(graph)
+    return waiting is None, waiting
+
+
 def graph_resource(
     graph: AnyWorkflowDocument,
 ) -> WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3:
     if isinstance(graph, WorkflowGraphV3):
+        executable, not_executable_reason = _executability_of(graph)
         return WorkflowGraphResourceV3(
             format_version=3,
-            executable=False,
+            executable=executable,
+            not_executable_reason=not_executable_reason,
             node_count=len(graph.nodes),
             name=graph.name,
             description=graph.description,
@@ -128,10 +151,12 @@ def workflow_revision_summary_resource(
 
     graph = projection.graph
     described = isinstance(graph, WorkflowGraphV3)
+    executable, not_executable_reason = _executability_of(graph)
     return WorkflowRevisionSummaryResourceV2(
         revision_hash=projection.revision.revision_hash.value,
         format_version=graph.format_version,
-        executable=not described,
+        executable=executable,
+        not_executable_reason=not_executable_reason,
         name=graph.name if described else None,
         description=graph.description if described else None,
     )

@@ -40,7 +40,22 @@ from atelier2.contracts.workflows import (
     AgentNodeV2,
     AnyWorkflowNode,
 )
-from atelier2.contracts.workflows_v3 import AnyWorkflowDocument, WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import (
+    AnyWorkflowDocument,
+    WorkflowGraphV3,
+    WorkflowNodeV3,
+    is_sink_node,
+    linear_successor_id,
+)
+
+type _RailNode = AnyWorkflowNode | WorkflowNodeV3
+"""Every node a rail can stand on, across the formats a run may be bound to.
+
+The rail is the one place that walks nodes without caring which format authored
+them, so the union it walks lives here rather than in the contracts: a shared
+alias with one consumer would claim a generality nothing else asked for.
+"""
+
 
 _NODE_STATES_ENDED_BY_EVENT: Mapping[RunEventKind, NodeState] = {
     RunEventKind.AGENT_COMPLETED: NodeState.SUCCEEDED,
@@ -111,7 +126,7 @@ class _RailDerivation:
     """What the whole rail shares, measured once instead of per node."""
 
     projection: RunProjection
-    nodes: tuple[AnyWorkflowNode, ...]
+    nodes: tuple[_RailNode, ...]
     current_index: int
     events: tuple[PersistedRunEvent, ...]
     leading_event: PersistedRunEvent | None
@@ -164,7 +179,7 @@ class _RailDerivation:
         return None
 
     def _snapshot_state(
-        self, node: AnyWorkflowNode, index: int, last_event: PersistedRunEvent | None
+        self, node: _RailNode, index: int, last_event: PersistedRunEvent | None
     ) -> NodeState:
         run = self.projection.run
         attempt = self.projection.current_agent_attempt
@@ -200,7 +215,7 @@ class _RailDerivation:
 
     def _event_driven_state(
         self,
-        node: AnyWorkflowNode,
+        node: _RailNode,
         last_event: PersistedRunEvent | None,
         leading_event: PersistedRunEvent,
     ) -> NodeState:
@@ -221,10 +236,21 @@ class _RailDerivation:
         return NodeState.QUEUED
 
     def _successor_of(self, node_id: str) -> str | None:
-        return next((node.next for node in self.nodes if node.id == node_id), None)
+        """The node the walk reaches next, whichever format declared that edge.
+
+        Asked of the walk rather than of the node: a V1 or V2 node names its
+        successor in `next` and a V3 node does not name one at all, but the walk
+        has already resolved both into one order, so reading it here keeps a
+        single owner of what follows what.
+        """
+        for index, node in enumerate(self.nodes):
+            if node.id == node_id:
+                following = self.nodes[index + 1 :]
+                return following[0].id if following else None
+        return None
 
     def _attempt(
-        self, node: AnyWorkflowNode, last_event: PersistedRunEvent | None
+        self, node: _RailNode, last_event: PersistedRunEvent | None
     ) -> NodeRailAttempt | None:
         run = self.projection.run
         if not isinstance(run, RunV2) or not _is_agent(node):
@@ -249,22 +275,27 @@ class _RailDerivation:
         return NodeRailAttempt(from_snapshot.attempt_ordinal, from_snapshot.state)
 
 
-def _walk_from_start(graph: AnyWorkflowDocument) -> tuple[AnyWorkflowNode, ...]:
+def _walk_from_start(graph: AnyWorkflowDocument) -> tuple[_RailNode, ...]:
     """Every node in graph order; the graph's own validator proved the walk ends.
 
-    The one executable V3 shape is a single node, so its rail is that node and
-    the walk has nothing to follow. A longer V3 graph cannot start yet, and the
-    order its rail would take is the ready set H2 and #86 own -- so this returns
-    what exists rather than inventing an order for a run nobody can begin.
+    A V3 graph is walked along the one edge its author declared: entry, then each
+    node's single dependent, to the sink. That is not an order chosen here -- it
+    is the same edge `durable_node` follows when it hands a finished node on, so
+    the rail describes the run's real path rather than inventing one. Only a line
+    can start, because a graph whose node has several dependents is refused before
+    a run exists: choosing between them is the ready set (#86), and no rail is
+    asked to decide it.
     """
     if isinstance(graph, WorkflowGraphV3):
-        # A V3 run has no rail yet. The rail is an ordered walk, and the order a
-        # V3 graph walks in is the ready set H2 and #86 own; the one startable
-        # V3 shape is a single node, so an empty rail says "nothing to show"
-        # rather than inventing a one-entry order the next shape would break.
-        return ()
-    walked: list[AnyWorkflowNode] = []
-    node: AnyWorkflowNode = graph.node(graph.start)
+        walked_v3: list[_RailNode] = []
+        node_id = graph.entry_node_ids[0]
+        while True:
+            walked_v3.append(graph.node(node_id))
+            if is_sink_node(graph, node_id):
+                return tuple(walked_v3)
+            node_id = linear_successor_id(graph, node_id)
+    walked: list[_RailNode] = []
+    node: _RailNode = graph.node(graph.start)
     while node.next is not None:
         walked.append(node)
         node = graph.node(node.next)
@@ -272,7 +303,7 @@ def _walk_from_start(graph: AnyWorkflowDocument) -> tuple[AnyWorkflowNode, ...]:
     return tuple(walked)
 
 
-def _is_agent(node: AnyWorkflowNode) -> bool:
+def _is_agent(node: _RailNode) -> bool:
     return isinstance(node, AgentNode | AgentNodeV2)
 
 

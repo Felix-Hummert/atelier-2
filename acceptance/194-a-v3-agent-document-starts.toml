@@ -43,38 +43,19 @@ text = "A V3 document of an admitted shape -- a line of agent nodes, each entere
 id = "every-v3-shape-no-runtime-binds-is-refused-by-name"
 text = "Every V3 document outside that shape is refused by name before anything starts, and the refusal says what it is waiting for -- a node kind nothing interprets, a branch nothing chooses between, or an authored form nothing binds -- rather than saying that version 3 is unsupported."
 
-# NARROWED TO THE REASON THAT SURVIVED, NOT REPLACED. This file declares
-# `a-public-start-refuses-a-v3-revision-before-any-write` for a different reason
-# than it was written with, and the correction is worth recording, because the
-# first attempt at this head got it wrong.
+# RETIRED WITH THE STOPGAP IT DESCRIBED, AND NAMED HERE RATHER THAN DELETED.
+# This file declared `a-public-start-refuses-a-v3-revision-before-any-write`
+# twice over, for two different reasons. The first reason -- nothing executes a
+# V3 document -- expired when the driver landed. The second -- the API had no
+# resource to answer with a V3 run -- outlived it, and the sentence was
+# re-declared on that reason alone as a named bridge, because a start this API
+# could not answer had to leave nothing behind.
 #
-# The sentence originally rested on two reasons: nothing executed a V3 document,
-# AND the API had no resource to answer with a V3 run. H1b, H1c and H2 built the
-# driver, so the first reason expired -- and I retired the whole sentence on that
-# basis. Measuring what an HTTP caller then received proved the retirement too
-# wide: the route wrote the run, enqueued its bootstrap, drove it to completion
-# and raised on the missing resource, so the caller read a 500 while a run of its
-# making was already running. `runs=1, bindings=1, enqueued=1`. That is exactly
-# the half-start the original sentence existed to prevent, reintroduced by the
-# change that retired it.
-#
-# So the sentence stands, at the layer that actually lacks something: the route
-# refuses a V3 revision before any write because the API cannot answer with a run
-# of that format, not because no runtime executes one. It is a NAMED STOPGAP --
-# visible, and carried off by #219, which gives a V3 run its own wire resource.
-# Widening what the API pretends to serve would be the dishonest exit from the
-# same defect.
-#
-# The internal foundation start did fall, and rightly. It existed so H1a could
-# persist a V3 run while nothing executed one, and it enqueued nothing on purpose;
-# a second door is only honest while the first cannot open. Every test it carried
-# now drives the public start, which is a stronger claim on the same sentences.
-# What replaced it is the driver sentence below -- declared of the one public
-# start, never of the HTTP route.
-
-[[sentence]]
-id = "a-public-start-refuses-a-v3-revision-before-any-write"
-text = "The public start route refuses a V3 revision before it writes anything: no run row, no agent binding row and no enqueued bootstrap, so a start this API cannot answer with a run resource never leaves durable state behind for a caller who was told the request failed."
+# #219 built the answer, so the bridge is gone and the sentence with it: a V3
+# revision started over HTTP now receives its run. What replaces it is
+# `a-v3-run-answers-over-http-with-its-own-resource` in #219's own file, which is
+# the stronger claim on the same ground. Nothing about a half-started run went
+# unproven in between, and nothing is silently dropped here.
 
 # One thing between the two layers was a real defect rather than a missing
 # decision: the run projection's column list omitted the configuration revision a

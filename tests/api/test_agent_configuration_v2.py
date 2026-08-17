@@ -363,6 +363,7 @@ def test_openapi_names_both_publish_operations_and_exact_problem_sets() -> None:
     ] == [
         "#/components/schemas/RunResource",
         "#/components/schemas/RunResourceV2",
+        "#/components/schemas/RunResourceV3",
     ]
     assert schema["paths"][API_PREFIX + "/runs"]["get"]["responses"]["200"]["content"][
         "application/json"
