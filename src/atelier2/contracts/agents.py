@@ -11,6 +11,10 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 MAXIMUM_AGENT_FIELD_CHARACTERS = 1_024
 MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
+# What a process accepts as stdin (or the job file Grok reads). A separate
+# decision from the durable answer bound; they share a number today and must
+# not be derived from each other (#88).
+MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
 # Current process-frame ceiling, earned by Claude 2.1.221's measured JSON frame;
 # each invocation still declares its exact lower limit at the process port.
 MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
@@ -320,6 +324,10 @@ class AgentExecutionRequestV2:
         _require_bounded_text(self.node_id, "agent request node id")
         if not self.job_bytes:
             raise ValueError("agent request job bytes must be nonempty")
+        if len(self.job_bytes) > MAXIMUM_AGENT_PROCESS_INPUT_BYTES:
+            raise ValueError(
+                f"agent request job bytes exceed {MAXIMUM_AGENT_PROCESS_INPUT_BYTES} bytes"
+            )
         expected_execution = NodeExecutionId.for_node(
             self.run_id, self.workflow_revision_hash, self.node_id
         )

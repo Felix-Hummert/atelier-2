@@ -15,6 +15,7 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import EffectIntentSnapshot, ReconcileCommandSnapshot
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
@@ -120,3 +121,64 @@ class RunProjection:
 class RunPage:
     runs: tuple[RunProjection, ...]
     next_after: RunId | None
+
+
+@dataclass(frozen=True)
+class NodeAnswer:
+    """What one node wrote, as the run kept it.
+
+    The bytes come from the node's own completion event, and the hash is the one
+    that event stored -- so a reader is looking at the value the run recorded,
+    not at a copy somebody made of it.
+    """
+
+    value: bytes
+    value_hash: Sha256Hash
+
+
+@dataclass(frozen=True)
+class NodeProvenance:
+    """Which agent, under which configuration, produced a node's answer.
+
+    Every field is read from the receipt the attempt wrote. What is deliberately
+    absent is what the receipt does not hold: this product records no usage and
+    no duration for an attempt, so a node detail can prove what ran and what came
+    out, and cannot say what it cost or how long it took.
+    """
+
+    role: str
+    provider_id: str
+    model: str
+    executor_revision: str
+    executor_operational_identity: str
+    auth_mode: str
+    profile_id: str
+    agent_configuration_revision_hash: str
+    request_hash: str
+    receipt_hash: str
+
+
+@dataclass(frozen=True)
+class NodeDetail:
+    """One node of a run, read the way an operator asks about it.
+
+    Three questions and one refusal. **What was it asked** is the job the run
+    really handed its provider, recomputed through the one composition owner and
+    bound to the request hash the attempt stored. **What did it answer** is its
+    completion payload with the hash the event kept. **Who did it** is the
+    receipt's provenance. And **what is it waiting on** is the refusal that stops
+    the run here, when one stops it.
+
+    Each of the three may be absent, and the absence is the answer: a node that
+    has not run yet was asked nothing this reader can prove, wrote nothing, and
+    has no receipt. A refusal exists only where something really refuses.
+    """
+
+    run_id: RunId
+    node_id: str
+    state: NodeState
+    job: bytes | None
+    job_hash: str | None
+    answer: NodeAnswer | None
+    provenance: NodeProvenance | None
+    refusal: str | None

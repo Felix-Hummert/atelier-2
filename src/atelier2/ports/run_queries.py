@@ -7,7 +7,7 @@ from atelier2.contracts.effects import (
     EffectIntentSnapshot,
     ReconcileCommandId,
 )
-from atelier2.contracts.run_projections import RunPage, RunProjection
+from atelier2.contracts.run_projections import NodeDetail, RunPage, RunProjection
 from atelier2.contracts.runs import RunId
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge,
@@ -68,6 +68,8 @@ class RunQueries(Protocol):
         run_id: RunId,
     ) -> GetRunResult: ...
 
+    def get_node_detail(self, run_id: RunId, node_id: str) -> GetNodeDetailResult: ...
+
     def list_runs(
         self,
         after: RunId | None,
@@ -79,3 +81,23 @@ class RunQueries(Protocol):
         run_id: RunId,
         command_id: ReconcileCommandId,
     ) -> GetReconciliationRetryTargetResult: ...
+
+
+@dataclass(frozen=True)
+class NodeDetailFound:
+    detail: NodeDetail
+
+
+@dataclass(frozen=True)
+class NodeQueryMissing:
+    """The run exists and declares no node by that name."""
+
+
+type GetNodeDetailResult = (
+    NodeDetailFound
+    | NodeQueryMissing
+    | RunQueryMissing
+    | ReadUnavailable
+    | ProjectionTooLarge
+    | QueryDurableStateCorrupt
+)

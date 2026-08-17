@@ -23,7 +23,7 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, ApiProblem
-from atelier2.api.projection.runs import run_resource
+from atelier2.api.projection.runs import node_detail_resource, run_resource
 from atelier2.api.references import encode_public_run_reference, parse_revision_hash
 from atelier2.api.wire.requests import (
     AnswerWaitRequestResource,
@@ -35,6 +35,7 @@ from atelier2.api.wire.requests import (
 from atelier2.api.wire.resources import (
     AnyRunPageResource,
     AnyRunResource,
+    NodeDetailResource,
     OperatorFoundDeterminationResource,
     VersionedRunPageResource,
 )
@@ -59,7 +60,12 @@ from atelier2.application.cancel_agent_attempt import (
     CommandConflict,
     ReplacementNotAllowed,
 )
-from atelier2.application.read_runs import RunsListed
+from atelier2.application.read_runs import (
+    NodeDetailRead,
+    NodeNotFound,
+    RunNotFound,
+    RunsListed,
+)
 from atelier2.application.reconcile_effect import (
     ReconciliationAcceptedPending,
     ReconciliationCommandConflict,
@@ -210,6 +216,46 @@ async def get_run_route(
     return await _run_resource_of(
         decode_public_reference(public_ref, context.limits), context
     )
+
+
+@router.get(
+    API_PREFIX + "/runs/{public_ref}/nodes/{node_id}",
+    response_model=NodeDetailResource,
+)
+async def get_node_detail_route(
+    public_ref: str, node_id: str, context: ApiContext = api_context_dependency
+) -> NodeDetailResource:
+    """What one node was asked, what it answered, who did it, and what stops it.
+
+    The click into a node an operator makes on the run page, answered as one
+    read: a panel that had to stitch this together from the run, the events and
+    the receipts would be deriving what the server already knows.
+    """
+
+    run_id = decode_public_reference(public_ref, context.limits)
+    try:
+        context.limits.require_field(node_id)
+    except ApiLimitExceeded as error:
+        raise ApiProblem("node-not-found") from error
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.get_node_detail(run_id, node_id),
+    )
+    match result:
+        case NodeDetailRead(detail):
+            return node_detail_resource(detail)
+        case NodeNotFound():
+            raise ApiProblem("node-not-found")
+        case RunNotFound():
+            raise ApiProblem("run-not-found")
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case ProjectionTooLarge():
+            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 @router.post(

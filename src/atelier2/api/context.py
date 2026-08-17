@@ -24,7 +24,11 @@ from atelier2.application.publish_workflow_revision import (
     WorkflowPublicationLimits,
 )
 from atelier2.application.read_run_events import ReadRunEventsResult
-from atelier2.application.read_runs import GetRunResult, ListRunsResult
+from atelier2.application.read_runs import (
+    GetNodeDetailUseCaseResult,
+    GetRunResult,
+    ListRunsResult,
+)
 from atelier2.application.read_workflow_revisions import (
     GetWorkflowRevisionResult,
     ListDescribedWorkflowRevisionsResult,
@@ -112,6 +116,7 @@ class ApiUseCases:
         [WorkflowRevisionHash | None, int], ListDescribedWorkflowRevisionsResult
     ]
     get_run: Callable[[RunId], GetRunResult]
+    get_node_detail: Callable[[RunId, str], GetNodeDetailUseCaseResult]
     list_runs: Callable[[RunId | None, int], ListRunsResult]
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
     read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]

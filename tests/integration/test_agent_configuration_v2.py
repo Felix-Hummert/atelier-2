@@ -44,6 +44,7 @@ from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -400,6 +401,31 @@ def test_live_request_refuses_capability_missing_from_the_consuming_host() -> No
             AgentExecutorOperationalIdentity("executor/headless-only"),
             frozenset({AgentExecutionCapability.HEADLESS}),
         )
+
+
+def test_an_oversized_job_is_a_named_binding_conflict() -> None:
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    encoded = dict(_encoded_binding(configuration, auth, include_contract=True))
+    encoded["job"] = "x" * (MAXIMUM_AGENT_PROCESS_INPUT_BYTES + 1)
+
+    with pytest.raises(RunBindingConflict) as raised:
+        _agent_request_v2(
+            cast(EncodedAgentBindingV2, encoded),
+            RunId("job/oversized"),
+            WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
+            "build",
+            AgentExecutorOperationalIdentity("executor/test"),
+            frozenset({AgentExecutionCapability.HEADLESS}),
+        )
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert str(MAXIMUM_AGENT_PROCESS_INPUT_BYTES) in str(raised.value.__cause__)
 
 
 def test_start_refuses_unattested_capability_before_enqueue_or_provider_process(
