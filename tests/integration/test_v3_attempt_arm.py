@@ -23,6 +23,7 @@ recomputes to nothing. The chain waits on that author, not on this door.
 
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -30,6 +31,7 @@ from typing import cast
 import pytest
 import sqlalchemy as sa
 
+from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
@@ -51,6 +53,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -60,11 +63,13 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.workflows import RunCompletes, RunContinues
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
+from atelier2.ports.run_queries import RunFound
 from tests.integration.test_v3_agent_start import publish
 from tests.scenarios.agents import (
     agent_scratch_root,
     failing_agent_executor_factory,
 )
+from tests.scenarios.api import durable_queries, permissive_projection_limit
 
 RUN = RunId("v3/attempt")
 INSTRUCTION = b"Do the one thing this chain is for."
@@ -126,6 +131,75 @@ def started_v3_attempt(
         1,
     )
     return workflow, execution
+
+
+def test_get_run_attaches_a_prepared_v3_attempt(runtime: DbosRuntime) -> None:
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+
+    found = durable_queries(runtime.engine).get_run(RUN)
+
+    assert isinstance(found, RunFound)
+    attempt = found.projection.current_agent_attempt
+    assert attempt is not None
+    assert attempt.attempt_ordinal == 1
+    assert attempt.state is PublicAgentAttemptState.PREPARED
+
+
+def test_get_run_answers_a_v3_agent_run_with_no_attempt_rows(
+    runtime: DbosRuntime,
+) -> None:
+    started_v3_attempt(runtime)
+
+    found = durable_queries(runtime.engine).get_run(RUN)
+
+    assert isinstance(found, RunFound)
+    assert found.projection.current_agent_attempt is None
+    assert found.projection.agent_attempts == ()
+
+
+@pytest.mark.parametrize(
+    ("needle", "restored"),
+    (
+        (
+            (
+                "graphs[run.revision_hash].node(run.current_node_id),\n"
+                "                (AgentNodeV2, AgentNodeV3),"
+            ),
+            "graphs[run.revision_hash].node(run.current_node_id), AgentNodeV2",
+        ),
+        (
+            "if not isinstance(run, (RunV2, RunV3)):",
+            "if not isinstance(run, RunV2):",
+        ),
+    ),
+    ids=("collect-v2-only", "refuse-non-run-v2"),
+)
+def test_restoring_v2_only_query_reds_the_prepared_v3_attempt(
+    runtime: DbosRuntime, tmp_path: Path, needle: str, restored: str
+) -> None:
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+    source = Path(queries_module.__file__).read_text(encoding="utf-8")
+    assert needle in source
+    mutated_path = tmp_path / "queries_mutated.py"
+    mutated_path.write_text(source.replace(needle, restored, 1), encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "atelier2.adapters.dbos.queries_mutated", mutated_path
+    )
+    assert spec is not None and spec.loader is not None
+    mutated = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mutated)
+    found = mutated.DbosQueries(runtime.engine, permissive_projection_limit()).get_run(
+        RUN
+    )
+
+    assert not (
+        isinstance(found, RunFound)
+        and found.projection.current_agent_attempt is not None
+    )
 
 
 @pytest.mark.proves("a-v3-agent-node-reaches-the-durable-attempt-path")
