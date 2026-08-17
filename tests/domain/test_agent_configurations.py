@@ -5,9 +5,11 @@ from dataclasses import fields, replace
 
 import pytest
 
+from atelier2.application.compose_node_job import node_job
 from atelier2.contracts import agents as agent_contracts
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -24,6 +26,8 @@ from atelier2.contracts.agents import (
     ResolvedAgentBinding,
 )
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 
@@ -529,4 +533,41 @@ def test_v2_output_bound_accepts_49152_and_rejects_49153_before_receipt() -> Non
             request,
             binding_set.binding_set_hash,
             AgentExecutionResult(b"x" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1)),
+        )
+
+
+def test_v2_request_holds_job_bytes_to_the_process_input_bound() -> None:
+    accepted = replace(
+        _request_variant("unchanged"),
+        job_bytes=b"x" * MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
+    )
+    assert len(accepted.job_bytes) == MAXIMUM_AGENT_PROCESS_INPUT_BYTES
+    with pytest.raises(ValueError, match=str(MAXIMUM_AGENT_PROCESS_INPUT_BYTES)):
+        replace(
+            _request_variant("unchanged"),
+            job_bytes=b"x" * (MAXIMUM_AGENT_PROCESS_INPUT_BYTES + 1),
+        )
+
+
+def test_a_composed_chain_job_is_held_to_the_process_input_bound() -> None:
+    instruction = "Plate the dish."
+    orders = (RunInput("portions", PublishedRevisionHash("a" * 64), b"4"),)
+    empty_result = DeliveredOutput("cook", "plate", b"")
+    overhead = len(node_job(instruction, orders, (empty_result,)).encode("utf-8"))
+    fitting = b"s" * (MAXIMUM_AGENT_PROCESS_INPUT_BYTES - overhead)
+    overflowing = b"s" * (MAXIMUM_AGENT_PROCESS_INPUT_BYTES - overhead + 1)
+
+    accepted = replace(
+        _request_variant("unchanged"),
+        job_bytes=node_job(
+            instruction, orders, (DeliveredOutput("cook", "plate", fitting),)
+        ).encode("utf-8"),
+    )
+    assert len(accepted.job_bytes) == MAXIMUM_AGENT_PROCESS_INPUT_BYTES
+    with pytest.raises(ValueError, match=str(MAXIMUM_AGENT_PROCESS_INPUT_BYTES)):
+        replace(
+            _request_variant("unchanged"),
+            job_bytes=node_job(
+                instruction, orders, (DeliveredOutput("cook", "plate", overflowing),)
+            ).encode("utf-8"),
         )
