@@ -151,7 +151,8 @@ describe("mobile run entry", () => {
                 id: "only",
                 kind: "agent" as const,
                 role: "builder",
-                instruction_start: "Sweep the suite."
+                instruction_start: "Sweep the suite.",
+                depends_on: []
               }
             ],
             name: "Nightly regression sweep",

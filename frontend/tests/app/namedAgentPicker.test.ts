@@ -58,7 +58,8 @@ function v3Revision(hash: string, documentBase64: string) {
           id: "implement",
           kind: "agent" as const,
           role: "builder",
-          instruction_start: "Do the one thing."
+          instruction_start: "Do the one thing.",
+          depends_on: []
         }
       ],
       name: "Named start",
