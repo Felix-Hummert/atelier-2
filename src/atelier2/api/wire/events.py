@@ -18,6 +18,7 @@ from atelier2.api.wire.resources import (
     EffectReceiptResource,
     NodeRailResource,
 )
+from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 
 
 class RunEventBaseResource(ApiModel):
@@ -119,7 +120,7 @@ class AgentCancelRequestedEventResourceV2(RunEventBaseResourceV2):
     event: Literal["AGENT_CANCEL_REQUESTED"]
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
-    command_id: str = Field(min_length=1, max_length=1_024)
+    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     replacement: Literal["NONE", "ONE"]
 
 
@@ -127,7 +128,7 @@ class AgentCancelledEventResourceV2(RunEventBaseResourceV2):
     event: Literal["AGENT_CANCELLED"]
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
-    command_id: str = Field(min_length=1, max_length=1_024)
+    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     replacement: Literal["NONE", "ONE"]
     disposition: Literal[
         "NEVER_LAUNCHED",
@@ -143,7 +144,7 @@ class AgentInterruptedEventResourceV2(RunEventBaseResourceV2):
     event: Literal["AGENT_INTERRUPTED"]
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
-    command_id: str = Field(min_length=1, max_length=1_024)
+    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     replacement: Literal["NONE", "ONE"]
     disposition: Literal[
         "NEVER_LAUNCHED",
