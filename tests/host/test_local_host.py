@@ -23,7 +23,11 @@ from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import (
+    SQLITE_LOCK_TIMEOUT_SECONDS,
+    DbosRuntime,
+    DbosRuntimeSettings,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -275,6 +279,8 @@ def served_settings(
     claude_subscription: ClaudeSubscriptionSettings | None = None,
     host: str = DEFAULT_HOST,
     scratch_root: Path | None = None,
+    sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS,
+    **tuning: int,
 ) -> HostSettings:
     frontend = tmp_path / "frontend"
     if not frontend.is_dir():
@@ -296,6 +302,8 @@ def served_settings(
             else agent_scratch_root(tmp_path)
         ),
         claude_subscription=claude_subscription,
+        limits=api_limits(**tuning),
+        sqlite_lock_timeout_seconds=sqlite_lock_timeout_seconds,
     )
 
 
@@ -621,3 +629,107 @@ def wait_for_health(port: int) -> dict[str, str]:
         except OSError:
             time.sleep(0.05)
     raise AssertionError("local host did not become healthy")
+
+
+@pytest.mark.proves("an-instance-value-is-set-where-the-instance-is-configured")
+def test_a_served_instance_reads_the_page_size_it_was_configured_with(
+    tmp_path: Path,
+) -> None:
+    """A knob is a knob only if setting it changes what the instance does.
+
+    Every one of these values was a module constant the host baked in: correct
+    for one machine, unreachable from any other. What makes this a channel rather
+    than a rename is that the value an operator sets is the value the composed
+    API enforces.
+    """
+    app, runtime = compose_application(served_settings(tmp_path, event_page_size=7))
+
+    try:
+        # Asked of the composed application, not of the record that carries the
+        # number: a settings field nobody reads would satisfy the record and
+        # leave the served instance on its old value.
+        assert app.state.api_context.limits.event_page_size == 7
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "refusal"),
+    [
+        # One case per owner that holds a rule, because a single case only proves
+        # the owner it happens to reach. The last two travelled a different path
+        # and escaped as a traceback until the record asked their owner early.
+        (
+            "--event-poll-delay-multiplier",
+            "1.0",
+            "multiplier must be greater than one",
+        ),
+        ("--event-page-size", "0", "event_page_size must be a positive integer"),
+        (
+            "--sqlite-lock-timeout-seconds",
+            "-1",
+            "SQLite lock timeout must be positive",
+        ),
+        (
+            "--agent-termination-grace-seconds",
+            "0",
+            "agent termination grace must be positive",
+        ),
+    ],
+)
+@pytest.mark.proves("an-instance-value-outside-its-range-is-refused-by-name")
+def test_the_operator_reads_the_owners_words_when_a_knob_is_out_of_range(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    flag: str,
+    value: str,
+    refusal: str,
+) -> None:
+    """A refusal is only a refusal if it reaches the person who typed the value."""
+    frontend = tmp_path / "frontend"
+    (frontend / "assets").mkdir(parents=True)
+    (frontend / "index.html").write_text("index")
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "serve",
+                "--database",
+                str(tmp_path / "d.sqlite"),
+                "--effect-store",
+                str(tmp_path / "e.sqlite"),
+                "--effect-adapter-revision",
+                "loopback-v1",
+                "--effect-destination",
+                "local",
+                "--application-version",
+                "t",
+                "--source-commit",
+                "c",
+                "--source-tree",
+                "t",
+                "--frontend-dist",
+                str(frontend),
+                flag,
+                value,
+            ]
+        )
+
+    printed = capsys.readouterr().err
+    assert refusal in printed
+    assert "Traceback" not in printed
+
+
+@pytest.mark.proves("an-instance-value-is-set-where-the-instance-is-configured")
+def test_the_store_waits_as_long_as_this_instance_was_configured_to_wait(
+    tmp_path: Path,
+) -> None:
+    """The same claim on the store side, asked of the runtime that was built."""
+    _app, runtime = compose_application(
+        served_settings(tmp_path, sqlite_lock_timeout_seconds=3.5)
+    )
+
+    try:
+        assert runtime.settings.sqlite_lock_timeout_seconds == 3.5
+    finally:
+        runtime.close()

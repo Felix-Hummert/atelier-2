@@ -1,0 +1,46 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/251"
+
+# HEAD 1 OF THE FAMILY: THE CHANNEL, NOT THE VALUES.
+#
+# The sweep on this item found the one cause behind the title: `atelier2 serve`
+# had eighteen flags and every one of them named an identity or a location -- a
+# store, a port, an executable, a credential directory. Not one behaviour value
+# was among them, and the two places that gathered them, `api_limits()` and
+# `event_poll_backoff()`, were parameterless module functions. There was no place
+# for an answer to go, which is why no answer could be given.
+#
+# So this head builds the place and opens the ten knobs with real variance. What
+# it deliberately does NOT do:
+#
+#   - NO GUARD. A gate that reddens new bare literals belongs after the channel,
+#     not before it: until a value has somewhere to be lifted to, a red light
+#     names a problem without showing a way out.
+#   - NO ATTEMPT POLICY. `REPLACEMENT_AGENT_ATTEMPT_ORDINAL = 2` -- "you get
+#     exactly one second try" -- is a policy, not a tuning, and it wants the
+#     three-layer resolution #25 already carries for the iteration bound. It is
+#     recorded in the audit and left untouched here.
+#   - NO SECOND OWNER. Every range rule stays with the owner that already had it.
+#     `ApiLimits` and `EventPollBackoff` refuse their own values, and the flags
+#     reach those refusals by building them rather than restating them.
+#
+# A rule this head tried to add and withdrew, recorded because the correction is
+# the useful part: the audit claimed a poll budget above the control budget was a
+# contradiction only the pair could state. It is not. `control_runner` and
+# `event_runner` are two independent `BoundedQueryRunner`s, so a poll is admitted
+# by the event budget and never by the control one, and an instance may honestly
+# allow one control query beside two polls. An existing test held that exact
+# configuration and refused the invented rule; the rule is gone, not the test.
+#
+# Honest correction to the sweep, measured here rather than left standing: the
+# poll backoff was already a settable field on `HostSettings`, so "no behaviour
+# value is settable" was too strong. What it lacked was a flag, and that is the
+# shape of most of this family -- a seam without a door.
+
+[[sentence]]
+id = "an-instance-value-is-set-where-the-instance-is-configured"
+text = "A value that decides how one served instance behaves -- how large a page it answers with, how much reading it admits at once, how long it waits for its store or for an agent to stop -- is set where that instance is configured, and the value the operator sets is the value the composed instance enforces; an instance that configures nothing behaves exactly as it did before."
+
+[[sentence]]
+id = "an-instance-value-outside-its-range-is-refused-by-name"
+text = "An instance value outside its range is refused by name before the instance serves anything, in the words of the owner that already holds that rule rather than in a second copy of it, and the operator reads that refusal on the command line instead of a traceback or a silently corrected number."
