@@ -324,20 +324,23 @@ def completion_after_node(graph: AnyWorkflowDocument, node_id: str) -> NodeCompl
     """Decide continuation once, without inventing a successor for the sink.
 
     One rule for every format: a sink completes the run, anything else hands on.
-    A V3 graph answers the sink half through its own `depends_on` edges, and has
-    no successor to hand to -- the one startable V3 shape is a single node, and
-    advancing beyond it is the ready set H2 and #86 own.
+    A V3 graph answers both halves through its own `depends_on` edges -- the sink
+    rule, and the one declared heir where exactly one exists. Where more than one
+    does, it refuses in its own typed words rather than choosing: picking between
+    waiting dependents is the ready set #86 owns.
     """
     # V3's vocabulary is built on this module's, so `workflows_v3` imports here and
-    # never the other way at module scope; reading its sink rule needs this import.
-    from atelier2.contracts.workflows_v3 import WorkflowGraphV3, is_sink_node
+    # never the other way at module scope; reading its rules needs this import.
+    from atelier2.contracts.workflows_v3 import (
+        WorkflowGraphV3,
+        is_sink_node,
+        linear_successor_id,
+    )
 
     if isinstance(graph, WorkflowGraphV3):
         if is_sink_node(graph, node_id):
             return RunCompletes()
-        raise ValueError(
-            f"V3 node {node_id!r} is not a sink, and no runtime advances past it yet"
-        )
+        return RunContinues(linear_successor_id(graph, node_id))
     if graph.is_sink(node_id):
         return RunCompletes()
     return RunContinues(graph.successor(node_id).id)

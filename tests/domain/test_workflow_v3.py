@@ -1141,17 +1141,58 @@ def test_the_one_admitted_v3_shape_is_executable() -> None:
     assert parsed.sink_node_ids == ("implement",)
 
 
+def test_a_line_of_agent_nodes_is_executable() -> None:
+    """`depends_on` is bound where it names one edge: after a node, its one heir."""
+    parsed = parse_executable_workflow_document(TWO_AGENT_CHAIN)
+
+    assert isinstance(parsed, WorkflowGraphV3)
+    assert parsed.entry_node_ids == ("implement",)
+    assert parsed.sink_node_ids == ("review",)
+
+
+# The other side of the same boundary. `depends_on` is the one authored form
+# this list lost: it was refused with its siblings while nothing advanced, and it
+# is admitted now because the linear rule binds it. Pinning the admission where
+# the refusals live is what makes it a decision someone made rather than a hole
+# that opened -- the empty authored form still means what the author wrote, and
+# what it now means is "no dependency", which is exactly what an entry node is.
+DECIDED_EXECUTABLE: dict[str, bytes] = {
+    "an empty authored depends_on": ONE_AGENT_DOCUMENT + b"    depends_on: []\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("document"), DECIDED_EXECUTABLE.values(), ids=DECIDED_EXECUTABLE
+)
+@pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
+def test_a_form_a_runtime_now_binds_is_admitted_rather_than_refused(
+    document: bytes,
+) -> None:
+    """A shape that stopped being refused says so here, beside the refusals."""
+    parsed = parse_executable_workflow_document(document)
+
+    assert isinstance(parsed, WorkflowGraphV3)
+    assert parsed.entry_node_ids == ("implement",)
+    assert parsed.sink_node_ids == ("implement",)
+
+
 NOT_YET_EXECUTABLE: dict[str, bytes] = {
     "a form nothing binds": ONE_AGENT_DOCUMENT
     + b"    budget: {ref: build_budget, revision: budget-1}\n",
-    "a second node": TWO_AGENT_CHAIN,
     # An empty authored form is a statement, not an absence: the author wrote it,
     # and a start that ignored it would ignore what they wrote.
     "an empty authored skills list": ONE_AGENT_DOCUMENT + b"    skills: []\n",
-    "an empty authored depends_on": ONE_AGENT_DOCUMENT + b"    depends_on: []\n",
     "an empty authored inputs list": ONE_AGENT_DOCUMENT + b"    inputs: []\n",
     "an empty authored context list": ONE_AGENT_DOCUMENT
     + b"    required_context: []\n",
+    "a fan-out": TWO_AGENT_CHAIN
+    + b"""  - id: document
+    type: agent
+    role: writer
+    mode: headless
+    instruction: Write the first thing up.
+    depends_on: [implement]
+""",
     "two entry nodes": ONE_AGENT_DOCUMENT
     + b"""  - id: second_entry
     type: agent
