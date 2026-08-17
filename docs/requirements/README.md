@@ -313,6 +313,15 @@ An identifier is lowercase words joined by single hyphens and is unique across
 every declaration. Unknown keys, a schema version the gate does not read, a
 sentence without text, and a repeated identifier are refused rather than ignored.
 
+A sentence may also carry `requirement = "REQ-<AREA>-<nn>"`, which is the same
+link as `Beweis` read from the other end: the requirement names the sentences
+that serve it, and the sentence names the rule it serves. The field is optional
+because most sentences predate the requirement documents, and the gate reports
+how many carry it rather than failing over the ones that do not — a count that
+is visible is a count somebody can lower. What it will not accept is a rule no
+document declares: a link nobody can follow reads as filed and answers wrongly,
+which is the drawer this field exists to close.
+
 ### What a landing states, and the written exemption
 
 A story declares in the repository, but a repository cannot tell on its own that
@@ -366,8 +375,11 @@ proves: every declared sentence was proven by a test that ran and passed here
 proves: every claim in this repository names a sentence some story declared
 proves: every claim was honoured by a passing test in this pipeline's reports
 proves: a proposed landing states its sentences by identifier, or why it has none
+proves: a sentence that names a requirement names one a document declares
 does not prove: that a test carries its sentence in meaning - review judges that
 does not prove: that a stated exemption is honest - review judges that
+does not prove: that a bound sentence serves its requirement - review judges that
+does not measure: how much of the shelf is bound - it counts and says so
 does not prove: that a body edited after this run still says what it said - review sees the edit
 does not measure: any ratio, case count, or coverage target
 ```

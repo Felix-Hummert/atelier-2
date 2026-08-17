@@ -21,6 +21,9 @@ DECLARATION = ACCEPTANCE / "94-acceptance-trace-in-ci.toml"
 SECOND_STORY_DECLARATION = ACCEPTANCE / "89-a-second-story.toml"
 CONFTEST = Path("tests/conftest.py")
 DOCUMENTATION = Path("docs/requirements/README.md")
+REQUIREMENTS = Path("docs/requirements")
+A_DECLARED_REQUIREMENT = "REQ-KATALOG-04"
+AN_UNDECLARED_REQUIREMENT = "REQ-NOBODY-99"
 PROOFS = Path("tests/tooling/test_acceptance_gate.py")
 COPIED_FILES = (GATE, PROOFS)
 
@@ -194,6 +197,7 @@ def copied_project(
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT_ROOT / relative, destination)
     shutil.copytree(PROJECT_ROOT / ACCEPTANCE, project / ACCEPTANCE)
+    shutil.copytree(PROJECT_ROOT / REQUIREMENTS, project / REQUIREMENTS)
     for relative, declaration in (also_declaring or {}).items():
         (project / relative).write_text(declaration, encoding="utf-8")
     written = {
@@ -1006,3 +1010,72 @@ def test_the_proves_marker_reaches_the_run_report_under_parallel_execution(
     assert [(proof.sentence_identifier, proof.proving_test) for proof in proofs] == [
         (MOVABLE_SENTENCE, "test_claims_its_sentence")
     ]
+
+
+def a_declaration_binding(requirement: str) -> str:
+    """One story whose only sentence names the requirement it serves."""
+
+    return (
+        "schema_version = 1\n"
+        'story = "https://github.com/FlexOr2/atelier-2/issues/89"\n\n'
+        "[[sentence]]\n"
+        f'id = "{SECOND_STORY_SENTENCE}"\n'
+        'text = "A second story declares one sentence."\n'
+        f'requirement = "{requirement}"\n'
+    )
+
+
+def test_a_sentence_naming_a_requirement_no_document_declares_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A link to a rule nobody wrote is worse than no link at all.
+
+    The whole value of the field is that a reader can follow it. A dead
+    identifier turns the filing cabinet into the thing it was meant to stop --
+    a drawer that answers confidently and wrongly -- so the gate refuses it by
+    the name it could not find.
+    """
+
+    project = copied_project(
+        tmp_path,
+        also_declaring={
+            SECOND_STORY_DECLARATION: a_declaration_binding(AN_UNDECLARED_REQUIREMENT)
+        },
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 1
+    assert AN_UNDECLARED_REQUIREMENT in result.stderr
+    assert str(REQUIREMENTS) in result.stderr
+
+
+def test_a_sentence_naming_a_declared_requirement_passes_the_gate(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(
+        tmp_path,
+        also_declaring={
+            SECOND_STORY_DECLARATION: a_declaration_binding(A_DECLARED_REQUIREMENT)
+        },
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_sentences_binding_no_requirement_are_listed_rather_than_refused(
+    tmp_path: Path,
+) -> None:
+    """Naming the gap is the point; failing on it would be a different story.
+
+    Almost nothing is filed yet, and a gate that went red over that would stop
+    the workshop to file paperwork. It says how many sentences reach a rule and
+    how many do not, so the number is visible instead of comfortable.
+    """
+
+    result = run_gate(copied_project(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "bind no requirement" in result.stdout
