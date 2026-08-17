@@ -1,7 +1,9 @@
 """Structured process logs for the served instance.
 
-The named reader is the diagnosing agent. One root configuration, one JSON
-line per record, stderr only. Missing optional keys are omitted, not nulled.
+The named reader is the diagnosing agent. One JSON line per record, stderr
+only, on the named process loggers that share the handler — not on the root.
+A logger outside that list is outside the contract and may fall to lastResort
+as plain text. Missing optional keys are omitted, not nulled.
 """
 
 from __future__ import annotations

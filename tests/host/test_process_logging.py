@@ -113,6 +113,19 @@ def test_a_failed_attempt_emits_exactly_one_parseable_json_line(
     assert "Traceback" not in record["message"]
 
 
+def test_a_dbos_line_uses_the_same_json_keys(process_log: io.StringIO) -> None:
+    logging.getLogger("dbos").info("durable runtime started")
+
+    records = _parse_json_lines(process_log.getvalue())
+    assert len(records) == 1
+    record = records[0]
+    assert tuple(record) == ALWAYS_KEYS
+    assert datetime.fromisoformat(record["ts"]).tzinfo is not None
+    assert record["level"] == "info"
+    assert record["logger"] == "dbos"
+    assert record["message"] == "durable runtime started"
+
+
 def test_serve_configures_json_logging_before_the_runtime_starts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

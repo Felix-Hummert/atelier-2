@@ -29,8 +29,9 @@ loopback bind is the host loopback. A bridge `ports:` mapping is refused by
 construction, because it would require binding `0.0.0.0` inside the container
 and the billed-provider loopback rule would then refuse to serve.
 
-The served process writes one JSON object per line to stderr. The two product
-sentences a diagnosing agent can query are a failed agent attempt
+The named process loggers share one JSON object per line on stderr; the root
+logger is not configured. The two product sentences a diagnosing agent can
+query are a failed agent attempt
 (`agent_attempt_failed`, with `run_id` / `node_id` / `attempt_id`) and an
 unhandled HTTP exception (`http_internal_error`). The uvicorn access log is
 off: it has no reader. Run facts, including why a run stopped, belong on the
