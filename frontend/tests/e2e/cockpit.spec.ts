@@ -686,14 +686,15 @@ test("opening Details on a saved V3 workflow shows each node with its role and i
     data: workflowYaml
   });
   expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).revision_hash as string;
 
   await page.goto("/atelier/new");
   await page.getByLabel("Saved workflow").check();
   await expect(
     page.getByRole("radio", { name: /Implement a candidate, then review it for defects/ })
   ).toBeVisible();
-  await page.getByText("Details", { exact: true }).click();
-  const details = page.locator("details.revision-details");
+  const details = page.locator("details.revision-details").filter({ hasText: revisionHash });
+  await details.getByText("Details", { exact: true }).click();
   await expect(details).toContainText("implement");
   await expect(details).toContainText("builder");
   await expect(details).toContainText("Implement every acceptance sentence of the bound story.");
