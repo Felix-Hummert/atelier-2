@@ -202,8 +202,8 @@
   let revealingHash: string | null = null;
 
   /**
-   * Fields the published graph already names. A V3 revision carries them; a
-   * V2 one does not, and this must not invent them by walking nodes.
+   * The graph resource publishes no nodes. A node view for a stored revision
+   * needs its own wire head.
    */
   function publishedNodeCount(graph: WorkflowRevisionDetail["graph"] | undefined): number | null {
     return graph?.format_version === 3 ? graph.node_count : null;
@@ -241,8 +241,6 @@
       if (revealingHash === revisionHash) revealingHash = null;
     }
   }
-
-
 
   async function startDraft(): Promise<void> {
     if (draft === null) return;
