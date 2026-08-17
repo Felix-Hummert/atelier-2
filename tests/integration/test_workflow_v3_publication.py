@@ -184,7 +184,7 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
     assert read.json()["graph"] == {
         "format_version": 3,
         "executable": False,
-        "not_executable_reason": "agent forms nothing binds yet: inputs, outputs",
+        "not_executable_reason": "agent forms nothing binds yet: outputs",
         "node_count": V3_NODE_COUNT,
         "name": V3_DOCUMENT_NAME,
         "description": None,

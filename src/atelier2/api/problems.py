@@ -208,6 +208,12 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Workflow format is not executable",
         "This revision is published and no runtime here runs its format version yet.",
     ),
+    "run-input-refused": ProblemDefinition(
+        422,
+        "Run input refused",
+        "Supply exactly the orders this workflow declares, each satisfying the "
+        "schema its author pinned.",
+    ),
     "run-identity-conflict": ProblemDefinition(
         409,
         "Run identity conflict",
