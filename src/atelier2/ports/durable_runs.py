@@ -7,6 +7,7 @@ from typing import Protocol
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
 from atelier2.contracts.node_records_v3 import (
+    ContextPackage,
     NodeArtifact,
     NodeExecutionRequest,
     NodeReceipt,
@@ -111,10 +112,17 @@ class DurablePublishedRunStarter(Protocol):
 
 @dataclass(frozen=True)
 class StartV3RunWithReceiptRequest:
-    """One supervised V3 start and its already-decided terminal node truth."""
+    """One supervised V3 start and its already-decided terminal node truth.
+
+    The `context_package` is the manifest itself and not only its hash, because
+    ADR 0006 binds that material to be written once, immutably, before START. A
+    request that named a package it did not carry would leave a receipt pointing
+    at bytes nobody kept, so the manifest travels with the truth that names it.
+    """
 
     revision: PublishedRevision
     node_request: NodeExecutionRequest
+    context_package: ContextPackage
     artifacts: tuple[NodeArtifact, ...]
     receipt: NodeReceipt
 
@@ -144,6 +152,7 @@ class V3StartRecord(StrEnum):
     RUN = "run"
     ARTIFACT = "artifact"
     RECEIPT = "receipt"
+    CONTEXT_PACKAGE = "context_package"
 
 
 @dataclass(frozen=True)

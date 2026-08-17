@@ -30,14 +30,15 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V12 only in a truly empty canonical store and reopens
-only an exact V12 product schema. V9, V10, and V11 remain published predecessor
-objects (`V9_SCHEMA_HANDOFF`, `V10_SCHEMA_HANDOFF`, and `V11_SCHEMA_HANDOFF`) and
-are not opened or migrated. Older, future, malformed, or nonempty unowned stores
-are rejected without mutation. There is no runtime downgrade. The published
-`PRODUCT_SCHEMA_HANDOFF` is version 12 with
+The runtime creates schema V13 only in a truly empty canonical store and reopens
+only an exact V13 product schema. V9, V10, V11, and V12 remain published
+predecessor objects (`V9_SCHEMA_HANDOFF`, `V10_SCHEMA_HANDOFF`,
+`V11_SCHEMA_HANDOFF`, and `V12_SCHEMA_HANDOFF`) and are not opened or migrated.
+Older, future, malformed, or nonempty unowned stores are rejected without
+mutation. There is no runtime downgrade. The published
+`PRODUCT_SCHEMA_HANDOFF` is version 13 with
 product-schema fingerprint
-`feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7`.
+`56143b0baed1e545fc72f93d09cbee731baf77843ac520cea6e8d0884feb7a2f`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -152,6 +153,7 @@ provider contract.
 | V10 thin store | A fresh store is exact V10 with published revisions of the closed kind set, lineage membership bound to those revisions, format-3 runs, and v3 receipts; invented kinds and unpublished member hashes are refused; an injected write failpoint rolls the thin set back; V7/V8/V9 files are refused unmutated. There is no runtime compatibility after the published V9 predecessor. |
 | V11 supervised V3 start | A fresh exact V11 store adds immutable node artifact bytes and ordered receipt output/access bindings. One typed in-process writer atomically persists the exact published workflow backing, format-3 started run, artifacts, receipt, and bindings; injected failure at every write boundary leaves none of them. An admitted lineage member resolves to the exact published bytes; missing founding, unpublished member, and wrong kind are refused; name lookup reports missing because alias and retirement tables are not in this profile. It neither enqueues nor claims output-schema validation, run events, or a terminal hash. V10 remains unchanged and is refused without mutation. |
 | V12 named catalog | A fresh exact V12 store adds append-only alias and retirement histories. One typed founder and admission writer derives `CatalogLineageId` from kind and founding hash and refuses a mismatched id before mutation. `resolve_name` returns the current display name and retirement flag through membership, or the typed missing/retired refusals. A 64-hex query is a lineage id. V11 remains unchanged and is refused without mutation. |
+| V13 context package | A fresh exact V13 store gives the `context-package/v3` manifest a durable, immutable home and records the run configuration revision a supervised V3 run was started under. The supervised writer persists the manifest inside the same transaction as the run and its receipt, refuses a decided truth that names a package it does not carry, and shares an identical manifest between runs rather than conflicting on it. V12 remains unchanged and is refused without mutation. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 | V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |
@@ -180,8 +182,8 @@ concurrency simulations, so the exploratory probe is no longer retained.
 Until a named maturity, the product does not promise store compatibility.
 [#16 comment 5307892458](https://github.com/FlexOr2/atelier-2/issues/16#issuecomment-5307892458)
 rules that preserving hops, compatibility layers, and keeping old store shapes
-openable are unnecessary while the store is a prototype. V12 replaces the
-prototype; it does not preserve V11 rows.
+openable are unnecessary while the store is a prototype. V13 replaces the
+prototype; it does not preserve V12 rows.
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the

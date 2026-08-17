@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.runtime import (
 )
 from atelier2.adapters.dbos.schema import (
     PRODUCT_TABLE_NAMES,
+    SCHEMA_VERSION,
     MigrationRequired,
     UnsupportedSchemaVersion,
     initialize_schema,
@@ -436,7 +437,7 @@ def test_current_schema_opens_idempotently(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_concurrent_first_schema_initializers_converge_on_version_twelve(
+def test_concurrent_first_schema_initializers_converge_on_version_thirteen(
     tmp_path: Path,
 ) -> None:
     participants = 4
@@ -468,7 +469,7 @@ def test_concurrent_first_schema_initializers_converge_on_version_twelve(
                 )
             )
 
-        assert results == [[12]] * participants
+        assert results == [[SCHEMA_VERSION]] * participants
 
 
 def test_initialized_runtime_can_execute_a_later_seeded_workflow(

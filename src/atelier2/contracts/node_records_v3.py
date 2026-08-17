@@ -95,6 +95,69 @@ class ContextPackage:
 
 
 @dataclass(frozen=True)
+class ContextPackageMember:
+    """One materialized `required_context` entry inside a manifest.
+
+    ADR 0006 names a member `(name, source revision, selector, content hash)` and
+    keeps them in declared order, so a re-ordered, swapped or changed member is
+    visible alike in the package hash. `content_hash` is the one field no owner
+    fills yet: nothing materializes a selector against its source, so the field
+    is written empty. Its position is declared here rather than added later
+    because an absent optional value is the zero-length field in its own place --
+    filling it when a materializer lands is a value change, never a frame change.
+    """
+
+    name: str
+    source_revision: PublishedRevisionHash
+    selector: str
+    content_hash: Sha256Hash | None = None
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("a context-package member names a nonempty entry")
+        if self.selector == "":
+            raise ValueError("a context-package member names a nonempty selector")
+        if not isinstance(self.source_revision, PublishedRevisionHash):
+            raise TypeError("a context-package member names a typed source revision")
+
+    def framed(self) -> bytes:
+        return frame(
+            "context-package-member/v3",
+            self.name.encode("utf-8"),
+            _ascii_hash(self.source_revision),
+            self.selector.encode("utf-8"),
+            b"" if self.content_hash is None else _ascii_hash(self.content_hash),
+        )
+
+
+def context_package_of(
+    workflow_revision_hash: WorkflowRevisionHash,
+    run_id: RunId,
+    node_id: str,
+    members: tuple[ContextPackageMember, ...],
+) -> ContextPackage:
+    """The manifest one node was given, as the container ADR 0006 hashes.
+
+    The container is what the hash covers, so the workflow revision and the node
+    it was assembled for are part of it: the same members reached for another node
+    are another package. Members keep their declared order.
+    """
+    _require_node_id(node_id)
+    return ContextPackage(
+        frame(
+            "context-package-body/v3",
+            _ascii_hash(workflow_revision_hash),
+            run_id.value.encode("utf-8"),
+            node_id.encode("utf-8"),
+            frame(
+                "context-package-members/v3",
+                *(member.framed() for member in members),
+            ),
+        )
+    )
+
+
+@dataclass(frozen=True)
 class AvailableContextGrant:
     """One `available_context` grant: name, source, and allowed read operations."""
 

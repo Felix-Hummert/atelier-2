@@ -27,15 +27,13 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     bootstrap_workflow_id_for,
 )
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.bind_node_execution import bind_node_execution
+from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
-    BoundNodeRevisions,
-    ContextPackage,
-    DeclaredOutput,
     NodeArtifact,
-    NodeExecutionRequest,
-    NodeKindV3,
     NodeReceipt,
     PersistedReceiptDisposition,
     ReceiptOutput,
@@ -45,8 +43,13 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
-from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
+from atelier2.contracts.run_configuration_v3 import (
+    ReferenceSite,
+    ResolvedReference,
+    RunConfigurationRevision,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt,
@@ -104,28 +107,33 @@ def request(
     revision: PublishedRevision | None = None,
     receipt_execution_id: NodeExecutionId | None = None,
 ) -> StartV3RunWithReceiptRequest:
+    """One supervised start, with its node truth built by the production author.
+
+    The frozen resolution matrix is the scenario's own data -- it is what the
+    document's references resolved to. Everything derived from it, the manifest
+    and the request that names it, comes from `bind_node_execution`, so a test
+    measures the composition rather than its own arithmetic.
+    """
     published = revision or PublishedRevision(RevisionKind.WORKFLOW, WORKFLOW_DOCUMENT)
     workflow_hash = WorkflowRevisionHash(published.revision_hash.value)
     run_id = RunId("run-lasagne")
-    context = ContextPackage(b"one supervised context")
-    node_request = NodeExecutionRequest(
-        workflow_revision_hash=workflow_hash,
-        run_configuration_revision_hash=RunConfigurationRevisionHash.of(
-            b"one exact run configuration"
-        ),
-        run_id=run_id,
-        node_id="cook",
-        context_package_hash=context.package_hash,
-        available_context=(),
-        kind=NodeKindV3.ACTION,
-        mode=None,
-        inputs=(),
-        bound_revisions=BoundNodeRevisions(),
-        declared_outputs=(
-            DeclaredOutput("meal", SCHEMA_REVISION),
-            DeclaredOutput("sauce", SAUCE_SCHEMA_REVISION),
+    graph = parse_workflow_document(published.document)
+    assert isinstance(graph, WorkflowGraphV3)
+    bound = bind_node_execution(
+        run_id,
+        workflow_hash,
+        graph,
+        "cook",
+        RunConfigurationRevision(
+            workflow_hash,
+            AgentBindingSet(()).binding_set_hash,
+            (
+                _resolved("outputs.schema", "meal", SCHEMA_REVISION),
+                _resolved("outputs.schema", "sauce", SAUCE_SCHEMA_REVISION),
+            ),
         ),
     )
+    node_request = bound.request
     artifact = NodeArtifact(
         run_id=run_id,
         node_id="cook",
@@ -148,7 +156,7 @@ def request(
         disposition=PersistedReceiptDisposition.SUCCEEDED,
         reason="completed",
         request_hash=node_request.request_hash,
-        context_package_hash=context.package_hash,
+        context_package_hash=node_request.context_package_hash,
         outputs=(
             ReceiptOutput("meal", SCHEMA_REVISION, artifact.value_hash),
             ReceiptOutput("sauce", SAUCE_SCHEMA_REVISION, sauce_artifact.value_hash),
@@ -159,7 +167,23 @@ def request(
         ),
     )
     return StartV3RunWithReceiptRequest(
-        published, node_request, (artifact, sauce_artifact), receipt
+        published,
+        node_request,
+        bound.context_package,
+        (artifact, sauce_artifact),
+        receipt,
+    )
+
+
+def _resolved(
+    field: str, entry: str, revision_hash: PublishedRevisionHash
+) -> ResolvedReference:
+    """One reference of the cook node, as the run configuration froze it."""
+    return ResolvedReference(
+        ReferenceSite(field, "cook", entry),
+        RevisionKind.SCHEMA,
+        VersionedReference(ref=f"{entry}-schema", revision=revision_hash.value),
+        revision_hash,
     )
 
 

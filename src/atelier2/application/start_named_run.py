@@ -131,7 +131,11 @@ def start_named_run(
 
     started = starter.start_v3_with_receipt(
         StartV3RunWithReceiptRequest(
-            revision, decided.node_request, decided.artifacts, decided.receipt
+            revision,
+            decided.node_request,
+            decided.context_package,
+            decided.artifacts,
+            decided.receipt,
         )
     )
     match started:

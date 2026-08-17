@@ -10,22 +10,29 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.bind_node_execution import bind_node_execution
+from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
-    BoundNodeRevisions,
-    ContextPackage,
-    DeclaredOutput,
     NodeArtifact,
-    NodeExecutionRequest,
-    NodeKindV3,
     NodeReceipt,
     PersistedReceiptDisposition,
     ReceiptOutput,
 )
-from atelier2.contracts.revisions_v3 import PublishedRevision, PublishedRevisionHash
-from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
+from atelier2.contracts.run_configuration_v3 import (
+    ReferenceSite,
+    ResolvedReference,
+    RunConfigurationRevision,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 from atelier2.ports.durable_runs import StartV3RunWithReceiptRequest
 
 PROOF_SCHEMA_REVISION = PublishedRevisionHash.of(b"the bound meal schema")
@@ -54,27 +61,39 @@ def decided_truth_for(
 ) -> StartV3RunWithReceiptRequest:
     """The terminal truth for one cooked proof run of this exact revision.
 
+    The frozen resolution matrix is this scenario's own data; the manifest and
+    the request that names it come from `bind_node_execution`, so the scenario
+    states what the document resolved to and never recomputes what production
+    derives from it.
+
     `break_receipt_binding` points the receipt at another node execution, which is
     how a caller asks for the all-or-nothing case without reaching into the store.
     """
     workflow_hash = WorkflowRevisionHash(revision.revision_hash.value)
     execution_id = NodeExecutionId.for_node(PROOF_RUN_ID, workflow_hash, "cook")
-    context = ContextPackage(b"one supervised context")
-    node_request = NodeExecutionRequest(
-        workflow_revision_hash=workflow_hash,
-        run_configuration_revision_hash=RunConfigurationRevisionHash.of(
-            b"one exact run configuration"
+    graph = parse_workflow_document(revision.document)
+    assert isinstance(graph, WorkflowGraphV3)
+    bound = bind_node_execution(
+        PROOF_RUN_ID,
+        workflow_hash,
+        graph,
+        "cook",
+        RunConfigurationRevision(
+            workflow_hash,
+            AgentBindingSet(()).binding_set_hash,
+            (
+                ResolvedReference(
+                    ReferenceSite("outputs.schema", "cook", "meal"),
+                    RevisionKind.SCHEMA,
+                    VersionedReference(
+                        ref="meal-schema", revision=PROOF_SCHEMA_REVISION.value
+                    ),
+                    PROOF_SCHEMA_REVISION,
+                ),
+            ),
         ),
-        run_id=PROOF_RUN_ID,
-        node_id="cook",
-        context_package_hash=context.package_hash,
-        available_context=(),
-        kind=NodeKindV3.ACTION,
-        mode=None,
-        inputs=(),
-        bound_revisions=BoundNodeRevisions(),
-        declared_outputs=(DeclaredOutput("meal", PROOF_SCHEMA_REVISION),),
     )
+    node_request = bound.request
     artifact = NodeArtifact(
         run_id=PROOF_RUN_ID,
         node_id="cook",
@@ -88,7 +107,7 @@ def decided_truth_for(
         disposition=PersistedReceiptDisposition.SUCCEEDED,
         reason="completed",
         request_hash=node_request.request_hash,
-        context_package_hash=context.package_hash,
+        context_package_hash=node_request.context_package_hash,
         outputs=(ReceiptOutput("meal", PROOF_SCHEMA_REVISION, artifact.value_hash),),
         access_receipt_hashes=(Sha256Hash.of(b"oven access"),),
     )
@@ -99,4 +118,6 @@ def decided_truth_for(
                 PROOF_RUN_ID, workflow_hash, "another_node"
             ),
         )
-    return StartV3RunWithReceiptRequest(revision, node_request, (artifact,), receipt)
+    return StartV3RunWithReceiptRequest(
+        revision, node_request, bound.context_package, (artifact,), receipt
+    )

@@ -66,3 +66,28 @@ text = "A V3 agent attempt that succeeds records the provider's receipt and carr
 # carrying its hash across would publish a receipt whose request hash recomputes
 # to nothing. The two durable columns wait on that author rather than landing
 # without a writer, and the schema stays at V12 until they have one.
+
+# THE SPINE UNDER THAT OPEN SENTENCE. The two records the chain waits on now have
+# a production author and a durable home. `context-package/v3` is written once,
+# with the supervised start's own transaction, and is immutable afterwards --
+# ADR 0006's "written once, immutably, before START" is a trigger rather than a
+# habit. `node-execution-request/v3` is composed from the document and the frozen
+# run configuration rather than assembled per caller, and the run records which
+# configuration revision it was started under, so `RunV3` reads back whole.
+#
+# Still honestly open, and named where it is written: no owner materializes a
+# `required_context` selector against its source, so a member carries its name,
+# its resolved source revision and the selector the author wrote, and the content
+# hash stays the zero-length field in its declared position.
+
+[[sentence]]
+id = "a-supervised-v3-start-leaves-the-manifest-its-receipt-names"
+text = "A supervised V3 start writes the context-package manifest in the same transaction as the run and its receipt, so the package hash a receipt carries reaches the exact bytes it was taken over, and those bytes can never be changed or removed afterwards."
+
+[[sentence]]
+id = "a-v3-node-execution-request-is-composed-not-supplied"
+text = "The node execution request and the manifest it names are composed in production from the document and the run configuration the run is bound to, never resolved a second time and never assembled by the caller, and a declared reference the frozen configuration does not carry is refused by its site rather than dropped."
+
+[[sentence]]
+id = "a-supervised-v3-run-records-the-configuration-it-was-started-under"
+text = "A supervised V3 run records the run configuration revision its request was bound to, and reads back carrying it, so the run's own truth no longer stops at the format number."

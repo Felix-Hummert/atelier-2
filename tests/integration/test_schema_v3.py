@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     PRODUCT_TABLE_NAMES,
+    SCHEMA_VERSION,
     UnsupportedSchemaVersion,
     initialize_schema,
 )
@@ -96,7 +97,7 @@ def engine_snapshot(
     return schema, rows
 
 
-def test_fresh_v12_has_the_closed_product_tables_and_reopens_idempotently(
+def test_fresh_v13_has_the_closed_product_tables_and_reopens_idempotently(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -107,7 +108,7 @@ def test_fresh_v12_has_the_closed_product_tables_and_reopens_idempotently(
         with engine.connect() as connection:
             assert connection.execute(
                 sa.text("SELECT version FROM atelier_schema_versions")
-            ).all() == [(12,)]
+            ).all() == [(SCHEMA_VERSION,)]
             assert PRODUCT_TABLE_NAMES.issubset(
                 sa.inspect(connection).get_table_names()
             )
@@ -217,8 +218,20 @@ def _seed_v2_constraint_rows(connection: sa.Connection) -> None:
         ("b" * 64, "opus", "a" * 64, "claude-cli/v1", 2, "headless"),
     )
     connection.exec_driver_sql(
-        "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("run-v2", "bootstrap", "c" * 64, 2, "d" * 64, "build", "STARTED", 0, 0, None),
+        "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "run-v2",
+            "bootstrap",
+            "c" * 64,
+            2,
+            "d" * 64,
+            "build",
+            "STARTED",
+            0,
+            0,
+            None,
+            None,
+        ),
     )
     connection.exec_driver_sql(
         "INSERT INTO run_agent_bindings VALUES (?, ?, ?, ?, ?)",
@@ -364,7 +377,7 @@ def test_malformed_v7_is_refused_without_mutation(tmp_path: Path) -> None:
         "changed-nullability",
     ],
 )
-def test_existing_v12_rejects_every_product_schema_drift_without_mutation(
+def test_existing_v13_rejects_every_product_schema_drift_without_mutation(
     tmp_path: Path, malformation: str
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -413,7 +426,7 @@ def test_existing_v12_rejects_every_product_schema_drift_without_mutation(
     before_schema = snapshot(database)
     before_rows = rows_snapshot(database)
     reopened = sa.create_engine(f"sqlite:///{database}")
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v12"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v13"):
         initialize_schema(reopened)
     reopened.dispose()
 
@@ -421,7 +434,7 @@ def test_existing_v12_rejects_every_product_schema_drift_without_mutation(
     assert rows_snapshot(database) == before_rows
 
 
-def test_existing_malformed_in_memory_v12_is_refused() -> None:
+def test_existing_malformed_in_memory_v13_is_refused() -> None:
     engine = sa.create_engine("sqlite://")
     initialize_schema(engine)
     with engine.begin() as connection:
@@ -433,7 +446,7 @@ def test_existing_malformed_in_memory_v12_is_refused() -> None:
             )
         )
 
-    with pytest.raises(UnsupportedSchemaVersion, match="malformed v12"):
+    with pytest.raises(UnsupportedSchemaVersion, match="malformed v13"):
         initialize_schema(engine)
     engine.dispose()
 
@@ -459,7 +472,7 @@ def test_nonempty_dbos_only_in_memory_database_is_not_treated_as_fresh() -> None
     engine.dispose()
 
 
-def test_dbos_owned_tables_are_allowed_and_unchanged_by_v12_preflight(
+def test_dbos_owned_tables_are_allowed_and_unchanged_by_v13_preflight(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "atelier.sqlite"
@@ -502,7 +515,7 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
         connection.execute(
             sa.text(
                 "INSERT INTO runs VALUES "
-                "('run-1','bootstrap',:revision,1,NULL,'action','STARTED',0,0,NULL)"
+                "('run-1','bootstrap',:revision,1,NULL,'action','STARTED',0,0,NULL,NULL)"
             ),
             {"revision": revision},
         )
@@ -607,7 +620,7 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
         connection.execute(
             sa.text(
                 "INSERT INTO runs VALUES "
-                "('run-1','bootstrap',:revision,1,NULL,'action','STARTED',0,0,NULL)"
+                "('run-1','bootstrap',:revision,1,NULL,'action','STARTED',0,0,NULL,NULL)"
             ),
             {"revision": revision},
         )
@@ -731,7 +744,7 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
             connection.execute(
                 sa.text(
                     "INSERT INTO runs VALUES "
-                    "(:run,:bootstrap,:revision,1,NULL,'action','STARTED',0,0,NULL)"
+                    "(:run,:bootstrap,:revision,1,NULL,'action','STARTED',0,0,NULL,NULL)"
                 ),
                 {
                     "run": f"run-{index}",

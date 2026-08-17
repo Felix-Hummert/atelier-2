@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     auth_profile_revisions,
+    context_packages_v3,
     node_artifacts_v3,
     node_receipt_access_v3,
     node_receipt_outputs_v3,
@@ -138,6 +139,7 @@ def _v3_start_is_bound(request: StartV3RunWithReceiptRequest) -> bool:
         receipt.node_execution_id != expected_execution
         or receipt.request_hash != node_request.request_hash
         or receipt.context_package_hash != node_request.context_package_hash
+        or node_request.context_package_hash != request.context_package.package_hash
     ):
         return False
     artifacts = request.artifacts
@@ -197,6 +199,8 @@ def _v3_run_record_matches(
         and int(str(run_record["state_version"])) == 0
         and int(str(run_record["last_event_sequence"])) == 0
         and run_record["terminal_hash"] is None
+        and str(run_record["run_configuration_revision_hash"])
+        == node_request.run_configuration_revision_hash.value
     )
 
 
@@ -222,7 +226,15 @@ def _stored_v3_start_matches(
         .mappings()
         .one_or_none()
     )
-    if run_record is None or receipt_record is None:
+    stored_manifest = connection.scalar(
+        sa.select(context_packages_v3.c.manifest).where(
+            context_packages_v3.c.package_hash
+            == request.context_package.package_hash.value
+        )
+    )
+    if run_record is None or receipt_record is None or stored_manifest is None:
+        return False
+    if bytes(stored_manifest) != request.context_package.manifest:
         return False
     if not _v3_run_record_matches(run_record, request):
         return False
@@ -809,6 +821,21 @@ class DbosDurableRunStarter:
                         state_version=0,
                         last_event_sequence=0,
                         terminal_hash=None,
+                        run_configuration_revision_hash=(
+                            node_request.run_configuration_revision_hash.value
+                        ),
+                    )
+                )
+                # One manifest can serve several runs, and it is immutable, so an
+                # existing row is a share rather than a conflict. What must never
+                # pass is the same hash over other bytes, which the record check
+                # below refuses by name.
+                connection.execute(
+                    context_packages_v3.insert()
+                    .prefix_with("OR IGNORE")
+                    .values(
+                        package_hash=request.context_package.package_hash.value,
+                        manifest=request.context_package.manifest,
                     )
                 )
                 if request.artifacts:

@@ -23,16 +23,19 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
+_VERSION_TWELVE = 12
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V9 product tables equal V8. V10 adds the thin catalog/receipt foundation. V11
 # closes the artifact/output/access store shape that Cut B writes atomically.
-# V12 adds append-only catalog alias and retirement histories.
+# V12 adds append-only catalog alias and retirement histories. V13 gives the
+# context-package manifest a durable home and records the run configuration
+# revision a supervised V3 run was started under.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -40,6 +43,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     10: "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7",
     11: "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef",
     12: "feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7",
+    13: "56143b0baed1e545fc72f93d09cbee731baf77843ac520cea6e8d0884feb7a2f",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -52,6 +56,10 @@ V10_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V11_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_ELEVEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_ELEVEN],
+)
+V12_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWELVE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWELVE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -92,6 +100,7 @@ runs = sa.Table(
     sa.Column("state_version", sa.Integer, nullable=False),
     sa.Column("last_event_sequence", sa.Integer, nullable=False),
     sa.Column("terminal_hash", sa.Text, nullable=True),
+    sa.Column("run_configuration_revision_hash", sa.Text, nullable=True),
     sa.UniqueConstraint("run_id", "revision_hash"),
     sa.UniqueConstraint("run_id", "revision_hash", "agent_binding_set_hash"),
     sa.CheckConstraint("length(run_id) > 0"),
@@ -115,6 +124,12 @@ runs = sa.Table(
         "(state = 'COMPLETED' AND terminal_hash IS NOT NULL "
         "AND length(terminal_hash) = 64 AND terminal_hash NOT GLOB '*[^0-9a-f]*') "
         "OR (state <> 'COMPLETED' AND terminal_hash IS NULL)"
+    ),
+    sa.CheckConstraint(
+        "run_configuration_revision_hash IS NULL OR "
+        "(workflow_format_version = 3 "
+        "AND length(run_configuration_revision_hash) = 64 "
+        "AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*')"
     ),
 )
 auth_profile_revisions = sa.Table(
@@ -969,6 +984,15 @@ node_receipts_v3 = sa.Table(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
+context_packages_v3 = sa.Table(
+    "context_packages_v3",
+    metadata,
+    sa.Column("package_hash", sa.Text, primary_key=True),
+    sa.Column("manifest", sa.LargeBinary, nullable=False),
+    sa.CheckConstraint(
+        "length(package_hash) = 64 AND package_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
 node_receipt_outputs_v3 = sa.Table(
     "node_receipt_outputs_v3",
     metadata,
@@ -1049,9 +1073,22 @@ _PRODUCT_TRIGGERS = {
     "runs_binding_no_update": """
         CREATE TRIGGER runs_binding_no_update
         BEFORE UPDATE OF run_id, bootstrap_workflow_id, revision_hash,
-                         workflow_format_version, agent_binding_set_hash
+                         workflow_format_version, agent_binding_set_hash,
+                         run_configuration_revision_hash
         ON runs BEGIN
           SELECT RAISE(ABORT, 'run bindings are immutable');
+        END
+    """,
+    "context_packages_v3_no_update": """
+        CREATE TRIGGER context_packages_v3_no_update
+        BEFORE UPDATE ON context_packages_v3 BEGIN
+          SELECT RAISE(ABORT, 'context packages are immutable');
+        END
+    """,
+    "context_packages_v3_no_delete": """
+        CREATE TRIGGER context_packages_v3_no_delete
+        BEFORE DELETE ON context_packages_v3 BEGIN
+          SELECT RAISE(ABORT, 'context packages are immutable');
         END
     """,
     "auth_profile_revisions_no_update": """
