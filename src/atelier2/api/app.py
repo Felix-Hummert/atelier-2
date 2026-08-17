@@ -21,6 +21,10 @@ from atelier2.api.openapi import API_PREFIX, install_custom_openapi
 from atelier2.api.problems import install_problem_handlers
 from atelier2.api.routes import agents, events, health, revisions, runs
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
+from atelier2.application.admit_catalog_member import (
+    admit_catalog_member,
+    found_catalog_lineage,
+)
 from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.prepare_run_events import prepare_run_events
 from atelier2.application.publish_agent_configurations import (
@@ -58,6 +62,30 @@ def bound_use_cases(
         ),
         resolve_catalog_name=lambda kind, query, position: resolve_catalog_name(
             kind, query, position, ports.catalog_resolver
+        ),
+        found_catalog_lineage=lambda kind, revision_hash, name, actor, at: (
+            found_catalog_lineage(
+                kind,
+                revision_hash,
+                name,
+                actor,
+                at,
+                ports.catalog_resolver,
+                ports.catalog_admissions,
+                ports.workflow_document_parser,
+            )
+        ),
+        admit_catalog_member=lambda kind, lineage_id, revision_hash, actor, at: (
+            admit_catalog_member(
+                kind,
+                lineage_id,
+                revision_hash,
+                actor,
+                at,
+                ports.catalog_resolver,
+                ports.catalog_admissions,
+                ports.workflow_document_parser,
+            )
         ),
         list_workflow_revisions=lambda after, limit: list_workflow_revisions(
             after, limit, ports.workflow_revision_queries

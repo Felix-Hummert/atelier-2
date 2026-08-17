@@ -275,6 +275,7 @@ def api_ports(**overrides: object) -> ApiPorts:
         "agent_configuration_catalog": unused,
         "agent_attempt_canceller": unused,
         "catalog_resolver": unused,
+        "catalog_admissions": unused,
     }
     ports.update(overrides)
     return ApiPorts(**ports)
@@ -362,6 +363,7 @@ def durable_api_client(
                     runtime.engine, runtime.settings.application_version
                 ),
                 catalog_resolver=DbosCatalogStore(runtime.engine),
+                catalog_admissions=DbosCatalogStore(runtime.engine),
             ),
             limits=api_limits() if limits is None else limits,
             event_poll_backoff=event_poll_backoff(),

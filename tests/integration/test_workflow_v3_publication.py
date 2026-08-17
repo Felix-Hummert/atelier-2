@@ -93,6 +93,7 @@ def _client(runtime: DbosRuntime) -> TestClient:
                     runtime.engine, runtime.settings.application_version
                 ),
                 catalog_resolver=DbosCatalogStore(runtime.engine),
+                catalog_admissions=DbosCatalogStore(runtime.engine),
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
@@ -130,9 +131,48 @@ def test_a_valid_v3_document_publishes_as_one_immutable_hash_identified_revision
     assert _row_count(runtime, workflow_revisions) == 1
 
 
-def test_the_published_v3_revision_reads_back_naming_its_format_as_unexecutable(
+EXECUTABLE_V3_DOCUMENT = b"""format_version: 3
+name: One agent
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+"""
+
+
+@pytest.mark.proves("a-revision-says-which-form-it-waits-for-not-which-version-it-is")
+def test_a_v3_revision_this_build_runs_reads_back_as_executable(
     runtime: DbosRuntime,
 ) -> None:
+    """The other half of the same rule: a document this build runs says so.
+
+    While `executable` was the constant false, no V3 revision could ever answer
+    this way, and the reader was told about the version rather than the document.
+    Both halves come from the one rule the start path applies, so this and the
+    refusal below cannot drift apart.
+    """
+    client = _client(runtime)
+    revision_hash = _publish(client, EXECUTABLE_V3_DOCUMENT).json()["revision_hash"]
+
+    read = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}")
+
+    assert read.status_code == 200
+    assert read.json()["graph"]["executable"] is True
+    assert read.json()["graph"]["not_executable_reason"] is None
+
+
+@pytest.mark.proves("a-revision-says-which-form-it-waits-for-not-which-version-it-is")
+def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
+    runtime: DbosRuntime,
+) -> None:
+    """Not executable is the answer; which form is waiting is the useful half.
+
+    This revision was refused for its format before, and is refused for its own
+    authored forms now -- the verdict is unchanged, the reason it gives is the
+    document's rather than the version's.
+    """
     client = _client(runtime)
     published = _publish(client, V3_DOCUMENT)
     revision_hash = published.json()["revision_hash"]
@@ -144,6 +184,7 @@ def test_the_published_v3_revision_reads_back_naming_its_format_as_unexecutable(
     assert read.json()["graph"] == {
         "format_version": 3,
         "executable": False,
+        "not_executable_reason": "agent forms nothing binds yet: inputs, outputs",
         "node_count": V3_NODE_COUNT,
         "name": V3_DOCUMENT_NAME,
         "description": None,

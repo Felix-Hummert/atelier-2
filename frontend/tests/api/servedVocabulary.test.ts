@@ -58,6 +58,7 @@ describe("the served vocabulary", () => {
       revision_hash: "a".repeat(64),
       format_version: 3,
       executable: false,
+      not_executable_reason: "agent forms nothing binds yet: outputs",
       name: "Implement a candidate, then review it for defects",
       description: null
     };

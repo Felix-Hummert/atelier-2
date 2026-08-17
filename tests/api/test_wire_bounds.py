@@ -32,7 +32,10 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
 )
-from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+from atelier2.contracts.catalog_v3 import (
+    MAXIMUM_CATALOG_ACTOR_CHARACTERS,
+    MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+)
 
 WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events)
 
@@ -46,8 +49,14 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentBindingResourceV2.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "AgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AdmitCatalogMemberRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     "AgentCancelRequestedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelledEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "CatalogAdmissionResource.display_name": (MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS),
+    "FoundCatalogLineageRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
+    "FoundCatalogLineageRequestResource.display_name": (
+        MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+    ),
     "AgentConfigurationRevisionResource.executor_revision": (
         MAXIMUM_AGENT_FIELD_CHARACTERS
     ),
@@ -74,6 +83,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     ),
     "RunResourceV2.agent_attempts": REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     "RunResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
+    "RunResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunRequestResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
 }

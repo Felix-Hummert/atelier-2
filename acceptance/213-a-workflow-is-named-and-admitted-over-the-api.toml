@@ -1,0 +1,44 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/213"
+
+# THIS HEAD FILLS THE CATALOG. IT SHOWS NOTHING AND STARTS NOTHING.
+#
+# Until now `found_lineage` and `admit_member` had no production caller at all:
+# measured on the tree this head starts from, the only callers of either were the
+# store that defines them and three test modules. The read door #200 opened --
+# `GET /workflow-revisions/by-name/{name}` -- therefore stood over a catalog that
+# nothing in production could fill. This head opens the write door beside it.
+#
+# What is deliberately absent, and why:
+#
+#   - THE PICKER. Showing the catalog is a surface, and surfaces are #131's
+#     family. This head gives that surface something true to show.
+#   - RUNNING. #111 starts a named workflow. Founding a name and starting it are
+#     two acts, exactly as publication and admission are.
+#   - RETIREMENT OVER THE API. The store can retire a lineage; refusing to start
+#     a retired one is already proven. Whether an operator retires over HTTP is
+#     its own wish and is not smuggled in beside this one.
+#
+# Requirement owner: `docs/requirements/0005-katalog-und-benannte-workflows.md`,
+# REQ-KATALOG-05 -- "Eine nur publizierte Revision ist noch kein waehlbares
+# Katalogmitglied." Its open line named a closed issue as owner until this head.
+
+[[sentence]]
+id = "a-published-revision-becomes-a-named-lineage-over-the-api"
+requirement = "REQ-KATALOG-05"
+text = "An operator who has published a V3 revision admits it over the API without restating its name, and the catalog answers with the exact name authored in those published bytes -- so a workflow reaches the catalog without a test writing the row."
+
+[[sentence]]
+id = "a-later-revision-joins-the-lineage-that-already-holds-its-name"
+requirement = "REQ-KATALOG-05"
+text = "A later V3 revision is admitted into that lineage over the API, becomes its next member and appends the exact name authored in its own published bytes; after restart both authored names answer the same current member and its exact position."
+
+[[sentence]]
+id = "an-admission-the-catalog-refuses-is-named-by-its-own-reason"
+requirement = "REQ-KATALOG-05"
+text = "A revision nobody published, a name another lineage already holds, a revision another lineage already owns, a lineage that does not exist and a lineage that was retired are each refused by the reason that names them, and nothing is written."
+
+[[sentence]]
+id = "a-v3-workflow-with-a-64-hex-authored-name-is-refused-before-any-catalog-write"
+requirement = "REQ-KATALOG-03"
+text = "A V3 workflow whose authored name is exactly 64 lowercase hexadecimal characters is refused as an invalid catalog name before any catalog row is written."

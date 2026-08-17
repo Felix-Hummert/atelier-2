@@ -53,8 +53,8 @@ Status:     DRAFT
 Quelle:     DESK — [ADR 0007](../decisions/0007-catalog-identity.md) Decision 1
 Begründung: Otherwise a typed name and a lineage id cannot be told apart. The refusal is at the name, not after a second discriminator.
 Journeys:
-Beweis:     UNGEBUNDEN
-Offen:      - Die Verweigerung ist implementiert (der Anzeigename-Vertrag verweigert 64 Hex), aber kein Akzeptanz-Satz spricht sie aus; er wird in dem Zug deklariert, der ihn beweist (Eigentümer: #22, Ziel: Akzeptanz-Deklaration)
+Beweis:     a-v3-workflow-with-a-64-hex-authored-name-is-refused-before-any-catalog-write
+Offen:
 
 ### REQ-KATALOG-04: Name und Beschreibung einer **publizierten** Revision kommen aus ihren authored Bytes, oder sie fehlen ehrlich.
 Status:     DRAFT
@@ -71,8 +71,10 @@ Status:     DRAFT
 Quelle:     DESK — [ADR 0007](../decisions/0007-catalog-identity.md) Decision 3
 Begründung: Publication and admission are two acts. The operator must not be offered a name that the catalog has not admitted.
 Journeys:
-Beweis:     UNGEBUNDEN
-Offen:      - Aufnahme-Befehl und Picker-Mitgliedschaft fehlen; der Store kann die Aufnahme (`admit_member`), aber keine Route oder ein Befehl bietet sie an (Eigentümer: #63, Ziel: Bahn B)
+Beweis:     a-published-revision-becomes-a-named-lineage-over-the-api
+            a-later-revision-joins-the-lineage-that-already-holds-its-name
+            an-admission-the-catalog-refuses-is-named-by-its-own-reason
+Offen:      - Der Picker fehlt, der eine Mitgliedschaft und einen Namen anbietet (Eigentümer: #131-Familie, Ziel: Oberfläche)
 
 ## Open questions
 
@@ -82,14 +84,9 @@ Wann eine Quelländerung zu einer neuen aufgenommenen Revision wird, steht hier
 nicht mehr als offene Frage: [ADR 0007](../decisions/0007-catalog-identity.md)
 Decision 2 entscheidet Scan, Intake und Aufnahme und besitzt sie allein.
 
-Der Rest der Schuld, an main `17976531` nachgemessen statt aus der Erinnerung
-geschrieben: die Lineage-Tabellen `catalog_lineages` und
-`catalog_lineage_members` **stehen** (mit #182 gelandet), und der Auflöser
-**steht** ebenfalls — der Store implementiert `resolve`, `resolve_reference`,
-`resolve_name` und `admit_member`, und die 64-Hex-Verweigerung sitzt im
-Anzeigename-Vertrag (mit #187/#190 gelandet). Offen bleiben der
-Aufnahme-Befehl — keine Route bietet die Aufnahme an — und der Picker, der
-eine Mitgliedschaft und einen Namen anbietet.
+Die Lineage-Persistenz, die Auflösung und die Aufnahme über die beiden
+API-Schreibrouten stehen. Offen bleibt der Picker, der eine Mitgliedschaft und
+einen Namen anbietet.
 
 ## Acceptance
 
@@ -100,4 +97,9 @@ REQ-KATALOG-04 is bound to three sentences declared in
 `the-description-is-read-from-the-published-bytes-and-from-nowhere-else`.
 REQ-KATALOG-02 is bound to `a-name-reaches-exactly-the-bytes-it-resolved-to`,
 declared in `acceptance/63-a-named-workflow-starts-in-process.toml`.
-REQ-KATALOG-01, 03 and 05 are `UNGEBUNDEN`.
+REQ-KATALOG-05 is bound to three sentences declared in
+`acceptance/213-a-workflow-is-named-and-admitted-over-the-api.toml`:
+`a-published-revision-becomes-a-named-lineage-over-the-api`,
+`a-later-revision-joins-the-lineage-that-already-holds-its-name` and
+`an-admission-the-catalog-refuses-is-named-by-its-own-reason`.
+REQ-KATALOG-01 is `UNGEBUNDEN`.

@@ -101,14 +101,22 @@ const workflowGraphV2Schema = z
   .superRefine(validateWorkflowGraph);
 
 /**
- * A published V3 revision says what it is and that nothing runs it. It carries
- * no nodes to walk, so there is no graph to validate here -- only the truth the
- * operator has to be told instead of a generic wire-contract failure.
+ * A published V3 revision says what it is and whether this build runs it. It
+ * carries no nodes to walk, so there is no graph to validate here -- only the
+ * truth the operator has to be told instead of a generic wire-contract failure.
+ *
+ * `executable` was pinned to `false` here, which mirrored a server that could
+ * never answer otherwise. It can now, and a literal would have turned the first
+ * honest `true` into exactly the wire-contract failure this shape exists to
+ * prevent. `not_executable_reason` carries the server's own words about which
+ * form is still waiting, so the operator is told about the document rather than
+ * about version 3.
  */
 const workflowGraphV3Schema = z
   .object({
     format_version: z.literal(3),
-    executable: z.literal(false),
+    executable: z.boolean(),
+    not_executable_reason: z.string().nullable(),
     node_count: z.number().int().positive(),
     name: z.string().min(1),
     description: z.string().nullable()
@@ -189,6 +197,7 @@ export const workflowRevisionSummarySchema = z
     revision_hash: sha256,
     format_version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     executable: z.boolean(),
+    not_executable_reason: z.string().nullable(),
     name: z.string().nullable(),
     description: z.string().nullable()
   })
@@ -421,7 +430,50 @@ const runV2Schema = z
   .strict()
   .superRefine(validateRunShape);
 
+/**
+ * A V3 run as the server answers it, decoded on its own rather than folded into
+ * the run union above.
+ *
+ * The two shapes disagree about what a run has. A V3 run names its current node
+ * by id and carries no `current_node` object, no `waiting` and no
+ * `agent_attempts`, because no runtime interprets a Wait or Action node in that
+ * format yet. Widening `runSchema` would push a "this format has no such thing"
+ * guard onto every reader of those fields; keeping it separate leaves the V2
+ * cockpit exactly as it was and lets the V3 view render what actually exists.
+ */
+const runV3Schema = z
+  .object({
+    workflow_format_version: z.literal(3),
+    run_id: z.string().min(1),
+    public_run_reference: publicRunReference,
+    workflow_revision_hash: sha256,
+    agent_binding_set_hash: sha256,
+    run_configuration_revision_hash: sha256,
+    agent_bindings: z.array(agentBindingV2Schema).max(100),
+    state_version: nonnegativeSafeInteger,
+    state: z.enum(["STARTED", "COMPLETED"]),
+    current_node_id: z.string().min(1),
+    node_rail: z.array(nodeRailEntrySchema).min(1),
+    terminal_hash: sha256.nullable(),
+    latest_event_cursor: eventCursor.nullable()
+  })
+  .strict();
+
 export const runSchema = z.union([runV2Schema, runV1Schema]);
+
+/**
+ * Whether this run is a version 3 one.
+ *
+ * A plain `run.workflow_format_version === 3` cannot narrow the union: a version
+ * 1 run carries no format field at all, so the property has to be asked for
+ * before it is compared.
+ */
+export function isRunV3(run: AnyRun): run is RunV3 {
+  return "workflow_format_version" in run && run.workflow_format_version === 3;
+}
+
+/** Every run the server can answer with, before a reader narrows it by format. */
+export const anyRunSchema = z.union([runV3Schema, runV2Schema, runV1Schema]);
 
 function validateRunShape(
   run: {
@@ -653,6 +705,8 @@ export type StreamFrame = z.infer<typeof streamFrameSchema>;
 export type Run = z.infer<typeof runSchema>;
 export type RunV1 = z.infer<typeof runV1Schema>;
 export type RunV2 = z.infer<typeof runV2Schema>;
+export type RunV3 = z.infer<typeof runV3Schema>;
+export type AnyRun = z.infer<typeof anyRunSchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
 export type WorkflowGraph = z.infer<typeof workflowGraphSchema>;
 export type WorkflowNode = z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema>;
@@ -714,7 +768,7 @@ export interface CockpitApi {
   start(mutation: StartMutation): Promise<HttpResult<Run>>;
   answer(mutation: WaitMutation): Promise<HttpResult<Run>>;
   reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
-  getRun(publicReference: string): Promise<Run>;
+  getRun(publicReference: string): Promise<AnyRun>;
   getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
   openRunEvents(publicReference: string, handlers: RunEventHandlers): RunEventSubscription;
 }
@@ -867,7 +921,7 @@ export function createCockpitApi(
         `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}`,
         {},
         [200],
-        runSchema
+        anyRunSchema
       ),
     getWorkflowRevision: async (revisionHash) => {
       const revision = await requestJson(

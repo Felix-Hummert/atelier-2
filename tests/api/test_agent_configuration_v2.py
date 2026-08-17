@@ -38,6 +38,7 @@ from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.workflow_projections import WorkflowRevisionProjection
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCollision,
     AgentConfigurationRevisionCreated,
@@ -56,6 +57,7 @@ from atelier2.ports.durable_runs import (
 from atelier2.ports.run_queries import (
     RunFound,
 )
+from atelier2.ports.workflow_revisions import WorkflowRevisionFound
 from tests.api.test_agent_attempts import SERVED_RAIL
 from tests.scenarios.api import (
     SSE_COMPLETE_HISTORY,
@@ -361,6 +363,7 @@ def test_openapi_names_both_publish_operations_and_exact_problem_sets() -> None:
     ] == [
         "#/components/schemas/RunResource",
         "#/components/schemas/RunResourceV2",
+        "#/components/schemas/RunResourceV3",
     ]
     assert schema["paths"][API_PREFIX + "/runs"]["get"]["responses"]["200"]["content"][
         "application/json"
@@ -408,6 +411,11 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
         def get_run(self, _run_id: RunId) -> RunFound:
             return RunFound(RunProjection(run, graph, None))
 
+        def get_workflow_revision(
+            self, _revision_hash: object
+        ) -> WorkflowRevisionFound:
+            return WorkflowRevisionFound(WorkflowRevisionProjection(workflow, graph))
+
     starter = Starter()
     queries = Queries()
     client = TestClient(
@@ -417,6 +425,7 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
             ports=api_ports(
                 published_run_starter=starter,
                 run_queries=queries,
+                workflow_revision_queries=queries,
                 workflow_document_parser=parse_executable_workflow_document,
                 agent_configuration_catalog=RecordingCatalog(object(), object()),
             ),

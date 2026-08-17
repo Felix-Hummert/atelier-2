@@ -211,6 +211,7 @@ def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
             ),
             DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version),
             DbosCatalogStore(runtime.engine),
+            DbosCatalogStore(runtime.engine),
         ),
         limits=api_limits(event_page_size=page_size),
         event_poll_backoff=event_poll_backoff(),

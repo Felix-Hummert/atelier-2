@@ -28,6 +28,7 @@ dev = [
     "pytest-xdist==3.8.0",
     "pyright==1.1.411",
     "ruff==0.16.2",
+    "sqlglot==30.13.0",
 ]
 
 [tool.pytest.ini_options]

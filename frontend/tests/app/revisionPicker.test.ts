@@ -35,6 +35,7 @@ const namedRevision = () =>
     revision_hash: namedHash,
     format_version: 3,
     executable: false,
+    not_executable_reason: "agent forms nothing binds yet: outputs",
     name: "Implement a candidate, then review it for defects",
     description: "Builds the candidate, then reviews it for defects."
   });
@@ -44,6 +45,7 @@ const unnamedRevision = () =>
     revision_hash: unnamedHash,
     format_version: 2,
     executable: true,
+    not_executable_reason: null,
     name: null,
     description: null
   });
@@ -100,7 +102,12 @@ describe("the saved-workflow picker", () => {
     });
 
     expect(option).toHaveProperty("disabled", true);
-    expect(screen.getByText(/cannot be started/i).textContent).toContain("format 3");
+    // Extension, named: this asserted the refusal said "format 3", which blamed
+    // the version. The server names the authored form that is waiting now, and
+    // the sentence asks for the reason -- so the stronger half is pinned here.
+    expect(screen.getByText(/cannot be started/i).textContent).toContain(
+      "agent forms nothing binds yet: outputs"
+    );
   });
 
   it("keeps the hash as the label of a revision whose format declares no name", async () => {
@@ -157,6 +164,7 @@ describe("the picker reads past its first page", () => {
       revision_hash: "c".repeat(64),
       format_version: 3,
       executable: false,
+      not_executable_reason: "agent forms nothing binds yet: outputs",
       name: "Sweep the suite and file what broke",
       description: null
     });

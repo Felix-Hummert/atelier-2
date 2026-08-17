@@ -210,6 +210,12 @@ def main() -> None:
     factory = BlockingAgentExecutorFactory(
         "e2e", "blocking/v1", "e2e-blocking-process", "Grüße 東京".encode()
     )
+    # A second provider that does not wait to be observed. The blocking one exists
+    # so the browser can catch a V2 attempt mid-flight; a V3 run is watched after
+    # it has finished, so holding its attempt open would only stall the proof.
+    immediate = RecordingAgentExecutorFactoryV2(
+        "e2e-v3", "immediate/v1", "e2e-immediate-process", b"V3 provider bytes"
+    )
 
     def runtime(
         settings: DbosRuntimeSettings,
@@ -217,7 +223,7 @@ def main() -> None:
         agent_factory: AgentExecutorFactory,
         agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
     ) -> DbosRuntime:
-        factories = (*agent_factories_v2, factory)
+        factories = (*agent_factories_v2, factory, immediate)
         # The e2e runtime root lives inside the repository checkout, which no
         # scratch root may, so the leased workspaces stand outside it.
         return DbosRuntime(

@@ -43,7 +43,8 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV2, RunV3
+from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
@@ -64,6 +65,7 @@ from atelier2.contracts.workflows import (
     WorkflowGraph,
     WorkflowGraphV2,
 )
+from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
 
 RUN_ID = RunId("node-rail")
 REVISION_HASH = WorkflowRevisionHash("a" * 64)
@@ -433,3 +435,71 @@ def test_only_a_v2_agent_node_carries_an_attempt() -> None:
     assert [entry.attempt for entry in v1_rail] == [None, None, None, None]
     assert v2_rail[0].attempt == NodeRailAttempt(1, PublicAgentAttemptState.PREPARED)
     assert v2_rail[1].attempt is None
+
+
+def v3_graph() -> WorkflowGraphV3:
+    """implement -> review: the line the V3 driver actually walks."""
+    return WorkflowGraphV3(
+        format_version=3,
+        name="Two agents in a line",
+        nodes=(
+            AgentNodeV3(
+                id="implement",
+                type="agent",
+                role="builder",
+                mode="headless",
+                instruction="Do the one thing this chain is for.",
+            ),
+            AgentNodeV3(
+                id="review",
+                type="agent",
+                role="builder",
+                mode="headless",
+                instruction="Check what the node before you did.",
+                depends_on=("implement",),
+            ),
+        ),
+    )
+
+
+def v3_projection(current_node_id: str, last_event_sequence: int) -> RunProjection:
+    return RunProjection(
+        RunV3(
+            RUN_ID,
+            REVISION_HASH,
+            AgentBindingSet(()).binding_set_hash,
+            (),
+            RunState.STARTED,
+            current_node_id,
+            0,
+            last_event_sequence,
+            RunConfigurationRevisionHash("c" * 64),
+        ),
+        v3_graph(),
+        None,
+        (),
+    )
+
+
+def test_a_v3_line_shows_the_node_that_finished_and_the_one_now_running() -> None:
+    """The rail of a V3 run walks the edge its author declared.
+
+    A V3 run used to have no rail at all: the walk answered with nothing, because
+    the only startable shape was a single node and the order a longer graph takes
+    was the ready set's to decide. A line of agent nodes starts and runs now, and
+    the order it takes is not open -- it is the same edge `durable_node` follows
+    from entry to sink, so answering with it invents nothing.
+    """
+    rail = project_node_rail(
+        v3_projection("review", 1),
+        (
+            durable_event(
+                1, "implement", RunEventKind.AGENT_COMPLETED, attempt_ordinal=1
+            ),
+        ),
+    )
+
+    assert tuple((entry.node_id, entry.state) for entry in rail) == (
+        ("implement", NodeState.SUCCEEDED),
+        ("review", NodeState.WORKING),
+    )
