@@ -93,9 +93,7 @@ def started_v3_attempt(
     workflow, bindings = publish(runtime)
     DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_v3_foundation(
-        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
-    )
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
     with runtime.engine.connect() as connection:
         record = (
@@ -272,9 +270,7 @@ def test_a_succeeded_non_sink_leaves_the_run_standing_on_its_declared_heir(
     workflow, bindings = publish(runtime, LINE_DOCUMENT, ("builder", "reviewer"))
     DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_v3_foundation(
-        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
-    )
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
 
