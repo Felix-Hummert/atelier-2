@@ -166,3 +166,74 @@ def test_a_recursive_schema_the_profile_admits_evaluates_to_an_answer() -> None:
         read_instance_document(b'{"child": {"child": {}}}', tree), InstanceAccepted
     )
     assert isinstance(read_instance_document(b'{"child": 7}', tree), InstanceRefused)
+
+
+@pytest.mark.parametrize(
+    ("label", "schema", "instance", "admitted"),
+    (
+        (
+            "the adjacent decimal below",
+            b'{"const": 9007199254740992.0}',
+            b"9007199254740992.0",
+            True,
+        ),
+        (
+            "the adjacent decimal above",
+            b'{"const": 9007199254740992.0}',
+            b"9007199254740993.0",
+            False,
+        ),
+        ("an exponent past float range", b'{"type": "number"}', b"1e400", True),
+        ("that exponent is not infinity", b'{"const": 1e400}', b"2e400", False),
+        ("a decimal fraction keeps its identity", b'{"const": 0.1}', b"0.1", True),
+        # `integer` must still mean integer once numbers stop being floats: 4.0
+        # is an integral decimal and the draft admits it, 4.5 is not.
+        ("an integral decimal is an integer", b'{"type": "integer"}', b"4.0", True),
+        ("a fractional decimal is not", b'{"type": "integer"}', b"4.5", False),
+    ),
+    ids=(
+        "adjacent-below",
+        "adjacent-above",
+        "overflow",
+        "overflow-distinct",
+        "fraction",
+        "integral-decimal",
+        "fractional-decimal",
+    ),
+)
+def test_two_numbers_that_differ_stay_different(
+    label: str, schema: bytes, instance: bytes, admitted: bool
+) -> None:
+    """A value whose identity is hashed cannot be collapsed by the decoder.
+
+    Default float decoding maps two distinct JSON numbers onto one float64, so a
+    value the pinned schema refuses would be admitted and durably written. The
+    numbers are therefore decoded exactly, and a schema that pins one of them
+    still refuses the other.
+    """
+    verdict = read_instance_document(instance, accepted(schema))
+
+    assert isinstance(verdict, InstanceAccepted if admitted else InstanceRefused)
+
+
+def test_the_named_place_orders_array_indexes_as_numbers_not_as_text() -> None:
+    """Index 2 comes before index 10, which is what a reader expects to read."""
+    listed = accepted(b'{"type": "array", "items": {"type": "string"}}')
+    twelve = b"[" + b'"a",' * 2 + b"7," + b'"a",' * 7 + b"7]"
+
+    verdict = read_instance_document(twelve, listed)
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.subject is not None
+    assert verdict.subject.startswith("/2:"), verdict.subject
+
+
+def test_a_key_that_contains_the_pointer_characters_is_unambiguous() -> None:
+    """`a/b` and `a~b` are different keys, and the named place must say which."""
+    keyed = accepted(b'{"type": "object", "properties": {"a/b~c": {"type": "string"}}}')
+
+    verdict = read_instance_document(b'{"a/b~c": 7}', keyed)
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.subject is not None
+    assert verdict.subject.startswith("/a~1b~0c:"), verdict.subject
