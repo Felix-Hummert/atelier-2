@@ -24,16 +24,20 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
+_VERSION_TWELVE = 12
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V9 product tables equal V8. V10 adds the thin catalog/receipt foundation. V11
 # closes the artifact/output/access store shape that Cut B writes atomically.
-# V12 adds append-only catalog alias and retirement histories.
+# V12 adds append-only catalog alias and retirement histories. V13 gives the
+# context-package manifest, the node-execution-request preimage and the run
+# configuration snapshot durable, immutable homes, and records the run
+# configuration revision a supervised V3 run was started under.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -41,6 +45,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     10: "4a7bbd9bf07880868aa2f7ddae3e7262eb270f711d4fdc420f902457817bfff7",
     11: "18dead2ab36c15bf61fa1b1bb5fed3b5a1075dc773d83d8b57c00c05c84178ef",
     12: "feef25b171e305bb9a3a9637cc4d0fb1c8dec4a4a7a9813e060ccf12598a5cc7",
+    13: "5782fdc1331c52f3f04097f6a2a6d416ab528d6ee8a6546a7d6435ae9d11c175",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -53,6 +58,10 @@ V10_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V11_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_ELEVEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_ELEVEN],
+)
+V12_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWELVE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWELVE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -93,6 +102,12 @@ runs = sa.Table(
     sa.Column("state_version", sa.Integer, nullable=False),
     sa.Column("last_event_sequence", sa.Integer, nullable=False),
     sa.Column("terminal_hash", sa.Text, nullable=True),
+    sa.Column(
+        "run_configuration_revision_hash",
+        sa.Text,
+        sa.ForeignKey("run_configuration_revisions.revision_hash"),
+        nullable=True,
+    ),
     sa.UniqueConstraint("run_id", "revision_hash"),
     sa.UniqueConstraint("run_id", "revision_hash", "agent_binding_set_hash"),
     sa.CheckConstraint("length(run_id) > 0"),
@@ -116,6 +131,14 @@ runs = sa.Table(
         "(state = 'COMPLETED' AND terminal_hash IS NOT NULL "
         "AND length(terminal_hash) = 64 AND terminal_hash NOT GLOB '*[^0-9a-f]*') "
         "OR (state <> 'COMPLETED' AND terminal_hash IS NULL)"
+    ),
+    sa.CheckConstraint(
+        "(workflow_format_version = 3 "
+        "AND run_configuration_revision_hash IS NOT NULL "
+        "AND length(run_configuration_revision_hash) = 64 "
+        "AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*') "
+        "OR (workflow_format_version <> 3 "
+        "AND run_configuration_revision_hash IS NULL)"
     ),
 )
 auth_profile_revisions = sa.Table(
@@ -954,7 +977,12 @@ node_receipts_v3 = sa.Table(
     sa.Column("disposition", sa.Text, nullable=False),
     sa.Column("reason", sa.Text, nullable=False),
     sa.Column("request_hash", sa.Text, nullable=False),
-    sa.Column("context_package_hash", sa.Text, nullable=False),
+    sa.Column(
+        "context_package_hash",
+        sa.Text,
+        sa.ForeignKey("context_packages_v3.package_hash"),
+        nullable=False,
+    ),
     sa.Column("receipt_hash", sa.Text, unique=True, nullable=False),
     sa.CheckConstraint(
         "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
@@ -972,6 +1000,63 @@ node_receipts_v3 = sa.Table(
     ),
     sa.CheckConstraint(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    # The pair is the binding. Each hash alone can name a record that exists
+    # while the two together describe a node execution nobody ran -- this
+    # execution's receipt pointing at another execution's request -- so the key
+    # is composite and a single-column one would not see it.
+    sa.ForeignKeyConstraint(
+        ("node_execution_id", "request_hash"),
+        (
+            "node_execution_requests_v3.node_execution_id",
+            "node_execution_requests_v3.request_hash",
+        ),
+    ),
+)
+run_configuration_revisions = sa.Table(
+    "run_configuration_revisions",
+    metadata,
+    sa.Column("revision_hash", sa.Text, primary_key=True),
+    sa.Column("preimage", sa.LargeBinary, nullable=False),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
+node_execution_requests_v3 = sa.Table(
+    "node_execution_requests_v3",
+    metadata,
+    sa.Column("request_hash", sa.Text, primary_key=True),
+    sa.Column("node_execution_id", sa.Text, nullable=False),
+    sa.Column(
+        "run_configuration_revision_hash",
+        sa.Text,
+        sa.ForeignKey("run_configuration_revisions.revision_hash"),
+        nullable=False,
+    ),
+    sa.Column("context_package_hash", sa.Text, nullable=False),
+    sa.Column("preimage", sa.LargeBinary, nullable=False),
+    sa.UniqueConstraint("node_execution_id", "request_hash"),
+    sa.CheckConstraint(
+        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(context_package_hash) = 64 "
+        "AND context_package_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.ForeignKeyConstraint(
+        ("context_package_hash",), ("context_packages_v3.package_hash",)
+    ),
+)
+context_packages_v3 = sa.Table(
+    "context_packages_v3",
+    metadata,
+    sa.Column("package_hash", sa.Text, primary_key=True),
+    sa.Column("manifest", sa.LargeBinary, nullable=False),
+    sa.CheckConstraint(
+        "length(package_hash) = 64 AND package_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
 node_receipt_outputs_v3 = sa.Table(
@@ -1054,9 +1139,46 @@ _PRODUCT_TRIGGERS = {
     "runs_binding_no_update": """
         CREATE TRIGGER runs_binding_no_update
         BEFORE UPDATE OF run_id, bootstrap_workflow_id, revision_hash,
-                         workflow_format_version, agent_binding_set_hash
+                         workflow_format_version, agent_binding_set_hash,
+                         run_configuration_revision_hash
         ON runs BEGIN
           SELECT RAISE(ABORT, 'run bindings are immutable');
+        END
+    """,
+    "run_configuration_revisions_no_update": """
+        CREATE TRIGGER run_configuration_revisions_no_update
+        BEFORE UPDATE ON run_configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'run configuration revisions are immutable');
+        END
+    """,
+    "run_configuration_revisions_no_delete": """
+        CREATE TRIGGER run_configuration_revisions_no_delete
+        BEFORE DELETE ON run_configuration_revisions BEGIN
+          SELECT RAISE(ABORT, 'run configuration revisions are immutable');
+        END
+    """,
+    "node_execution_requests_v3_no_update": """
+        CREATE TRIGGER node_execution_requests_v3_no_update
+        BEFORE UPDATE ON node_execution_requests_v3 BEGIN
+          SELECT RAISE(ABORT, 'node execution requests are immutable');
+        END
+    """,
+    "node_execution_requests_v3_no_delete": """
+        CREATE TRIGGER node_execution_requests_v3_no_delete
+        BEFORE DELETE ON node_execution_requests_v3 BEGIN
+          SELECT RAISE(ABORT, 'node execution requests are immutable');
+        END
+    """,
+    "context_packages_v3_no_update": """
+        CREATE TRIGGER context_packages_v3_no_update
+        BEFORE UPDATE ON context_packages_v3 BEGIN
+          SELECT RAISE(ABORT, 'context packages are immutable');
+        END
+    """,
+    "context_packages_v3_no_delete": """
+        CREATE TRIGGER context_packages_v3_no_delete
+        BEFORE DELETE ON context_packages_v3 BEGIN
+          SELECT RAISE(ABORT, 'context packages are immutable');
         END
     """,
     "auth_profile_revisions_no_update": """

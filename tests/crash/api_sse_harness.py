@@ -39,6 +39,7 @@ app = create_app(
         DbosAgentConfigurationCatalog(engine, AgentExecutorRegistry()),
         DbosAgentAttemptStore(engine, settings.application_version),
         DbosCatalogStore(engine),
+        DbosCatalogStore(engine),
     ),
     limits=api_limits(event_page_size=2),
     event_poll_backoff=event_poll_backoff(),

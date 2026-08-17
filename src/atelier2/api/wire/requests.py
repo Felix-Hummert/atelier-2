@@ -18,6 +18,11 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
 )
+from atelier2.contracts.catalog_v3 import (
+    CATALOG_ACTIVATED_AT_PATTERN,
+    MAXIMUM_CATALOG_ACTOR_CHARACTERS,
+    MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+)
 
 
 class RevisionListingView(StrEnum):
@@ -32,6 +37,29 @@ class RevisionListingView(StrEnum):
 
     SUMMARY = "summary"
     DESCRIBED = "described"
+
+
+class FoundCatalogLineageRequestResource(ApiModel):
+    """Give one published revision a name the catalog will answer to."""
+
+    revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    display_name: str = Field(
+        min_length=1, max_length=MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+    )
+    actor: str = Field(min_length=1, max_length=MAXIMUM_CATALOG_ACTOR_CHARACTERS)
+    activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
+
+
+class AdmitCatalogMemberRequestResource(ApiModel):
+    """Admit one published revision into the lineage named by the path.
+
+    It carries no name: the lineage already holds one, and letting a caller
+    state it here would make an admission a rename.
+    """
+
+    revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    actor: str = Field(min_length=1, max_length=MAXIMUM_CATALOG_ACTOR_CHARACTERS)
+    activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
 
 
 class PublishAuthProfileRevisionRequestResource(ApiModel):
