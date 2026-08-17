@@ -804,7 +804,9 @@ class InvalidFieldResource(ApiModel):
     """
 
     path: str = Field(min_length=1, max_length=MAXIMUM_INVALID_FIELD_PATH_CHARACTERS)
-    reason: str = Field(min_length=1, max_length=MAXIMUM_INVALID_FIELD_REASON_CHARACTERS)
+    reason: str = Field(
+        min_length=1, max_length=MAXIMUM_INVALID_FIELD_REASON_CHARACTERS
+    )
 
 
 class ProblemResource(ApiModel):
