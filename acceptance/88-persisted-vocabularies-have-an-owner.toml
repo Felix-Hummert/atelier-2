@@ -10,8 +10,8 @@ story = "https://github.com/FlexOr2/atelier-2/issues/88"
 #     stream. It is the D2 shape (a bound the reader should hold), and D2 was a
 #     head of its own for the same reason: the parameter has to die at every call
 #     site at once. It does not fit beside four unrelated lines.
-#   - H7 beyond what is already pinned. The suite next door already proves every
-#     schema CHECK equals the vocabulary its contract owns; what is left is the
+#   - H7's ownerless columns. This head makes every CHECK over an owned vocabulary
+#     prove the full admitted set through SQLite grammar; what remains is the
 #     handful of columns with no Python owner at all (`runs.workflow_format_version`
 #     among them), and minting those owners is a contract decision, not a
 #     hygiene edit.
@@ -37,3 +37,7 @@ text = "The audited bootstrap, logical-effect, effect-workflow and reconcile-wor
 [[sentence]]
 id = "the-v1-event-vocabulary-is-spelled-once-and-refuses-by-name"
 text = "The set of event kinds a V1 run cannot carry has one owner that both the published schema and the projection read, so every unpublished kind is refused by name instead of leaving the closed union through a fall-through assertion."
+
+[[sentence]]
+id = "a-schema-check-cannot-silently-narrow-an-owned-vocabulary"
+text = "Every SQLite CHECK that names a contract-owned persisted vocabulary is parsed under the SQLite dialect and preserves the complete owned member set; equality, reversed equality, positive or negative membership, inequality and Boolean nesting cannot silently remove a member, and an unrecognised predicate on that vocabulary fails the guard by name."

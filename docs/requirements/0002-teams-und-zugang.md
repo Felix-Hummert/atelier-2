@@ -18,9 +18,9 @@ paragraph below keeps saying why that caution matters here. And this subject is 
 operator's wish is on the record and quoted verbatim below; almost everything
 under it is the desk's answer to his questions, and #82 itself heads that answer
 "Engineering-Richtung (zu prüfen im späteren ADR, nicht vorentschieden)".
-**Exactly one rule below quotes an operator sentence** — rule 15, and only for
-the part that sentence carries. Rule 11 was graded `OPERATOR` in an earlier
-revision on the strength of its comment's header "ZWEI PRÄZISIERUNGEN
+**Exactly one rule below quotes an operator sentence** — REQ-ZUGANG-15, and only
+for the part that sentence carries. REQ-ZUGANG-11 was graded `OPERATOR` in an
+earlier revision on the strength of its comment's header "ZWEI PRÄZISIERUNGEN
 (Operator)"; the section under that header quotes him nowhere, so it is `DESK`.
 The rest is a direction: nothing in it may be built as settled, and its real
 binding force is negative — make no decision now that blocks it.
@@ -47,107 +47,131 @@ ruling:
 
 ## Rules
 
-1. `DESK` — **OIDC is the one protocol, and the atelier never owns passwords.**
-   Identity providers are configuration — Entra ID, Google, GitHub, Keycloak —
-   so "Entra support" falls out of the architecture instead of being a special
-   case. Storing passwords is refused as a design, with the same reference
-   discipline already applied to provider tokens. (#82 body @ fe6fd31f, under
-   "Engineering-Richtung (zu prüfen im späteren ADR, nicht vorentschieden)".
-   What the operator asked for is a real login of Songmaker quality with Entra
-   ID and OAuth; the choice of OIDC as the single protocol is the desk's
-   proposal for delivering it.)
+Each rule below is the rule this document already carried; the identifier is
+what is new, so a later gate can find it and an acceptance sentence can point
+back at it. The thread's own numbering is kept in `Quelle`.
 
-2. `DESK` — **Authorisation is roles per project.** Viewer / Operator / Admin,
-   granted per project (#23 coupling). Agents and runners stay their own typed
-   actors — the actor typing of ADR 0009 §9 is the seam that is already laid.
-   (#82 body @ fe6fd31f, same section.)
+### REQ-ZUGANG-01: OIDC ist das eine Protokoll, und das Atelier besitzt niemals Passwörter.
+Status:     DRAFT
+Quelle:     DESK — #82 body @ fe6fd31f (Regel 1), unter „Engineering-Richtung (zu prüfen im späteren ADR, nicht vorentschieden)"
+Begründung: Identitätsanbieter sind Konfiguration — Entra ID, Google, GitHub, Keycloak —, damit fällt „Entra-Unterstützung" aus der Architektur heraus, statt ein Sonderfall zu sein. Passwörter zu speichern wird als Entwurf verweigert, mit derselben Referenz-Disziplin, die für Provider-Token schon gilt.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Die Protokoll-Mechanik ist ausdrücklich einem späteren ADR vorbehalten; bindend ist bis dahin nur die negative Pflicht, nichts zu bauen, das OIDC später verstellt (Eigentümer: #82, Ziel: Zugangs-ADR)
 
-3. `DESK` — **The audit trail answers who started, parked, or intervened.** It
-   is the attach audit of ADR 0009 §8, generalised. (#82 body @ fe6fd31f, same
-   section.)
+### REQ-ZUGANG-02: Autorisierung sind Rollen je Projekt.
+Status:     DRAFT
+Quelle:     DESK — #82 body @ fe6fd31f (Regel 2)
+Begründung: Viewer / Operator / Admin, gewährt je Projekt. Agenten und Runner bleiben eigene typisierte Akteure — die Akteurs-Typisierung von ADR 0009 §9 ist die bereits gelegte Naht.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Die Projekt-Kopplung gehört [ADR 0011](../decisions/0011-project-isolation.md); der Faden nannte #23, und das Item ist **geschlossen** (Eigentümer: ADR 0011, Ziel: Projekt-Bau)
 
-4. `DESK` — **Local stays simple, and the boundary is the one that already
-   exists.** Single-operator loopback mode needs no login (ADR 0009 §3); login
-   becomes mandatory exactly when a non-loopback bind happens. The lower bound
-   stays fail-closed, with no intermediate state. (#82 body @ fe6fd31f, same
-   section; 5302604615.)
+### REQ-ZUGANG-03: Die Prüfspur beantwortet, wer gestartet, pausiert oder eingegriffen hat.
+Status:     DRAFT
+Quelle:     DESK — #82 body @ fe6fd31f (Regel 3)
+Begründung: Es ist die Attach-Prüfspur von ADR 0009 §8, verallgemeinert. Ohne sie ist ein Eingriff eine Behauptung.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-5. `DESK` — **A human is admitted by login plus a granted role.** OIDC login
-   against the configured IdP *and* an operator-granted role per project;
-   without both, any installed CLI or browser session is only knocking.
-   Sessions are short-lived, actions audited. Paid starts are additionally
-   subject to the budget rules, independent of which actor triggered them.
-   (5302604615.)
+### REQ-ZUGANG-04: Lokal bleibt einfach, und die Grenze ist die, die es schon gibt.
+Status:     DRAFT
+Quelle:     DESK — #82 body @ fe6fd31f (Regel 4), 5302604615
+Begründung: Der Einzeloperator-Loopback-Modus braucht keinen Login (ADR 0009 §3); Login wird genau dann Pflicht, wenn ein Nicht-Loopback-Bind geschieht. Die untere Schranke bleibt fail-closed, ohne Zwischenzustand.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Heute bindet `serve --host 0.0.0.0` ohne komponierten Executor öffentlich und unauthentifiziert; die Schranke ist als ADR-Satz da, als Verhalten nicht (Eigentümer: ADR 0009, Ziel: Bind-Kopf)
 
-6. `DESK` — **A machine is admitted by enrolment.** A one-time join token is
-   exchanged for the runner's own short-lived certificate and is consumed in
-   the process (ADR 0009 §4); revocation then hits exactly one runner.
-   (5302604615.)
+### REQ-ZUGANG-05: Ein Mensch wird durch Login plus gewährte Rolle zugelassen.
+Status:     DRAFT
+Quelle:     DESK — 5302604615 (Regel 5)
+Begründung: OIDC-Login gegen den konfigurierten IdP *und* eine vom Operator gewährte Rolle je Projekt; ohne beides klopft eine installierte CLI oder Browser-Sitzung nur an. Sitzungen sind kurzlebig, Aktionen geprüft. Bezahlte Starts unterliegen zusätzlich den Budget-Regeln, unabhängig davon, welcher Akteur sie auslöst.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - „Ein installierter Client ohne Einladung erreicht nichts" ist als Kandidat notiert, von keiner Story deklariert (Eigentümer: #82, Ziel: Akzeptanz-Deklaration)
 
-7. `DESK` — **The wire is TLS, thought in both directions, from the standard
-   stack.** The client verifies it is talking to the real atelier via the
-   server certificate; a runner additionally uses mTLS. Public deployments use
-   Let's Encrypt, private ones a minimal own CA. No self-built crypto.
-   (5302604615.)
+### REQ-ZUGANG-06: Eine Maschine wird durch Einschreibung zugelassen.
+Status:     DRAFT
+Quelle:     DESK — 5302604615 (Regel 6)
+Begründung: Ein einmaliges Join-Token wird gegen das eigene kurzlebige Zertifikat des Runners getauscht und dabei verbraucht (ADR 0009 §4); ein Widerruf trifft danach genau einen Runner.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - „Ein einmaliges Join-Token lässt sich kein zweites Mal verwenden" ist Kandidat, nicht deklariert (Eigentümer: #82, Ziel: Akzeptanz-Deklaration)
 
-8. `DESK` — **The project is the sharing unit.** Roles are per project — who
-   sees, who starts, who administers. (5302806812 §2.)
+### REQ-ZUGANG-07: Die Leitung ist TLS, in beide Richtungen gedacht, aus dem Standard-Stack.
+Status:     DRAFT
+Quelle:     DESK — 5302604615 (Regel 7)
+Begründung: Der Client prüft über das Server-Zertifikat, dass er mit dem echten Atelier spricht; ein Runner nutzt zusätzlich mTLS. Öffentliche Installationen nehmen Let's Encrypt, private eine minimale eigene CA. Keine selbstgebaute Kryptografie.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-9. `DESK` — **Sharing libraries and workflows means sharing git sources.** The
-   ADR 0007 model is the only sharing channel: sources are registered globally
-   and selected per project. There is no second sharing channel. (5302806812
-   §3.)
+### REQ-ZUGANG-08: Das Projekt ist die Teilungseinheit.
+Status:     DRAFT
+Quelle:     DESK — 5302806812 §2 (Regel 8)
+Begründung: Rollen sind je Projekt — wer sieht, wer startet, wer verwaltet.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-10. `DESK` — **Runners are installation-bound and carry an owner scope.** They
-    are registered at the team's atelier through an enrolment register — the
-    GitLab runner model, deliberately consumed rather than reinvented. A runner
-    holding a *personal subscription credential* carries `owner` and
-    `allowed-projects`, so no colleague spends someone else's quota. API-key
-    runners may be team-wide. (5302806812 §4.)
+### REQ-ZUGANG-09: Bibliotheken und Workflows zu teilen heißt, Git-Quellen zu teilen.
+Status:     DRAFT
+Quelle:     DESK — 5302806812 §3 (Regel 9)
+Begründung: Das Modell von ADR 0007 ist der einzige Teilungskanal: Quellen werden global registriert und je Projekt ausgewählt. Es gibt keinen zweiten Kanal.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-11. `DESK` — **Placement follows attestation, not preference.** A
-    subscription needs a long-lived machine with one interactive login —
-    **including remote machines, which are first class**: a long-lived remote
-    machine with a single interactive login carries a subscription executor
-    fully, and the credential directory stays local, so the reference principle
-    is untouched. Only *ephemeral* environments (throwaway CI) structurally
-    cannot hold a subscription and therefore use API keys. (5302806812 §5,
-    sharpened by 5302820772 §1. That comment is headed "ZWEI PRÄZISIERUNGEN
-    (Operator)", but §1 quotes no operator sentence, so first-class remote
-    subscription runners are the desk's reading of his position and not a
-    ruling on the record.)
+### REQ-ZUGANG-10: Runner sind installationsgebunden und tragen einen Eigentümer-Bereich.
+Status:     DRAFT
+Quelle:     DESK — 5302806812 §4 (Regel 10)
+Begründung: Sie werden am Atelier des Teams über ein Einschreibe-Register angemeldet — das GitLab-Runner-Modell, bewusst konsumiert statt neu erfunden. Ein Runner, der ein *persönliches Abo-Credential* hält, trägt `owner` und `allowed-projects`, damit kein Kollege fremdes Kontingent ausgibt. API-Key-Runner dürfen teamweit sein.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - „Ein Abo-Runner verweigert ein Projekt außerhalb seiner `allowed-projects`" ist Kandidat, nicht deklariert (Eigentümer: #82, Ziel: Akzeptanz-Deklaration)
 
-12. `DESK` — **Consumption is tracked per mode, and modes are never mixed.**
-    Both modes measure attempts, duration, and tokens. Money is exact **only**
-    in key mode; a subscription is an honestly labelled quota share, never
-    mixed with money and never extrapolated. (5302806812 §5, confirming ADR
-    0008 and #8.)
+### REQ-ZUGANG-11: Platzierung folgt der Bezeugbarkeit, nicht der Vorliebe.
+Status:     DRAFT
+Quelle:     DESK — 5302806812 §5, geschärft durch 5302820772 §1 (Regel 11). Der Kommentar ist „ZWEI PRÄZISIERUNGEN (Operator)" überschrieben, §1 zitiert aber keinen Operator-Satz; erstklassige Remote-Abo-Runner sind damit die Desk-Lesart seiner Position und kein Ruling.
+Begründung: Ein Abo braucht eine langlebige Maschine mit einem interaktiven Login — **einschließlich entfernter Maschinen, die erstklassig sind**: eine langlebige Remote-Maschine mit einem einzigen interaktiven Login trägt einen Abo-Executor vollständig, und das Credential-Verzeichnis bleibt lokal, womit das Referenzprinzip unberührt ist. Nur *ephemere* Umgebungen (Wegwerf-CI) können ein Abo strukturell nicht halten und nehmen deshalb API-Keys.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Eine frühere Fassung führte diese Regel als `OPERATOR` auf die Überschrift ihres Kommentars hin; das ist korrigiert und bleibt hier benannt, damit die Korrektur nicht unsichtbar ist (Eigentümer: #82, Ziel: Ruling oder Bestätigung)
 
-13. `DESK` — **Team-wide API-key consumption is attributed, not merely measured
-    — per project and per trigger (actor or workflow), never only per runner.**
-    This makes "which project or team member spent what" structurally
-    answerable without mixing personal quotas. The `owner` + `allowed-projects`
-    fences stay the protection instrument for *personal subscription* quotas;
-    the asymmetry is justified because an API key is team billing by
-    construction, so there is no personal quota there to fence. (5302855908,
-    the one finding that survived the machine review of 5302849696.)
+### REQ-ZUGANG-12: Verbrauch wird je Modus geführt, und Modi werden nie vermischt.
+Status:     DRAFT
+Quelle:     DESK — 5302806812 §5 (Regel 12), bestätigt ADR 0008 und #8
+Begründung: Beide Modi messen Attempts, Dauer und Token. Geld ist **nur** im Key-Modus exakt; ein Abo ist ein ehrlich beschrifteter Kontingent-Anteil, nie mit Geld vermischt und nie hochgerechnet.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Die Einheiten stehen in ADR 0008; die Modus-Trennung hat keinen Satz (Eigentümer: #8, Ziel: Messwerte-Kopf)
 
-14. `DESK` — **Credentials stay references and are never transported through
-    the atelier** (ADR 0009 §6). Central distribution would be a secret
-    manager's job, not this product's. (5302806812 §6.)
+### REQ-ZUGANG-13: Teamweiter API-Key-Verbrauch wird zugerechnet, nicht bloß gemessen.
+Status:     DRAFT
+Quelle:     DESK — 5302855908 (Regel 13), der eine Befund, der die Maschinen-Durchsicht von 5302849696 überlebt hat
+Begründung: Je Projekt und je Auslöser (Akteur oder Workflow), nie nur je Runner. Das macht „welches Projekt oder Teammitglied hat was ausgegeben" strukturell beantwortbar, ohne persönliche Kontingente zu vermischen. Die Zäune `owner` + `allowed-projects` bleiben das Schutzinstrument für *persönliche Abo*-Kontingente; die Asymmetrie ist gerechtfertigt, weil ein API-Key konstruktionsbedingt Team-Abrechnung ist und es dort kein persönliches Kontingent zu zäunen gibt.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-15. `OPERATOR` — **A subscription's money line may be an estimate, and it is
-    provider-neutral.** His sentence, quoted at 5302820772 §2:
+### REQ-ZUGANG-14: Credentials bleiben Referenzen und werden nie durch das Atelier transportiert.
+Status:     DRAFT
+Quelle:     DESK — 5302806812 §6 (Regel 14), ADR 0009 §6
+Begründung: Zentrale Verteilung wäre die Aufgabe eines Secret-Managers, nicht dieses Produkts.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-    > „der Rest könnte eine Schätzung sein — provider-neutral"
+### REQ-ZUGANG-15: Die Geldzeile eines Abos darf eine Schätzung sein, und sie ist provider-neutral.
+Status:     DRAFT
+Quelle:     OPERATOR — 5302820772 §2 (Regel 15), sein Satz wörtlich:
 
-    That is the entire operator content of the comment, and the grade covers
-    exactly it. The rest of this rule is desk elaboration and a proposal until
-    he rules it: the estimate is displayed as a clearly labelled "≈ estimated"
-    line and computed from **configurable** price tables, never hardcoded;
-    receipts carry only measured values and no gate ever computes with an
-    estimate (ADR 0008 claim 3 untouched); the dividing line is that the
-    display layer may guess and the proof layer never.
+            > „der Rest könnte eine Schätzung sein — provider-neutral"
+Begründung: Das ist der gesamte Operator-Inhalt des Kommentars, und der Grad deckt genau ihn. Der Rest ist Desk-Ausarbeitung und Vorschlag bis zu seinem Ruling: die Schätzung wird als klar beschriftete „≈ geschätzt"-Zeile angezeigt und aus **konfigurierbaren** Preistabellen berechnet, nie hartkodiert; Receipts tragen nur gemessene Werte, und kein Tor rechnet je mit einer Schätzung (ADR 0008 Claim 3 unberührt). Die Trennlinie ist, dass die Anzeigeschicht raten darf und die Beweisschicht nie.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - „Ein Receipt trägt nie einen geschätzten Geldwert" ist Kandidat, nicht deklariert (Eigentümer: #82, Ziel: Akzeptanz-Deklaration)
 
 ## Open questions
 
@@ -182,7 +206,7 @@ second-opinion workflow revision ran one paid `claude-haiku-4-5` call against a
 (5302849696).
 
 Of that review, exactly one finding survived — the attribution line now standing
-as rule 13. Its headline charge ("no way to attribute consumption") was false
+as REQ-ZUGANG-13. Its headline charge ("no way to attribute consumption") was false
 against the full concept and hit only the condensation, which had dropped the
 per-mode consumption tracking to fit the field limit. Its main recommendation —
 abolish team-wide API-key runners — contradicted the attestation rule it praised
