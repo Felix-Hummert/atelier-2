@@ -241,9 +241,9 @@ def v2_projection(
 
 
 def agent_attempt(
-    ordinal: int, state: PublicAgentAttemptState
+    ordinal: int, state: PublicAgentAttemptState, node_id: str = "agent"
 ) -> AgentAttemptProjection:
-    execution_id = NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "agent")
+    execution_id = NodeExecutionId.for_node(RUN_ID, REVISION_HASH, node_id)
     return AgentAttemptProjection(
         AgentAttemptId.for_execution(execution_id, REQUEST_HASH, ordinal),
         execution_id,
@@ -426,15 +426,25 @@ def test_a_succeeded_attempt_is_told_by_its_ordinal_alone() -> None:
     assert rail[0].attempt == NodeRailAttempt(1, None)
 
 
-def test_only_a_v2_agent_node_carries_an_attempt() -> None:
+def test_a_v1_run_carries_no_attempt_and_a_bound_agent_does() -> None:
     v1_rail = project_node_rail(v1_projection(RunState.STARTED, "agent", 0), ())
     v2_rail = project_node_rail(
         v2_projection((agent_attempt(1, PublicAgentAttemptState.PREPARED),)), ()
+    )
+    v3_rail = project_node_rail(
+        v3_projection(
+            "implement",
+            0,
+            (agent_attempt(1, PublicAgentAttemptState.PREPARED, "implement"),),
+        ),
+        (),
     )
 
     assert [entry.attempt for entry in v1_rail] == [None, None, None, None]
     assert v2_rail[0].attempt == NodeRailAttempt(1, PublicAgentAttemptState.PREPARED)
     assert v2_rail[1].attempt is None
+    assert v3_rail[0].attempt == NodeRailAttempt(1, PublicAgentAttemptState.PREPARED)
+    assert v3_rail[1].attempt is None
 
 
 def v3_graph() -> WorkflowGraphV3:
@@ -462,7 +472,11 @@ def v3_graph() -> WorkflowGraphV3:
     )
 
 
-def v3_projection(current_node_id: str, last_event_sequence: int) -> RunProjection:
+def v3_projection(
+    current_node_id: str,
+    last_event_sequence: int,
+    attempts: tuple[AgentAttemptProjection, ...] = (),
+) -> RunProjection:
     return RunProjection(
         RunV3(
             RUN_ID,
@@ -477,7 +491,23 @@ def v3_projection(current_node_id: str, last_event_sequence: int) -> RunProjecti
         ),
         v3_graph(),
         None,
-        (),
+        attempts,
+    )
+
+
+def v3_agent_event(
+    kind: RunEventKind, sequence: int = 1, node_id: str = "implement"
+) -> PersistedRunEvent:
+    return durable_event(
+        sequence, node_id, kind, workflow_format_version=3, attempt_ordinal=1
+    )
+
+
+def v3_possibly_ran() -> RunProjection:
+    return v3_projection(
+        "implement",
+        0,
+        (agent_attempt(1, PublicAgentAttemptState.POSSIBLY_RAN, "implement"),),
     )
 
 
@@ -503,3 +533,85 @@ def test_a_v3_line_shows_the_node_that_finished_and_the_one_now_running() -> Non
         ("implement", NodeState.SUCCEEDED),
         ("review", NodeState.WORKING),
     )
+
+
+@pytest.mark.parametrize(
+    ("attempt_state", "node_state"),
+    [
+        (PublicAgentAttemptState.FAILED, NodeState.FAILED),
+        (PublicAgentAttemptState.CANCELLED, NodeState.CANCELLED),
+        (PublicAgentAttemptState.INTERRUPTED, NodeState.INTERRUPTED),
+        (PublicAgentAttemptState.PREPARED, NodeState.WORKING),
+        (PublicAgentAttemptState.POSSIBLY_RAN, NodeState.WORKING),
+        (PublicAgentAttemptState.CANCEL_REQUESTED, NodeState.WORKING),
+    ],
+)
+def test_the_agent_node_of_a_v3_snapshot_reads_its_own_current_attempt(
+    attempt_state: PublicAgentAttemptState, node_state: NodeState
+) -> None:
+    projection = v3_projection(
+        "implement", 0, (agent_attempt(1, attempt_state, "implement"),)
+    )
+
+    rail = project_node_rail(projection, ())
+
+    assert rail[0].state is node_state
+    assert rail[0].attempt == NodeRailAttempt(1, attempt_state)
+    assert rail[1].state is NodeState.QUEUED
+    assert rail[1].attempt is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "attempt_state"),
+    [
+        (RunEventKind.AGENT_FAILED, PublicAgentAttemptState.FAILED),
+        (RunEventKind.AGENT_CANCELLED, PublicAgentAttemptState.CANCELLED),
+        (RunEventKind.AGENT_INTERRUPTED, PublicAgentAttemptState.INTERRUPTED),
+        (RunEventKind.AGENT_CANCEL_REQUESTED, PublicAgentAttemptState.CANCEL_REQUESTED),
+        (RunEventKind.AGENT_COMPLETED, None),
+    ],
+)
+def test_a_format_3_event_proves_the_attempt_a_v3_agent_just_ended(
+    kind: RunEventKind, attempt_state: PublicAgentAttemptState | None
+) -> None:
+    rail = project_node_rail(v3_possibly_ran(), (v3_agent_event(kind),))
+
+    assert rail[0].attempt == NodeRailAttempt(1, attempt_state)
+
+
+def test_a_completed_format_3_event_still_names_the_attempt_the_run_walked_past() -> (
+    None
+):
+    rail = project_node_rail(
+        v3_projection("review", 1), (v3_agent_event(RunEventKind.AGENT_COMPLETED),)
+    )
+
+    assert rail[0].attempt == NodeRailAttempt(1, None)
+    assert rail[1].attempt is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "agent_state", "successor_state"),
+    [
+        (RunEventKind.AGENT_COMPLETED, "succeeded", "working"),
+        (RunEventKind.AGENT_FAILED, "failed", "queued"),
+        (RunEventKind.AGENT_CANCELLED, "cancelled", "queued"),
+        (RunEventKind.AGENT_INTERRUPTED, "interrupted", "queued"),
+    ],
+)
+def test_a_v3_agent_ending_is_named_without_inventing_successor_progress(
+    kind: RunEventKind, agent_state: str, successor_state: str
+) -> None:
+    rail = project_node_rail(v3_possibly_ran(), (v3_agent_event(kind),))
+
+    assert [entry.node_id for entry in rail] == ["implement", "review"]
+    assert state_names(rail) == [agent_state, successor_state]
+
+
+def test_a_format_1_event_does_not_invent_a_v3_attempt() -> None:
+    rail = project_node_rail(
+        v3_possibly_ran(),
+        (durable_event(1, "implement", RunEventKind.AGENT_FAILED, attempt_ordinal=1),),
+    )
+
+    assert rail[0].attempt == NodeRailAttempt(1, PublicAgentAttemptState.POSSIBLY_RAN)
