@@ -52,8 +52,8 @@ ROUTE_CALLS_STILL_HOLDING_PORTS = {
         "cancel_agent_attempt_route": ("agent_attempt_canceller",),
         # Released with the stopgap it serves: the start route refuses a V3
         # revision it could not answer with, and deciding that needs the same
-        # parse the start path performs. The refusal disappears when a V3 run
-        # has its own wire resource, and this line goes with it.
+        # parse the start path performs. #219 gives a V3 run its own wire
+        # resource, and this line goes with the refusal.
         "_refuse_a_format_this_api_cannot_answer_with": ("workflow_document_parser",),
     },
 }

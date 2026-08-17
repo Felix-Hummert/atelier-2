@@ -61,7 +61,7 @@ text = "Every V3 document outside that shape is refused by name before anything 
 # So the sentence stands, at the layer that actually lacks something: the route
 # refuses a V3 revision before any write because the API cannot answer with a run
 # of that format, not because no runtime executes one. It is a NAMED STOPGAP --
-# visible, and carried off by the head that gives a V3 run its own wire resource.
+# visible, and carried off by #219, which gives a V3 run its own wire resource.
 # Widening what the API pretends to serve would be the dishonest exit from the
 # same defect.
 #

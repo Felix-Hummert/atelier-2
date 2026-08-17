@@ -176,7 +176,7 @@ async def start_run_route(
 async def _refuse_a_format_this_api_cannot_answer_with(
     revision_hash: WorkflowRevisionHash, context: ApiContext
 ) -> None:
-    """A NAMED STOPGAP, removed by the head that gives a V3 run a wire resource.
+    """A NAMED STOPGAP, removed by #219: a V3 run answering over HTTP.
 
     The runtime drives a V3 line end to end, and `run_resource` still has nothing
     to render one with: the V1 and V2 shapes are frozen and a V3 run stands on an
@@ -188,8 +188,8 @@ async def _refuse_a_format_this_api_cannot_answer_with(
     Refusing before the write is the bridge, not the answer. It restores the one
     guarantee that survived the family seam's removal -- a start this API cannot
     answer leaves nothing behind -- and it disappears the moment a V3 run can be
-    served, which is the successor's whole job. Widening what the API pretends to
-    serve would be the dishonest way out of the same defect.
+    served, which is #219's whole job. Widening what the API pretends to serve
+    would be the dishonest way out of the same defect.
 
     It refuses only what would otherwise be started and then be unanswerable, so
     it mirrors the conditions a successful start needs rather than the format
