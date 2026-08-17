@@ -320,6 +320,10 @@ class AgentExecutionRequestV2:
         _require_bounded_text(self.node_id, "agent request node id")
         if not self.job_bytes:
             raise ValueError("agent request job bytes must be nonempty")
+        if len(self.job_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
+            raise ValueError(
+                f"agent request job bytes exceed {MAXIMUM_AGENT_OUTPUT_BYTES_V2} bytes"
+            )
         expected_execution = NodeExecutionId.for_node(
             self.run_id, self.workflow_revision_hash, self.node_id
         )

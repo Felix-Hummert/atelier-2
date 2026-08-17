@@ -530,3 +530,16 @@ def test_v2_output_bound_accepts_49152_and_rejects_49153_before_receipt() -> Non
             binding_set.binding_set_hash,
             AgentExecutionResult(b"x" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1)),
         )
+
+
+def test_v2_request_holds_job_bytes_to_the_identity_carrying_bound() -> None:
+    accepted = replace(
+        _request_variant("unchanged"),
+        job_bytes=b"x" * MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    )
+    assert len(accepted.job_bytes) == MAXIMUM_AGENT_OUTPUT_BYTES_V2
+    with pytest.raises(ValueError, match=str(MAXIMUM_AGENT_OUTPUT_BYTES_V2)):
+        replace(
+            _request_variant("unchanged"),
+            job_bytes=b"x" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1),
+        )
