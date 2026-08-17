@@ -212,7 +212,7 @@ billed provider is unauthenticated on this API. OS-enforced isolation remains
 the planned stronger boundary; until it lands, these refusals are what keep the
 tool-free premise true.
 
-Workflow format V3 is authored truth, not executable truth. The parser accepts a
+Workflow format V3 is authored in full and executed in one shape. The parser accepts a
 format-3 document into its own closed model — the five node kinds with the field
 matrix each requires, refuses, or accepts, `depends_on` as the only control edge,
 the join rule in its three arities, the input sources a node may read — another
@@ -299,15 +299,33 @@ without calling `resolve_reference`. A
 lineage is refused by id or any alias. There is no capability attestation, and
 no runtime executes a child.
 
-A valid V3 document is publishable long before it is executable: it
+A valid V3 document is publishable long before all of it is executable: it
 becomes an immutable revision under the same exact-bytes hash identity as V1 and V2,
-and the revision projection names its format and marks it unexecutable, while an
-invalid one is refused at publication carrying that named node and field. Starting a
-run on such a revision is refused naming its format and writes no run. V1 and V2
+and the revision projection names its format and says what still has no owner, while an
+invalid one is refused at publication carrying that named node and field. One shape of
+it runs: a single line of Agent and Wait nodes, each entered by at most one dependency
+and followed by at most one dependent, declaring no optional form the runtime does not
+bind. A document outside that shape is refused at the start naming what it is waiting
+for — a node kind nothing interprets, a branch nothing chooses between, an authored form
+nothing binds — rather than naming its version, and writes no run. V1 and V2
 documents keep their exact meaning under their own models, and their wire bytes are
 unchanged.
 [ADR 0006](decisions/0006-node-vocabulary.md) owns this vocabulary and the staging
 rule behind it.
+
+Inside that shape the runtime drives the line its author wrote. Each Agent node runs
+its attempt through the same durable path a V2 node uses, and the heir its author
+declared starts when its predecessor completes. A Wait node holds the run in
+`WAITING_INPUT` as a durable state rather than as work in progress: nothing is queued
+behind it, a restart finds it still waiting, and it moves only when a person answers.
+What that answer may be is the node's own declaration — a V1 or V2 Wait names an
+`answer_type` and admits the canonical text of an integer, while a V3 Wait declares one
+output with a schema and admits exactly what that schema admits, judged by the same
+profile owner that reads every other value the run produces. An answer the schema
+refuses is named as no answer at all and leaves the run waiting for another; an answer
+to a run that is not waiting is refused as the state conflict it is. The admitted
+answer is kept as the event's own bytes and carries the run to the next node, or, where
+the Wait node is the line's sink, to the run's own terminal hash.
 
 What makes a V3 agent node executable now includes the shape of its answer. The
 one enforced shape is `single-json-output/v1`: exactly one declared output, whose
@@ -386,7 +404,10 @@ with the snapshot authoritative only until an event overtakes it, and success
 carries exactly one name on the wire. Existing
 V1 JSON and OpenAPI component bytes remain frozen while exact V2 unions expose
 the run's safe binding matrix and byte-safe Agent output, and the event stream
-answers a format-3 agent event as its own family rather than dressing it as V1.
+answers a format-3 agent or wait event as its own family rather than dressing it
+as V1 — a format-3 pause naming no answer type, because that format's Wait node
+declares a schema instead, and its answer travelling as bytes rather than as the
+decimal text only an `integer` wait can honestly produce.
 Public references are transport identifiers, not new domain identities, and
 retries report whether a command was newly accepted or already existed without
 duplicating its durable

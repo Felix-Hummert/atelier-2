@@ -483,11 +483,13 @@ const runV2Schema = z
  * the run union above.
  *
  * The two shapes disagree about what a run has. A V3 run names its current node
- * by id and carries no `current_node` object, no `waiting` and no
- * `agent_attempts`, because no runtime interprets a Wait or Action node in that
- * format yet. Widening `runSchema` would push a "this format has no such thing"
- * guard onto every reader of those fields; keeping it separate leaves the V2
- * cockpit exactly as it was and lets the V3 view render what actually exists.
+ * by id and carries no `current_node` object and no `agent_attempts`. It carries
+ * no `waiting` block either, although it does reach WAITING_INPUT: what a V3
+ * Wait node asks and which schema judges the answer belong to the document, and
+ * the rail is what marks the node owing a person a move. Widening `runSchema`
+ * would push a "this format has no such thing" guard onto every reader of those
+ * fields; keeping it separate leaves the V2 cockpit exactly as it was and lets
+ * the V3 view render what actually exists.
  */
 const runV3Schema = z
   .object({
@@ -499,7 +501,7 @@ const runV3Schema = z
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
     state_version: nonnegativeSafeInteger,
-    state: z.enum(["STARTED", "COMPLETED"]),
+    state: z.enum(["STARTED", "WAITING_INPUT", "COMPLETED"]),
     current_node_id: z.string().min(1),
     node_rail: z.array(nodeRailEntrySchema).min(1),
     terminal_hash: sha256.nullable(),
@@ -709,9 +711,11 @@ const runEventV2Schema = z
  * The forms are the served wire's own (#249), read here rather than invented a
  * third time: the API answers them, the command reads them (#253), and this is
  * the surface the operator actually watches. A version-3 line writes its agent
- * events through the same attempt store as a version-2 one, so the attempt and
- * the rail travel the same way; what is absent is absent on purpose, because no
- * format-3 run persists a Wait, Action or Subworkflow event today.
+ * events through the same attempt store as a version-2 one and its pauses
+ * through the same wait path, so the attempt and the rail travel the same way.
+ * Its answer is base64 rather than the V2 shape's decimal text, because a V3
+ * wait admits whatever its declared schema admits. What is absent is absent on
+ * purpose: no format-3 run persists an Action or Subworkflow event today.
  */
 const v3EventBase = {
   workflow_format_version: z.literal(3),
@@ -725,7 +729,9 @@ const runEventV3Schema = z
     z.object({ ...v3EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.literal("PROCESS_EXITED_UNSUCCESSFULLY") }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
-    z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict()
+    z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("WAITING_INPUT") }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("WAIT_ANSWERED"), answer_base64: standardBase64, answer_hash: sha256 }).strict()
   ])
   .superRefine(validateEventCursor);
 

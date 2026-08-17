@@ -432,6 +432,7 @@ def main() -> None:
             "execute-until-reconcile": "WAITING_RECONCILIATION",
             "execute-until-wait": "WAITING_INPUT",
             "execute-until-complete": "COMPLETED",
+            "execute-v3-until-wait": "WAITING_INPUT",
             "execute-v3-until-complete": "COMPLETED",
         }[command]
         execute_until(

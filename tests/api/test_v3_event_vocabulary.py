@@ -83,9 +83,53 @@ def test_format_3_agent_failed_is_a_v3_failure_not_the_v1_cannot_carry_path() ->
     assert type(resource).__name__ == "AgentFailedEventResourceV3"
 
 
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_format_3_waiting_input_says_a_person_is_owed_a_move_and_names_no_type() -> (
+    None
+):
+    """The pause reads back in the V3 family, without the V2 answer vocabulary.
+
+    A V1 or V2 Wait node declares `answer_type: integer` and its event says so. A
+    V3 Wait node declares an output with a schema instead, so naming a type here
+    would state a shape nothing in this format enforces.
+    """
+    projection = v3_projection(RunEventKind.WAITING_INPUT, b"")
+
+    resource = run_event_resource(projection, SERVED_RAIL)
+
+    dumped = resource.model_dump(mode="json")
+    assert dumped["workflow_format_version"] == 3
+    assert dumped["event"] == "WAITING_INPUT"
+    assert "answer_type" not in dumped
+    assert dumped["node_rail"] == [
+        entry.model_dump(mode="json") for entry in SERVED_RAIL
+    ]
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_format_3_wait_answered_carries_the_exact_bytes_a_person_sent() -> None:
+    """A V3 answer is whatever its schema admits, so it travels as bytes.
+
+    The V2 shape renders a decimal string, which only its own `integer` wait can
+    honestly produce; a JSON string, object or array read through that shape
+    would be a value the wire misdescribes.
+    """
+    answer = b'{"verdict": "approved"}'
+    projection = v3_projection(RunEventKind.WAIT_ANSWERED, answer)
+
+    resource = run_event_resource(projection, SERVED_RAIL)
+
+    dumped = resource.model_dump(mode="json")
+    assert dumped["workflow_format_version"] == 3
+    assert dumped["event"] == "WAIT_ANSWERED"
+    assert dumped["answer_base64"] == encode_canonical_base64(answer)
+    assert dumped["answer_hash"] == projection.event.payload_hash.value
+    assert "answer" not in dumped
+
+
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
 def test_a_v3_run_cannot_answer_with_a_kind_its_nodes_never_write() -> None:
-    """A V3 node is an Agent, so a subworkflow completion is a store that lies."""
+    """A V3 node is an Agent or a Wait, so a subworkflow completion is a lie."""
     subworkflow = PersistedRunEvent(
         event=RunEvent(
             run_id=RUN_ID,

@@ -151,7 +151,7 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
             for binding in run.agent_bindings
         ),
         state_version=run.state_version,
-        state=cast(Literal["STARTED", "COMPLETED"], run.state.value),
+        state=cast(Literal["STARTED", "WAITING_INPUT", "COMPLETED"], run.state.value),
         current_node_id=run.current_node_id,
         # A run resource says where the snapshot stands, so no event has
         # overtaken it here; the event stream carries its own rail.

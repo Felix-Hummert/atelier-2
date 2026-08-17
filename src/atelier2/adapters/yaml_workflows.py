@@ -244,10 +244,11 @@ def parse_executable_workflow_document(document: bytes) -> AnyWorkflowDocument:
     """Parse one document the current runtime can execute, refusing what it cannot.
 
     A V3 document is executable exactly as far as its node kinds are interpreted.
-    Today that is the Agent kind alone, on the attempt path V2 already owns; every
-    other kind is refused by name rather than started and abandoned at the first
-    node no runtime can run. The refusal names the kind, so an author learns which
-    one is waiting rather than that "version 3" is.
+    Today those are the Agent kind, on the attempt path V2 already owns, and the
+    Wait kind, on the pause and answer path V2 already owns; every other kind is
+    refused by name rather than started and abandoned at the first node no runtime
+    can run. The refusal names the kind, so an author learns which one is waiting
+    rather than that "version 3" is.
     """
     graph = parse_workflow_document(document)
     if isinstance(graph, WorkflowGraphV3):

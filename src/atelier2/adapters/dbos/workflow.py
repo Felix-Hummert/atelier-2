@@ -95,9 +95,11 @@ from atelier2.contracts.workflows import (
     RunCompletes,
     RunContinues,
     SubworkflowNode,
-    WaitNode,
 )
-from atelier2.contracts.workflows_v3 import AgentNodeV3
+from atelier2.contracts.workflows_v3 import (
+    ANY_WAIT_NODE_KINDS,
+    AgentNodeV3,
+)
 from atelier2.ports.agent_attempts import AgentAttemptStore, AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceOwner,
@@ -126,7 +128,7 @@ AGENT_COMMIT_STEP_NAME = "agent-commit/1"
 ACTION_PREPARE_STEP_NAME = "action-prepare/1"
 WAIT_COMMIT_STEP_NAME = "wait-commit/1"
 SUBWORKFLOW_COMMIT_STEP_NAME = "subworkflow-commit/1"
-ANSWER_COMMIT_STEP_NAME = "answer-commit/0"
+ANSWER_COMMIT_STEP_NAME = "answer-commit/1"
 OBSERVE_STEP_NAME = "observe/0"
 RESOLVE_STEP_NAME = "resolve/1"
 COMMIT_STEP_NAME = "commit/2"
@@ -316,7 +318,11 @@ def _node_binding(
             return encoded
         if isinstance(node, ActionNode):
             return {"type": "action"}
-        if isinstance(node, WaitNode):
+        if isinstance(node, ANY_WAIT_NODE_KINDS):
+            # A V3 Wait binds through the same durable path as a V1 or V2 one:
+            # the pause carries no material of its own, so what the two formats
+            # disagree about is only which answer the node admits, and that is
+            # decided where the answer arrives rather than encoded here twice.
             return {"type": "wait"}
         if isinstance(node, SubworkflowNode):
             return {
@@ -851,16 +857,25 @@ def register_durable_run_workflow(
         typed_run_id = RunId(run_id)
         typed_revision = WorkflowRevisionHash(revision_hash)
 
-        def apply() -> str:
+        def apply() -> list[str]:
             answer = load_wait_answer(
                 datasource.sql_session(), typed_run_id, typed_revision, node_id
             ).answer
-            return commit_wait_answered(
-                datasource.sql_session(), answer
-            ).current_node_id
+            transition = commit_wait_answered(datasource.sql_session(), answer)
+            return [transition.current_node_id, transition.state.value]
 
-        successor = str(
-            datasource.run_tx_step({"name": ANSWER_COMMIT_STEP_NAME}, apply)
+        # The step reports the state as well as the head, because an answered Wait
+        # node that is its run's sink ends the run, and after a terminal transition
+        # correctness must not rest on DBOS deduplicating a workflow id: starting
+        # the sink's own node again is harmless only for as long as that id happens
+        # to collide. The state is what says "there is nothing left to start", so
+        # the decision is read from the run rather than borrowed from the runtime.
+        # Recording two values is why the step name carries a version -- a
+        # recovered step of the earlier shape would be read as a head alone.
+        head, state = cast(
+            tuple[str, str],
+            tuple(datasource.run_tx_step({"name": ANSWER_COMMIT_STEP_NAME}, apply)),
         )
-        start_node(typed_run_id, typed_revision, successor)
-        return RunState.STARTED.value
+        if RunState(state) is RunState.STARTED:
+            start_node(typed_run_id, typed_revision, head)
+        return state

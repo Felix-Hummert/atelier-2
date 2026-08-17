@@ -59,6 +59,7 @@ from atelier2.ports.durable_runs import (
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
+    DurableAnswerNotAdmitted,
     DurableAnswerResult,
     DurableAnswerRevisionConflict,
     DurableAnswerRunMissing,
@@ -515,8 +516,8 @@ PROBLEM_CASES = (
     (
         "wait-unanswerable",
         "wait",
-        "unanswerable-wait",
-        None,
+        "answerer",
+        DurableAnswerNotAdmitted("the waiting node does not admit these bytes"),
         422,
         "invalid-request",
     ),
@@ -920,15 +921,12 @@ def _request(client: TestClient, case: RouteResultCase):
     if case.operation == "run-get":
         return client.get("/atelier/api/v1/runs/run1.cnVu")
     if case.operation == "wait":
-        # Non-canonical integer text refuses before the store is asked at all, so
-        # the answerer below asserts it was never reached.
-        answer = "MDM=" if case.source == "unanswerable-wait" else "Mw=="
         return client.post(
             "/atelier/api/v1/runs/run1.cnVu/answers",
             json={
                 "revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
-                "answer_base64": answer,
+                "answer_base64": "Mw==",
             },
         )
     if case.operation == "reconcile":

@@ -48,7 +48,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from atelier2.ports.durable_runs import DurableAnswerStateConflict
+from atelier2.ports.durable_runs import DurableAnswerNotAdmitted
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.runs import (
     start_published_v1_run,
@@ -503,17 +503,16 @@ def test_invalid_integer_answer_writes_no_product_or_dbos_state(
             == UnanswerableWait()
         )
         assert all_durable_rows(tmp_path) == before
-        # The use-case now refuses these bytes before the store is asked, so the
-        # store's own guard is exercised here directly: it has to keep refusing
-        # them for every caller, not only for the one that asks through a use-case.
-        assert (
-            answerer.submit_result(
-                SubmitWaitAnswerRequest(
-                    RunId("run-1"), revision.revision_hash, "waiting", answer_bytes
-                )
+        # What the waiting node admits is the store's to decide, because only the
+        # store can read the node. The same refusal is asked for directly here, so
+        # it is pinned for every caller and not only for the one going through a
+        # use-case -- and it leaves nothing durable behind either way.
+        refusal = answerer.submit_result(
+            SubmitWaitAnswerRequest(
+                RunId("run-1"), revision.revision_hash, "waiting", answer_bytes
             )
-            == DurableAnswerStateConflict()
         )
+        assert isinstance(refusal, DurableAnswerNotAdmitted)
         assert all_durable_rows(tmp_path) == before
     finally:
         idle.close()

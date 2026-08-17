@@ -749,9 +749,12 @@ class RunResourceV3(ApiModel):
     not "no attempt exists". Surfacing V3 attempts is its own head with its own
     query change; it is a named gap here, not a claim.
 
-    There is no `waiting` either: a V3 run cannot wait, because no runtime
-    interprets a Wait node in this format yet, so the document that could reach
-    that state is refused before it starts.
+    A V3 run does reach WAITING_INPUT, and `current_node_id` with the rail is
+    what says so: the rail marks that node as the one owing a person a move. What
+    is deliberately absent is a `waiting` block restating the question, because a
+    V3 Wait node's prompt and answer schema are the document's and are read from
+    the workflow revision this run names, not copied onto the run. Projecting the
+    question onto the run resource is a named gap, not a claim.
     """
 
     workflow_format_version: Literal[3]
@@ -764,7 +767,7 @@ class RunResourceV3(ApiModel):
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
-    state: Literal["STARTED", "COMPLETED"]
+    state: Literal["STARTED", "WAITING_INPUT", "COMPLETED"]
     current_node_id: str = Field(min_length=1)
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)

@@ -1123,7 +1123,9 @@ def test_a_v3_document_whose_kinds_no_runtime_interprets_is_still_refused() -> N
 
     This is the half of the old sentence that is still true, kept as its own
     case rather than reinterpreted: the document below carries deterministic,
-    wait, subworkflow and action nodes, and nothing executes any of them.
+    subworkflow and action nodes, and nothing executes any of them. The Wait
+    kind left this list when the pause and its answer became executable, and
+    it is admitted below rather than quietly dropped from here.
     """
     with pytest.raises(InvalidWorkflowDocument, match=FORMAT_V3_NOT_EXECUTABLE):
         parse_executable_workflow_document(DOCUMENT)
@@ -1151,6 +1153,53 @@ nodes:
 )
 
 
+AGENT_WAIT_AGENT_CHAIN = (
+    b"""format_version: 3
+name: A person answers between two agents
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the first thing.
+"""
+    + DECLARED_OUTPUT
+    + b"""  - id: approve
+    type: wait
+    prompt: Is this good enough to review?
+    depends_on: [implement]
+"""
+    + DECLARED_OUTPUT
+    + b"""  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: Judge the first thing.
+    depends_on: [approve]
+"""
+    + DECLARED_OUTPUT
+)
+
+AGENT_THEN_WAIT_CHAIN = (
+    b"""format_version: 3
+name: A person answers last
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the first thing.
+"""
+    + DECLARED_OUTPUT
+    + b"""  - id: approve
+    type: wait
+    prompt: Is this good enough to land?
+    depends_on: [implement]
+"""
+    + DECLARED_OUTPUT
+)
+
+
 @pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
 def test_the_one_admitted_v3_shape_is_executable() -> None:
     """One simple Agent node, its own entry and its own sink."""
@@ -1168,6 +1217,48 @@ def test_a_line_of_agent_nodes_is_executable() -> None:
     assert isinstance(parsed, WorkflowGraphV3)
     assert parsed.entry_node_ids == ("implement",)
     assert parsed.sink_node_ids == ("review",)
+
+
+@pytest.mark.parametrize(
+    ("document", "sink"),
+    [(AGENT_WAIT_AGENT_CHAIN, "review"), (AGENT_THEN_WAIT_CHAIN, "approve")],
+    ids=["a wait between two agents", "a wait as the line's sink"],
+)
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_a_line_carrying_a_wait_node_is_executable(document: bytes, sink: str) -> None:
+    """A pause is admitted wherever the line puts it, at the end or in the middle.
+
+    Both positions are stated because they end differently: an answered wait in
+    the middle hands on to the heir its author declared, and an answered wait
+    standing last is the node that completes the run.
+    """
+    parsed = parse_executable_workflow_document(document)
+
+    assert isinstance(parsed, WorkflowGraphV3)
+    assert parsed.entry_node_ids == ("implement",)
+    assert parsed.sink_node_ids == (sink,)
+
+
+@pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
+def test_a_wait_node_reading_an_earlier_value_is_refused_by_the_form_it_wrote() -> None:
+    """Nothing composes a question out of what an earlier node produced.
+
+    The refusal names `inputs` rather than the wait kind, because the kind runs:
+    what has no owner is folding another node's value into the sentence a person
+    is shown, and a run that dropped it would judge an answer against a question
+    the operator never saw.
+    """
+    document = AGENT_WAIT_AGENT_CHAIN.replace(
+        b"    prompt: Is this good enough to review?\n",
+        b"""    prompt: Is this good enough to review?
+    inputs:
+      - name: candidate
+        from: {node: implement, output: result}
+""",
+    )
+
+    with pytest.raises(InvalidWorkflowDocument, match="inputs on wait node 'approve'"):
+        parse_executable_workflow_document(document)
 
 
 # The other side of the same boundary. `depends_on` is the one authored form
