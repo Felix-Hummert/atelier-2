@@ -13,8 +13,9 @@ story = "https://github.com/FlexOr2/atelier-2/issues/111"
 #     class no production code constructs or even imports. Filling it here would
 #     author `context-package/v3` from a route, which is the forgery H1c refused
 #     from the store side. That owner is its own head.
-#   - NO CLI. `run --name` is the next head and this route's first caller. A `run`
-#     that resolves without running would be a verb that lies.
+#   - NO CLI. That head is now here, and it is `resolve`, not `run --name`: a
+#     `run` that resolves without running would be a verb that lies, and running
+#     is what the record-truth owner still blocks.
 #
 # ONE REFUSAL IS DECLARED WITHOUT A TEST, AND THAT IS SAID RATHER THAN HIDDEN.
 # `catalog-revision-not-a-member` answers the case where a name resolves but the
@@ -42,3 +43,15 @@ text = "A name nobody admitted, a member position the lineage does not hold, a p
 [[sentence]]
 id = "the-name-path-is-never-read-as-a-revision-hash"
 text = "The path that answers a name is never claimed by the path that answers a revision hash, so a name is answered as a name instead of being refused as a malformed hash."
+
+# THE COMMAND HALF, ADDED WITH `atelier2 resolve`. It asks the route above and
+# adds no judgment of its own -- which is why it is a client of the product and
+# not a second way into it, exactly as `run` documents about itself.
+
+[[sentence]]
+id = "one-command-answers-what-a-name-holds"
+text = "An operator who knows a workflow name learns from one command which revision that name holds -- its lineage, its member number and the exact revision hash -- without publishing anything, starting anything, or translating a name into a hash by hand first."
+
+[[sentence]]
+id = "a-refused-name-ends-the-command-unsuccessfully"
+text = "A name the service refuses ends the command unsuccessfully and in the service's own words, with nothing written to standard output, so a refusal can never be mistaken for an answer by a script or by an eye."

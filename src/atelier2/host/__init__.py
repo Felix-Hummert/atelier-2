@@ -35,13 +35,27 @@ from atelier2.adapters.grok_subscription import (
 )
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
 from atelier2.host.run_command import (
+    DEFAULT_CATALOG_POSITION,
     AgentBindingSource,
+    NameOrder,
     RunCommandRefusal,
     RunOrder,
     describe_receipt,
+    describe_resolution,
     execute_run,
+    resolve_published_name,
 )
 from atelier2.host.serving import HostSettings, serve
+
+RESOLVE_DESCRIPTION = """\
+Ask a served Atelier which published revision a workflow name holds, and print
+the lineage, the member number and the exact revision hash.
+
+This command starts nothing. It answers the question `run --workflow` needs
+answered by hand today: which bytes a name stands for. Every refusal is the
+service's own - an unadmitted name, a retired lineage, a position the lineage
+does not hold - and each one ends this command unsuccessfully.
+"""
 
 RUN_DESCRIPTION = """\
 Run one workflow document on a served Atelier API and wait for its end. Every
@@ -79,6 +93,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return _serve(parser, parsed)
     if parsed.command == "run":
         return _run(parser, parsed)
+    if parsed.command == "resolve":
+        return _resolve(parser, parsed)
     parser.error("a command is required")
 
 
@@ -127,6 +143,22 @@ def _run(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
         sys.stdout.buffer.write(output.output)
     sys.stdout.buffer.flush()
     print(describe_receipt(report), file=sys.stderr)
+    return 0
+
+
+def _resolve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
+    """Answer which revision a name holds. Start nothing, and say nothing else."""
+
+    del parser
+    order = NameOrder(
+        service_url=parsed.service, name=parsed.name, position=parsed.position
+    )
+    try:
+        resolution = resolve_published_name(order)
+    except RunCommandRefusal as refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+    print(describe_resolution(resolution))
     return 0
 
 
@@ -304,6 +336,32 @@ def _argument_parser() -> argparse.ArgumentParser:
         "--codex-sandbox",
         choices=tuple(mode.value for mode in CodexSandboxMode),
         default=CodexSandboxMode.READ_ONLY.value,
+    )
+    resolve_parser = commands.add_parser(
+        "resolve",
+        help="ask a served Atelier which revision a workflow name holds",
+        description=RESOLVE_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    resolve_parser.add_argument(
+        "--name",
+        required=True,
+        metavar="NAME",
+        help="the catalog name to resolve, or a 64-hex lineage id",
+    )
+    resolve_parser.add_argument(
+        "--position",
+        default=DEFAULT_CATALOG_POSITION,
+        metavar="head|N",
+        help=(
+            "which member of the lineage to answer with: head, or an exact "
+            f"member number (default {DEFAULT_CATALOG_POSITION})"
+        ),
+    )
+    resolve_parser.add_argument(
+        "--service",
+        default=DEFAULT_SERVICE_URL,
+        help=f"the served Atelier API to ask (default {DEFAULT_SERVICE_URL})",
     )
     run_parser = commands.add_parser(
         "run",
