@@ -36,14 +36,17 @@ story = "https://github.com/FlexOr2/atelier-2/issues/22"
 [[sentence]]
 id = "a-published-revision-is-listed-with-the-name-its-author-wrote"
 text = "A published workflow revision is listed with the name its author wrote into the document, not with its hash."
+requirement = "REQ-KATALOG-04"
 
 [[sentence]]
 id = "a-format-that-declares-no-name-is-listed-as-unnamed"
 text = "A revision whose format declares no name is listed as unnamed, and no name is invented for it."
+requirement = "REQ-KATALOG-04"
 
 [[sentence]]
 id = "the-description-is-read-from-the-published-bytes-and-from-nowhere-else"
 text = "A revision's description is read from the exact bytes that were published and from nowhere else, so no second place can disagree with it."
+requirement = "REQ-KATALOG-04"
 
 [[sentence]]
 id = "an-enriched-page-stops-at-its-derived-bound-and-pages-on"
