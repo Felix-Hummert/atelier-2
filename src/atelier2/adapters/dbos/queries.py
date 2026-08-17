@@ -18,6 +18,8 @@ from atelier2.adapters.dbos.effect_store import (
     receipt_from_record,
 )
 from atelier2.adapters.dbos.run_store import (
+    NodeOutputNotWritten,
+    NodeOutputSchemaRefused,
     RunTransitionConflict,
     event_from_record,
     graph_from_document,
@@ -439,7 +441,12 @@ def _node_job_and_refusal(
                 connection, run.run_id, run.revision_hash, projection.graph, node
             ),
         ).encode("utf-8")
-    except RunTransitionConflict as refused:
+    except NodeOutputNotWritten:
+        # Absence, not refusal. The node this one reads has not written yet, so
+        # there is no job to prove and nothing has judged anything. Saying so as
+        # a refusal would report a waiting run as a stopped one.
+        return None, None, None
+    except NodeOutputSchemaRefused as refused:
         return None, None, str(refused)
     return composed, Sha256Hash.of(composed).value, None
 
@@ -713,12 +720,12 @@ class DbosQueries:
         stands still instead of watching it stand still.
         """
 
+        found = self.get_run(run_id)
+        if not isinstance(found, RunFound):
+            return found
+        projection = found.projection
         try:
             with self._connection() as connection:
-                found = self.get_run(run_id)
-                if not isinstance(found, RunFound):
-                    return found
-                projection = found.projection
                 try:
                     node = projection.graph.node(node_id)
                 except KeyError:

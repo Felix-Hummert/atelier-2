@@ -63,6 +63,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionExisting,
 )
 from atelier2.ports.run_queries import NodeDetailFound, NodeQueryMissing
+from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
@@ -200,7 +201,7 @@ def drive_until_the_chain_stops(runtime: DbosRuntime) -> None:
 
 @pytest.mark.proves("a-click-into-a-node-answers-what-it-was-asked-and-wrote")
 def test_a_finished_node_answers_its_job_its_value_and_who_produced_it(
-    runtime: DbosRuntime,
+    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
     """The three questions an operator asks about a node that has run."""
     publish_and_start(runtime)
@@ -211,14 +212,29 @@ def test_a_finished_node_answers_its_job_its_value_and_who_produced_it(
     assert isinstance(found, NodeDetailFound), found
     detail = found.detail
     assert detail.state is NodeState.SUCCEEDED
-    assert detail.job == b"Write three German sentences about code review."
-    assert detail.job_hash == Sha256Hash.of(detail.job).value
+
+    # Held against what the driver really passed, not against itself. Hashing the
+    # answer would prove only that this test can hash.
+    assert provider.opened is not None
+    handed = next(
+        request
+        for request in provider.opened.requests
+        if request.node_id == "implement"
+    )
+    assert detail.job == handed.job_bytes
+    assert detail.job_hash == Sha256Hash.of(handed.job_bytes).value
     assert detail.answer is not None
     assert detail.answer.value == PROSE
     assert detail.answer.value_hash == Sha256Hash.of(PROSE)
     assert detail.provenance is not None
     assert detail.provenance.provider_id == "exact"
     assert detail.provenance.role == "builder"
+
+    # The receipt's own hash, not the job hash standing in for it: the two frame
+    # different preimages, and a reader told to compare them would reject a job
+    # that is right.
+    assert detail.provenance.request_hash == handed.request_hash.value
+    assert detail.provenance.request_hash != detail.job_hash
 
 
 @pytest.mark.proves("a-node-that-stops-the-run-says-what-it-is-waiting-on")
@@ -257,3 +273,57 @@ def test_a_node_the_run_does_not_declare_is_refused_by_name(
         durable_queries(runtime.engine).get_node_detail(RUN, "not-a-node"),
         NodeQueryMissing,
     )
+
+
+@pytest.mark.proves("a-node-that-stops-the-run-says-what-it-is-waiting-on")
+def test_a_node_whose_predecessor_has_not_written_carries_no_refusal(
+    runtime: DbosRuntime,
+) -> None:
+    """Waiting is not refusing, and the difference is the whole point.
+
+    Before the first node writes, the second one has nothing to be given -- and
+    nothing has judged anything. Reporting that as a refusal would tell an
+    operator a run had stopped when it had not started, on the same surface that
+    later reports a real refusal honestly.
+    """
+    publish_and_start(runtime)
+
+    found = durable_queries(runtime.engine).get_node_detail(RUN, "review")
+
+    assert isinstance(found, NodeDetailFound), found
+    detail = found.detail
+    assert detail.state is NodeState.QUEUED
+    assert detail.refusal is None
+    assert detail.job is None
+    assert detail.answer is None
+    assert detail.provenance is None
+
+
+@pytest.mark.proves("a-node-that-stops-the-run-says-what-it-is-waiting-on")
+def test_a_stored_value_that_no_longer_matches_its_hash_is_reported_as_corruption(
+    runtime: DbosRuntime,
+) -> None:
+    """A panel must never dress durable corruption as a tidy refusal.
+
+    The refusal path exists for a value a schema judged and rejected. A payload
+    that no longer matches the hash its own event kept is a store disagreeing
+    with itself, and it leaves loudly through the same door every other corrupt
+    read leaves by.
+
+    The trigger has to be dropped to reach that state at all, and that is worth
+    saying: this product cannot write it. An event is immutable by construction,
+    so a mismatched payload exists only if something outside the product reached
+    the file -- which is exactly the situation the loud answer is for.
+    """
+    publish_and_start(runtime)
+    drive_until_the_chain_stops(runtime)
+    with runtime.engine.begin() as connection:
+        connection.execute(sa.text("DROP TRIGGER run_events_no_update"))
+        connection.execute(
+            sa.text("UPDATE run_events SET payload = :tampered WHERE run_id = :run_id"),
+            {"tampered": b'"a value nobody produced"', "run_id": RUN.value},
+        )
+
+    found = durable_queries(runtime.engine).get_node_detail(RUN, "review")
+
+    assert isinstance(found, QueryDurableStateCorrupt), found

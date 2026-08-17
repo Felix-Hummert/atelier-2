@@ -10,7 +10,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/238"
 # tell which family it was looking at, nor where the run stood after the event it
 # had just received.
 #
-# WHAT IS MEASURED AND WAITING, so the next head cuts rather than searches:
+# WHAT WAS MEASURED BEFORE THIS HEAD WAS CUT, so it cut rather than searched:
 #
 #   * the ASK is derivable, hash-bound: `node_job` composes what the provider was
 #     handed, and the attempt guard already recomputes it byte for byte against
@@ -44,9 +44,8 @@ story = "https://github.com/FlexOr2/atelier-2/issues/238"
 # THE UI IS THE NEXT HEAD. This one hands a panel everything it needs; drawing
 # the panel belongs to the cockpit family.
 #
-# The node-detail answer itself -- one read that hands a caller those three
-# layers for one node -- is the next head, and it is a route, a use case and a
-# query rather than a projection fix.
+# The node-detail answer itself is THIS head: one read that hands a caller those
+# layers for one node, as a route, a use case and a query.
 
 [[sentence]]
 id = "a-format-three-event-answers-in-the-shape-that-says-so"
@@ -54,8 +53,8 @@ text = "Every event of a format-3 run answers in its own shape: it names the for
 
 [[sentence]]
 id = "a-click-into-a-node-answers-what-it-was-asked-and-wrote"
-text = "One read of one node of a run answers what that node was handed -- the job the run really composed for its provider, carried with the hash a reader checks against the receipt -- what it wrote, with the hash its own completion event kept, and which agent under which configuration produced it, so a reader is told what the server already knows instead of stitching it together from the run, the events and the receipts."
+text = "One read of one node of a run answers what that node was handed -- the exact job the run composed for its provider, the same bytes the driver passed -- what it wrote, with the hash its own completion event kept, and which agent under which configuration produced it, carrying the receipt's own request hash rather than a hash of the job standing in for it, so a reader is told what the server already knows instead of stitching it together from the run, the events and the receipts."
 
 [[sentence]]
 id = "a-node-that-stops-the-run-says-what-it-is-waiting-on"
-text = "A node that cannot be given what its author declared it reads names the refusal that stops it, in the words of the owner that refused, so a run standing still says why it stands still instead of standing still silently."
+text = "A node that cannot be given what its author declared it reads names the refusal that stops it, in the words of the owner that refused -- and only then: a node whose predecessor has not written yet carries no refusal at all, and a store that disagrees with itself is reported as corruption rather than dressed as a refusal, so a run standing still says why it stands still and a run merely waiting is not called stopped."

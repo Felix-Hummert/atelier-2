@@ -488,6 +488,12 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
         "PublicRunReference": (
             (API_PREFIX + "/runs", "get", "after", "query"),
             (API_PREFIX + "/runs/{public_ref}", "get", "public_ref", "path"),
+            (
+                API_PREFIX + "/runs/{public_ref}/nodes/{node_id}",
+                "get",
+                "public_ref",
+                "path",
+            ),
             (CANCELLATION_PATH, "post", "public_ref", "path"),
             (
                 API_PREFIX + "/runs/{public_ref}/answers",
