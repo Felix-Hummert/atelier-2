@@ -24,6 +24,14 @@ story = "https://github.com/FlexOr2/atelier-2/issues/111"
 # the deferral above is answered rather than left standing as a claim about a
 # limit that no longer exists.
 #
+# The reading half of that sentence was true only for the older formats until
+# #253. The service learned to answer with the format-3 event form (#249) and the
+# command's decoder still knew V1 and V2, so the first live chain run printed
+# nothing and ended unsuccessfully while the run itself completed cleanly on the
+# server. The command refused honestly rather than misreading, which is why the
+# repair is a wider union at the wire's own owner and not a second vocabulary in
+# the host; a chain now carries the sentence end to end.
+#
 # ONE REFUSAL IS DECLARED WITHOUT A TEST, AND THAT IS SAID RATHER THAN HIDDEN.
 # `catalog-revision-not-a-member` answers the case where a name resolves but the
 # lineage does not admit the revision it resolved to. No sequence of store calls

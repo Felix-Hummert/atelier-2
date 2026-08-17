@@ -36,7 +36,9 @@ from atelier2.api.wire.events import (
     ActionReconciliationRequiredEventResourceV2,
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
+    AgentCompletedEventResourceV3,
     AgentFailedEventResourceV2,
+    AgentFailedEventResourceV3,
     WaitingInputEventResource,
     WaitingInputEventResourceV2,
 )
@@ -79,12 +81,26 @@ RUN_IDENTITY_DOMAIN = "atelier2-command-line-run"
 ActedEventResource = (
     AgentCompletedEventResource
     | AgentCompletedEventResourceV2
+    | AgentCompletedEventResourceV3
     | AgentFailedEventResourceV2
+    | AgentFailedEventResourceV3
     | WaitingInputEventResource
     | WaitingInputEventResourceV2
     | ActionReconciliationRequiredEventResource
     | ActionReconciliationRequiredEventResourceV2
 )
+"""Every event form this command must read to report a run it started.
+
+The resources are the served wire's own, imported rather than restated: a second
+vocabulary in the host is how this command came to refuse what the service had
+already learned to say. It is narrower than `AnyRunEventResource` on purpose --
+only the kinds in `ACTED_EVENT_NAMES` reach the decoder, so a form this command
+passes over needs no entry here.
+
+The V3 forms joined when the service began answering with them (#249). Until
+then a format-3 line ended with its whole history unread and exit 1 while the run
+itself completed, which is the one promise this command exists to keep.
+"""
 ACTED_EVENT_NAMES = frozenset(
     {
         RunEventKind.AGENT_COMPLETED,
@@ -513,7 +529,10 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                             attempt_id=None,
                         )
                     )
-                case AgentCompletedEventResourceV2():
+                case AgentCompletedEventResourceV2() | AgentCompletedEventResourceV3():
+                    # One arm for both: a format-3 completion carries its output
+                    # in the same three fields, so telling them apart here would
+                    # be a distinction the reader does not have.
                     outputs.append(
                         AgentOutput(
                             node_id=event.node_id,
@@ -522,7 +541,7 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                             attempt_id=event.attempt_id,
                         )
                     )
-                case AgentFailedEventResourceV2():
+                case AgentFailedEventResourceV2() | AgentFailedEventResourceV3():
                     raise RunNeedsAnotherActor(
                         f"agent attempt {event.attempt_id} of node {event.node_id} "
                         f"failed with {event.failure_code}; only an operator "
