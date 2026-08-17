@@ -670,6 +670,11 @@ class MatrixQueries:
         projection_limit: DurableProjectionLimit | None = None,
     ) -> GetWorkflowRevisionResult:
         del revision_hash, projection_limit
+        if self.case.operation == "start":
+            # The start route asks what format it would have to answer with
+            # before it writes anything; every matrix start case is a document
+            # the API can serve, so the read falls through to the starter.
+            return WorkflowRevisionFound(REVISION_PROJECTION)
         assert self.case.source == "revision-get"
         return cast(GetWorkflowRevisionResult, self.case.result)
 
