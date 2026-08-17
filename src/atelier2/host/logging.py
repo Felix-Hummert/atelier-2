@@ -22,7 +22,11 @@ _OPTIONAL_KEYS = ("event", "run_id", "node_id", "attempt_id", "exception")
 
 
 class JsonLogFormatter(logging.Formatter):
-    """One JSON object per line, with a readable sentence in ``message``."""
+    """One JSON object per line, with a readable sentence in ``message``.
+
+    ``exception`` renders from the record's ``exc_info``/``stack_info`` when
+    the call site did not already set it via ``extra``.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, object] = {
@@ -35,7 +39,21 @@ class JsonLogFormatter(logging.Formatter):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value
+        if "exception" not in payload:
+            rendered = self._render_traceback(record)
+            if rendered is not None:
+                payload["exception"] = rendered
         return json.dumps(payload, ensure_ascii=False)
+
+    def _render_traceback(self, record: logging.LogRecord) -> str | None:
+        parts = []
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = self.formatException(record.exc_info)
+            parts.append(record.exc_text)
+        if record.stack_info:
+            parts.append(self.formatStack(record.stack_info))
+        return "\n".join(parts) if parts else None
 
 
 def configure_process_logging(stream: TextIO | None = None) -> None:

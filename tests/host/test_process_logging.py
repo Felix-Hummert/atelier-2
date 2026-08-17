@@ -196,6 +196,47 @@ def test_an_unhandled_http_exception_emits_http_internal_error(
     assert "probe fault" in record["exception"]
 
 
+def test_an_error_log_with_a_live_exception_carries_its_traceback_text(
+    process_log: io.StringIO,
+) -> None:
+    logger = logging.getLogger(PROCESS_LOGGER_NAME)
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        logger.exception("attempt raised")
+
+    records = _parse_json_lines(process_log.getvalue())
+    assert len(records) == 1
+    record = records[0]
+    assert tuple(record) == ALWAYS_KEYS + ("exception",)
+    assert "ValueError: boom" in record["exception"]
+    assert "test_process_logging.py" in record["exception"]
+
+
+def test_an_error_log_without_a_live_exception_has_no_exception_key(
+    process_log: io.StringIO,
+) -> None:
+    logging.getLogger(PROCESS_LOGGER_NAME).error("plain failure")
+
+    records = _parse_json_lines(process_log.getvalue())
+    assert len(records) == 1
+    assert "exception" not in records[0]
+
+
+def test_an_explicit_exception_attribute_wins_over_exc_info(
+    process_log: io.StringIO,
+) -> None:
+    logger = logging.getLogger(PROCESS_LOGGER_NAME)
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        logger.exception("attempt raised", extra={"exception": "explicit text"})
+
+    records = _parse_json_lines(process_log.getvalue())
+    assert len(records) == 1
+    assert records[0]["exception"] == "explicit text"
+
+
 def _parse_json_lines(text: str) -> list[dict[str, Any]]:
     lines = [line for line in text.splitlines() if line]
     return [json.loads(line) for line in lines]
