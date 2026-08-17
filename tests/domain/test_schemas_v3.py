@@ -184,6 +184,17 @@ def test_every_bound_of_the_profile_refuses_by_its_own_name(
     assert verdict.refusal is expected
 
 
+def test_an_exact_number_beyond_the_profile_is_refused_by_name() -> None:
+    """A valid JSON number must return a verdict, never escape the decoder."""
+    literal = b"1e" + b"9" * 19
+
+    verdict = read_schema_document(b'{"const":' + literal + b"}")
+
+    assert isinstance(verdict, SchemaRefused)
+    assert verdict.refusal is SchemaDocumentRefusal.NON_CANONICAL_NUMBER
+    assert verdict.subject == literal.decode()
+
+
 @pytest.mark.parametrize(
     "document",
     (A_REAL_SCHEMA, A_LOCAL_REFERENCE, b"true", b'{"format": "email"}'),
