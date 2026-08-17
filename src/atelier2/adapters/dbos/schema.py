@@ -12,6 +12,7 @@ from sqlalchemy.engine import Engine
 
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_PROVIDER_ID_CHARACTERS,
     MAXIMUM_SIGNED_INT64,
 )
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
@@ -163,7 +164,9 @@ auth_profile_revisions = sa.Table(
         f"length(profile_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
     sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
-    sa.CheckConstraint("length(provider_id) BETWEEN 1 AND 64"),
+    sa.CheckConstraint(
+        f"length(provider_id) BETWEEN 1 AND {MAXIMUM_PROVIDER_ID_CHARACTERS}"
+    ),
     sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
     sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
     sa.CheckConstraint("auth_mode IN ('subscription', 'api_key')"),
@@ -551,7 +554,9 @@ agent_receipts_v2 = sa.Table(
         f"length(profile_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
     sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
-    sa.CheckConstraint("length(provider_id) BETWEEN 1 AND 64"),
+    sa.CheckConstraint(
+        f"length(provider_id) BETWEEN 1 AND {MAXIMUM_PROVIDER_ID_CHARACTERS}"
+    ),
     sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
     sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
     sa.CheckConstraint("auth_mode IN ('subscription', 'api_key')"),
