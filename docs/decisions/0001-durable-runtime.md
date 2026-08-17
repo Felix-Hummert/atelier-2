@@ -83,7 +83,10 @@ non-secret executor operational identity; that identity is an integrity input,
 not process authority. Success atomically commits attempt, receipt, event, and
 successor. A typed, authoritatively reaped unsuccessful child atomically commits
 `FAILED`, `AGENT_FAILED`, and the same current run node. Ambiguous exceptions
-stay `LAUNCH_ARMED` until an exact cancellation owns their cleanup. Schema V8
+stay `LAUNCH_ARMED` until an exact cancellation owns their cleanup, and a serve
+start is what issues it where no live workflow is left to: a workflow that ended
+without moving the attempt it drove is not pending, so recovery replays nothing,
+and the restart stops each such attempt under one durable command. Schema V8
 already makes cancellation durable before any signal; V9 is the version handoff
 of that same product shape. A live supervisor binds a Unix
 control endpoint, watchdog generation, and delegated cgroup; an exec guard joins
@@ -91,9 +94,11 @@ the provider child to that cgroup and dies if the watchdog parent disappears.
 The cancellation workflow sends `TERM`, waits the configured finite grace,
 escalates to `KILL`, and reaps before it records `CANCELLED`. After an owner
 process dies, recovery stores `OWNER_NOT_LOCAL` and uses the exact empty
-cgroup—not a persisted PID or invocation—to attest `INTERRUPTED`. Only an
-explicit `ONE` policy creates one distinct ordinal-2 `PREPARED` attempt and
-workflow after cleanup; ordinal 3, automatic retry, and provider-session resume
+cgroup—not a persisted PID or invocation—to attest `INTERRUPTED`; a cgroup the
+host already removed holds no process either and attests the same, because
+requiring the directory left exactly the restarted host unable to converge.
+Only an explicit `ONE` policy creates one distinct ordinal-2 `PREPARED`
+attempt and workflow after cleanup; ordinal 3, automatic retry, and provider-session resume
 are absent.
 
 Before an external call, Atelier durably records an effect intent bound to the
@@ -160,7 +165,8 @@ provider contract.
 | V16 receipt in the chain | A fresh exact V16 store gives an `AGENT_COMPLETED` event the receipt hash its preimage binds: `node-event-hash/v3` is chosen by content whenever that field is set, so an event without a binding keeps its frozen V1 or V2 hash byte for byte. The store admits the field only on a completion, mirroring the contract's rule, and a finished run's terminal hash recomputes from presented receipt and event fields alone -- under any other provider, profile, model, executor revision or request hash it misses. V15 remains unchanged and is refused without mutation. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
-| V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |
+| V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery with and without a surviving witness, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |
+| Driver-loss convergence | A killed driver leaves an armed attempt no workflow owes a move to; the next serve start stops it under one durable command and ends it `INTERRUPTED`, with the cancellation and interruption events carrying that command as the readable reason. |
 
 The repository gate is `.github/workflows/ci.yml`; the local crash lane is
 `uv run --locked pytest -n auto tests/crash`.

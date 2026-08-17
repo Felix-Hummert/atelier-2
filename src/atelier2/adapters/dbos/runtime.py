@@ -29,6 +29,9 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, register_durable_run_workflow
 from atelier2.adapters.project_verification import declared_project
+from atelier2.application.converge_driverless_attempts import (
+    converge_driverless_attempts,
+)
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutorBinding,
@@ -562,6 +565,27 @@ class _DbosProcessOwner:
                 return
             self._start(bound)
             bound.launched = True
+            self._converge_driverless_attempts(bound)
+
+    @staticmethod
+    def _converge_driverless_attempts(bound: _BoundRuntime) -> None:
+        """Answer for what the last process left armed, once recovery is armed.
+
+        After the launch, and not before: the launch is what replays the
+        workflows that are still pending, so asking first would stop attempts
+        that recovery was about to drive. An attempt only exists where a scratch
+        root is declared -- a V2 agent node refuses before it prepares one
+        otherwise -- so a runtime without a workspace owner has none to converge.
+        """
+
+        workspaces = bound.agent_workspace_owner
+        if workspaces is None:
+            return
+        converge_driverless_attempts(
+            DbosAgentAttemptStore(bound.engine, bound.settings.application_version),
+            bound.agent_process_supervisor,
+            workspaces,
+        )
 
     def initialize_storage(self, bound: _BoundRuntime) -> None:
         with self._lock:
