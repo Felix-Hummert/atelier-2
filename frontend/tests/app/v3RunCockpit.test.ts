@@ -159,8 +159,15 @@ async function completedEvent(nodeId: string, output: string, sequence: number) 
 }
 
 describe("the click into a node", () => {
-  const asked = "Judge the draft you were handed.";
-  const wrote = "Ein gutes Code-Review schuetzt vor fehlerhaftem Code.";
+  // Both values stand well over the 120 characters at which the timeline cuts
+  // its preview, because the sentence these tests carry says the panel shows the
+  // job and the answer WHOLE. Under a shorter value a truncating panel passes
+  // every assertion here, so the value is the proof: shorten either one and the
+  // clause stops being tested.
+  const asked =
+    "Judge the draft you were handed, sentence by sentence, and say plainly which of them you would send back to its author, and for what reason.";
+  const wrote =
+    "Ein gutes Code-Review schuetzt vor fehlerhaftem Code. Es liest zuerst die Absicht und danach die Zeilen. Wer nur die Zeilen liest, findet Tippfehler und keine Denkfehler.";
 
   function nodeDetail(overrides: Record<string, unknown> = {}) {
     return {
