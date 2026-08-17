@@ -116,6 +116,38 @@ async function chainedAgentCompleted(
   };
 }
 
+const V3_ANSWER = '"approved, with the second paragraph rewritten"';
+
+function chainedWaitBase(sequence: number) {
+  return {
+    workflow_format_version: 3,
+    cursor: `event1.cnVu.${sequence}`,
+    sequence,
+    public_run_reference: "run1.cnVu",
+    workflow_revision_hash: "a".repeat(64),
+    node_id: "approve",
+    node_execution_id: "b".repeat(64),
+    event_hash: "c".repeat(64),
+    node_rail: [{ node_id: "approve", state: "needs_you", attempt: null }]
+  };
+}
+
+function chainedWaitingInput(sequence: number) {
+  // No `answer_type`: a format-3 wait declares a schema, and naming a type here
+  // would be the wire claiming a fact the document never wrote.
+  return { ...chainedWaitBase(sequence), event: "WAITING_INPUT" };
+}
+
+async function chainedWaitAnswered(answer: string, sequence: number) {
+  return {
+    ...chainedWaitBase(sequence),
+    node_rail: [{ node_id: "approve", state: "succeeded", attempt: null }],
+    event: "WAIT_ANSWERED",
+    answer_base64: btoa(answer),
+    answer_hash: await sha256Of(answer)
+  };
+}
+
 function agentCompleted() {
   return {
     cursor: "event1.cnVu.1",
@@ -155,6 +187,49 @@ describe("a chain run seen while it runs", () => {
       "the draft",
       "the findings"
     ]);
+  });
+
+  it("reads a format-3 pause and the answer that carries it on, answer bytes and all", async () => {
+    let projection = streamProjection("run1.cnVu", "a".repeat(64));
+
+    projection = await decodeAndApplyDurableEvent(
+      projection,
+      JSON.stringify(chainedWaitingInput(1))
+    );
+    projection = await decodeAndApplyDurableEvent(
+      projection,
+      JSON.stringify(await chainedWaitAnswered(V3_ANSWER, 2))
+    );
+
+    expect(projection.protocol_problem).toBeNull();
+    expect(projection.events.map((entry) => entry.event)).toEqual([
+      "WAITING_INPUT",
+      "WAIT_ANSWERED"
+    ]);
+    const answered = projection.events.at(-1);
+    // A format-3 answer is whatever the wait's own schema admits, so it reaches
+    // the browser base64 rather than as the decimal text the older formats send.
+    expect(answered).toMatchObject({ answer_base64: btoa(V3_ANSWER) });
+    expect(answered).not.toHaveProperty("answer");
+  });
+
+  it.each([
+    [
+      "an answer in the decimal shape only an older format's node can promise",
+      async () => ({ ...(await chainedWaitAnswered(V3_ANSWER, 1)), answer: "17" })
+    ],
+    [
+      "a pause naming an answer type the format never declares",
+      async () => ({ ...chainedWaitingInput(1), answer_type: "integer" })
+    ]
+  ])("refuses a format-3 wait event carrying %s", async (_name, build) => {
+    const projection = await decodeAndApplyDurableEvent(
+      streamProjection("run1.cnVu", "a".repeat(64)),
+      JSON.stringify(await build())
+    );
+
+    expect(projection.protocol_problem).toEqual({ type: "decoder" });
+    expect(projection.events).toHaveLength(0);
   });
 });
 

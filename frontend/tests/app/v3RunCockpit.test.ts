@@ -196,6 +196,125 @@ describe("a version 3 run in the cockpit", () => {
   });
 });
 
+describe("a version 3 run that stops for a person", () => {
+  const answer = '"approved, with the second paragraph rewritten"';
+
+  function waitRevision() {
+    const revision = v3Revision();
+    return {
+      ...revision,
+      graph: {
+        ...revision.graph,
+        name: "A person approves last",
+        node_previews: [
+          revision.graph.node_previews[0]!,
+          {
+            id: "approve",
+            kind: "wait" as const,
+            role: null,
+            instruction_start: null,
+            depends_on: ["implement"]
+          }
+        ]
+      }
+    };
+  }
+
+  function waitingRun(): RunV3 {
+    return v3Run({
+      run_id: "v3/a-person-approves",
+      state: "WAITING_INPUT",
+      current_node_id: "approve",
+      node_rail: [
+        { node_id: "implement", state: "succeeded", attempt: null },
+        { node_id: "approve", state: "needs_you", attempt: null }
+      ]
+    });
+  }
+
+  function answeredRun(): RunV3 {
+    return v3Run({
+      run_id: "v3/a-person-approves",
+      state: "COMPLETED",
+      current_node_id: "approve",
+      node_rail: [
+        { node_id: "implement", state: "succeeded", attempt: null },
+        { node_id: "approve", state: "succeeded", attempt: null }
+      ],
+      terminal_hash: terminalHash
+    });
+  }
+
+  async function waitAnsweredEvent(sequence: number) {
+    return {
+      workflow_format_version: 3,
+      cursor: `event1.cnVu.${sequence}`,
+      sequence,
+      public_run_reference: publicReference,
+      workflow_revision_hash: digest,
+      node_id: "approve",
+      node_execution_id: "b".repeat(64),
+      event_hash: "c".repeat(64),
+      node_rail: [{ node_id: "approve", state: "succeeded", attempt: null }],
+      event: "WAIT_ANSWERED",
+      answer_base64: btoa(answer),
+      answer_hash: [
+        ...new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(answer))
+        )
+      ]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("")
+    };
+  }
+
+  it("proves(a-v3-line-stops-for-a-person-and-their-answer-carries-it-on): draws the node that owes a person a move as the one needing them", async () => {
+    const cockpitApi = api(waitingRun(), {
+      getWorkflowRevision: vi.fn(async () => waitRevision())
+    });
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    const graph = await screen.findByRole("region", { name: "Workflow" });
+    expect(within(graph).getByRole("button", { name: "approve — Needs you" }).isConnected).toBe(
+      true
+    );
+    expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true);
+    expect(screen.getByText(/not yet/i).isConnected).toBe(true);
+  });
+
+  it("proves(a-v3-line-stops-for-a-person-and-their-answer-carries-it-on): carries the page on when the answer arrives, without an answer of its own to settle", async () => {
+    const feed = new FakeRunEventFeed();
+    const journal = new MutationJournal(sessionStorage);
+    const getRun = vi
+      .fn()
+      .mockResolvedValueOnce(waitingRun())
+      .mockResolvedValue(answeredRun());
+    const cockpitApi = api(waitingRun(), {
+      getRun,
+      getWorkflowRevision: vi.fn(async () => waitRevision()),
+      openRunEvents: feed.open
+    });
+
+    render(App, { props: { cockpitApi, mutationJournal: journal } });
+    await screen.findByRole("button", { name: "approve — Needs you" });
+    feed.handlers?.opened();
+    feed.handlers?.event(JSON.stringify(await waitAnsweredEvent(1)));
+
+    expect((await screen.findByText(terminalHash)).isConnected).toBe(true);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "approve — Done" }).isConnected).toBe(true)
+    );
+    // The answer reached the run through the API, never through this page: there
+    // is no answer card for a format-3 wait, so there is nothing here to settle
+    // and nothing to leave behind.
+    expect(await journal.entries()).toEqual([]);
+    expect(screen.queryByText("Run unavailable")).toBeNull();
+  });
+});
+
 
 async function completedEvent(nodeId: string, output: string, sequence: number) {
   const encoded = btoa(output);
