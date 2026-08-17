@@ -51,7 +51,7 @@ from atelier2.contracts.executions import (
     RunEvent,
     RunEventKind,
 )
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.workflows import (
     AgentNodeV2,
@@ -61,6 +61,7 @@ from atelier2.contracts.workflows import (
     WorkflowGraphV2,
     completion_after_node,
 )
+from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
@@ -218,18 +219,35 @@ def _load_attempt(session: Any, attempt_id: AgentAttemptId) -> AgentAttempt:
 
 def _validate_request(
     session: Any, request: AgentExecutionRequestV2
-) -> tuple[RunV2, WorkflowGraphV2]:
+) -> tuple[RunV2 | RunV3, WorkflowGraphV2 | WorkflowGraphV3]:
+    """The run and graph one attempt request must exactly describe.
+
+    A V3 agent node runs here too. Its role binding, its attempt identity and its
+    provider contract are the ones V2 already carries, so admitting it is a wider
+    door rather than a second path -- what a V3 run does differently begins after
+    the provider answers, where the receipt chain is written.
+
+    Only bound runs pass: a V1 run has no role matrix to attempt against. The
+    graph is what decides how a node is read, and the run head is what decides
+    where the run stands, so neither format is asked to answer for the other.
+    """
     run = load_run(session, request.run_id)
     graph = load_graph(session, request.workflow_revision_hash)
-    if not isinstance(run, RunV2) or not isinstance(graph, WorkflowGraphV2):
-        raise RunTransitionConflict("agent attempt requires a V2 run")
+    if not isinstance(run, (RunV2, RunV3)) or not isinstance(
+        graph, (WorkflowGraphV2, WorkflowGraphV3)
+    ):
+        raise RunTransitionConflict("agent attempt requires a bound run")
     if run.revision_hash != request.workflow_revision_hash:
         raise RunTransitionConflict("agent attempt request names another revision")
     node = graph.node(request.node_id)
+    if not isinstance(node, (AgentNodeV2, AgentNodeV3)):
+        raise RunTransitionConflict("agent attempt request differs from durable graph")
+    authored_job = (
+        node.job if isinstance(node, AgentNodeV2) else node.instruction
+    ).encode("utf-8")
     if (
-        not isinstance(node, AgentNodeV2)
-        or node.role != request.resolved_binding.role.value
-        or node.job.encode("utf-8") != request.job_bytes
+        node.role != request.resolved_binding.role.value
+        or authored_job != request.job_bytes
     ):
         raise RunTransitionConflict("agent attempt request differs from durable graph")
     durable_binding = next(
@@ -266,7 +284,7 @@ def _require_attempt_binding(
 
 
 def _require_completed_attempt_head(
-    run: RunV2,
+    run: RunV2 | RunV3,
     request: AgentExecutionRequestV2,
     completion: NodeCompletion,
 ) -> None:
