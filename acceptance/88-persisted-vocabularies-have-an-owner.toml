@@ -25,6 +25,16 @@ story = "https://github.com/FlexOr2/atelier-2/issues/88"
 #
 # What the sentences below share is the shape of the defect: a number or a
 # name written twice, agreeing today, with nothing red on the day they stop.
+#
+# THE "DERIVED EVERYWHERE" HALF WAS DECLARED BEFORE IT WAS PROVEN, and that is
+# recorded here rather than repaired in silence. #204 bound 23 wire bounds to
+# their owners, and the guards that hold them compared the *value*: a wire file
+# could keep the number and lose the derivation -- `WIRE_BOUND = 1_024` beside
+# `max_length=WIRE_BOUND`, or `max_length=512 * 2` -- and stay green. The bound
+# was right and the sentence was not proven. The guard now reads the reference,
+# so a bound that stops naming its owner is red whatever its value; the shapes
+# that used to slip through are pinned against synthetic source so the guard's
+# reach is a standing claim and not a reviewer's re-measurement.
 
 [[sentence]]
 id = "a-persisted-bound-is-written-once-and-derived-everywhere"
