@@ -52,6 +52,7 @@ from atelier2.application.publish_schema_revision import (
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
+    AuthoredOrder,
     InvalidAgentBindings,
     RunCreated,
     start_published_run,
@@ -131,6 +132,7 @@ from atelier2.ports.durable_runs import (
     DurableAnswerCreated,
     DurableRunCreated,
     DurableWriteUnavailable,
+    StartPublishedRunRequestV3,
 )
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
@@ -384,6 +386,28 @@ def test_a_start_that_binds_an_agent_carries_the_authored_roles_to_the_store() -
 
     bound = starter.started[0].agent_bindings
     assert [binding.role.value for binding in bound.bindings] == ["builder"]
+
+
+def test_a_start_that_carries_orders_asks_for_the_v3_shape_without_a_schema_hash() -> (
+    None
+):
+    """The caller names the material. The start pins the schema the document named."""
+    starter = ScriptedStarter(DurableRunCreated(RUN))
+
+    start_published_run(
+        RUN_ID,
+        REVISION_HASH,
+        (AuthoredAgentBinding("builder", "c" * 64),),
+        starter,
+        (AuthoredOrder("order", b'{"portions": 4}'),),
+    )
+
+    requested = starter.started[0]
+    assert isinstance(requested, StartPublishedRunRequestV3)
+    assert requested.run_inputs == ()
+    assert [(order.name, order.value) for order in requested.orders] == [
+        ("order", b'{"portions": 4}')
+    ]
 
 
 class ScriptedAnswerer:

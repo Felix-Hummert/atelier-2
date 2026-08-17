@@ -74,6 +74,7 @@ from atelier2.contracts.workflows_v3 import (
 from atelier2.ports.agent_executions import AgentExecutorKey, AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
+    AuthoredOrder,
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
@@ -138,6 +139,47 @@ def _v3_run_configuration(
 def _supplied_orders(request: AnyStartPublishedRunRequest) -> tuple[RunInput, ...]:
     """The orders this start carries, for a request shape that can carry any."""
     return request.run_inputs if isinstance(request, StartPublishedRunRequestV3) else ()
+
+
+def _authored_orders(request: AnyStartPublishedRunRequest) -> tuple[AuthoredOrder, ...]:
+    """The name-and-bytes form a caller can honestly supply."""
+    return request.orders if isinstance(request, StartPublishedRunRequestV3) else ()
+
+
+def _pin_authored_orders(
+    graph: WorkflowGraphV3,
+    run_configuration: RunConfigurationRevision,
+    authored: tuple[AuthoredOrder, ...],
+) -> tuple[RunInput, ...] | DurableV3StartInputRefused:
+    """Bind each authored order to the schema the document pinned.
+
+    A caller does not name a schema hash. Repeating the pin would make a typo
+    a SCHEMA_MISMATCH instead of the order the operator meant.
+    """
+    declared = {entry.name for entry in graph.graph_inputs}
+    names = [order.name for order in authored]
+    if len(set(names)) != len(names):
+        duplicated = next(
+            name for index, name in enumerate(names) if name in names[:index]
+        )
+        return DurableV3StartInputRefused(
+            duplicated,
+            V3InputRefusal.DUPLICATED,
+            "one name answers one order, and this start supplied it twice",
+        )
+    pinned_orders: list[RunInput] = []
+    for order in authored:
+        if order.name not in declared:
+            return DurableV3StartInputRefused(order.name, V3InputRefusal.UNDECLARED)
+        pinned = _resolved_graph_input_schema(run_configuration, order.name)
+        if pinned is None:
+            return DurableV3StartInputRefused(
+                order.name,
+                V3InputRefusal.SCHEMA_MISMATCH,
+                "the document pinned nothing",
+            )
+        pinned_orders.append(RunInput(order.name, pinned, order.value))
+    return tuple(pinned_orders)
 
 
 def _refused_order(
@@ -452,7 +494,21 @@ class DbosDurableRunStarter:
                 else:
                     assert_never(graph)
 
-                orders = _supplied_orders(request)
+                authored = _authored_orders(request)
+                stored = _supplied_orders(request)
+                if authored and stored:
+                    raise RuntimeError("a start names its orders once")
+                if (
+                    authored
+                    and run_configuration is not None
+                    and isinstance(graph, WorkflowGraphV3)
+                ):
+                    pinned = _pin_authored_orders(graph, run_configuration, authored)
+                    if isinstance(pinned, DurableV3StartInputRefused):
+                        return pinned
+                    orders = pinned
+                else:
+                    orders = stored
                 if run_configuration is not None and isinstance(graph, WorkflowGraphV3):
                     # Inside the serialized transaction and before the first row,
                     # so a refused order leaves no run, no configuration and no

@@ -205,11 +205,10 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was last regenerated when `POST /schema-revisions` opened:
-    exact JSON Schema bytes in, the catalog store's existing publish_revision
-    write, hash out, and each profile refusal as its own problem code. That
-    regeneration is the wire change this head declares; refreshing it alongside
-    a refactor is what this test still refuses.
+    The artefact was last regenerated when `POST /runs` grew the V3 start
+    that carries orders: name and exact JSON text, schema pin owned by the
+    document. That regeneration is the wire change this head declares;
+    refreshing it alongside a refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
