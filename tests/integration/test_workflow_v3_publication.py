@@ -171,6 +171,7 @@ def test_a_v3_revision_this_build_runs_reads_back_as_executable(
     # The roles are what a caller must bind to start this revision, and until now
     # they could be learnt only by reading the document itself.
     assert read.json()["graph"]["agent_roles"] == ["builder"]
+    assert read.json()["graph"]["orders"] == []
     assert read.json()["graph"]["node_previews"] == [
         {
             "id": "implement",
@@ -179,6 +180,50 @@ def test_a_v3_revision_this_build_runs_reads_back_as_executable(
             "instruction_start": "Do the one thing this chain is for.",
         }
     ]
+
+
+def test_a_v3_revision_announces_the_orders_it_declares(
+    runtime: DbosRuntime,
+) -> None:
+    """The graph says which orders a start must supply, without republishing them.
+
+    Until this head a caller could learn the names only by parsing the document
+    itself. The announcement is the same class as `agent_roles`: name plus the
+    schema the author pinned, and nothing of the schema bytes.
+    """
+    document = b"""format_version: 3
+name: Cook to order
+graph_inputs:
+  - name: portions
+    schema:
+      ref: portions-schema
+      revision: schema-portions
+nodes:
+  - id: cook
+    type: agent
+    role: cook
+    mode: headless
+    instruction: Cook exactly what the order says.
+    inputs:
+      - name: portions
+        from:
+          graph_input: portions
+"""
+    client = _client(runtime)
+    revision_hash = _publish(client, document).json()["revision_hash"]
+
+    graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
+        "graph"
+    ]
+
+    assert graph["orders"] == [
+        {
+            "name": "portions",
+            "schema_ref": "portions-schema",
+            "schema_revision": "schema-portions",
+        }
+    ]
+    assert document.decode() not in str(graph)
 
 
 @pytest.mark.proves("a-revision-says-which-form-it-waits-for-not-which-version-it-is")
@@ -207,6 +252,7 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
         ),
         "node_count": V3_NODE_COUNT,
         "agent_roles": ["builder", "reviewer"],
+        "orders": [],
         "node_previews": [
             {
                 "id": "implement",
@@ -299,6 +345,7 @@ nodes:
         }
     ]
     assert graph["agent_roles"] == []
+    assert graph["orders"] == []
     assert "Approve the candidate" not in str(graph["node_previews"])
 
 

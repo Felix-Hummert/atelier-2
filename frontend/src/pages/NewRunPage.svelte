@@ -18,6 +18,7 @@
     requestedStartAgentBindings,
     startMutation,
     startMutationV2,
+    startMutationV3,
     type JournalEntry,
     type PublishMutation,
     type StartMutation
@@ -47,10 +48,19 @@
     error: string | null;
   }
 
+  interface OrderDraft {
+    name: string;
+    schema_ref: string;
+    schema_revision: string;
+    value: string;
+    error: string | null;
+  }
+
   interface RunDraft {
     revision: WorkflowRevisionDetail;
     runId: string;
     bindings: BindingDraft[];
+    orders: OrderDraft[];
   }
 
   let revisions: RetainedResource<WorkflowRevisionPage> = {
@@ -281,10 +291,41 @@
     }
   }
 
+  function declaredOrdersOf(graph: WorkflowRevisionDetail["graph"]): OrderDraft[] {
+    if (graph.format_version !== 3) return [];
+    return graph.orders.map((order) => ({
+      name: order.name,
+      schema_ref: order.schema_ref,
+      schema_revision: order.schema_revision,
+      value: "",
+      error: null
+    }));
+  }
+
+  function missingOrderRefusal(name: string): string {
+    return `input '${name}' was refused: missing`;
+  }
+
+  function validateOrders(orders: OrderDraft[]): boolean {
+    let valid = true;
+    for (const order of orders) {
+      const present = order.value.trim().length > 0;
+      order.error = present ? null : missingOrderRefusal(order.name);
+      valid &&= present;
+    }
+    draft = draft === null ? null : { ...draft, orders: [...orders] };
+    return valid;
+  }
+
+  function schemaHint(order: OrderDraft): string {
+    return `${order.schema_ref}@${order.schema_revision}`;
+  }
+
   async function startDraft(): Promise<void> {
     if (draft === null) return;
     const selected = draft;
     let mutation: StartMutation | null = null;
+    if (selected.orders.length > 0 && !validateOrders(selected.orders)) return;
     if (bindsAgentRoles(selected.revision.graph)) {
       if (!validateBindings(selected.bindings)) return;
       operation = "start";
@@ -295,14 +336,19 @@
         operation = null;
         return;
       }
-      mutation = startMutationV2(
-        selected.runId,
-        selected.revision.revision_hash,
-        publishedBindings.map(({ role, agent_configuration_revision_hash }) => ({
-          role,
-          agent_configuration_revision_hash
-        }))
-      );
+      const bound = publishedBindings.map(({ role, agent_configuration_revision_hash }) => ({
+        role,
+        agent_configuration_revision_hash
+      }));
+      mutation =
+        selected.orders.length > 0
+          ? startMutationV3(
+              selected.runId,
+              selected.revision.revision_hash,
+              bound,
+              selected.orders.map((order) => ({ name: order.name, value: order.value }))
+            )
+          : startMutationV2(selected.runId, selected.revision.revision_hash, bound);
     } else {
       mutation = startMutation(selected.runId, selected.revision.revision_hash);
     }
@@ -371,9 +417,20 @@
         model: "",
         executorRevision: "",
         error: null
-      }))
+      })),
+      orders: declaredOrdersOf(revision.graph)
     };
     applyRememberedChoices();
+  }
+
+  function setOrderValue(name: string, value: string): void {
+    if (draft === null) return;
+    draft = {
+      ...draft,
+      orders: draft.orders.map((order) =>
+        order.name === name ? { ...order, value, error: null } : order
+      )
+    };
   }
 
   function applyRememberedChoices(): void {
@@ -631,6 +688,38 @@
   {:else if operation === "retry"}<p class="status" role="status">Retrying exact request…</p>{/if}
 
   {#if draft !== null}
+    {#if draft.orders.length > 0}
+      <section class="binding-list" aria-labelledby="material-list-title">
+        <p class="eyebrow">Material</p>
+        <h2 id="material-list-title">Orders</h2>
+        {#each draft.orders as order (order.name)}
+          <article
+            class="node-card binding-card"
+            class:node-queued={operation !== "start" && order.error === null}
+            class:node-working={operation === "start" && order.error === null}
+            class:node-needs_you={order.error !== null}
+            aria-label={`Order ${order.name}`}
+          >
+            <header class="node-header">
+              <span class="node-kind">Order</span><h3>{order.name}</h3>
+            </header>
+            <p class="muted"><code>{schemaHint(order)}</code></p>
+            <label class="named-agent">Material
+              <textarea
+                rows="6"
+                value={order.value}
+                oninput={(event) => setOrderValue(order.name, event.currentTarget.value)}
+                spellcheck="false"
+                disabled={busy}
+                aria-invalid={order.error !== null}
+                aria-label={`Material ${order.name}`}
+              ></textarea>
+            </label>
+            {#if order.error !== null}<p class="binding-error" role="alert">{order.error}</p>{/if}
+          </article>
+        {/each}
+      </section>
+    {/if}
     {#if bindsAgentRoles(draft.revision.graph) && draft.bindings.length > 0}
       <section class="binding-list" aria-labelledby="binding-list-title">
         <p class="eyebrow">Agent setup</p>

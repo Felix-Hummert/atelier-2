@@ -21,6 +21,7 @@ function v3Revision(hash: string, documentBase64: string) {
       not_executable_reason: null,
       node_count: 2,
       agent_roles: ["builder"],
+      orders: [],
       node_previews: [
         {
           id: "implement",

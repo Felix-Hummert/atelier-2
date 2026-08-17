@@ -382,7 +382,10 @@ format, roles and node count where the V3 resource carries them, executability,
 and hash. The V3 graph also answers an excerpt of each node — id, kind, role,
 and the bounded start of an agent instruction. A wait has a prompt, not an
 instruction, so that field is empty there. The authored node stays in the
-document bytes. Role bindings on `/new` offer published agent-configuration
+document bytes. A chosen V3 revision that declares orders shows one material field per
+order — the name and the schema the author pinned — and sends the typed text
+as `orders` on the start; a revision that declares none shows no field. Role
+bindings on `/new` offer published agent-configuration
 revisions by provider, model, and readable auth mode; the raw publication form
 stays as a collapsed expert fallback. Last choice per role is remembered in
 this browser only — that is not the project-configuration owner for a

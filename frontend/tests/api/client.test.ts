@@ -613,6 +613,7 @@ describe("the graph a run is allowed to hold", () => {
       executable: false as const,
       not_executable_reason: "agent forms nothing binds yet: outputs" as const,
       agent_roles: [],
+      orders: [],
       node_count: 1,
       node_previews: [
         {

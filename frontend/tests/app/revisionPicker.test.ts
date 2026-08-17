@@ -64,6 +64,7 @@ function namedGraph() {
     not_executable_reason: "agent forms nothing binds yet: outputs",
     node_count: 2,
     agent_roles: ["builder", "reviewer"],
+    orders: [],
     node_previews: [
       {
         id: "implement",
@@ -207,6 +208,7 @@ describe("the saved-workflow picker", () => {
       ...namedGraph(),
       node_count: 1,
       agent_roles: [] as string[],
+      orders: [],
       node_previews: [
         {
           id: "approve",
