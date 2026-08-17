@@ -44,6 +44,7 @@ from atelier2.ports.durable_runs import (
     V3InputRefusal,
 )
 from tests.scenarios.v3_ordered_run import (
+    MEAL_SCHEMA,
     ORDER_NAME,
     ORDER_VALUE,
     ORDERED_RUN_ID,
@@ -171,8 +172,13 @@ def test_the_stored_order_can_never_be_changed_or_removed(
             V3InputRefusal.VALUE_REFUSED,
             "instance-too-large",
         ),
+        (
+            "an order pinned to a schema the document did not name",
+            V3InputRefusal.SCHEMA_MISMATCH,
+            "the document pinned",
+        ),
     ),
-    ids=("missing", "undeclared", "schema", "size"),
+    ids=("missing", "undeclared", "schema", "size", "other-schema"),
 )
 def test_an_order_the_start_cannot_honour_is_refused_by_its_own_name(
     storage: tuple[Engine, DbosDurableRunStarter],
@@ -205,6 +211,17 @@ def test_an_order_the_start_cannot_honour_is_refused_by_its_own_name(
             run_inputs=(
                 replace(
                     decided.run_inputs[0], value=b'{"portions": ' + b"1" * 20_000 + b"}"
+                ),
+            ),
+        ),
+        # A published, perfectly readable schema -- just not the one the document
+        # pinned for this order. Without the revision check the start would
+        # validate the value against a schema nobody asked for and admit it.
+        "the document pinned": replace(
+            decided,
+            run_inputs=(
+                replace(
+                    decided.run_inputs[0], schema_revision=MEAL_SCHEMA.revision_hash
                 ),
             ),
         ),

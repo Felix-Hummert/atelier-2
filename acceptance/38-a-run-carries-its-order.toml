@@ -62,6 +62,16 @@ text = "Before any start, the preview names every declared graph input with its 
 #     an attachment or a file reference would mean is its own wish.
 #   - THE SELECTOR MATERIALIZER. `required_context` slices a source; an order
 #     carries its own bytes and needs no selector at all.
+#
+# ONE REFUSAL IS DECLARED WITHOUT A TEST, AND THAT IS SAID RATHER THAN HIDDEN.
+# `schema-unreadable` answers the case where the schema revision an order names
+# is absent from the store, or is present and is not a schema this profile can
+# enforce. Reaching it needs a store whose published bytes contradict the
+# document that pinned them -- durable corruption, not an input a caller can
+# send -- so a test would have to write that corruption itself and would then be
+# proving its own fixture. The branch is one refusal beside four proven ones and
+# is named here so the gap is visible instead of comfortable. It is the same
+# discipline `acceptance/111-…` applies to `catalog-revision-not-a-member`.
 
 [[sentence]]
 id = "a-run-carries-its-order-as-material-not-as-a-new-revision"
