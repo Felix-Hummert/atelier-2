@@ -361,7 +361,9 @@ boundary.
 An HTTP API now projects that durable state under `/atelier/api/v1`. It can
 publish secret-free auth-profile and agent-configuration revisions; publish
 exact JSON Schema revisions; publish and
-inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs;
+inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs
+(the list accepts a `state` filter so a consumer can ask which runs wait);
+an `invalid-request` names the field and reason the validator already knew;
 answer a waiting node; cancel the current V2 Agent attempt with an optional
 single replacement; submit an accountable reconciliation; and follow the
 closed durable event history as a resumable server-sent event stream. A served V2

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 
@@ -30,6 +31,8 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
+from atelier2.api.app import create_app
+from atelier2.api.openapi import API_PREFIX
 from atelier2.api.stream import BoundedQueryRunner
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptId
@@ -68,7 +71,13 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionFound,
 )
 from tests.scenarios.agents import agent_attempt_execution, commit_configured_agent
-from tests.scenarios.api import durable_queries, permissive_projection_limit
+from tests.scenarios.api import (
+    api_limits,
+    api_ports,
+    durable_queries,
+    event_poll_backoff,
+    permissive_projection_limit,
+)
 
 # A checkout the pool cannot serve at once is refused without waiting at all.
 # Zero is what makes the refusal a decision rather than an elapsed measurement,
@@ -935,6 +944,59 @@ def test_run_pages_follow_exact_utf8_bytes_from_existing_or_missing_boundary(
         if run_id.value.encode("utf-8") > missing_boundary.value.encode("utf-8")
     )
     assert after_missing.next_after is None
+
+
+def test_list_runs_answers_only_the_named_state(engine: Engine) -> None:
+    revision = WorkflowRevision(_workflow_document("state-filter"))
+    first = RunId("alpha-run")
+    second = RunId("zeta-run")
+    _seed_runs(engine, ((first, revision), (second, revision)))
+
+    started = durable_queries(engine).list_runs(None, 100, RunState.STARTED)
+    completed = durable_queries(engine).list_runs(None, 100, RunState.COMPLETED)
+
+    assert isinstance(started, RunPage)
+    assert {projection.run.run_id for projection in started.runs} == {first, second}
+    assert isinstance(completed, RunPage)
+    assert completed.runs == ()
+
+
+def test_the_run_list_route_filters_by_state_and_names_an_unknown_one(
+    engine: Engine,
+) -> None:
+    revision = WorkflowRevision(_workflow_document("state-route"))
+    first = RunId("alpha-run")
+    second = RunId("zeta-run")
+    _seed_runs(engine, ((first, revision), (second, revision)))
+    client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=api_ports(run_queries=durable_queries(engine)),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+    listed = client.get(API_PREFIX + "/runs", params={"state": "STARTED"})
+    empty = client.get(API_PREFIX + "/runs", params={"state": "COMPLETED"})
+    refused = client.get(API_PREFIX + "/runs", params={"state": "NOT_A_STATE"})
+
+    assert listed.status_code == 200
+    assert {item["run_id"] for item in listed.json()["items"]} == {
+        first.value,
+        second.value,
+    }
+    assert empty.status_code == 200
+    assert empty.json()["items"] == []
+    assert refused.status_code == 422
+    assert refused.json()["type"].endswith("invalid-request")
+    assert refused.json()["invalid_fields"] == [
+        {
+            "path": "query/state",
+            "reason": "not a run state this list can filter",
+        }
+    ]
 
 
 @pytest.mark.parametrize(
