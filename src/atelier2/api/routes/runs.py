@@ -49,7 +49,16 @@ from atelier2.application.answer_wait import (
     RunMissing,
     UnanswerableWait,
 )
-from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
+from atelier2.application.cancel_agent_attempt import (
+    AttemptAlreadyTerminal,
+    AttemptMissing,
+    AttemptNotCurrent,
+    CancellationAccepted,
+    CancellationRunMissing,
+    CancellationStale,
+    CommandConflict,
+    ReplacementNotAllowed,
+)
 from atelier2.application.read_runs import RunsListed
 from atelier2.application.reconcile_effect import (
     ReconciliationAcceptedPending,
@@ -96,22 +105,6 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.runs import RunId
-from atelier2.ports.agent_attempts import (
-    AgentAttemptCancellationAccepted,
-    AgentAttemptCancellationCommandConflict,
-    AgentAttemptCancellationNotCurrent,
-    AgentAttemptCancellationRunMissing,
-    AgentAttemptCancellationStale,
-    AgentAttemptCancellationTargetMissing,
-    AgentAttemptCancellationTerminalConflict,
-    AgentAttemptReplacementNotAllowed,
-)
-from atelier2.ports.durable_runs import (
-    DurableStateCorrupt as PortDurableStateCorrupt,
-)
-from atelier2.ports.durable_runs import (
-    DurableWriteUnavailable,
-)
 
 router = APIRouter()
 
@@ -240,28 +233,28 @@ async def cancel_agent_attempt_route(
         raise ApiProblem("invalid-agent-attempt-id") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: cancel_agent_attempt(request, context.ports.agent_attempt_canceller),
+        lambda: context.use_cases.cancel_agent_attempt(request),
     )
     match result:
-        case AgentAttemptCancellationAccepted(terminal=terminal):
+        case CancellationAccepted(terminal=terminal):
             status = HTTPStatus.OK if terminal else HTTPStatus.ACCEPTED
-        case AgentAttemptCancellationRunMissing():
+        case CancellationRunMissing():
             raise ApiProblem("run-not-found")
-        case AgentAttemptCancellationTargetMissing():
+        case AttemptMissing():
             raise ApiProblem("agent-attempt-not-found")
-        case AgentAttemptCancellationNotCurrent():
+        case AttemptNotCurrent():
             raise ApiProblem("agent-attempt-not-current")
-        case AgentAttemptCancellationStale():
+        case CancellationStale():
             raise ApiProblem("agent-attempt-cancellation-stale")
-        case AgentAttemptCancellationTerminalConflict():
+        case AttemptAlreadyTerminal():
             raise ApiProblem("agent-attempt-terminal")
-        case AgentAttemptCancellationCommandConflict():
+        case CommandConflict():
             raise ApiProblem("cancellation-command-conflict")
-        case AgentAttemptReplacementNotAllowed():
+        case ReplacementNotAllowed():
             raise ApiProblem("replacement-not-allowed")
-        case DurableWriteUnavailable():
+        case WriteUnavailable():
             raise ApiProblem("temporarily-unavailable")
-        case PortDurableStateCorrupt():
+        case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)

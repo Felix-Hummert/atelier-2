@@ -1,11 +1,10 @@
 """What each write use-case decides, one case per outcome.
 
-These carry no `proves` mark on purpose. The sentence they would claim — every
-write decides through a use-case that owns building what the store is asked for —
-is not true of this tree while the cancellation is still a pass-through, and a
-mark here would make the gate agree with a sentence the code does not keep. They
-earn their keep as behavioural cover either way, and the mark joins them when the
-write set is finished.
+These carried no `proves` mark while the cancellation was still a pass-through:
+the sentence they would have claimed -- every write decides through a use-case
+that owns the store's answer -- was not true of this tree, and a mark would have
+made the gate agree with a sentence the code did not keep. The cancellation is
+translated now and its cases stand below with the rest, so the mark joins them.
 """
 
 from __future__ import annotations
@@ -16,6 +15,17 @@ from typing import Any
 import pytest
 
 from atelier2.application.answer_wait import UnanswerableWait, answer_wait_result
+from atelier2.application.cancel_agent_attempt import (
+    AttemptAlreadyTerminal,
+    AttemptMissing,
+    AttemptNotCurrent,
+    CancellationAccepted,
+    CancellationRunMissing,
+    CancellationStale,
+    CommandConflict,
+    ReplacementNotAllowed,
+    cancel_agent_attempt,
+)
 from atelier2.application.publish_agent_configurations import (
     PUBLISHED_CONFIGURATION_FORMAT,
     AgentConfigurationRevisionCollision,
@@ -39,8 +49,48 @@ from atelier2.application.start_published_run import (
     RunCreated,
     start_published_run,
 )
-from atelier2.contracts.agents import AgentConfigurationRevisionFormatVersion
+from atelier2.contracts.agent_attempts import (
+    AgentAttempt,
+    AgentAttemptCancellation,
+    AgentAttemptId,
+    AgentAttemptReplacement,
+    AgentAttemptState,
+    CancelAgentAttemptRequest,
+)
+from atelier2.contracts.agents import (
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionRequestHash,
+    AgentExecutorOperationalIdentity,
+)
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted as DurableCancellationAccepted,
+)
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationCommandConflict as DurableCommandConflict,
+)
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationNotCurrent as DurableNotCurrent,
+)
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationRunMissing as DurableRunMissing,
+)
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationStale as DurableStale,
+)
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationTargetMissing as DurableTargetMissing,
+)
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationTerminalConflict as DurableTerminalConflict,
+)
+from atelier2.ports.agent_attempts import (
+    AgentAttemptReplacementNotAllowed as DurableReplacementNotAllowed,
+)
+from atelier2.ports.agent_attempts import (
+    DurableWriteUnavailable as PortDurableWriteUnavailable,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCollision as PortConfigurationCollision,
 )
@@ -172,6 +222,7 @@ PUBLICATIONS: list[
 ]
 
 
+@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
 @pytest.mark.parametrize(
     ("publish", "port_answer", "expected"),
     [
@@ -304,3 +355,91 @@ def test_an_answer_carries_the_authored_values_into_the_submission() -> None:
         "waiting",
         b"6",
     )
+
+
+class ScriptedCanceller:
+    """One canceller that answers with exactly what it was scripted to say."""
+
+    def __init__(self, answer: Any) -> None:
+        self._answer = answer
+        self.asked: list[CancelAgentAttemptRequest] = []
+
+    def request_cancellation(self, request: CancelAgentAttemptRequest) -> Any:
+        self.asked.append(request)
+        return self._answer
+
+
+# Derived rather than invented: the attempt id is bound to its execution and
+# request, so a made-up one is refused before any use-case is reached.
+CANCELLED_EXECUTION = NodeExecutionId("b" * 64)
+CANCELLED_REQUEST_HASH = AgentExecutionRequestHash("c" * 64)
+CANCELLED_ATTEMPT_ID = AgentAttemptId.for_execution(
+    CANCELLED_EXECUTION, CANCELLED_REQUEST_HASH
+)
+CANCELLATION_REQUEST = CancelAgentAttemptRequest(
+    RunId("run/cancel"),
+    CANCELLED_ATTEMPT_ID,
+    "command-1",
+    1,
+    AgentAttemptReplacement.NONE,
+)
+CANCELLED_ATTEMPT = AgentAttempt(
+    CANCELLED_ATTEMPT_ID,
+    CANCELLED_EXECUTION,
+    CANCELLED_REQUEST_HASH,
+    AgentExecutorOperationalIdentity("exact-operation"),
+    RunId("run/cancel"),
+    WorkflowRevisionHash("d" * 64),
+    "implement",
+    1,
+    AgentAttemptState.CANCEL_REQUESTED,
+    1,
+    cancellation=AgentAttemptCancellation("command-1", 1, AgentAttemptReplacement.NONE),
+)
+
+
+@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        pytest.param(
+            DurableCancellationAccepted(CANCELLED_ATTEMPT, False),
+            CancellationAccepted(CANCELLED_ATTEMPT, False),
+            id="accepted",
+        ),
+        pytest.param(DurableRunMissing(), CancellationRunMissing(), id="run-missing"),
+        pytest.param(DurableTargetMissing(), AttemptMissing(), id="attempt-missing"),
+        pytest.param(DurableNotCurrent(), AttemptNotCurrent(), id="not-current"),
+        pytest.param(DurableStale(), CancellationStale(), id="stale"),
+        pytest.param(
+            DurableTerminalConflict(), AttemptAlreadyTerminal(), id="already-terminal"
+        ),
+        pytest.param(
+            DurableCommandConflict(), CommandConflict(), id="command-conflict"
+        ),
+        pytest.param(
+            DurableReplacementNotAllowed(),
+            ReplacementNotAllowed(),
+            id="replacement-not-allowed",
+        ),
+        pytest.param(
+            PortDurableWriteUnavailable(), WriteUnavailable(), id="write-unavailable"
+        ),
+        pytest.param(
+            PortDurableStateCorrupt(), DurableStateCorrupt(), id="state-corrupt"
+        ),
+    ],
+)
+def test_every_port_answer_of_a_cancellation_becomes_this_layers_own_outcome(
+    port_answer: Any, expected: Any
+) -> None:
+    """The last write to be translated, answered in this layer's words.
+
+    It handed the store's union straight to the route until now, which is what
+    made the application layer a corridor for this one call: the route read the
+    store's vocabulary and the record that binds use cases named a port type.
+    """
+    canceller = ScriptedCanceller(port_answer)
+
+    assert cancel_agent_attempt(CANCELLATION_REQUEST, canceller) == expected
+    assert canceller.asked == [CANCELLATION_REQUEST]
