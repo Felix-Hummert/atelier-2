@@ -775,6 +775,7 @@ def _client(
                     runtime.engine, runtime.settings.application_version
                 ),
                 catalog_resolver=DbosCatalogStore(runtime.engine),
+                catalog_admissions=DbosCatalogStore(runtime.engine),
             ),
             limits=active_limits,
             event_poll_backoff=event_poll_backoff(),

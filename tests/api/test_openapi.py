@@ -73,6 +73,8 @@ EXPECTED_PATHS = {
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/by-name/{name}",
     API_PREFIX + "/workflow-revisions/{revision_hash}",
+    API_PREFIX + "/workflow-lineages",
+    API_PREFIX + "/workflow-lineages/{lineage_id}/members",
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
     API_PREFIX + "/runs/{public_ref}/answers",
@@ -95,6 +97,16 @@ EXPECTED_ROUTE_SEQUENCE = (
     ),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
+    (
+        "POST",
+        API_PREFIX + "/workflow-lineages",
+        "found_catalog_lineage_route",
+    ),
+    (
+        "POST",
+        API_PREFIX + "/workflow-lineages/{lineage_id}/members",
+        "admit_catalog_member_route",
+    ),
     (
         "GET",
         API_PREFIX + "/workflow-revisions/by-name/{name}",
@@ -182,11 +194,12 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact was last regenerated when the catalog gained its read route,
-    which brought `/workflow-revisions/by-name/{name}`, the
-    `CatalogNameResolutionResource` component and four catalog problem codes into
-    the document. That regeneration is the wire change this head declares;
-    refreshing it alongside a refactor is what this test still refuses.
+    The artefact was last regenerated when the catalog gained its write door,
+    which brought `/workflow-lineages` and
+    `/workflow-lineages/{lineage_id}/members`, their two request components, the
+    `CatalogAdmissionResource` and four catalog problem codes into the document.
+    That regeneration is the wire change this head declares; refreshing it
+    alongside a refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()

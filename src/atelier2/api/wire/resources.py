@@ -159,6 +159,17 @@ class CatalogNameResolutionResource(ApiModel):
     revision_number: int = Field(ge=1)
 
 
+class CatalogAdmissionResource(ApiModel):
+    """Which lineage a revision now belongs to, and where in it it sits."""
+
+    display_name: str = Field(
+        min_length=1, max_length=MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+    )
+    lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    revision_number: int = Field(ge=1)
+
+
 class WorkflowRevisionPageResource(ApiModel):
     items: tuple[WorkflowRevisionSummaryResource, ...]
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
