@@ -22,6 +22,12 @@ story = "https://github.com/FlexOr2/atelier-2/issues/219"
 #     capability revision attests what a document demands, which a published
 #     revision without bindings cannot be asked. Its missing door is a named
 #     observation elsewhere, not a gap this head fills.
+#   - NO OPERATOR SEEING THE RUN. The API answers with a V3 run; the browser
+#     still cannot draw one. `executableGraph` refuses a V3 graph because the
+#     wire carries a node count for one and not its nodes, so the run page has
+#     nothing to walk -- which is why the picker gates on what this cockpit can
+#     draw rather than on what the server can start. The cockpit drawing is its
+#     own head (#224), and this sentence must not be read as reaching the glass.
 
 [[sentence]]
 id = "a-v3-run-answers-over-http-with-its-own-resource"
