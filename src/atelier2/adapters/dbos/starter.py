@@ -23,18 +23,22 @@ from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     auth_profile_revisions,
+    context_packages_v3,
     node_artifacts_v3,
+    node_execution_requests_v3,
     node_receipt_access_v3,
     node_receipt_outputs_v3,
     node_receipts_v3,
     published_revisions,
     run_agent_bindings,
+    run_configuration_revisions,
     runs,
     workflow_revisions,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.yaml_workflows import (
+    FORMAT_V3_NOT_EXECUTABLE,
     InvalidWorkflowDocument,
     WorkflowFormatNotExecutable,
     parse_executable_workflow_document,
@@ -52,10 +56,15 @@ from atelier2.contracts.node_records_v3 import (
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
+from atelier2.contracts.run_configuration_v3 import (
+    RunConfigurationRevision,
+    declared_references,
+)
 from atelier2.contracts.runs import (
     RunId,
     RunState,
     WorkflowRevision,
+    WorkflowRevisionHash,
 )
 from atelier2.contracts.workflows import (
     AgentNodeV2,
@@ -138,6 +147,11 @@ def _v3_start_is_bound(request: StartV3RunWithReceiptRequest) -> bool:
         receipt.node_execution_id != expected_execution
         or receipt.request_hash != node_request.request_hash
         or receipt.context_package_hash != node_request.context_package_hash
+        or node_request.context_package_hash != request.context_package.package_hash
+        or node_request.run_configuration_revision_hash
+        != request.run_configuration.revision_hash
+        or request.run_configuration.workflow_revision_hash
+        != node_request.workflow_revision_hash
     ):
         return False
     artifacts = request.artifacts
@@ -197,6 +211,8 @@ def _v3_run_record_matches(
         and int(str(run_record["state_version"])) == 0
         and int(str(run_record["last_event_sequence"])) == 0
         and run_record["terminal_hash"] is None
+        and str(run_record["run_configuration_revision_hash"])
+        == node_request.run_configuration_revision_hash.value
     )
 
 
@@ -222,7 +238,41 @@ def _stored_v3_start_matches(
         .mappings()
         .one_or_none()
     )
+    stored_records = {
+        V3StartRecord.CONTEXT_PACKAGE: (
+            connection.scalar(
+                sa.select(context_packages_v3.c.manifest).where(
+                    context_packages_v3.c.package_hash
+                    == request.context_package.package_hash.value
+                )
+            ),
+            request.context_package.manifest,
+        ),
+        V3StartRecord.RUN_CONFIGURATION: (
+            connection.scalar(
+                sa.select(run_configuration_revisions.c.preimage).where(
+                    run_configuration_revisions.c.revision_hash
+                    == request.run_configuration.revision_hash.value
+                )
+            ),
+            request.run_configuration.preimage,
+        ),
+        V3StartRecord.NODE_EXECUTION_REQUEST: (
+            connection.scalar(
+                sa.select(node_execution_requests_v3.c.preimage).where(
+                    node_execution_requests_v3.c.request_hash
+                    == node_request.request_hash.value
+                )
+            ),
+            node_request.preimage,
+        ),
+    }
     if run_record is None or receipt_record is None:
+        return False
+    if any(
+        stored is None or bytes(stored) != expected
+        for stored, expected in stored_records.values()
+    ):
         return False
     if not _v3_run_record_matches(run_record, request):
         return False
@@ -332,6 +382,28 @@ class _StartSeam(Enum):
     V3_FOUNDATION = auto()
 
 
+def _foundation_run_configuration(
+    graph: WorkflowGraphV3,
+    revision_hash: WorkflowRevisionHash,
+    binding_set: AgentBindingSet,
+) -> RunConfigurationRevision:
+    """The exact snapshot a foundation V3 run is bound to.
+
+    The admitted shape declares no versioned reference at all -- every optional
+    form is refused before a run exists -- so the matrix is empty and complete,
+    and no registry is consulted because there is nothing to look up. A document
+    that ever declares one refuses here rather than persisting a run whose own
+    configuration nobody resolved.
+    """
+    declared = declared_references(graph)
+    if declared:
+        raise WorkflowFormatNotExecutable(
+            f"{FORMAT_V3_NOT_EXECUTABLE}: {len(declared)} declared references "
+            "that no resolver binds at this seam"
+        )
+    return RunConfigurationRevision(revision_hash, binding_set.binding_set_hash, ())
+
+
 def _seam_of(graph: AnyWorkflowDocument) -> _StartSeam:
     """The one seam a parsed document belongs to."""
     if isinstance(graph, WorkflowGraphV3):
@@ -404,6 +476,15 @@ class DbosDurableRunStarter:
             graph = parse_executable_workflow_document(revision.document)
             if _seam_of(graph) is not seam:
                 return DurableRunFormatNotExecutable()
+            run_configuration: RunConfigurationRevision | None = None
+            if isinstance(graph, WorkflowGraphV3):
+                if not isinstance(request, StartPublishedRunRequestV2):
+                    return DurableInvalidAgentBindings()
+                run_configuration = _foundation_run_configuration(
+                    graph,
+                    WorkflowRevisionHash(revision.revision_hash.value),
+                    request.agent_bindings,
+                )
         except WorkflowFormatNotExecutable:
             return DurableRunFormatNotExecutable()
         except (OperationalError, PoolTimeoutError):
@@ -530,6 +611,15 @@ class DbosDurableRunStarter:
                     assert_never(graph)
 
                 workflow_id = bootstrap_workflow_id_for(request.run_id)
+                if run_configuration is not None:
+                    connection.execute(
+                        run_configuration_revisions.insert()
+                        .prefix_with("OR IGNORE")
+                        .values(
+                            revision_hash=run_configuration.revision_hash.value,
+                            preimage=run_configuration.preimage,
+                        )
+                    )
                 inserted = connection.execute(
                     runs.insert()
                     .prefix_with("OR IGNORE")
@@ -548,6 +638,11 @@ class DbosDurableRunStarter:
                         state_version=0,
                         last_event_sequence=0,
                         terminal_hash=None,
+                        run_configuration_revision_hash=(
+                            None
+                            if run_configuration is None
+                            else run_configuration.revision_hash.value
+                        ),
                     )
                 )
                 existing_record = (
@@ -570,8 +665,7 @@ class DbosDurableRunStarter:
                     # the binding rows below are not written yet.
                     assert binding_set is not None
                     terminal_hash = existing_record["terminal_hash"]
-                    shape = RunV2 if isinstance(graph, WorkflowGraphV2) else RunV3
-                    run = shape(
+                    head = (
                         request.run_id,
                         request.revision_hash,
                         binding_set.binding_set_hash,
@@ -580,12 +674,19 @@ class DbosDurableRunStarter:
                         str(existing_record["current_node_id"]),
                         int(existing_record["state_version"]),
                         int(existing_record["last_event_sequence"]),
-                        (
-                            None
-                            if terminal_hash is None
-                            else Sha256Hash(str(terminal_hash))
-                        ),
                     )
+                    ended = (
+                        None
+                        if terminal_hash is None
+                        else Sha256Hash(str(terminal_hash))
+                    )
+                    if isinstance(graph, WorkflowGraphV2):
+                        run = RunV2(*head, ended)
+                    else:
+                        # A V3 graph reached this seam, so the configuration was
+                        # bound above; the type refuses a V3 run without it.
+                        assert run_configuration is not None
+                        run = RunV3(*head, run_configuration.revision_hash, ended)
                 if inserted.rowcount == 0:
                     existing_set = existing_record["agent_binding_set_hash"]
                     requested_set = (
@@ -796,6 +897,39 @@ class DbosDurableRunStarter:
                     raise _V3StartConflictError(V3StartRecord.WORKFLOW_BACKING)
 
                 connection.execute(
+                    run_configuration_revisions.insert()
+                    .prefix_with("OR IGNORE")
+                    .values(
+                        revision_hash=request.run_configuration.revision_hash.value,
+                        preimage=request.run_configuration.preimage,
+                    )
+                )
+                connection.execute(
+                    context_packages_v3.insert()
+                    .prefix_with("OR IGNORE")
+                    .values(
+                        package_hash=request.context_package.package_hash.value,
+                        manifest=request.context_package.manifest,
+                    )
+                )
+                connection.execute(
+                    node_execution_requests_v3.insert()
+                    .prefix_with("OR IGNORE")
+                    .values(
+                        request_hash=node_request.request_hash.value,
+                        node_execution_id=NodeExecutionId.for_node(
+                            node_request.run_id,
+                            node_request.workflow_revision_hash,
+                            node_request.node_id,
+                        ).value,
+                        run_configuration_revision_hash=(
+                            node_request.run_configuration_revision_hash.value
+                        ),
+                        context_package_hash=(node_request.context_package_hash.value),
+                        preimage=node_request.preimage,
+                    )
+                )
+                connection.execute(
                     runs.insert().values(
                         run_id=node_request.run_id.value,
                         bootstrap_workflow_id=bootstrap_workflow_id_for(
@@ -809,6 +943,9 @@ class DbosDurableRunStarter:
                         state_version=0,
                         last_event_sequence=0,
                         terminal_hash=None,
+                        run_configuration_revision_hash=(
+                            node_request.run_configuration_revision_hash.value
+                        ),
                     )
                 )
                 if request.artifacts:

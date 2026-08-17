@@ -14,7 +14,7 @@ record of them is whole. V3 execution is open and belongs to #194 H1.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -37,6 +37,7 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.resolve_catalog_name import (
     CatalogNameLineageRetired,
     CatalogNameMissing,
@@ -46,6 +47,7 @@ from atelier2.application.start_named_run import (
     NamedRunRevisionUnbound,
     NamedRunStarted,
     NamedRunTruthForAnotherRevision,
+    NamedRunTruthNotComposed,
     start_named_run,
 )
 from atelier2.contracts.catalog_v3 import (
@@ -56,6 +58,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageId,
     CatalogRetirementState,
 )
+from atelier2.contracts.node_records_v3 import AvailableContextGrant
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -69,6 +72,7 @@ from atelier2.ports.published_revisions import (
     ResolvePublishedRevisionResult,
 )
 from tests.scenarios.v3_proof_run import (
+    PROOF_SCHEMA_REVISION,
     PROOF_WORKFLOW_DOCUMENT,
     decided_truth_for,
 )
@@ -175,6 +179,7 @@ def test_a_name_reaches_the_exact_bytes_the_catalog_holds_under_it(
         decided_truth_for(revision),
         catalog,
         starter,
+        parse_workflow_document,
     )
 
     assert isinstance(result, NamedRunStarted)
@@ -211,6 +216,7 @@ def test_a_named_start_records_a_row_in_every_one_of_the_seven_tables(
         decided_truth_for(revision),
         catalog,
         starter,
+        parse_workflow_document,
     )
 
     assert isinstance(result, NamedRunStarted)
@@ -241,6 +247,7 @@ def test_a_failure_at_the_last_boundary_rolls_the_whole_named_start_back(
         decided_truth_for(revision),
         catalog,
         starter,
+        parse_workflow_document,
     )
 
     assert not isinstance(result, NamedRunStarted)
@@ -266,6 +273,7 @@ def test_a_retired_lineage_records_nothing_and_says_which_refusal_it_is(
         decided_truth_for(revision),
         catalog,
         starter,
+        parse_workflow_document,
     )
 
     assert isinstance(result, NamedRunNameUnresolved)
@@ -290,6 +298,7 @@ def test_a_name_nobody_admitted_records_nothing_and_says_which_refusal_it_is(
         decided_truth_for(revision),
         catalog,
         starter,
+        parse_workflow_document,
     )
 
     assert isinstance(result, NamedRunNameUnresolved)
@@ -317,6 +326,7 @@ def test_a_decided_truth_for_another_revision_is_refused_without_a_write(
         decided_truth_for(stranger),
         catalog,
         starter,
+        parse_workflow_document,
     )
 
     assert isinstance(result, NamedRunTruthForAnotherRevision)
@@ -379,8 +389,49 @@ def test_a_name_whose_member_is_not_admitted_is_refused_by_that_name(
         decided_truth_for(revision),
         ResolverThatDeniesItsOwnName(lineage.lineage_id, revision.revision_hash),
         starter,
+        parse_workflow_document,
     )
 
     assert isinstance(result, NamedRunRevisionUnbound)
     assert result.lineage_id == lineage.lineage_id
+    assert durable_snapshot(engine) == before
+
+
+@pytest.mark.proves("a-v3-node-execution-request-is-composed-not-supplied")
+def test_a_decided_request_this_document_does_not_compose_is_refused(
+    workshop: tuple[Engine, DbosCatalogStore, DbosDurableRunStarter],
+) -> None:
+    """The caller says what happened; what was asked is composed here.
+
+    A truth carrying a request the document and the frozen configuration do not
+    produce is refused by both hashes, before anything durable exists -- the
+    author runs on the real path rather than beside it.
+    """
+    engine, catalog, starter = workshop
+    revision = admitted(catalog)
+    decided = decided_truth_for(revision)
+    forged = replace(
+        decided,
+        node_request=replace(
+            decided.node_request,
+            available_context=(
+                AvailableContextGrant("invented", PROOF_SCHEMA_REVISION),
+            ),
+        ),
+    )
+    before = durable_snapshot(engine)
+
+    result = start_named_run(
+        RevisionKind.WORKFLOW,
+        DISPLAY_NAME,
+        "head",
+        forged,
+        catalog,
+        starter,
+        parse_workflow_document,
+    )
+
+    assert isinstance(result, NamedRunTruthNotComposed)
+    assert result.decided_request_hash == forged.node_request.request_hash
+    assert result.composed_request_hash == decided.node_request.request_hash
     assert durable_snapshot(engine) == before
