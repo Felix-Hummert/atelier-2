@@ -1,4 +1,4 @@
-"""The schemas an event stream frames, in both workflow format versions."""
+"""The schemas an event stream frames, in each workflow format version."""
 
 from __future__ import annotations
 
@@ -204,4 +204,88 @@ RunEventResourceV2 = Annotated[
     Field(discriminator="event"),
 ]
 
-AnyRunEventResource = RunEventResource | RunEventResourceV2
+
+class RunEventBaseResourceV3(ApiModel):
+    workflow_format_version: Literal[3]
+    cursor: str = Field(pattern=EVENT_CURSOR_PATTERN)
+    sequence: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    node_id: str = Field(min_length=1)
+    node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    event_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
+    """Where the whole run stands once this event is folded into the snapshot.
+
+    A format-3 line writes agent events through the same attempt store as V2, so
+    the rail travels with them the same way. V1 stays byte-frozen and cannot
+    carry it. Wait, Action, and Subworkflow V3 resources are not invented here:
+    no format-3 run persists those kinds today.
+    """
+
+
+class AgentCompletedEventResourceV3(RunEventBaseResourceV3):
+    event: Literal["AGENT_COMPLETED"]
+    output_base64: str
+    output_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
+
+
+class AgentFailedEventResourceV3(RunEventBaseResourceV3):
+    event: Literal["AGENT_FAILED"]
+    failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"]
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
+
+
+class AgentCancelRequestedEventResourceV3(RunEventBaseResourceV3):
+    event: Literal["AGENT_CANCEL_REQUESTED"]
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
+    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    replacement: Literal["NONE", "ONE"]
+
+
+class AgentCancelledEventResourceV3(RunEventBaseResourceV3):
+    event: Literal["AGENT_CANCELLED"]
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
+    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    replacement: Literal["NONE", "ONE"]
+    disposition: Literal[
+        "NEVER_LAUNCHED",
+        "EXITED_BEFORE_SIGNAL",
+        "REAPED_AFTER_TERM",
+        "REAPED_AFTER_KILL",
+        "OWNER_LOST_AFTER_PARENT_DEATH",
+    ]
+    replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class AgentInterruptedEventResourceV3(RunEventBaseResourceV3):
+    event: Literal["AGENT_INTERRUPTED"]
+    attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    attempt_ordinal: Literal[1, 2]
+    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    replacement: Literal["NONE", "ONE"]
+    disposition: Literal[
+        "NEVER_LAUNCHED",
+        "EXITED_BEFORE_SIGNAL",
+        "REAPED_AFTER_TERM",
+        "REAPED_AFTER_KILL",
+        "OWNER_LOST_AFTER_PARENT_DEATH",
+    ]
+    replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
+
+
+RunEventResourceV3 = Annotated[
+    AgentCompletedEventResourceV3
+    | AgentFailedEventResourceV3
+    | AgentCancelRequestedEventResourceV3
+    | AgentCancelledEventResourceV3
+    | AgentInterruptedEventResourceV3,
+    Field(discriminator="event"),
+]
+
+AnyRunEventResource = RunEventResource | RunEventResourceV2 | RunEventResourceV3

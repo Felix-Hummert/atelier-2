@@ -22,6 +22,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 from annotated_types import MaxLen
 from pydantic import BaseModel
 
@@ -51,7 +52,9 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AdmitCatalogMemberRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     "AgentCancelRequestedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AgentCancelRequestedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelledEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AgentCancelledEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CatalogAdmissionResource.display_name": (MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS),
     "FoundCatalogLineageRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     "FoundCatalogLineageRequestResource.display_name": (
@@ -63,6 +66,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentConfigurationRevisionResource.model": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentConfigurationRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "AgentInterruptedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AgentInterruptedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "CancelAgentAttemptRequestResource.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -117,17 +121,81 @@ def _declared_wire_bounds() -> Mapping[str, int]:
     return declared
 
 
-def _typed_bound_literals(module: ModuleType) -> tuple[str, ...]:
-    """Where a wire module writes a maximum length as a number of its own."""
-    source = Path(inspect.getfile(module)).read_text(encoding="utf-8")
-    typed: list[str] = []
-    for node in ast.walk(ast.parse(source)):
+def _names_this_module_binds(tree: ast.Module) -> frozenset[str]:
+    """Every name the source assigns to itself, wherever it assigns it.
+
+    Scope is deliberately ignored. A bound that reads a name this file wrote is
+    not derived from the contract no matter which body the writing happened in,
+    and every `max_length=` in a wire module sits inside a class body -- so a
+    module-level-only reading was blind exactly where the bounds live.
+
+    Both assignment forms count. `_WIRE_BOUND = 1_024` and
+    `_WIRE_BOUND: int = 1_024` differ only in whether an annotation is present,
+    which is nothing the owner cares about.
+    """
+
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            bound.update(
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            )
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            bound.add(node.target.id)
+    return frozenset(bound)
+
+
+def _reference_root(bound: ast.expr) -> str | None:
+    """The name a bound expression ultimately reads, or nothing if it computes one.
+
+    `MAXIMUM_AGENT_FIELD_CHARACTERS` and `agents.MAXIMUM_AGENT_FIELD_CHARACTERS`
+    both read an owner and answer with the name the reading starts from; a
+    literal or an arithmetic expression reads nothing and answers with nothing.
+    """
+
+    if isinstance(bound, ast.Name):
+        return bound.id
+    if isinstance(bound, ast.Attribute):
+        return _reference_root(bound.value)
+    return None
+
+
+def unowned_bounds(source: str, where: str) -> tuple[str, ...]:
+    """Where this source writes a maximum length it does not take from an owner.
+
+    A bound follows its owner only if it *names* one. Three shapes do not, and
+    they fail the same way -- the value is right today and stops moving with the
+    contract tomorrow:
+
+      - a literal, which was never connected to anything;
+      - an expression, which recomputes the number instead of reading it;
+      - a name this module assigned itself, which is a second owner wearing the
+        first one's value.
+
+    The third is why comparing values was not enough. `WIRE_BOUND = 1_024` beside
+    `max_length=WIRE_BOUND` reports the same integer as the contract and passes
+    every check that only asks what the number is.
+    """
+
+    tree = ast.parse(source)
+    assigned_here = _names_this_module_binds(tree)
+    unowned: list[str] = []
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         for keyword in node.keywords:
-            if keyword.arg == "max_length" and isinstance(keyword.value, ast.Constant):
-                typed.append(f"{module.__name__}:{keyword.value.lineno}")
-    return tuple(typed)
+            if keyword.arg != "max_length":
+                continue
+            bound = keyword.value
+            root = _reference_root(bound)
+            if root is None or root in assigned_here:
+                unowned.append(f"{where}:{bound.lineno}")
+    return tuple(unowned)
+
+
+def _unowned_wire_bounds(module: ModuleType) -> tuple[str, ...]:
+    source = Path(inspect.getfile(module)).read_text(encoding="utf-8")
+    return unowned_bounds(source, module.__name__)
 
 
 def test_every_bounded_wire_field_is_bounded_by_the_contract_that_owns_it() -> None:
@@ -135,12 +203,99 @@ def test_every_bounded_wire_field_is_bounded_by_the_contract_that_owns_it() -> N
     assert _declared_wire_bounds() == OWNED_WIRE_BOUNDS
 
 
-def test_no_wire_field_types_a_bound_it_does_not_own() -> None:
-    """A literal cannot follow its owner, so the wire never writes one."""
-    typed = tuple(
-        location
-        for module in WIRE_MODULES
-        for location in _typed_bound_literals(module)
+@pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
+def test_no_wire_field_writes_a_bound_it_does_not_take_from_its_owner() -> None:
+    """Every bound on the wire names the contract it follows, and nothing else."""
+    unowned = tuple(
+        location for module in WIRE_MODULES for location in _unowned_wire_bounds(module)
     )
 
-    assert typed == ()
+    assert unowned == ()
+
+
+@pytest.mark.parametrize(
+    ("shape", "source", "reported"),
+    [
+        ("the owner itself", "Field(max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)", False),
+        ("a literal", "Field(max_length=1_024)", True),
+        ("an expression over the owner", "Field(max_length=512 * 2)", True),
+        (
+            "a name this module assigned itself",
+            "WIRE_BOUND = 1_024\nField(max_length=WIRE_BOUND)",
+            True,
+        ),
+        (
+            "a local alias of the owner",
+            "WIRE_BOUND = MAXIMUM_AGENT_FIELD_CHARACTERS\nField(max_length=WIRE_BOUND)",
+            True,
+        ),
+        # Where the bounds actually live. Every max_length in a wire module sits
+        # inside a class body, so a guard that read only module level was blind
+        # in the one place it had to see.
+        (
+            "a name assigned in the class body that holds the field",
+            (
+                "class R(ApiModel):\n"
+                "    WIRE_BOUND = 1_024\n"
+                "    role: str = Field(max_length=WIRE_BOUND)\n"
+            ),
+            True,
+        ),
+        (
+            "a class-body alias of the owner",
+            (
+                "class R(ApiModel):\n"
+                "    WIRE_BOUND = MAXIMUM_AGENT_FIELD_CHARACTERS\n"
+                "    role: str = Field(max_length=WIRE_BOUND)\n"
+            ),
+            True,
+        ),
+        (
+            "an annotated assignment, which is an assignment with a type on it",
+            "WIRE_BOUND: int = 1_024\nField(max_length=WIRE_BOUND)",
+            True,
+        ),
+        (
+            "an annotated assignment in the class body",
+            (
+                "class R(ApiModel):\n"
+                "    WIRE_BOUND: int = 1_024\n"
+                "    role: str = Field(max_length=WIRE_BOUND)\n"
+            ),
+            True,
+        ),
+        # Reading the owner through the module that holds it is still reading the
+        # owner, so the guard must not refuse it and call that strictness.
+        (
+            "the owner reached through its own module",
+            "Field(max_length=agents.MAXIMUM_AGENT_FIELD_CHARACTERS)",
+            False,
+        ),
+        (
+            "the owner inside a class body",
+            (
+                "class R(ApiModel):\n"
+                "    role: str = Field(max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)\n"
+            ),
+            False,
+        ),
+    ],
+)
+@pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
+def test_the_guard_reports_every_bound_that_stopped_naming_its_owner(
+    shape: str, source: str, reported: bool
+) -> None:
+    """Every shape that keeps the value and loses the derivation, pinned.
+
+    The class-body and annotated rows are here because the first version of this
+    guard passed them: it read module-level `ast.Assign` only, and every bound on
+    the wire is written inside a class body. A guard that cannot fail where the
+    subject lives proves its fixture, not its reach -- so the reach is the thing
+    pinned, including the two readings that must stay green.
+
+    Pinned against synthetic source rather than by editing a wire module, so the
+    guard's own reach is a standing claim instead of something a reviewer has to
+    re-prove by hand each time. The last two are the pair that passed both earlier
+    checks: same value, no owner.
+    """
+    assert bool(unowned_bounds(source, shape)) is reported

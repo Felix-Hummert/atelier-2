@@ -334,9 +334,11 @@ core derives that rail from the run snapshot, that revision, and the events sinc
 with the snapshot authoritative only until an event overtakes it, and success
 carries exactly one name on the wire. Existing
 V1 JSON and OpenAPI component bytes remain frozen while exact V2 unions expose
-the run's safe binding matrix and byte-safe Agent output. Public references are
-transport identifiers, not new domain identities, and retries report whether a
-command was newly accepted or already existed without duplicating its durable
+the run's safe binding matrix and byte-safe Agent output, and the event stream
+answers a format-3 agent event as its own family rather than dressing it as V1.
+Public references are transport identifiers, not new domain identities, and
+retries report whether a command was newly accepted or already existed without
+duplicating its durable
 write or wake-up. [ADR 0003](decisions/0003-http-api.md) owns the API and resume
 contract.
 

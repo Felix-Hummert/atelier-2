@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 from atelier2.adapters.claude_subscription import (
@@ -33,15 +34,66 @@ CONFORMANT_CLAUDE_VERSION = ".".join(
     str(part) for part in max(CONFORMANT_CLAUDE_VERSIONS)
 )
 
+_FROM_INSTRUCTION = re.compile(r"^FROM\s+", re.MULTILINE | re.IGNORECASE)
+_USER_INSTRUCTION = re.compile(r"^USER\s+(\S+)\s*$", re.MULTILINE | re.IGNORECASE)
+_PRIVILEGED_USERS = frozenset({"root", "0"})
+_NO_USER_MESSAGE = "image recipe declares no USER"
+_PRIVILEGED_USER_MESSAGE = "image recipe ends as privileged USER"
+
+
+def last_user_name(recipe: str) -> str:
+    last_from = None
+    for match in _FROM_INSTRUCTION.finditer(recipe):
+        last_from = match
+    last_stage = recipe[last_from.end() :] if last_from is not None else ""
+    declared = [
+        match.group(1).split(":", 1)[0]
+        for match in _USER_INSTRUCTION.finditer(last_stage)
+    ]
+    assert declared, _NO_USER_MESSAGE
+    return declared[-1]
+
+
+def assert_recipe_runs_unprivileged(recipe: str) -> None:
+    user = last_user_name(recipe)
+    assert user not in _PRIVILEGED_USERS, f"{_PRIVILEGED_USER_MESSAGE} {user}"
+
 
 def test_the_image_recipe_exists_and_runs_unprivileged() -> None:
     text = DOCKERFILE.read_text(encoding="utf-8")
 
-    assert re.search(r"^USER (?!root\b)\S+", text, re.MULTILINE)
-    assert not re.search(r"^USER root\s*$", text, re.MULTILINE)
+    assert_recipe_runs_unprivileged(text)
     assert "uv sync --locked --no-dev" in text
     assert "frontend/dist" in text
     assert "npm run build" in text
+
+
+def test_a_recipe_that_drops_the_final_stage_user_is_refused() -> None:
+    recipe = DOCKERFILE.read_text(encoding="utf-8")
+    last_user = None
+    for match in _USER_INSTRUCTION.finditer(recipe):
+        last_user = match
+    assert last_user is not None
+    mutated = recipe[: last_user.start()] + recipe[last_user.end() :]
+
+    with pytest.raises(AssertionError, match=_NO_USER_MESSAGE):
+        assert_recipe_runs_unprivileged(mutated)
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    (
+        "USER 0",
+        "USER root",
+        "USER root:root",
+        "USER 0:0",
+    ),
+)
+def test_a_recipe_that_ends_as_privileged_is_refused(instruction: str) -> None:
+    recipe = DOCKERFILE.read_text(encoding="utf-8") + f"\n{instruction}\n"
+
+    with pytest.raises(AssertionError, match=_PRIVILEGED_USER_MESSAGE):
+        assert_recipe_runs_unprivileged(recipe)
 
 
 def test_the_image_pins_the_one_conformant_claude_and_no_other_provider() -> None:
