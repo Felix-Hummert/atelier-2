@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -349,5 +349,97 @@ describe("the picker reads past its first page", () => {
       "Details for Sweep the suite and file what broke"
     ]);
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe("the picker groups revisions that share a published name", () => {
+  const lineageName = "drei-saetze-review-sehend";
+  const olderHash = "c".repeat(64);
+  const newestHash = "d".repeat(64);
+
+  function olderRevision() {
+    return decodedRow({
+      revision_hash: olderHash,
+      format_version: 3,
+      executable: true,
+      not_executable_reason: null,
+      name: lineageName,
+      description: "The first admitted member."
+    });
+  }
+
+  function newestRevision() {
+    return decodedRow({
+      revision_hash: newestHash,
+      format_version: 3,
+      executable: false,
+      not_executable_reason: "agent forms nothing binds yet: outputs",
+      name: lineageName,
+      description: "The catalog head."
+    });
+  }
+
+  function lineageApi(overrides: Partial<CockpitApi> = {}): CockpitApi {
+    return api([olderRevision(), newestRevision()], {
+      getRevisionByName: vi.fn(async () => ({
+        display_name: lineageName,
+        lineage_id: "e".repeat(64),
+        revision_hash: newestHash,
+        revision_number: 2
+      })),
+      ...overrides
+    });
+  }
+
+  it("offers two revisions of one lineage as one row, defaults to the newest, and switching revision changes startability", async () => {
+    render(App, {
+      props: {
+        cockpitApi: lineageApi(),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    const option = await screen.findByRole("radio", { name: new RegExp(lineageName) });
+
+    expect(screen.getAllByRole("radio", { name: new RegExp(lineageName) })).toHaveLength(1);
+    expect(option).toHaveProperty("disabled", true);
+    const article = screen.getByRole("article", { name: lineageName });
+    const row = within(article);
+    const choice = option.closest("label");
+    expect(choice?.textContent).toContain("The catalog head.");
+    expect(choice?.textContent).toContain("Cannot be started: agent forms nothing binds yet: outputs");
+    expect(choice?.textContent).not.toContain("The first admitted member.");
+
+    await fireEvent.change(row.getByLabelText(`Revision of ${lineageName}`), {
+      target: { value: olderHash }
+    });
+
+    expect(screen.getByRole("radio", { name: new RegExp(lineageName) })).toHaveProperty(
+      "disabled",
+      false
+    );
+    expect(row.getByText("The first admitted member.")).toBeTruthy();
+    expect(row.getByRole("radio").closest("label")?.textContent).not.toMatch(/cannot be started/i);
+  });
+
+  it("asks the existing by-name door for the head of a name that has several revisions", async () => {
+    const cockpitApi = lineageApi();
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("radio", { name: new RegExp(lineageName) });
+
+    expect(vi.mocked(cockpitApi.getRevisionByName).mock.calls).toEqual([[lineageName]]);
+  });
+
+  it("does not show an empty revision submenu for a lineage with one revision", async () => {
+    renderPicker([namedRevision()]);
+
+    await screen.findByRole("radio", {
+      name: /Implement a candidate, then review it for defects/
+    });
+
+    expect(screen.queryByLabelText(/Revisions of/)).toBeNull();
+    expect(screen.queryByLabelText(/^Revision of /)).toBeNull();
   });
 });

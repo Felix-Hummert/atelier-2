@@ -579,6 +579,32 @@ describe("the saved-workflow listing the cockpit asks for", () => {
   });
 });
 
+describe("the catalog name the picker asks for the head", () => {
+  it("asks the existing by-name door and decodes the resolution the document serves", async () => {
+    const body = {
+      display_name: "drei-saetze-review-sehend",
+      lineage_id: digest,
+      revision_hash: digest,
+      revision_number: 2
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const resolved = await createCockpitApi(fetcher).getRevisionByName(
+      "drei-saetze-review-sehend"
+    );
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/workflow-revisions/by-name/drei-saetze-review-sehend"
+    );
+    expect(resolved).toEqual(body);
+  });
+});
+
 describe("the published agent-configuration listing", () => {
   it("asks the collection with the house page bound and decodes the item form", async () => {
     const item = {

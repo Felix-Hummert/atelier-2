@@ -376,8 +376,13 @@ contract.
 
 A narrow local cockpit can list runs, publish and start a workflow from `/new`,
 and project one durable run's bound revision, state, nodes, and resumable event
-history. The saved-workflow picker offers a named revision by the name its own
-bytes declare; Details repeats what the published graph already answers —
+history. The saved-workflow picker offers one row per authored name the described
+listing already publishes, not one row per revision hash. Several revisions
+that share a name collapse; the catalog head from
+`GET /workflow-revisions/by-name/{name}` is the default when that name
+resolves, and older members sit in a collapsed revision choice. A name with
+one listed revision has no empty submenu. Unnamed documents stay one row
+each, as they did. Details repeats what the published graph already answers —
 format, roles and node count where the V3 resource carries them, executability,
 and hash. The V3 graph also answers an excerpt of each node — id, kind, role,
 the bounded start of an agent instruction, and the authored `depends_on`

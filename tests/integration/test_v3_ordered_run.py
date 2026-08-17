@@ -341,6 +341,49 @@ def test_the_public_start_route_posts_the_order_the_document_declared(
     assert bytes(stored) == b'{"portions": 7}'
 
 
+@pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
+def test_the_public_start_route_names_an_undeclared_order(
+    runtime: DbosRuntime,
+) -> None:
+    """The HTTP half of the refusal the application seam already pinned.
+
+    The table at the starter names `UNDECLARED`. A route that swallowed the
+    token or the order name would still 422, and the operator would not know
+    which input to drop.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    binding = bindings.bindings[0]
+
+    refused = durable_api_client(runtime).post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": "v3/undeclared-order",
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [
+                {"name": ORDER_NAME, "value": '{"portions": 7}'},
+                {"name": "supper", "value": '{"portions": 1}'},
+            ],
+        },
+    )
+
+    assert refused.status_code == 422
+    problem = refused.json()
+    assert problem["type"] == "urn:atelier2:problem:v1:run-input-refused"
+    assert "supper" in problem["detail"]
+    assert V3InputRefusal.UNDECLARED.value in problem["detail"]
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
 def test_one_published_revision_serves_two_different_orders(
     runtime: DbosRuntime, cook: RecordingAgentExecutorFactoryV2
