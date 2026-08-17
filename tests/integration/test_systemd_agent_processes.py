@@ -276,7 +276,7 @@ class _FakeSystemd:
             RuntimeMaxUSec="1min",
             SendSIGKILL="yes",
             CollectMode="inactive-or-failed",
-            WorkingDirectory=str(self.invocation.lease.working_directory),
+            WorkingDirectory=str(self.generation),
             InvocationID="0123456789abcdef0123456789abcdef",
             ExecStart="{ path=/python ; argv[]=/python -m atelier2.adapters.systemd_agent_collector ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=7 ; code=(null) ; status=0/0 }",
         )

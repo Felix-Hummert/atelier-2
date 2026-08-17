@@ -483,7 +483,7 @@ class DirectSystemdAgentProcessManager:
             "KillMode": "control-group",
             "SendSIGKILL": "yes",
             "CollectMode": "inactive-or-failed",
-            "WorkingDirectory": str(intent.working_directory),
+            "WorkingDirectory": str(generation_directory),
         }
         durations = ("TimeoutStopUSec", "RuntimeMaxUSec")
         names = (*expected, *durations, "InvocationID", "ExecStart")
@@ -599,7 +599,11 @@ class DirectSystemdAgentProcessManager:
             f"--property=TimeoutStopSec={configuration.timeout_stop_seconds}s",
             f"--property=RuntimeMaxSec={configuration.runtime_max_seconds}s",
             "--property=SendSIGKILL=yes",
-            f"--property=WorkingDirectory={intent.working_directory}",
+            # The unit's own working directory addresses the collector: it reads
+            # its INTENT, ENVELOPE, STARTED and RESULT from where it is started.
+            # The provider runs one level below, in the directory the attempt
+            # leased, which the collector takes from the launch envelope.
+            f"--property=WorkingDirectory={generation_directory}",
             f"--property=LoadCredential={DIRECT_SYSTEMD_LAUNCH_CREDENTIAL_NAME}:{source}",
             *self._collector,
         )

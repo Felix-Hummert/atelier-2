@@ -50,11 +50,17 @@ class DirectSystemdRecordOutdated(ValueError):
 class DirectSystemdIntent:
     """The durable truth about what was meant to start, and where.
 
-    `working_directory` is the attempt's leased directory, and it is durable
-    for one reason: the unit's identity attestation includes systemd's own
-    `WorkingDirectory`, and a process that restarts between start and stop has
-    no other source for the value it must compare against -- the launch
-    envelope is deleted before the unit starts.
+    `working_directory` is the attempt's leased directory -- the ground the
+    provider itself runs on, which the collector gives it from the launch
+    envelope. It is durable because a record of what was meant to start is
+    incomplete without where it was meant to run, and the envelope that carried
+    it is deleted before the unit starts.
+
+    It is deliberately **not** what the unit's identity attestation compares.
+    The unit's own `WorkingDirectory` is the generation directory, because that
+    is how the collector is told where its records are -- it reads them from its
+    own working directory -- and the manager derives that value itself rather
+    than reading it back from here.
     """
 
     attempt_id: AgentAttemptId
