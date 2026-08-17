@@ -167,16 +167,60 @@ def test_restart_kills_a_session_escaped_descendant_from_only_the_cgroup(
             os.kill(descendant_pid, 9)
 
 
-def test_restart_retries_recovery_after_the_first_witness_lookup_fails(
+def test_restart_attests_cleanup_when_the_host_already_removed_the_witness(
     tmp_path: Path,
 ) -> None:
     child(tmp_path, "crash-running", CRASHED)
 
-    child(tmp_path, "recover-after-missing-witness-restored")
+    child(tmp_path, "recover-without-witness")
 
-    assert (tmp_path / "second-recovery-state").read_text(
+    assert (tmp_path / "witnessless-recovery-state").read_text(
         encoding="ascii"
     ) == "INTERRUPTED"
+
+
+def test_a_serve_start_converges_a_run_whose_driver_workflow_died(
+    tmp_path: Path,
+) -> None:
+    child(tmp_path, "crash-running", CRASHED)
+    provider_pid = int((tmp_path / "running-pid").read_text(encoding="ascii"))
+    assert rows(
+        tmp_path, "SELECT state,cancellation_command_id FROM agent_attempts"
+    ) == (("LAUNCH_ARMED", None),)
+
+    child(tmp_path, "converge-driverless")
+
+    cgroup = Path((tmp_path / "driverless-cgroup").read_text(encoding="utf-8"))
+    endpoint = Path((tmp_path / "driverless-endpoint").read_text(encoding="utf-8"))
+    assert (tmp_path / "converged-state").read_text(encoding="ascii") == "INTERRUPTED"
+    assert not Path(f"/proc/{provider_pid}").exists()
+    assert not cgroup.exists()
+    assert not endpoint.exists()
+    assert rows(
+        tmp_path,
+        "SELECT state,cancellation_command_id,cancellation_disposition FROM agent_attempts",
+    ) == (("INTERRUPTED", "atelier2-driver-lost", "OWNER_LOST_AFTER_PARENT_DEATH"),)
+    assert rows(
+        tmp_path, "SELECT event_kind,cancellation_command_id FROM run_events"
+    ) == (
+        ("AGENT_CANCEL_REQUESTED", "atelier2-driver-lost"),
+        ("AGENT_INTERRUPTED", "atelier2-driver-lost"),
+    )
+
+
+def test_a_serve_start_converges_even_where_the_unit_took_the_witness_with_it(
+    tmp_path: Path,
+) -> None:
+    child(tmp_path, "crash-running", CRASHED)
+
+    child(tmp_path, "converge-driverless-without-witness")
+
+    endpoint = Path((tmp_path / "driverless-endpoint").read_text(encoding="utf-8"))
+    assert (tmp_path / "converged-state").read_text(encoding="ascii") == "INTERRUPTED"
+    assert not endpoint.exists()
+    assert rows(
+        tmp_path, "SELECT state,cancellation_disposition FROM agent_attempts"
+    ) == (("INTERRUPTED", "OWNER_LOST_AFTER_PARENT_DEATH"),)
 
 
 def test_restart_converges_after_cleanup_precedes_durable_attestation(
