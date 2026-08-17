@@ -82,6 +82,13 @@ text = "A V3 agent attempt that succeeds records the provider's receipt and carr
 id = "a-v3-node-execution-request-is-composed-not-supplied"
 text = "The node execution request and the manifest it names are composed on the real start path from the document and the run configuration the run is bound to, never resolved a second time and never taken from the caller: a decided truth carrying a request this document does not compose is refused by both hashes before anything durable exists, a declared reference the frozen configuration does not carry is refused by its site rather than dropped, and a node declaring more revisions of one kind than the request can bind is refused by that count rather than bound in part."
 
+# NARROWED WITH THE CALLERLESS SUPERVISED DOOR, SAME ID. This sentence used to
+# claim the supervised start and the public start alike, plus the preimages of
+# the node-execution request and the manifest, receipt recomputation from kept
+# bytes, and that a receipt can only carry the request of its own node
+# execution. Those clauses described the deleted door. What remains is the
+# snapshot the public start actually stores.
+
 [[sentence]]
 id = "a-supervised-v3-run-records-the-configuration-it-was-started-under"
 text = "Every V3 run binds the exact run configuration it was started under, and the store keeps the preimage of that snapshot, immutable and reachable from the row that names it."
