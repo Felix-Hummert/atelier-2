@@ -47,28 +47,6 @@ ROUTE_PACKAGE = "src/atelier2/api/routes"
 PORT_ANSWERS_THE_API_MATCHES = frozenset(
     {"DurableWriteUnavailable", "DurableStateCorrupt"}
 )
-ROUTE_CALLS_STILL_HOLDING_PORTS = {
-    "runs": {"cancel_agent_attempt_route": ("agent_attempt_canceller",)},
-}
-"""Every port a route still reaches, named down to the single access.
-
-The unit of the exception is the unit of the work, and the work is one access at a
-time. A module is not translated at once, and neither is a call: an allowlisted
-call that grows a
-*second* port read has taken back a decision it had already given up. So the
-declaration names which ports each call reaches, and the check compares the whole
-list rather than asking whether the call reaches one at all.
-
-Read in both directions: an access this map does not name is red, and an access it
-names that no longer happens is red too. A stale entry is a failure rather than a
-comfortable lie. It shrinks to empty, and with the last entry it deletes itself.
-
-One entry is left, and it is left for a reason that is not scope: rewriting
-`cancel_agent_attempt` means rewriting the module a live change (#70) is already
-rewriting, and two heads editing one file is how a rewrite loses. It is the last
-pass-through use-case in the tree — it hands its port union straight to a route —
-so the day #70 lands, this entry and this map go together.
-"""
 EXPECTED_LAYER_ROWS = (
     "__main__",
     "host",
@@ -551,8 +529,9 @@ def api_port_record_problems(project_root: Path) -> tuple[str, ...]:
     match on the answers a port gives. What it must not do is read a port for
     the shape of the answer: a projection the adapter builds and the use cases
     carry is a shared value, so it lives with the other values and the port
-    keeps only its protocol and its outcomes. Declared exceptions are the route
-    answers already fenced by ROUTE_CALLS_STILL_HOLDING_PORTS.
+    keeps only its protocol and its outcomes. The two answers below are the ones
+    the API matches on directly, because every layer that can fail to write says
+    them in the same words.
     """
     records = _port_record_names(project_root)
     problems: list[str] = []
@@ -578,21 +557,21 @@ def api_port_record_problems(project_root: Path) -> tuple[str, ...]:
 
 
 def route_port_problems(project_root: Path) -> tuple[str, ...]:
-    """Which calls still reach a port, read against the declared map."""
+    """Which calls still reach a port -- and none may, now that none does.
+
+    This read against a map of declared exceptions while routes were being
+    translated one call at a time. The map shrank to empty and deleted itself
+    with its last entry, exactly as it said it would, so the rule is now the
+    plain one: a route reads the use-case record the composition bound for it.
+    """
     problems: list[str] = []
     for module_path in sorted((project_root / ROUTE_PACKAGE).glob("*.py")):
-        name = module_path.stem
-        reaching = _calls_reaching_ports(_parsed(module_path))
-        declared = ROUTE_CALLS_STILL_HOLDING_PORTS.get(name, {})
-        for call in sorted(set(reaching) | set(declared)):
-            reached = reaching.get(call, ())
-            allowed = tuple(sorted(declared.get(call, ())))
-            if reached == allowed:
-                continue
+        for call, reached in sorted(
+            _calls_reaching_ports(_parsed(module_path)).items()
+        ):
             problems.append(
-                f"{ROUTE_PACKAGE}/{name}.py: {call} reaches {reached or 'no port'}, "
-                f"and this head declares {allowed or 'none'}; a route reads the "
-                "use-case record the composition bound for it"
+                f"{ROUTE_PACKAGE}/{module_path.stem}.py: {call} reaches {reached}; "
+                "a route reads the use-case record the composition bound for it"
             )
     return tuple(problems)
 
@@ -618,7 +597,7 @@ def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
         "Architecture preflight: "
         f"{source_count} source modules, {len(configuration.contracts)} contracts, "
         f"{len(configuration.layer_members)} layer members, "
-        f"{sum(len(ports) for calls in ROUTE_CALLS_STILL_HOLDING_PORTS.values() for ports in calls.values())} route port reaches still declared",
+        "no route port reaches declared",
         flush=True,
     )
     return configuration
