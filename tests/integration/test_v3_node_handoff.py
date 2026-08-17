@@ -22,8 +22,15 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.run_store import (
+    load_graph,
+    load_node_outputs,
+    load_run_inputs,
+    run_from_record_with_bindings,
+)
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.starter import (
@@ -36,29 +43,43 @@ from atelier2.adapters.yaml_workflows import (
     InvalidWorkflowDocument,
     parse_executable_workflow_document,
 )
+from atelier2.application.compose_node_job import node_job
+from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
+    AgentExecutionRequestV2,
+    AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AgentRole,
     AuthMode,
     AuthProfileRevision,
     ProviderId,
+    ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
     RevisionKind,
 )
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
+from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
+from atelier2.ports.agent_executions import AgentExecutionResult
 from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
@@ -67,10 +88,12 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
+from atelier2.ports.run_queries import RunFound
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
 )
+from tests.scenarios.api import durable_queries
 
 TEXT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
 PROVIDER_OUTPUT = b'"the exact sentence this node produced"'
@@ -343,3 +366,89 @@ def test_an_output_form_nothing_keeps_is_refused_by_its_own_name(
     """
     with pytest.raises(InvalidWorkflowDocument, match=named):
         parse_executable_workflow_document(document)
+
+
+def attempt_for(
+    runtime: DbosRuntime,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    job: bytes,
+) -> AgentAttemptExecution:
+    """The attempt a node would run under, for the job it is really handed."""
+    with runtime.engine.connect() as connection:
+        record = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == RUN.value))
+            .mappings()
+            .one()
+        )
+        run = run_from_record_with_bindings(connection, record)
+    assert isinstance(run, RunV3)
+    binding = run.agent_bindings[0]
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(RUN, revision_hash, node_id),
+        RUN,
+        revision_hash,
+        node_id,
+        ResolvedAgentBinding(binding.role, binding.configuration, binding.auth_profile),
+        AgentExecutorOperationalIdentity("exact-op"),
+        job,
+    )
+    return AgentAttemptExecution(
+        request,
+        AgentAttemptId.for_execution(request.node_execution_id, request.request_hash),
+        1,
+    )
+
+
+@pytest.mark.proves("a-node-reads-the-work-of-the-node-before-it")
+def test_a_chained_run_reads_back_with_the_attempt_of_the_node_that_was_handed_work(
+    runtime: DbosRuntime,
+) -> None:
+    """The read path must recompute the same job the run was actually given.
+
+    `get_run` proves the attempt it projects by recomputing the job from durable
+    truth and comparing the request hash. That recomputation learned the orders a
+    node reads and not the work it was handed, so the first run that really was a
+    chain would have read back as `RunTransitionConflict` -- a run nobody could
+    open, at the moment the chain finally worked.
+
+    Nothing here is hand-built: the first node is driven to success through the
+    real attempt store, which advances the run to its heir, and the heir's attempt
+    is armed for the job the composition owner says it gets.
+    """
+    workflow, bindings = publish_chain(
+        runtime, chained_document(TEXT_SCHEMA.revision_hash)
+    )
+    revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
+    created = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    assert isinstance(created, DurableRunCreated), created
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    coding = attempt_for(
+        runtime, revision_hash, "code", b"Write the thing this chain is for."
+    )
+    store.prepare(coding)
+    store.claim(coding)
+    store.complete_success(coding, AgentExecutionResult(PROVIDER_OUTPUT))
+
+    with runtime.engine.connect() as connection:
+        graph = load_graph(connection, revision_hash)
+        assert isinstance(graph, WorkflowGraphV3)
+        node = graph.node("review")
+        assert isinstance(node, AgentNodeV3)
+        handed = node_job(
+            node.instruction,
+            load_run_inputs(connection, RUN, node),
+            load_node_outputs(connection, RUN, revision_hash, graph, node),
+        ).encode("utf-8")
+    reviewing = attempt_for(runtime, revision_hash, "review", handed)
+    store.prepare(reviewing)
+    store.claim(reviewing)
+
+    found = durable_queries(runtime.engine).get_run(RUN)
+
+    assert isinstance(found, RunFound), found
+    assert found.projection.current_agent_attempt is not None
+    assert PROVIDER_OUTPUT in handed
