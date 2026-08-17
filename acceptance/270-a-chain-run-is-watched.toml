@@ -1,0 +1,27 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/270"
+
+# THE OPERATOR WATCHES HIS OWN CHAIN RUN. The words that started this were his:
+# "ich sehe da ehrlich gesagt noch nicht viel ... Was für dich die API ist, ist
+# für mich die UI." Measured: `frontend/src/api/client.ts` decoded V1 and V2
+# events only, so a format-3 line -- the runs this workshop is built for -- broke
+# the browser's decoder. The same class as #253 on the CLI, on the surface the
+# operator actually uses.
+#
+# The forms are the served wire's own (#249). The API answers them, the command
+# reads them, and the browser now reads the same ones: no third vocabulary.
+#
+# WHAT THIS HEAD DOES NOT CLAIM:
+#
+#   - NO FULL OUTPUT. The line shows a preview, shortened. A page that pasted a
+#     whole agent answer into the timeline would bury the movement it exists to
+#     show; the full output belongs to the panel (#238).
+#   - NO NEW VISUAL VOCABULARY. The state mark, the rail and the standing line
+#     are the ones 0003 already fixed; what changed is that they now move.
+#   - NO REPLAY OR HISTORY CONTROL. What arrives while the page is open is what
+#     is shown. Reading an old run's history back is the page read (#249), not a
+#     live follow.
+
+[[sentence]]
+id = "a-chain-run-is-watched-while-it-runs"
+text = "An operator who opens a running V3 chain sees it move: each node's completion or failure arrives on the page while it happens, named by the node that did the work and carrying a short preview of what it produced, and the page says whether it is following live -- so the operator learns that the run is alive from the page rather than from a reload."
