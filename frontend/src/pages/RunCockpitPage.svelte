@@ -117,7 +117,6 @@
       if (isRunV3(run)) {
         if (disposed || generation !== loadGeneration) return;
         v3Run = run;
-        snapshot = startLoading(snapshot);
         snapshot = { confirmed: null, request: { state: "idle" } };
         return;
       }
@@ -909,7 +908,7 @@
     </details>
   {:else if snapshot.request.state === "loading"}
     <p class="status" role="status">Looking…</p>
-  {:else}
+  {:else if v3Run === null}
     <button type="button" onclick={load}>Retry</button>
   {/if}
 </section>

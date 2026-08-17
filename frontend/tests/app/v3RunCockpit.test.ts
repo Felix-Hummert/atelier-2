@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -55,14 +55,36 @@ describe("a version 3 run in the cockpit", () => {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect((await screen.findByRole("heading", { name: "v3/two-agents" })).isConnected).toBe(
-      true
-    );
+    expect(
+      (await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" })).isConnected
+    ).toBe(true);
     const rail = screen.getAllByRole("listitem").map((item) => item.textContent ?? "");
     expect(rail.some((entry) => entry.includes("implement") && /done/i.test(entry))).toBe(true);
     expect(rail.some((entry) => entry.includes("review") && /working/i.test(entry))).toBe(true);
     expect(screen.getByText(/not yet/i).isConnected).toBe(true);
     expect(screen.getByText(configurationHash).isConnected).toBe(true);
+    // A loaded run is not a failed one: the page must not offer to fetch it again
+    // beneath the answer it already has.
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("tells the operator it is not following the run live, and why", async () => {
+    const cockpitApi = api(v3Run());
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    // The sentence says the page tells the operator. A page that merely declined
+    // to open a stream would keep every other test green while saying nothing,
+    // so the telling itself is asserted: the named affordance, and the reason
+    // behind it.
+    const why = await screen.findByRole("button", {
+      name: /does not follow the run live/i
+    });
+    expect(screen.getByText("Snapshot").isConnected).toBe(true);
+    await fireEvent.click(why);
+    expect(screen.getByText(/does not follow the run live/i).isConnected).toBe(true);
   });
 
   it("shows the terminal hash once the run has ended", async () => {
@@ -75,7 +97,8 @@ describe("a version 3 run in the cockpit", () => {
     });
 
     expect((await screen.findByText(terminalHash)).isConnected).toBe(true);
-    expect(screen.getByText(/completed/i).isConnected).toBe(true);
+    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Done");
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("asks for no workflow revision and opens no event stream it cannot read", async () => {
@@ -86,7 +109,7 @@ describe("a version 3 run in the cockpit", () => {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    await screen.findByRole("heading", { name: "v3/two-agents" });
+    await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
     // The revision would be fetched only to walk its nodes, and a version 3
     // graph carries none; the event resource is pinned to version 2, so opening
     // a stream would claim a connection this run cannot have.
