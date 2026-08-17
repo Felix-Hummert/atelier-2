@@ -11,6 +11,7 @@ where this map and an owner disagree, the owner is right.
 | Question | Layer | Owner today |
 | --- | --- | --- |
 | Why does this atelier exist? | Vision | [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1). A one-page `VISION.md` is intended as a derived view of that issue and is **not written**. Copying Issue #1 into this tree is forbidden. |
+| What does the house look like? | Face | [`atelier.jpg`](atelier.jpg). One picture, one owner. The README embeds it so GitHub shows the door. Not a second logo farm. |
 | What must it be able to do? | Requirements | Numbered documents indexed by [requirements/README.md](requirements/README.md). Views of issue threads; the thread wins. |
 | How is it used? | Journeys | Intended `journeys/`. **Not written.** Journeys will illustrate requirements and bind nothing. Requirement 0003 currently carries most of that journey-stoff in its rules (Issue #163 Phase-1 inventory). |
 | What does the machine count as done? | Acceptance | `acceptance/*.toml` at the repository root, with schema and trace rules in [requirements/README.md](requirements/README.md). |

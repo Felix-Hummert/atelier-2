@@ -1,5 +1,7 @@
 # Atelier 2
 
+![The workshop — the house you arrive in](docs/atelier.jpg)
+
 Atelier 2 is intended to become a lean agentic orchestrator for versioned,
 configurable workflows. What it should become is stated in
 [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1) and read into
