@@ -21,7 +21,12 @@ from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.runtime import (
+    AGENT_TERMINATION_GRACE_SECONDS,
+    SQLITE_LOCK_TIMEOUT_SECONDS,
+    DbosRuntime,
+    DbosRuntimeSettings,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -87,7 +92,28 @@ MAXIMUM_EVENT_POLL_DELAY_SECONDS = 1.0
 EVENT_POLL_DELAY_MULTIPLIER = 2.0
 
 
-def api_limits() -> ApiLimits:
+def api_limits(
+    *,
+    event_page_size: int = EVENT_PAGE_SIZE,
+    maximum_control_queries: int = MAXIMUM_CONTROL_QUERIES,
+    maximum_event_poll_queries: int = MAXIMUM_EVENT_POLL_QUERIES,
+    maximum_query_admission_wait_milliseconds: int = (
+        MAXIMUM_QUERY_ADMISSION_WAIT_MILLISECONDS
+    ),
+) -> ApiLimits:
+    """The limits one served instance enforces, with this deployment's answers.
+
+    The bounds above the signature are the wire's and the store's: they say what
+    the product can represent, and an instance does not get to disagree with
+    them. The four below it are this instance's own -- how much reading it admits
+    at once and how large a page it answers with -- and they are the ones a second
+    machine honestly wants differently.
+
+    The defaults are the same values the host baked in before, in the one place
+    that names them, so an instance that configures nothing behaves exactly as it
+    did.
+    """
+
     return ApiLimits(
         maximum_request_body_bytes=MAXIMUM_REQUEST_BODY_BYTES,
         maximum_field_characters=MAXIMUM_FIELD_CHARACTERS,
@@ -96,20 +122,32 @@ def api_limits() -> ApiLimits:
         maximum_workflow_nodes=MAXIMUM_WORKFLOW_NODES,
         maximum_enriched_page_nodes=MAXIMUM_ENRICHED_PAGE_NODES,
         maximum_enriched_page_document_bytes=MAXIMUM_ENRICHED_PAGE_DOCUMENT_BYTES,
-        event_page_size=EVENT_PAGE_SIZE,
-        maximum_control_queries=MAXIMUM_CONTROL_QUERIES,
-        maximum_event_poll_queries=MAXIMUM_EVENT_POLL_QUERIES,
+        event_page_size=event_page_size,
+        maximum_control_queries=maximum_control_queries,
+        maximum_event_poll_queries=maximum_event_poll_queries,
         maximum_query_admission_wait_milliseconds=(
-            MAXIMUM_QUERY_ADMISSION_WAIT_MILLISECONDS
+            maximum_query_admission_wait_milliseconds
         ),
     )
 
 
-def event_poll_backoff() -> EventPollBackoff:
+def event_poll_backoff(
+    *,
+    initial_delay_seconds: float = INITIAL_EVENT_POLL_DELAY_SECONDS,
+    maximum_delay_seconds: float = MAXIMUM_EVENT_POLL_DELAY_SECONDS,
+    multiplier: float = EVENT_POLL_DELAY_MULTIPLIER,
+) -> EventPollBackoff:
+    """How this instance waits between polls, refused by its own owner.
+
+    Every range rule already lives on `EventPollBackoff` -- positive start, a
+    ceiling no lower than the start, a multiplier above one. Nothing is restated
+    here: what was missing was never the refusal, only a way to reach the values.
+    """
+
     return EventPollBackoff(
-        initial_delay_seconds=INITIAL_EVENT_POLL_DELAY_SECONDS,
-        maximum_delay_seconds=MAXIMUM_EVENT_POLL_DELAY_SECONDS,
-        multiplier=EVENT_POLL_DELAY_MULTIPLIER,
+        initial_delay_seconds=initial_delay_seconds,
+        maximum_delay_seconds=maximum_delay_seconds,
+        multiplier=multiplier,
     )
 
 
@@ -126,6 +164,10 @@ class HostSettings:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     limits: ApiLimits = field(default_factory=api_limits)
+    # The two store- and process-side answers, beside the two API-side ones above.
+    # Their range rules live on `DbosRuntimeSettings`, which is built from them.
+    sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS
+    agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
     agent_scratch_root: Path | None = None
     claude_subscription: ClaudeSubscriptionSettings | None = None
@@ -229,6 +271,8 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
             settings.database_path,
             settings.application_version,
             agent_scratch_root=settings.agent_scratch_root,
+            agent_termination_grace_seconds=settings.agent_termination_grace_seconds,
+            sqlite_lock_timeout_seconds=settings.sqlite_lock_timeout_seconds,
         ),
         LoopbackEffectAdapterFactory(
             settings.effect_store_path,
@@ -241,7 +285,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
     try:
         # One set of limits configures both the reader's bound and the API's own,
         # so the two cannot describe different numbers for the same deployment.
-        limits = api_limits()
+        limits = settings.limits
         queries = DbosQueries(runtime.engine, durable_projection_limit(limits))
         app = create_app(
             source_commit=settings.source_commit,
