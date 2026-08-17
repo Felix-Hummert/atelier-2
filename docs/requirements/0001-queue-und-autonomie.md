@@ -53,159 +53,137 @@ star, not a sentence of it.)
 
 ## Rules
 
-1. `DESK` — **Triage proposes, it does not decide.** Priority is business
-   judgment: the default is a proposal (priority + workflow) with one-click
-   confirmation. Auto-confirmation is unlockable per item class once the
-   scorecard shows it earned. Full automation is earned, never assumed.
-   (5302017656 §1, the desk's answer to the operator's question "gut oder
-   Push-back?" — the operator asked for the judgment and has not ruled it.)
+Each rule below is the same rule this document has carried since it was
+distilled; what is new is the identifier, so a later gate can find it and an
+acceptance sentence can point back at it. The numbers the thread used are kept
+in `Quelle` — the thread jumped from 13 to 20, and that history is worth more
+than a tidy sequence.
 
-2. `DESK` — **Assignment comes from evidence.** Workflow assignment is fed
-   by the #8 measurements — workflow × item-class performance. Cold start with
-   hand-written rules, then learning. #79 and #8 are coupled. (5302017656 §2.)
+### REQ-QUEUE-01: Triage schlägt vor, es entscheidet nicht.
+Status:     DRAFT
+Quelle:     DESK — 5302017656 §1 (Regel 1 des Fadens), die Antwort des Desks auf die Operator-Frage „gut oder Push-back?"
+Begründung: Priorität ist Geschäftsurteil. Die Vorgabe ist ein Vorschlag (Priorität + Workflow) mit Ein-Klick-Bestätigung; Auto-Bestätigung wird pro Item-Klasse freigeschaltet, sobald die Scorecard sie verdient hat. Volle Automatik wird verdient, nie angenommen. Der Operator hat das Urteil erbeten und nicht entschieden.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Kein Akzeptanz-Satz spricht die Vorschlags-Zusage aus; er entsteht mit der Queue-Sicht (Eigentümer: #79, Ziel: erster Queue-Kopf)
 
-3. `DESK` — **The queue cap is denominated in what the atelier can count
-   without the provider.** (a) started attempts per time window and (b) summed
-   `attempt_deadline_seconds` admission; optionally (c) a token cap **per meter
-   revision**, never a sum across meter revisions. The parallelism cap stays a
-   count of concurrent attempts. All three are visible and **refuse instead of
-   truncating**. (5302131944 §1, which replaces the undenominated
-   "Tages-Deckel" of 5302017656 §3 — a daily token cap over a queue spanning
-   several models and providers is exactly the cross-meter sum ADR 0008
-   forbids. Both objects are desk comments; no operator ruling has chosen
-   between them.)
+### REQ-QUEUE-02: Die Workflow-Zuordnung kommt aus Messwerten.
+Status:     DRAFT
+Quelle:     DESK — 5302017656 §2 (Regel 2)
+Begründung: Gespeist aus den #8-Messungen — Workflow × Item-Klasse. Kaltstart mit handgeschriebenen Regeln, danach Lernen. #79 und #8 sind gekoppelt.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Die Messfläche selbst ist #8s (Eigentümer: #8, Ziel: Messwerte vor Zuordnungslernen)
 
-   The same counter is today's only honest consumption alarm: it is what can
-   tell the operator *beforehand* that it is getting tight.
+### REQ-QUEUE-03: Der Queue-Deckel wird in dem gezählt, was das Atelier ohne den Provider zählen kann.
+Status:     DRAFT
+Quelle:     DESK — 5302131944 §1 (Regel 3), das den undenominierten „Tages-Deckel" von 5302017656 §3 ersetzt
+Begründung: (a) gestartete Attempts je Zeitfenster und (b) summierte `attempt_deadline_seconds`-Zulassung; optional (c) ein Token-Deckel **je Meter-Revision**, nie eine Summe über Meter-Revisionen hinweg. Der Parallelitäts-Deckel bleibt eine Zählung gleichzeitiger Attempts. Alle drei sind sichtbar und **verweigern, statt zu kürzen**. Ein Tages-Token-Deckel über eine Queue mehrerer Modelle und Provider wäre genau die Quer-Meter-Summe, die ADR 0008 verbietet. Derselbe Zähler ist heute der einzige ehrliche Verbrauchsalarm: er kann dem Operator *vorher* sagen, dass es eng wird. Beide Objekte sind Desk-Kommentare; kein Operator-Ruling hat zwischen ihnen gewählt.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Kein Deckel existiert im Code; die Einheiten stehen in ADR 0008, der Zähler nicht (Eigentümer: #79, Ziel: erster Queue-Kopf)
 
-4. `DESK` — **Red does not circle.** Bounded retry, then escalation to the
-   inbox. (5302017656 §4.)
+### REQ-QUEUE-04: Rot dreht sich nicht im Kreis.
+Status:     DRAFT
+Quelle:     DESK — 5302017656 §4 (Regel 4)
+Begründung: Begrenzter Retry, danach Eskalation in den Posteingang. Ein unbegrenzter Retry verbrennt Geld an einem Fehler, den niemand sieht.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Der Posteingang existiert als Oberflächen-Zusage (#9); die Eskalationsregel der Queue hat keinen Beweis (Eigentümer: #79, Ziel: erster Queue-Kopf)
 
-5. `DESK` — **The queue automates the starting, never the releasing.** The
-   thread keeps this sentence word for word, and it is what separates the
-   feature from an accident (5302017656 §4, kept literal by 5302109936 and
-   5302131944). It is the desk's sentence, not the operator's: the thread
-   attributes it to no operator statement, so it is quoted here as the desk
-   wrote it, and it is a proposal for the acceptance wording rather than a
-   ruled one:
+### REQ-QUEUE-05: Die Queue automatisiert das Anstoßen, nie das Freigeben.
+Status:     DRAFT
+Quelle:     DESK — 5302017656 §4 (Regel 5), wörtlich gehalten durch 5302109936 und 5302131944. Der Faden schreibt den Satz keinem Operator-Satz zu; er steht hier so, wie das Desk ihn schrieb, und ist ein Vorschlag für die Akzeptanz-Formulierung, kein Ruling:
 
-   > „Die Queue automatisiert das ANSTOSSEN, nie das FREIGEBEN — Verdict-Tore in
-   > den Workflows bleiben, Durchsatz schlägt nie Review."
+            > „Die Queue automatisiert das ANSTOSSEN, nie das FREIGEBEN — Verdict-Tore in den Workflows bleiben, Durchsatz schlägt nie Review."
+Begründung: Das ist der Satz, der dieses Feature von einem Unfall trennt. Durchsatz darf ein Review nie überholen.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Der Satz ist als Akzeptanz-Richtung notiert, aber von keiner Story deklariert (Eigentümer: #79, Ziel: Akzeptanz-Deklaration)
 
-6. `DESK` — **Deep links in both directions, tracker-neutral.** Every
-   run and workflow in the atelier UI links its work item; the queue start
-   writes the back link at the item — to the live graph, finally to the
-   receipted result. Owner cut: the link semantics (what is written when,
-   idempotent, readback-verified) belong to the #24 adapter contract, the UI
-   side (item chip on the run row and on the graph) to #9. (5302022156. The
-   comment is headed "ERGÄNZUNG (Operator)", but its body is desk prose with no
-   operator sentence quoted anywhere in it, so the attribution does not raise
-   this rule above `DESK`.)
+### REQ-QUEUE-06: Tiefe Verweise in beide Richtungen, Tracker-neutral.
+Status:     DRAFT
+Quelle:     DESK — 5302022156 (Regel 6). Der Kommentar ist mit „ERGÄNZUNG (Operator)" überschrieben, sein Rumpf ist aber Desk-Prosa ohne zitierten Operator-Satz, was die Regel nicht über `DESK` hebt.
+Begründung: Jeder Lauf und Workflow in der Atelier-Oberfläche verweist auf sein Work-Item; der Queue-Start schreibt den Rückverweis am Item — auf den lebenden Graphen, zuletzt auf das quittierte Ergebnis. Eigentümer-Schnitt: die Verweis-Semantik (was wann geschrieben wird, idempotent, per Readback geprüft) gehört zum Adapter-Vertrag, die Oberflächen-Seite zu #9.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Der Adapter-Vertrag ist heute [ADR 0010](../decisions/0010-github-platform-adapter.md); der Faden nannte #24, und das Item ist geschlossen (Eigentümer: ADR 0010, Ziel: Adapter-Bau)
 
-7. `DESK` — **Pause means drain; resume means releasing the ready set.**
-   Pause starts no new node and lets running attempts drain to their terminal
-   receipt; resume releases the ready set again. "Lossless" refers to the state
-   of the *queue* — item order, assignments, satisfied preconditions — never to
-   an in-flight attempt. (5302131944 §2, which replaces the park-and-save
-   wording of 5302048197: a running provider attempt cannot save itself
-   hand-over-ready. Native provider session resume promises neither stream
-   replay nor exactly-once model calls, the adapter runs
-   `--no-session-persistence`, and cancel ends in exactly one terminal cancel
-   receipt — a paused attempt would be a cancelled attempt whose restart is a
-   new paid call without the half-done work.)
+### REQ-QUEUE-07: Pause heißt auslaufen, Fortsetzen heißt die Ready-Menge freigeben.
+Status:     DRAFT
+Quelle:     DESK — 5302131944 §2 (Regel 7), das die Park-und-Sichern-Formulierung von 5302048197 ersetzt
+Begründung: Pause startet keinen neuen Knoten und lässt laufende Attempts bis zu ihrem terminalen Receipt auslaufen; Fortsetzen gibt die Ready-Menge wieder frei. „Verlustfrei" meint den Zustand der *Queue* — Item-Reihenfolge, Zuordnungen, erfüllte Vorbedingungen —, nie einen laufenden Attempt: eine native Provider-Sitzung verspricht weder Stream-Replay noch Exactly-once-Modellaufrufe, der Adapter läuft mit `--no-session-persistence`, und ein Abbruch endet in genau einem terminalen Cancel-Receipt. Ein pausierter Attempt wäre ein abgebrochener, dessen Neustart ein neuer bezahlter Aufruf ohne die halbfertige Arbeit ist. **Das verengt eine Zusage, die der Faden dem Operator zuschreibt**: 5302048197 ist „ERGÄNZUNG (Operator)" überschrieben und verspricht „Pause/Park mit sauberer Zustands-Sicherung … jederzeit, verlustfrei", zitiert aber keinen Operator-Satz — unter der Grad-Regel ist auch das Desk-Prosa, und diese Regel korrigiert eine Desk-Lesart mit einer anderen. Sie bleibt markiert, weil die Zusage etwas wiedergeben könnte, das der Operator ungeschrieben gesagt hat.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Die Verengung ist ein Vorschlag an den Operator, keine geschlichtete Korrektur (Eigentümer: Operator, Ziel: Ruling auf #79)
 
-   **This narrows a promise the thread attributes to the operator.** 5302048197
-   is headed "ERGÄNZUNG (Operator)" and promises "Pause/Park mit sauberer
-   Zustands-Sicherung … jederzeit, verlustfrei", but quotes no operator
-   sentence, so under the grade rule that promise is desk prose too and this
-   rule corrects one desk reading with another. It is still flagged, because
-   the promise may render something the operator said off the record: the
-   desk's reading is that it is unbuildable for a running provider attempt and
-   true only for the queue, and that reading is a proposal to him, not a
-   settled correction.
+### REQ-QUEUE-08: Ein Label autorisiert Arbeit nur, wenn der setzende Akteur nicht das Atelier selbst ist.
+Status:     DRAFT
+Quelle:     DESK — 5302131944 §3 (Regel 8), das das kanonische Szenario von 5302062963 schärft
+Begründung: Im PAT-Modus sind Labels eine *beobachtete* Menge: die Operations-Registry enthält **keine Schreiboperation** für das autorisierende Label, und die Akteursprüfung läuft über die Abwesenheit des Atelier-Inhaltsmarkers — der Marker ist ein Hinweis, die fehlende Schreiboperation ist die Kontrolle. Im App-Modus ist die Prüfung über die Kontoidentität trivial. Sonst könnte ein Agent seine eigene Arbeit und ihr Geld autorisieren, indem er ein Label schreibt; dafür braucht es keinen Angreifer, ein Fehler oder ein missverstandener Prompt genügt, und Prompts sind keine Kontrolle.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Die Operations-Registry gehört heute [ADR 0010](../decisions/0010-github-platform-adapter.md); der Faden nannte #24, und das Item ist geschlossen (Eigentümer: ADR 0010, Ziel: Adapter-Bau)
 
-8. `DESK` — **A label authorises work only when the actor that set it is not
-   the atelier itself.** In PAT mode labels are an *observed* set: the #24
-   operations registry contains **no write operation** for the authorising
-   label, and the actor check runs on the absence of the atelier's content
-   marker — the marker is a hint, the missing write operation is the control.
-   In app mode the check is trivial by account identity. (5302131944 §3,
-   sharpening the canonical scenario of 5302062963: under the PAT ruling an
-   agent could otherwise authorise its own work and spending by writing a
-   label; no attacker is needed, a bug or a misread prompt suffices, and
-   prompts are not a control.)
+### REQ-QUEUE-09: Ein Projekt ist ein konfiguriertes Bündel.
+Status:     DRAFT
+Quelle:     DESK — 5302062963 §1 (Regel 9), die Desk-Ableitung aus dem kanonischen Operator-Szenario unter `Acceptance`
+Begründung: Repository-URL + Tracker + Credential-*Referenz* (nie Klartext, ADR 0009) + Workflow-Zuordnungsregeln + Item-Filter. Eigentümer-Schnitt: die Projekt-Isolation entscheidet [ADR 0011](../decisions/0011-project-isolation.md), den Adapter [ADR 0010](../decisions/0010-github-platform-adapter.md), die Queue-Regeln dieses Dokument.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Der Faden schnitt beide Eigentümer auf Items (#23, #24), die inzwischen **geschlossen** sind; die Sätze zeigen jetzt auf die Records, die sie hervorgebracht haben (Eigentümer: ADR 0010 / ADR 0011, Ziel: deren Umsetzung)
 
-9. `DESK` — **A project is a configured bundle:** repository URL + tracker +
-   credential *reference* (never plaintext, ADR 0009) + workflow assignment
-   rules + item filter. Owner cut: project isolation is decided by #23, the
-   adapter by #24, the queue rules here. (5302062963 §1, the desk's derivation
-   from the operator's canonical scenario quoted under `Acceptance`.)
+### REQ-QUEUE-10: Gearbeitet wird in einem Klon je Attempt, nie im Checkout des Operators.
+Status:     DRAFT
+Quelle:     DESK — 5302062963 §2 (Regel 10), dieselbe Ableitung
+Begründung: Das Ergebnis kommt als Branch oder Pull Request zurück. Das macht den Werkstatt-Begriff für #60 genau: das attempt-eindeutige Arbeitsverzeichnis wird aus dem Projekt-Klon gesät, während Scratch (#58) daneben die Schreibfläche des Providers bleibt.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Die Werkstatt-Zusage gehört #60/#58 und ist dort noch nicht als Satz deklariert (Eigentümer: #60, Ziel: Werkstatt-Kopf)
 
-10. `DESK` — **Working means a clone per attempt, never the operator's
-    checkout**; the result comes back as a branch or pull request. This makes
-    the workspace term precise for #60: the attempt-unique working directory is
-    seeded from the project clone, while scratch (#58) stays the provider's
-    write surface beside it. (5302062963 §2, same derivation.)
+### REQ-QUEUE-11: Ein CI-Tor ist ein Workflow-Detail, kein Teil der Plattform-Anbindung.
+Status:     DRAFT
+Quelle:     DESK — 5302062963 §3 (Regel 11), dieselbe Ableitung
+Begründung: Was ein Projekt vor dem Merge verlangt, gehört in seinen Workflow. Die Anbindung an den Tracker trägt es nicht mit.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:
 
-11. `DESK` — **A CI gate is a workflow detail, not part of the platform
-    connection.** (5302062963 §3, same derivation.)
+### REQ-QUEUE-12: Verarbeitung ist sequenziell oder parallel bis zum Queue-Deckel.
+Status:     DRAFT
+Quelle:     DESK — 5302062963 §4 mit 5302048197 (Regel 12)
+Begründung: Sichtbar, quittiert, mit Pause ↔ Fortsetzen. Der Deckel ist der aus REQ-QUEUE-03; diese Regel sagt nur, dass beide Betriebsarten unter demselben Deckel stehen.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Hängt an REQ-QUEUE-03 und REQ-QUEUE-07 (Eigentümer: #79, Ziel: erster Queue-Kopf)
 
-12. `DESK` — **Processing is sequential or parallel up to the queue cap** —
-    visible, receipted, with pause ↔ resume. (5302062963 §4 with 5302048197.)
+### REQ-QUEUE-13: Menschliche Tore sind vier genaue Stellen, die der Operator setzt, nie ein globaler Schalter.
+Status:     DRAFT
+Quelle:     DESK — 5302732436 (Regel 13). Die vier Stellen sind die Komposition des Desks; der Operator-Satz jenes Kommentars ist der Nordstern unter `Intent` und sagt nur „außer ich schreite irgendwo ein".
+Begründung: (1) das **Workflow-Tor** — ein Wait-Knoten: „zeig mir X, bevor du Y tust"; (2) das **Queue-Regel-Tor** — Item-Klassen autonom versus bestätigungspflichtig, der menschliche Filter dieses Items, mit der Stufen-Mechanik von #106: vom Operator gewährt, durch Messung widerrufbar; (3) das **Budget-Tor** — die Deckel von REQ-QUEUE-03: heiß laufen ⇒ sichtbarer Stopp, nie stilles Weiterbrennen; (4) das **Posteingangs-Tor** (#9) — alles, was den Menschen braucht (Frage, Tor, Rot nach begrenzten Retries), kommt als Karte *bei ihm* an, mit Pause ↔ Fortsetzen je Projekt als Not-Aus und Neustart.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - `the-inbox-names-every-run-that-waits-for-a-human` (#131) beweist einen Teil des vierten Tores, nicht die Regel: sie sagt, dass vier Stellen existieren und wer sie setzt (Eigentümer: #79 + #9, Ziel: eigener Satz je Tor)
 
-13. `DESK` — **Human gates are four precise places set by the operator,
-    never one global switch.** (5302732436, where the four places are the
-    desk's composition; the operator's own sentence in that comment is the
-    north star quoted under `Intent`, and it says only "außer ich schreite
-    irgendwo ein".)
+### REQ-QUEUE-14: Kein Tracker-Nachbau; Items leben im angebundenen Tracker.
+Status:     DRAFT
+Quelle:     OPERATOR — 5307633402 auf #79 (Regel 20), der Operator wörtlich an Fable, 16.08.:
 
-    1. the **workflow gate** — a Wait node: "show me X before you do Y";
-    2. the **queue-rule gate** — item classes autonomous versus
-       confirmation-required, the human filter of this item, with the stage
-       mechanics of #106: granted by the operator, revocable by measurement;
-    3. the **budget gate** — the caps of rule 3: run hot ⇒ visible stop, never
-       silent further burning;
-    4. the **inbox gate** (#9) — everything that needs the human (question,
-       gate, red after bounded retries) arrives as a card *at* him, with pause ↔
-       resume per project (#23) as the emergency stop and restart.
+            > „ich will arbeit priorisieren stimmt, aber wir müssen aufpassen das wir nicht etwas bauen was github oder andere plattformen bieten […] ich will kein work-item tracker nachbauen! sondern wiederverwenden können (github/gitlab oder jira oder was auch immer anbinden)"
+Begründung: Der Grad deckt genau diesen Kern. Die Desk-Ausarbeitung um ihn (selbe Quelle, Grad DESK): der Tracker (GitHub zuerst, andere hinter demselben Port) ist die Quelle der Wahrheit für Items — Anlegen, Beschreiben, Kommentieren, Schließen passieren dort; das Atelier besitzt ausschließlich Orchestrierungszustand per Referenz auf die Tracker-ID (Workflow-Zuordnung, Claim/Queue-Zulassung, Run↔Item-Bindung, Beweise/Receipts). Lackmustest je Kopf: „Bietet die Plattform das schon?" → Adapter, nie Nachbau.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Kein Satz prüft heute, dass das Atelier keinen Item-Zustand doppelt hält (Eigentümer: ADR 0010, Ziel: Adapter-Bau)
 
-20. `OPERATOR` — **Kein Tracker-Nachbau; Items leben im angebundenen
-    Tracker.** Der Operator wörtlich (an Fable, 16.08., via 5307633402 auf #79):
+### REQ-QUEUE-15: Priorität soll im Atelier sichtbar und bindend sein, nicht im Tracker-Kommentar.
+Status:     DRAFT
+Quelle:     DESK — 5307639686 auf #79 (Regel 21), ersetzt Punkt 3 von 5307633402. Der Operator wörtlich, 16.08.:
 
-    > „ich will arbeit priorisieren stimmt, aber wir müssen aufpassen das wir
-    > nicht etwas bauen was github oder andere plattformen bieten […] ich will
-    > kein work-item tracker nachbauen! sondern wiederverwenden können
-    > (github/gitlab oder jira oder was auch immer anbinden)"
-
-    Desk-Ausarbeitung um diesen Kern (selbe Quelle, Grad DESK): der Tracker
-    (GitHub zuerst, andere hinter demselben Port) ist die Quelle der Wahrheit
-    für Items — Anlegen, Beschreiben, Kommentieren, Schließen passieren dort;
-    das Atelier besitzt ausschließlich Orchestrierungszustand per Referenz auf
-    die Tracker-ID (Workflow-Zuordnung, Claim/Queue-Zulassung, Run↔Item-
-    Bindung, Beweise/Receipts); Lackmustest je Kopf: „Bietet die Plattform das
-    schon?" → Adapter, nie Nachbau.
-
-21. `DESK` — **Priorität soll im Atelier sichtbar und bindend sein, nicht im
-    Tracker-Kommentar.** Die zitierte Quelle trägt diesen Satz **nicht positiv**:
-    sie stellt zwei Fragen und weist eine Ablage zurück. `OPERATOR` ist deshalb
-    der falsche Grad, solange kein späteres, direktes Ruling zitiert wird — und
-    das Zitat bleibt genau deshalb stehen, damit ein Leser die Lücke selbst sieht
-    statt sie glauben zu müssen. Der Operator wörtlich (an Fable, 16.08., via
-    5307639686 auf #79, ersetzt Punkt 3 von 5307633402):
-
-    > „das kann schon auch im atelier sichtbar sein? und es muss so sein dass
-    > es bindend ist? […] im kommentar sicher nicht"
-
-    Was die Quelle wirklich entscheidet: **im Kommentar nicht** — das ist die
-    einzige Festlegung, und sie ist negativ. Dass Priorität bindender
-    Orchestrierungszustand *ist*, bleibt Desk-Lesart bis zu einem Ruling.
-
-    Desk-Ausarbeitung um diesen Kern (selbe Quelle, Grad DESK): Priorität ist
-    typisierter, dauerhafter, ereignis-historisierter Orchestrierungszustand —
-    Triage-Vorschlag → Operator-Bestätigung (ein Klick in der Atelier-Queue-
-    Sicht) → gebundene Queue-Reihenfolge; der Tracker erhält höchstens eine
-    abgeleitete, nicht-bindende Spiegelung (z. B. Label), klar als Projektion
-    markiert.
+            > „das kann schon auch im atelier sichtbar sein? und es muss so sein dass es bindend ist? […] im kommentar sicher nicht"
+Begründung: Die zitierte Quelle trägt diesen Satz **nicht positiv**: sie stellt zwei Fragen und weist eine Ablage zurück. Was sie wirklich entscheidet, ist **im Kommentar nicht** — die einzige Festlegung, und sie ist negativ. `OPERATOR` ist deshalb der falsche Grad, solange kein späteres direktes Ruling zitiert wird, und das Zitat bleibt genau deshalb stehen, damit ein Leser die Lücke selbst sieht statt sie glauben zu müssen. Desk-Ausarbeitung (selbe Quelle, Grad DESK): Priorität ist typisierter, dauerhafter, ereignis-historisierter Orchestrierungszustand — Triage-Vorschlag → Operator-Bestätigung (ein Klick in der Atelier-Queue-Sicht) → gebundene Queue-Reihenfolge; der Tracker erhält höchstens eine abgeleitete, nicht-bindende Spiegelung (z. B. Label), klar als Projektion markiert.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Dass Priorität bindender Orchestrierungszustand *ist*, bleibt Desk-Lesart bis zu einem Ruling (Eigentümer: Operator, Ziel: Ruling auf #79)
 
 ## Open questions
 
@@ -252,7 +230,7 @@ as *wörtlich sinngemäß* and repeated here in that form (5302062963):
 
 The acceptance direction, which #79 itself heads "zu verfeinern vor Bau" and
 which is therefore a direction and not a set of sentences (#79 body @
-9d781a3c), plus the desk sentence rule 5 keeps word for word:
+9d781a3c), plus the desk sentence REQ-QUEUE-05 keeps word for word:
 
 - A newly created item appears in the queue already triaged: priority, assigned
   workflow, and ready state with its open preconditions named.
@@ -261,7 +239,7 @@ which is therefore a direction and not a set of sentences (#79 body @
 - Becoming ready starts the bound workflow with no further handling, and the run
   is live on the graph (#9).
 - Everything is receipted; no start outside the budget and authorisation rules.
-- Word for word, from rule 5 and authored by the desk: „Die Queue automatisiert
+- Word for word, from REQ-QUEUE-05 and authored by the desk: „Die Queue automatisiert
   das ANSTOSSEN, nie das FREIGEBEN — Verdict-Tore in den Workflows bleiben,
   Durchsatz schlägt nie Review."
 - The canonical scenario above, carrying the two named preconditions from
