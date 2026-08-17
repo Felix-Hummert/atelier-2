@@ -972,7 +972,6 @@ V3_UNBOUND_AGENT_FORMS = (
     "cancellation",
     "required_context",
     "available_context",
-    "inputs",
     "outputs",
 )
 """Every authored form of a V3 Agent node that nothing binds at run start yet.
@@ -981,6 +980,20 @@ Naming the forms rather than the kinds is the point. "Only Agent nodes" would
 still admit a document declaring skills, tools or a budget, and the run would
 start having silently ignored what its author wrote. A document is executable
 only when nothing in it is waiting for an owner.
+
+`inputs` left this list when the start began binding one: it is admitted per
+source by `V3_BOUND_INPUT_SOURCES` rather than as a whole form, because only an
+order the graph declares has an owner at the start today.
+"""
+
+V3_BOUND_INPUT_SOURCES = (GraphInputSource,)
+"""Which `inputs` source a node may read, because the start actually binds it.
+
+An order the graph declares is supplied at the start and handed to the node. The
+other three sources name something the run produces -- another node's output, a
+node's receipt, a context entry -- and nothing walks a V3 graph to produce them
+yet, so a document that reads one is refused by the source it named rather than
+started and quietly given nothing.
 """
 
 
@@ -1022,4 +1035,38 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     )
     if declared:
         return f"agent forms nothing binds yet: {', '.join(declared)}"
+    return _unbound_input_sources(graph)
+
+
+def _unbound_input_sources(graph: WorkflowGraphV3) -> str | None:
+    """Which `inputs` source this document reads that the start cannot supply.
+
+    An authored `value` is refused with the rest: it is a constant inside the
+    document, which is the very thing an order replaces, and nothing hands it to
+    a node today either.
+    """
+    unbound = sorted(
+        {
+            _source_form(entry)
+            for node in graph.nodes
+            if isinstance(node, AgentNodeV3)
+            for entry in node.inputs
+            if not isinstance(entry.source, V3_BOUND_INPUT_SOURCES)
+        }
+    )
+    if unbound:
+        return f"input sources nothing binds yet: {', '.join(unbound)}"
     return None
+
+
+def _source_form(entry: NodeInput) -> str:
+    """What an author wrote as this input's source, named back to them."""
+    if entry.source is None:
+        return "value"
+    if isinstance(entry.source, NodeOutputSource):
+        return "output"
+    if isinstance(entry.source, NodeReceiptSource):
+        return "receipt"
+    if isinstance(entry.source, ContextEntrySource):
+        return "context"
+    return "graph_input"

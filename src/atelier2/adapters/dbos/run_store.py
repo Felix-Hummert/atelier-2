@@ -25,6 +25,7 @@ from atelier2.adapters.dbos.schema import (
     effect_receipts,
     run_agent_bindings,
     run_events,
+    run_inputs_v3,
     runs,
     wait_answers,
     workflow_revisions,
@@ -65,6 +66,8 @@ from atelier2.contracts.executions import (
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.node_records_v3 import RunInput
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.runs import (
@@ -84,6 +87,7 @@ from atelier2.contracts.workflows import (
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
+    GraphInputSource,
     WorkflowGraphV3,
     is_sink_node,
 )
@@ -258,6 +262,45 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
         RunConfigurationRevisionHash(str(configuration)),
         terminal_hash,
     )
+
+
+def load_run_inputs(
+    session: Any, run_id: RunId, node: AgentNodeV3
+) -> tuple[RunInput, ...]:
+    """The orders this node declared it reads, as the start stored them.
+
+    A node is handed what it asked for and not everything the run carries: a run
+    may be started with orders several nodes divide between them, and a node that
+    received one it never named would be told something its author did not ask
+    for -- and would carry it in its request hash.
+
+    The start refused the run unless every order it declares was supplied, so an
+    order named here and absent from the store is a store that disagrees with the
+    run it holds, not an input somebody forgot.
+    """
+    read = {
+        entry.source.graph_input
+        for entry in node.inputs
+        if isinstance(entry.source, GraphInputSource)
+    }
+    if not read:
+        return ()
+    stored = {
+        str(record.name): RunInput(
+            str(record.name),
+            PublishedRevisionHash(str(record.schema_revision_hash)),
+            bytes(record.value),
+        )
+        for record in session.execute(
+            sa.select(run_inputs_v3).where(run_inputs_v3.c.run_id == run_id.value)
+        ).all()
+    }
+    missing = sorted(read - stored.keys())
+    if missing:
+        raise RunTransitionConflict(
+            f"the run carries no order named {missing[0]!r}, which this node reads"
+        )
+    return tuple(stored[name] for name in sorted(read))
 
 
 def load_run(session: Any, run_id: RunId) -> AnyRun:

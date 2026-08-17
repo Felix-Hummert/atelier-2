@@ -1180,9 +1180,11 @@ NOT_YET_EXECUTABLE: dict[str, bytes] = {
     "a form nothing binds": ONE_AGENT_DOCUMENT
     + b"    budget: {ref: build_budget, revision: budget-1}\n",
     # An empty authored form is a statement, not an absence: the author wrote it,
-    # and a start that ignored it would ignore what they wrote.
+    # and a start that ignored it would ignore what they wrote. `inputs: []` is
+    # the exception that proves the rule -- the start binds inputs now, so an
+    # empty list is a statement it obeys rather than one it drops, and it is
+    # admitted below with the sources nothing binds yet still refused.
     "an empty authored skills list": ONE_AGENT_DOCUMENT + b"    skills: []\n",
-    "an empty authored inputs list": ONE_AGENT_DOCUMENT + b"    inputs: []\n",
     "an empty authored context list": ONE_AGENT_DOCUMENT
     + b"    required_context: []\n",
     "a fan-out": TWO_AGENT_CHAIN
@@ -1210,6 +1212,81 @@ NOT_YET_EXECUTABLE: dict[str, bytes] = {
 def test_every_v3_form_no_runtime_binds_is_refused_by_name(document: bytes) -> None:
     """A shape nothing runs is named, never started and abandoned midway."""
     with pytest.raises(InvalidWorkflowDocument, match=FORMAT_V3_NOT_EXECUTABLE):
+        parse_executable_workflow_document(document)
+
+
+ORDERED_AGENT_DOCUMENT = b"""format_version: 3
+name: One agent that reads an order
+graph_inputs:
+  - name: order
+    schema: {ref: order-schema, revision: "%s"}
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+    inputs:
+      - name: order
+        from: {graph_input: order}
+""" % (b"a" * 64)
+
+
+UNBOUND_SOURCE_DOCUMENT = b"""format_version: 3
+name: One agent reading something nothing produces
+nodes:
+  - id: prepare
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Go first.
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Then me.
+    depends_on: [prepare]
+    inputs:
+      - name: thing
+        from: {node: prepare, receipt: terminal}
+"""
+
+AUTHORED_VALUE_DOCUMENT = (
+    ONE_AGENT_DOCUMENT
+    + b"""    inputs:
+      - name: portions
+        value: "four"
+"""
+)
+
+
+@pytest.mark.parametrize(
+    ("document", "named"),
+    [
+        pytest.param(UNBOUND_SOURCE_DOCUMENT, "receipt", id="a node receipt"),
+        pytest.param(AUTHORED_VALUE_DOCUMENT, "value", id="an authored constant"),
+    ],
+)
+def test_an_input_reading_what_nothing_supplies_is_refused_by_its_source(
+    document: bytes, named: str
+) -> None:
+    """Refused by the source it named, not by "inputs" as a whole.
+
+    Only an order the graph declares has an owner at the start. A node receipt
+    names something the run produces and nothing walks a V3 graph to produce it
+    yet; an authored constant is the very thing an order replaces. Both are
+    refused rather than admitted and quietly handed nothing.
+
+    The other two sources -- another node's output and a context entry -- are
+    refused earlier and for a different reason: a document may only read an
+    output its upstream node declares, or a context entry the reading node
+    requires, and `outputs` and `required_context` are themselves forms nothing
+    binds yet. There is no document that reaches this refusal through them, so
+    none is written here pretending otherwise.
+    """
+    with pytest.raises(
+        InvalidWorkflowDocument, match=f"input sources nothing binds yet: {named}"
+    ):
         parse_executable_workflow_document(document)
 
 

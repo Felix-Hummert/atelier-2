@@ -25,29 +25,37 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     initialize_schema,
     reconcile_commands,
+    run_configuration_revisions,
     run_events,
     runs,
     workflow_revisions,
 )
 from atelier2.api.stream import BoundedQueryRunner
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
-from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptId
 from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import EffectIntentState, ReconcileCommandState
 from atelier2.contracts.executions import (
     NodeExecutionId,
+    RunEvent,
     RunEventKind,
     logical_effect_key_for,
 )
 from atelier2.contracts.run_projections import (
     RunPage,
 )
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
 )
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
+    RunEventPage,
     StreamReady,
 )
 from atelier2.ports.run_queries import (
@@ -145,31 +153,85 @@ def _seed_history(
     missing_sequences: frozenset[int] = frozenset(),
     state: RunState = RunState.STARTED,
     terminal_event: bool = False,
+    workflow_format_version: int = 1,
+    sink_node_id: str | None = None,
+    head_event_kind: RunEventKind | None = None,
+    head_event_payload: bytes | None = None,
 ) -> WorkflowRevision:
+    """One durable history of the exact shape a run of that family leaves.
+
+    `sink_node_id` is what a V3 run stands on when it ends: its agent sink, whose
+    completion carries the same kind as every other node's, so the node and the
+    kind together say which event ended the run.
+
+    `head_event_kind` writes another kind at the head, which is what an attempt
+    event leaves behind: the store advances the run's head without moving it off
+    the node it stands on.
+    """
     revision = WorkflowRevision(_workflow_document())
     event_records = []
     for sequence in range(1, head + 1):
         if sequence in missing_sequences:
             continue
-        event_kind = (
-            RunEventKind.SUBWORKFLOW_COMPLETED
-            if terminal_event and sequence == head
-            else RunEventKind.AGENT_COMPLETED
+        if sequence == head and head_event_kind is not None:
+            event_kind = head_event_kind
+        elif terminal_event and sequence == head:
+            event_kind = RunEventKind.SUBWORKFLOW_COMPLETED
+        else:
+            event_kind = RunEventKind.AGENT_COMPLETED
+        cancellation = event_kind in {
+            RunEventKind.AGENT_CANCEL_REQUESTED,
+            RunEventKind.AGENT_CANCELLED,
+            RunEventKind.AGENT_INTERRUPTED,
+        }
+        payload = (
+            head_event_payload
+            if sequence == head and head_event_payload is not None
+            else str(sequence).encode()
         )
-        payload = str(sequence).encode()
+        node_id = (
+            sink_node_id
+            if sink_node_id is not None and sequence == head
+            else f"node-{sequence}"
+        )
+        # Built through the production record and inserted as it stores itself.
+        # A seeded row with an invented execution identity or event hash is
+        # refused by the event contract before any reader can judge it, so a test
+        # written that way proves the fixture rather than the read.
+        event = RunEvent(
+            run_id,
+            WorkflowRevisionHash(revision.revision_hash.value),
+            sequence,
+            node_id,
+            NodeExecutionId.for_node(
+                run_id, WorkflowRevisionHash(revision.revision_hash.value), node_id
+            ),
+            event_kind,
+            payload,
+            agent_attempt_id=_digest(f"attempt-{run_id.value}")
+            if cancellation
+            else None,
+            attempt_ordinal=1 if cancellation else None,
+            cancellation_command_id="cancel-1" if cancellation else None,
+            replacement="NONE" if cancellation else None,
+        )
         event_records.append(
             {
-                "run_id": run_id.value,
-                "revision_hash": revision.revision_hash.value,
-                "event_sequence": sequence,
-                "node_id": f"node-{sequence}",
-                "node_execution_id": _digest(f"execution-{run_id.value}-{sequence}"),
-                "event_kind": event_kind.value,
-                "payload": payload,
-                "payload_hash": hashlib.sha256(payload).hexdigest(),
+                "run_id": event.run_id.value,
+                "revision_hash": event.revision_hash.value,
+                "event_sequence": event.event_sequence,
+                "node_id": event.node_id,
+                "node_execution_id": event.node_execution_id.value,
+                "event_kind": event.event_kind.value,
+                "payload": event.payload,
+                "payload_hash": event.payload_hash.value,
                 "receipt_logical_key": None,
                 "receipt_result_hash": None,
-                "event_hash": _digest(f"event-{run_id.value}-{sequence}"),
+                "event_hash": event.event_hash.value,
+                "agent_attempt_id": event.agent_attempt_id,
+                "attempt_ordinal": event.attempt_ordinal,
+                "cancellation_command_id": event.cancellation_command_id,
+                "replacement": event.replacement,
             }
         )
     with engine.begin() as connection:
@@ -179,14 +241,30 @@ def _seed_history(
                 document=revision.document,
             )
         )
+        configuration_hash: str | None = None
+        if workflow_format_version == 3:
+            # The schema keeps a V3 row honest: it stands on the configuration
+            # revision it was started under, and the preimage that hash names.
+            configuration_hash = _digest(f"configuration-{run_id.value}")
+            connection.execute(
+                run_configuration_revisions.insert().values(
+                    revision_hash=configuration_hash,
+                    preimage=b"seeded run configuration",
+                )
+            )
         connection.execute(
             runs.insert().values(
                 run_id=run_id.value,
                 bootstrap_workflow_id=f"workflow-{run_id.value}",
                 revision_hash=revision.revision_hash.value,
-                workflow_format_version=1,
+                workflow_format_version=workflow_format_version,
+                run_configuration_revision_hash=configuration_hash,
                 agent_binding_set_hash=None,
-                current_node_id="final" if state is RunState.COMPLETED else "agent",
+                current_node_id=(
+                    sink_node_id
+                    if sink_node_id is not None
+                    else ("final" if state is RunState.COMPLETED else "agent")
+                ),
                 state=state.value,
                 state_version=head,
                 last_event_sequence=head,
@@ -631,6 +709,56 @@ def test_prepare_rejects_missing_history_endpoint_before_stream_headers(
     assert isinstance(
         durable_queries(engine).prepare_run_event_stream(run_id, 0),
         EventHistoryCorrupt,
+    )
+
+
+def test_prepare_rejects_a_terminal_v3_run_whose_head_event_left_the_sink(
+    engine: Engine,
+) -> None:
+    """The V3 spelling of an ending is checked as strictly as the V1 one.
+
+    A V3 line ends on its agent sink, and every agent node completes with the
+    same kind -- so the node is what says which event ended the run. A completed
+    run whose last event stands somewhere else is a torn history, and naming it
+    is the whole reason this pre-flight exists (#90).
+    """
+    run_id = RunId("v3-head-off-the-sink")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=5,
+        state=RunState.COMPLETED,
+        workflow_format_version=3,
+        sink_node_id=None,
+    )
+
+    assert isinstance(
+        durable_queries(engine).prepare_run_event_stream(run_id, 0),
+        EventHistoryCorrupt,
+    )
+
+
+def test_prepare_opens_a_terminal_v3_run_that_ended_on_its_sink(
+    engine: Engine,
+) -> None:
+    """And the honest history opens, instead of being reported as corruption.
+
+    Before this, every finished V3 run answered `EventHistoryCorrupt` -- the
+    loudest thing this system can say, about a store that is intact -- because
+    the pre-flight knew only the subworkflow spelling of an ending.
+    """
+    run_id = RunId("v3-head-on-the-sink")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=5,
+        state=RunState.COMPLETED,
+        workflow_format_version=3,
+        sink_node_id="sink",
+    )
+
+    assert durable_queries(engine).prepare_run_event_stream(run_id, 0) == StreamReady(
+        5, True, 0
     )
 
 
@@ -1153,3 +1281,132 @@ def test_the_bound_a_reader_holds_is_the_bound_it_applies(engine: Engine) -> Non
         durable_queries(engine).get_workflow_revision(revision.revision_hash),
         WorkflowRevisionFound,
     )
+
+
+def test_a_finished_v3_page_reads_back_its_events_and_says_the_line_ended(
+    engine: Engine,
+) -> None:
+    """The read the cockpit actually calls, not only the pre-flight before it.
+
+    `prepare_run_event_stream` answering `StreamReady` only buys the 200 and the
+    stream headers; the first page is what carries events to the browser. While
+    this read knew one spelling of an ending, a finished V3 line left prepare
+    happily and then called the store corrupt one call later -- a 200 that
+    immediately says `durable-state-corrupt`, which is worse to read than the 500
+    it replaced.
+    """
+    run_id = RunId("v3-page-on-the-sink")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=3,
+        state=RunState.COMPLETED,
+        workflow_format_version=3,
+        sink_node_id="sink",
+    )
+
+    page = durable_queries(engine).read_run_event_page(run_id, 0, 5)
+
+    assert isinstance(page, RunEventPage), page
+    assert page.terminal_seen is True
+    assert [event.event.event_sequence for event in page.events] == [1, 2, 3]
+    assert [event.event.node_id for event in page.events] == [
+        "node-1",
+        "node-2",
+        "sink",
+    ]
+    assert all(
+        event.event.event_kind is RunEventKind.AGENT_COMPLETED for event in page.events
+    )
+
+
+def test_a_v3_page_whose_head_left_the_sink_is_still_corrupt(engine: Engine) -> None:
+    """Teaching the read the second spelling does not blunt it.
+
+    A completed V3 run stands on its sink, so a head event somewhere else is a
+    torn history -- and naming that is the reason this read checks at all.
+    """
+    run_id = RunId("v3-page-off-the-sink")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=3,
+        state=RunState.COMPLETED,
+        workflow_format_version=3,
+        sink_node_id=None,
+    )
+
+    assert isinstance(
+        durable_queries(engine).read_run_event_page(run_id, 0, 5), EventHistoryCorrupt
+    )
+
+
+def test_a_v1_page_still_refuses_a_finished_run_without_its_subworkflow_ending(
+    engine: Engine,
+) -> None:
+    """The older family keeps the only ending it has ever had."""
+    run_id = RunId("v1-page-without-ending")
+    _seed_history(engine, run_id=run_id, head=3, state=RunState.COMPLETED)
+
+    assert isinstance(
+        durable_queries(engine).read_run_event_page(run_id, 0, 5), EventHistoryCorrupt
+    )
+
+
+def test_a_running_v3_run_whose_head_event_stands_on_its_node_still_reads(
+    engine: Engine,
+) -> None:
+    """An attempt event is not an ending, even where the run still stands.
+
+    Requesting a cancellation writes an event at the node the run occupies and
+    advances the run's head without moving it, so for a moment the head event's
+    node and the run's node are the same. Asking only "same node?" calls that
+    healthy, running history an ended one -- and, against a run that has not
+    ended, corruption. The question is whether the event *completed* the node the
+    run stands on.
+    """
+    run_id = RunId("v3-cancel-requested")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=2,
+        state=RunState.STARTED,
+        workflow_format_version=3,
+        sink_node_id="working",
+        head_event_kind=RunEventKind.AGENT_CANCEL_REQUESTED,
+    )
+    queries = durable_queries(engine)
+
+    assert queries.prepare_run_event_stream(run_id, 0) == StreamReady(2, False, 0)
+    page = queries.read_run_event_page(run_id, 0, 5)
+    assert isinstance(page, RunEventPage), page
+    assert page.terminal_seen is False
+
+
+def test_a_v3_page_carries_a_failed_agent_attempt_instead_of_refusing_it(
+    engine: Engine,
+) -> None:
+    """A failure event is V2's shape and V3's too, because they share the arm.
+
+    The projection refused an agent failure outside format 2, from a time when
+    only V1 and V2 existed. A V3 attempt fails through the same store, so that
+    check called an ordinary failed attempt a corrupt store.
+    """
+    run_id = RunId("v3-failed-attempt")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=2,
+        state=RunState.STARTED,
+        workflow_format_version=3,
+        sink_node_id="working",
+        head_event_kind=RunEventKind.AGENT_FAILED,
+        head_event_payload=(
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value.encode("ascii")
+        ),
+    )
+
+    page = durable_queries(engine).read_run_event_page(run_id, 0, 5)
+
+    assert isinstance(page, RunEventPage), page
+    assert page.events[-1].event.event_kind is RunEventKind.AGENT_FAILED

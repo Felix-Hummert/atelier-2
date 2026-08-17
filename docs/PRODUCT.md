@@ -363,6 +363,15 @@ workflow editing. The graph, API, and local cockpit are a proven durable
 vertical, not yet a general-purpose workflow engine or a deployed remote
 product.
 
+A packaged container image now exists for that same local serve: the locked
+project and the built cockpit are baked in, the process runs unprivileged, and
+only the Claude executable is admitted, with isolated `HOME` and a single
+mounted `.credentials.json`. Durable store and scratch are a host volume.
+The live host unit `atelier2-live.service` is still the running serve; the
+container path is documented, not switched live. How to start and redeploy it
+is owned by [OPERATIONS.md](OPERATIONS.md). Network hardening remains
+[ADR 0009](decisions/0009-runner-trust.md).
+
 That API now has a command-line client of its own, so starting real work costs
 one command instead of four ceremonies. `atelier2 run` publishes one workflow
 document and one agent file per bound role, starts the run they describe,
@@ -378,20 +387,30 @@ a decision the command cannot make — a waiting node, an unknown effect outcome
 failed agent attempt — ends it by name with a nonzero exit code instead of
 waiting. Exit 0 says the command read that run's history as far as the run's own
 latest event, so a history that broke off is refused by name and a truncated or
-empty output is never dressed as a receipt. The
-job still travels inside the published document, so one distinct input burns one
-revision. A workflow name is no longer among what is missing: `--name` runs the
-revision a catalog name holds, asked of the service before anything is written
-and at the lineage member `--position` names, so an operator starts named work
-without translating a name into a hash by hand. A run-level input and an output
-contract that could decide an exit code still do not exist.
+empty output is never dressed as a receipt. A
+run started through `start_published` now carries its order beside the document:
+the exact bytes are stored under the run and the name its author declared,
+immutably, and the agent whose node reads that order is handed it -- so one
+published revision serves every order instead of one revision per distinct input.
+An order is refused before any row exists when it is missing, undeclared,
+supplied twice, pinned to another schema than the document named, or is a value
+that schema does not admit. Only an order the graph declares binds today; an
+input reading another node's output, a node receipt, a context entry or an
+authored constant is refused by the source it named. A workflow name is no
+longer among what is missing either: `--name` runs the revision a catalog name
+holds, asked of the service before anything is written and at the lineage member
+`--position` names, so an operator starts named work without translating a name
+into a hash by hand. The command does not yet carry an order of its own -- that
+seam is `start_published` -- and an output contract that could decide an exit
+code still does not exist.
 
-The canonical store is schema V13. A fresh store is created as exact V13 and
+The canonical store is schema V14. A fresh store is created as exact V14 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
 access bindings, and the immutable declared context packages, node-execution request
-preimages and run configuration snapshots those receipts name. A typed in-process writer can commit that exact
+preimages and run configuration snapshots those receipts name, and the immutable
+orders a run was started with. A typed in-process writer can commit that exact
 supervised V3 start as one atomic set. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An

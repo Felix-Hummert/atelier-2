@@ -24,9 +24,11 @@ from atelier2.ports.durable_runs import (
     DurableRunFormatNotExecutable,
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
+    DurableV3StartInputRefused,
     DurableWriteUnavailable,
     StartPublishedRunRequest,
     StartPublishedRunRequestV2,
+    V3InputRefusal,
 )
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
@@ -73,6 +75,15 @@ class AgentExecutorBindingUnavailable:
     pass
 
 
+@dataclass(frozen=True)
+class RunInputRefused:
+    """One order this start cannot honour, named by the input it is about."""
+
+    name: str
+    refusal: V3InputRefusal
+    detail: str | None
+
+
 type StartPublishedRunResult = (
     RunCreated
     | RunExisting
@@ -82,6 +93,7 @@ type StartPublishedRunResult = (
     | InvalidAgentBindings
     | AgentConfigurationRevisionMissing
     | AgentExecutorBindingUnavailable
+    | RunInputRefused
     | WriteUnavailable
     | DurableStateCorrupt
 )
@@ -134,6 +146,8 @@ def start_published_run(
             return AgentExecutorBindingUnavailable()
         case DurableAgentExecutorCapabilityUnavailable():
             return AgentExecutorBindingUnavailable()
+        case DurableV3StartInputRefused(name, refusal, detail):
+            return RunInputRefused(name, refusal, detail)
         case DurableWriteUnavailable():
             return WriteUnavailable()
         case PortDurableStateCorrupt():
