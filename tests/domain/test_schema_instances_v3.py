@@ -120,6 +120,17 @@ def test_bytes_that_are_no_value_at_all_are_refused_by_their_own_name(
     assert verdict.refusal is expected
 
 
+def test_an_exact_number_beyond_the_profile_is_refused_by_name() -> None:
+    """A valid JSON number must return a verdict, never escape the decoder."""
+    literal = b"1e" + b"9" * 19
+
+    verdict = read_instance_document(literal, accepted(b"true"))
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.refusal is InstanceRefusal.NON_CANONICAL_NUMBER
+    assert verdict.subject == literal.decode()
+
+
 def test_an_oversized_value_is_refused_before_anything_reads_it() -> None:
     """The bound exists so hostile input costs a length check, not an evaluation."""
     oversized = b'{"name": "' + b"x" * MAXIMUM_INSTANCE_DOCUMENT_BYTES + b'"}'
@@ -214,6 +225,37 @@ def test_two_numbers_that_differ_stay_different(
     verdict = read_instance_document(instance, accepted(schema))
 
     assert isinstance(verdict, InstanceAccepted if admitted else InstanceRefused)
+
+
+@pytest.mark.parametrize(
+    ("schema", "instance", "admitted"),
+    (
+        (b'{"multipleOf": 1e-100000}', b"1e100000", True),
+        (b'{"multipleOf": 2e-100000}', b"3e-100000", False),
+        (b'{"multipleOf": 0.1}', b"0.3", True),
+        (b'{"multipleOf": 0.2}', b"0.3", False),
+        (b'{"multipleOf": 0.5}', b"4", True),
+        (b'{"multipleOf": 0.5}', b"-4", True),
+        (b'{"multipleOf": 1e999999999999999999}', b"0", True),
+    ),
+    ids=(
+        "extreme-divisible",
+        "extreme-nondivisible",
+        "decimal-divisible",
+        "decimal-nondivisible",
+        "mixed-integer-decimal",
+        "negative",
+        "zero",
+    ),
+)
+def test_multiple_of_is_exact_and_independent_of_decimal_context(
+    schema: bytes, instance: bytes, admitted: bool
+) -> None:
+    verdict = read_instance_document(instance, accepted(schema))
+
+    assert isinstance(verdict, InstanceAccepted if admitted else InstanceRefused)
+    if isinstance(verdict, InstanceRefused):
+        assert verdict.refusal is InstanceRefusal.SCHEMA_VIOLATED
 
 
 def test_the_named_place_orders_array_indexes_as_numbers_not_as_text() -> None:

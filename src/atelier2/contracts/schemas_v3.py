@@ -49,12 +49,15 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from math import gcd
 from typing import NoReturn
 
 import jsonschema.validators
 from jsonschema import Draft202012Validator, TypeChecker
+from jsonschema.exceptions import ValidationError
+from jsonschema.protocols import Validator
 from jsonschema_specifications import REGISTRY as SPECIFICATION_REGISTRY
 from referencing import Registry
 from referencing.jsonschema import Schema
@@ -87,6 +90,7 @@ _IN_PLACE_SUBSCHEMA_MAPS = ("dependentSchemas",)
 type JsonValue = (
     None | bool | int | Decimal | str | list["JsonValue"] | dict[str, "JsonValue"]
 )
+type _ExactNumber = int | Decimal
 
 
 def _is_integer(checker: TypeChecker, instance: object) -> bool:
@@ -97,6 +101,71 @@ def _is_integer(checker: TypeChecker, instance: object) -> bool:
     return isinstance(instance, Decimal) and instance == instance.to_integral_value()
 
 
+def _number_parts(value: _ExactNumber) -> tuple[int, int]:
+    """The finite coefficient and exponent, without expanding the exponent."""
+    if isinstance(value, int):
+        return abs(value), 0
+    decomposed = value.as_tuple()
+    if not isinstance(decomposed.exponent, int):
+        raise TypeError("a JSON number must be finite")
+    coefficient = 0
+    for digit in decomposed.digits:
+        coefficient = coefficient * 10 + digit
+    return coefficient, decomposed.exponent
+
+
+def _without_factor(value: int, factor: int, limit: int) -> tuple[int, int]:
+    """Remove one prime at most `limit` times, stopping when it is absent."""
+    removed = 0
+    while removed < limit:
+        quotient, remainder = divmod(value, factor)
+        if remainder != 0:
+            break
+        value = quotient
+        removed += 1
+    return value, removed
+
+
+def _is_exact_multiple(instance: _ExactNumber, divisor: _ExactNumber) -> bool:
+    """Base-10 divisibility bounded by coefficient digits, not exponent size."""
+    numerator, numerator_exponent = _number_parts(instance)
+    denominator, denominator_exponent = _number_parts(divisor)
+    if numerator == 0:
+        return denominator != 0
+    if denominator == 0:
+        return False
+
+    common = gcd(numerator, denominator)
+    numerator //= common
+    denominator //= common
+    exponent_delta = numerator_exponent - denominator_exponent
+    if exponent_delta >= 0:
+        for factor in (2, 5):
+            denominator, _ = _without_factor(denominator, factor, exponent_delta)
+        return denominator == 1
+
+    if denominator != 1:
+        return False
+    required = -exponent_delta
+    for factor in (2, 5):
+        numerator, removed = _without_factor(numerator, factor, required)
+        if removed != required:
+            return False
+    return True
+
+
+def _validate_exact_multiple_of(
+    _validator: Validator, divisor: JsonValue, instance: JsonValue, _schema: Schema
+) -> Iterator[ValidationError]:
+    """The draft's `multipleOf` decision for this exact-number vocabulary."""
+    if isinstance(instance, bool) or not isinstance(instance, (int, Decimal)):
+        return
+    if isinstance(divisor, bool) or not isinstance(divisor, (int, Decimal)):
+        raise TypeError("an accepted multipleOf divisor must be an exact number")
+    if not _is_exact_multiple(instance, divisor):
+        yield ValidationError(f"{instance!r} is not a multiple of {divisor}")
+
+
 # Numbers are decoded exactly rather than through float64, because two JSON
 # numbers that differ must stay different: a value whose hash is stored and whose
 # schema is enforced cannot be collapsed onto the nearest double. The evaluator
@@ -104,7 +173,9 @@ def _is_integer(checker: TypeChecker, instance: object) -> bool:
 # draft says they mean.
 _EXACT_NUMBER_TYPES = Draft202012Validator.TYPE_CHECKER.redefine("integer", _is_integer)
 _ExactNumberValidator = jsonschema.validators.extend(
-    Draft202012Validator, type_checker=_EXACT_NUMBER_TYPES
+    Draft202012Validator,
+    validators={"multipleOf": _validate_exact_multiple_of},
+    type_checker=_EXACT_NUMBER_TYPES,
 )
 
 
@@ -398,6 +469,13 @@ def _refuse_constant(literal: str) -> NoReturn:
     raise _NonCanonicalNumber(literal)
 
 
+def _read_exact_decimal(literal: str) -> Decimal:
+    try:
+        return Decimal(literal)
+    except InvalidOperation as refused:
+        raise _NonCanonicalNumber(literal) from refused
+
+
 def _refuse_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     seen: dict[str, object] = {}
     for key, value in pairs:
@@ -419,7 +497,7 @@ def _decoded_json(text: str) -> _Decoded | SchemaRefused:
         value: JsonValue = json.loads(
             text,
             parse_constant=_refuse_constant,
-            parse_float=Decimal,
+            parse_float=_read_exact_decimal,
             object_pairs_hook=_refuse_duplicate_keys,
         )
     except _NonCanonicalNumber as refused:
