@@ -100,6 +100,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         "publish_agent_configuration_revision_route",
     ),
     (
+        "GET",
+        API_PREFIX + "/agent-configuration-revisions",
+        "list_agent_configuration_revisions_route",
+    ),
+    (
         "POST",
         API_PREFIX + "/schema-revisions",
         "publish_schema_revision_route",
@@ -140,6 +145,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/health", "get"): {"200"},
     (API_PREFIX + "/auth-profile-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-configuration-revisions", "post"): {"200", "201"},
+    (API_PREFIX + "/agent-configuration-revisions", "get"): {"200"},
     (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},

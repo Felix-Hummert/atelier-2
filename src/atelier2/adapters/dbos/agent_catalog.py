@@ -29,12 +29,15 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCollision,
     AgentConfigurationRevisionCreated,
     AgentConfigurationRevisionExisting,
+    AgentConfigurationRevisionPage,
     AgentExecutorBindingUnavailable,
     AuthProfileRevisionCollision,
     AuthProfileRevisionConflict,
     AuthProfileRevisionCreated,
     AuthProfileRevisionExisting,
     AuthProfileRevisionMissing,
+    CatalogReadUnavailable,
+    ListAgentConfigurationRevisionsResult,
     PublishAgentConfigurationRevisionResult,
     PublishAuthProfileRevisionResult,
 )
@@ -225,3 +228,51 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
         if auth_record is None:
             raise ValueError("agent configuration references a missing auth profile")
         return configuration, auth_profile_from_record(auth_record)
+
+    def list_agent_configuration_revisions(
+        self, after: AgentConfigurationRevisionHash | None, limit: int
+    ) -> ListAgentConfigurationRevisionsResult:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("revision page limit must be an integer from 1 to 100")
+        try:
+            with self._engine.connect() as connection:
+                statement = sa.select(agent_configuration_revisions)
+                if after is not None:
+                    statement = statement.where(
+                        agent_configuration_revisions.c.revision_hash > after.value
+                    )
+                records = tuple(
+                    connection.execute(
+                        statement.order_by(
+                            agent_configuration_revisions.c.revision_hash
+                        ).limit(limit + 1)
+                    ).mappings()
+                )
+                has_more = len(records) > limit
+                page = records[:limit]
+                items: list[tuple[AgentConfigurationRevision, AuthProfileRevision]] = []
+                for record in page:
+                    configuration = agent_configuration_from_record(record)
+                    auth_record = (
+                        connection.execute(
+                            sa.select(auth_profile_revisions).where(
+                                auth_profile_revisions.c.revision_hash
+                                == configuration.auth_profile_revision_hash.value
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if auth_record is None:
+                        raise ValueError(
+                            "agent configuration references a missing auth profile"
+                        )
+                    items.append((configuration, auth_profile_from_record(auth_record)))
+                return AgentConfigurationRevisionPage(
+                    tuple(items),
+                    items[-1][0].revision_hash if has_more and items else None,
+                )
+        except (OperationalError, PoolTimeoutError):
+            return CatalogReadUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()

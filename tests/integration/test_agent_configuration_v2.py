@@ -69,6 +69,7 @@ from atelier2.contracts.run_projections import (
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionPage,
     AuthProfileRevisionCreated,
 )
 from atelier2.ports.durable_runs import (
@@ -761,6 +762,87 @@ nodes:
         ]
         with runtime.engine.connect() as connection:
             assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 1
+    finally:
+        runtime.close()
+
+
+def test_published_configurations_are_listed_over_the_api(tmp_path: Path) -> None:
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "claude-api-test", b"build"
+    )
+    runtime = _runtime(tmp_path, (factory,))
+    runtime.initialize_storage()
+    catalog = DbosAgentConfigurationCatalog(
+        runtime.engine, runtime.agent_executor_registry
+    )
+    client = _api_client(runtime)
+    try:
+        first_auth = AuthProfileRevision(
+            "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+        )
+        second_auth = AuthProfileRevision(
+            "team", 2, ProviderId("anthropic"), AuthMode.API_KEY
+        )
+        assert isinstance(
+            catalog.publish_auth_profile_revision(first_auth),
+            AuthProfileRevisionCreated,
+        )
+        assert isinstance(
+            catalog.publish_auth_profile_revision(second_auth),
+            AuthProfileRevisionCreated,
+        )
+        first = AgentConfigurationRevision(
+            "opus",
+            first_auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        second = AgentConfigurationRevision(
+            "sonnet",
+            second_auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(first),
+            AgentConfigurationRevisionCreated,
+        )
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(second),
+            AgentConfigurationRevisionCreated,
+        )
+        stored = catalog.list_agent_configuration_revisions(None, 1)
+        assert isinstance(stored, AgentConfigurationRevisionPage)
+        assert len(stored.items) == 1
+        assert stored.next_after is not None
+
+        empty = client.get(
+            API_PREFIX + "/agent-configuration-revisions", params={"limit": "1"}
+        )
+        assert empty.status_code == 200
+        first_page = empty.json()
+        assert len(first_page["items"]) == 1
+        assert first_page["next_after_revision_hash"] is not None
+        second_page = client.get(
+            API_PREFIX + "/agent-configuration-revisions",
+            params={
+                "limit": "1",
+                "after_revision_hash": first_page["next_after_revision_hash"],
+            },
+        )
+        assert second_page.status_code == 200
+        assert len(second_page.json()["items"]) == 1
+        assert second_page.json()["next_after_revision_hash"] is None
+        listed = {
+            item["model"] for item in first_page["items"] + second_page.json()["items"]
+        }
+        assert listed == {"opus", "sonnet"}
+        for item in first_page["items"] + second_page.json()["items"]:
+            assert item["provider_id"] == "anthropic"
+            assert item["auth_mode"] in {"subscription", "api_key"}
+            assert "secret" not in str(item).lower()
     finally:
         runtime.close()
 
