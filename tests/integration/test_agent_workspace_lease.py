@@ -53,6 +53,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
     AgentAttemptClaimedByThisCall,
     AgentAttemptPossiblyRan,
     AgentAttemptSucceeded,
@@ -812,6 +813,16 @@ def test_a_cancelled_attempt_loses_its_workspace_only_behind_attested_cleanup(
         worker = threading.Thread(target=run_attempt)
         worker.start()
         _wait_until(ready.exists)
+        # The ready file is not the durable launch. `observe_process` still
+        # bumps `state_version` after the child has started; a cancel loaded
+        # before that write is stale, never records the command, and the
+        # attestation then names a missing cancellation.
+        _wait_until(
+            lambda: (
+                store.load(execution.attempt_id).process_phase
+                is AgentAttemptProcessPhase.PROCESS_OBSERVED
+            )
+        )
         workspace = workspaces.owner.scratch_root / execution.attempt_id.value
         assert (workspace / ".env").is_file()
 
@@ -823,7 +834,9 @@ def test_a_cancelled_attempt_loses_its_workspace_only_behind_attested_cleanup(
             current.state_version,
             AgentAttemptReplacement.NONE,
         )
-        store.request_cancellation(request)
+        assert isinstance(
+            store.request_cancellation(request), AgentAttemptCancellationAccepted
+        )
         accepted = continue_agent_attempt_cancellation(
             request, store, runtime.agent_process_supervisor, workspaces
         )
