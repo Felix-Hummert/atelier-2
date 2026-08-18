@@ -9,7 +9,10 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from atelier2.adapters.bounded_processes import bounded_process_answer
+from atelier2.adapters.bounded_processes import (
+    bounded_process_answer,
+    bounded_process_streams,
+)
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -79,7 +82,11 @@ CLAUDE_SUBSCRIPTION_FRAME_BYTES = MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
 CONFORMANT_CLAUDE_VERSIONS = frozenset({(2, 1, 221), (2, 1, 233)})
 
 _VERSION_FLAG = "--version"
-_VERSION_PROBE_TIMEOUT_SECONDS = 30.0
+# How long this deployment waits for one probe of this CLI to answer. Both
+# probes below share it: neither reaches a model, both are one short startup,
+# and a deployment that wanted to wait differently for one of them would be
+# saying something about the executable rather than about the probe.
+_PROBE_TIMEOUT_SECONDS = 30.0
 # The measured answer is one short line. The probe reads an external program's
 # streams, so it holds them to the smallest bound that answer fits inside
 # rather than to whatever the program decides to write.
@@ -211,7 +218,7 @@ def _parsed_version(reported: str) -> tuple[int, int, int] | None:
 
 
 def read_claude_version(
-    executable: Path, timeout_seconds: float = _VERSION_PROBE_TIMEOUT_SECONDS
+    executable: Path, timeout_seconds: float = _PROBE_TIMEOUT_SECONDS
 ) -> tuple[int, int, int]:
     """Ask one executable which Claude Code it is. Runs it with `--version`.
 
@@ -264,7 +271,7 @@ def read_claude_version(
 
 
 def verify_claude_capability(
-    executable: Path, timeout_seconds: float = _VERSION_PROBE_TIMEOUT_SECONDS
+    executable: Path, timeout_seconds: float = _PROBE_TIMEOUT_SECONDS
 ) -> tuple[int, int, int]:
     """Refuse an executable outside the reviewed conformance set."""
 
@@ -406,6 +413,58 @@ class ClaudeSubscriptionSettings:
             )
 
 
+def _credential_environment(
+    settings: ClaudeSubscriptionSettings,
+) -> tuple[tuple[str, str], ...]:
+    """The complete environment every invocation of this CLI is handed.
+
+    It is the same whatever the invocation may do, because it is the credential
+    boundary plus the retry, prompt-history and subprocess hardening -- and none
+    of those is a property of the operation's tool surface.
+    """
+
+    return (
+        (_CREDENTIAL_DIRECTORY_VARIABLE, str(settings.credential_directory)),
+        (_SEARCH_PATH_VARIABLE, settings.search_path),
+        (_SKIP_PROMPT_HISTORY_VARIABLE, _SKIP_PROMPT_HISTORY),
+        (_MAXIMUM_RETRIES_VARIABLE, _NO_RETRIES),
+        (_SUBPROCESS_ENVIRONMENT_SCRUB_VARIABLE, _SCRUB_SUBPROCESS_ENVIRONMENT),
+    )
+
+
+def _decoded_claude_answer(
+    completion: AgentProcessCompletion,
+) -> AgentExecutionResult | AgentExecutionFailure:
+    """Read one `claude -p --output-format json` frame back, or refuse it.
+
+    The envelope is the CLI's contract rather than one operation's, so every
+    executor in this module reads it the same way and a release that changed it
+    would move all of them at once.
+    """
+
+    if completion.return_code != 0:
+        return _UNUSABLE_PROVIDER_ANSWER
+    if len(completion.standard_output) > CLAUDE_SUBSCRIPTION_FRAME_BYTES:
+        return _UNUSABLE_PROVIDER_ANSWER
+    try:
+        envelope: object = json.loads(completion.standard_output)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return _UNUSABLE_PROVIDER_ANSWER
+    if not isinstance(envelope, dict):
+        return _UNUSABLE_PROVIDER_ANSWER
+    result = envelope.get(_RESULT_FIELD)
+    if (
+        envelope.get(_ENVELOPE_TYPE_FIELD) != _RESULT_ENVELOPE_TYPE
+        or envelope.get(_ERROR_FLAG_FIELD) is not False
+        or not isinstance(result, str)
+    ):
+        return _UNUSABLE_PROVIDER_ANSWER
+    output_bytes = result.encode("utf-8")
+    if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
+        return _UNUSABLE_PROVIDER_ANSWER
+    return AgentExecutionResult(output_bytes)
+
+
 @dataclass(frozen=True)
 class ClaudeSubscriptionExecutor:
     """One bare headless `claude --print` invocation and its JSON envelope.
@@ -518,19 +577,7 @@ class ClaudeSubscriptionExecutor:
                 _MAXIMUM_TURNS_FLAG,
                 _HEARTBEAT_MAXIMUM_TURNS,
             ),
-            (
-                (
-                    _CREDENTIAL_DIRECTORY_VARIABLE,
-                    str(settings.credential_directory),
-                ),
-                (_SEARCH_PATH_VARIABLE, settings.search_path),
-                (_SKIP_PROMPT_HISTORY_VARIABLE, _SKIP_PROMPT_HISTORY),
-                (_MAXIMUM_RETRIES_VARIABLE, _NO_RETRIES),
-                (
-                    _SUBPROCESS_ENVIRONMENT_SCRUB_VARIABLE,
-                    _SCRUB_SUBPROCESS_ENVIRONMENT,
-                ),
-            ),
+            _credential_environment(settings),
             # The job travels through standard input so no prompt ever appears
             # in the process table of a host the operator shares.
             request.job_bytes,
@@ -542,27 +589,8 @@ class ClaudeSubscriptionExecutor:
     ) -> AgentExecutionResult | AgentExecutionFailure:
         """The answer travels inside the process result, so the invocation is
         not consulted: this executor holds no state to correlate."""
-        if completion.return_code != 0:
-            return _UNUSABLE_PROVIDER_ANSWER
-        if len(completion.standard_output) > CLAUDE_SUBSCRIPTION_FRAME_BYTES:
-            return _UNUSABLE_PROVIDER_ANSWER
-        try:
-            envelope: object = json.loads(completion.standard_output)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return _UNUSABLE_PROVIDER_ANSWER
-        if not isinstance(envelope, dict):
-            return _UNUSABLE_PROVIDER_ANSWER
-        result = envelope.get(_RESULT_FIELD)
-        if (
-            envelope.get(_ENVELOPE_TYPE_FIELD) != _RESULT_ENVELOPE_TYPE
-            or envelope.get(_ERROR_FLAG_FIELD) is not False
-            or not isinstance(result, str)
-        ):
-            return _UNUSABLE_PROVIDER_ANSWER
-        output_bytes = result.encode("utf-8")
-        if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
-            return _UNUSABLE_PROVIDER_ANSWER
-        return AgentExecutionResult(output_bytes)
+        del invocation
+        return _decoded_claude_answer(completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
         """Nothing to take back: `CLAUDE_CONFIG_DIR` names the operator's own
@@ -603,3 +631,297 @@ class ClaudeSubscriptionExecutorFactory:
 
     def open(self) -> ClaudeSubscriptionExecutor:
         return ClaudeSubscriptionExecutor(self.settings)
+
+
+CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY = AgentExecutorKey(
+    ProviderId("anthropic"),
+    AgentExecutorRevision("claude-subscription-tools/v1"),
+)
+# A second operation of the same CLI, not a later revision of the first. Its
+# argument vector differs from the tool-free one in exactly one decision -- the
+# tools this call may use -- and that decision is what an operational identity
+# stands for, so every durable attempt record keeps saying which of the two ran.
+CLAUDE_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
+    "headless-workspace-tools-print-json/v1"
+)
+
+# The exact built-in tools this operation offers, named once and used twice:
+# `--tools` decides what the model can see, `--allowedTools` decides what it may
+# use without asking. Both are needed and neither is a stand-in for the other.
+# Measured on 2.1.233, the release this vector was first built against: with
+# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB set and no allowlist, the CLI forces the
+# permission mode back to its default and says so -- "Declare allowedTools
+# explicitly, or set CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to opt out" -- and that
+# announcement is gone once the allowlist is declared. So an explicit allowlist
+# is the only grant this environment honours, and a `--permission-mode` would be
+# accepted on the command line and then silently overridden. Naming the same set
+# at `--tools` keeps every other built-in, the network-reaching ones included,
+# out of the model's reach rather than visible and refused.
+WORKSPACE_TOOLS = ("Bash", "Edit", "Glob", "Grep", "Read", "Write")
+_WORKSPACE_TOOL_LIST = ",".join(WORKSPACE_TOOLS)
+_TOOLS_FLAG = "--tools"
+_ALLOWED_TOOLS_FLAG = "--allowedTools"
+# Stopgap until issue #26 owns a provider-neutral budget, beside the tool-free
+# call's single turn. A tool-using answer spends one turn per tool result, so a
+# call bounded at one turn could never finish an edit; this ceiling is small
+# enough that no unbounded subscription loop can start behind it.
+_WORKSPACE_TOOLS_MAXIMUM_TURNS = "16"
+
+# What the CLI says when it could not read an argument, measured on 2.1.233
+# against a flag no release can know. It is the one thing that tells a vector
+# this executable parsed whole from one it stopped inside -- and the attestation
+# below does not take it on trust from that one measurement: it re-establishes
+# the refusal on whatever executable a deployment actually serves.
+_ARGUMENT_REFUSAL_MARKER = "unknown option"
+_UNKNOWN_FLAG_CONTROL = "--atelier2-no-claude-code-knows-this"
+# The probe never reaches a model, so this names none: it keeps the vector's
+# shape exact while saying plainly that no billed call stands behind it.
+_INVOCATION_PROBE_MODEL = "atelier2-invocation-probe"
+# The measured answers are one short line each. The probe reads an external
+# program's streams, so it holds them to the smallest bound those answers fit
+# inside rather than to whatever the program decides to write.
+_INVOCATION_PROBE_OUTPUT_BYTES = 16_384
+
+
+def _workspace_tool_arguments(executable: Path, model: str) -> tuple[str, ...]:
+    """The exact argument vector one workspace-tool invocation is launched with."""
+
+    return (
+        str(executable),
+        _PRINT_FLAG,
+        _OUTPUT_FORMAT_FLAG,
+        _JSON_OUTPUT_FORMAT,
+        _MODEL_FLAG,
+        model,
+        _TOOLS_FLAG,
+        _WORKSPACE_TOOL_LIST,
+        _ALLOWED_TOOLS_FLAG,
+        _WORKSPACE_TOOL_LIST,
+        _NO_SETTING_SOURCES,
+        _SAFE_MODE_FLAG,
+        _STRICT_MCP_CONFIG_FLAG,
+        _MCP_CONFIG_FLAG,
+        _EMPTY_MCP_CONFIG,
+        _DISABLE_SLASH_COMMANDS_FLAG,
+        _NO_CHROME_FLAG,
+        _NO_SESSION_PERSISTENCE_FLAG,
+        _MAXIMUM_TURNS_FLAG,
+        _WORKSPACE_TOOLS_MAXIMUM_TURNS,
+    )
+
+
+def _jobless_invocation_answer(
+    settings: ClaudeSubscriptionSettings,
+    arguments: tuple[str, ...],
+    timeout_seconds: float,
+) -> str:
+    """Start this exact invocation with no job, and read back how it refused.
+
+    Both streams are read, because what has to be told apart here is only said
+    on the diagnostic one. The call is handed the deployment's real environment,
+    unlike the version probe: what is being attested is the invocation form this
+    executor will really launch, and an environment of its own would attest a
+    different one.
+    """
+
+    with tempfile.TemporaryDirectory(
+        prefix="atelier2-claude-invocation-"
+    ) as probe_root:
+        try:
+            process = subprocess.Popen(
+                arguments,
+                cwd=probe_root,
+                env=dict(_credential_environment(settings)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise ClaudeExecutableUnsupported(
+                f"the Claude executable could not start this executor's "
+                f"invocation: {error}"
+            ) from error
+        try:
+            return_code, answer, diagnostics = bounded_process_streams(
+                process, timeout_seconds, _INVOCATION_PROBE_OUTPUT_BYTES
+            )
+        except OSError as error:
+            raise ClaudeExecutableUnsupported(
+                f"the Claude executable could not start this executor's "
+                f"invocation: {error}"
+            ) from error
+    if return_code == 0:
+        raise ClaudeExecutableUnsupported(
+            "the Claude executable answered a jobless invocation successfully: "
+            "this probe rests on a call with no job ending in a refusal, so a "
+            "release that runs one instead has to be measured again before this "
+            "executor may be composed against it"
+        )
+    return (answer + diagnostics).decode("utf-8", "replace")
+
+
+def attest_workspace_tool_invocation(
+    settings: ClaudeSubscriptionSettings,
+    timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
+) -> None:
+    """Refuse an executable that cannot start this executor's exact invocation.
+
+    A version answer is not startability. A copy of this CLI has passed
+    `--version` and then failed to spawn its real invocation at all, which is
+    the observation this attestation exists for (#301, operator ruling of the
+    night of 18.08.). So it launches the argument vector the workspace-tool
+    executor really prepares -- every flag, the deployment's own environment --
+    and hands it no job: a CLI that read the whole vector reaches its own
+    missing-input refusal, and a CLI that did not stops at the argument it could
+    not read. Neither reaches a model, so the attestation is free and runs at
+    every composition rather than at the first run that binds a node.
+
+    The negative observation only means something if this executable can still
+    make the positive one, so the control runs beside it: the same vector with
+    one flag no release can know must be refused as an unknown option. Without
+    that control, "said nothing about an unknown option" would also be what a
+    release that stopped saying it looks like.
+    """
+
+    arguments = _workspace_tool_arguments(settings.executable, _INVOCATION_PROBE_MODEL)
+    started = _jobless_invocation_answer(settings, arguments, timeout_seconds)
+    if _ARGUMENT_REFUSAL_MARKER in started:
+        raise ClaudeExecutableUnsupported(
+            "the Claude executable refused an argument of this executor's "
+            f"invocation: {started.strip()}. Serving workspace-tool agents "
+            "needs every flag of that vector to exist and parse, because each "
+            "one is a containment decision this executor states"
+        )
+    control = _jobless_invocation_answer(
+        settings, (*arguments, _UNKNOWN_FLAG_CONTROL), timeout_seconds
+    )
+    if _ARGUMENT_REFUSAL_MARKER not in control:
+        raise ClaudeExecutableUnsupported(
+            "the Claude executable did not refuse a flag no release can know, "
+            f"answering instead: {control.strip()}. The probe above reads a "
+            "missing flag out of exactly that refusal, so an executable that "
+            "never states one cannot be attested by it"
+        )
+
+
+@dataclass(frozen=True)
+class ClaudeWorkspaceToolExecutor:
+    """One headless `claude --print` call that may use tools where it stands.
+
+    This is the tool-free executor's sibling and deliberately not its successor.
+    The two differ in one decision, and a node keeps the tool-free one unless its
+    durable binding asks for `HEADLESS_WITH_TOOLS`; the capability the factory
+    below declares is what makes that ask the only way to reach this class.
+
+    WHAT IT GRANTS. The invocation names the built-in tools it offers and
+    pre-approves exactly the same set, so the process may read, search, write
+    and run commands. Both halves are measured, not chosen: with the subprocess
+    environment scrub this deployment sets, the CLI forces the permission mode
+    back to its default and tells the caller to declare `allowedTools`
+    explicitly, so an explicit allowlist is the only grant it honours here.
+
+    WHAT IT KEEPS. Every other flag and the whole environment are the tool-free
+    executor's, unchanged: no user or project settings, safe mode, an explicitly
+    empty strict MCP configuration, no skills, no Chrome integration, no session
+    persistence, no prompt history and no retries. Safe mode's own help states
+    that built-in tools and permissions keep working while every customization
+    stays disabled, which is what makes the pair coherent -- what this executor
+    adds is the built-in tools it named, and nothing the workspace or the
+    operator's configuration could bring with them.
+
+    WHAT IT DOES NOT CLAIM. No operating-system isolation. The process runs as
+    the serving user, and `Bash` and `Write` reach every path that user reaches
+    -- including the credential directory this invocation hands it. The
+    attempt's workspace is where the process is *started*, not a boundary it is
+    held inside: the lease says in its own words that it claims nothing about
+    operating-system isolation, and this executor claims nothing beyond it. A
+    tool this vector did not name cannot be used; where a named tool may reach
+    is the CLI's own business and no promise of this module's. The boundary that
+    would make those claims is a separate slice and has its own owners (#242,
+    #312).
+
+    WHAT IS NOT MEASURED, said here rather than discovered later. The tool-free
+    executor rests on a one-call conformance matrix against a real subscription
+    answer. This one has no such call yet on any release: what is measured is
+    that the vector starts and parses whole, and that the CLI's own hardening
+    stops overriding the permission decision once the allowlist is declared.
+    That a real answer then uses exactly these tools, that no customization
+    returns with them, and what the envelope reports while they run, are the
+    half a billed call has to establish -- one call, under the operator's gate,
+    owned by #301. Until it is run, this executor is composed only where an
+    operator armed it by name.
+    """
+
+    settings: ClaudeSubscriptionSettings
+
+    def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
+        binding = request.resolved_binding
+        if binding.auth_profile.auth_mode is not AuthMode.SUBSCRIPTION:
+            raise ClaudeSubscriptionAuthModeUnsupported(
+                "the Claude workspace-tool executor serves subscription profiles only"
+            )
+        settings = self.settings
+        return AgentProcessCommand(
+            _workspace_tool_arguments(settings.executable, binding.configuration.model),
+            _credential_environment(settings),
+            # The job travels through standard input so no prompt ever appears
+            # in the process table of a host the operator shares.
+            request.job_bytes,
+            standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
+        )
+
+    def decode_process_completion(
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        """The answer travels inside the process result, so the invocation is
+        not consulted: this executor holds no state to correlate.
+
+        What the process wrote beside the answer stays in the workspace the
+        attempt leased. This executor reads none of it: making a file durable is
+        the artifact store's decision and its own slice (#352).
+        """
+        del invocation
+        return _decoded_claude_answer(completion)
+
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        """Nothing to take back: `CLAUDE_CONFIG_DIR` names the operator's own
+        credential directory, and this executor copies it nowhere."""
+
+        del command
+
+    def close(self) -> None:
+        return
+
+
+@dataclass(frozen=True)
+class ClaudeWorkspaceToolExecutorFactory:
+    """The host-composed factory for one Claude workspace-tool executor."""
+
+    settings: ClaudeSubscriptionSettings
+
+    @property
+    def key(self) -> AgentExecutorKey:
+        return CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY
+
+    @property
+    def operational_identity(self) -> AgentExecutorOperationalIdentity:
+        return CLAUDE_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY
+
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        """Only headless-with-tools, and the omissions are the guard.
+
+        Plain `HEADLESS` is missing on purpose. A configuration asking for it is
+        asking for a call that can touch nothing, and answering that ask with
+        this invocation would hand a node tools its binding never requested. The
+        tool-free executor serves it, and a binding that names this executor's
+        revision while asking for `HEADLESS` is refused by the starter rather
+        than quietly widened. Interactive is missing for the same reason it is
+        missing from the tool-free executor: there is no terminal here.
+        """
+
+        return frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS})
+
+    def open(self) -> ClaudeWorkspaceToolExecutor:
+        return ClaudeWorkspaceToolExecutor(self.settings)

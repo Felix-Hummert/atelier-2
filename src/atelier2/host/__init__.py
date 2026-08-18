@@ -1,4 +1,4 @@
-"""The operator's command line: serve, run, resolve, or migrate a store."""
+"""The operator's command line: serve, run, resolve, migrate, or speak MCP."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from atelier2.adapters.claude_subscription import (
     ClaudeManagedPolicyPresent,
     ClaudeSubscriptionSettings,
     attest_no_managed_policy,
+    attest_workspace_tool_invocation,
     verify_claude_capability,
 )
 from atelier2.adapters.codex_subscription import (
@@ -37,6 +38,7 @@ from atelier2.adapters.grok_subscription import (
 )
 from atelier2.adapters.project_verification import declared_project
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
+from atelier2.host.mcp_command import execute_mcp
 from atelier2.host.migrate_command import describe_migration, execute_migrate
 from atelier2.host.run_command import (
     DEFAULT_CATALOG_POSITION,
@@ -129,6 +131,22 @@ There is no verdict exit code: output contracts (issue #57) do not exist yet,
 so the exit code reports the run's disposition and nothing more.
 """
 
+
+MCP_DESCRIPTION = """\
+Speak MCP on standard input and standard output against a served Atelier API.
+
+This command starts no listener and invents no credential. It is a child
+process a client launches, and it talks to the public HTTP API of --service
+exactly as the browser and `run` already do. The API has no caller
+authentication today: #82 is human OIDC, ADR 0009 (machine credentials) is
+not landed, so this child refuses any service that is not a literal
+loopback address rather than pretending a token exists.
+
+The four tools are list_workflows, start_run, run_status and answer_wait.
+Each one calls an existing door. A typed problem from the service is the
+tool's own answer, field pointers included.
+"""
+
 BINDING_SEPARATOR = "="
 
 
@@ -143,6 +161,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return _resolve(parser, parsed)
     if parsed.command == "migrate":
         return _migrate(parsed)
+    if parsed.command == "mcp":
+        return execute_mcp(parsed.service, sys.stdin.buffer, sys.stdout.buffer)
     parser.error("a command is required")
 
 
@@ -198,6 +218,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             agent_scratch_root=_attested_agent_scratch_root(parser, parsed),
             project_root=_declared_project_root(parser, parsed),
             claude_subscription=_claude_subscription_settings(parser, parsed),
+            claude_workspace_tools=parsed.claude_workspace_tools,
             grok_subscription=_grok_subscription_settings(parser, parsed),
             codex_subscription=_codex_subscription_settings(parser, parsed),
         )
@@ -376,6 +397,12 @@ def _claude_subscription_settings(
 
     declared = (parsed.claude_executable, parsed.claude_credential_directory)
     if all(value is None for value in declared):
+        if parsed.claude_workspace_tools:
+            parser.error(
+                "--claude-workspace-tools arms a second executor of the Claude "
+                "deployment, so it needs --claude-executable and "
+                "--claude-credential-directory beside it"
+            )
         return None
     if any(value is None for value in declared):
         parser.error(
@@ -399,6 +426,12 @@ def _claude_subscription_settings(
     try:
         attest_no_managed_policy(settings.credential_directory, MANAGED_POLICY_ROOTS)
         verify_claude_capability(settings.executable)
+        if parsed.claude_workspace_tools:
+            # Startability, not a version answer: the tool-bearing invocation is
+            # the one whose flags decide what a node's process may touch, so the
+            # deployment starts that exact vector once, here, rather than
+            # discovering at the first bound node that it never spawns.
+            attest_workspace_tool_invocation(settings)
     except (ClaudeExecutableUnsupported, ClaudeManagedPolicyPresent) as error:
         parser.error(str(error))
     return settings
@@ -510,6 +543,16 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--project-root", type=Path)
     serve_parser.add_argument("--claude-executable", type=Path)
     serve_parser.add_argument("--claude-credential-directory", type=Path)
+    serve_parser.add_argument(
+        "--claude-workspace-tools",
+        action="store_true",
+        help=(
+            "also serve the Claude executor whose invocation may read, write "
+            "and run commands where the attempt stands. It runs as this user "
+            "and is no sandbox; only a node whose binding requests the "
+            "headless_with_tools capability reaches it"
+        ),
+    )
     serve_parser.add_argument("--grok-executable", type=Path)
     serve_parser.add_argument("--grok-workspace", type=Path)
     serve_parser.add_argument("--grok-credential-directory", type=Path)
@@ -627,6 +670,20 @@ def _argument_parser() -> argparse.ArgumentParser:
             "this run's own identity; without it the identity is derived from "
             "the published workflow and bindings, so repeating the command "
             "reports the same run instead of starting another"
+        ),
+    )
+    mcp_parser = commands.add_parser(
+        "mcp",
+        help="speak MCP on standard input against a loopback Atelier API",
+        description=MCP_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    mcp_parser.add_argument(
+        "--service",
+        default=DEFAULT_SERVICE_URL,
+        help=(
+            "the served Atelier API to call (default "
+            f"{DEFAULT_SERVICE_URL}); must be a literal loopback address"
         ),
     )
     return parser

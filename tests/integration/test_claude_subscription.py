@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -21,18 +22,23 @@ from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_FRAME_BYTES,
     CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
+    CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY,
+    CLAUDE_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY,
     CONFORMANT_CLAUDE_VERSIONS,
     CREDENTIAL_RECORD_ENTRY,
     MANAGED_POLICY_ENTRIES,
     MANAGED_POLICY_ROOTS,
     PERSONAL_SUBSCRIPTION_TYPES,
     REMOTE_MANAGED_POLICY_ENTRY,
+    WORKSPACE_TOOLS,
     ClaudeExecutableUnsupported,
     ClaudeManagedPolicyPresent,
     ClaudeSubscriptionAuthModeUnsupported,
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
+    ClaudeWorkspaceToolExecutorFactory,
     attest_no_managed_policy,
+    attest_workspace_tool_invocation,
     verify_claude_capability,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
@@ -55,6 +61,7 @@ from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
+    AgentExecutorRevision,
     AgentReceiptV2,
     AgentRole,
     AuthMode,
@@ -1531,3 +1538,375 @@ def test_the_real_subscription_cli_answers_one_contained_headless_job(
         request, binding_set.binding_set_hash, result
     )
     assert receipt.output_bytes == result.output_bytes
+
+
+# --- The workspace-tool executor: the second operation of the same deployment ---
+
+WORKSPACE_ARTEFACT_NAME = "the-line-this-attempt-left.txt"
+WORKSPACE_ARTEFACT_LINE = "written where this attempt was started"
+
+TOOL_USING_CLAUDE = (
+    "import json, os, sys\n"
+    "sys.stdin.buffer.read()\n"
+    f"written = os.path.join(os.getcwd(), {WORKSPACE_ARTEFACT_NAME!r})\n"
+    "with open(written, 'w', encoding='utf-8') as artefact:\n"
+    f"    artefact.write({WORKSPACE_ARTEFACT_LINE!r})\n"
+    "with open(written, encoding='utf-8') as artefact:\n"
+    "    read_back = artefact.read()\n"
+    "json.dump(\n"
+    "    {\n"
+    "        'type': 'result',\n"
+    "        'is_error': False,\n"
+    "        'result': json.dumps({'wrote': written, 'read_back': read_back}),\n"
+    "    },\n"
+    "    sys.stdout,\n"
+    ")\n"
+)
+"""A fake CLI standing where the model's own file tools would stand.
+
+It writes where it was started, reads the file back, and answers with both. What
+it stands in for is the tool call, not the model: the boundary this test owns is
+the process one, and what a real Claude does with the tools this invocation
+grants it is the conformance matrix's question, not this suite's.
+"""
+
+
+def claude_deployment(
+    root: Path, name: str, program: str
+) -> ClaudeSubscriptionSettings:
+    """One Claude deployment of its own directory under this test's root."""
+
+    directory = root / name
+    directory.mkdir()
+    return claude_subscription_deployment(directory, program)
+
+
+def argument_after(arguments: Sequence[str], flag: str) -> str:
+    return arguments[arguments.index(flag) + 1]
+
+
+def workspace_tool_flags(settings: ClaudeSubscriptionSettings) -> tuple[str, ...]:
+    """Every flag the real workspace-tool invocation carries, read off that invocation."""
+
+    command = (
+        ClaudeWorkspaceToolExecutorFactory(settings)
+        .open()
+        .prepare_process(subscription_request())
+    )
+    return tuple(
+        argument for argument in command.arguments if argument.startswith("--")
+    )
+
+
+def parsing_claude(known: Iterable[str], *, refuses_unknown: bool = True) -> str:
+    """A fake CLI that reads exactly these flags, then refuses a call with no job.
+
+    That is the measured order of the real one: an argument it cannot read ends
+    the call before anything else, and a call whose arguments it read whole is
+    still refused when no job arrives.
+    """
+
+    return (
+        "import sys\n"
+        f"known = {sorted(set(known))!r}\n"
+        f"refuses_unknown = {refuses_unknown!r}\n"
+        "for argument in sys.argv[1:]:\n"
+        "    if refuses_unknown and argument.startswith('--') "
+        "and argument not in known:\n"
+        '        sys.stderr.write("error: unknown option \'" + argument + "\'\\n")\n'
+        "        raise SystemExit(1)\n"
+        "sys.stderr.write('Error: Input must be provided when using --print\\n')\n"
+        "raise SystemExit(1)\n"
+    )
+
+
+def test_the_workspace_tool_factory_offers_its_own_identity_and_only_its_capability(
+    tmp_path: Path,
+) -> None:
+    """A second operation of one provider, not a later revision of the first."""
+
+    settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    factory = ClaudeWorkspaceToolExecutorFactory(settings)
+    tool_free = ClaudeSubscriptionExecutorFactory(settings)
+
+    assert factory.key == CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY
+    assert factory.key.provider_id == tool_free.key.provider_id
+    assert factory.key.executor_revision != tool_free.key.executor_revision
+    assert factory.operational_identity != tool_free.operational_identity
+    assert factory.declared_capabilities == frozenset(
+        {AgentExecutionCapability.HEADLESS_WITH_TOOLS}
+    )
+    assert factory.open().close() is None
+
+
+def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_flag(
+    tmp_path: Path,
+) -> None:
+    """One decision separates the two invocations, and it is the tool ban.
+
+    The tool-free call's `--tools=` is gone and the built-in set this executor
+    grants stands in its place, offered and pre-approved as the same list. Every
+    other flag that call carries is still carried, and the environment is the
+    same object: what changed is what the process may touch, not who it is.
+    """
+
+    settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    tool_free = ClaudeSubscriptionExecutorFactory(settings).open()
+    executor = ClaudeWorkspaceToolExecutorFactory(settings).open()
+    request = subscription_request(model="claude-sonnet-4-6", job=b"draw the owl")
+
+    command = executor.prepare_process(request)
+    tool_free_command = tool_free.prepare_process(request)
+
+    assert "--tools=" in tool_free_command.arguments
+    assert "--tools=" not in command.arguments
+    assert argument_after(command.arguments, "--tools") == ",".join(WORKSPACE_TOOLS)
+    assert argument_after(command.arguments, "--allowedTools") == ",".join(
+        WORKSPACE_TOOLS
+    )
+    kept = tuple(
+        flag
+        for flag in tool_free_command.arguments
+        if flag.startswith("--") and flag != "--tools="
+    )
+    assert all(flag in command.arguments for flag in kept)
+    # A tool result costs a turn, so the tool-free call's ceiling could never
+    # finish one.
+    assert int(argument_after(command.arguments, "--max-turns")) > int(
+        argument_after(tool_free_command.arguments, "--max-turns")
+    )
+    assert command.environment == tool_free_command.environment
+    assert all(argument for argument in command.arguments)
+
+    workspace = provider_workspace(tmp_path)
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    observed = json.loads(result.output_bytes)
+    assert observed["arguments"][1:] == list(command.arguments[1:])
+    assert observed["working_directory"] == str(workspace)
+    assert observed["job"] == "draw the owl"
+    assert "HOME" not in observed["environment"]
+
+
+def test_a_non_subscription_profile_reaches_no_tool_bearing_process(
+    tmp_path: Path,
+) -> None:
+    settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    executor = ClaudeWorkspaceToolExecutorFactory(settings).open()
+
+    with pytest.raises(ClaudeSubscriptionAuthModeUnsupported, match="subscription"):
+        executor.prepare_process(subscription_request(auth_mode=AuthMode.API_KEY))
+
+
+@pytest.mark.parametrize(
+    ("executor_revision", "requested_capability"),
+    [
+        pytest.param(
+            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
+            AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+            id="the tool-free executor is asked for tools",
+        ),
+        pytest.param(
+            CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision,
+            AgentExecutionCapability.HEADLESS,
+            id="the tool executor is asked for a tool-free call",
+        ),
+    ],
+)
+def test_a_binding_asking_an_executor_for_a_capability_it_never_declared_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_revision: AgentExecutorRevision,
+    requested_capability: AgentExecutionCapability,
+) -> None:
+    """Neither executor answers the other's ask, and the refusal is the starter's.
+
+    This is what makes the tool grant a binding's decision rather than a
+    deployment's: a node bound to the tool-free revision cannot obtain tools by
+    asking, and a node bound to the tool revision cannot obtain it by asking for
+    a plain headless call. Both refusals land before the run row, so no process
+    of either kind can exist.
+    """
+
+    settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    runtime = claude_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime.initialize_storage()
+
+    def unexpected_enqueue(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("an undeclared capability reached the durable queue")
+
+    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
+    try:
+        refused, _workflow = claude_subscription_start(
+            runtime,
+            "claude/undeclared-capability",
+            requested_capability=requested_capability,
+            executor_revision=executor_revision,
+        )
+        with runtime.engine.connect() as connection:
+            written = tuple(
+                connection.scalar(sa.select(sa.func.count()).select_from(table))
+                for table in (runs, run_agent_bindings)
+            )
+    finally:
+        runtime.close()
+
+    assert isinstance(refused, DurableAgentExecutorCapabilityUnavailable)
+    assert written == (0, 0)
+
+
+def test_a_node_requesting_tools_starts_through_the_production_starter(
+    tmp_path: Path,
+) -> None:
+    settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    runtime = claude_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime.initialize_storage()
+    try:
+        started, _workflow = claude_subscription_start(
+            runtime,
+            "claude/tool-capability",
+            requested_capability=AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+            executor_revision=(CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision),
+        )
+        with runtime.engine.connect() as connection:
+            started_runs = connection.scalar(
+                sa.select(sa.func.count()).select_from(runs)
+            )
+    finally:
+        runtime.close()
+
+    assert isinstance(started, DurableRunCreated)
+    assert started_runs == 1
+
+
+def test_a_tool_bearing_attempt_writes_in_its_lease_and_answers_what_it_wrote(
+    tmp_path: Path,
+) -> None:
+    """The vertical the capability exists for, through the production path.
+
+    The provider process really writes a file, and the path it answers with is
+    the directory this attempt leased -- not a configured one, and not the
+    server's. The workspace then falls with the terminal attempt, which is the
+    other half of the same sentence: what a tool wrote is evidence in the lease
+    and reaches no durable row (#352 owns making any of it durable).
+    """
+
+    settings = claude_deployment(tmp_path, "deployment", TOOL_USING_CLAUDE)
+    runtime = claude_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime.initialize_storage()
+    try:
+        execution = claude_subscription_attempt(
+            runtime,
+            "claude/workspace-tools",
+            requested_capability=AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+            executor_revision=(CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision),
+            operational_identity=CLAUDE_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY,
+        )
+        workspaces = runtime_workspace_owner(runtime)
+        leased_directory = workspaces.scratch_root / execution.attempt_id.value
+        outcome = execute_agent_attempt(
+            execution,
+            ClaudeWorkspaceToolExecutorFactory(settings).open(),
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+            workspaces,
+        )
+        with runtime.engine.connect() as connection:
+            receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()
+    finally:
+        runtime.close()
+
+    assert isinstance(outcome, AgentAttemptSucceeded)
+    assert len(receipts) == 1
+    assert receipts[0]["executor_revision"] == (
+        CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision.value
+    )
+    assert receipts[0]["executor_operational_identity"] == (
+        CLAUDE_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY.value
+    )
+    answered = json.loads(receipts[0]["output_bytes"])
+    assert answered["wrote"] == str(leased_directory / WORKSPACE_ARTEFACT_NAME)
+    assert answered["read_back"] == WORKSPACE_ARTEFACT_LINE
+    assert not leased_directory.exists()
+
+
+def test_an_executable_that_starts_this_exact_invocation_is_attested(
+    tmp_path: Path,
+) -> None:
+    reference = claude_deployment(tmp_path, "reference", INTROSPECTING_CLAUDE)
+    settings = claude_deployment(
+        tmp_path, "deployment", parsing_claude(workspace_tool_flags(reference))
+    )
+
+    assert attest_workspace_tool_invocation(settings) is None
+
+
+def test_an_executable_missing_any_flag_of_this_invocation_is_refused_by_that_flag(
+    tmp_path: Path,
+) -> None:
+    """Every flag of the vector is a containment decision, so every one is probed.
+
+    A version answer would pass for all of them at once. What the probe reads
+    instead is the CLI's own refusal of the argument it could not take, one
+    deployment per flag, so no single missing control can hide behind the rest.
+    """
+
+    reference = claude_deployment(tmp_path, "reference", INTROSPECTING_CLAUDE)
+    flags = workspace_tool_flags(reference)
+
+    assert flags
+    for missing in flags:
+        settings = claude_deployment(
+            tmp_path,
+            f"without{flags.index(missing)}",
+            parsing_claude(flag for flag in flags if flag != missing),
+        )
+
+        with pytest.raises(ClaudeExecutableUnsupported, match=re.escape(missing)):
+            attest_workspace_tool_invocation(settings)
+
+
+def test_an_executable_that_never_names_an_unknown_flag_cannot_be_attested(
+    tmp_path: Path,
+) -> None:
+    """Without the control, "said nothing" and "has nothing to say" look alike."""
+
+    reference = claude_deployment(tmp_path, "reference", INTROSPECTING_CLAUDE)
+    settings = claude_deployment(
+        tmp_path,
+        "deployment",
+        parsing_claude(workspace_tool_flags(reference), refuses_unknown=False),
+    )
+
+    with pytest.raises(ClaudeExecutableUnsupported, match="no release can know"):
+        attest_workspace_tool_invocation(settings)
+
+
+def test_an_executable_that_answers_a_jobless_invocation_successfully_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The probe rests on that call being refused, so a success is unmeasured ground."""
+
+    settings = claude_deployment(tmp_path, "deployment", "raise SystemExit(0)\n")
+
+    with pytest.raises(ClaudeExecutableUnsupported, match="jobless"):
+        attest_workspace_tool_invocation(settings)
+
+
+def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The gap this attestation exists for: a version answer is not startability."""
+
+    settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    assert verify_claude_capability(settings.executable) in CONFORMANT_CLAUDE_VERSIONS
+    settings.executable.write_text(
+        "#!/atelier2/no/such/interpreter\n", encoding="utf-8"
+    )
+    settings.executable.chmod(0o755)
+
+    with pytest.raises(ClaudeExecutableUnsupported, match="could not start"):
+        attest_workspace_tool_invocation(settings)

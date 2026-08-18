@@ -37,7 +37,7 @@ MAXIMUM_DOCUMENT_NAME_BYTES = 200
 MAXIMUM_DOCUMENT_DESCRIPTION_BYTES = 4 * 1024
 
 type JoinRule = Literal["all_succeeded", "all_terminal"]
-type AgentMode = Literal["headless", "interactive"]
+type AgentMode = Literal["headless", "headless_with_tools", "interactive"]
 
 DEFAULT_SINGLE_DEPENDENCY_JOIN: JoinRule = "all_succeeded"
 

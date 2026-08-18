@@ -8,6 +8,29 @@ because reading this pair must not cost the client the whole server graph.
 
 from __future__ import annotations
 
+import ipaddress
+from urllib.parse import urlsplit
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8422
 DEFAULT_SERVICE_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+ADDRESSABLE_SCHEMES = frozenset({"http", "https"})
+
+
+def is_loopback_service_url(service_url: str) -> bool:
+    """Whether this client address is a literal loopback host.
+
+    A name resolves elsewhere at connect time, so a host this function cannot
+    read as an address is not loopback. The MCP child has no caller
+    authentication; only a loopback service keeps that the same trust as the
+    browser on this machine.
+    """
+
+    address = urlsplit(service_url)
+    host = address.hostname
+    if address.scheme not in ADDRESSABLE_SCHEMES or not host:
+        return False
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False

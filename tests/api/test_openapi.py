@@ -235,6 +235,11 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
+    it. This head widens one closed vocabulary: `headless_with_tools` joins the
+    requested capability a configuration may publish and the mode an agent node
+    may declare, so a caller can bind a node to an executor whose invocation
+    carries tools. Refreshing the artefact alongside a refactor is what this test
+    still refuses.
     it. This head adds the verdict a declared loop may repeat on, with the closed
     vocabulary it is written in, so a publisher reads the early way out of a loop
     from the door as well as the bounded way back.
@@ -389,7 +394,7 @@ def test_openapi_offers_the_capability_and_demands_it_back() -> None:
     request = _referenced_schema(schema, operation["requestBody"]["content"])
     capability = {
         "type": "string",
-        "enum": ["headless", "interactive"],
+        "enum": ["headless", "headless_with_tools", "interactive"],
         "title": "Requested Capability",
     }
 
