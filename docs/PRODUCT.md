@@ -428,7 +428,9 @@ inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs
 (the list accepts a `state` filter so a consumer can ask which runs wait;
 a page is admitted by one `PageLimit`, not a restated 1-to-100;
 a persisted run format is one `WorkflowFormatVersion`,
-not a restated 1-2-3 CHECK);
+not a restated 1-2-3 CHECK;
+a cancelled attempt's cleanup disposition is one
+`AgentAttemptCancellationDisposition`, not restated tokens on query and SSE);
 list and inspect a V3 run from the published document it was started
 against, not today's executable parse;
 read the agent receipts a run has written;
