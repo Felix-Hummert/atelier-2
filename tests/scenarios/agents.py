@@ -362,6 +362,33 @@ def claude_subscription_attempt(
     )
 
 
+def resolved_agent_binding(
+    role: str = "builder",
+    *,
+    model: str = "opus",
+    provider_id: str = "anthropic",
+    executor_revision: str = "claude-cli/v1",
+    requested_capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
+    revision_format_version: AgentConfigurationRevisionFormatVersion = (
+        AgentConfigurationRevisionFormatVersion.V2
+    ),
+) -> ResolvedAgentBinding:
+    """What one role of a started run resolved to, hashed as the start hashes it."""
+
+    auth = AuthProfileRevision("max", 1, ProviderId(provider_id), AuthMode.SUBSCRIPTION)
+    return ResolvedAgentBinding(
+        AgentRole(role),
+        AgentConfigurationRevision(
+            model,
+            auth.revision_hash,
+            AgentExecutorRevision(executor_revision),
+            requested_capability,
+            revision_format_version,
+        ),
+        auth,
+    )
+
+
 def agent_execution_request_v2(
     run_name: str = "scenario/one-agent",
     node_id: str = "builder",

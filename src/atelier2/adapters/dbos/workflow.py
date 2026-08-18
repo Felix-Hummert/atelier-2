@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal, NotRequired, TypedDict, assert_never, cast
+from typing import Any, assert_never, cast
 
 import sqlalchemy as sa
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
@@ -40,6 +40,11 @@ from atelier2.adapters.dbos.names import (
     WAIT_COMMIT_STEP_NAME,
     WORKFLOW_NAME,
 )
+from atelier2.adapters.dbos.node_binding_codec import (
+    EncodedNodeBinding,
+    decode_node_binding,
+    encode_node_binding,
+)
 from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
     commit_agent_completed,
@@ -59,32 +64,25 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     subworkflow_workflow_id_for,
 )
+from atelier2.application.bind_node import (
+    agent_execution_request,
+    agent_execution_request_v2,
+    bind_node,
+    node_the_run_stands_on,
+    pinned_project,
+)
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
-from atelier2.application.compose_node_job import node_job
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     CancelAgentAttemptRequest,
 )
 from atelier2.contracts.agents import (
-    AgentConfigurationRevision,
-    AgentConfigurationRevisionFormatVersion,
-    AgentConfigurationRevisionHash,
     AgentExecutionCapability,
-    AgentExecutionRequest,
-    AgentExecutionRequestV2,
     AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
-    AgentExecutorRevision,
-    AgentRole,
-    AuthMode,
-    AuthProfileRevision,
-    AuthProfileRevisionHash,
-    ExactOutputContract,
-    ProviderId,
-    ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
@@ -95,8 +93,17 @@ from atelier2.contracts.executions import (
     AgentAttemptExecution,
     NodeExecutionId,
 )
+from atelier2.contracts.node_bindings import (
+    ActionNodeBinding,
+    AgentNodeBinding,
+    AgentNodeBindingV2,
+    SubworkflowNodeBinding,
+    WaitNodeBinding,
+)
+from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
+from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
-from atelier2.contracts.run_bindings import RunV2, RunV3
+from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -104,21 +111,18 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
-    ToolGrantCapability,
     ToolGrantRefused,
     read_tool_grant_document,
 )
 from atelier2.contracts.workflows import (
-    ActionNode,
-    AgentNode,
     AgentNodeV2,
     RunCompletes,
     RunContinues,
-    SubworkflowNode,
 )
 from atelier2.contracts.workflows_v3 import (
-    ANY_WAIT_NODE_KINDS,
     AgentNodeV3,
+    AnyWorkflowDocument,
+    AnyWorkflowDocumentNode,
 )
 from atelier2.ports.agent_attempts import AgentAttemptStore, AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
@@ -128,17 +132,11 @@ from atelier2.ports.agent_executions import (
     AgentExecutorV2,
 )
 from atelier2.ports.effects import EffectAdapter
-from atelier2.ports.project_source import ProjectSourcePin
 from atelier2.ports.project_verification import (
     DeclaredProject,
-    PinnedProjectSource,
 )
 
 CANCELLATION_REDRIVE_SECONDS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0)
-
-
-class RunBindingConflict(RuntimeError):
-    pass
 
 
 def _declared_workspace_owner(
@@ -149,55 +147,6 @@ def _declared_workspace_owner(
             "a V2 agent node requires the declared agent scratch root"
         )
     return owner
-
-
-class EncodedAgentBinding(TypedDict):
-    type: Literal["agent"]
-    job: str
-    output: str
-
-
-class EncodedAgentBindingV2(TypedDict):
-    type: Literal["agent-v2"]
-    role: str
-    job: str
-    tool_revision_hash: NotRequired[str]
-    tool_capability: NotRequired[str]
-    project_commit: NotRequired[str]
-    project_tree: NotRequired[str]
-    configuration_hash: str
-    auth_hash: str
-    profile_id: str
-    revision_number: int
-    provider_id: str
-    auth_mode: str
-    model: str
-    executor_revision: str
-    revision_format_version: NotRequired[int]
-    requested_capability: NotRequired[str]
-
-
-class EncodedActionBinding(TypedDict):
-    type: Literal["action"]
-
-
-class EncodedWaitBinding(TypedDict):
-    type: Literal["wait"]
-
-
-class EncodedSubworkflowBinding(TypedDict):
-    type: Literal["subworkflow"]
-    left: int
-    right: int
-
-
-type EncodedNodeBinding = (
-    EncodedAgentBinding
-    | EncodedAgentBindingV2
-    | EncodedActionBinding
-    | EncodedWaitBinding
-    | EncodedSubworkflowBinding
-)
 
 
 def bootstrap_run_binding(
@@ -243,7 +192,7 @@ def _node_binding(
     node_id: str,
     project: DeclaredProject | None,
 ) -> EncodedNodeBinding:
-    """Compose what this node durably binds, including the source it is pinned to.
+    """Record what this node durably binds, including the source it is pinned to.
 
     The pin is taken here and nowhere else. Composing the binding is the one
     moment a node's material is decided, so resolving the project's head again at
@@ -255,84 +204,19 @@ def _node_binding(
     def load() -> EncodedNodeBinding:
         session = datasource.sql_session()
         run = load_run(session, run_id)
-        if (
-            run.revision_hash != revision_hash
-            or run.current_node_id != node_id
-            or run.state is not RunState.STARTED
-        ):
-            raise RunTransitionConflict(
-                "node workflow does not own current STARTED node"
-            )
         graph = load_graph(session, revision_hash)
-        node = graph.node(node_id)
-        if isinstance(node, AgentNode):
-            return {"type": "agent", "job": node.job, "output": node.output}
-        if isinstance(node, (AgentNodeV2, AgentNodeV3)):
-            # A V3 Agent binds through the same durable path as a V2 one: same
-            # role matrix, same attempt store, same executor registry. The arm is
-            # shared rather than copied, because a second encoding of the same
-            # binding is how the two would drift apart.
-            if not isinstance(run, (RunV2, RunV3)):
-                raise RunTransitionConflict("Agent node belongs to a V1 run")
-            resolved = next(
-                (
-                    binding
-                    for binding in run.agent_bindings
-                    if binding.role.value == node.role
-                ),
-                None,
+        node = node_the_run_stands_on(run, revision_hash, graph, node_id)
+        orders, results = _agent_material(session, run_id, revision_hash, graph, node)
+        return encode_node_binding(
+            bind_node(
+                run,
+                node,
+                orders=orders,
+                results=results,
+                tool_grant=_pinned_tool_grant(session, node),
+                project_source=_pinned_source(node, project),
             )
-            if resolved is None:
-                raise RunTransitionConflict("V2 Agent role has no durable binding")
-            configuration = resolved.configuration
-            auth = resolved.auth_profile
-            encoded: EncodedAgentBindingV2 = {
-                "type": "agent-v2",
-                "role": resolved.role.value,
-                "job": (
-                    node.job
-                    if isinstance(node, AgentNodeV2)
-                    else node_job(
-                        node.instruction,
-                        load_run_inputs(session, run_id, node),
-                        load_node_outputs(session, run_id, revision_hash, graph, node),
-                    )
-                ),
-                "configuration_hash": configuration.revision_hash.value,
-                "auth_hash": auth.revision_hash.value,
-                "profile_id": auth.profile_id,
-                "revision_number": auth.revision_number,
-                "provider_id": auth.provider_id.value,
-                "auth_mode": auth.auth_mode.value,
-                "model": configuration.model,
-                "executor_revision": configuration.executor_revision.value,
-                "revision_format_version": int(configuration.revision_format_version),
-                "requested_capability": configuration.requested_capability.value,
-            }
-            pinned = _pinned_tool_grant(session, node)
-            if pinned is not None:
-                encoded["tool_revision_hash"] = pinned.revision_hash.value
-                encoded["tool_capability"] = pinned.capability.value
-            if project is not None:
-                source_pin = project.source.head()
-                encoded["project_commit"] = source_pin.commit
-                encoded["project_tree"] = source_pin.tree
-            return encoded
-        if isinstance(node, ActionNode):
-            return {"type": "action"}
-        if isinstance(node, ANY_WAIT_NODE_KINDS):
-            # A V3 Wait binds through the same durable path as a V1 or V2 one:
-            # the pause carries no material of its own, so what the two formats
-            # disagree about is only which answer the node admits, and that is
-            # decided where the answer arrives rather than encoded here twice.
-            return {"type": "wait"}
-        if isinstance(node, SubworkflowNode):
-            return {
-                "type": "subworkflow",
-                "left": node.operands[0],
-                "right": node.operands[1],
-            }
-        raise AssertionError("closed WorkflowNode union was not exhaustive")
+        )
 
     return cast(
         EncodedNodeBinding,
@@ -340,8 +224,50 @@ def _node_binding(
     )
 
 
+def _agent_material(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    graph: AnyWorkflowDocument,
+    node: AnyWorkflowDocumentNode,
+) -> tuple[tuple[RunInput, ...], tuple[DeliveredOutput, ...]]:
+    """The orders and earlier results a V3 Agent node reads, and nothing for the rest.
+
+    Read here rather than inside the decision because reading them is a store
+    call, and read only for the one node kind whose document can declare them.
+    """
+    if not isinstance(node, AgentNodeV3):
+        return ((), ())
+    return (
+        load_run_inputs(session, run_id, node),
+        load_node_outputs(session, run_id, revision_hash, graph, node),
+    )
+
+
+def _pinned_source(
+    node: AnyWorkflowDocumentNode, project: DeclaredProject | None
+) -> ProjectSourcePin | None:
+    """The source this runtime pins for one Agent node, resolved once and here.
+
+    Only an Agent node works in a tree, so only an Agent node's binding takes the
+    head -- a Wait or Subworkflow node that resolved it would make a run depend
+    on a repository it never reads.
+    """
+    if project is None or not isinstance(node, (AgentNodeV2, AgentNodeV3)):
+        return None
+    return project.source.head()
+
+
+def _executor_key(binding: AgentNodeBindingV2) -> AgentExecutorKey:
+    """Which registered executor this binding names: its provider and its revision."""
+    return AgentExecutorKey(
+        binding.resolved.auth_profile.provider_id,
+        binding.resolved.configuration.executor_revision,
+    )
+
+
 def _pinned_tool_grant(
-    session: Any, node: AgentNodeV2 | AgentNodeV3
+    session: Any, node: AnyWorkflowDocumentNode
 ) -> DeclaredToolGrant | None:
     """The grant this node pinned, read from the revision the document pins by hash.
 
@@ -366,141 +292,6 @@ def _pinned_tool_grant(
     if isinstance(grant, ToolGrantRefused):
         raise RunBindingConflict(f"the pinned tool revision is no grant: {grant}")
     return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
-
-
-def _declared_tool_grant(binding: EncodedAgentBindingV2) -> DeclaredToolGrant | None:
-    """The grant a durable node binding carries, or nothing where none was pinned."""
-    revision_hash = binding.get("tool_revision_hash")
-    capability = binding.get("tool_capability")
-    if revision_hash is None or capability is None:
-        if revision_hash is not None or capability is not None:
-            raise RunBindingConflict("a durable tool grant is only partly encoded")
-        return None
-    try:
-        return DeclaredToolGrant(
-            PublishedRevisionHash(revision_hash), ToolGrantCapability(capability)
-        )
-    except (TypeError, ValueError) as error:
-        raise RunBindingConflict(
-            "a durable tool grant carries an unknown value"
-        ) from error
-
-
-def _declared_source_pin(binding: EncodedAgentBindingV2) -> ProjectSourcePin | None:
-    """The project source a durable node binding pinned, or nothing where none was."""
-    commit = binding.get("project_commit")
-    tree = binding.get("project_tree")
-    if commit is None or tree is None:
-        if commit is not None or tree is not None:
-            raise RunBindingConflict(
-                "a durable project source pin is only partly encoded"
-            )
-        return None
-    try:
-        return ProjectSourcePin(commit, tree)
-    except (TypeError, ValueError) as error:
-        raise RunBindingConflict(
-            "a durable project source pin carries an unknown value"
-        ) from error
-
-
-def _pinned_project(
-    binding: EncodedAgentBindingV2, project: DeclaredProject | None
-) -> PinnedProjectSource | None:
-    """The project this attempt works in, or the named refusal that none does."""
-    pin = _declared_source_pin(binding)
-    grant = _declared_tool_grant(binding)
-    if pin is None:
-        if grant is not None:
-            raise RunBindingConflict(
-                "a node redeeming a tool grant requires the project source its "
-                "binding pinned, and this durable binding pinned none"
-            )
-        return None
-    if project is None:
-        raise RunBindingConflict(
-            "a node whose binding pinned a project source requires the declared "
-            "project, and this runtime was given none"
-        )
-    return project.pinned(pin, grant)
-
-
-def _agent_request_v2(
-    binding: EncodedAgentBindingV2,
-    run_id: RunId,
-    revision_hash: WorkflowRevisionHash,
-    node_id: str,
-    operational_identity: AgentExecutorOperationalIdentity,
-    declared_capabilities: frozenset[AgentExecutionCapability],
-) -> AgentExecutionRequestV2:
-    auth = AuthProfileRevision(
-        binding["profile_id"],
-        binding["revision_number"],
-        ProviderId(binding["provider_id"]),
-        AuthMode(binding["auth_mode"]),
-    )
-    if auth.revision_hash != AuthProfileRevisionHash(binding["auth_hash"]):
-        raise RunBindingConflict("V2 auth fields differ from their durable hash")
-    has_encoded_version = "revision_format_version" in binding
-    has_encoded_capability = "requested_capability" in binding
-    if not has_encoded_version and not has_encoded_capability:
-        revision_format_version = AgentConfigurationRevisionFormatVersion.V1
-        requested_capability = AgentExecutionCapability.HEADLESS
-    elif not has_encoded_version or not has_encoded_capability:
-        raise RunBindingConflict("V2 configuration contract is only partly encoded")
-    else:
-        encoded_version = binding["revision_format_version"]
-        encoded_capability = binding["requested_capability"]
-        if type(encoded_version) is not int or type(encoded_capability) is not str:
-            raise RunBindingConflict(
-                "V2 configuration contract carries a value of the wrong type"
-            )
-        try:
-            revision_format_version = AgentConfigurationRevisionFormatVersion(
-                encoded_version
-            )
-            requested_capability = AgentExecutionCapability(encoded_capability)
-        except ValueError as error:
-            raise RunBindingConflict(
-                "V2 configuration contract carries an unknown value"
-            ) from error
-    try:
-        configuration = AgentConfigurationRevision(
-            binding["model"],
-            auth.revision_hash,
-            AgentExecutorRevision(binding["executor_revision"]),
-            requested_capability,
-            revision_format_version,
-        )
-    except (TypeError, ValueError) as error:
-        raise RunBindingConflict(
-            "V2 configuration contract carries an invalid combination"
-        ) from error
-    if configuration.revision_hash != AgentConfigurationRevisionHash(
-        binding["configuration_hash"]
-    ):
-        raise RunBindingConflict(
-            "V2 configuration fields differ from their durable hash"
-        )
-    if configuration.requested_capability not in declared_capabilities:
-        raise RunBindingConflict(
-            "runtime executor lacks the durably requested capability"
-        )
-    try:
-        resolved = ResolvedAgentBinding(AgentRole(binding["role"]), configuration, auth)
-        return AgentExecutionRequestV2(
-            NodeExecutionId.for_node(run_id, revision_hash, node_id),
-            run_id,
-            revision_hash,
-            node_id,
-            resolved,
-            operational_identity,
-            binding["job"].encode("utf-8"),
-        )
-    except (TypeError, ValueError) as error:
-        raise RunBindingConflict(
-            "V2 agent request contract carries an invalid combination"
-        ) from error
 
 
 def register_durable_run_workflow(
@@ -581,22 +372,21 @@ def register_durable_run_workflow(
     @DBOS.workflow(name=REPLACEMENT_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_agent_attempt_replacement(attempt_id: str) -> str:
         replacement = agent_attempt_store.load(AgentAttemptId(attempt_id))
-        binding = _node_binding(
-            datasource,
-            replacement.run_id,
-            replacement.workflow_revision_hash,
-            replacement.node_id,
-            project,
+        binding = decode_node_binding(
+            _node_binding(
+                datasource,
+                replacement.run_id,
+                replacement.workflow_revision_hash,
+                replacement.node_id,
+                project,
+            )
         )
-        if binding["type"] != "agent-v2":
+        if not isinstance(binding, AgentNodeBindingV2):
             raise RunTransitionConflict("replacement attempt is not a V2 agent node")
         executor, operational_identity, declared_capabilities = agent_executors_v2[
-            AgentExecutorKey(
-                ProviderId(binding["provider_id"]),
-                AgentExecutorRevision(binding["executor_revision"]),
-            )
+            _executor_key(binding)
         ]
-        request = _agent_request_v2(
+        request = agent_execution_request_v2(
             binding,
             replacement.run_id,
             replacement.workflow_revision_hash,
@@ -619,7 +409,7 @@ def register_durable_run_workflow(
             agent_attempt_store,
             agent_process_supervisor,
             _declared_workspace_owner(agent_workspace_owner),
-            _pinned_project(binding, project),
+            pinned_project(binding, project),
         )
         if isinstance(outcome, AgentAttemptSucceeded):
             match outcome.completion:
@@ -639,17 +429,12 @@ def register_durable_run_workflow(
     def durable_node(run_id: str, revision_hash: str, node_id: str) -> str:
         typed_run_id = RunId(run_id)
         typed_revision = WorkflowRevisionHash(revision_hash)
-        binding = _node_binding(
-            datasource, typed_run_id, typed_revision, node_id, project
+        binding = decode_node_binding(
+            _node_binding(datasource, typed_run_id, typed_revision, node_id, project)
         )
-        if binding["type"] == "agent":
-            execution_request = AgentExecutionRequest(
-                NodeExecutionId.for_node(typed_run_id, typed_revision, node_id),
-                typed_run_id,
-                typed_revision,
-                node_id,
-                binding["job"].encode("utf-8"),
-                ExactOutputContract(binding["output"].encode("utf-8")),
+        if isinstance(binding, AgentNodeBinding):
+            execution_request = agent_execution_request(
+                binding, typed_run_id, typed_revision, node_id
             )
             result = agent_executor.execute(execution_request)
             successor = datasource.run_tx_step(
@@ -665,14 +450,11 @@ def register_durable_run_workflow(
             )
             start_node(typed_run_id, typed_revision, str(successor))
             return RunState.STARTED.value
-        if binding["type"] == "agent-v2":
+        if isinstance(binding, AgentNodeBindingV2):
             executor, operational_identity, declared_capabilities = agent_executors_v2[
-                AgentExecutorKey(
-                    ProviderId(binding["provider_id"]),
-                    AgentExecutorRevision(binding["executor_revision"]),
-                )
+                _executor_key(binding)
             ]
-            execution_request_v2 = _agent_request_v2(
+            execution_request_v2 = agent_execution_request_v2(
                 binding,
                 typed_run_id,
                 typed_revision,
@@ -695,7 +477,7 @@ def register_durable_run_workflow(
                 agent_attempt_store,
                 agent_process_supervisor,
                 _declared_workspace_owner(agent_workspace_owner),
-                _pinned_project(binding, project),
+                pinned_project(binding, project),
             )
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value
@@ -707,7 +489,7 @@ def register_durable_run_workflow(
                     return RunState.COMPLETED.value
                 case _ as unreachable:
                     assert_never(unreachable)
-        if binding["type"] == "action":
+        if isinstance(binding, ActionNodeBinding):
             logical_key = str(
                 datasource.run_tx_step(
                     {"name": ACTION_PREPARE_STEP_NAME},
@@ -724,7 +506,7 @@ def register_durable_run_workflow(
             with SetWorkflowID(effect_workflow_id_for(LogicalEffectKey(logical_key))):
                 DBOS.start_workflow(durable_effect, logical_key, revision_hash)
             return RunState.STARTED.value
-        if binding["type"] == "wait":
+        if isinstance(binding, WaitNodeBinding):
             datasource.run_tx_step(
                 {"name": WAIT_COMMIT_STEP_NAME},
                 lambda: (
@@ -734,14 +516,12 @@ def register_durable_run_workflow(
                 ),
             )
             return RunState.WAITING_INPUT.value
-        if binding["type"] == "subworkflow":
+        if isinstance(binding, SubworkflowNodeBinding):
             execution_id = NodeExecutionId.for_node(
                 typed_run_id, typed_revision, node_id
             )
             with SetWorkflowID(subworkflow_workflow_id_for(execution_id)):
-                handle = DBOS.start_workflow(
-                    durable_add, int(binding["left"]), int(binding["right"])
-                )
+                handle = DBOS.start_workflow(durable_add, *binding.operands)
             result = handle.get_result()
             datasource.run_tx_step(
                 {"name": SUBWORKFLOW_COMMIT_STEP_NAME},
@@ -756,7 +536,7 @@ def register_durable_run_workflow(
                 ),
             )
             return RunState.COMPLETED.value
-        raise AssertionError("closed node binding union was not exhaustive")
+        assert_never(binding)
 
     @DBOS.workflow(name=EFFECT_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_effect(logical_key: str, revision_hash: str) -> str:

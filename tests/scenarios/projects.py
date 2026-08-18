@@ -18,7 +18,7 @@ from pathlib import Path
 
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
-from atelier2.ports.project_source import ProjectSourcePin
+from atelier2.contracts.project_sources import ProjectSourcePin
 
 COMMITTING_SCENARIO = {
     "GIT_CONFIG_GLOBAL": os.devnull,

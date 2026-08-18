@@ -14,6 +14,10 @@ from httpx import Response
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.node_binding_codec import (
+    decode_node_binding,
+    encode_node_binding,
+)
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import (
@@ -31,11 +35,6 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow import (
-    EncodedAgentBindingV2,
-    RunBindingConflict,
-    _agent_request_v2,
-)
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
@@ -43,6 +42,7 @@ from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
+from atelier2.application.bind_node import agent_execution_request_v2
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     AgentBinding,
@@ -59,14 +59,21 @@ from atelier2.contracts.agents import (
     AuthMode,
     AuthProfileRevision,
     ProviderId,
+    ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
-from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.node_bindings import AgentNodeBindingV2
+from atelier2.contracts.run_bindings import RunBindingConflict, RunV2
 from atelier2.contracts.run_projections import (
     RunPage,
 )
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AgentConfigurationRevisionPage,
@@ -233,28 +240,39 @@ def _encoded_binding(
     auth: AuthProfileRevision,
     *,
     include_contract: bool,
-) -> EncodedAgentBindingV2:
-    encoded: dict[str, object] = {
-        "type": "agent-v2",
-        "role": "builder",
-        "job": "build",
-        "configuration_hash": configuration.revision_hash.value,
-        "auth_hash": auth.revision_hash.value,
-        "profile_id": auth.profile_id,
-        "revision_number": auth.revision_number,
-        "provider_id": auth.provider_id.value,
-        "auth_mode": auth.auth_mode.value,
-        "model": configuration.model,
-        "executor_revision": configuration.executor_revision.value,
-    }
-    if include_contract:
-        encoded.update(
-            {
-                "revision_format_version": int(configuration.revision_format_version),
-                "requested_capability": configuration.requested_capability.value,
-            }
+) -> dict[str, object]:
+    encoded = dict(
+        encode_node_binding(
+            AgentNodeBindingV2(
+                ResolvedAgentBinding(AgentRole("builder"), configuration, auth), "build"
+            )
         )
-    return cast(EncodedAgentBindingV2, encoded)
+    )
+    if not include_contract:
+        del encoded["revision_format_version"]
+        del encoded["requested_capability"]
+    return encoded
+
+
+def _replayed_request(
+    encoded: dict[str, object],
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    operational_identity: AgentExecutorOperationalIdentity,
+    declared_capabilities: frozenset[AgentExecutionCapability],
+) -> AgentExecutionRequestV2:
+    """The request a recovered node makes of a recorded row, the way the node does."""
+    binding = decode_node_binding(encoded)
+    assert isinstance(binding, AgentNodeBindingV2)
+    return agent_execution_request_v2(
+        binding,
+        run_id,
+        revision_hash,
+        node_id,
+        operational_identity,
+        declared_capabilities,
+    )
 
 
 def test_old_node_binding_payload_replays_and_new_payload_carries_contract() -> None:
@@ -279,7 +297,7 @@ def test_old_node_binding_payload_replays_and_new_payload_carries_contract() -> 
     ).revision_hash
     operational_identity = AgentExecutorOperationalIdentity("executor/test")
 
-    replayed = _agent_request_v2(
+    replayed = _replayed_request(
         _encoded_binding(legacy, auth, include_contract=False),
         run_id,
         revision_hash,
@@ -287,7 +305,7 @@ def test_old_node_binding_payload_replays_and_new_payload_carries_contract() -> 
         operational_identity,
         frozenset({AgentExecutionCapability.HEADLESS}),
     )
-    newly_encoded = _agent_request_v2(
+    newly_encoded = _replayed_request(
         _encoded_binding(current, auth, include_contract=True),
         run_id,
         revision_hash,
@@ -331,8 +349,8 @@ def test_node_binding_payload_refuses_partial_or_invalid_capability_contract(
         encoded["requested_capability"] = requested_capability
 
     with pytest.raises(RunBindingConflict):
-        _agent_request_v2(
-            cast(EncodedAgentBindingV2, encoded),
+        _replayed_request(
+            encoded,
             RunId("capability/invalid-replay"),
             WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
             "build",
@@ -369,8 +387,8 @@ def test_node_binding_payload_refuses_explicit_null_contract_values(
     encoded.update(encoded_contract)
 
     with pytest.raises(RunBindingConflict, match="wrong type"):
-        _agent_request_v2(
-            cast(EncodedAgentBindingV2, encoded),
+        _replayed_request(
+            encoded,
             RunId("capability/null-replay"),
             WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
             "build",
@@ -395,7 +413,7 @@ def test_live_request_refuses_capability_missing_from_the_consuming_host() -> No
     )
 
     with pytest.raises(RunBindingConflict, match="runtime executor lacks"):
-        _agent_request_v2(
+        _replayed_request(
             _encoded_binding(configuration, auth, include_contract=True),
             RunId("capability/host-mismatch"),
             WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
@@ -418,8 +436,8 @@ def test_an_oversized_job_is_a_named_binding_conflict() -> None:
     encoded["job"] = "x" * (MAXIMUM_AGENT_PROCESS_INPUT_BYTES + 1)
 
     with pytest.raises(RunBindingConflict) as raised:
-        _agent_request_v2(
-            cast(EncodedAgentBindingV2, encoded),
+        _replayed_request(
+            encoded,
             RunId("job/oversized"),
             WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
             "build",

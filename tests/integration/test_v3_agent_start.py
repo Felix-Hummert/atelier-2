@@ -24,6 +24,7 @@ import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.node_binding_codec import EncodedAgentBindingV2
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
@@ -34,7 +35,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow import EncodedAgentBindingV2, _node_binding
+from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.project_verification import declared_project
