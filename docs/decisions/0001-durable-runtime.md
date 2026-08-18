@@ -31,11 +31,13 @@ separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
 The runtime creates schema V19 only in a truly empty canonical store and reopens
-only an exact V19 product schema. V9 through V18 remain published predecessor
-objects (`V9_SCHEMA_HANDOFF` through `V18_SCHEMA_HANDOFF`) and are not opened or
-migrated by runtime. An exact V13 through V18 store advances to the current
-schema only through the offline `atelier2 migrate` command, one published step at
-a time; older published predecessors stay refused by name. Older, future,
+only an exact V19 product schema. Every schema from V9 up to the one just below
+current remains a published predecessor object -- `schema.py` names each as its
+own `V*_SCHEMA_HANDOFF` constant -- and none of them are opened or migrated by
+runtime. An exact store on any source version `schema.py`'s
+`_SCHEMA_MIGRATION_STEPS` ladder still names advances to the current schema only
+through the offline `atelier2 migrate` command, one published step at a time;
+older published predecessors stay refused by name. Older, future,
 malformed, or nonempty unowned stores are rejected without mutation. There is no
 runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 19 with
 product-schema fingerprint
