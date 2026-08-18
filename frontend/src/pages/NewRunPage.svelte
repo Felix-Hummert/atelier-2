@@ -10,8 +10,10 @@
     type WorkflowRevisionPage,
     type WorkflowRevisionSummary
   } from "../api/client";
+  import Breadcrumb from "../components/Breadcrumb.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
+  import { THE_ONE_PROJECT } from "../lib/project";
   import {
     MutationJournal,
     createRunId as makeRunId,
@@ -642,7 +644,11 @@
 <svelte:window onkeydown={handleEscape} />
 
 <section aria-labelledby="new-title">
-  <a class="back-link" href="/atelier/project" onclick={(event) => { event.preventDefault(); navigate("/atelier/project"); }}>← Project</a>
+  <Breadcrumb
+    steps={[{ label: "Studio", path: "/atelier" }, { label: THE_ONE_PROJECT, path: "/atelier/project" }]}
+    current="New run"
+    {navigate}
+  />
   <p class="eyebrow">New durable work</p>
   <h1 id="new-title">Choose a workflow</h1>
 
