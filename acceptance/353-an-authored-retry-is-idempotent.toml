@@ -1,0 +1,18 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/353"
+
+# The CLI and the public start send `orders`. The existing retry tests sent
+# `run_inputs`. `_supplied_orders` read only the latter, so an honest repeat
+# of the operator door was DurableRunIdentityConflict and paid twice.
+
+[[sentence]]
+id = "an-authored-retry-reports-the-existing-run"
+text = "The same authored start, sent twice, is answered as the run that already exists — DurableRunExisting, one run identity — instead of DurableRunIdentityConflict."
+
+[[sentence]]
+id = "an-authored-start-with-another-order-stays-a-conflict"
+text = "A second authored start that reuses a run identity but supplies different orders is still DurableRunIdentityConflict, and the stored order is the first one."
+
+[[sentence]]
+id = "the-same-cli-command-twice-reports-one-run"
+text = "The same `run --workflow` command with the same --input, run twice against one service, reports one run instead of paying for two."

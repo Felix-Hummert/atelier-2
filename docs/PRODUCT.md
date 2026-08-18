@@ -568,7 +568,9 @@ produced to standard output, with the run, its revision, its terminal hash and
 one hash per output on standard error. Every publication is idempotent and the
 run identity is derived from the published hashes unless the operator names one,
 so the same command run twice reports the first run instead of paying for a
-second. The client owns nothing: it holds no durable state, adds no route, and
+second. That identity compare pins authored `--input` orders the same way it
+already pinned `run_inputs`, so a retry of the operator door is
+`DurableRunExisting` rather than a conflict. The client owns nothing: it holds no durable state, adds no route, and
 hands the service's typed problems on unchanged, whether the service refused an
 answer or ended the event stream with its own failure frame. A run that stops on
 a decision the command cannot make — a waiting node, an unknown effect outcome, a
