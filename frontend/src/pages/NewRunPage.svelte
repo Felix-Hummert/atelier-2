@@ -33,6 +33,7 @@
   } from "../lib/namedAgentChoice";
   import { readEveryAgentConfiguration, readEveryRevision } from "../lib/runPages";
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
+  import { cannotBeStarted, humanErrorMessage } from "../lib/humanRefusal";
   import {
     groupSavedWorkflows,
     namesWithSeveralRevisions,
@@ -317,7 +318,7 @@
       parts.push(`roles: ${roles.length === 0 ? "none" : roles.join(", ")}`);
     }
     if (revision.executable) parts.push("executable");
-    else parts.push(`Cannot be started: ${revision.not_executable_reason}`);
+    else parts.push(cannotBeStarted(revision.not_executable_reason));
     return parts.join(" · ");
   }
 
@@ -630,7 +631,7 @@
   }
 
   function showFailure(error: unknown, fallback: string): void {
-    failureMessage = error instanceof Error ? error.message : fallback;
+    failureMessage = humanErrorMessage(error, fallback);
   }
 
   function handleEscape(event: KeyboardEvent): void {
@@ -689,7 +690,7 @@
                 {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
               {/if}
               {#if !revision.executable}
-                <span class="revision-refusal">Cannot be started: {revision.not_executable_reason}</span>
+                <span class="revision-refusal">{cannotBeStarted(revision.not_executable_reason)}</span>
               {/if}
             </span>
           </label>
@@ -829,7 +830,7 @@
           <p class="eyebrow">Published</p>
           <h2 id="start-title">{draft.revision.graph.name}</h2>
           {#if draft.revision.graph.description !== null}<p class="muted">{draft.revision.graph.description}</p>{/if}
-          <p class="revision-refusal">Cannot be started: {draft.revision.graph.not_executable_reason}</p>
+          <p class="revision-refusal">{cannotBeStarted(draft.revision.graph.not_executable_reason)}</p>
         </div>
       </section>
     {:else}

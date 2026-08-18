@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Problem } from "../api/client";
+  import { humanProblemDetail } from "../lib/humanRefusal";
 
   export let title = "Request failed";
   export let message = "The request could not be completed.";
@@ -10,7 +11,7 @@
   <span class="notice-mark" aria-hidden="true">◇</span>
   <span>
     <strong>{problem?.title ?? title}</strong>
-    <span>{problem?.detail ?? message}</span>
+    <span>{problem !== null ? humanProblemDetail(problem) : message}</span>
   </span>
   {#if problem !== null}<small>HTTP {problem.status}</small>{/if}
 </div>
