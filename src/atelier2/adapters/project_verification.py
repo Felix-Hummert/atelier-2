@@ -26,10 +26,10 @@ from atelier2.adapters.bounded_processes import bounded_process_answer
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.contracts.agents import MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.tool_grants_v3 import MAXIMUM_VERIFICATION_COMMAND_BYTES
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.project_source import (
-    ProjectSourcePin,
     ProjectSourceRepository,
     ProjectSourceUnavailable,
 )

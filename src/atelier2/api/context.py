@@ -18,6 +18,7 @@ from atelier2.application.publish_agent_configurations import (
     PublishAgentConfigurationRevisionResult,
     PublishAuthProfileRevisionResult,
 )
+from atelier2.application.publish_artifact import PublishArtifactUseCaseResult
 from atelier2.application.publish_budget_revision import PublishBudgetRevisionResult
 from atelier2.application.publish_schema_revision import PublishSchemaRevisionResult
 from atelier2.application.publish_workflow_revision import (
@@ -64,6 +65,7 @@ from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
+from atelier2.ports.artifacts import ArtifactPublisher
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     TransactionalWaitAnswerer,
@@ -102,6 +104,7 @@ class ApiPorts:
     catalog_resolver: CatalogResolver
     catalog_admissions: CatalogAdmissions
     published_revision_registry: PublishedRevisionRegistry
+    artifact_publisher: ArtifactPublisher
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,7 @@ class ApiUseCases:
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
     read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
     publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
+    publish_artifact: Callable[[bytes], PublishArtifactUseCaseResult]
     publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
     publish_budget_revision: Callable[[bytes], PublishBudgetRevisionResult]
     publish_auth_profile_revision: Callable[

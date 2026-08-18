@@ -10,6 +10,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionHash,
     AgentRole,
 )
+from atelier2.contracts.orders import AuthoredOrderValue
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.durable_runs import (
@@ -113,10 +114,10 @@ class AuthoredAgentBinding:
 
 @dataclass(frozen=True)
 class AuthoredOrder:
-    """An order as a caller supplies it: a name and the exact value bytes."""
+    """An order as a caller supplies it: a name and where its value comes from."""
 
     name: str
-    value: bytes
+    value: AuthoredOrderValue
 
 
 def start_published_run(

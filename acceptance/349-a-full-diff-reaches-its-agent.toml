@@ -1,0 +1,24 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/349"
+
+# THE ORDER THAT WAS TOO BIG TO SEND.
+#
+# `MAXIMUM_INSTANCE_DOCUMENT_BYTES` capped an order at sixteen kilobytes, and
+# real pull-request diffs are measured in hundreds. The review class could
+# therefore only review truncated diffs, and the operator ruled the clean way
+# rather than a bigger number: large material travels as a hash-addressed
+# artifact beside the order, the order carries the address, and the inline bound
+# stays strict with its height documented once.
+#
+# The bytes are the name. Publishing the same bytes twice is the same artifact,
+# and an order's stored content hash is that same digest -- so the record that
+# binds a run to its material already names the exact artifact it came from,
+# with no second identity invented for it.
+#
+# Not built here and named instead: retention and deletion of stored artifacts,
+# any surface that lists or reads them back, and the attempt-log artifact #104
+# will publish through this same door.
+
+[[sentence]]
+id = "a-full-pull-request-diff-reaches-its-agent-as-an-artifact"
+text = "Material larger than the inline order bound is published once as a content-addressed artifact, ordered by its address, and the agent is handed those exact bytes whole, under the same digest the run's stored order names."
