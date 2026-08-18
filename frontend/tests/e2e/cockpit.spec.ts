@@ -29,6 +29,42 @@ function declaredOutput(schemaHash: string, name = "result"): string[] {
   ];
 }
 
+test("the target-UI shell names today's doors and does not fake the rest", async ({ page }) => {
+  await page.goto("/atelier");
+  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+
+  const rail = page.getByRole("navigation", { name: "Workshop" });
+  await expect(rail.getByRole("link", { name: "Studio" })).toBeVisible();
+  await expect(rail.getByRole("link", { name: "Projekte" })).toBeVisible();
+  await expect(rail.getByRole("link", { name: "Runs" })).toHaveCount(0);
+  await expect(rail.getByRole("link", { name: "Library" })).toHaveCount(0);
+  await expect(rail.getByRole("link", { name: "Settings" })).toHaveCount(0);
+  await expect(rail.getByText("Runs", { exact: true })).toBeVisible();
+  await expect(rail.getByText("Library", { exact: true })).toBeVisible();
+  await expect(rail.getByText("Settings", { exact: true })).toBeVisible();
+  await expect(rail.locator("[title*='REQ-UI-13']")).toBeVisible();
+  await expect(page.getByRole("banner").getByText("atelier")).toBeVisible();
+  await expect(page.getByRole("banner").getByRole("button", { name: /This workshop/ })).toBeVisible();
+
+  await rail.getByRole("link", { name: "Projekte" }).click();
+  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier\/project$/);
+
+  const stillOnProject = page.url();
+  await rail.getByText("Library", { exact: true }).click();
+  await expect(page).toHaveURL(stillOnProject);
+
+  await rail.getByRole("link", { name: "Studio" }).click();
+  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier$/);
+
+  await page.screenshot({ path: "test-results/shell-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("navigation", { name: "Workshop" })).toBeVisible();
+  await assertMobileSurface(page);
+  await page.screenshot({ path: "test-results/shell-390x844.png", fullPage: true });
+});
+
 test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await page.goto("/atelier/new");
   await page.getByLabel("Publish YAML").check();

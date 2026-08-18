@@ -452,7 +452,12 @@ whole workshop naming every run that waits for a human — the durable states
 `WAITING_INPUT` and `WAITING_RECONCILIATION` — beside the one project of this
 installation, where an area with nothing in it names the next action that is
 possible today and the door to a conductor nobody has built yet says exactly
-that. It can answer the exact integer requested by a Wait node and resolve an
+that. Every level sits in the target-UI skeleton from mockup v4: a left rail
+and a topbar. Studio and Projekte open today's pages; Runs, Library, and
+Settings are named and disabled with their vision reference. The topbar carries
+the atelier·2 wordmark and the one project. No page was added behind those
+destinations. The new-run trail names the project the same way the other
+levels do. It can answer the exact integer requested by a Wait node and resolve an
 unknown Action outcome as either an exact found effect or an accountable,
 confirmed absence. For a V2 run it renders the node states the API names rather
 than deriving them — the V2 event stream carries the rail with every event, so
