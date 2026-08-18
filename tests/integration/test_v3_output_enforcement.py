@@ -109,7 +109,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
-from atelier2.ports.run_queries import NodeDetailFound
+from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import agent_scratch_root, failing_agent_executor_factory
 from tests.scenarios.api import durable_queries
 
@@ -336,7 +336,7 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
     assert durable_answer(runtime) == (
         0,
         1,
-        RunState.STARTED.value,
+        RunState.FAILED.value,
         AgentAttemptState.FAILED.value,
     )
     with runtime.engine.connect() as connection:
@@ -588,7 +588,7 @@ def test_a_refused_output_never_releases_the_node_behind_it(
     assert chain_after_the_answer(
         runtime, execution.request.workflow_revision_hash
     ) == ChainAfterTheAnswer(
-        RunState.STARTED.value, NODE, (NODE,), 0, ((NODE, "failed"),)
+        RunState.FAILED.value, NODE, (NODE,), 0, ((NODE, "failed"),)
     )
 
 
@@ -808,7 +808,7 @@ def test_a_process_that_died_leaves_a_failed_receipt_naming_what_it_left(
     assert durable_answer(runtime) == (
         0,
         1,
-        RunState.STARTED.value,
+        RunState.FAILED.value,
         AgentAttemptState.FAILED.value,
     )
     with runtime.engine.connect() as connection:
@@ -897,3 +897,60 @@ def test_only_a_bounded_tail_of_what_the_process_said_becomes_durable(
     assert "closing-line" in reason
     assert "opening-line" not in reason
     assert len(reason) < 2 * MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES
+
+
+@pytest.mark.proves("an-uncontinuable-run-ends-under-the-node-reason")
+def test_a_refused_answer_ends_the_run_as_failed(runtime: DbosRuntime) -> None:
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    store.complete_success(
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+
+    assert durable_answer(runtime)[2:] == (
+        RunState.FAILED.value,
+        AgentAttemptState.FAILED.value,
+    )
+    found = durable_queries(runtime.engine).get_run(RUN)
+    assert isinstance(found, RunFound), found
+    assert found.projection.run.state is RunState.FAILED
+    assert found.projection.run.terminal_hash is not None
+
+
+@pytest.mark.proves("a-serve-start-ends-uncontinuable-inventory")
+def test_a_serve_start_ends_a_started_run_whose_current_node_already_failed(
+    runtime: DbosRuntime,
+) -> None:
+    """The leftover inventory: attempt already FAILED, run still STARTED."""
+
+    from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
+    from atelier2.application.converge_uncontinuable_runs import (
+        converge_uncontinuable_runs,
+    )
+
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.complete_success(
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+    assert durable_answer(runtime)[2] == RunState.FAILED.value
+
+    with runtime.engine.connect() as connection:
+        reverted = connection.execute(
+            runs.update()
+            .where(runs.c.run_id == RUN.value)
+            .values(state=RunState.STARTED.value, terminal_hash=None)
+        )
+        assert reverted.rowcount == 1
+        connection.commit()
+
+    assert durable_answer(runtime)[2] == RunState.STARTED.value
+
+    ended = converge_uncontinuable_runs(DbosUncontinuableRunStore(runtime.engine))
+
+    assert ended == (RUN,)
+    assert durable_answer(runtime)[2] == RunState.FAILED.value
+    found = durable_queries(runtime.engine).get_run(RUN)
+    assert isinstance(found, RunFound), found
+    assert found.projection.run.terminal_hash is not None

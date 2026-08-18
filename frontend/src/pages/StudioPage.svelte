@@ -26,20 +26,21 @@
     home = startLoading(home);
     failureMessage = null;
     try {
-      const [started, waitingInput, waitingReconciliation, completed] = await Promise.all([
+      const [started, waitingInput, waitingReconciliation, completed, failed] = await Promise.all([
         readEveryRun((after) => cockpitApi.listRuns(after, "STARTED")),
         readEveryRun((after) => cockpitApi.listRuns(after, "WAITING_INPUT")),
         readEveryRun((after) => cockpitApi.listRuns(after, "WAITING_RECONCILIATION")),
-        readEveryRun((after) => cockpitApi.listRuns(after, "COMPLETED"))
+        readEveryRun((after) => cockpitApi.listRuns(after, "COMPLETED")),
+        readEveryRun((after) => cockpitApi.listRuns(after, "FAILED"))
       ]);
-      const unread = [started, waitingInput, waitingReconciliation, completed]
+      const unread = [started, waitingInput, waitingReconciliation, completed, failed]
         .filter((reading) => !reading.complete)
         .map((reading) => ("unreadable" in reading ? reading.unreadable : ""))
         .filter((text) => text.length > 0);
       home = confirmResource(home, {
         running: started.runs,
         waiting: [...waitingInput.runs, ...waitingReconciliation.runs],
-        landed: completed.runs.length
+        landed: completed.runs.length + failed.runs.length
       });
       if (unread.length > 0) {
         failureMessage = `Some of this workshop could not be read, so what is below is incomplete: ${unread.join("; ")}.`;

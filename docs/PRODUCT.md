@@ -348,11 +348,13 @@ member under its content hash -- and the terminal write ends the execution in
 the same transaction as the agent receipt. A refused answer ends its attempt
 `FAILED` under `OUTPUT_SCHEMA_REFUSED` with an `AGENT_FAILED` event, and the
 `failed` `node-receipt/v3` carries the schema owner's own words as its reason
-(`output-schema-refused: ...`); a success additionally keeps the exact produced
-bytes as `node-artifact/v3` beside its `succeeded` receipt. The run stands on
-the node that produced the refused answer, the node detail reads the stored
-reason back, and a run started before this writer existed stays honestly absent
-in those tables.
+(`output-schema-refused: ...`); the run itself ends `FAILED` under that same
+reason — the node's ending lifted one level, so the studio no longer lists it
+as Running. A success additionally keeps the exact produced
+bytes as `node-artifact/v3` beside its `succeeded` receipt. The node detail
+reads the stored reason back, and a run started before this writer existed
+stays honestly absent in those tables. A store that still holds the old
+STARTED-after-failure shape is ended the same way at the next serve start.
 
 The other way an attempt ends badly now says as much. A provider process that
 leaves no usable answer ends `FAILED` under `PROCESS_EXITED_UNSUCCESSFULLY` on

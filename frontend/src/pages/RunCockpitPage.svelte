@@ -261,7 +261,7 @@
     }
     if (disposed || !isRunV3(read)) return;
     v3Run = read;
-    if (read.state !== "COMPLETED") return;
+    if (read.state !== "COMPLETED" && read.state !== "FAILED") return;
     projection = markComplete(applied);
     stream?.close();
     stream = null;

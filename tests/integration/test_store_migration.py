@@ -6,11 +6,11 @@ addition removed, then a format-3 run that already wrote one event. That is the
 today's owner.
 
 V14 and V15 each added a table, so dropping those tables was the whole reversal.
-V16 changes `run_events` itself and V17 changes `agent_attempts`, so the fixture
-also restores those tables' published predecessor shapes below. The literals are
-not second owners of the current tables: they are the frozen artifacts the
-predecessor versions really carried, and the pinned V13 fingerprint refuses
-them the moment a character drifts.
+V16 changes `run_events` itself, V17 changes `agent_attempts`, and V18 changes
+`runs`, so the fixture also restores those tables' published predecessor shapes
+below. The literals are not second owners of the current tables: they are the
+frozen artifacts the predecessor versions really carried, and the pinned V13
+fingerprint refuses them the moment a character drifts.
 """
 
 from __future__ import annotations
@@ -243,6 +243,47 @@ def _restore_predecessor_run_events(connection: Connection) -> None:
         connection.execute(sa.text(_PRODUCT_TRIGGERS[trigger]))
 
 
+_PREDECESSOR_RUNS_DDL = """
+CREATE TABLE runs (
+run_id TEXT NOT NULL, 
+bootstrap_workflow_id TEXT NOT NULL, 
+revision_hash TEXT NOT NULL, 
+workflow_format_version INTEGER NOT NULL, 
+agent_binding_set_hash TEXT, 
+current_node_id TEXT NOT NULL, 
+state TEXT NOT NULL, 
+state_version INTEGER NOT NULL, 
+last_event_sequence INTEGER NOT NULL, 
+terminal_hash TEXT, 
+run_configuration_revision_hash TEXT, 
+PRIMARY KEY (run_id), 
+UNIQUE (run_id, revision_hash), 
+UNIQUE (run_id, revision_hash, agent_binding_set_hash), 
+CHECK (length(run_id) > 0), 
+CHECK (length(current_node_id) > 0), 
+CHECK (workflow_format_version IN (1, 2, 3)), 
+CHECK ((workflow_format_version = 1 AND agent_binding_set_hash IS NULL) OR (workflow_format_version = 2 AND agent_binding_set_hash IS NOT NULL AND length(agent_binding_set_hash) = 64 AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*') OR (workflow_format_version = 3 AND (agent_binding_set_hash IS NULL OR (length(agent_binding_set_hash) = 64 AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*')))), 
+CHECK (state IN ('STARTED', 'WAITING_RECONCILIATION', 'WAITING_INPUT', 'COMPLETED')), 
+CHECK (state_version >= 0), 
+CHECK (last_event_sequence >= 0), 
+CHECK ((state = 'COMPLETED' AND terminal_hash IS NOT NULL AND length(terminal_hash) = 64 AND terminal_hash NOT GLOB '*[^0-9a-f]*') OR (state <> 'COMPLETED' AND terminal_hash IS NULL)), 
+CHECK ((workflow_format_version = 3 AND run_configuration_revision_hash IS NOT NULL AND length(run_configuration_revision_hash) = 64 AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*') OR (workflow_format_version <> 3 AND run_configuration_revision_hash IS NULL)), 
+UNIQUE (bootstrap_workflow_id), 
+FOREIGN KEY(revision_hash) REFERENCES workflow_revisions (revision_hash), 
+FOREIGN KEY(run_configuration_revision_hash) REFERENCES run_configuration_revisions (revision_hash)
+)
+"""
+
+
+def _restore_predecessor_runs(connection: Connection) -> None:
+    connection.execute(sa.text("PRAGMA foreign_keys=OFF"))
+    connection.execute(sa.text("DROP TRIGGER runs_binding_no_update"))
+    connection.execute(sa.text("DROP TABLE runs"))
+    connection.execute(sa.text(_PREDECESSOR_RUNS_DDL))
+    connection.execute(sa.text(_PRODUCT_TRIGGERS["runs_binding_no_update"]))
+    connection.execute(sa.text("PRAGMA foreign_keys=ON"))
+
+
 def _restore_predecessor_agent_attempts(connection: Connection) -> None:
     triggers = ("agent_attempts_state_transition", "agent_attempts_no_delete")
     for trigger in triggers:
@@ -293,6 +334,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
             connection.execute(sa.text(f"DROP TABLE {table}"))
         _restore_predecessor_run_events(connection)
         _restore_predecessor_agent_attempts(connection)
+        _restore_predecessor_runs(connection)
         connection.execute(
             atelier_schema_versions.update()
             .where(atelier_schema_versions.c.version == SCHEMA_VERSION)

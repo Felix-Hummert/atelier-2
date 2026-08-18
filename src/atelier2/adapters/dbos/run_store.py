@@ -747,9 +747,13 @@ def _commit_event(
         target_node, ActionNode
     ):
         raise RunTransitionConflict("WAITING_RECONCILIATION target is not an Action")
-    if terminal != (target_state is RunState.COMPLETED):
+    if terminal != (target_state in {RunState.COMPLETED, RunState.FAILED}):
         raise RunTransitionConflict("terminal transition shape disagrees")
-    if terminal and not is_sink_node(graph, target_node_id):
+    if (
+        terminal
+        and target_state is RunState.COMPLETED
+        and not is_sink_node(graph, target_node_id)
+    ):
         raise RunTransitionConflict("terminal transition must finish the run's sink")
     sequence = current.last_event_sequence + 1
     event = RunEvent(

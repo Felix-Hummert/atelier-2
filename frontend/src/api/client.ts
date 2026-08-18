@@ -381,7 +381,13 @@ const runV1Schema = z
     public_run_reference: publicRunReference,
     workflow_revision_hash: sha256,
     state_version: nonnegativeSafeInteger,
-    state: z.enum(["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]),
+    state: z.enum([
+      "STARTED",
+      "WAITING_RECONCILIATION",
+      "WAITING_INPUT",
+      "COMPLETED",
+      "FAILED"
+    ]),
     current_node: nodeSchema,
     waiting: waitingSchema,
     terminal_hash: sha256.nullable(),
@@ -493,7 +499,13 @@ const runV2Schema = z
     agent_binding_set_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
     state_version: nonnegativeSafeInteger,
-    state: z.enum(["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]),
+    state: z.enum([
+      "STARTED",
+      "WAITING_RECONCILIATION",
+      "WAITING_INPUT",
+      "COMPLETED",
+      "FAILED"
+    ]),
     current_node: nodeV2Schema,
     node_rail: z.array(nodeRailEntrySchema).min(1),
     agent_attempts: z.array(agentAttemptV2Schema).max(2),
@@ -527,7 +539,7 @@ const runV3Schema = z
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
     state_version: nonnegativeSafeInteger,
-    state: z.enum(["STARTED", "WAITING_INPUT", "COMPLETED"]),
+    state: z.enum(["STARTED", "WAITING_INPUT", "COMPLETED", "FAILED"]),
     current_node_id: z.string().min(1),
     node_rail: z.array(nodeRailEntrySchema).min(1),
     terminal_hash: sha256.nullable(),
@@ -602,7 +614,7 @@ function validateRunShape(
     run_id: string;
     public_run_reference: string;
     latest_event_cursor: string | null;
-    state: "STARTED" | "WAITING_RECONCILIATION" | "WAITING_INPUT" | "COMPLETED";
+    state: "STARTED" | "WAITING_RECONCILIATION" | "WAITING_INPUT" | "COMPLETED" | "FAILED";
     current_node: z.infer<typeof nodeSchema> | z.infer<typeof nodeV2Schema>;
     waiting: z.infer<typeof waitingSchema>;
     terminal_hash: string | null;
@@ -633,6 +645,10 @@ function validateRunShape(
         run.terminal_hash === null) ||
       (run.state === "COMPLETED" &&
         run.current_node.type === "subworkflow" &&
+        run.waiting.type === "NONE" &&
+        run.terminal_hash !== null) ||
+      (run.state === "FAILED" &&
+        run.current_node.type === "agent" &&
         run.waiting.type === "NONE" &&
         run.terminal_hash !== null);
     if (!valid) {
