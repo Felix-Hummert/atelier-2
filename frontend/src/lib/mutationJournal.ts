@@ -137,6 +137,27 @@ export async function waitMutation(
   if (!canonicalIntegerPattern.test(answer)) {
     throw new Error("wait answer must be one canonical integer");
   }
+  return waitAnswerMutation(publicRunReference, workflowRevisionHash, nodeId, answer);
+}
+
+export async function v3WaitMutation(
+  publicRunReference: string,
+  workflowRevisionHash: string,
+  nodeId: string,
+  answer: string
+): Promise<WaitMutation> {
+  if (answer.length === 0) {
+    throw new Error("wait answer must not be empty");
+  }
+  return waitAnswerMutation(publicRunReference, workflowRevisionHash, nodeId, answer);
+}
+
+async function waitAnswerMutation(
+  publicRunReference: string,
+  workflowRevisionHash: string,
+  nodeId: string,
+  answer: string
+): Promise<WaitMutation> {
   const answerBytes = new TextEncoder().encode(answer);
   const answerBase64 = encodeBase64(answerBytes);
   const body = new TextEncoder().encode(
@@ -161,10 +182,18 @@ export async function waitMutation(
 }
 
 export function waitAnswer(mutation: WaitMutation): string {
+  const answer = waitAnswerText(mutation);
+  if (!canonicalIntegerPattern.test(answer)) {
+    throw new Error("saved wait answer is not one canonical integer");
+  }
+  return answer;
+}
+
+export function waitAnswerText(mutation: WaitMutation): string {
   const bytes = decodeCanonicalBase64(mutation.answer_base64);
   const answer = bytes === null ? null : decodeUtf8(bytes);
-  if (answer === null || !canonicalIntegerPattern.test(answer)) {
-    throw new Error("saved wait answer is not one canonical integer");
+  if (answer === null || answer.length === 0) {
+    throw new Error("saved wait answer is not readable text");
   }
   return answer;
 }
@@ -595,7 +624,7 @@ async function requireWait(envelope: WaitMutation): Promise<void> {
     envelope.node_id !== body.node_id ||
     envelope.answer_base64 !== body.answer_base64 ||
     answer === null ||
-    !canonicalIntegerPattern.test(answer) ||
+    answer.length === 0 ||
     envelope.mutation_id !== waitMutationId(publicReference, body.node_id)
   ) {
     throw new Error("invalid wait mutation envelope");
