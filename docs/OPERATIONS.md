@@ -11,7 +11,8 @@ versions and fingerprints. This file only says how the packaged process is
 started and how a predecessor store is raised offline.
 
 No operations owner existed. [docs/README.md](README.md) now names this file
-for that question. Journeys are unwritten and would illustrate, not bind.
+for that question. [Journeys](journeys/) illustrate requirements and bind
+nothing.
 
 ## What is packaged
 

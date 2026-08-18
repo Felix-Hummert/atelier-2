@@ -3,13 +3,11 @@
 Audience: humans and agents deciding what Atelier 2 should become.
 
 This file owns implementation status: what Atelier 2 currently is, proven by
-what has landed. It no longer owns product intent. Intent is stated by
-[GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1) and by the
-issue threads that the numbered documents indexed by
-[docs/requirements/README.md](requirements/README.md) read; the intent section
-below is a derived view of those sources, corrected by rewriting it against them
-and never by editing it into a second, independent truth. It is hand-maintained
-and nothing checks it, so where it and a source disagree the source is right and
+what has landed. It does not own why the atelier exists — that reading is
+[VISION.md](VISION.md), and behind it
+[GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1). The intent
+section below is a derived view of those sources, kept only so this file still
+reads as one piece; where it and a source disagree the source is right and
 this view is simply stale. Technical decisions and implementation evidence
 belong to their own owners.
 
