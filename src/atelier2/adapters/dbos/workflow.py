@@ -108,6 +108,7 @@ from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
     RunId,
     RunState,
     WorkflowRevisionHash,
@@ -210,7 +211,9 @@ def _node_binding(
         require_the_run_stands_on(run, revision_hash, node_id)
         graph = load_graph(session, revision_hash)
         node = graph.node(node_id)
-        orders, results = _agent_material(session, run_id, revision_hash, graph, node)
+        orders, results = _agent_material(
+            session, run_id, revision_hash, graph, node, run.current_round_ordinal
+        )
         return encode_node_binding(
             bind_node(
                 run,
@@ -237,17 +240,22 @@ def _agent_material(
     revision_hash: WorkflowRevisionHash,
     graph: AnyWorkflowDocument,
     node: AnyWorkflowDocumentNode,
+    round_ordinal: int,
 ) -> tuple[tuple[RunInput, ...], tuple[DeliveredOutput, ...]]:
     """The orders and earlier results a V3 Agent node reads, and nothing for the rest.
 
     Read here rather than inside the decision because reading them is a store
     call, and read only for the one node kind whose document can declare them.
+
+    The round travels with the read because a looped producer wrote one value per
+    round: without it the store would be asked for a node's output and hold
+    several.
     """
     if not isinstance(node, AgentNodeV3):
         return ((), ())
     return (
         load_run_inputs(session, run_id, node),
-        load_node_outputs(session, run_id, revision_hash, graph, node),
+        load_node_outputs(session, run_id, revision_hash, graph, node, round_ordinal),
     )
 
 
@@ -352,9 +360,20 @@ def register_durable_run_workflow(
     effect_binding: EffectAdapterBinding,
 ) -> None:
     def start_node(
-        run_id: RunId, revision_hash: WorkflowRevisionHash, node_id: str
+        run_id: RunId,
+        revision_hash: WorkflowRevisionHash,
+        node_id: str,
+        round_ordinal: int = FIRST_ROUND_ORDINAL,
     ) -> None:
-        execution_id = NodeExecutionId.for_node(run_id, revision_hash, node_id)
+        """Start one round of one node under the identity that round has.
+
+        The durable workflow id is derived from the execution, so a second round
+        of the same node is a second durable workflow rather than a repeat of
+        the first that the idempotency key would swallow.
+        """
+        execution_id = NodeExecutionId.for_node(
+            run_id, revision_hash, node_id, round_ordinal
+        )
         with SetWorkflowID(node_workflow_id_for(execution_id)):
             DBOS.start_workflow(
                 durable_node, run_id.value, revision_hash.value, node_id
@@ -451,11 +470,12 @@ def register_durable_run_workflow(
         )
         if isinstance(outcome, AgentAttemptSucceeded):
             match outcome.completion:
-                case RunContinues(node_id):
+                case RunContinues(node_id, round_ordinal):
                     start_node(
                         replacement.run_id,
                         replacement.workflow_revision_hash,
                         node_id,
+                        round_ordinal,
                     )
                 case RunCompletes():
                     pass
@@ -520,8 +540,8 @@ def register_durable_run_workflow(
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value
             match outcome.completion:
-                case RunContinues(node_id):
-                    start_node(typed_run_id, typed_revision, node_id)
+                case RunContinues(node_id, round_ordinal):
+                    start_node(typed_run_id, typed_revision, node_id, round_ordinal)
                     return RunState.STARTED.value
                 case RunCompletes():
                     return RunState.COMPLETED.value

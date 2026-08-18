@@ -6,11 +6,11 @@ addition removed, then a format-3 run that already wrote one event. That is the
 today's owner.
 
 V14 and V15 each added a table, so dropping those tables was the whole reversal.
-V16 changes `run_events` itself, V17 changes `agent_attempts`, and V18 changes
-`runs`, so the fixture also restores those tables' published predecessor shapes
-below. The literals are not second owners of the current tables: they are the
-frozen artifacts the predecessor versions really carried, and the pinned V13
-fingerprint refuses them the moment a character drifts.
+Every version after them instead reshapes a table V13 already had, so the
+fixture also restores each of those tables' published V13 shape below. The
+literals are not second owners of the current tables: they are the frozen
+artifacts V13 really carried, and the pinned V13 fingerprint refuses them the
+moment a character drifts.
 """
 
 from __future__ import annotations
@@ -33,8 +33,11 @@ from atelier2.adapters.dbos.schema import (
     MigrationRequired,
     _require_product_shape,
     agent_attempts,
+    agent_configuration_revisions,
+    agent_receipts_v2,
     artifacts,
     atelier_schema_versions,
+    auth_profile_revisions,
     catalog_lineage_members,
     catalog_lineages,
     context_packages_v3,
@@ -42,6 +45,7 @@ from atelier2.adapters.dbos.schema import (
     node_execution_requests_v3,
     node_receipts_v3,
     published_revisions,
+    run_agent_bindings,
     run_configuration_revisions,
     run_events,
     run_inputs_v3,
@@ -52,7 +56,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.contracts.catalog_v3 import CatalogLineage
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
 from atelier2.host import main
 
 ARCHIVED_RUN_ID = "live/erster-lauf-nach-der-nacht"
@@ -222,6 +226,7 @@ END
 
 ARCHIVED_ATTEMPT_ID = "ab" * 32
 ARCHIVED_ATTEMPT_FAILURE_CODE = "PROCESS_EXITED_UNSUCCESSFULLY"
+ARCHIVED_RECEIPT_NODE_EXECUTION_ID = "99" * 32
 
 
 def _logical_dump(database_path: Path) -> tuple[str, ...]:
@@ -295,6 +300,99 @@ def _restore_predecessor_agent_attempts(connection: Connection) -> None:
     connection.execute(sa.text(_PRODUCT_TRIGGERS["agent_attempts_no_delete"]))
 
 
+_PREDECESSOR_NODE_EXECUTION_REQUESTS_DDL = """
+CREATE TABLE node_execution_requests_v3 (
+    request_hash TEXT NOT NULL,
+    node_execution_id TEXT NOT NULL,
+    run_configuration_revision_hash TEXT NOT NULL,
+    context_package_hash TEXT NOT NULL,
+    preimage BLOB NOT NULL,
+    PRIMARY KEY (request_hash),
+    UNIQUE (node_execution_id, request_hash),
+    CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(context_package_hash) = 64 AND context_package_hash NOT GLOB '*[^0-9a-f]*'),
+    FOREIGN KEY(context_package_hash) REFERENCES context_packages_v3 (package_hash),
+    FOREIGN KEY(run_configuration_revision_hash) REFERENCES run_configuration_revisions (revision_hash)
+)
+"""
+
+
+def _restore_predecessor_node_execution_requests(connection: Connection) -> None:
+    triggers = (
+        "node_execution_requests_v3_no_update",
+        "node_execution_requests_v3_no_delete",
+    )
+    for trigger in triggers:
+        connection.execute(sa.text(f"DROP TRIGGER {trigger}"))
+    connection.execute(sa.text("DROP TABLE node_execution_requests_v3"))
+    connection.execute(sa.text(_PREDECESSOR_NODE_EXECUTION_REQUESTS_DDL))
+    for trigger in triggers:
+        connection.execute(sa.text(_PRODUCT_TRIGGERS[trigger]))
+
+
+_PREDECESSOR_AGENT_RECEIPTS_DDL = """
+CREATE TABLE agent_receipts_v2 (
+    node_execution_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    workflow_revision_hash TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    binding_set_hash TEXT NOT NULL,
+    agent_configuration_revision_hash TEXT NOT NULL,
+    auth_profile_revision_hash TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    revision_number INTEGER NOT NULL,
+    provider_id TEXT NOT NULL,
+    auth_mode TEXT NOT NULL,
+    model TEXT NOT NULL,
+    executor_revision TEXT NOT NULL,
+    executor_operational_identity TEXT NOT NULL,
+    output_bytes BLOB NOT NULL,
+    output_hash TEXT NOT NULL,
+    receipt_hash TEXT NOT NULL,
+    PRIMARY KEY (node_execution_id),
+    UNIQUE (run_id, workflow_revision_hash, node_id),
+    FOREIGN KEY(run_id, workflow_revision_hash, binding_set_hash, role, agent_configuration_revision_hash) REFERENCES run_agent_bindings (run_id, revision_hash, binding_set_hash, role, agent_configuration_revision_hash),
+    FOREIGN KEY(agent_configuration_revision_hash, auth_profile_revision_hash, model, executor_revision) REFERENCES agent_configuration_revisions (revision_hash, auth_profile_revision_hash, model, executor_revision),
+    FOREIGN KEY(auth_profile_revision_hash, profile_id, revision_number, provider_id, auth_mode) REFERENCES auth_profile_revisions (revision_hash, profile_id, revision_number, provider_id, auth_mode),
+    CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(run_id) > 0),
+    CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(node_id) BETWEEN 1 AND 1024),
+    CHECK (length(role) BETWEEN 1 AND 1024),
+    CHECK (length(binding_set_hash) = 64 AND binding_set_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(agent_configuration_revision_hash) = 64 AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(auth_profile_revision_hash) = 64 AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(profile_id) BETWEEN 1 AND 1024),
+    CHECK (revision_number BETWEEN 1 AND 9223372036854775807),
+    CHECK (length(provider_id) BETWEEN 1 AND 64),
+    CHECK (provider_id GLOB '[a-z]*'),
+    CHECK (provider_id NOT GLOB '*[^a-z0-9._-]*'),
+    CHECK (auth_mode IN ('subscription', 'api_key')),
+    CHECK (length(model) BETWEEN 1 AND 1024),
+    CHECK (length(executor_revision) BETWEEN 1 AND 1024),
+    CHECK (length(executor_operational_identity) BETWEEN 1 AND 1024),
+    CHECK (typeof(output_bytes) = 'blob' AND length(output_bytes) <= 49152),
+    CHECK (length(output_hash) = 64 AND output_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'),
+    UNIQUE (receipt_hash)
+)
+"""
+
+
+def _restore_predecessor_agent_receipts(connection: Connection) -> None:
+    triggers = ("agent_receipts_v2_no_update", "agent_receipts_v2_no_delete")
+    for trigger in triggers:
+        connection.execute(sa.text(f"DROP TRIGGER {trigger}"))
+    connection.execute(sa.text("DROP TABLE agent_receipts_v2"))
+    connection.execute(sa.text(_PREDECESSOR_AGENT_RECEIPTS_DDL))
+    for trigger in triggers:
+        connection.execute(sa.text(_PRODUCT_TRIGGERS[trigger]))
+
+
 def _archived_completion(revision_hash: WorkflowRevisionHash) -> RunEvent:
     """The completion an old run really wrote: no attempt binding, no receipt."""
     run_id = RunId(ARCHIVED_RUN_ID)
@@ -313,8 +411,9 @@ def _create_populated_v13_store(database_path: Path) -> None:
     """An exact V13 product store, not a version-row witness.
 
     A fresh store of the current schema with each later table and its triggers
-    removed, and `run_events` restored to the shape it had before V16, is the
-    published V13 shape. That is the same method as the #240 Z2 testimony
+    removed, and every table a later hop reshapes restored to the shape it had
+    at V13, is the published V13 shape. That is the same method as the #240 Z2
+    testimony
     (predecessor schema from before the V14 head), expressed through today's
     owner so the fixture cannot drift from the create path the hop will reopen.
     """
@@ -328,14 +427,20 @@ def _create_populated_v13_store(database_path: Path) -> None:
     request = "22" * 32
     execution = "11" * 32
     receipt = "ef" * 32
+    auth_profile_revision_hash = "55" * 32
+    agent_configuration_revision_hash = "66" * 32
+    binding_set_hash = "77" * 32
+    agent_receipt_hash = "dd" * 32
     with engine.connect() as connection:
         for table in (artifacts.name, run_inputs_v3.name, tool_redemptions.name):
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
             connection.execute(sa.text(f"DROP TABLE {table}"))
         _restore_predecessor_run_events(connection)
+        _restore_predecessor_agent_receipts(connection)
         _restore_predecessor_agent_attempts(connection)
         _restore_predecessor_runs(connection)
+        _restore_predecessor_node_execution_requests(connection)
         connection.execute(
             atelier_schema_versions.update()
             .where(atelier_schema_versions.c.version == SCHEMA_VERSION)
@@ -393,13 +498,41 @@ def _create_populated_v13_store(database_path: Path) -> None:
                 bootstrap_workflow_id="bootstrap-archived-night-run",
                 revision_hash=published.revision_hash.value,
                 workflow_format_version=3,
-                agent_binding_set_hash=None,
+                agent_binding_set_hash=binding_set_hash,
                 current_node_id="cook",
                 state="STARTED",
                 state_version=1,
                 last_event_sequence=1,
                 terminal_hash=None,
                 run_configuration_revision_hash=configuration,
+            )
+        )
+        connection.execute(
+            auth_profile_revisions.insert().values(
+                revision_hash=auth_profile_revision_hash,
+                profile_id="profile/archived",
+                revision_number=1,
+                provider_id="anthropic",
+                auth_mode="api_key",
+            )
+        )
+        connection.execute(
+            agent_configuration_revisions.insert().values(
+                revision_hash=agent_configuration_revision_hash,
+                model="archived-model",
+                auth_profile_revision_hash=auth_profile_revision_hash,
+                executor_revision="archived-executor",
+                revision_format_version=1,
+                requested_capability="headless",
+            )
+        )
+        connection.execute(
+            run_agent_bindings.insert().values(
+                run_id=ARCHIVED_RUN_ID,
+                revision_hash=published.revision_hash.value,
+                binding_set_hash=binding_set_hash,
+                role="chef",
+                agent_configuration_revision_hash=agent_configuration_revision_hash,
             )
         )
         connection.execute(
@@ -453,6 +586,43 @@ def _create_populated_v13_store(database_path: Path) -> None:
                 receipt_hash=receipt,
             )
         )
+        connection.execute(
+            sa.text(
+                "INSERT INTO agent_receipts_v2 (node_execution_id, request_hash, "
+                "run_id, workflow_revision_hash, node_id, role, binding_set_hash, "
+                "agent_configuration_revision_hash, auth_profile_revision_hash, "
+                "profile_id, revision_number, provider_id, auth_mode, model, "
+                "executor_revision, executor_operational_identity, output_bytes, "
+                "output_hash, receipt_hash) VALUES (:node_execution_id, "
+                ":request_hash, :run_id, :workflow_revision_hash, :node_id, "
+                ":role, :binding_set_hash, :agent_configuration_revision_hash, "
+                ":auth_profile_revision_hash, :profile_id, :revision_number, "
+                ":provider_id, :auth_mode, :model, :executor_revision, "
+                ":executor_operational_identity, :output_bytes, :output_hash, "
+                ":receipt_hash)"
+            ),
+            {
+                "node_execution_id": ARCHIVED_RECEIPT_NODE_EXECUTION_ID,
+                "request_hash": request,
+                "run_id": ARCHIVED_RUN_ID,
+                "workflow_revision_hash": published.revision_hash.value,
+                "node_id": ARCHIVED_NODE_ID,
+                "role": "chef",
+                "binding_set_hash": binding_set_hash,
+                "agent_configuration_revision_hash": agent_configuration_revision_hash,
+                "auth_profile_revision_hash": auth_profile_revision_hash,
+                "profile_id": "profile/archived",
+                "revision_number": 1,
+                "provider_id": "anthropic",
+                "auth_mode": "api_key",
+                "model": "archived-model",
+                "executor_revision": "archived-executor",
+                "executor_operational_identity": "operational/archived",
+                "output_bytes": ARCHIVED_OUTPUT,
+                "output_hash": "aa" * 32,
+                "receipt_hash": agent_receipt_hash,
+            },
+        )
         connection.commit()
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
@@ -489,6 +659,28 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
             )
             == ARCHIVED_RUN_ID
         )
+        assert (
+            connection.scalar(
+                sa.select(runs.c.current_round_ordinal).where(
+                    runs.c.run_id == ARCHIVED_RUN_ID
+                )
+            )
+            == FIRST_ROUND_ORDINAL
+        )
+        carried_receipt = (
+            connection.execute(
+                sa.select(agent_receipts_v2).where(
+                    agent_receipts_v2.c.run_id == ARCHIVED_RUN_ID,
+                    agent_receipts_v2.c.node_id == ARCHIVED_NODE_ID,
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert (
+            carried_receipt["node_execution_id"] == ARCHIVED_RECEIPT_NODE_EXECUTION_ID
+        )
+        assert carried_receipt["round_ordinal"] == FIRST_ROUND_ORDINAL
         assert (
             connection.scalar(sa.select(node_receipts_v3.c.disposition)) == "succeeded"
         )
@@ -686,6 +878,47 @@ def test_a_refused_failure_code_hop_rolls_back_every_earlier_step(
 
     shown = capsys.readouterr()
     assert "agent_attempts_before_the_refusal_code" in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (13,)
+
+
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        pytest.param(
+            "CREATE TABLE runs_before_the_round_column(wrong TEXT)",
+            id="table",
+        ),
+        pytest.param(
+            "CREATE VIEW runs_before_the_round_column AS SELECT 1 AS wrong",
+            id="view",
+        ),
+    ],
+)
+def test_a_refused_round_column_hop_rolls_back_every_earlier_step(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
+) -> None:
+    """The round hop refuses, so every step that already ran is undone with it.
+
+    The round hop rebuilds `runs` under a parking name, so any object already
+    holding that name is a collision the hop refuses by name -- after every
+    earlier step completed inside the same transaction.
+    """
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v13_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(collision_sql)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "runs_before_the_round_column" in shown.err
     assert "will not alter" in shown.err
     assert _logical_dump(database_path) == before
     with sqlite3.connect(database_path) as connection:

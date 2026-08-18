@@ -73,6 +73,13 @@ def persist_bound_node_executions(
     later nodes had no request would be a chain whose later nodes could not be
     receipted.
 
+    Every round, not only the first: a declared loop bounds how often its body
+    runs, so how many executions a start owes is known before anything runs, and
+    a round whose request was written later would be a round whose receipt had
+    nothing to bind. What the rounds of one node share is the request itself --
+    they are asked the same thing -- so the row that differs between them is the
+    execution it belongs to, which is why the store keys these rows by that.
+
     `OR IGNORE` is the identity rule, not a swallow. Both records are addressed by
     a hash over their own bytes, so a second start of the same run under the same
     revision, configuration and orders presents byte-identical records; a differing
@@ -96,19 +103,22 @@ def persist_bound_node_executions(
                 manifest=bound.context_package.manifest,
             )
         )
-        connection.execute(
-            node_execution_requests_v3.insert()
-            .prefix_with("OR IGNORE")
-            .values(
-                request_hash=bound.request.request_hash.value,
-                node_execution_id=NodeExecutionId.for_node(
-                    run_id, workflow_revision_hash, node.id
-                ).value,
-                run_configuration_revision_hash=(run_configuration.revision_hash.value),
-                context_package_hash=bound.context_package.package_hash.value,
-                preimage=bound.request.preimage,
+        for round_ordinal in graph.declared_rounds_of(node.id):
+            connection.execute(
+                node_execution_requests_v3.insert()
+                .prefix_with("OR IGNORE")
+                .values(
+                    request_hash=bound.request.request_hash.value,
+                    node_execution_id=NodeExecutionId.for_node(
+                        run_id, workflow_revision_hash, node.id, round_ordinal
+                    ).value,
+                    run_configuration_revision_hash=(
+                        run_configuration.revision_hash.value
+                    ),
+                    context_package_hash=bound.context_package.package_hash.value,
+                    preimage=bound.request.preimage,
+                )
             )
-        )
 
 
 def keep_node_receipt(

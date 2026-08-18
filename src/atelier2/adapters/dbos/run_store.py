@@ -69,6 +69,7 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
     RunId,
     RunState,
     WorkflowRevision,
@@ -90,6 +91,7 @@ from atelier2.contracts.workflows import (
     RunContinues,
     WaitNode,
     completion_after_node,
+    round_of,
 )
 from atelier2.contracts.workflows_v3 import (
     ANY_WAIT_NODE_KINDS,
@@ -189,6 +191,7 @@ def load_node_outputs(
     revision_hash: WorkflowRevisionHash,
     graph: AnyWorkflowDocument,
     node: AgentNodeV3,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> tuple[DeliveredOutput, ...]:
     """The work of earlier nodes this node declared it reads, as they wrote it.
 
@@ -205,6 +208,13 @@ def load_node_outputs(
 
     A node that reads nothing gets nothing: no query runs, and the composition
     is the authored instruction alone.
+
+    Which round wrote the value is read from the graph, never guessed: a
+    producer the same loop repeats wrote it in the round now turning, and a
+    producer no loop repeats wrote it once. That is why the query names the
+    producing execution rather than the producing node -- a node id alone would
+    match every round at once, and a store that has several answers to one
+    question is a store that cannot answer it.
     """
     read = tuple(
         entry.source
@@ -217,11 +227,15 @@ def load_node_outputs(
         raise RunTransitionConflict("a V3 agent node belongs to a V3 document")
     delivered: list[DeliveredOutput] = []
     for source in sorted(read, key=lambda named: (named.node, named.output)):
+        written_in = round_of(graph, source.node, round_ordinal)
         record = session.execute(
             sa.select(run_events.c.payload, run_events.c.payload_hash).where(
                 run_events.c.run_id == run_id.value,
                 run_events.c.revision_hash == revision_hash.value,
-                run_events.c.node_id == source.node,
+                run_events.c.node_execution_id
+                == NodeExecutionId.for_node(
+                    run_id, revision_hash, source.node, written_in
+                ).value,
                 run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
             )
         ).one_or_none()
@@ -465,6 +479,7 @@ def _agent_receipt_v2_values(receipt: AgentReceiptV2) -> dict[str, object]:
         "output_bytes": receipt.output_bytes,
         "output_hash": receipt.output_hash.value,
         "receipt_hash": receipt.receipt_hash.value,
+        "round_ordinal": receipt.round_ordinal,
     }
 
 
@@ -494,6 +509,7 @@ def _agent_receipt_v2_from_record(record: Mapping[Any, Any]) -> AgentReceiptV2:
             bytes(record["output_bytes"]),
             AgentOutputHash(str(record["output_hash"])),
             AgentReceiptHash(str(record["receipt_hash"])),
+            int(record["round_ordinal"]),
         )
     except ValueError as error:
         raise AgentReceiptConflict(

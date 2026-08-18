@@ -13,6 +13,8 @@ from pydantic import (
     model_validator,
 )
 
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, require_exact_round_ordinal
+
 if TYPE_CHECKING:
     from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 
@@ -303,13 +305,20 @@ type AnyWorkflowGraph = WorkflowGraph | WorkflowGraphV2
 
 @dataclass(frozen=True)
 class RunContinues:
-    """A completed node advances the run to this exact successor."""
+    """A completed node advances the run to this exact successor, in this round.
+
+    The round travels with the successor because they are one decision: the node
+    a run moves to and the round it stands in are chosen together, and a caller
+    holding only the node would have to guess the other half.
+    """
 
     node_id: str
+    round_ordinal: int = FIRST_ROUND_ORDINAL
 
     def __post_init__(self) -> None:
         if not self.node_id:
             raise ValueError("a run successor node id must not be empty")
+        require_exact_round_ordinal(self.round_ordinal)
 
 
 @dataclass(frozen=True)
@@ -320,7 +329,11 @@ class RunCompletes:
 type NodeCompletion = RunContinues | RunCompletes
 
 
-def completion_after_node(graph: AnyWorkflowDocument, node_id: str) -> NodeCompletion:
+def completion_after_node(
+    graph: AnyWorkflowDocument,
+    node_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+) -> NodeCompletion:
     """Decide continuation once, without inventing a successor for the sink.
 
     One rule for every format: a sink completes the run, anything else hands on.
@@ -328,6 +341,13 @@ def completion_after_node(graph: AnyWorkflowDocument, node_id: str) -> NodeCompl
     rule, and the one declared heir where exactly one exists. Where more than one
     does, it refuses in its own typed words rather than choosing: picking between
     waiting dependents is the ready set #86 owns.
+
+    A declared loop adds the one move the edges cannot express, and adds nothing
+    else: the last node of a round hands back to the first while rounds are left.
+    Reaching the declared bound is the only way out of a loop this build has --
+    a result that ends it early is the verdict-driven continuation of #25's
+    second head -- so an exhausted loop simply falls through to the rule above
+    and ends where any other node would.
     """
     # V3's vocabulary is built on this module's, so `workflows_v3` imports here and
     # never the other way at module scope; reading its rules needs this import.
@@ -337,10 +357,38 @@ def completion_after_node(graph: AnyWorkflowDocument, node_id: str) -> NodeCompl
         linear_successor_id,
     )
 
+    require_exact_round_ordinal(round_ordinal)
     if isinstance(graph, WorkflowGraphV3):
+        loop = graph.loop_of(node_id)
+        if (
+            loop is not None
+            and node_id == loop.body[-1]
+            and round_ordinal < loop.maximum_rounds
+        ):
+            return RunContinues(loop.body[0], round_ordinal + 1)
         if is_sink_node(graph, node_id):
             return RunCompletes()
-        return RunContinues(linear_successor_id(graph, node_id))
+        successor_id = linear_successor_id(graph, node_id)
+        return RunContinues(successor_id, round_of(graph, successor_id, round_ordinal))
     if graph.is_sink(node_id):
         return RunCompletes()
     return RunContinues(graph.successor(node_id).id)
+
+
+def round_of(
+    graph: AnyWorkflowDocument, node_id: str, current_round_ordinal: int
+) -> int:
+    """Which round this node stands in while the run is in that round.
+
+    A node inside the loop that is turning stands in the round that is turning;
+    a node no loop repeats runs exactly once, whatever the run has been through
+    to reach it. One reader of that rule is what keeps a stored execution and the
+    execution a later step recomputes from disagreeing.
+    """
+    from atelier2.contracts.workflows_v3 import WorkflowGraphV3
+
+    if not isinstance(graph, WorkflowGraphV3):
+        return FIRST_ROUND_ORDINAL
+    if graph.loop_of(node_id) is None:
+        return FIRST_ROUND_ORDINAL
+    return current_round_ordinal
