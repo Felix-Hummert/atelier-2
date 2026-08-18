@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos.run_store import (
+from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     commit_reconciliation_required,
     commit_reconciliation_resolved,
@@ -215,6 +215,7 @@ def written_events(engine: Engine) -> int:
         )
 
 
+@pytest.mark.proves("a-run-transition-answers-one-state-or-one-named-refusal")
 @pytest.mark.parametrize(
     ("node", "state", "write", "admits", "refuses"),
     [vector[1:] for vector in VECTORS],

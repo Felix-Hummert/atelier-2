@@ -26,9 +26,9 @@ from atelier2.adapters.dbos.run_store import (
     commit_action_completed,
     commit_subworkflow_completed,
     commit_wait_answered,
-    commit_waiting_input,
     load_wait_answer,
 )
+from atelier2.adapters.dbos.run_transitions import commit_waiting_input
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
@@ -142,7 +142,9 @@ def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
                 state_version=1,
             )
         )
-        from atelier2.adapters.dbos.run_store import commit_reconciliation_required
+        from atelier2.adapters.dbos.run_transitions import (
+            commit_reconciliation_required,
+        )
 
         commit_reconciliation_required(
             connection,

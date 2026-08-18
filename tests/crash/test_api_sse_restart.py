@@ -19,11 +19,13 @@ from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
     commit_action_completed,
-    commit_reconciliation_required,
     commit_subworkflow_completed,
     commit_wait_answered,
-    commit_waiting_input,
     load_wait_answer,
+)
+from atelier2.adapters.dbos.run_transitions import (
+    commit_reconciliation_required,
+    commit_waiting_input,
 )
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,

@@ -108,6 +108,7 @@ def test_a_workflow_format_is_written_once_and_derived_everywhere() -> None:
     for relative in (
         "adapters/dbos/queries.py",
         "adapters/dbos/run_store.py",
+        "adapters/dbos/run_transitions.py",
         "adapters/dbos/runtime.py",
         "adapters/dbos/schema.py",
         "adapters/dbos/starter.py",

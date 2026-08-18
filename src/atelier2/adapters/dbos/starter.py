@@ -15,8 +15,8 @@ from atelier2.adapters.dbos.agent_catalog import (
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.dbos.node_records import persist_bound_node_executions
-from atelier2.adapters.dbos.run_store import (
-    entry_node_of,
+from atelier2.adapters.dbos.run_store import entry_node_of
+from atelier2.adapters.dbos.run_transitions import (
     run_from_record,
     run_from_record_with_bindings,
 )
