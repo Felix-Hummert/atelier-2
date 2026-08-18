@@ -11,10 +11,10 @@ import sqlalchemy as sa
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
 import atelier2.adapters.dbos.agent_attempt_store as agent_attempt_store_module
-import atelier2.adapters.dbos.run_store as run_store_module
+import atelier2.adapters.dbos.run_transitions as run_transitions_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.run_store import RunTransitionConflict
+from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -339,7 +339,7 @@ def _stage_agent_sink_graph(monkeypatch: pytest.MonkeyPatch) -> None:
             ),
         ),
     )
-    for module in (agent_attempt_store_module, run_store_module):
+    for module in (agent_attempt_store_module, run_transitions_module):
         monkeypatch.setattr(
             module, "load_graph", lambda _session, _revision_hash: terminal_graph
         )

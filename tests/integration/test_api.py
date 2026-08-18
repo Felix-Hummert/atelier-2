@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos import run_store as run_store_module
+from atelier2.adapters.dbos import run_transitions as run_transitions_module
 from atelier2.adapters.dbos import starter as starter_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
@@ -21,8 +21,8 @@ from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
-from atelier2.adapters.dbos.run_store import (
-    DbosWaitAnswerer,
+from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
+from atelier2.adapters.dbos.run_transitions import (
     commit_reconciliation_required,
     commit_waiting_input,
 )
@@ -1505,9 +1505,9 @@ def test_wait_answer_parses_workflow_before_begin_immediate(
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
-    original_parser = run_store_module.parse_executable_workflow_document
+    original_parser = run_transitions_module.parse_executable_workflow_document
     monkeypatch.setattr(
-        run_store_module,
+        run_transitions_module,
         "parse_executable_workflow_document",
         lambda document: _assert_parser_has_no_serialized_write_lock(
             runtime, original_parser, document
@@ -1586,7 +1586,7 @@ def test_wait_answer_rechecks_revision_bytes_after_outside_parse_without_mutatio
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
     changed_document = DOCUMENT.replace(b"output: payload", b"output: changed")
-    original_parser = run_store_module.parse_executable_workflow_document
+    original_parser = run_transitions_module.parse_executable_workflow_document
 
     def drift_revision(document: bytes):
         graph = original_parser(document)
@@ -1602,7 +1602,7 @@ def test_wait_answer_rechecks_revision_bytes_after_outside_parse_without_mutatio
         return graph
 
     monkeypatch.setattr(
-        run_store_module, "parse_executable_workflow_document", drift_revision
+        run_transitions_module, "parse_executable_workflow_document", drift_revision
     )
     with runtime.engine.connect() as connection:
         before_answers = int(

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
-from atelier2.adapters.dbos.run_store import (
+from atelier2.adapters.dbos.run_transitions import (
     commit_reconciliation_required,
 )
 from atelier2.adapters.dbos.runtime import (

@@ -10,9 +10,20 @@ story = "https://github.com/FlexOr2/atelier-2/issues/86"
 #     would keep this table green. The machine guard that would close it belongs
 #     to #11's gate module, and declaring the half before that guard exists is
 #     exactly the mistake #88 recorded against itself.
-#   - Head 2 (no function-local import, acyclic adapter package) and head 3 (the
-#     node binding as a contract) carry their own sentences when they land.
+#   - Head 2 gives the run-state transitions one owner, and the last two
+#     function-local imports fall with it. Its sentence below is about the
+#     answers, not about the import graph: that no adapter module reaches for
+#     another from inside a function body is a *machine* claim, and its guard
+#     belongs to #11's gate module. Head 2 measured the two cycles falling and
+#     reported the measurement rather than landing a second checker, so it
+#     declares only what a test of its own holds green.
+#   - Head 3 (the node binding as a contract) carries its own sentences when it
+#     lands.
 
 [[sentence]]
 id = "every-durable-workflow-id-keeps-its-exact-form-when-its-owner-moves"
 text = "All ten durable identities this engine mints - bootstrap, node, answer, subworkflow, logical-effect, effect, action-continuation, reconcile, agent-cancellation and agent-replacement - are pinned as whole literal strings in one table, so moving their derivations to a single owner cannot change one byte of an identity that durable rows already carry."
+
+[[sentence]]
+id = "a-run-transition-answers-one-state-or-one-named-refusal"
+text = "Every state-and-event pair a durable run transition admits or refuses is pinned as one whole answer - the state and node the run then stands on, or the refusal in the words of the rule that refused it - so moving those transitions to a single owner beneath the stores that call them cannot change one answer a durable run already depends on."
