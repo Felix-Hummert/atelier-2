@@ -99,6 +99,7 @@ from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
     AuthoredOrder,
     InvalidAgentBindings,
+    ProjectUnknown,
     RevisionMissing,
     RunCreated,
     RunExisting,
@@ -125,6 +126,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.projects import ProjectId
 from atelier2.contracts.runs import RunId, RunState
 
 router = APIRouter()
@@ -157,6 +159,7 @@ async def start_run_route(
     revision_hash = parse_revision_hash(body.workflow_revision_hash)
     bindings = None
     orders: tuple[AuthoredOrder, ...] = ()
+    project_id = None
     if isinstance(body, (StartRunRequestResourceV2, StartRunRequestResourceV3)):
         bindings = tuple(
             AuthoredAgentBinding(
@@ -164,12 +167,14 @@ async def start_run_route(
             )
             for binding in body.agent_bindings
         )
+        if body.project_id is not None:
+            project_id = ProjectId(body.project_id)
     if isinstance(body, StartRunRequestResourceV3):
         orders = tuple(_authored_order(order) for order in body.orders)
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.start_published_run(
-            run_id, revision_hash, bindings, orders
+            run_id, revision_hash, bindings, orders, project_id
         ),
     )
     match result:
@@ -179,6 +184,8 @@ async def start_run_route(
             status = HTTPStatus.OK
         case RevisionMissing():
             raise ApiProblem("workflow-revision-not-found")
+        case ProjectUnknown():
+            raise ApiProblem("project-unknown")
         case RunIdentityConflict():
             raise ApiProblem("run-identity-conflict")
         case RunFormatNotExecutable():
@@ -209,6 +216,7 @@ async def list_runs(
     after: str | None = None,
     limit: str = "50",
     state: str | None = None,
+    project: str | None = None,
     context: ApiContext = api_context_dependency,
 ) -> AnyRunPageResource:
     boundary = None
@@ -229,9 +237,25 @@ async def list_runs(
                     ),
                 ),
             ) from None
+    parsed_project = None
+    if project is not None:
+        try:
+            parsed_project = ProjectId(project)
+        except ValueError:
+            raise ApiProblem(
+                "invalid-request",
+                invalid_fields=(
+                    InvalidFieldResource(
+                        path="query/project",
+                        reason="not a project id this list can filter",
+                    ),
+                ),
+            ) from None
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_runs(boundary, parsed_limit, parsed_state),
+        lambda: context.use_cases.list_runs(
+            boundary, parsed_limit, parsed_state, parsed_project
+        ),
     )
     match result:
         case RunsListed(runs, next_after):

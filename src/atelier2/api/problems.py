@@ -240,6 +240,16 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
     "invalid-request": ProblemDefinition(
         422, "Invalid request", "Correct the request fields and submit it again."
     ),
+    "project-name-collision": ProblemDefinition(
+        409,
+        "Project name collision",
+        "Another project already holds that name; choose a different one.",
+    ),
+    "project-unknown": ProblemDefinition(
+        404,
+        "Project unknown",
+        "Create the project before starting or filtering a run under it.",
+    ),
     "invalid-base64": ProblemDefinition(
         422, "Invalid base64", "Use canonical RFC 4648 base64 with required padding."
     ),

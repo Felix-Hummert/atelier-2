@@ -17,6 +17,7 @@ from atelier2.application.refusals import (
     ReadUnavailable,
 )
 from atelier2.contracts.agents import AgentReceiptV2
+from atelier2.contracts.projects import ProjectId
 from atelier2.contracts.run_projections import (
     NodeDetail,
     RunPage,
@@ -161,8 +162,9 @@ def list_runs(
     limit: int,
     queries: RunQueries,
     state: RunState | None = None,
+    project_id: ProjectId | None = None,
 ) -> ListRunsResult:
-    match queries.list_runs(after, limit, state):
+    match queries.list_runs(after, limit, state, project_id):
         case RunPage(runs, next_after):
             return RunsListed(runs, next_after)
         case PortReadUnavailable(detail):

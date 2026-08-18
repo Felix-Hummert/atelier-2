@@ -651,6 +651,7 @@ def test_the_started_run_binds_the_hashes_the_service_answered_with(
                 "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
             }
         ],
+        "project_id": None,
     }
 
 

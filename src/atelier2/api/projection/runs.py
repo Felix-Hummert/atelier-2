@@ -174,6 +174,9 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
             if run.last_event_sequence == 0
             else encode_event_cursor(run.run_id, run.last_event_sequence)
         ),
+        project_id=(
+            None if projection.project_id is None else projection.project_id.value
+        ),
     )
 
 
@@ -276,6 +279,9 @@ def _run_resource_v2(
             None
             if run.last_event_sequence == 0
             else encode_event_cursor(run.run_id, run.last_event_sequence)
+        ),
+        project_id=(
+            None if projection.project_id is None else projection.project_id.value
         ),
     )
 

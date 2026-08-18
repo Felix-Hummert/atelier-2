@@ -11,6 +11,7 @@ from atelier2.contracts.agents import (
     AgentRole,
 )
 from atelier2.contracts.orders import AuthoredOrderValue
+from atelier2.contracts.projects import ProjectId
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.durable_runs import (
@@ -19,6 +20,7 @@ from atelier2.ports.durable_runs import (
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
     DurableInvalidAgentBindings,
+    DurableProjectUnknown,
     DurablePublishedRunStarter,
     DurableRunCreated,
     DurableRunExisting,
@@ -52,6 +54,11 @@ class RunExisting:
 
 @dataclass(frozen=True)
 class RevisionMissing:
+    pass
+
+
+@dataclass(frozen=True)
+class ProjectUnknown:
     pass
 
 
@@ -93,6 +100,7 @@ type StartPublishedRunResult = (
     RunCreated
     | RunExisting
     | RevisionMissing
+    | ProjectUnknown
     | RunIdentityConflict
     | RunFormatNotExecutable
     | InvalidAgentBindings
@@ -126,6 +134,7 @@ def start_published_run(
     bindings: tuple[AuthoredAgentBinding, ...] | None,
     starter: DurablePublishedRunStarter,
     orders: tuple[AuthoredOrder, ...] = (),
+    project_id: ProjectId | None = None,
 ) -> StartPublishedRunResult:
     """Start one published revision, from the values an author supplied.
 
@@ -137,9 +146,12 @@ def start_published_run(
     `bindings` is `None` for a revision that binds no agent, which is a different
     statement from binding an empty set. `orders` is the material the document
     declared as `graph_inputs`; the start pins each one to the schema the
-    document named, so a caller does not repeat that hash.
+    document named, so a caller does not repeat that hash. `project_id` is the
+    optional project this run starts under -- absent, the run is exactly
+    today's projectless workshop behaviour; named, an unconfigured project
+    refuses the start before any row is written (`project-unknown`).
     """
-    request = _durable_request(run_id, revision_hash, bindings, orders)
+    request = _durable_request(run_id, revision_hash, bindings, orders, project_id)
     if request is None:
         return InvalidAgentBindings()
     result = starter.start_published(request)
@@ -150,6 +162,8 @@ def start_published_run(
             return RunExisting(run)
         case DurableRunRevisionMissing():
             return RevisionMissing()
+        case DurableProjectUnknown():
+            return ProjectUnknown()
         case DurableRunIdentityConflict():
             return RunIdentityConflict()
         case DurableRunFormatNotExecutable():
@@ -177,11 +191,12 @@ def _durable_request(
     revision_hash: WorkflowRevisionHash,
     bindings: tuple[AuthoredAgentBinding, ...] | None,
     orders: tuple[AuthoredOrder, ...] = (),
+    project_id: ProjectId | None = None,
 ) -> AnyStartPublishedRunRequest | None:
     if bindings is None:
         if orders:
             return None
-        return StartPublishedRunRequest(run_id, revision_hash)
+        return StartPublishedRunRequest(run_id, revision_hash, project_id)
     try:
         binding_set = AgentBindingSet(
             tuple(
@@ -202,7 +217,10 @@ def _durable_request(
                 orders=tuple(
                     PortAuthoredOrder(order.name, order.value) for order in orders
                 ),
+                project_id=project_id,
             )
-        return StartPublishedRunRequestV2(run_id, revision_hash, binding_set)
+        return StartPublishedRunRequestV2(
+            run_id, revision_hash, binding_set, project_id
+        )
     except (TypeError, ValueError):
         return None

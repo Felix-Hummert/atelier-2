@@ -10,6 +10,7 @@ from pydantic import Field
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
     MAXIMUM_RUN_AGENT_BINDINGS,
+    PROJECT_ID_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
@@ -23,6 +24,7 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
+from atelier2.contracts.projects import MAXIMUM_PROJECT_NAME_CHARACTERS
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 
@@ -69,6 +71,10 @@ class AdmitCatalogMemberRequestResource(ApiModel):
     activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
 
 
+class CreateProjectRequestResource(ApiModel):
+    name: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_NAME_CHARACTERS)
+
+
 class PublishAuthProfileRevisionRequestResource(ApiModel):
     profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
@@ -102,6 +108,7 @@ class StartRunRequestResourceV2(ApiModel):
     agent_bindings: tuple[StartRunAgentBindingResourceV2, ...] = Field(
         max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
     )
+    project_id: str | None = Field(default=None, pattern=PROJECT_ID_PATTERN)
 
 
 class InlineOrderResource(ApiModel):
@@ -141,6 +148,7 @@ class StartRunRequestResourceV3(ApiModel):
         max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
     )
     orders: tuple[AnyStartRunOrderResource, ...] = Field(strict=False)
+    project_id: str | None = Field(default=None, pattern=PROJECT_ID_PATTERN)
 
 
 AnyStartRunRequestResource = (

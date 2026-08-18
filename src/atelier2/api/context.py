@@ -20,6 +20,7 @@ from atelier2.application.publish_agent_configurations import (
 )
 from atelier2.application.publish_artifact import PublishArtifactUseCaseResult
 from atelier2.application.publish_budget_revision import PublishBudgetRevisionResult
+from atelier2.application.publish_project import CreateProjectResult
 from atelier2.application.publish_schema_revision import PublishSchemaRevisionResult
 from atelier2.application.publish_workflow_revision import (
     PublishWorkflowRevisionResult,
@@ -29,6 +30,7 @@ from atelier2.application.read_agent_configurations import (
     ListAgentConfigurationRevisionsResult,
     ListAuthProfileRevisionsResult,
 )
+from atelier2.application.read_projects import GetProjectResult, ListProjectsResult
 from atelier2.application.read_run_events import ReadRunEventsResult
 from atelier2.application.read_runs import (
     GetNodeDetailUseCaseResult,
@@ -61,6 +63,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageId,
     CatalogLineageQuery,
 )
+from atelier2.contracts.projects import ProjectId
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
@@ -71,6 +74,7 @@ from atelier2.ports.durable_runs import (
     TransactionalWaitAnswerer,
 )
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
+from atelier2.ports.projects import ProjectCatalog
 from atelier2.ports.published_revisions import (
     CatalogAdmissions,
     CatalogResolver,
@@ -105,6 +109,7 @@ class ApiPorts:
     catalog_admissions: CatalogAdmissions
     published_revision_registry: PublishedRevisionRegistry
     artifact_publisher: ArtifactPublisher
+    project_catalog: ProjectCatalog
 
 
 @dataclass(frozen=True)
@@ -132,7 +137,9 @@ class ApiUseCases:
     get_run: Callable[[RunId], GetRunResult]
     get_node_detail: Callable[[RunId, str], GetNodeDetailUseCaseResult]
     list_run_receipts: Callable[[RunId], ListRunReceiptsUseCaseResult]
-    list_runs: Callable[[RunId | None, int, RunState | None], ListRunsResult]
+    list_runs: Callable[
+        [RunId | None, int, RunState | None, ProjectId | None], ListRunsResult
+    ]
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
     read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
     publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
@@ -159,6 +166,7 @@ class ApiUseCases:
             WorkflowRevisionHash,
             tuple[AuthoredAgentBinding, ...] | None,
             tuple[AuthoredOrder, ...],
+            ProjectId | None,
         ],
         StartPublishedRunResult,
     ]
@@ -190,6 +198,9 @@ class ApiUseCases:
         ],
         AdmitMemberResult,
     ]
+    create_project: Callable[[str], CreateProjectResult]
+    get_project: Callable[[ProjectId], GetProjectResult]
+    list_projects: Callable[[ProjectId | None, int], ListProjectsResult]
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import EffectIntentSnapshot, ReconcileCommandSnapshot
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.projects import ProjectId
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
@@ -111,6 +112,7 @@ class RunProjection:
     graph: AnyWorkflowDocument
     reconciliation: WaitingReconciliationProjection | None
     agent_attempts: tuple[AgentAttemptProjection, ...] = ()
+    project_id: ProjectId | None = None
 
     @property
     def current_agent_attempt(self) -> AgentAttemptProjection | None:

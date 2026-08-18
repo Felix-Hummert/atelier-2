@@ -12,6 +12,7 @@ from atelier2.contracts.orders import (
     AuthoredOrderValue,
     InlineOrderValue,
 )
+from atelier2.contracts.projects import ProjectId
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
@@ -39,6 +40,11 @@ class DurableRunExisting:
 @dataclass(frozen=True)
 class DurableRunRevisionMissing:
     pass
+
+
+@dataclass(frozen=True)
+class DurableProjectUnknown:
+    """The start named a project no configured root answers (ADR 0011 `project-unknown`)."""
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,7 @@ type DurablePublishedRunResult = (
     DurableRunCreated
     | DurableRunExisting
     | DurableRunRevisionMissing
+    | DurableProjectUnknown
     | DurableRunIdentityConflict
     | DurableRunFormatNotExecutable
     | DurableInvalidAgentBindings
@@ -91,6 +98,7 @@ type DurablePublishedRunResult = (
 class StartPublishedRunRequest:
     run_id: RunId
     revision_hash: WorkflowRevisionHash
+    project_id: ProjectId | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +106,7 @@ class StartPublishedRunRequestV2:
     run_id: RunId
     revision_hash: WorkflowRevisionHash
     agent_bindings: AgentBindingSet
+    project_id: ProjectId | None = None
 
 
 class V3InputRefusal(StrEnum):
@@ -167,6 +176,7 @@ class StartPublishedRunRequestV3:
     agent_bindings: AgentBindingSet
     run_inputs: tuple[RunInput, ...] = ()
     orders: tuple[AuthoredOrder, ...] = ()
+    project_id: ProjectId | None = None
 
 
 type AnyStartPublishedRunRequest = (

@@ -19,6 +19,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+from atelier2.contracts.projects import MAXIMUM_PROJECT_NAME_CHARACTERS
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
@@ -28,7 +29,7 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
@@ -39,6 +40,13 @@ _VERSION_FIFTEEN = 15
 _VERSION_SIXTEEN = 16
 _VERSION_SEVENTEEN = 17
 _VERSION_EIGHTEEN = 18
+_VERSION_NINETEEN = 19
+# Schema-hop ladder note (#133 Kopf 1): this hop is authored as the immediate
+# successor of the `main` this branch forked from (V19). Three sibling heads
+# (#358, #357, #355) each claim one rung ahead of it (V20, V21, V22); at the
+# ladder rebase this hop's version numbers and handoff name are renumbered to
+# V22 -> V23, and nothing else about it changes -- the two tables and their
+# triggers do not depend on which integer names the step.
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -61,7 +69,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # reason instead of standing STARTED with nothing to continue it. V19 gives
 # content-addressed material a durable, immutable home, so an order larger than
 # the inline bound travels as the address of bytes published once instead of not
-# travelling at all.
+# travelling at all. V20 gives a project a durable, immutable home with a
+# minted id, and a run an immutable record of which project (if any) it
+# started under -- a binding row rather than a column, so no existing product
+# table widens (ADR 0011 decision 5).
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -76,6 +87,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     17: "2f3a11d0b4d67e375259ca732c7243c95d19fa763e03785b0bd4a83c1b1359d2",
     18: "c60275544c9984adccff79e3a4f5ab6eeab5ea1683306adf1d2faa7dbb51e29d",
     19: "a861d9087da05c112f88ae8ec573f57338b5ef1d04f36553922c505127b34298",
+    20: "23fceb30f68d6aa5c6b0bae3fd6da73d43063380c8e6929a03eb2a55f34c385f",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -116,6 +128,10 @@ V17_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V18_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_EIGHTEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_EIGHTEEN],
+)
+V19_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_NINETEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_NINETEEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -202,6 +218,26 @@ runs = sa.Table(
         f"OR (workflow_format_version <> {int(WorkflowFormatVersion.V3)} "
         "AND run_configuration_revision_hash IS NULL)"
     ),
+)
+projects = sa.Table(
+    "projects",
+    metadata,
+    sa.Column("project_id", sa.Text, primary_key=True),
+    sa.Column("name", sa.Text, nullable=False, unique=True),
+    sa.CheckConstraint("length(project_id) = 64 AND project_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(f"length(name) BETWEEN 1 AND {MAXIMUM_PROJECT_NAME_CHARACTERS}"),
+)
+run_project_bindings = sa.Table(
+    "run_project_bindings",
+    metadata,
+    sa.Column("run_id", sa.Text, sa.ForeignKey("runs.run_id"), primary_key=True),
+    sa.Column(
+        "project_id",
+        sa.Text,
+        sa.ForeignKey("projects.project_id"),
+        nullable=False,
+    ),
+    sa.CheckConstraint("length(project_id) = 64 AND project_id NOT GLOB '*[^0-9a-f]*'"),
 )
 auth_profile_revisions = sa.Table(
     "auth_profile_revisions",
@@ -1317,6 +1353,30 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'artifacts are immutable');
         END
     """,
+    "projects_no_update": """
+        CREATE TRIGGER projects_no_update
+        BEFORE UPDATE ON projects BEGIN
+          SELECT RAISE(ABORT, 'projects are immutable');
+        END
+    """,
+    "projects_no_delete": """
+        CREATE TRIGGER projects_no_delete
+        BEFORE DELETE ON projects BEGIN
+          SELECT RAISE(ABORT, 'projects are immutable');
+        END
+    """,
+    "run_project_bindings_no_update": """
+        CREATE TRIGGER run_project_bindings_no_update
+        BEFORE UPDATE ON run_project_bindings BEGIN
+          SELECT RAISE(ABORT, 'run project bindings are immutable');
+        END
+    """,
+    "run_project_bindings_no_delete": """
+        CREATE TRIGGER run_project_bindings_no_delete
+        BEFORE DELETE ON run_project_bindings BEGIN
+          SELECT RAISE(ABORT, 'run project bindings are immutable');
+        END
+    """,
     "run_inputs_v3_no_update": """
         CREATE TRIGGER run_inputs_v3_no_update
         BEFORE UPDATE ON run_inputs_v3 BEGIN
@@ -1929,24 +1989,33 @@ def _table_fingerprint(
     )
 
 
+_PROJECT_TABLE_NAMES = frozenset({projects.name, run_project_bindings.name})
+
+
 def _table_names_for_version(version: int) -> frozenset[str]:
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version == _VERSION_NINETEEN:
+        return PRODUCT_TABLE_NAMES - _PROJECT_TABLE_NAMES
     if version in {
         _VERSION_EIGHTEEN,
         _VERSION_SEVENTEEN,
         _VERSION_SIXTEEN,
         _VERSION_FIFTEEN,
     }:
-        return PRODUCT_TABLE_NAMES - {artifacts.name}
+        return PRODUCT_TABLE_NAMES - _PROJECT_TABLE_NAMES - {artifacts.name}
     if version == _VERSION_FOURTEEN:
-        return PRODUCT_TABLE_NAMES - {artifacts.name, tool_redemptions.name}
+        return (
+            PRODUCT_TABLE_NAMES
+            - _PROJECT_TABLE_NAMES
+            - {artifacts.name, tool_redemptions.name}
+        )
     if version == _VERSION_THIRTEEN:
-        return PRODUCT_TABLE_NAMES - {
-            artifacts.name,
-            run_inputs_v3.name,
-            tool_redemptions.name,
-        }
+        return (
+            PRODUCT_TABLE_NAMES
+            - _PROJECT_TABLE_NAMES
+            - {artifacts.name, run_inputs_v3.name, tool_redemptions.name}
+        )
     raise UnsupportedSchemaVersion(version)
 
 
@@ -2326,6 +2395,39 @@ def _apply_v17_to_v18(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_SEVENTEEN, _VERSION_EIGHTEEN)
 
 
+def _apply_v19_to_v20(connection: sqlite3.Connection) -> None:
+    """Give a project a durable home, and a run an immutable record of one.
+
+    Two tables in one hop because they are one capability: `projects` a caller
+    can create and read, and `run_project_bindings` the one place a run
+    records which project (if any) it started under. Neither widens `runs` --
+    ADR 0011 decision 5 keeps the project dimension out of every existing
+    product table, so the binding is its own row rather than a column.
+    """
+
+    for table in (projects, run_project_bindings):
+        existing = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table.name,),
+        ).fetchone()
+        if existing is not None:
+            raise StoreMigrationRefused(
+                f"schema version {_VERSION_NINETEEN} already has {table.name}; "
+                "this command will not alter it"
+            )
+        connection.execute(
+            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger in (
+        "projects_no_update",
+        "projects_no_delete",
+        "run_project_bindings_no_update",
+        "run_project_bindings_no_delete",
+    ):
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+    _raise_declared_version(connection, _VERSION_NINETEEN, SCHEMA_VERSION)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -2359,14 +2461,15 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_SEVENTEEN, _VERSION_EIGHTEEN, _apply_v17_to_v18),
     _SchemaMigrationStep(
         _VERSION_EIGHTEEN,
-        SCHEMA_VERSION,
+        _VERSION_NINETEEN,
         _added_table_step(
             artifacts,
             ("artifacts_no_update", "artifacts_no_delete"),
             _VERSION_EIGHTEEN,
-            SCHEMA_VERSION,
+            _VERSION_NINETEEN,
         ),
     ),
+    _SchemaMigrationStep(_VERSION_NINETEEN, SCHEMA_VERSION, _apply_v19_to_v20),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

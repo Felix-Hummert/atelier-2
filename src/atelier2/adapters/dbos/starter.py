@@ -25,10 +25,12 @@ from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     auth_profile_revisions,
+    projects,
     published_revisions,
     run_agent_bindings,
     run_configuration_revisions,
     run_inputs_v3,
+    run_project_bindings,
     runs,
     workflow_revisions,
 )
@@ -85,6 +87,7 @@ from atelier2.ports.durable_runs import (
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
     DurableInvalidAgentBindings,
+    DurableProjectUnknown,
     DurablePublishedRunResult,
     DurableRunCreated,
     DurableRunExisting,
@@ -445,6 +448,20 @@ class DbosDurableRunStarter:
                     raise RuntimeError(
                         "published revision bytes disagree with their hash"
                     )
+                if request.project_id is not None:
+                    # Resolved and refused before any row exists, the same rule
+                    # `_pin_authored_orders` states for an order: what a run
+                    # names is settled before the run does, so a project no
+                    # configured root answers refuses the start by name
+                    # (ADR 0011 `project-unknown`) instead of leaving a run that
+                    # named one nothing can find.
+                    known_project = connection.execute(
+                        sa.select(projects.c.project_id).where(
+                            projects.c.project_id == request.project_id.value
+                        )
+                    ).scalar_one_or_none()
+                    if known_project is None:
+                        return DurableProjectUnknown()
                 if isinstance(graph, WorkflowGraph):
                     if not isinstance(request, StartPublishedRunRequest):
                         return DurableInvalidAgentBindings()
@@ -610,6 +627,23 @@ class DbosDurableRunStarter:
                         ),
                     )
                 )
+                if request.project_id is not None:
+                    # `OR IGNORE` mirrors the run row's own idempotent-retry
+                    # shape immediately above: a retry of an already-bound run
+                    # keeps its original project rather than raising on the
+                    # primary key. A V2/V3 retry never reaches here at all --
+                    # its existing-run check above already returned -- and a V1
+                    # request has no wire path to name a project (ADR 0003
+                    # freezes the V1 request shape), so this row is written
+                    # exactly once per run in every reachable case.
+                    connection.execute(
+                        run_project_bindings.insert()
+                        .prefix_with("OR IGNORE")
+                        .values(
+                            run_id=request.run_id.value,
+                            project_id=request.project_id.value,
+                        )
+                    )
                 existing_record = (
                     connection.execute(
                         sa.select(runs).where(runs.c.run_id == request.run_id.value)

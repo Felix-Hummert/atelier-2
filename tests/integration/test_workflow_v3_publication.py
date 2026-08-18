@@ -14,6 +14,7 @@ from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.projects import DbosProjectCatalog
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -109,6 +110,7 @@ def _client(runtime: DbosRuntime) -> TestClient:
                 catalog_admissions=DbosCatalogStore(runtime.engine),
                 published_revision_registry=DbosCatalogStore(runtime.engine),
                 artifact_publisher=DbosArtifactStore(runtime.engine),
+                project_catalog=DbosProjectCatalog(runtime.engine),
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),

@@ -110,7 +110,7 @@ class ScriptedQueries:
         after: Any,
         limit: int,
         state: Any = None,
-        projection_limit: Any = None,
+        project_id: Any = None,
     ) -> Any:
         return self._record(after, limit, state)
 

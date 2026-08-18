@@ -20,6 +20,7 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
+    PROJECT_ID_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
@@ -35,6 +36,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
+from atelier2.contracts.projects import MAXIMUM_PROJECT_NAME_CHARACTERS
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 
 
@@ -77,6 +79,16 @@ class BudgetRevisionResource(ApiModel):
     """
 
     revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+
+
+class ProjectResource(ApiModel):
+    project_id: str = Field(pattern=PROJECT_ID_PATTERN)
+    name: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_NAME_CHARACTERS)
+
+
+class ProjectPageResource(ApiModel):
+    items: tuple[ProjectResource, ...]
+    next_after_project_id: str | None = Field(pattern=PROJECT_ID_PATTERN)
 
 
 class AuthProfileRevisionResource(ApiModel):
@@ -764,6 +776,7 @@ class RunResourceV2(ApiModel):
     waiting: WaitingResourceV2
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
     latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
+    project_id: str | None = Field(default=None, pattern=PROJECT_ID_PATTERN)
 
     @model_validator(mode="after")
     def validate_state_shape(self) -> RunResourceV2:
@@ -846,6 +859,7 @@ class RunResourceV3(ApiModel):
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
     latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
+    project_id: str | None = Field(default=None, pattern=PROJECT_ID_PATTERN)
 
     @model_validator(mode="after")
     def validate_state_shape(self) -> RunResourceV3:

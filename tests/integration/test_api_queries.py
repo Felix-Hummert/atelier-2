@@ -1243,7 +1243,10 @@ nodes:
         event.remove(engine, "before_cursor_execute", count_selects)
 
     assert isinstance(page, RunPage)
-    assert selects == 4
+    # One more than before #133 Kopf 1: `_run_projections` now batches one
+    # extra `run_project_bindings` lookup per page, alongside the revision,
+    # attempt and intent batches this test already counts.
+    assert selects == 5
     assert len(intent_selects) == 1
     assert "effect_intents.logical_key IN" in intent_selects[0]
     assert "effect_intents.run_id IN" not in intent_selects[0]

@@ -687,6 +687,7 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
         "waiting": {"type": "NONE"},
         "terminal_hash": None,
         "latest_event_cursor": None,
+        "project_id": None,
     }
 
 

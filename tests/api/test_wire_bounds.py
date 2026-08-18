@@ -42,6 +42,7 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
+from atelier2.contracts.projects import MAXIMUM_PROJECT_NAME_CHARACTERS
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events)
@@ -66,6 +67,8 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "NodeProvenanceResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AdmitCatalogMemberRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
+    "CreateProjectRequestResource.name": MAXIMUM_PROJECT_NAME_CHARACTERS,
+    "ProjectResource.name": MAXIMUM_PROJECT_NAME_CHARACTERS,
     "AgentCancelRequestedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelRequestedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelledEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,

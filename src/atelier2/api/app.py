@@ -19,7 +19,15 @@ from atelier2.api.limits import (
 )
 from atelier2.api.openapi import API_PREFIX, install_custom_openapi
 from atelier2.api.problems import install_problem_handlers
-from atelier2.api.routes import agents, artifacts, events, health, revisions, runs
+from atelier2.api.routes import (
+    agents,
+    artifacts,
+    events,
+    health,
+    projects,
+    revisions,
+    runs,
+)
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
 from atelier2.application.admit_catalog_member import (
     admit_catalog_member,
@@ -34,6 +42,7 @@ from atelier2.application.publish_agent_configurations import (
 )
 from atelier2.application.publish_artifact import publish_artifact
 from atelier2.application.publish_budget_revision import publish_budget_revision
+from atelier2.application.publish_project import create_project
 from atelier2.application.publish_schema_revision import publish_schema_revision
 from atelier2.application.publish_workflow_revision import (
     WorkflowPublicationLimits,
@@ -43,6 +52,7 @@ from atelier2.application.read_agent_configurations import (
     list_agent_configuration_revisions,
     list_auth_profile_revisions,
 )
+from atelier2.application.read_projects import get_project, list_projects
 from atelier2.application.read_run_events import read_run_events
 from atelier2.application.read_runs import (
     get_node_detail,
@@ -118,8 +128,8 @@ def bound_use_cases(
             run_id, node_id, ports.run_queries
         ),
         list_run_receipts=lambda run_id: list_run_receipts(run_id, ports.run_queries),
-        list_runs=lambda after, limit, state=None: list_runs(
-            after, limit, ports.run_queries, state
+        list_runs=lambda after, limit, state=None, project_id=None: list_runs(
+            after, limit, ports.run_queries, state, project_id
         ),
         prepare_run_events=lambda run_id, after_sequence: prepare_run_events(
             run_id, after_sequence, ports.run_event_queries
@@ -177,9 +187,16 @@ def bound_use_cases(
                 after, limit, ports.agent_configuration_catalog
             )
         ),
-        start_published_run=lambda run_id, revision_hash, bindings, orders=(): (
-            start_published_run(
-                run_id, revision_hash, bindings, ports.published_run_starter, orders
+        start_published_run=(
+            lambda run_id, revision_hash, bindings, orders=(), project_id=None: (
+                start_published_run(
+                    run_id,
+                    revision_hash,
+                    bindings,
+                    ports.published_run_starter,
+                    orders,
+                    project_id,
+                )
             )
         ),
         answer_wait=lambda run_id, revision_hash, node_id, answer_bytes: (
@@ -192,6 +209,11 @@ def bound_use_cases(
         ),
         reconcile_run=lambda request: reconcile_run(
             request, ports.run_queries, ports.reconcile_commander
+        ),
+        create_project=lambda name: create_project(name, ports.project_catalog),
+        get_project=lambda project_id: get_project(project_id, ports.project_catalog),
+        list_projects=lambda after, limit: list_projects(
+            after, limit, ports.project_catalog
         ),
     )
 
@@ -262,12 +284,13 @@ def create_app(
     if frontend_dist is not None:
         _mount_frontend(app, frontend_dist)
 
-    # The order of these five calls is the order of the published document's
+    # The order of these calls is the order of the published document's
     # `paths` keys, which the frozen artefact pins byte for byte.
     app.include_router(health.router)
     app.include_router(agents.router)
     app.include_router(artifacts.router)
     app.include_router(revisions.router)
+    app.include_router(projects.router)
     app.include_router(runs.router)
     app.include_router(events.router)
 

@@ -39,6 +39,7 @@ from atelier2.adapters.dbos.schema import (
     node_receipts_v3,
     reconcile_commands,
     run_events,
+    run_project_bindings,
     runs,
     workflow_revisions,
 )
@@ -74,6 +75,7 @@ from atelier2.contracts.node_records_v3 import (
     read_stored_node_receipt_reason,
 )
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
+from atelier2.contracts.projects import ProjectId
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -893,6 +895,7 @@ class DbosQueries:
         after: RunId | None,
         limit: int,
         state: RunState | None = None,
+        project_id: ProjectId | None = None,
     ) -> ListRunsResult:
         if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
             raise ValueError(
@@ -910,6 +913,14 @@ class DbosQueries:
                     statement = statement.where(runs.c.run_id > after.value)
                 if state is not None:
                     statement = statement.where(runs.c.state == state.value)
+                if project_id is not None:
+                    statement = statement.where(
+                        runs.c.run_id.in_(
+                            sa.select(run_project_bindings.c.run_id).where(
+                                run_project_bindings.c.project_id == project_id.value
+                            )
+                        )
+                    )
                 records = tuple(
                     connection.execute(
                         statement.order_by(runs.c.run_id).limit(limit + 1)
@@ -1028,6 +1039,18 @@ class DbosQueries:
         loaded_runs = tuple(
             run_from_record_with_bindings(connection, record) for record in records
         )
+        project_ids_by_run = {
+            RunId(str(binding_record["run_id"])): ProjectId(
+                str(binding_record["project_id"])
+            )
+            for binding_record in connection.execute(
+                sa.select(run_project_bindings).where(
+                    run_project_bindings.c.run_id.in_(
+                        tuple(run.run_id.value for run in loaded_runs)
+                    )
+                )
+            ).mappings()
+        }
         revision_hashes = {run.revision_hash for run in loaded_runs}
         revision_rows = tuple(
             connection.execute(
@@ -1255,6 +1278,7 @@ class DbosQueries:
                     graphs[run.revision_hash],
                     reconciliation,
                     attempt_projections,
+                    project_ids_by_run.get(run.run_id),
                 )
             )
         return tuple(projections)

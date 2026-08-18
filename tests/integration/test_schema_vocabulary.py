@@ -46,6 +46,7 @@ from atelier2.contracts.node_records_v3 import (
     MAXIMUM_KIND_TOKEN_CHARACTERS,
     PersistedReceiptDisposition,
 )
+from atelier2.contracts.projects import MAXIMUM_PROJECT_NAME_CHARACTERS
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
@@ -489,6 +490,8 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "node_receipts_v3.request_hash",
         "node_receipts_v3.context_package_hash",
         "node_receipts_v3.receipt_hash",
+        "projects.project_id",
+        "run_project_bindings.project_id",
     }
 )
 
@@ -517,6 +520,7 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "catalog_lineages.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
     "published_revisions.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
     "catalog_lineage_aliases.name": MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+    "projects.name": MAXIMUM_PROJECT_NAME_CHARACTERS,
 }
 
 
