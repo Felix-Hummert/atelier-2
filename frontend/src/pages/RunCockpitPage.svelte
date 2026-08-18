@@ -724,16 +724,20 @@
       throw new Error("A pending answer was incorrectly treated as durable completion.");
     }
     requireRequestedRun(result.value);
+    if (isRunV3(result.value)) {
+      throw new Error("The answer response was not this run's format.");
+    }
+    const answered = result.value;
     const revision = snapshot.confirmed?.revision;
     if (revision === undefined) throw new Error("The bound workflow revision is unavailable.");
-    requireBoundRevision(result.value, revision);
+    requireBoundRevision(answered, revision);
     if (eventAlreadyProvedAnswer) {
       pendingWait = null;
       waitAccepted = false;
       await load();
       return;
     }
-    snapshot = confirmResource(snapshot, { run: result.value, revision });
+    snapshot = confirmResource(snapshot, { run: answered, revision });
     if (result.status === 202) {
       let uncertain: JournalEntry;
       try {
@@ -847,7 +851,15 @@
   />
 
   {#if v3Run !== null}
-    <V3RunView run={v3Run} {cockpitApi} {projection} />
+    <V3RunView
+      run={v3Run}
+      {cockpitApi}
+      {mutationJournal}
+      {projection}
+      onRunRead={(read) => {
+        v3Run = read;
+      }}
+    />
   {:else if snapshot.request.state === "failed"}
     <ProblemNotice problem={snapshot.request.problem} />
   {:else if failureMessage !== null}

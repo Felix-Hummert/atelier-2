@@ -100,7 +100,7 @@ from atelier2.contracts.workflow_projections import (
     WorkflowRevisionProjection,
 )
 from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2
-from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import AgentNodeV3, WaitNodeV3, WorkflowGraphV3
 from atelier2.ports.run_events import (
     CursorAhead,
     EventHistoryCorrupt,
@@ -470,6 +470,12 @@ def _node_job_and_refusal(
 
     if isinstance(node, AgentNodeV2):
         job = node.job.encode("utf-8")
+        return job, Sha256Hash.of(job).value, None
+    if isinstance(node, WaitNodeV3):
+        # The published document already names what the person is asked. This
+        # read uses that parse, not the executable one, so a wait that holds a
+        # run still answers with its authored question.
+        job = node.prompt.encode("utf-8")
         return job, Sha256Hash.of(job).value, None
     if not isinstance(node, AgentNodeV3):
         return None, None, None
