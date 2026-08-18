@@ -267,10 +267,25 @@ other node ends by. Every round of every looped node is its own node execution
 with its own deterministic identity, durable request, receipt, produced value,
 durable workflow and event in the chain the terminal hash recomputes over — while
 the first round of a node keeps byte for byte the identity it had before any loop
-existed. Reaching the bound is the only way out this build has: a result that ends
-a loop early does not yet steer an edge, and a loop body may hold only agent
-nodes, with a value read out of a loop refused by name because no rule here says
-which round wrote it. Unsafe YAML is
+existed.
+
+A loop has a second, earlier way out: the answer a round produced. The
+declaration may name the node whose verdict decides and the verdict that sends
+the loop round again, and the engine reads that verdict out of the value the
+round kept and chooses the edge — another round, or the way out — while the
+declared bound stays the fallback no verdict gets past. The vocabulary is closed
+and has one owner (`accepted` and `revise`), and the answer carrying it is judged
+by a schema derived from that same vocabulary and published as an ordinary
+revision: a deciding node's one output must pin exactly that revision, or the
+document is refused by name, as is a verdict read from a node that does not close
+the round. That is what makes a `revise` a *successful* node whose content chose
+the next edge rather than a failure. What no verdict can say yet is the agent's
+own named refusal — "the order is unclear because X" — because a run ends failed
+only under an attempt failure code whose value list is a store contract, and a
+refusal written under either existing code would name a schema or a dead process
+that was never involved. A loop body may hold only agent nodes, and a value read
+out of a loop is still refused by name because no rule here says which round wrote
+it. Unsafe YAML is
 refused by name too, before any vocabulary is read: an
 anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
 a document that is not UTF-8 without a byte order mark, and one nested past the

@@ -177,8 +177,9 @@ acceptance gate still judges the test. `UNGEBUNDEN` on an `AGREED` sentence is
 named debt, and most of the shelf is that today: 0001, 0002 and 0004 are
 seam-now, build-later throughout, so every rule there names what would prove it
 rather than pretending something already does. The bound ones are 0005's catalog
-rules and 0003's `REQ-UI-01` and `REQ-UI-16`, where the workshop's own levels and
-its teaching empty state are declared and proven.
+rules and 0003's `REQ-UI-01`, `REQ-UI-16`, `REQ-UIQ-04`, and `REQ-UIQ-05`, where
+the workshop's own levels, its teaching empty state, and the first two
+UI-quality checkers are declared and proven.
 
 `## Acceptance` is a reading of those `Beweis` fields: it lists the identifiers
 already declared and names what is still `UNGEBUNDEN`. It does not bind a

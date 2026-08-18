@@ -3,11 +3,14 @@
 ```text
 Status:         AGREED
 Owner-Issue:    https://github.com/FlexOr2/atelier-2/issues/9
-Source-Threads: #9, #5
+Source-Threads: #9, #5, #336
 Distilled-From: 5294009202, 5294316639, 5301898411, 5302066517, 5302109868,
-                5302132001, 5302769095, 5302788411, 5307632332
+                5302132001, 5302769095, 5302788411, 5307632332,
+                5324914874, 5333831486
                 #9 body, sha256
                 36800d6ecd5d3e8922028425835b368b42d163098e5d32da930e40d25f49ce99
+                #336 body, sha256
+                92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8
 Approved-By:    5307632332
 ```
 
@@ -20,9 +23,15 @@ Operator-Abnahme (Konvention siehe #5)". That approval has not happened, so this
 document settles nothing, and the route it names is #5's: the operator's approval
 publishes a requirement issue, never this file.
 
-The thread quotes the operator in several places, and exactly one of those
-quotations states a rule. **Exactly one rule below is graded `OPERATOR`** —
-REQ-UI-01, on the sentence 5302769095 quotes from him. The other quotations are his
+The quality section below is an addendum from #336 after that approval. Those
+sentences are `DRAFT`. Their identifiers are `REQ-UIQ-nn` because the
+acceptance gate publishes `REQ-[A-Z0-9]+-[0-9]{2}` and refuses the hyphen the
+item wrote as `REQ-UI-Q`.
+
+The thread quotes the operator in several places, and two of those
+quotations state a rule. **Exactly two rules below are graded `OPERATOR`** —
+REQ-UI-01, on the sentence 5302769095 quotes from him, and REQ-UIQ-09, on the
+quality sentence #336 records as his. The other quotations are his
 standard, reproduced under `Intent`; his nine words of dissatisfaction with the
 mockup's Settings screen, reproduced at REQ-UI-15; and the questions he asked,
 whose answers are the desk's. An earlier revision graded eleven rules
@@ -51,6 +60,16 @@ wörtlich"):
 
 And the admission criterion for anything added to it: it must **remove work**,
 not add features. (5302788411.)
+
+#336 records a second operator standard, the quality contract (19.08.,
+wörtlich destilliert in the item body @ 92d5e087):
+
+> „klar strukturiert, intuitiv, einfach zu bedienen, kein unnützer Schnickschnack,
+> ich muss schnell finden was ich brauche — es darf trotzdem geil aussehen und
+> Spaß machen."
+
+The nine sentences under Quality are the desk's named criteria and
+verifications for that standard. Mockup v4 remains the Gestalt owner.
 
 ## Rules
 
@@ -218,6 +237,89 @@ Journeys:
 Beweis:     UNGEBUNDEN
 Offen:
 
+### Quality
+
+Nine criteria, each with the verification #336 named. The first two machine
+checkers — axe-core over the core surfaces, and a pseudo-locale smoke over
+the display strings that already have an owner — run in CI. The rest stay
+named rituals or later checkers.
+
+### REQ-UIQ-01: Jedes Element beantwortet eine benennbare Nutzerfrage.
+Status:     DRAFT
+Quelle:     DESK — #336 body @ 92d5e087, Kriterium 1
+Begründung: Keine Antwort → das Element fällt. Die Verifikation ist ein Review-Ritual je Fläche, kein Maschinen-Gate.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Review-Ritual je Fläche ist nicht gebaut (Eigentümer: #336, Ziel: späterer Prüfer)
+
+### REQ-UIQ-02: Kernaufgaben erreichen ihr Ziel in einem benannten Klick- und Blick-Budget.
+Status:     DRAFT
+Quelle:     DESK — #336 body @ 92d5e087, Kriterium 2
+Begründung: Findability ist ein Budget, kein Gefühl. Die Verifikation ist ein Aufgaben-Walkthrough mit Budget.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Klick- und Blick-Budgets sind nicht gebaut (Eigentümer: #336, Ziel: späterer Prüfer)
+
+### REQ-UIQ-03: Begriffe einer Fläche kommen aus einer Quelle.
+Status:     DRAFT
+Quelle:     DESK — #336 body @ 92d5e087, Kriterium 3
+Begründung: Prompt, Output und Log haben ihr Ruling an #333. Diese Regel ist der Owner-Satz; der Pseudo-Locale-Smoke unter REQ-UIQ-04 prüft nur die Display-Strings, die heute schon einen Owner haben.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Prompt/Output/Log-Vokabeln (Eigentümer: #333, Ziel: Ruling)
+
+### REQ-UIQ-04: Anzeige-Strings einer Fläche kommen aus ihrem Owner, und das Layout verträgt die längere Form.
+Status:     DRAFT
+Quelle:     DESK — #336 body @ 92d5e087, Kriterium 4
+Begründung: Der erste Maschinen-Prüfer ist ein Pseudo-Locale über die Kernflächen. Heutiger Owner: die Schienen-Wörter in `WORKSHOP_DESTINATIONS`. Alles andere auf Studio, New Run und der Run-Seite ist die benannte Lücke.
+Journeys:
+Beweis:     core-surfaces-render-owned-display-strings-under-a-pseudo-locale
+Offen:      - Die übrigen hartkodierten Anzeige-Strings der Kernflächen (Eigentümer: #336, Ziel: eigener Owner je Fläche)
+
+### REQ-UIQ-05: Die Kernflächen erfüllen WCAG 2.2 AA, oder der Verstoß trägt ein Item.
+Status:     DRAFT
+Quelle:     DESK — #336 body @ 92d5e087, Kriterium 5
+Begründung: Semantik, Kontrast, Screenreader, vollständiger Tastaturweg mit sichtbarem Fokus. Der erste Maschinen-Prüfer ist axe-core im Chromium-E2E über Studio, New Run und die Run-Seite. Die erste Messung (19.08.2026, 66 WCAG-2.2-AA-Regeln) fand keine Verstöße; die Baseline ist deshalb leer. Ein späterer Verstoß ohne Zeile mit Issue-URL ist rot. Der Tastatur-Walkthrough bleibt der zweite, noch ungebundene Prüfer.
+Journeys:
+Beweis:     core-surfaces-have-no-unnamed-axe-violations
+Offen:      - Tastatur-Walkthrough (Eigentümer: #336, Ziel: späterer Prüfer)
+
+### REQ-UIQ-06: Leer, lädt, Fehler und wartet sind vier benannte Zustände.
+Status:     DRAFT
+Quelle:     DESK — #336 body @ 92d5e087, Kriterium 6
+Begründung: Die drei-Wahrheiten-Linie und #332 tragen schon Teile. Diese Regel verlangt, dass die vier Zustände nicht ineinanderfallen.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - E2E-Belege je Kernfläche (Eigentümer: #332, Ziel: Zustands-Wahrheit)
+
+### REQ-UIQ-07: Eine Frage hat ein Muster, und das Muster ist eine wiederverwendete Komponente.
+Status:     DRAFT
+Quelle:     DESK — #336 body @ 92d5e087, Kriterium 7
+Begründung: Konsistenz ist Review plus Komponenten-Inventar, kein axe-Lauf.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Komponenten-Inventar (Eigentümer: #336, Ziel: späterer Prüfer)
+
+### REQ-UIQ-08: Eine Fläche, die ihr Interaktions-Budget überschreitet, ist ein Defekt.
+Status:     DRAFT
+Quelle:     DESK — #336 body @ 92d5e087, Kriterium 8
+Begründung: Geschwindigkeit wird gemessen, nicht geschätzt. Dieser Kopf baut die Messung nicht.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Interaktions-Budget und E2E-Messung (Eigentümer: #336, Ziel: späterer Prüfer)
+
+### REQ-UIQ-09: Die Fläche darf geil aussehen und Spaß machen; das letzte Wort hat der Operator.
+Status:     DRAFT
+Quelle:     OPERATOR — #336 body @ 92d5e087, wörtlich:
+
+            > „es darf trotzdem geil aussehen und Spaß machen"
+
+            Die Verifikation — Screenshot-Review gegen Mockup v4 — ist Desk-Detail.
+Begründung: Bewusst subjektiv. Der Operator-Maßstab unter Intent („simple, intuitiv, Spaß, cool") bleibt das Kriterium; kein Maschinen-Gate spricht das letzte Wort.
+Journeys:
+Beweis:     UNGEBUNDEN
+Offen:      - Screenshot-Review-Ritual gegen Mockup v4 (Eigentümer: Operator, Ziel: späterer Prüfer)
+
 ## Open questions
 
 - **Remote attach is its own epic**, gated on a runner-trust ADR: runner
@@ -255,10 +357,25 @@ Offen:
 
 ## Acceptance
 
-No story has declared an acceptance sentence for this requirement yet, so the
-list below is a set of candidates and not a set of sentences. What the rules above already state in
-testable form is, notably: a node demanding an undeclared interactive mode is
-refused at validation; an opened tile without input leaves the run out of the
-operator-influenced set; no raw provider frame is readable from any event or
-receipt after a live tile was watched; the replay button enumerates exactly what
-it replays; a viewer role renders no start button.
+This section reads the `Beweis` fields. It does not bind a sentence a second
+time. Where the two disagree, `Beweis` is the owner. (The previous text here
+said no story had declared a sentence; that was already false when #131 bound
+REQ-UI-01 and REQ-UI-16 — #9 comment 5324914874.)
+
+Declared:
+
+- REQ-UI-01: `the-workshop-opens-in-the-studio`,
+  `the-inbox-names-every-run-that-waits-for-a-human`,
+  `every-level-names-the-way-back-up`,
+  `the-deepest-level-shows-the-whole-way-it-sits-on`,
+  `a-level-opens-from-a-pasted-link-and-survives-a-reload`
+- REQ-UI-16: `an-empty-area-names-the-one-next-action`
+- REQ-UIQ-04: `core-surfaces-render-owned-display-strings-under-a-pseudo-locale`
+- REQ-UIQ-05: `core-surfaces-have-no-unnamed-axe-violations`
+
+Every other rule on this document is `UNGEBUNDEN`. The testable forms the
+previous text listed as candidates — a node demanding undeclared interactive
+mode, an opened tile that does not mark the run, no raw provider frame after a
+live watch, a replay button that enumerates what it replays, a viewer role with
+no start button — remain that: still `UNGEBUNDEN` on REQ-UI-07, REQ-UI-08,
+REQ-UI-09, REQ-UI-10, and REQ-UI-17.
