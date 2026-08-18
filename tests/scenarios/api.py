@@ -28,6 +28,7 @@ from atelier2.api.limits import ApiLimits
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.application.read_run_events import ReadRunEventsResult, read_run_events
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_projections import (
     RunProjection,
 )
@@ -283,6 +284,7 @@ def api_ports(**overrides: object) -> ApiPorts:
 
 
 def api_limits(**changes: int) -> ApiLimits:
+    event_page_size = changes.pop("event_page_size", 50)
     configured = ApiLimits(
         maximum_request_body_bytes=65_536,
         maximum_field_characters=1_024,
@@ -291,7 +293,7 @@ def api_limits(**changes: int) -> ApiLimits:
         maximum_workflow_nodes=100,
         maximum_enriched_page_nodes=100,
         maximum_enriched_page_document_bytes=65_536,
-        event_page_size=50,
+        event_page_size=PageLimit(event_page_size),
         maximum_control_queries=8,
         maximum_event_poll_queries=2,
         maximum_query_admission_wait_milliseconds=1_000,

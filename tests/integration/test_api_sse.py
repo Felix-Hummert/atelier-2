@@ -65,6 +65,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     RunEventPage,
 )
@@ -277,7 +278,7 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
                     PreparedEventStream(request.run_id, 0, 1, False, found.projection),
                     stream_page_reader(queries),
                     BoundedQueryRunner(1, admission_timeout_seconds=1),
-                    page_size=1,
+                    page_size=PageLimit(1),
                     limits=api_limits(),
                     poll_backoff=event_poll_backoff(),
                 )

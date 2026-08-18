@@ -31,6 +31,7 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_projections import (
     RunProjection,
 )
@@ -147,7 +148,7 @@ def require_new_run_identity(run_id: RunId, limits: ApiLimits) -> None:
 
 
 def parse_limit(value: str) -> int:
-    if re.fullmatch(r"(?:[1-9]|[1-9][0-9]|100)", value) is None:
+    if not value.isdigit() or (len(value) > 1 and value.startswith("0")):
         raise ApiProblem(
             "invalid-request",
             invalid_fields=(
@@ -157,7 +158,18 @@ def parse_limit(value: str) -> int:
                 ),
             ),
         )
-    return int(value)
+    try:
+        return PageLimit(int(value)).value
+    except ValueError:
+        raise ApiProblem(
+            "invalid-request",
+            invalid_fields=(
+                InvalidFieldResource(
+                    path="query/limit",
+                    reason="not a page size this list accepts",
+                ),
+            ),
+        ) from None
 
 
 def parse_revision_view(value: str) -> RevisionListingView:

@@ -13,6 +13,7 @@ from atelier2.api.stream import (
 from atelier2.api.wire.events import AgentCompletedEventResourceV2
 from atelier2.api.wire.resources import NodeRailAttemptResource, NodeRailResource
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
@@ -83,7 +84,7 @@ def streamed(projection: RunProjection, event: PersistedRunEvent) -> ServerSentE
                 PreparedEventStream(projection.run.run_id, 0, 1, False, projection),
                 stream_page_reader(OnePageOfEvents((event,))),
                 BoundedQueryRunner(1, admission_timeout_seconds=1),
-                page_size=10,
+                page_size=PageLimit(10),
                 limits=api_limits(),
                 poll_backoff=event_poll_backoff(),
             )
