@@ -59,11 +59,12 @@ GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
     "headless-print-json/v1"
 )
 
-# Same portable ceiling as the process port. A Grok JSON envelope carries the
-# durable answer in `text`; 1.0.4 metadata has not been measured, so this
-# executor does not invent a tighter envelope allowance. A durable-legal
-# answer still fits: JSON escaping expands one source byte to at most six
-# frame bytes (6 * 49,152 = 294,912), leaving the remainder for metadata.
+# Same portable ceiling as the process port. Measured on grok 1.0.4
+# `--output-format json`: the durable answer is `text`; `thought` is the
+# turn narration and is not the answer. Metadata size is not a tighter
+# allowance. A durable-legal answer still fits: JSON escaping expands one
+# source byte to at most six frame bytes (6 * 49,152 = 294,912), leaving
+# the remainder for metadata.
 GROK_SUBSCRIPTION_FRAME_BYTES = MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
 
 CONFORMANT_GROK_VERSIONS = frozenset({(1, 0, 4)})
@@ -593,8 +594,12 @@ class GrokSubscriptionExecutor:
             return _UNUSABLE_PROVIDER_ANSWER
         if not isinstance(envelope, dict):
             return _UNUSABLE_PROVIDER_ANSWER
+        # Measured on grok 1.0.4 `--output-format json`: `text` is the final
+        # answer message; `thought` is the turn narration. An empty or missing
+        # `text` is a named refusal — passing `thought` or the raw frame would
+        # hand the schema seam the story of the run.
         text = envelope.get(_TEXT_FIELD)
-        if not isinstance(text, str):
+        if not isinstance(text, str) or text == "":
             return _UNUSABLE_PROVIDER_ANSWER
         output_bytes = text.encode("utf-8")
         if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
