@@ -188,8 +188,8 @@ section is wrong.
 `Offen` is allowed only while the sentence is `DRAFT`, and every entry names an
 owner. An `AGREED` sentence has no open question.
 
-`Journeys` may be empty. `docs/journeys/` does not exist yet; a pointer there
-today would be a dead link.
+`Journeys` may be empty. A pointer there names a file under
+[docs/journeys/](../journeys/); the journey illustrates, it does not bind.
 
 The existing provenance convention is not relaxed: every sentence still names
 its source object, in `Distilled-From` and again at `Quelle`. A sentence with
