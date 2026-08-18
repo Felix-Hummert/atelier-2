@@ -174,6 +174,10 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
             if run.last_event_sequence == 0
             else encode_event_cursor(run.run_id, run.last_event_sequence)
         ),
+        started_at=None
+        if projection.started_at is None
+        else projection.started_at.value,
+        ended_at=None if projection.ended_at is None else projection.ended_at.value,
     )
 
 
@@ -315,6 +319,8 @@ def node_detail_resource(detail: NodeDetail) -> NodeDetailResource:
             receipt_hash=detail.provenance.receipt_hash,
         ),
         refusal=detail.refusal,
+        started_at=None if detail.started_at is None else detail.started_at.value,
+        ended_at=None if detail.ended_at is None else detail.ended_at.value,
     )
 
 

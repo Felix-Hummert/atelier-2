@@ -530,7 +530,10 @@ contract.
 
 A narrow local cockpit can list runs, publish and start a workflow from `/new`,
 and project one durable run's bound revision, state, nodes, and resumable event
-history. The saved-workflow picker offers one row per authored name the described
+history. A V3 run, its list row, and a node that has run carry when they
+started and ended: the store keeps UTC, the surface shows age, and the exact
+local stamp sits behind the info affordance. Predecessor rows that never
+recorded an instant stay empty rather than inventing one. The saved-workflow picker offers one row per authored name the described
 listing already publishes, not one row per revision hash. Several revisions
 that share a name collapse; the catalog head from
 `GET /workflow-revisions/by-name/{name}` is the default when that name

@@ -1250,7 +1250,7 @@ nodes:
         event.remove(engine, "before_cursor_execute", count_selects)
 
     assert isinstance(page, RunPage)
-    assert selects == 4
+    assert selects == 5
     assert len(intent_selects) == 1
     assert "effect_intents.logical_key IN" in intent_selects[0]
     assert "effect_intents.run_id IN" not in intent_selects[0]

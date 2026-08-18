@@ -31,6 +31,7 @@ from atelier2.adapters.dbos.schema import (
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V13_SCHEMA_HANDOFF,
+    V21_SCHEMA_HANDOFF,
     MigrationRequired,
     _require_product_shape,
     agent_attempts,
@@ -38,10 +39,12 @@ from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
     artifacts,
     atelier_schema_versions,
+    attempt_instants,
     auth_profile_revisions,
     catalog_lineage_members,
     catalog_lineages,
     context_packages_v3,
+    event_instants,
     initialize_schema,
     node_execution_requests_v3,
     node_receipts_v3,
@@ -50,6 +53,7 @@ from atelier2.adapters.dbos.schema import (
     run_configuration_revisions,
     run_events,
     run_inputs_v3,
+    run_instants,
     runs,
     tool_redemptions,
     workflow_revisions,
@@ -489,6 +493,19 @@ def _create_populated_v13_store(database_path: Path) -> None:
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
             connection.execute(sa.text(f"DROP TABLE {table}"))
+        for trigger in (
+            "run_instants_start_no_update",
+            "run_instants_end_once",
+            "run_instants_no_delete",
+            "attempt_instants_start_no_update",
+            "attempt_instants_end_once",
+            "attempt_instants_no_delete",
+            "event_instants_no_update",
+            "event_instants_no_delete",
+        ):
+            connection.execute(sa.text(f"DROP TRIGGER {trigger}"))
+        for table in (run_instants.name, attempt_instants.name, event_instants.name):
+            connection.execute(sa.text(f"DROP TABLE {table}"))
         _restore_predecessor_run_events(connection)
         _restore_predecessor_agent_receipts(connection)
         _restore_predecessor_agent_attempts(connection)
@@ -801,6 +818,64 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
                 ),
             )
         )
+    engine.dispose()
+
+
+def _create_exact_v21_store(database_path: Path) -> None:
+    """A current store with the V22 tables removed: the published V21 shape."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        for trigger in (
+            "run_instants_start_no_update",
+            "run_instants_end_once",
+            "run_instants_no_delete",
+            "attempt_instants_start_no_update",
+            "attempt_instants_end_once",
+            "attempt_instants_no_delete",
+            "event_instants_no_update",
+            "event_instants_no_delete",
+        ):
+            connection.execute(sa.text(f"DROP TRIGGER {trigger}"))
+        for table in (run_instants.name, attempt_instants.name, event_instants.name):
+            connection.execute(sa.text(f"DROP TABLE {table}"))
+        connection.execute(
+            atelier_schema_versions.update()
+            .where(atelier_schema_versions.c.version == SCHEMA_VERSION)
+            .values(version=V21_SCHEMA_HANDOFF.version)
+        )
+        connection.commit()
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _require_product_shape(connection, V21_SCHEMA_HANDOFF.version)
+
+
+def test_an_exact_v21_store_migrates_to_v22(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v21_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 21"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "21" in shown.out and "22" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+        for table in (run_instants, attempt_instants, event_instants):
+            assert connection.scalar(sa.select(sa.func.count()).select_from(table)) == 0
     engine.dispose()
 
 

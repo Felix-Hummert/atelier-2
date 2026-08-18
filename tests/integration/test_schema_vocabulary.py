@@ -418,6 +418,7 @@ ADMITTED_VOCABULARIES = _admitted_vocabularies(SCHEMA_CONDITIONS)
 OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
     {
         "agent_attempts.attempt_id",
+        "attempt_instants.attempt_id",
         "agent_attempts.node_execution_id",
         "agent_attempts.request_hash",
         "agent_attempts.workflow_revision_hash",
@@ -517,6 +518,11 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "catalog_lineages.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
     "published_revisions.kind": MAXIMUM_KIND_TOKEN_CHARACTERS,
     "catalog_lineage_aliases.name": MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+    "run_instants.started_at": 20,
+    "run_instants.ended_at": 20,
+    "attempt_instants.started_at": 20,
+    "attempt_instants.ended_at": 20,
+    "event_instants.recorded_at": 20,
 }
 
 
