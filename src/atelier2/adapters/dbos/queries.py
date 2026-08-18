@@ -92,6 +92,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
@@ -253,13 +254,12 @@ def _validate_bounded_record(
 
 _LOG = logging.getLogger("atelier2")
 
-_V3_WORKFLOW_FORMAT_VERSION = 3
-_AGENT_FAILURE_FORMATS = frozenset((2, _V3_WORKFLOW_FORMAT_VERSION))
+_AGENT_FAILURE_FORMATS = frozenset((WorkflowFormatVersion.V2, WorkflowFormatVersion.V3))
 """Which families reach the agent attempt path, and so can record its failure."""
 
 
 def _run_ending_event_predicate(
-    workflow_format_version: int, current_node_id: str
+    workflow_format_version: WorkflowFormatVersion, current_node_id: str
 ) -> Callable[[tuple[str, str]], bool]:
     """Whether one event is the event that ended this run.
 
@@ -282,7 +282,7 @@ def _run_ending_event_predicate(
     projection.
     """
 
-    if workflow_format_version == _V3_WORKFLOW_FORMAT_VERSION:
+    if workflow_format_version is WorkflowFormatVersion.V3:
         completed = RunEventKind.AGENT_COMPLETED.value
         return lambda endpoint: (
             endpoint[0] == completed and endpoint[1] == current_node_id
@@ -1295,7 +1295,7 @@ class DbosQueries:
                 if set(endpoint_records) != required_sequences:
                     return EventHistoryCorrupt()
                 ended_the_run = _run_ending_event_predicate(
-                    int(record["workflow_format_version"]),
+                    WorkflowFormatVersion(int(record["workflow_format_version"])),
                     str(record["current_node_id"]),
                 )
                 if ended_the_run(endpoint_records[head]) != terminal or any(
@@ -1370,7 +1370,7 @@ class DbosQueries:
                 if sequences != expected_sequences:
                     return EventHistoryCorrupt()
                 ended_the_run = _run_ending_event_predicate(
-                    int(run_record["workflow_format_version"]),
+                    WorkflowFormatVersion(int(run_record["workflow_format_version"])),
                     str(run_record["current_node_id"]),
                 )
                 terminal_sequences = tuple(
@@ -1390,7 +1390,9 @@ class DbosQueries:
                     self._event_projection(
                         connection,
                         record,
-                        int(run_record["workflow_format_version"]),
+                        WorkflowFormatVersion(
+                            int(run_record["workflow_format_version"])
+                        ),
                         self._projection_limit,
                     )
                     for record in records
@@ -1417,7 +1419,7 @@ class DbosQueries:
     def _event_projection(
         connection: Connection,
         record: Mapping[Any, Any],
-        workflow_format_version: int,
+        workflow_format_version: WorkflowFormatVersion,
         projection_limit: DurableProjectionLimit,
     ) -> PersistedRunEvent:
         event = event_from_record(record)

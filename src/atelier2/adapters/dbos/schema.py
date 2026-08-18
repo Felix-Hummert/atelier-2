@@ -18,6 +18,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_SIGNED_INT64,
 )
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
 @dataclass(frozen=True)
@@ -147,13 +148,20 @@ runs = sa.Table(
     sa.UniqueConstraint("run_id", "revision_hash", "agent_binding_set_hash"),
     sa.CheckConstraint("length(run_id) > 0"),
     sa.CheckConstraint("length(current_node_id) > 0"),
-    sa.CheckConstraint("workflow_format_version IN (1, 2, 3)"),
     sa.CheckConstraint(
-        "(workflow_format_version = 1 AND agent_binding_set_hash IS NULL) OR "
-        "(workflow_format_version = 2 AND agent_binding_set_hash IS NOT NULL "
+        "workflow_format_version IN ("
+        + ", ".join(str(int(member)) for member in WorkflowFormatVersion)
+        + ")"
+    ),
+    sa.CheckConstraint(
+        f"(workflow_format_version = {int(WorkflowFormatVersion.V1)} AND "
+        "agent_binding_set_hash IS NULL) OR "
+        f"(workflow_format_version = {int(WorkflowFormatVersion.V2)} AND "
+        "agent_binding_set_hash IS NOT NULL "
         "AND length(agent_binding_set_hash) = 64 "
         "AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*') OR "
-        "(workflow_format_version = 3 AND (agent_binding_set_hash IS NULL OR "
+        f"(workflow_format_version = {int(WorkflowFormatVersion.V3)} AND "
+        "(agent_binding_set_hash IS NULL OR "
         "(length(agent_binding_set_hash) = 64 "
         "AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*')))"
     ),
@@ -168,11 +176,11 @@ runs = sa.Table(
         "OR (state <> 'COMPLETED' AND terminal_hash IS NULL)"
     ),
     sa.CheckConstraint(
-        "(workflow_format_version = 3 "
+        f"(workflow_format_version = {int(WorkflowFormatVersion.V3)} "
         "AND run_configuration_revision_hash IS NOT NULL "
         "AND length(run_configuration_revision_hash) = 64 "
         "AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*') "
-        "OR (workflow_format_version <> 3 "
+        f"OR (workflow_format_version <> {int(WorkflowFormatVersion.V3)} "
         "AND run_configuration_revision_hash IS NULL)"
     ),
 )

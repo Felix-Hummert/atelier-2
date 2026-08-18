@@ -6,11 +6,13 @@ story = "https://github.com/FlexOr2/atelier-2/issues/88"
 #   - Hygiene-4, the page limit. Closed: `PageLimit` / `MAXIMUM_PAGE_ITEMS` is
 #     the one owner; the event page, the HTTP `limit`, and the durable query
 #     adapters derive that bound.
-#   - H7's ownerless columns. Every CHECK over an owned vocabulary proves the
-#     full admitted set through SQLite grammar; what remains is the handful of
-#     columns with no Python owner at all (`runs.workflow_format_version`
-#     among them), and minting those owners is a contract decision, not a
-#     hygiene edit.
+#   - H7's ownerless columns. Closed for the one remaining closed vocabulary:
+#     `WorkflowFormatVersion` owns `runs.workflow_format_version`; the store
+#     CHECK, the persisted-event constructor, and every store reader derive
+#     it. Published wire discriminators stay the frozen `Literal[1|2|3]`
+#     bytes. The two named exemptions stay exemptions:
+#     `agent_attempts.state_version` and `wait_answers.state_version` are
+#     monotonic counters, not vocabularies.
 #   - M5, the predecessor control-frame strings. The direct-systemd Manager
 #     foundation landed in PR #165, and #15 Slice 2 owns deletion of
 #     `agent_process_watchdog.py`, `agent_processes.py`, their protocol, and their

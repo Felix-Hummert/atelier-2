@@ -25,6 +25,7 @@ from yaml.tokens import (
     Token,
 )
 
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentInvalid,
     WorkflowDocumentRefused,
@@ -160,11 +161,11 @@ def parse_workflow_document(document: bytes) -> AnyWorkflowDocument:
                 "workflow format version must be a strict integer",
             )
         version = loaded["format_version"]
-        if version == 1:
+        if version == WorkflowFormatVersion.V1:
             return WorkflowGraph.model_validate(loaded, strict=True)
-        if version == 2:
+        if version == WorkflowFormatVersion.V2:
             return WorkflowGraphV2.model_validate(loaded, strict=True)
-        if version == 3:
+        if version == WorkflowFormatVersion.V3:
             return validate_workflow_graph_v3(loaded)
         raise _refused(
             WorkflowRefusalReason.INVALID_VALUE,

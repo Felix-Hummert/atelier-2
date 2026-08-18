@@ -40,6 +40,7 @@ from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_projections import WorkflowRevisionProjection
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCollision,
@@ -708,8 +709,12 @@ def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None
         attempt_ordinal=1,
     )
 
-    resource = run_event_resource(PersistedRunEvent(event, None, 2), SERVED_RAIL)
-    api_limits().require_event_projection(PersistedRunEvent(event, None, 2))
+    resource = run_event_resource(
+        PersistedRunEvent(event, None, WorkflowFormatVersion.V2), SERVED_RAIL
+    )
+    api_limits().require_event_projection(
+        PersistedRunEvent(event, None, WorkflowFormatVersion.V2)
+    )
 
     assert resource.model_dump(mode="json") == {
         "workflow_format_version": 2,

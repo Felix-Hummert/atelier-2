@@ -73,6 +73,12 @@ def test_the_edge_field_bound_is_the_contracts_own_bound() -> None:
 
 
 PAGE_LIMIT_RESTATED = re.compile(r"<= 100|> 100|from 1 to 100")
+WORKFLOW_FORMAT_RESTATED = re.compile(
+    r"workflow_format_version IN \(1, 2, 3\)"
+    r"|not in \(1, 2, 3\)"
+    r"|_V3_WORKFLOW_FORMAT_VERSION = 3"
+    r"|if version == [123]:"
+)
 
 
 @pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
@@ -89,6 +95,29 @@ def test_a_page_limit_is_written_once_and_derived_everywhere() -> None:
         "host/serving.py",
     ):
         assert PAGE_LIMIT_RESTATED.search(source_of(relative)) is None, relative
+
+
+@pytest.mark.proves("a-schema-check-cannot-silently-narrow-an-owned-vocabulary")
+def test_a_workflow_format_is_written_once_and_derived_everywhere() -> None:
+    """The 1-2-3 format set has one owner; adapters name it, they do not retype it."""
+
+    owner = source_of("contracts/workflow_formats.py")
+    assert "V1 = 1" in owner
+    assert "V2 = 2" in owner
+    assert "V3 = 3" in owner
+    for relative in (
+        "adapters/dbos/queries.py",
+        "adapters/dbos/run_store.py",
+        "adapters/dbos/runtime.py",
+        "adapters/dbos/schema.py",
+        "adapters/dbos/starter.py",
+        "adapters/yaml_workflows.py",
+        "api/limits.py",
+        "api/projection/events.py",
+        "application/project_node_rail.py",
+        "contracts/run_events.py",
+    ):
+        assert WORKFLOW_FORMAT_RESTATED.search(source_of(relative)) is None, relative
 
 
 @pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
