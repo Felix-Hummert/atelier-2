@@ -111,12 +111,17 @@ def run_resource(projection: RunProjection) -> AnyRunResource:
         )
     else:
         waiting = NoWaitingResource(type="NONE")
+    if run.state is RunState.FAILED:
+        raise ValueError("a V1 run cannot end as FAILED")
     return RunResource(
         run_id=run.run_id.value,
         public_run_reference=encode_public_run_reference(run.run_id),
         workflow_revision_hash=run.revision_hash.value,
         state_version=run.state_version,
-        state=run.state.value,
+        state=cast(
+            Literal["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"],
+            run.state.value,
+        ),
         current_node=cast(NodeResource, node_resource(node)),
         waiting=waiting,
         terminal_hash=None if run.terminal_hash is None else run.terminal_hash.value,
@@ -154,7 +159,10 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
             for binding in run.agent_bindings
         ),
         state_version=run.state_version,
-        state=cast(Literal["STARTED", "WAITING_INPUT", "COMPLETED"], run.state.value),
+        state=cast(
+            Literal["STARTED", "WAITING_INPUT", "COMPLETED", "FAILED"],
+            run.state.value,
+        ),
         current_node_id=run.current_node_id,
         # A run resource says where the snapshot stands, so no event has
         # overtaken it here; the event stream carries its own rail.

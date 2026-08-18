@@ -297,7 +297,12 @@ def test_projecting_attempts_on_a_completed_v3_sink_reds_the_completed_get(
     store.prepare(execution)
     store.claim(execution)
     store.complete_success(execution, AgentExecutionResult(PROVIDER_OUTPUT))
-    needle = "if records_for_execution and run.state is not RunState.COMPLETED:"
+    needle = (
+        "if records_for_execution and run.state not in {\n"
+        "                    RunState.COMPLETED,\n"
+        "                    RunState.FAILED,\n"
+        "                }:"
+    )
     restored = "if records_for_execution:"
     source = Path(queries_module.__file__).read_text(encoding="utf-8")
     assert needle in source

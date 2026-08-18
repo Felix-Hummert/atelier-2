@@ -276,7 +276,7 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
         async def first_event() -> ServerSentEvent:
             stream = aiter(
                 stream_server_events(
-                    PreparedEventStream(request.run_id, 0, 1, False, found.projection),
+                    PreparedEventStream(request.run_id, 0, 1, True, found.projection),
                     stream_page_reader(queries),
                     BoundedQueryRunner(1, admission_timeout_seconds=1),
                     page_size=PageLimit(1),

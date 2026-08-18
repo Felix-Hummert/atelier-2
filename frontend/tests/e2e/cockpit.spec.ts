@@ -837,12 +837,18 @@ test("a node whose answer its own contract refuses never reports success", async
     const read = await page.request.get(`${api}/runs/${reference}`);
     expect(read.status()).toBe(200);
     const body = await read.json();
-    expect(body.state).toBe("STARTED");
+    expect(body.state).toBe("FAILED");
     expect(body.current_node_id).toBe("implement");
+    expect(body.terminal_hash).toMatch(/^[0-9a-f]{64}$/);
   }).toPass({ timeout: 15_000 });
+
+  await page.goto(`/atelier/project`);
+  await expect(page.getByRole("heading", { name: "Failed" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "v3/the-silent-one" })).toBeVisible();
 
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: "Run v3/the-silent-one" })).toBeVisible();
+  await expect(page.getByLabel("Where this run stands")).toContainText("Failed");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Done");
 
   await page.getByRole("button", { name: /implement/ }).click();
