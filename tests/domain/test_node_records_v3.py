@@ -19,9 +19,13 @@ from atelier2.contracts.node_records_v3 import (
     NodeKindV3,
     NodeReceipt,
     NodeReceiptHash,
+    NodeReceiptReason,
     PersistedReceiptDisposition,
     ProjectedDeliveryStatus,
     ReceiptOutput,
+    node_receipt_reason,
+    read_stored_node_receipt_reason,
+    store_node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
@@ -249,3 +253,82 @@ def test_receipt_refuses_a_wrong_request_hash_type() -> None:
             _package().package_hash,
             (),
         )
+
+
+def test_a_judged_receipt_includes_schema_identity_in_its_hash() -> None:
+    artifact = NodeArtifact(RUN, NODE, _execution(), "result", SCHEMA, RESULT_BYTES)
+    judged = NodeReceipt(
+        _execution(),
+        PersistedReceiptDisposition.SUCCEEDED,
+        NodeReceiptReason.OUTPUT_ACCEPTED.value,
+        _request().request_hash,
+        _package().package_hash,
+        (ReceiptOutput("result", SCHEMA, artifact.value_hash),),
+        schema_revision=SCHEMA,
+        value_hash=artifact.value_hash,
+    )
+    assert judged.receipt_hash.value != RECEIPT_HASH
+    other_bytes = NodeReceipt(
+        _execution(),
+        PersistedReceiptDisposition.SUCCEEDED,
+        NodeReceiptReason.OUTPUT_ACCEPTED.value,
+        _request().request_hash,
+        _package().package_hash,
+        (ReceiptOutput("result", SCHEMA, artifact.value_hash),),
+        schema_revision=SCHEMA,
+        value_hash=Sha256Hash.of(b"other-bytes"),
+    )
+    assert other_bytes.receipt_hash != judged.receipt_hash
+
+
+def test_schema_identity_is_both_fields_or_neither() -> None:
+    with pytest.raises(ValueError, match="both fields or neither"):
+        NodeReceipt(
+            _execution(),
+            PersistedReceiptDisposition.FAILED,
+            node_receipt_reason(
+                NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, "instance-not-json"
+            ),
+            _request().request_hash,
+            _package().package_hash,
+            (),
+            schema_revision=SCHEMA,
+        )
+
+
+def test_a_plain_stored_reason_is_honestly_empty_identity() -> None:
+    words = node_receipt_reason(
+        NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, "instance-not-json"
+    )
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(words)
+    assert reason == words
+    assert schema_revision is None
+    assert value_hash is None
+
+
+def test_a_stored_judgment_round_trips_its_schema_identity() -> None:
+    words = node_receipt_reason(
+        NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, "instance-not-json"
+    )
+    stored = store_node_receipt_reason(words, SCHEMA, Sha256Hash(RESULT_VALUE_HASH))
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(stored)
+    assert reason == words
+    assert schema_revision == SCHEMA
+    assert value_hash == Sha256Hash(RESULT_VALUE_HASH)
+
+
+@pytest.mark.parametrize(
+    "stored",
+    (
+        "{not-json",
+        '{"reason":"output-accepted"}',
+        (
+            '{"reason":"output-accepted","schema_revision":"not-a-hash",'
+            f'"value_hash":"{RESULT_VALUE_HASH}"}}'
+        ),
+    ),
+    ids=("broken object", "missing identity", "unreadable hash"),
+)
+def test_an_unreadable_receipt_payload_is_loud(stored: str) -> None:
+    with pytest.raises(ValueError, match="unreadable"):
+        read_stored_node_receipt_reason(stored)

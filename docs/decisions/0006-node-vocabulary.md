@@ -889,7 +889,9 @@ The node's terminal receipt is one envelope, owned by the core for every kind
 (`node-receipt/v3`): the node execution id, the persisted disposition and its reason,
 **the request hash and, separately and by name, the Context-Package hash that request
 bound**, one ordered tuple of `(name, schema revision, hash)` for the declared
-outputs, the access receipts actually used, and — for an Action — the derived
+outputs, **and, where a schema judged the decoded bytes, that same schema revision
+and the hash of those exact bytes as fields of this family** — older receipts
+without those two fields remain readable — the access receipts actually used, and — for an Action — the derived
 idempotency key, the intent hash and the adapter's typed readback evidence as an
 opaque hashed payload. The package hash is carried, never re-derived: a reader asks
 "which context did this receipt run against?" without reconstructing the request

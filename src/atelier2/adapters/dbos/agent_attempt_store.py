@@ -64,6 +64,7 @@ from atelier2.contracts.executions import (
     RunEvent,
     RunEventKind,
 )
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
     NodeArtifact,
     NodeReceiptReason,
@@ -355,6 +356,8 @@ def _fail_current_attempt(
     durable: AgentAttempt,
     failure: AgentAttemptFailureCode,
     receipt_reason: str,
+    schema_revision: PublishedRevisionHash | None = None,
+    value_hash: Sha256Hash | None = None,
 ) -> AgentAttemptFailed:
     """One durable failure seam for every way an armed attempt ends badly.
 
@@ -365,6 +368,8 @@ def _fail_current_attempt(
     ending -- the schema owner where an answer was refused, the supervision
     where a process died -- and every way through here carries one, because a
     failure whose reason is nowhere is the silent death this seam exists to end.
+    A schema judgment also keeps the identity it judged; a process that died
+    judged nothing, so those fields stay honestly empty.
     """
     request = execution.request
     attempt_id = execution.attempt_id
@@ -373,6 +378,8 @@ def _fail_current_attempt(
         request.node_execution_id,
         PersistedReceiptDisposition.FAILED,
         receipt_reason,
+        schema_revision=schema_revision,
+        value_hash=value_hash,
     )
     updated = connection.execute(
         agent_attempts.update()
@@ -745,8 +752,9 @@ class DbosAgentAttemptStore:
                 )
             node = graph.node(request.node_id)
             if isinstance(node, AgentNodeV3):
+                declared = node.outputs[0]
                 refusal = why_a_value_its_declared_schema_refuses(
-                    connection, node.id, node.outputs[0], result.output_bytes
+                    connection, node.id, declared, result.output_bytes
                 )
                 if refusal is not None:
                     return _fail_current_attempt(
@@ -757,6 +765,8 @@ class DbosAgentAttemptStore:
                         node_receipt_reason(
                             NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, refusal
                         ),
+                        PublishedRevisionHash(declared.schema_reference.revision),
+                        Sha256Hash.of(result.output_bytes),
                     )
             receipt = AgentReceiptV2.for_execution(
                 request, run.binding_set_hash, result
