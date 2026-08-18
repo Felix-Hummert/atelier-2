@@ -132,13 +132,18 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         execution: AgentAttemptExecution,
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
-    ) -> AgentAttemptSucceeded:
+    ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         """Keep this attempt's terminal truth, and what its grant redeemed with it.
 
         `redemption` is absent for an attempt whose node pinned no tool grant. One
         that redeemed a grant hands its evidence in here rather than writing it
         beside this call, so a succeeded attempt and the proof of what its tool
         ran become durable together or not at all.
+
+        A decoded result whose bytes the node's own pinned schema refuses is not
+        an error of this call: the attempt ends `FAILED` under
+        `OUTPUT_SCHEMA_REFUSED` with the refusal durably named, and the failed
+        outcome is returned rather than raised.
         """
         ...
 

@@ -7,6 +7,7 @@ import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.node_records import keep_node_receipt
 from atelier2.adapters.dbos.run_store import (
     AgentReceiptConflict,
     RunTransitionConflict,
@@ -21,7 +22,7 @@ from atelier2.adapters.dbos.run_store import (
     load_node_outputs,
     load_run,
     load_run_inputs,
-    refuse_an_output_its_schema_does_not_admit,
+    why_a_value_its_declared_schema_refuses,
 )
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -62,6 +63,13 @@ from atelier2.contracts.executions import (
     RunEvent,
     RunEventKind,
 )
+from atelier2.contracts.node_records_v3 import (
+    NodeArtifact,
+    NodeReceiptReason,
+    PersistedReceiptDisposition,
+    node_receipt_reason,
+)
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
@@ -338,6 +346,63 @@ def _require_completed_attempt_head(
                 )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _fail_current_attempt(
+    connection: Any,
+    execution: AgentAttemptExecution,
+    durable: AgentAttempt,
+    failure: AgentAttemptFailureCode,
+    receipt_reason: str | None = None,
+) -> AgentAttemptFailed:
+    """One durable failure seam for every way an armed attempt ends badly.
+
+    The attempt turns `FAILED` under its named code, the `AGENT_FAILED` event
+    carries that code, and the run stays `STARTED` on the node -- the exact
+    shape a process failure has always left behind, so a reader needs one
+    vocabulary for both. `receipt_reason` is the schema owner's verdict where
+    one judged; a process that died produced nothing anybody judged, so it
+    writes no node receipt here -- that absence is a named gap on #295.
+    """
+    request = execution.request
+    attempt_id = execution.attempt_id
+    if receipt_reason is not None:
+        keep_node_receipt(
+            connection,
+            request.node_execution_id,
+            PersistedReceiptDisposition.FAILED,
+            receipt_reason,
+        )
+    updated = connection.execute(
+        agent_attempts.update()
+        .where(
+            agent_attempts.c.attempt_id == attempt_id.value,
+            agent_attempts.c.state == AgentAttemptState.LAUNCH_ARMED.value,
+            agent_attempts.c.state_version == durable.state_version,
+        )
+        .values(
+            state=AgentAttemptState.FAILED.value,
+            state_version=durable.state_version + 1,
+            failure_code=failure.value,
+        )
+    )
+    if updated.rowcount != 1:
+        raise RunTransitionConflict("agent failure lost its attempt CAS")
+    durable_failure = _load_attempt(connection, attempt_id)
+    _commit_event(
+        connection,
+        request.run_id,
+        request.workflow_revision_hash,
+        request.node_id,
+        RunEventKind.AGENT_FAILED,
+        failure.value.encode("ascii"),
+        RunState.STARTED,
+        RunState.STARTED,
+        request.node_id,
+        agent_attempt_id=attempt_id,
+        attempt_ordinal=execution.ordinal,
+    )
+    return AgentAttemptFailed(durable_failure)
 
 
 def _keep_tool_redemption(
@@ -646,17 +711,22 @@ class DbosAgentAttemptStore:
         execution: AgentAttemptExecution,
         result: AgentExecutionResult,
         redemption: ToolRedemptionReceipt | None = None,
-    ) -> AgentAttemptSucceeded:
-        """Write the one success this attempt is allowed, or refuse to write any.
+    ) -> AgentAttemptSucceeded | AgentAttemptFailed:
+        """Write the one success this attempt is allowed, or its named refusal.
 
         A V3 node's declared output is what its author promised, so the exact
         decoded bytes are read against the schema it pins before anything here is
-        written. The reading happens inside this transaction and before the first
-        insert, so bytes their own schema refuses leave no receipt, no
-        `AGENT_COMPLETED` event and no advanced run -- the refusal is the same
-        shape the durable output bound already has, and for the same reason: a
-        success nobody may take back must not be written for an answer this
-        product cannot honour.
+        written. Bytes their own schema refuses leave no agent receipt, no
+        `AGENT_COMPLETED` event and no advanced run -- a success nobody may take
+        back must not be written for an answer this product cannot honour. What
+        the refusal leaves instead is its durable name: a `failed`
+        `node-receipt/v3` carrying the schema owner's words, and the attempt on
+        the same failure seam `PROCESS_EXITED_UNSUCCESSFULLY` runs on today, so
+        the driver ends named instead of dying on an exception nobody stored.
+
+        A V3 success additionally keeps what the run now knows durably: the
+        produced value as `node-artifact/v3` and the `succeeded`
+        `node-receipt/v3` naming it, in this same transaction.
         """
         request = execution.request
         attempt_id = execution.attempt_id
@@ -674,9 +744,19 @@ class DbosAgentAttemptStore:
                 )
             node = graph.node(request.node_id)
             if isinstance(node, AgentNodeV3):
-                refuse_an_output_its_schema_does_not_admit(
+                refusal = why_a_value_its_declared_schema_refuses(
                     connection, node.id, node.outputs[0], result.output_bytes
                 )
+                if refusal is not None:
+                    return _fail_current_attempt(
+                        connection,
+                        execution,
+                        durable,
+                        AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
+                        node_receipt_reason(
+                            NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, refusal
+                        ),
+                    )
             receipt = AgentReceiptV2.for_execution(
                 request, run.binding_set_hash, result
             )
@@ -700,6 +780,22 @@ class DbosAgentAttemptStore:
                     "durable V2 agent receipt differs from exact result"
                 )
             _keep_tool_redemption(connection, execution, redemption)
+            if isinstance(node, AgentNodeV3):
+                declared = node.outputs[0]
+                keep_node_receipt(
+                    connection,
+                    request.node_execution_id,
+                    PersistedReceiptDisposition.SUCCEEDED,
+                    node_receipt_reason(NodeReceiptReason.OUTPUT_ACCEPTED),
+                    NodeArtifact(
+                        request.run_id,
+                        node.id,
+                        request.node_execution_id,
+                        declared.name,
+                        PublishedRevisionHash(declared.schema_reference.revision),
+                        result.output_bytes,
+                    ),
+                )
             updated = connection.execute(
                 agent_attempts.update()
                 .where(
@@ -749,11 +845,9 @@ class DbosAgentAttemptStore:
         self, execution: AgentAttemptExecution
     ) -> AgentAttemptFailed:
         request = execution.request
-        attempt_id = execution.attempt_id
-        failure = AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
         with canonical_write_transaction(self._engine) as connection:
             run, _graph = _validate_request(connection, request)
-            durable = _load_attempt(connection, attempt_id)
+            durable = _load_attempt(connection, execution.attempt_id)
             _require_attempt_binding(durable, execution)
             if (
                 durable.state is not AgentAttemptState.LAUNCH_ARMED
@@ -761,36 +855,12 @@ class DbosAgentAttemptStore:
                 or run.current_node_id != request.node_id
             ):
                 raise RunTransitionConflict("only the armed current attempt can fail")
-            updated = connection.execute(
-                agent_attempts.update()
-                .where(
-                    agent_attempts.c.attempt_id == attempt_id.value,
-                    agent_attempts.c.state == AgentAttemptState.LAUNCH_ARMED.value,
-                    agent_attempts.c.state_version == durable.state_version,
-                )
-                .values(
-                    state=AgentAttemptState.FAILED.value,
-                    state_version=durable.state_version + 1,
-                    failure_code=failure.value,
-                )
-            )
-            if updated.rowcount != 1:
-                raise RunTransitionConflict("agent failure lost its attempt CAS")
-            durable_failure = _load_attempt(connection, attempt_id)
-            _commit_event(
+            return _fail_current_attempt(
                 connection,
-                request.run_id,
-                request.workflow_revision_hash,
-                request.node_id,
-                RunEventKind.AGENT_FAILED,
-                failure.value.encode("ascii"),
-                RunState.STARTED,
-                RunState.STARTED,
-                request.node_id,
-                agent_attempt_id=attempt_id,
-                attempt_ordinal=execution.ordinal,
+                execution,
+                durable,
+                AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
             )
-            return AgentAttemptFailed(durable_failure)
 
     def request_cancellation(
         self, request: CancelAgentAttemptRequest

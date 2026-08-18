@@ -374,6 +374,7 @@ def test_a_completed_v3_attempt_carries_its_run_to_the_terminal_hash(
 
     succeeded = store.complete_success(execution, AgentExecutionResult(PROVIDER_OUTPUT))
 
+    assert isinstance(succeeded, AgentAttemptSucceeded)
     assert succeeded.attempt.state is AgentAttemptState.SUCCEEDED
     assert succeeded.completion == RunCompletes()
     with runtime.engine.connect() as connection:

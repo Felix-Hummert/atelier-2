@@ -233,8 +233,14 @@ def _run_resource_v2(
                 request_hash=attempt.request_hash.value,
                 attempt_ordinal=cast(Literal[1, 2], attempt.attempt_ordinal),
                 state=cast(PublicAttemptStateName, attempt.state),
-                failure_code=(
-                    None if attempt.failure_code is None else attempt.failure_code.value
+                # A format-2 attempt can only fail as a process exit; the
+                # resource's own literal still rejects any other stored code
+                # loudly at projection time, so the cast asserts, not assumes.
+                failure_code=cast(
+                    Literal["PROCESS_EXITED_UNSUCCESSFULLY"] | None,
+                    None
+                    if attempt.failure_code is None
+                    else attempt.failure_code.value,
                 ),
                 cancellation=(
                     None
