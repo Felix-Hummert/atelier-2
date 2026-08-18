@@ -10,6 +10,7 @@ from atelier2.api.references import encode_event_cursor, encode_public_run_refer
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.effects import OperatorFoundEffect
 from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
@@ -65,17 +66,19 @@ class ApiLimits:
     maximum_workflow_nodes: int
     maximum_enriched_page_nodes: int
     maximum_enriched_page_document_bytes: int
-    event_page_size: int
+    event_page_size: PageLimit
     maximum_control_queries: int
     maximum_event_poll_queries: int
     maximum_query_admission_wait_milliseconds: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.event_page_size, PageLimit):
+            raise TypeError("event_page_size must be a PageLimit")
         for name, value in self.__dict__.items():
+            if name == "event_page_size":
+                continue
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        if self.event_page_size > 100:
-            raise ValueError("event_page_size must not exceed 100")
         if self.maximum_base64_characters < 4:
             raise ValueError(
                 "maximum_base64_characters must accommodate a nonempty payload"

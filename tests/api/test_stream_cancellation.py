@@ -16,6 +16,7 @@ from atelier2.api.stream import (
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
@@ -168,7 +169,7 @@ def test_empty_stream_uses_capped_adaptive_backoff_with_injected_sleep() -> None
             ),
             stream_page_reader(queries),
             BoundedQueryRunner(1, admission_timeout_seconds=1),
-            page_size=1,
+            page_size=PageLimit(1),
             limits=api_limits(),
             poll_backoff=EventPollBackoff(0.1, 0.4, 2),
             sleep=virtual_sleep,
@@ -234,7 +235,7 @@ def test_poll_backoff_resets_to_initial_delay_immediately_after_progress() -> No
             ),
             stream_page_reader(queries),
             BoundedQueryRunner(1, admission_timeout_seconds=1),
-            page_size=1,
+            page_size=PageLimit(1),
             limits=api_limits(),
             poll_backoff=EventPollBackoff(0.1, 0.8, 2),
             sleep=virtual_sleep,
@@ -420,7 +421,7 @@ def test_event_poll_admission_timeout_mid_stream_closes_without_starting_query()
                 ),
                 stream_page_reader(cast(RunEventQueries, queries)),
                 runner,
-                page_size=1,
+                page_size=PageLimit(1),
                 limits=api_limits(),
                 poll_backoff=EventPollBackoff(0.01, 0.04, 2),
             )
@@ -522,7 +523,7 @@ def test_stream_does_not_read_the_next_bounded_page_before_yielding_the_current_
             ),
             stream_page_reader(queries),
             BoundedQueryRunner(1, admission_timeout_seconds=1),
-            page_size=2,
+            page_size=PageLimit(2),
             limits=api_limits(),
             poll_backoff=EventPollBackoff(0.01, 0.04, 2),
         )
@@ -590,7 +591,7 @@ def test_cancelled_stream_starts_no_next_query_and_blocked_query_closes_once() -
             ),
             stream_page_reader(queries),
             runner,
-            page_size=2,
+            page_size=PageLimit(2),
             limits=api_limits(),
             poll_backoff=EventPollBackoff(0.01, 0.04, 2),
         )

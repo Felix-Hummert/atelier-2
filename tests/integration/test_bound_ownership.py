@@ -72,6 +72,25 @@ def test_the_edge_field_bound_is_the_contracts_own_bound() -> None:
     assert "MAXIMUM_FIELD_CHARACTERS = 1_024" not in source_of("host/serving.py")
 
 
+PAGE_LIMIT_RESTATED = re.compile(r"<= 100|> 100|from 1 to 100")
+
+
+@pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
+def test_a_page_limit_is_written_once_and_derived_everywhere() -> None:
+    """The 1-to-100 page bound has one owner; adapters name it, they do not retype it."""
+
+    assert "MAXIMUM_PAGE_ITEMS = 100" in source_of("contracts/pages.py")
+    for relative in (
+        "adapters/dbos/queries.py",
+        "adapters/dbos/agent_catalog.py",
+        "api/limits.py",
+        "api/_support.py",
+        "api/stream.py",
+        "host/serving.py",
+    ):
+        assert PAGE_LIMIT_RESTATED.search(source_of(relative)) is None, relative
+
+
 @pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
 def test_the_edge_body_bound_owns_the_envelope_around_an_encoded_payload() -> None:
     assert MAXIMUM_REQUEST_BODY_BYTES > base64_characters_for(

@@ -27,6 +27,7 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
@@ -168,7 +169,7 @@ async def stream_server_events(
     read_page: Callable[[RunId, int, int], ReadRunEventsResult],
     runner: BoundedQueryRunner,
     *,
-    page_size: int,
+    page_size: PageLimit,
     limits: ApiLimits,
     poll_backoff: EventPollBackoff,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -191,7 +192,7 @@ async def stream_server_events(
         try:
             result = await runner.run(
                 lambda current_after_sequence=after_sequence: read_page(
-                    prepared.run_id, current_after_sequence, page_size
+                    prepared.run_id, current_after_sequence, page_size.value
                 )
             )
         except QueryAdmissionTimeout:

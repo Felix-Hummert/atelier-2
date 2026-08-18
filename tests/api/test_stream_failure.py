@@ -29,6 +29,7 @@ from atelier2.api.stream import (
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
@@ -159,7 +160,7 @@ def streamed_frames(
                 ),
                 stream_page_reader(queries),
                 BoundedQueryRunner(1, admission_timeout_seconds=1),
-                page_size=page_size,
+                page_size=PageLimit(page_size),
                 limits=api_limits(**(limit_changes or {})),
                 poll_backoff=EventPollBackoff(0.01, 0.04, 2),
             )
