@@ -40,9 +40,15 @@ from atelier2.application.publish_workflow_revision import (
 )
 from atelier2.application.read_agent_configurations import (
     list_agent_configuration_revisions,
+    list_auth_profile_revisions,
 )
 from atelier2.application.read_run_events import read_run_events
-from atelier2.application.read_runs import get_node_detail, get_run, list_runs
+from atelier2.application.read_runs import (
+    get_node_detail,
+    get_run,
+    list_run_receipts,
+    list_runs,
+)
 from atelier2.application.read_workflow_revisions import (
     get_workflow_revision,
     list_described_workflow_revisions,
@@ -110,6 +116,7 @@ def bound_use_cases(
         get_node_detail=lambda run_id, node_id: get_node_detail(
             run_id, node_id, ports.run_queries
         ),
+        list_run_receipts=lambda run_id: list_run_receipts(run_id, ports.run_queries),
         list_runs=lambda after, limit, state=None: list_runs(
             after, limit, ports.run_queries, state
         ),
@@ -158,6 +165,11 @@ def bound_use_cases(
         ),
         list_agent_configuration_revisions=(
             lambda after, limit: list_agent_configuration_revisions(
+                after, limit, ports.agent_configuration_catalog
+            )
+        ),
+        list_auth_profile_revisions=(
+            lambda after, limit: list_auth_profile_revisions(
                 after, limit, ports.agent_configuration_catalog
             )
         ),

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from atelier2.contracts.agents import AgentReceiptV2
 from atelier2.contracts.effects import (
     EffectIntentSnapshot,
     ReconcileCommandId,
@@ -70,6 +71,8 @@ class RunQueries(Protocol):
 
     def get_node_detail(self, run_id: RunId, node_id: str) -> GetNodeDetailResult: ...
 
+    def list_run_receipts(self, run_id: RunId) -> ListRunReceiptsResult: ...
+
     def list_runs(
         self,
         after: RunId | None,
@@ -101,4 +104,14 @@ type GetNodeDetailResult = (
     | ReadUnavailable
     | ProjectionTooLarge
     | QueryDurableStateCorrupt
+)
+
+
+@dataclass(frozen=True)
+class RunReceiptsFound:
+    items: tuple[AgentReceiptV2, ...]
+
+
+type ListRunReceiptsResult = (
+    RunReceiptsFound | RunQueryMissing | ReadUnavailable | QueryDurableStateCorrupt
 )

@@ -5,6 +5,7 @@ import {
   NODE_STATES,
   PUBLIC_ATTEMPT_STATES,
   agentConfigurationRevisionPageSchema,
+  authProfileRevisionPageSchema,
   workflowDeclaredOrderSchema,
   workflowNodePreviewSchema,
   workflowRevisionDetailSchema,
@@ -165,6 +166,14 @@ describe("the served vocabulary", () => {
     const served = servedDocument.components.schemas.AgentConfigurationRevisionPageResource;
 
     expect(Object.keys(agentConfigurationRevisionPageSchema.shape).sort()).toEqual(
+      Object.keys(served?.properties ?? {}).sort()
+    );
+  });
+
+  it("decodes exactly the fields the auth-profile listing serves", () => {
+    const served = servedDocument.components.schemas.AuthProfileRevisionPageResource;
+
+    expect(Object.keys(authProfileRevisionPageSchema.shape).sort()).toEqual(
       Object.keys(served?.properties ?? {}).sort()
     );
   });

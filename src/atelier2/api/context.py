@@ -26,11 +26,13 @@ from atelier2.application.publish_workflow_revision import (
 )
 from atelier2.application.read_agent_configurations import (
     ListAgentConfigurationRevisionsResult,
+    ListAuthProfileRevisionsResult,
 )
 from atelier2.application.read_run_events import ReadRunEventsResult
 from atelier2.application.read_runs import (
     GetNodeDetailUseCaseResult,
     GetRunResult,
+    ListRunReceiptsUseCaseResult,
     ListRunsResult,
 )
 from atelier2.application.read_workflow_revisions import (
@@ -47,7 +49,10 @@ from atelier2.application.start_published_run import (
     StartPublishedRunResult,
 )
 from atelier2.contracts.agent_attempts import CancelAgentAttemptRequest
-from atelier2.contracts.agents import AgentConfigurationRevisionHash
+from atelier2.contracts.agents import (
+    AgentConfigurationRevisionHash,
+    AuthProfileRevisionHash,
+)
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -123,6 +128,7 @@ class ApiUseCases:
     ]
     get_run: Callable[[RunId], GetRunResult]
     get_node_detail: Callable[[RunId, str], GetNodeDetailUseCaseResult]
+    list_run_receipts: Callable[[RunId], ListRunReceiptsUseCaseResult]
     list_runs: Callable[[RunId | None, int, RunState | None], ListRunsResult]
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
     read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
@@ -138,6 +144,10 @@ class ApiUseCases:
     list_agent_configuration_revisions: Callable[
         [AgentConfigurationRevisionHash | None, int],
         ListAgentConfigurationRevisionsResult,
+    ]
+    list_auth_profile_revisions: Callable[
+        [AuthProfileRevisionHash | None, int],
+        ListAuthProfileRevisionsResult,
     ]
     start_published_run: Callable[
         [

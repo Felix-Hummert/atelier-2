@@ -27,6 +27,7 @@ from atelier2.contracts.agents import (
     AgentRole,
     AuthMode,
     AuthProfileRevision,
+    AuthProfileRevisionHash,
     ProviderId,
     ResolvedAgentBinding,
 )
@@ -49,6 +50,7 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionConflict,
     AuthProfileRevisionCreated,
     AuthProfileRevisionMissing,
+    AuthProfileRevisionPage,
     CatalogReadUnavailable,
 )
 from atelier2.ports.durable_runs import (
@@ -100,9 +102,11 @@ class RecordingCatalog:
     auth_result: object
     configuration_result: object | None = None
     list_result: object = AgentConfigurationRevisionPage((), None)
+    auth_list_result: object = AuthProfileRevisionPage((), None)
     auth_calls: int = 0
     configuration_calls: int = 0
     list_calls: list[tuple[object, int]] = field(default_factory=list)
+    auth_list_calls: list[tuple[object, int]] = field(default_factory=list)
 
     def publish_auth_profile_revision(self, revision: AuthProfileRevision) -> object:
         self.auth_calls += 1
@@ -126,6 +130,10 @@ class RecordingCatalog:
     def list_agent_configuration_revisions(self, after: object, limit: int) -> object:
         self.list_calls.append((after, limit))
         return self.list_result
+
+    def list_auth_profile_revisions(self, after: object, limit: int) -> object:
+        self.auth_list_calls.append((after, limit))
+        return self.auth_list_result
 
 
 def _client(catalog: RecordingCatalog) -> TestClient:
@@ -389,6 +397,94 @@ def test_openapi_names_both_publish_operations_and_exact_problem_sets() -> None:
     ]["graph"]
     assert set(graph["discriminator"]["mapping"]) == {"1", "2", "3"}
     assert len(graph["oneOf"]) == 3
+
+
+def test_auth_list_answers_with_the_published_item_form_and_no_secrets() -> None:
+    catalog = RecordingCatalog(
+        object(),
+        auth_list_result=AuthProfileRevisionPage((AUTH,), None),
+    )
+
+    response = _client(catalog).get(API_PREFIX + "/auth-profile-revisions")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "profile_id": "max",
+                "revision_number": 7,
+                "provider_id": "anthropic",
+                "auth_mode": "subscription",
+                "auth_profile_revision_hash": AUTH.revision_hash.value,
+            }
+        ],
+        "next_after_revision_hash": None,
+    }
+    assert all(
+        forbidden not in response.text.lower()
+        for forbidden in ("secret", "credential", "handle", "api_key_value")
+    )
+    assert catalog.auth_list_calls == [(None, 50)]
+
+
+def test_auth_list_pages_with_the_workflow_revision_cursor() -> None:
+    catalog = RecordingCatalog(
+        object(),
+        auth_list_result=AuthProfileRevisionPage((AUTH,), AUTH.revision_hash),
+    )
+
+    response = _client(catalog).get(
+        API_PREFIX + "/auth-profile-revisions",
+        params={"after_revision_hash": "a" * 64, "limit": "1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["next_after_revision_hash"] == AUTH.revision_hash.value
+    after, limit = catalog.auth_list_calls[0]
+    assert isinstance(after, AuthProfileRevisionHash)
+    assert after.value == "a" * 64
+    assert limit == 1
+
+
+def test_auth_list_empty_is_an_empty_page() -> None:
+    response = _client(RecordingCatalog(object())).get(
+        API_PREFIX + "/auth-profile-revisions"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "next_after_revision_hash": None}
+
+
+def test_auth_list_refuses_a_malformed_cursor_before_the_catalog() -> None:
+    catalog = RecordingCatalog(object())
+
+    response = _client(catalog).get(
+        API_PREFIX + "/auth-profile-revisions",
+        params={"after_revision_hash": "not-a-hash"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["type"].endswith(":invalid-revision-hash")
+    assert catalog.auth_list_calls == []
+
+
+@pytest.mark.parametrize(
+    ("result", "status", "code"),
+    [
+        (CatalogReadUnavailable("store asleep"), 503, "temporarily-unavailable"),
+        (DurableStateCorrupt(), 500, "durable-state-corrupt"),
+    ],
+)
+def test_auth_list_maps_every_read_refusal(
+    result: object, status: int, code: str
+) -> None:
+    response = _client(RecordingCatalog(object(), auth_list_result=result)).get(
+        API_PREFIX + "/auth-profile-revisions"
+    )
+
+    assert response.status_code == status
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["type"] == f"urn:atelier2:problem:v1:{code}"
 
 
 def test_list_answers_with_the_published_item_form_and_no_secrets() -> None:
