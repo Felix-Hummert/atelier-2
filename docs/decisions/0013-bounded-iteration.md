@@ -1,7 +1,13 @@
 # ADR 0013: A bounded `iterate` block repeats a subworkflow until a receipt says green
 
-- Status: ACCEPTED 2026-08-16 — the document surface below is implemented; binding,
-  executability and the durable rounds are not
+- Status: ACCEPTED 2026-08-16, structurally SUPERSEDED 2026-08-18 by
+  [ADR 0014](0014-in-graph-rounds.md) — the document surface and the boundary
+  binding below are implemented and stand; the `iterate` block stays declarable and
+  stays unexecutable. What no longer holds is the finding under "A round is a child
+  run, so only the child-run binding gains an ordinal": a loop inside one graph is
+  not identity-impossible. ADR 0014 gives the node execution identity a round
+  dimension and repeats a stretch of one graph, and that is the form the engine
+  runs. Read that record before building on this one
 - Date: 2026-08-16, written with the three corrections of the independent deputy
   review bound into the record before its first line rather than after it, because
   a record is the one text the next reader does not re-derive; amended 2026-08-16

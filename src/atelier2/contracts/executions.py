@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING
 
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.hashing import Sha256Hash, frame
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevisionHash,
+    require_exact_round_ordinal,
+)
 
 if TYPE_CHECKING:
     from atelier2.contracts.agent_attempts import AgentAttemptId
@@ -21,16 +27,42 @@ def is_canonical_integer_bytes(value: bytes) -> bool:
 
 
 class NodeExecutionId(Sha256Hash):
+    """Which execution of which node of which run, as one exact identity.
+
+    The round is the fourth dimension, and it is carried by a *nested* family
+    rather than by widening the landed one. `node-execution-id/v1` binds run,
+    revision and node, and every identity this engine has already written is
+    that preimage; a round dimension folded into it would rename every stored
+    execution, receipt and attempt at once. So round one is byte-for-byte the
+    landed derivation, and a later round frames it again under its own domain
+    with the ordinal that distinguishes it. The three-schema discipline of
+    `adapters/dbos/workflow_ids.py` is the same rule seen from the other side.
+    """
+
     @classmethod
     def for_node(
-        cls, run_id: RunId, revision_hash: WorkflowRevisionHash, node_id: str
+        cls,
+        run_id: RunId,
+        revision_hash: WorkflowRevisionHash,
+        node_id: str,
+        round_ordinal: int = FIRST_ROUND_ORDINAL,
     ) -> NodeExecutionId:
-        return cls.of(
+        require_exact_round_ordinal(round_ordinal)
+        first = cls.of(
             frame(
                 "node-execution-id/v1",
                 run_id.value.encode("utf-8"),
                 revision_hash.value.encode("ascii"),
                 node_id.encode("utf-8"),
+            )
+        )
+        if round_ordinal == FIRST_ROUND_ORDINAL:
+            return first
+        return cls.of(
+            frame(
+                "node-execution-id/round/v1",
+                first.value.encode("ascii"),
+                str(round_ordinal).encode("ascii"),
             )
         )
 
@@ -109,6 +141,7 @@ class RunEvent:
     cancellation_disposition: str | None = None
     replacement_attempt_id: str | None = None
     agent_receipt_hash: Sha256Hash | None = None
+    round_ordinal: int = FIRST_ROUND_ORDINAL
     event_hash: Sha256Hash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -116,8 +149,13 @@ class RunEvent:
             raise ValueError("event sequence must be an exact positive integer")
         if self.node_id == "":
             raise ValueError("event node id must be nonempty")
+        require_exact_round_ordinal(self.round_ordinal)
+        # The round is not a second author of the identity, it is the fourth
+        # dimension of the one identity -- so the pair is checked here rather
+        # than trusted, exactly as the node id already is. The event hash needs
+        # no new domain for it: the execution id it already binds carries it.
         expected_execution = NodeExecutionId.for_node(
-            self.run_id, self.revision_hash, self.node_id
+            self.run_id, self.revision_hash, self.node_id, self.round_ordinal
         )
         if self.node_execution_id != expected_execution:
             raise ValueError("event execution identity differs from its node binding")
@@ -249,6 +287,7 @@ class TransitionSnapshot:
     state_version: int
     last_event_sequence: int
     event: RunEvent
+    current_round_ordinal: int = FIRST_ROUND_ORDINAL
 
 
 @dataclass(frozen=True)
