@@ -36,10 +36,11 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 #       stable token `output-schema-refused` and the second
 #       `AgentAttemptFailureCode` member the store's CHECK now admits (V17).
 #       Declared as `a-refused-output-ends-its-attempt-durably-named` in
-#       `295-the-record-family-gets-its-writer.toml`. Still open from this
-#       sentence's wording: the receipt does not record the schema revision and
-#       the hash of the exact refused bytes as their own fields -- the reason
-#       carries the verdict, not the evidence bytes.
+#       `295-the-record-family-gets-its-writer.toml`. Head 4 recorded the
+#       schema revision and the hash of the exact judged bytes as fields of
+#       the same `node-receipt/v3` family -- the last sentence declared below.
+#       A judged receipt that omits them is refused; an older row without them
+#       stays honestly empty identity.
 #   4.  "Join bleibt ADR 0006: all_succeeded blockiert; all_terminal darf starten
 #       und erhaelt das Failure-Receipt. Kein Sonderweg startet einen
 #       Nachfolger." -- head 3 proved the half that exists. The only join a run
@@ -64,20 +65,19 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 #       restart that re-arms a node from durable receipts alone is ADR 0001's
 #       and has no V3 owner yet.
 #   6.  "Derselbe Vertrag gilt fuer Claude und Codex; genau ein billbarer Canary
-#       nach allen lokalen Gates." -- STILL OPEN, and not a build. A canary is
-#       no construct of this catalog: no node kind, no authored form, no runtime
-#       object carries the word, and `docs/COORDINATION.md` owns it as an
-#       operator gate ("Deploy, arming, canary runs: operator gates"). There is
-#       therefore nothing at the parse boundary to refuse and nothing for a
-#       builder head to run. The provider half of the sentence is measurable
-#       without a billable call and still unmeasured: enforcement sits in the
-#       success write, below every adapter, so Claude and Codex meet the same
-#       seam by construction rather than by proof.
+#       nach allen lokalen Gates." -- the provider half is the second-to-last
+#       sentence declared below: a fake process per adapter (claude, codex,
+#       grok) proves they take the same success-write seam and the same
+#       `output-schema-refused` token. A canary is still no construct of this
+#       catalog -- `docs/COORDINATION.md` owns it as an operator gate -- and
+#       stays named, not built.
 #
 # The first sentence declared below is 1a, and 1a is EXPRESSLY NOT a substitute
 # for 1b: 1a proves the bound contract is a contract, 1b proves the core holds an
-# output to it. #57 is not verified and not retired while any of the open
-# sentences above is open.
+# output to it. What remains open above is owned elsewhere: blocked receipts
+# and run termination (#86/#89), restart-from-receipts (no V3 owner), cancelled
+# receipts (#295), and the canary as an operator gate. This item's own
+# sentences are the ones declared below.
 #
 # SHARPENED, not narrowed, by head 1b. The closed profile the first sentence
 # names grew three rules after Codex found that head 1 checked a reference's
@@ -129,3 +129,15 @@ text = "A replacement attempt of a node execution answers to the same declared s
 [[sentence]]
 id = "a-refused-output-never-releases-the-node-behind-it"
 text = "A node whose declared output its own schema refuses never releases the node that depends on it: the run does not move off the refused node, no attempt is ever opened for the successor and no artifact exists, while one character of difference in the same answer releases that same edge -- which is the omitted single-dependency all_succeeded of ADR 0006, applied by there being no path past a node that did not succeed."
+
+# Head 4. The two remaining #57 sentences this item still owns: the receipt
+# carries the schema identity it judged, and every executor adapter meets that
+# same seam. What this item does not own stays named in the header above.
+
+[[sentence]]
+id = "a-judged-receipt-names-the-schema-identity-it-judged"
+text = "A node-receipt/v3 written for a schema judgment carries the schema revision and the hash of the exact decoded bytes it judged as its own fields of that same family; a receipt of that judgment that omits them is refused, and an older row that never had them remains readable as honestly empty identity."
+
+[[sentence]]
+id = "every-executor-meets-the-same-output-contract-seam"
+text = "Claude, Codex and Grok each take a decoded provider answer through the same success-write seam, and bytes their node's schema refuses end under the same token output-schema-refused; the proof is a fake process per adapter, not a billed call."

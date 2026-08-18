@@ -348,8 +348,14 @@ member under its content hash -- and the terminal write ends the execution in
 the same transaction as the agent receipt. A refused answer ends its attempt
 `FAILED` under `OUTPUT_SCHEMA_REFUSED` with an `AGENT_FAILED` event, and the
 `failed` `node-receipt/v3` carries the schema owner's own words as its reason
-(`output-schema-refused: ...`); a success additionally keeps the exact produced
-bytes as `node-artifact/v3` beside its `succeeded` receipt. The run stands on
+(`output-schema-refused: ...`) and, on that same family, the schema revision
+and the hash of the exact decoded bytes the judgment used; a success
+additionally keeps the exact produced bytes as `node-artifact/v3` beside its
+`succeeded` receipt, and that receipt names the same identity. An older
+receipt written before those fields existed stays readable: the identity is
+honestly absent, not a refusal and not corruption. Claude, Codex and Grok
+each take a decoded answer through that same success-write seam; bytes the
+schema refuses end under the same token for all three. The run stands on
 the node that produced the refused answer, the node detail reads the stored
 reason back, and a run started before this writer existed stays honestly absent
 in those tables.
