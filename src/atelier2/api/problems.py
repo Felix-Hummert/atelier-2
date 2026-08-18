@@ -15,6 +15,7 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
 )
 from atelier2.api.wire.resources import InvalidFieldResource, ProblemResource
+from atelier2.contracts.artifacts import ArtifactRefusal
 from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
 from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
 
@@ -44,6 +45,32 @@ def route_not_found_detail(openapi_document_path: str) -> str:
     """The refusal a guessed path earns, naming the document that lists them."""
 
     return f"{ROUTE_NOT_FOUND_ACTION} at {openapi_document_path}."
+
+
+def artifact_problem_code(refusal: ArtifactRefusal) -> str:
+    """The problem code one artifact refusal becomes on the wire.
+
+    The contract already names each fault, and a caller whose material was
+    turned away reads which of the two it was from the type.
+    """
+
+    return refusal.value
+
+
+def _artifact_problems() -> dict[str, ProblemDefinition]:
+    return {
+        artifact_problem_code(refusal): ProblemDefinition(
+            422,
+            "Artifact refused",
+            f"The bytes are not material this store keeps ({refusal.value}).",
+        )
+        for refusal in ArtifactRefusal
+    }
+
+
+ARTIFACT_PROBLEM_CODES = tuple(
+    artifact_problem_code(refusal) for refusal in ArtifactRefusal
+)
 
 
 def schema_document_problem_code(refusal: SchemaDocumentRefusal) -> str:
@@ -221,6 +248,7 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Invalid workflow document",
         "Submit exact bytes for a safe closed workflow graph.",
     ),
+    **_artifact_problems(),
     **_schema_document_problems(),
     "schema-revision-collision": ProblemDefinition(
         409,

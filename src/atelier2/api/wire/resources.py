@@ -45,6 +45,16 @@ class HealthResource(ApiModel):
     source_tree: str
 
 
+class ArtifactResource(ApiModel):
+    """The address of one published artifact, and nothing else.
+
+    Publication is bytes in, address out. The content is not echoed: the caller
+    already holds the exact bytes they posted, and the address is their identity.
+    """
+
+    artifact_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
 class SchemaRevisionResource(ApiModel):
     """The hash of one published schema revision, and nothing else.
 

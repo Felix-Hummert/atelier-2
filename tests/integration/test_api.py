@@ -17,6 +17,7 @@ from atelier2.adapters.dbos import run_transitions as run_transitions_module
 from atelier2.adapters.dbos import starter as starter_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.queries import DbosQueries
@@ -774,6 +775,7 @@ def _client(
                 catalog_resolver=DbosCatalogStore(runtime.engine),
                 catalog_admissions=DbosCatalogStore(runtime.engine),
                 published_revision_registry=DbosCatalogStore(runtime.engine),
+                artifact_publisher=DbosArtifactStore(runtime.engine),
             ),
             limits=active_limits,
             event_poll_backoff=event_poll_backoff(),
