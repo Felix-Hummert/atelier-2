@@ -7,7 +7,7 @@ from enum import IntEnum, StrEnum
 
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
 
 MAXIMUM_AGENT_FIELD_CHARACTERS = 1_024
 MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
@@ -321,6 +321,7 @@ class AgentExecutionRequestV2:
     executor_operational_identity: AgentExecutorOperationalIdentity
     job_bytes: bytes
     declared_output_schema_bytes: bytes | None = None
+    round_ordinal: int = FIRST_ROUND_ORDINAL
     request_hash: AgentExecutionRequestHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -337,7 +338,7 @@ class AgentExecutionRequestV2:
             if not self.declared_output_schema_bytes:
                 raise ValueError("declared output schema bytes must be nonempty")
         expected_execution = NodeExecutionId.for_node(
-            self.run_id, self.workflow_revision_hash, self.node_id
+            self.run_id, self.workflow_revision_hash, self.node_id, self.round_ordinal
         )
         if self.node_execution_id != expected_execution:
             raise ValueError(
@@ -405,13 +406,14 @@ class AgentReceiptV2:
     output_bytes: bytes
     output_hash: AgentOutputHash
     receipt_hash: AgentReceiptHash
+    round_ordinal: int = FIRST_ROUND_ORDINAL
 
     def __post_init__(self) -> None:
         _require_bounded_text(self.node_id, "agent receipt node id")
         _require_bounded_text(self.profile_id, "auth profile id")
         _require_bounded_text(self.model, "agent model")
         if self.node_execution_id != NodeExecutionId.for_node(
-            self.run_id, self.workflow_revision_hash, self.node_id
+            self.run_id, self.workflow_revision_hash, self.node_id, self.round_ordinal
         ):
             raise ValueError(
                 "agent receipt execution identity differs from its binding"
@@ -545,6 +547,7 @@ class AgentReceiptV2:
             result.output_bytes,
             output_hash,
             receipt_hash,
+            request.round_ordinal,
         )
 
 

@@ -44,7 +44,12 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.run_projections import RunPage
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 from atelier2.host.logging import PROCESS_LOGGER_NAME, configure_process_logging
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
@@ -186,6 +191,7 @@ def _seed_historic_run(runtime: DbosRuntime, run_id: RunId) -> WorkflowRevision:
                 "agent_binding_set_hash": bindings.binding_set_hash.value,
                 "run_configuration_revision_hash": configuration_hash,
                 "current_node_id": "implement",
+                "current_round_ordinal": FIRST_ROUND_ORDINAL,
                 "state": RunState.STARTED.value,
                 "state_version": 0,
                 "last_event_sequence": 0,
@@ -255,6 +261,7 @@ nodes:
                 "workflow_format_version": 1,
                 "agent_binding_set_hash": None,
                 "current_node_id": "missing-node",
+                "current_round_ordinal": FIRST_ROUND_ORDINAL,
                 "state": RunState.STARTED.value,
                 "state_version": 0,
                 "last_event_sequence": 0,

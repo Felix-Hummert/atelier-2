@@ -51,6 +51,7 @@ from atelier2.contracts.run_configuration_v3 import (
     RunConfigurationRevision,
 )
 from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
     RunId,
     RunState,
     WorkflowRevision,
@@ -543,6 +544,7 @@ class DbosDurableRunStarter:
                             else binding_set.binding_set_hash.value
                         ),
                         current_node_id=entry_node_of(graph),
+                        current_round_ordinal=FIRST_ROUND_ORDINAL,
                         state=RunState.STARTED.value,
                         state_version=0,
                         last_event_sequence=0,

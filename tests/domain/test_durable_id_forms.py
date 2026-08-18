@@ -6,8 +6,9 @@ a durable fact: change the digest, the separator or the encoding and identical
 work becomes a second identity — silently, with nothing red.
 
 This table pins whole vectors rather than prefixes, for every one of the ten
-derivations the engine has, and for the surrounding space and non-ASCII input
-that separate an exact identity from a normalised one. A prefix test stays green
+derivations the engine has, for the round dimension a declared loop turns, and
+for the surrounding space and non-ASCII input that separate an exact identity
+from a normalised one. A prefix test stays green
 while the tail drifts; a vector test cannot. Every value below was computed from
 the production owner and pasted, never hand-derived here: a test that recomputes
 the form it is checking would agree with any form at all. That is also what lets the table survive a
@@ -17,6 +18,12 @@ The ten do not share one derivation, and this table deliberately does not make
 them: three schemas live here side by side (framed digest, bare digest, plain
 concatenation) because unifying them would restart every durable workflow under
 a new identity.
+
+The round follows the same rule from the other side. The first round of a node
+is pinned here to be the *same bytes* as the roundless derivation that landed
+before loops existed, and every later round is its own value — so a document
+that declares no loop cannot have moved a single stored identity, and two rounds
+of one node can never be mistaken for one execution.
 """
 
 from __future__ import annotations
@@ -41,10 +48,21 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.effects import LogicalEffectKey, ReconcileCommandId
 from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    WorkflowRevisionHash,
+)
 
 RUN = RunId("run-1")
-EXECUTION = NodeExecutionId.for_node(RUN, WorkflowRevisionHash("2" * 64), "node")
+REVISION = WorkflowRevisionHash("2" * 64)
+EXECUTION = NodeExecutionId.for_node(RUN, REVISION, "node")
+
+
+def executed_in_round(round_ordinal: int) -> NodeExecutionId:
+    return NodeExecutionId.for_node(RUN, REVISION, "node", round_ordinal)
+
+
 EFFECT_KEY = LogicalEffectKey("atelier2-node-effect-" + "d" * 64)
 RECONCILE_COMMAND = ReconcileCommandId("command-1")
 ATTEMPT = AgentAttemptId("a" * 64)
@@ -131,6 +149,32 @@ DURABLE_ID_VECTORS = (
         replacement_workflow_id_for(ATTEMPT),
         "atelier2-agent-replacement-" + "a" * 64,
         id="agent-replacement",
+    ),
+    pytest.param(
+        executed_in_round(FIRST_ROUND_ORDINAL).value,
+        EXECUTION.value,
+        id="node-execution-first-round-is-the-landed-form",
+    ),
+    pytest.param(
+        executed_in_round(2).value,
+        "647f77d7df3f68f6b00ce092d8423cfb9cc2c01292a87366d170f3b441406c4e",
+        id="node-execution-second-round",
+    ),
+    pytest.param(
+        executed_in_round(3).value,
+        "977fa1fb75d7b406ed986858f0afffde8932484d9357ff4e8b3bcf52d5e1c69c",
+        id="node-execution-third-round",
+    ),
+    pytest.param(
+        executed_in_round(10).value,
+        "f197a38b6bb345a5784d39f1b20a969ce70770b6f8fbe08731a12d93132d17be",
+        id="node-execution-tenth-round",
+    ),
+    pytest.param(
+        node_workflow_id_for(executed_in_round(2)),
+        "atelier2-node-"
+        "e8d6ffba5c33358acc3db881eb00c9b78303707290f2e6173c875578b3d8f024",
+        id="node-workflow-of-a-second-round",
     ),
 )
 

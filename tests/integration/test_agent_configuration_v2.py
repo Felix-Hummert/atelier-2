@@ -66,7 +66,12 @@ from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.run_projections import (
     RunPage,
 )
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AgentConfigurationRevisionPage,
@@ -234,9 +239,14 @@ def _encoded_binding(
     *,
     include_contract: bool,
 ) -> EncodedAgentBindingV2:
+    # The round is not part of what `include_contract` toggles: the capability
+    # contract was added tolerantly, so a payload recorded before it still
+    # replays, while the round arrived with a store cutover that no earlier
+    # payload survives. Every binding this reader can meet carries it.
     encoded: dict[str, object] = {
         "type": "agent-v2",
         "role": "builder",
+        "round_ordinal": FIRST_ROUND_ORDINAL,
         "job": "build",
         "configuration_hash": configuration.revision_hash.value,
         "auth_hash": auth.revision_hash.value,
@@ -300,6 +310,38 @@ def test_old_node_binding_payload_replays_and_new_payload_carries_contract() -> 
     assert newly_encoded.resolved_binding.configuration == current
     assert replayed.declared_output_schema_bytes is None
     assert newly_encoded.declared_output_schema_bytes is None
+
+
+@pytest.mark.proves("every-round-of-a-loop-is-its-own-durable-execution")
+def test_a_recorded_binding_that_names_no_round_is_refused_by_name() -> None:
+    """Which execution a recovered node is may not be guessed back into place.
+
+    A binding without a round is a binding this build never wrote, and reading
+    it as the first round would silently make a later round answer for the
+    first. The refusal says that instead.
+    """
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    roundless = dict(_encoded_binding(configuration, auth, include_contract=True))
+    del roundless["round_ordinal"]
+
+    with pytest.raises(RunBindingConflict) as refused:
+        _agent_request_v2(
+            cast(EncodedAgentBindingV2, roundless),
+            RunId("run-1"),
+            WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
+            "build",
+            AgentExecutorOperationalIdentity("executor/test"),
+            frozenset({AgentExecutionCapability.HEADLESS}),
+        )
+
+    assert "no round" in str(refused.value)
 
 
 def test_a_declared_schema_document_reaches_the_request_as_its_published_bytes() -> (

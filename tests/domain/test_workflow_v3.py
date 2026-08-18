@@ -188,6 +188,138 @@ def iterate_line(
     return "iterate: {" + ", ".join(declared) + "}"
 
 
+def loops_line(
+    body: str = "[code_review, approve]",
+    bound: str = "maximum_rounds: 2",
+    loop_id: str = "review_cycle",
+    second: str = "",
+) -> str:
+    """One or two loop declarations as a flow sequence, differing only in data."""
+    declared = [part for part in (f"id: {loop_id}", f"body: {body}", bound) if part]
+    return "loops: [{" + ", ".join(declared) + "}" + second + "]"
+
+
+@pytest.mark.proves("a-loop-over-a-stretch-of-the-graph-is-declarable")
+def test_a_declared_loop_reads_back_with_its_body_and_its_bound() -> None:
+    parsed = graph(with_document_line(loops_line()))
+
+    declared = parsed.loops[0]
+    assert (declared.id, declared.body) == ("review_cycle", ("code_review", "approve"))
+    assert declared.maximum_rounds == 2
+    assert parsed.loop_of("code_review") is declared
+    assert parsed.loop_of("implement") is None
+
+
+@pytest.mark.proves("a-loop-over-a-stretch-of-the-graph-is-declarable")
+def test_a_document_that_declares_no_loop_repeats_nothing() -> None:
+    parsed = graph()
+
+    assert parsed.loops == ()
+    assert parsed.declared_rounds_of("implement") == range(1, 2)
+
+
+@pytest.mark.proves("a-loop-without-a-bound-is-refused-by-name")
+@pytest.mark.parametrize(
+    "bound",
+    (
+        "",
+        "maximum_rounds: 0",
+        "maximum_rounds: -1",
+        "maximum_rounds: 9223372036854775808",
+        "maximum_rounds: many",
+        "maximum_rounds: 1.5",
+        "maximum_rounds: true",
+    ),
+    ids=(
+        "absent",
+        "no round at all",
+        "below the declared range",
+        "above the declared range",
+        "a word",
+        "a fraction",
+        "a boolean",
+    ),
+)
+def test_a_loop_that_declares_no_honest_round_bound_is_refused(bound: str) -> None:
+    refusal = refusal_of(with_document_line(loops_line(bound=bound)))
+
+    assert refusal.reason is WorkflowRefusalReason.UNBOUNDED_ITERATION
+    assert refusal.field == "maximum_rounds"
+
+
+@pytest.mark.proves("a-loop-the-graph-cannot-turn-is-refused-by-name")
+@pytest.mark.parametrize(
+    ("declaration", "reason", "node"),
+    (
+        (
+            loops_line(body="[nowhere]"),
+            WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE,
+            None,
+        ),
+        (
+            loops_line(body="[approve, code_review]"),
+            WorkflowRefusalReason.LOOP_BODY_NOT_ONE_LINE,
+            "approve",
+        ),
+        (
+            loops_line(body="[code_review, merge_findings]"),
+            WorkflowRefusalReason.LOOP_BODY_NOT_ONE_LINE,
+            "merge_findings",
+        ),
+        (
+            loops_line(body="[implement, code_review]"),
+            WorkflowRefusalReason.LOOP_BODY_NOT_ONE_LINE,
+            "rehearse",
+        ),
+        (
+            loops_line(
+                second=", {id: second_cycle, body: [code_review], maximum_rounds: 2}"
+            ),
+            WorkflowRefusalReason.DUPLICATE_NAME,
+            "code_review",
+        ),
+        (
+            loops_line(
+                second=", {id: review_cycle, body: [rehearse], maximum_rounds: 2}"
+            ),
+            WorkflowRefusalReason.DUPLICATE_NAME,
+            None,
+        ),
+    ),
+    ids=(
+        "repeating a node nothing declares",
+        "entered where the round would already have run",
+        "a body the declared edges do not order in one stretch",
+        "left at a node that is not the round's last",
+        "one node claimed by two loops",
+        "two loops under one id",
+    ),
+)
+def test_a_loop_the_declared_edges_cannot_turn_is_refused(
+    declaration: str, reason: WorkflowRefusalReason, node: str | None
+) -> None:
+    refusal = refusal_of(with_document_line(declaration))
+
+    assert refusal.reason is reason
+    assert (refusal.node, refusal.field) == (node, "loops")
+
+
+@pytest.mark.proves("a-loop-the-graph-cannot-turn-is-refused-by-name")
+def test_a_backwards_control_edge_is_still_refused_as_the_cycle_it_is() -> None:
+    """The loop is the only legal way back, and declaring one changes nothing here.
+
+    A `depends_on` edge pointing at a node further down the order is what ADR
+    0002 refuses unconditionally, and an unconditional refusal that gained an
+    exception for the loop would stop being one.
+    """
+    refusal = refusal_of(
+        with_node_line("implement", "depends_on: [code_review]", DOCUMENT)
+    )
+
+    assert refusal.reason is WorkflowRefusalReason.CYCLE
+    assert refusal.field == "depends_on"
+
+
 def test_every_node_kind_of_the_record_parses_into_its_own_closed_model() -> None:
     parsed = graph()
 

@@ -101,6 +101,7 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
     RunId,
     RunState,
     WorkflowRevisionHash,
@@ -163,6 +164,7 @@ class EncodedAgentBinding(TypedDict):
 class EncodedAgentBindingV2(TypedDict):
     type: Literal["agent-v2"]
     role: str
+    round_ordinal: int
     job: str
     tool_revision_hash: NotRequired[str]
     tool_capability: NotRequired[str]
@@ -290,16 +292,28 @@ def _node_binding(
                 raise RunTransitionConflict("V2 Agent role has no durable binding")
             configuration = resolved.configuration
             auth = resolved.auth_profile
+            # The round travels inside the binding because the binding is what a
+            # recovery replays. Reading the run again at launch would ask a row
+            # that may already stand in the next round, and the recovered node
+            # would silently bind an execution it never was.
             encoded: EncodedAgentBindingV2 = {
                 "type": "agent-v2",
                 "role": resolved.role.value,
+                "round_ordinal": run.current_round_ordinal,
                 "job": (
                     node.job
                     if isinstance(node, AgentNodeV2)
                     else node_job(
                         node.instruction,
                         load_run_inputs(session, run_id, node),
-                        load_node_outputs(session, run_id, revision_hash, graph, node),
+                        load_node_outputs(
+                            session,
+                            run_id,
+                            revision_hash,
+                            graph,
+                            node,
+                            run.current_round_ordinal,
+                        ),
                     )
                 ),
                 "configuration_hash": configuration.revision_hash.value,
@@ -525,10 +539,16 @@ def _agent_request_v2(
         raise RunBindingConflict(
             "a durable output schema document carries a value of the wrong type"
         )
+    # A binding recorded before the round existed names no round, and the round
+    # is not something this reader may invent: which execution a recovered node
+    # is is exactly what the recorded binding is for.
+    round_ordinal = binding.get("round_ordinal")
+    if type(round_ordinal) is not int:
+        raise RunBindingConflict("a durable agent binding names no round it ran in")
     try:
         resolved = ResolvedAgentBinding(AgentRole(binding["role"]), configuration, auth)
         return AgentExecutionRequestV2(
-            NodeExecutionId.for_node(run_id, revision_hash, node_id),
+            NodeExecutionId.for_node(run_id, revision_hash, node_id, round_ordinal),
             run_id,
             revision_hash,
             node_id,
@@ -536,6 +556,7 @@ def _agent_request_v2(
             operational_identity,
             binding["job"].encode("utf-8"),
             None if schema_text is None else schema_text.encode("utf-8"),
+            round_ordinal,
         )
     except (TypeError, ValueError) as error:
         raise RunBindingConflict(
@@ -563,9 +584,20 @@ def register_durable_run_workflow(
     effect_binding: EffectAdapterBinding,
 ) -> None:
     def start_node(
-        run_id: RunId, revision_hash: WorkflowRevisionHash, node_id: str
+        run_id: RunId,
+        revision_hash: WorkflowRevisionHash,
+        node_id: str,
+        round_ordinal: int = FIRST_ROUND_ORDINAL,
     ) -> None:
-        execution_id = NodeExecutionId.for_node(run_id, revision_hash, node_id)
+        """Start one round of one node under the identity that round has.
+
+        The durable workflow id is derived from the execution, so a second round
+        of the same node is a second durable workflow rather than a repeat of
+        the first that the idempotency key would swallow.
+        """
+        execution_id = NodeExecutionId.for_node(
+            run_id, revision_hash, node_id, round_ordinal
+        )
         with SetWorkflowID(node_workflow_id_for(execution_id)):
             DBOS.start_workflow(
                 durable_node, run_id.value, revision_hash.value, node_id
@@ -663,11 +695,12 @@ def register_durable_run_workflow(
         )
         if isinstance(outcome, AgentAttemptSucceeded):
             match outcome.completion:
-                case RunContinues(node_id):
+                case RunContinues(node_id, round_ordinal):
                     start_node(
                         replacement.run_id,
                         replacement.workflow_revision_hash,
                         node_id,
+                        round_ordinal,
                     )
                 case RunCompletes():
                     pass
@@ -740,8 +773,8 @@ def register_durable_run_workflow(
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value
             match outcome.completion:
-                case RunContinues(node_id):
-                    start_node(typed_run_id, typed_revision, node_id)
+                case RunContinues(node_id, round_ordinal):
+                    start_node(typed_run_id, typed_revision, node_id, round_ordinal)
                     return RunState.STARTED.value
                 case RunCompletes():
                     return RunState.COMPLETED.value
