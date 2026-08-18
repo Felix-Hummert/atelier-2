@@ -33,8 +33,11 @@ from atelier2.adapters.dbos.schema import (
     MigrationRequired,
     _require_product_shape,
     agent_attempts,
+    agent_configuration_revisions,
+    agent_receipts_v2,
     artifacts,
     atelier_schema_versions,
+    auth_profile_revisions,
     catalog_lineage_members,
     catalog_lineages,
     context_packages_v3,
@@ -42,6 +45,7 @@ from atelier2.adapters.dbos.schema import (
     node_execution_requests_v3,
     node_receipts_v3,
     published_revisions,
+    run_agent_bindings,
     run_configuration_revisions,
     run_events,
     run_inputs_v3,
@@ -52,7 +56,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.contracts.catalog_v3 import CatalogLineage
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
 from atelier2.host import main
 
 ARCHIVED_RUN_ID = "live/erster-lauf-nach-der-nacht"
@@ -222,6 +226,7 @@ END
 
 ARCHIVED_ATTEMPT_ID = "ab" * 32
 ARCHIVED_ATTEMPT_FAILURE_CODE = "PROCESS_EXITED_UNSUCCESSFULLY"
+ARCHIVED_RECEIPT_NODE_EXECUTION_ID = "99" * 32
 
 
 def _logical_dump(database_path: Path) -> tuple[str, ...]:
@@ -422,6 +427,10 @@ def _create_populated_v13_store(database_path: Path) -> None:
     request = "22" * 32
     execution = "11" * 32
     receipt = "ef" * 32
+    auth_profile_revision_hash = "55" * 32
+    agent_configuration_revision_hash = "66" * 32
+    binding_set_hash = "77" * 32
+    agent_receipt_hash = "dd" * 32
     with engine.connect() as connection:
         for table in (artifacts.name, run_inputs_v3.name, tool_redemptions.name):
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
@@ -489,13 +498,41 @@ def _create_populated_v13_store(database_path: Path) -> None:
                 bootstrap_workflow_id="bootstrap-archived-night-run",
                 revision_hash=published.revision_hash.value,
                 workflow_format_version=3,
-                agent_binding_set_hash=None,
+                agent_binding_set_hash=binding_set_hash,
                 current_node_id="cook",
                 state="STARTED",
                 state_version=1,
                 last_event_sequence=1,
                 terminal_hash=None,
                 run_configuration_revision_hash=configuration,
+            )
+        )
+        connection.execute(
+            auth_profile_revisions.insert().values(
+                revision_hash=auth_profile_revision_hash,
+                profile_id="profile/archived",
+                revision_number=1,
+                provider_id="anthropic",
+                auth_mode="api_key",
+            )
+        )
+        connection.execute(
+            agent_configuration_revisions.insert().values(
+                revision_hash=agent_configuration_revision_hash,
+                model="archived-model",
+                auth_profile_revision_hash=auth_profile_revision_hash,
+                executor_revision="archived-executor",
+                revision_format_version=1,
+                requested_capability="headless",
+            )
+        )
+        connection.execute(
+            run_agent_bindings.insert().values(
+                run_id=ARCHIVED_RUN_ID,
+                revision_hash=published.revision_hash.value,
+                binding_set_hash=binding_set_hash,
+                role="chef",
+                agent_configuration_revision_hash=agent_configuration_revision_hash,
             )
         )
         connection.execute(
@@ -549,6 +586,43 @@ def _create_populated_v13_store(database_path: Path) -> None:
                 receipt_hash=receipt,
             )
         )
+        connection.execute(
+            sa.text(
+                "INSERT INTO agent_receipts_v2 (node_execution_id, request_hash, "
+                "run_id, workflow_revision_hash, node_id, role, binding_set_hash, "
+                "agent_configuration_revision_hash, auth_profile_revision_hash, "
+                "profile_id, revision_number, provider_id, auth_mode, model, "
+                "executor_revision, executor_operational_identity, output_bytes, "
+                "output_hash, receipt_hash) VALUES (:node_execution_id, "
+                ":request_hash, :run_id, :workflow_revision_hash, :node_id, "
+                ":role, :binding_set_hash, :agent_configuration_revision_hash, "
+                ":auth_profile_revision_hash, :profile_id, :revision_number, "
+                ":provider_id, :auth_mode, :model, :executor_revision, "
+                ":executor_operational_identity, :output_bytes, :output_hash, "
+                ":receipt_hash)"
+            ),
+            {
+                "node_execution_id": ARCHIVED_RECEIPT_NODE_EXECUTION_ID,
+                "request_hash": request,
+                "run_id": ARCHIVED_RUN_ID,
+                "workflow_revision_hash": published.revision_hash.value,
+                "node_id": ARCHIVED_NODE_ID,
+                "role": "chef",
+                "binding_set_hash": binding_set_hash,
+                "agent_configuration_revision_hash": agent_configuration_revision_hash,
+                "auth_profile_revision_hash": auth_profile_revision_hash,
+                "profile_id": "profile/archived",
+                "revision_number": 1,
+                "provider_id": "anthropic",
+                "auth_mode": "api_key",
+                "model": "archived-model",
+                "executor_revision": "archived-executor",
+                "executor_operational_identity": "operational/archived",
+                "output_bytes": ARCHIVED_OUTPUT,
+                "output_hash": "aa" * 32,
+                "receipt_hash": agent_receipt_hash,
+            },
+        )
         connection.commit()
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
@@ -585,6 +659,28 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
             )
             == ARCHIVED_RUN_ID
         )
+        assert (
+            connection.scalar(
+                sa.select(runs.c.current_round_ordinal).where(
+                    runs.c.run_id == ARCHIVED_RUN_ID
+                )
+            )
+            == FIRST_ROUND_ORDINAL
+        )
+        carried_receipt = (
+            connection.execute(
+                sa.select(agent_receipts_v2).where(
+                    agent_receipts_v2.c.run_id == ARCHIVED_RUN_ID,
+                    agent_receipts_v2.c.node_id == ARCHIVED_NODE_ID,
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert (
+            carried_receipt["node_execution_id"] == ARCHIVED_RECEIPT_NODE_EXECUTION_ID
+        )
+        assert carried_receipt["round_ordinal"] == FIRST_ROUND_ORDINAL
         assert (
             connection.scalar(sa.select(node_receipts_v3.c.disposition)) == "succeeded"
         )
