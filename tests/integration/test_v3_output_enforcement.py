@@ -396,7 +396,6 @@ def test_the_answer_its_own_schema_admits_is_written_as_the_one_success(
 
 @pytest.mark.proves("a-refused-output-ends-its-attempt-durably-named")
 @pytest.mark.proves("a-node-that-stops-the-run-says-what-it-is-waiting-on")
-@pytest.mark.proves("a-refused-output-ends-its-attempt-durably-named")
 def test_the_refused_nodes_detail_names_the_durably_stored_reason(
     runtime: DbosRuntime,
 ) -> None:
