@@ -61,6 +61,8 @@ function v3Run(overrides: Partial<RunV3> = {}): RunV3 {
     ],
     terminal_hash: null,
     latest_event_cursor: null,
+    started_at: "2026-08-18T15:00:00Z",
+    ended_at: null,
     ...overrides
   };
 }

@@ -265,6 +265,7 @@ def plant_the_value_a_build_without_the_guard_wrote(runtime: DbosRuntime) -> Non
 
 
 @pytest.mark.proves("a-click-into-a-node-answers-what-it-was-asked-and-wrote")
+@pytest.mark.proves("a-node-carries-how-long-it-ran")
 def test_a_finished_node_answers_its_job_its_value_and_who_produced_it(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
@@ -294,6 +295,9 @@ def test_a_finished_node_answers_its_job_its_value_and_who_produced_it(
     assert detail.provenance is not None
     assert detail.provenance.provider_id == "exact"
     assert detail.provenance.role == "builder"
+    assert detail.started_at is not None
+    assert detail.ended_at is not None
+    assert detail.started_at.value <= detail.ended_at.value
 
     # The receipt's own hash, not the job hash standing in for it: the two frame
     # different preimages, and a reader told to compare them would reject a job

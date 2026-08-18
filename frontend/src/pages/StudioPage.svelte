@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { AnyRun, CockpitApi } from "../api/client";
+  import { isRunV3, type AnyRun, type CockpitApi } from "../api/client";
   import InboxRow from "../components/InboxRow.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ProjectCard from "../components/ProjectCard.svelte";
@@ -15,6 +15,7 @@
     running: AnyRun[];
     waiting: AnyRun[];
     landed: number;
+    lastLandedAt: string | null;
   };
 
   let home: RetainedResource<StudioHome> = { confirmed: null, request: { state: "idle" } };
@@ -40,7 +41,8 @@
       home = confirmResource(home, {
         running: started.runs,
         waiting: [...waitingInput.runs, ...waitingReconciliation.runs],
-        landed: completed.runs.length + failed.runs.length
+        landed: completed.runs.length + failed.runs.length,
+        lastLandedAt: lastLanding([...completed.runs, ...failed.runs])
       });
       if (unread.length > 0) {
         failureMessage = `Some of this workshop could not be read, so what is below is incomplete: ${unread.join("; ")}.`;
@@ -49,6 +51,15 @@
       failureMessage = error instanceof Error ? error.message : "The workshop could not be read.";
       home = { ...home, request: { state: "idle" } };
     }
+  }
+
+  function lastLanding(runs: AnyRun[]): string | null {
+    const stamps = runs
+      .filter(isRunV3)
+      .map((run) => run.ended_at)
+      .filter((value): value is string => value !== null)
+      .sort();
+    return stamps.at(-1) ?? null;
   }
 
   $: snapshot = home.confirmed;
@@ -98,6 +109,7 @@
           running={snapshot.running.length}
           waiting={snapshot.waiting.length}
           landed={snapshot.landed}
+          lastLandedAt={snapshot.lastLandedAt}
           {navigate}
         />
       {/if}

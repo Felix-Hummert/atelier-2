@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { CockpitApi, RunPage } from "../api/client";
+  import { isRunV3, type CockpitApi, type RunPage } from "../api/client";
   import Breadcrumb from "../components/Breadcrumb.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
+  import When from "../components/When.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
   import { runPath } from "../lib/route";
   import { readEveryRun } from "../lib/runPages";
@@ -77,6 +78,13 @@
                 <strong>{run.run_id}</strong>
                 {#if group.standing === "waiting"}
                   <span class="state-label state-waiting"><span aria-hidden="true">{standingMarks.waiting}</span>{humanMove(run.state)}</span>
+                {/if}
+                {#if isRunV3(run)}
+                  <When
+                    startedAt={run.started_at ?? null}
+                    endedAt={run.ended_at ?? null}
+                    kind={run.ended_at == null ? "for" : "ago"}
+                  />
                 {/if}
               </a>
             </li>
