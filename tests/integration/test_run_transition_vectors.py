@@ -33,6 +33,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
     RunId,
     RunState,
     WorkflowRevision,
@@ -183,6 +184,7 @@ def standing(engine: Engine, node: str, state: RunState) -> WorkflowRevisionHash
                 revision_hash=revision.revision_hash.value,
                 workflow_format_version=1,
                 current_node_id=node,
+                current_round_ordinal=FIRST_ROUND_ORDINAL,
                 state=state.value,
                 state_version=0,
                 last_event_sequence=0,

@@ -15,6 +15,7 @@ from atelier2.adapters.dbos.schema import (
     UnsupportedSchemaVersion,
     initialize_schema,
 )
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 
 
 def snapshot(database: Path) -> tuple[bytes, tuple[tuple[str, str, str], ...]]:
@@ -162,6 +163,7 @@ def test_v2_tables_have_exact_secret_free_columns(tmp_path: Path) -> None:
             "output_bytes",
             "output_hash",
             "receipt_hash",
+            "round_ordinal",
         ),
         "agent_attempts": (
             "attempt_id",
@@ -218,7 +220,7 @@ def _seed_v2_constraint_rows(connection: sa.Connection) -> None:
         ("b" * 64, "opus", "a" * 64, "claude-cli/v1", 2, "headless"),
     )
     connection.exec_driver_sql(
-        "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             "run-v2",
             "bootstrap",
@@ -226,6 +228,7 @@ def _seed_v2_constraint_rows(connection: sa.Connection) -> None:
             2,
             "d" * 64,
             "build",
+            FIRST_ROUND_ORDINAL,
             "STARTED",
             0,
             0,
@@ -238,7 +241,8 @@ def _seed_v2_constraint_rows(connection: sa.Connection) -> None:
         ("run-v2", "c" * 64, "d" * 64, "builder", "b" * 64),
     )
     connection.exec_driver_sql(
-        "INSERT INTO agent_receipts_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agent_receipts_v2 "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             "f" * 64,
             "1" * 64,
@@ -259,6 +263,7 @@ def _seed_v2_constraint_rows(connection: sa.Connection) -> None:
             b"output",
             "e" * 64,
             "9" * 64,
+            FIRST_ROUND_ORDINAL,
         ),
     )
 
@@ -293,7 +298,7 @@ def _seed_v2_constraint_rows(connection: sa.Connection) -> None:
                 "auth_profile_revision_hash,profile_id,revision_number,provider_id,"
                 "auth_mode,'wrong-model',executor_revision,"
                 "executor_operational_identity,output_bytes,output_hash,"
-                ":receipt FROM agent_receipts_v2"
+                ":receipt,round_ordinal FROM agent_receipts_v2"
             ),
             {"execution": "2" * 64, "receipt": "3" * 64},
         ),
@@ -304,13 +309,25 @@ def _seed_v2_constraint_rows(connection: sa.Connection) -> None:
                 "binding_set_hash,agent_configuration_revision_hash,"
                 "auth_profile_revision_hash,profile_id,revision_number,provider_id,"
                 "auth_mode,model,executor_revision,executor_operational_identity,"
-                ":output,output_hash,:receipt FROM agent_receipts_v2"
+                ":output,output_hash,:receipt,round_ordinal FROM agent_receipts_v2"
             ),
             {
                 "execution": "2" * 64,
                 "output": b"x" * 49_153,
                 "receipt": "3" * 64,
             },
+        ),
+        (
+            (
+                "INSERT INTO agent_receipts_v2 SELECT "
+                "node_execution_id,request_hash,run_id,workflow_revision_hash,node_id,"
+                "role,binding_set_hash,agent_configuration_revision_hash,"
+                "auth_profile_revision_hash,profile_id,revision_number,provider_id,"
+                "auth_mode,model,executor_revision,executor_operational_identity,"
+                "output_bytes,output_hash,:receipt,round_ordinal "
+                "FROM agent_receipts_v2"
+            ),
+            {"receipt": "3" * 64},
         ),
         (
             "UPDATE auth_profile_revisions SET profile_id='changed'",
@@ -326,6 +343,7 @@ def _seed_v2_constraint_rows(connection: sa.Connection) -> None:
         "run-binding-composite-foreign-key",
         "receipt-configuration-composite-foreign-key",
         "receipt-output-bound",
+        "receipt-once-per-node-execution",
         "auth-immutable",
         "configuration-immutable",
         "run-binding-immutable",
@@ -514,10 +532,10 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
         )
         connection.execute(
             sa.text(
-                "INSERT INTO runs VALUES "
-                "('run-1','bootstrap',:revision,1,NULL,'action','STARTED',0,0,NULL,NULL)"
+                "INSERT INTO runs VALUES ('run-1','bootstrap',:revision,1,NULL,"
+                "'action',:round,'STARTED',0,0,NULL,NULL)"
             ),
-            {"revision": revision},
+            {"revision": revision, "round": FIRST_ROUND_ORDINAL},
         )
         connection.execute(
             sa.text(
@@ -550,14 +568,15 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
             sa.text(
                 "INSERT INTO run_events("
                 "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
-                "event_kind,payload,payload_hash,receipt_logical_key,"
+                "round_ordinal,event_kind,payload,payload_hash,receipt_logical_key,"
                 "receipt_result_hash,event_hash) VALUES "
-                "('run-1',:revision,1,'action',:node,'ACTION_COMPLETED',"
+                "('run-1',:revision,1,'action',:node,:round,'ACTION_COMPLETED',"
                 ":payload,:payload_hash,'key',:result_hash,:event_hash)"
             ),
             {
                 "revision": revision,
                 "node": "2" * 64,
+                "round": FIRST_ROUND_ORDINAL,
                 "payload": b"draft-17",
                 "payload_hash": result_hash,
                 "result_hash": result_hash,
@@ -619,10 +638,10 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
         )
         connection.execute(
             sa.text(
-                "INSERT INTO runs VALUES "
-                "('run-1','bootstrap',:revision,1,NULL,'action','STARTED',0,0,NULL,NULL)"
+                "INSERT INTO runs VALUES ('run-1','bootstrap',:revision,1,NULL,"
+                "'action',:round,'STARTED',0,0,NULL,NULL)"
             ),
-            {"revision": revision},
+            {"revision": revision, "round": FIRST_ROUND_ORDINAL},
         )
         connection.execute(
             sa.text(
@@ -647,15 +666,16 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
                 sa.text(
                     "INSERT INTO run_events("
                     "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
-                    "event_kind,payload,payload_hash,receipt_logical_key,"
-                    "receipt_result_hash,event_hash) VALUES "
-                    "('run-1',:revision,:sequence,'action',:node,:event_kind,"
+                    "round_ordinal,event_kind,payload,payload_hash,"
+                    "receipt_logical_key,receipt_result_hash,event_hash) VALUES "
+                    "('run-1',:revision,:sequence,'action',:node,:round,:event_kind,"
                     ":payload,:payload_hash,'key',:result_hash,:event_hash)"
                 ),
                 {
                     "revision": revision,
                     "sequence": sequence,
                     "node": "2" * 64,
+                    "round": FIRST_ROUND_ORDINAL,
                     "event_kind": event_kind,
                     "payload": result,
                     "payload_hash": result_hash,
@@ -705,15 +725,16 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
                 sa.text(
                     "INSERT INTO run_events("
                     "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
-                    "event_kind,payload,payload_hash,receipt_logical_key,"
-                    "receipt_result_hash,event_hash) VALUES "
-                    "('run-1',:revision,3,'node',:node,:event_kind,"
+                    "round_ordinal,event_kind,payload,payload_hash,"
+                    "receipt_logical_key,receipt_result_hash,event_hash) VALUES "
+                    "('run-1',:revision,3,'node',:node,:round,:event_kind,"
                     ":payload,:payload_hash,:receipt_logical_key,"
                     ":receipt_result_hash,:event_hash)"
                 ),
                 {
                     "revision": revision,
                     "node": "4" * 64,
+                    "round": FIRST_ROUND_ORDINAL,
                     "event_kind": event_kind,
                     "payload": payload,
                     "payload_hash": payload_hash,
@@ -743,13 +764,14 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
             )
             connection.execute(
                 sa.text(
-                    "INSERT INTO runs VALUES "
-                    "(:run,:bootstrap,:revision,1,NULL,'action','STARTED',0,0,NULL,NULL)"
+                    "INSERT INTO runs VALUES (:run,:bootstrap,:revision,1,NULL,"
+                    "'action',:round,'STARTED',0,0,NULL,NULL)"
                 ),
                 {
                     "run": f"run-{index}",
                     "bootstrap": f"bootstrap-{index}",
                     "revision": revision,
+                    "round": FIRST_ROUND_ORDINAL,
                 },
             )
             connection.execute(
@@ -801,14 +823,15 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
             sa.text(
                 "INSERT INTO run_events("
                 "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
-                "event_kind,payload,payload_hash,receipt_logical_key,"
+                "round_ordinal,event_kind,payload,payload_hash,receipt_logical_key,"
                 "receipt_result_hash,event_hash) VALUES "
-                "('run-2',:revision,1,'action',:node,'ACTION_COMPLETED',"
+                "('run-2',:revision,1,'action',:node,:round,'ACTION_COMPLETED',"
                 ":payload,:payload_hash,'key-1',:payload_hash,:event_hash)"
             ),
             {
                 "revision": revisions[1],
                 "node": "3" * 64,
+                "round": FIRST_ROUND_ORDINAL,
                 "payload": payload,
                 "payload_hash": payload_hash,
                 "event_hash": "4" * 64,

@@ -255,6 +255,7 @@ def plant_the_value_a_build_without_the_guard_wrote(runtime: DbosRuntime) -> Non
                 event_sequence=written.event_sequence,
                 node_id=written.node_id,
                 node_execution_id=written.node_execution_id.value,
+                round_ordinal=written.round_ordinal,
                 event_kind=written.event_kind.value,
                 payload=written.payload,
                 payload_hash=written.payload_hash.value,

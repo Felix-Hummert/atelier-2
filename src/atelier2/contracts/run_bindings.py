@@ -10,7 +10,13 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
-from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    Run,
+    RunId,
+    RunState,
+    WorkflowRevisionHash,
+)
 
 
 class RunBindingConflict(RuntimeError):
@@ -28,6 +34,7 @@ class RunV2:
     state_version: int
     last_event_sequence: int
     terminal_hash: Sha256Hash | None = None
+    current_round_ordinal: int = FIRST_ROUND_ORDINAL
 
     def __post_init__(self) -> None:
         Run.validate_head(
@@ -36,6 +43,7 @@ class RunV2:
             self.state_version,
             self.last_event_sequence,
             self.terminal_hash,
+            self.current_round_ordinal,
         )
         ordered = tuple(
             sorted(
@@ -84,6 +92,7 @@ class RunV3:
     last_event_sequence: int
     run_configuration_revision_hash: RunConfigurationRevisionHash
     terminal_hash: Sha256Hash | None = None
+    current_round_ordinal: int = FIRST_ROUND_ORDINAL
 
     def __post_init__(self) -> None:
         if not isinstance(
@@ -96,6 +105,7 @@ class RunV3:
             self.state_version,
             self.last_event_sequence,
             self.terminal_hash,
+            self.current_round_ordinal,
         )
         ordered = tuple(
             sorted(

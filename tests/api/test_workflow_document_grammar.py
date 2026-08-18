@@ -30,7 +30,11 @@ from tests.scenarios.api import (
     published_workflow_grammar,
     published_workflow_grammar_reference,
 )
-from tests.scenarios.workflows import V3_DOCUMENT, declared_output
+from tests.scenarios.workflows import (
+    LOOPED_LINE_DOCUMENT,
+    V3_DOCUMENT,
+    declared_output,
+)
 
 GUESSED_PATH = "/where-a-consumer-holding-only-a-base-url-knocks-first"
 
@@ -111,6 +115,44 @@ DOCUMENT_CASES = (
         ),
         False,
     ),
+    DocumentCase("a declared loop", LOOPED_LINE_DOCUMENT, True),
+    DocumentCase(
+        "a loop without the bound it must declare",
+        LOOPED_LINE_DOCUMENT.replace(b"    maximum_rounds: 3\n", b""),
+        False,
+    ),
+)
+
+
+@dataclass(frozen=True)
+class WholeDocumentCase:
+    """One rule the shape admits because no single node can answer it."""
+
+    name: str
+    document: bytes
+    reason: WorkflowRefusalReason
+
+
+WHOLE_DOCUMENT_CASES = (
+    WholeDocumentCase(
+        "a control edge naming no node",
+        ONE_AGENT_DOCUMENT.replace(
+            AGENT_KIND_LINE, AGENT_KIND_LINE + b"    depends_on: [nowhere]\n"
+        ),
+        WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE,
+    ),
+    WholeDocumentCase(
+        "a loop repeating a node the document does not declare",
+        LOOPED_LINE_DOCUMENT.replace(b"body: [implement, review]", b"body: [nowhere]"),
+        WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE,
+    ),
+    WholeDocumentCase(
+        "a loop entered where the round would already have run",
+        LOOPED_LINE_DOCUMENT.replace(
+            b"body: [implement, review]", b"body: [review, implement]"
+        ),
+        WorkflowRefusalReason.LOOP_BODY_NOT_ONE_LINE,
+    ),
 )
 
 
@@ -169,27 +211,27 @@ def test_the_named_document_describes_every_format_a_document_may_declare(
 
 
 @pytest.mark.proves("the-published-shape-is-the-grammar-the-publication-reads")
+@pytest.mark.parametrize(
+    "case", WHOLE_DOCUMENT_CASES, ids=[case.name for case in WHOLE_DOCUMENT_CASES]
+)
 def test_a_rule_no_single_node_can_answer_keeps_its_name_at_the_door(
-    openapi_document: Any,
+    case: WholeDocumentCase, openapi_document: Any
 ) -> None:
     """The shape is honest about its own boundary rather than silently wrong.
 
-    Whether a declared edge resolves is a statement about the whole document, and
-    the published shape admits this one. What must not happen is that it is then
-    swallowed: the publication refuses it under the name of the node nothing
-    declares.
+    Whether a declared edge resolves, and whether a declared loop repeats one
+    uninterrupted stretch of the order, are statements about the whole document,
+    and the published shape admits both. What must not happen is that they are
+    then swallowed: the publication refuses each under its own name.
     """
 
-    document = ONE_AGENT_DOCUMENT.replace(
-        AGENT_KIND_LINE, AGENT_KIND_LINE + b"    depends_on: [nowhere]\n"
-    )
     grammar = published_workflow_grammar(openapi_document)
 
-    assert grammar.is_valid(yaml.safe_load(document))
+    assert grammar.is_valid(yaml.safe_load(case.document))
     with pytest.raises(InvalidWorkflowDocument) as refused:
-        parse_workflow_document(document)
+        parse_workflow_document(case.document)
     assert refused.value.refusal is not None
-    assert refused.value.refusal.reason is WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE
+    assert refused.value.refusal.reason is case.reason
 
 
 def _is_a_workflow_document(document: bytes) -> bool:

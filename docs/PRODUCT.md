@@ -250,9 +250,27 @@ format-3 document into its own closed model — the five node kinds with the fie
 matrix each requires, refuses, or accepts, `depends_on` as the only control edge,
 the join rule in its three arities, the input sources a node may read — another
 node's output, that node's terminal receipt, a context entry, and the order the
-graph itself was started with — the two context-edge kinds, and graph-level inputs
-and outputs — and refuses every forbidden form naming the node and the field it
-concerns, including each retired V1 or V2 key with its replacement. Unsafe YAML is
+graph itself was started with — the two context-edge kinds, graph-level inputs
+and outputs, and the loops that repeat a stretch of the graph — and refuses every
+forbidden form naming the node and the field it concerns, including each retired
+V1 or V2 key with its replacement.
+
+A document may declare that a stretch of its own graph repeats. The declaration
+names the loop, the nodes it repeats and a maximum number of rounds that has no
+default: an unbounded loop is refused by name, as is a body the declared edges do
+not order in one uninterrupted stretch, a node two loops claim, and a loop
+repeating a node nothing declares. A control edge pointing backwards stays refused
+as the cycle it always was, so the declaration is the only legal way back. A run
+whose document declares a loop runs the body again from its first node while
+rounds remain and ends when the bound is reached, through the terminal path every
+other node ends by. Every round of every looped node is its own node execution
+with its own deterministic identity, durable request, receipt, produced value,
+durable workflow and event in the chain the terminal hash recomputes over — while
+the first round of a node keeps byte for byte the identity it had before any loop
+existed. Reaching the bound is the only way out this build has: a result that ends
+a loop early does not yet steer an edge, and a loop body may hold only agent
+nodes, with a value read out of a loop refused by name because no rule here says
+which round wrote it. Unsafe YAML is
 refused by name too, before any vocabulary is read: an
 anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
 a document that is not UTF-8 without a byte order mark, and one nested past the
@@ -675,22 +693,23 @@ version carries no binding rather than an invented one. What is still not proven
 is the request hash's own preimage: the job bytes it is taken over have no
 durable home, so a verifier copies that hash rather than recomputing it.
 
-The canonical store is schema V19. A fresh store is created as exact V19 and
+The canonical store is schema V20. A fresh store is created as exact V20 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
 access bindings, and the immutable declared context packages, node-execution request
 preimages and run configuration snapshots those receipts name, and the immutable
 orders a run was started with, the immutable proof of every redeemed tool
-grant, the receipt hash an agent completion binds, and immutable
-content-addressed artifacts an order may name instead of carrying their bytes. The catalog adapter founds a lineage
+grant, the receipt hash an agent completion binds, immutable content-addressed
+artifacts an order may name instead of carrying their bytes, and the round a
+declared loop was turning when each run, event and agent receipt was written. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
 founding, unpublished member, wrong kind, or retired lineage is refused by
 name. Measurements and policy activations are not in this profile. V13 through
-V18 remain published predecessor objects; exact V7 through V18 files are refused
+V19 remain published predecessor objects; exact V7 through V19 files are refused
 by runtime without mutation, with no runtime migration or downgrade. An offline
-`atelier2 migrate` command raises an exact V13 through V18 store to the current
+`atelier2 migrate` command raises an exact V13 through V19 store to the current
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.

@@ -27,6 +27,7 @@ from atelier2.adapters.dbos.schema import (
     V17_SCHEMA_HANDOFF,
     V18_SCHEMA_HANDOFF,
     V19_SCHEMA_HANDOFF,
+    V20_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -53,6 +54,7 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.contracts.catalog_v3 import CatalogLineage
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 
 
 def _create_populated_version_one_database(database_path: Path) -> None:
@@ -304,15 +306,23 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[19]
         == "a861d9087da05c112f88ae8ec573f57338b5ef1d04f36553922c505127b34298"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 20
+    assert V20_SCHEMA_HANDOFF.version == 20
+    assert (
+        V20_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[20]
+        == "09752981999444ee4129cfe29b7322b79d2ff378f91d1af5050342eff78b8637"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 21
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
-        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[20]
-        == "0e844689df44b41370c9e801cd7a0f8ff447d1e25c6df3d856605014949a3a81"
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[21]
+        == "6c4705f2960d1669a596ae8f3c857dd0ac15c4c94b71b4bb5998d1bac672cefe"
     )
 
 
-@pytest.mark.parametrize("version", [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
+@pytest.mark.parametrize(
+    "version", [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+)
 def test_predecessor_store_is_refused_without_mutation(
     tmp_path: Path, version: int
 ) -> None:
@@ -407,6 +417,7 @@ def _write_thin_vertical_set(
             workflow_format_version=3,
             agent_binding_set_hash=None,
             current_node_id="cook",
+            current_round_ordinal=FIRST_ROUND_ORDINAL,
             state="STARTED",
             state_version=0,
             last_event_sequence=0,
@@ -662,6 +673,7 @@ def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
                 workflow_format_version=1,
                 agent_binding_set_hash=None,
                 current_node_id="other",
+                current_round_ordinal=FIRST_ROUND_ORDINAL,
                 state="STARTED",
                 state_version=0,
                 last_event_sequence=0,
@@ -683,16 +695,17 @@ def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
         connection.exec_driver_sql(
             "INSERT INTO run_events("
             "run_id,revision_hash,event_sequence,node_id,node_execution_id,"
-            "event_kind,payload,payload_hash,receipt_logical_key,"
+            "round_ordinal,event_kind,payload,payload_hash,receipt_logical_key,"
             "receipt_result_hash,event_hash,agent_attempt_id,attempt_ordinal,"
             "cancellation_command_id,replacement,cancellation_disposition,"
-            "replacement_attempt_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "replacement_attempt_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 run_id,
                 revision,
                 sequence,
                 node_id,
                 execution_id,
+                FIRST_ROUND_ORDINAL,
                 kind,
                 b"event",
                 hashlib.sha256(b"event").hexdigest(),
@@ -812,6 +825,7 @@ def test_the_store_admits_a_receipt_binding_only_on_an_agent_completion(
                     event_sequence=1,
                     node_id="agent",
                     node_execution_id="1" * 64,
+                    round_ordinal=FIRST_ROUND_ORDINAL,
                     event_kind=event_kind,
                     payload=b"event",
                     payload_hash=hashlib.sha256(b"event").hexdigest(),
@@ -852,6 +866,7 @@ def ledger_engine(tmp_path: Path) -> Iterator[Engine]:
                 workflow_format_version=1,
                 agent_binding_set_hash=None,
                 current_node_id="agent",
+                current_round_ordinal=FIRST_ROUND_ORDINAL,
                 state="STARTED",
                 state_version=0,
                 last_event_sequence=0,
@@ -1094,6 +1109,7 @@ def test_run_state_tokens_are_exact(
         workflow_format_version=1,
         agent_binding_set_hash=None,
         current_node_id=("final" if state == "COMPLETED" else "node"),
+        current_round_ordinal=FIRST_ROUND_ORDINAL,
         state=state,
         state_version=0,
         last_event_sequence=0,
@@ -1338,6 +1354,7 @@ def test_every_effect_intent_binding_column_is_immutable(
                 workflow_format_version=1,
                 agent_binding_set_hash=None,
                 current_node_id="agent",
+                current_round_ordinal=FIRST_ROUND_ORDINAL,
                 state="STARTED",
                 state_version=0,
                 last_event_sequence=0,

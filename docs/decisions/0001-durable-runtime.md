@@ -30,16 +30,16 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V20 only in a truly empty canonical store and reopens
-only an exact V20 product schema. V9 through V19 remain published predecessor
-objects (`V9_SCHEMA_HANDOFF` through `V19_SCHEMA_HANDOFF`) and are not opened or
-migrated by runtime. An exact V13 through V19 store advances to the current
+The runtime creates schema V21 only in a truly empty canonical store and reopens
+only an exact V21 product schema. V9 through V20 remain published predecessor
+objects (`V9_SCHEMA_HANDOFF` through `V20_SCHEMA_HANDOFF`) and are not opened or
+migrated by runtime. An exact V13 through V20 store advances to the current
 schema only through the offline `atelier2 migrate` command, one published step at
 a time; older published predecessors stay refused by name. Older, future,
 malformed, or nonempty unowned stores are rejected without mutation. There is no
-runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 20 with
+runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 21 with
 product-schema fingerprint
-`0e844689df44b41370c9e801cd7a0f8ff447d1e25c6df3d856605014949a3a81`.
+`6c4705f2960d1669a596ae8f3c857dd0ac15c4c94b71b4bb5998d1bac672cefe`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -164,6 +164,8 @@ provider contract.
 | V15 redeemed tool grants | A fresh exact V15 store gives one redeemed tool grant a durable, immutable home: the node execution and attempt that redeemed it, the published grant revision, the capability it granted, the exact command, its exit code and the hash of what it wrote, with update and delete refused by trigger. It is written inside the transaction that makes the attempt succeed, so a succeeded attempt and the proof of what its tool ran are durable together or not at all. V14 remains unchanged and is refused without mutation. |
 | V16 receipt in the chain | A fresh exact V16 store gives an `AGENT_COMPLETED` event the receipt hash its preimage binds: `node-event-hash/v3` is chosen by content whenever that field is set, so an event without a binding keeps its frozen V1 or V2 hash byte for byte. The store admits the field only on a completion, mirroring the contract's rule, and a finished run's terminal hash recomputes from presented receipt and event fields alone -- under any other provider, profile, model, executor revision or request hash it misses. V15 remains unchanged and is refused without mutation. |
 | V17 named refusal and the record family's writer | A fresh exact V17 store admits `OUTPUT_SCHEMA_REFUSED` beside the process-exit code, and the family writes: the public start persists `node-execution-request/v3` and `context-package/v3` per node -- an order the run carries binds in as a material member under its content hash -- and the terminal write ends the execution in the same transaction as the agent receipt: `failed` carrying the schema owner's reason on a refusal and the supervision's exit signature with a bounded standard-error tail on a dead process, `succeeded` with `node-artifact/v3` and its output binding on success; a judged receipt of either ending also names, on the same `node-receipt/v3` family, the schema revision and the hash of the exact decoded bytes it judged (older plain-reason rows stay readable); a crash inside that write leaves none of them, and a run from before the writer stays honestly receipt-less. A populated exact V16 store migrates through one transactional `agent_attempts` rebuild that keeps every attempt row and the child `tool_redemptions` declaration; a parked-name collision refuses by name and rolls back every earlier step; V16 joins the refused predecessors at runtime. |
+| V18 a run may end failed | A fresh exact V18 store admits `FAILED` as a run state, so a line whose open node paths have terminally failed ends under the node's own reason instead of standing STARTED with nothing to continue it. A populated exact V17 store migrates through one transactional `runs` rebuild that keeps every stored run; V17 joins the refused predecessors at runtime. |
+| V20 the round a loop turns | A fresh exact V20 store gives the round a durable home on the run and on every event and agent receipt it writes, keys a `node-execution-request/v3` by the execution rather than by the request it repeats, and drops the agent receipt key that said one receipt per node per run -- a sentence that stopped being true when a declared loop could run a node twice. Every round of every looped node is therefore its own request, receipt, artifact, agent receipt and durable workflow, and the first round of a node keeps byte for byte the identity it had before any loop existed. A populated exact V19 store migrates through four transactional table rebuilds that keep every stored row and read each as round one; a parked-name collision refuses by name and rolls back every earlier step; V19 joins the refused predecessors at runtime. Each rebuild materialises the shape of its own target version rather than the current declaration, so a hop that touches a table an earlier hop already rebuilt no longer breaks the chain in the middle. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 | V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery with and without a surviving witness, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |
@@ -195,13 +197,15 @@ Until a named maturity, the product does not promise store compatibility.
 rules that preserving hops, compatibility layers, and keeping old store shapes
 openable are unnecessary while the store is a prototype. Runtime still refuses
 every predecessor. The offline migrate command is the one exception: an exact
-V13, V14 or V15 store is raised to the current schema, preserving product rows,
-because every step is additive: `run_inputs_v3` was empty in V13,
-`tool_redemptions` in V14, and V16's `run_events.agent_receipt_hash` is NULL for
-every event a V15 store wrote. That last step rebuilds `run_events` rather than
-appending a column, because SQLite can only append behind a table's constraints
-while the shape a store is checked against is the one the declaration renders;
-every predecessor row is copied verbatim into the rebuilt table.
+V13 store or later is raised to the current schema, preserving product rows,
+because every step is additive in meaning: `run_inputs_v3` was empty in V13,
+`tool_redemptions` in V14, V16's `run_events.agent_receipt_hash` is NULL for
+every event a V15 store wrote, `artifacts` in V18, and V20's rounds are one for
+every run, event and agent receipt written before a document could declare a
+loop -- a fact about those rows, not a default filled in to make a column fit. Each such step rebuilds its table rather
+than appending a column, because SQLite can only append behind a table's
+constraints while the shape a store is checked against is the one the declaration
+renders; every predecessor row is copied verbatim into the rebuilt table.
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the
