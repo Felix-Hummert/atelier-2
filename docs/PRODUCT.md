@@ -411,7 +411,14 @@ same success-write seam; bytes the schema refuses end under the same token
 for all three. The node detail reads the stored reason back, and a run started
 before this writer existed stays honestly absent in those tables. A store that
 still holds the old STARTED-after-failure shape is ended the same way at the
-next serve start.
+next serve start. A leftover whose last attempt on the current node is already
+`INTERRUPTED` under the durable `atelier2-driver-lost` command, with no
+replacement still in flight, ends the same way: the run becomes `FAILED` and
+that existing interruption event is the named reason — no new event, no
+attempt rewrite. A V1 run cannot take that lift, because the frozen V1 wire
+refuses `FAILED`. A run that advanced past a succeeded predecessor onto a
+node that never prepared an attempt is left standing rather than given an
+invented ending.
 
 The other way an attempt ends badly now says as much. A provider process that
 leaves no usable answer ends `FAILED` under `PROCESS_EXITED_UNSUCCESSFULLY` on
