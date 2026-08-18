@@ -472,8 +472,10 @@ edges. A wait has a prompt, not an instruction, so that field is empty there.
 An entry node answers an empty edge list. The authored node stays in the
 document bytes. A V3 run page draws that excerpt as topological layers and
 paints each node's state from the rail the server already walked — shape and
-colour together, no zoom, no drag. Details on the saved-workflow picker
-reuses the same drawing without run state. A chosen V3 revision that declares
+colour together, no zoom, no drag. The live event line stays open until the
+events it has applied match the latest cursor the run itself names, so a run
+that has already ended still shows every node that finished. Details on the
+saved-workflow picker reuses the same drawing without run state. A chosen V3 revision that declares
 orders shows one material field per order — the name and the schema the
 author pinned — and sends the typed text as `orders` on the start; a revision
 that declares none shows no field. Role
