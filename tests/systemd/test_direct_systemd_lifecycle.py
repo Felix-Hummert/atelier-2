@@ -27,6 +27,8 @@ from atelier2.adapters.systemd_agent_processes import (
     direct_systemd_unit_name,
 )
 from atelier2.adapters.systemd_generation_records import (
+    DirectSystemdGenerationRecords,
+    DirectSystemdRecoveryState,
     DirectSystemdResultOutcome,
 )
 from atelier2.adapters.systemd_timespans import DirectSystemdHostFailure
@@ -161,6 +163,20 @@ def _wait_until(predicate: object, message: str, timeout: float = 3) -> None:
             return
         time.sleep(0.02)
     pytest.fail(message)
+
+
+def _generation_is_possibly_ran(generation: Path) -> bool:
+    """The durable recovery state `start` adopts, not the provider's ready file."""
+
+    try:
+        inspection = DirectSystemdGenerationRecords(generation).inspect()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return (
+        inspection.state is DirectSystemdRecoveryState.POSSIBLY_RAN
+        and inspection.started is not None
+        and inspection.result is None
+    )
 
 
 def _unit_state(
@@ -704,6 +720,13 @@ def test_controller_death_is_adopted_without_a_second_provider(
     try:
         controller.start()
         _wait_until(ready.exists, "provider did not survive controller acceptance")
+        # The ready file is the provider process, not the durable launch.
+        # `start` adopts POSSIBLY_RAN (STARTED present, no RESULT). Seeing
+        # SAFE_TO_RETRY instead launches a second provider — the parallel flake.
+        _wait_until(
+            lambda: _generation_is_possibly_ran(generation),
+            "generation never reached durable STARTED",
+        )
         controller.terminate()
         controller.join(timeout=2)
         assert controller.exitcode is not None
