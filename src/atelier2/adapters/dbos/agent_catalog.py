@@ -285,8 +285,10 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
     def list_auth_profile_revisions(
         self, after: AuthProfileRevisionHash | None, limit: int
     ) -> ListAuthProfileRevisionsResult:
-        if type(limit) is not int or not 1 <= limit <= 100:
-            raise ValueError("revision page limit must be an integer from 1 to 100")
+        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+            raise ValueError(
+                f"revision page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+            )
         try:
             with self._engine.connect() as connection:
                 statement = sa.select(auth_profile_revisions)
