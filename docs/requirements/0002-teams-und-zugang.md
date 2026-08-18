@@ -80,7 +80,7 @@ Status:     DRAFT
 Quelle:     DESK — #82 body @ fe6fd31f (Regel 4), 5302604615
 Begründung: Der Einzeloperator-Loopback-Modus braucht keinen Login (ADR 0009 §3); Login wird genau dann Pflicht, wenn ein Nicht-Loopback-Bind geschieht. Die untere Schranke bleibt fail-closed, ohne Zwischenzustand.
 Journeys:
-Beweis:     UNGEBUNDEN
+Beweis:     a-non-loopback-mcp-service-is-refused-without-inventing-auth
 Offen:      - Heute bindet `serve --host 0.0.0.0` ohne komponierten Executor öffentlich und unauthentifiziert; die Schranke ist als ADR-Satz da, als Verhalten nicht (Eigentümer: ADR 0009, Ziel: Bind-Kopf)
 
 ### REQ-ZUGANG-05: Ein Mensch wird durch Login plus gewährte Rolle zugelassen.
@@ -188,14 +188,15 @@ Offen:      - „Ein Receipt trägt nie einen geschätzten Geldwert" ist Kandida
 
 ## Acceptance
 
-No story has declared an acceptance sentence for this requirement yet, so the
-list below is a set of candidates and not a set of sentences. The subject is deliberately seam-now,
-build-later. What the rules above already state in testable form is, notably:
-an installed client without an invitation reaches nothing; a non-loopback bind
-without a configured authenticator is refused rather than served; a one-time
-join token cannot be used twice; a personal subscription runner refuses a
-project outside its `allowed-projects`; a receipt never carries an estimated
-money value.
+REQ-ZUGANG-04 is bound to
+`a-non-loopback-mcp-service-is-refused-without-inventing-auth` in
+`acceptance/112-the-atelier-is-an-mcp-server.toml`: the MCP child refuses a
+non-loopback service instead of inventing a credential. The serve bind itself
+is still the ADR 0009 gap named on that rule. The rest of this subject remains
+seam-now, build-later. Candidates that no story has declared: an installed
+client without an invitation reaches nothing; a one-time join token cannot be
+used twice; a personal subscription runner refuses a project outside its
+`allowed-projects`; a receipt never carries an estimated money value.
 
 ## Provenance note
 
