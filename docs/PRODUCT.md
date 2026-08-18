@@ -137,12 +137,14 @@ provider factory and behaves exactly as before. When the
 operator also declares a Grok executable, workspace, and credential directory,
 the host composes one Grok subscription executor beside Claude. It runs the
 bound model headless through `grok --output-format json`, hands the job
-through `--prompt-file` rather than the argument vector, and grants the child
-only the serving host's search path plus one disposable invocation-private
-`HOME`/`GROK_HOME`. That home receives a private copy of the source
-`auth.json`; provider sessions and responses stay there and the entire home is
-removed after success, known failure, cancellation, retry refusal, or process
-error without touching another invocation. Before launch, `grok inspect`
+through `--prompt-file` rather than the argument vector, pins a turn
+ceiling on that same vector so a Diff-Review-sized order cannot run an
+unbounded loop, and grants the child only the serving host's search path
+plus one disposable invocation-private `HOME`/`GROK_HOME`. That home
+receives a private copy of the source `auth.json`; provider sessions and
+responses stay there and the entire home is removed after success, known
+failure, cancellation, retry refusal, or process error without touching
+another invocation. Before launch, `grok inspect`
 must report that exact home/configuration as its only configuration source,
 all external-compatibility imports disabled, and no ambient trust surface.
 The isolated read, edit, and test tools an agent needs to change its own

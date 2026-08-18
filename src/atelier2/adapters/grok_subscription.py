@@ -77,7 +77,11 @@ _JSON_OUTPUT_FORMAT = "json"
 _MODEL_FLAG = "--model"
 _PROMPT_FILE_FLAG = "--prompt-file"
 _MAXIMUM_TURNS_FLAG = "--max-turns"
-_HEARTBEAT_MAXIMUM_TURNS = "1"
+# Headless one-answer class, not a heartbeat. A Diff-Review-sized order
+# (~14 KB, #295) dies at one turn (`max turns reached`) because the CLI
+# spends turns on read/tool work before the one JSON answer. Sixteen
+# covers that cycle; it is not an unbounded subscription loop.
+_HEADLESS_MAXIMUM_TURNS = "16"
 _TOOLS_FLAG = "--tools="
 _PERMISSION_MODE_FLAG = "--permission-mode"
 _DONT_ASK = "dontAsk"
@@ -556,7 +560,7 @@ class GrokSubscriptionExecutor:
                     _NO_SUBAGENTS_FLAG,
                     _NO_WEB_SEARCH_FLAG,
                     _MAXIMUM_TURNS_FLAG,
-                    _HEARTBEAT_MAXIMUM_TURNS,
+                    _HEADLESS_MAXIMUM_TURNS,
                 ),
                 _child_environment(settings, state_directory),
                 b"",
