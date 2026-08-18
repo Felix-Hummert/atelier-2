@@ -33,6 +33,7 @@ from atelier2.adapters.dbos.schema import (
     MigrationRequired,
     _require_product_shape,
     agent_attempts,
+    artifacts,
     atelier_schema_versions,
     catalog_lineage_members,
     catalog_lineages,
@@ -328,7 +329,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
     execution = "11" * 32
     receipt = "ef" * 32
     with engine.connect() as connection:
-        for table in (run_inputs_v3.name, tool_redemptions.name):
+        for table in (artifacts.name, run_inputs_v3.name, tool_redemptions.name):
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
             connection.execute(sa.text(f"DROP TABLE {table}"))
@@ -510,6 +511,7 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
             connection.scalar(sa.select(sa.func.count()).select_from(tool_redemptions))
             == 0
         )
+        assert connection.scalar(sa.select(sa.func.count()).select_from(artifacts)) == 0
         archived = (
             connection.execute(
                 sa.select(run_events).where(run_events.c.run_id == ARCHIVED_RUN_ID)

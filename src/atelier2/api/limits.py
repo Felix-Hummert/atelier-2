@@ -6,8 +6,10 @@ from typing import cast
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from atelier2.api.problems import artifact_problem_code
 from atelier2.api.references import encode_event_cursor, encode_public_run_reference
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES, ArtifactRefusal
 from atelier2.contracts.effects import OperatorFoundEffect
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.pages import PageLimit
@@ -172,7 +174,23 @@ class ApiLimits:
             self.require_field(receipt.reconcile_command_id.value)
 
 
+@dataclass(frozen=True)
+class _BodyLimit:
+    """What one bounded path refuses an oversized body under, and above which size."""
+
+    code: str
+    maximum_bytes: int
+
+
 class RequestBodyLimitMiddleware:
+    """The byte bound a POST body meets before any route reads it.
+
+    Which paths are bounded, and by how much, is one table rather than one
+    number, because the envelope a document travels in and the material an
+    artifact *is* are two decisions with two owners. A path absent from the
+    table is unbounded here and is bounded by whatever reads it.
+    """
+
     def __init__(
         self,
         app: ASGIApp,
@@ -184,6 +202,7 @@ class RequestBodyLimitMiddleware:
         self._maximum_body_bytes = maximum_body_bytes
         self._workflow_publication_path = api_prefix + "/workflow-revisions"
         self._start_run_path = api_prefix + "/runs"
+        self._artifact_publication_path = api_prefix + "/artifacts"
         self._run_command_path = re.compile(
             re.escape(api_prefix) + r"/runs/[^/]+/(?:answers|reconciliations)"
         )
@@ -192,10 +211,11 @@ class RequestBodyLimitMiddleware:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        limit_code = self._limit_code(scope)
-        if limit_code is None:
+        limit = self._limit_for(scope)
+        if limit is None:
             await self._app(scope, receive, send)
             return
+        limit_code = limit.code
         content_lengths = [
             value
             for name, value in cast(list[tuple[bytes, bytes]], scope["headers"])
@@ -213,7 +233,7 @@ class RequestBodyLimitMiddleware:
             except ValueError:
                 await self._problem(scope, receive, send, limit_code)
                 return
-            if declared_length > self._maximum_body_bytes:
+            if declared_length > limit.maximum_bytes:
                 await self._problem(
                     scope,
                     receive,
@@ -230,7 +250,7 @@ class RequestBodyLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received_bytes += len(message.get("body", b""))
-                if received_bytes > self._maximum_body_bytes:
+                if received_bytes > limit.maximum_bytes:
                     from atelier2.api.problems import ApiProblem
 
                     raise ApiProblem(limit_code, "Request body exceeds its byte limit.")
@@ -238,14 +258,22 @@ class RequestBodyLimitMiddleware:
 
         await self._app(scope, limited_receive, send)
 
-    def _limit_code(self, scope: Scope) -> str | None:
+    def _limit_for(self, scope: Scope) -> _BodyLimit | None:
         if scope["method"] != "POST":
             return None
         path = scope["path"]
         if path == self._workflow_publication_path:
-            return "invalid-workflow-document"
+            return _BodyLimit("invalid-workflow-document", self._maximum_body_bytes)
         if path == self._start_run_path or self._run_command_path.fullmatch(path):
-            return "invalid-request"
+            return _BodyLimit("invalid-request", self._maximum_body_bytes)
+        if path == self._artifact_publication_path:
+            # Material is bounded by what an artifact may be, not by the
+            # envelope a document travels in: the two are different decisions
+            # and the transport must not quietly overrule the store's.
+            return _BodyLimit(
+                artifact_problem_code(ArtifactRefusal.ARTIFACT_TOO_LARGE),
+                MAXIMUM_ARTIFACT_BYTES,
+            )
         return None
 
     @staticmethod

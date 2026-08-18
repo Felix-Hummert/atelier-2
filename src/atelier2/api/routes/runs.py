@@ -31,8 +31,11 @@ from atelier2.api.projection.runs import (
 from atelier2.api.references import encode_public_run_reference, parse_revision_hash
 from atelier2.api.wire.requests import (
     AnswerWaitRequestResource,
+    AnyStartRunOrderResource,
     AnyStartRunRequestResource,
+    ArtifactOrderResource,
     CancelAgentAttemptRequestResource,
+    InlineOrderResource,
     ReconcileRunRequestResource,
     StartRunRequestResourceV2,
     StartRunRequestResourceV3,
@@ -111,6 +114,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.effects import (
     EffectId,
     EffectIntentStateVersion,
@@ -120,9 +124,21 @@ from atelier2.contracts.effects import (
     ReconcileActor,
     ReconcileCommandId,
 )
+from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.runs import RunId, RunState
 
 router = APIRouter()
+
+
+def _authored_order(order: AnyStartRunOrderResource) -> AuthoredOrder:
+    """The order one wire shape is, in the vocabulary the start speaks."""
+    match order:
+        case InlineOrderResource(name=name, value=value):
+            return AuthoredOrder(name, InlineOrderValue(value.encode()))
+        case ArtifactOrderResource(name=name, artifact=artifact):
+            return AuthoredOrder(name, ArtifactOrderValue(ArtifactHash(artifact)))
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 @router.post(
@@ -149,9 +165,7 @@ async def start_run_route(
             for binding in body.agent_bindings
         )
     if isinstance(body, StartRunRequestResourceV3):
-        orders = tuple(
-            AuthoredOrder(order.name, order.value.encode()) for order in body.orders
-        )
+        orders = tuple(_authored_order(order) for order in body.orders)
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.start_published_run(
