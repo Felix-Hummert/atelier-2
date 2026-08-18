@@ -107,7 +107,7 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "this file is condemned to deletion by #15 slice 2; giving it a seam "
         "would preserve it",
     ),
-    "adapters/claude_subscription.py::_VERSION_PROBE_TIMEOUT_SECONDS": SpelledValue(
+    "adapters/claude_subscription.py::_PROBE_TIMEOUT_SECONDS": SpelledValue(
         1,
         "one thought written three times across the providers -- the sweep's "
         "named duplication, waiting for its one owner on #251",

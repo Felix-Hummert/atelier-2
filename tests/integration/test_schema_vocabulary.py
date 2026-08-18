@@ -29,6 +29,7 @@ from atelier2.contracts.agents import (
     AuthMode,
     ProviderId,
 )
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
     CatalogRetirementState,
@@ -442,6 +443,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "tool_redemptions.tool_revision_hash",
         "tool_redemptions.workflow_revision_hash",
         "agent_receipts_v2.workflow_revision_hash",
+        "artifacts.artifact_hash",
         "auth_profile_revisions.revision_hash",
         "context_packages_v3.package_hash",
         "node_execution_requests_v3.context_package_hash",
@@ -507,6 +509,7 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "agent_receipts_v2.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "agent_receipts_v2.provider_id": PROVIDER_ID_BOUND,
     "agent_receipts_v2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "artifacts.content": MAXIMUM_ARTIFACT_BYTES,
     "auth_profile_revisions.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "auth_profile_revisions.provider_id": PROVIDER_ID_BOUND,
     "run_agent_bindings.role": MAXIMUM_AGENT_FIELD_CHARACTERS,

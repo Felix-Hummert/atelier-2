@@ -16,6 +16,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     MAXIMUM_SIGNED_INT64,
+    UNATTENDED_AGENT_EXECUTION_CAPABILITIES,
     AgentExecutionCapability,
     AgentExecutionRequest,
     AgentExecutionRequestV2,
@@ -319,11 +320,15 @@ class AgentExecutorRegistry:
         ):
             raise TypeError("agent executor capabilities must use their typed contract")
         if any(
-            AgentExecutionCapability.HEADLESS
-            not in entry.manifest_entry.declared_capabilities
+            not (
+                entry.manifest_entry.declared_capabilities
+                & UNATTENDED_AGENT_EXECUTION_CAPABILITIES
+            )
             for entry in captured
         ):
-            raise ValueError("every agent executor must declare headless capability")
+            raise ValueError(
+                "every agent executor must declare an unattended capability"
+            )
         ordered = tuple(
             sorted(
                 captured,

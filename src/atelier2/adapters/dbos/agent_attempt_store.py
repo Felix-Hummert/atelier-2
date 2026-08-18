@@ -293,7 +293,12 @@ def _validate_request(
             node.instruction,
             load_run_inputs(session, request.run_id, node),
             load_node_outputs(
-                session, request.run_id, request.workflow_revision_hash, graph, node
+                session,
+                request.run_id,
+                request.workflow_revision_hash,
+                graph,
+                node,
+                request.round_ordinal,
             ),
         )
     ).encode("utf-8")
@@ -341,8 +346,12 @@ def _require_completed_attempt_head(
     completion: NodeCompletion,
 ) -> None:
     match completion:
-        case RunContinues(node_id):
-            if run.state is not RunState.STARTED or run.current_node_id != node_id:
+        case RunContinues(node_id, round_ordinal):
+            if (
+                run.state is not RunState.STARTED
+                or run.current_node_id != node_id
+                or run.current_round_ordinal != round_ordinal
+            ):
                 raise RunTransitionConflict(
                     "successful attempt has no exact successor transition"
                 )
@@ -420,6 +429,8 @@ def _fail_current_attempt(
         terminal=True,
         agent_attempt_id=attempt_id,
         attempt_ordinal=execution.ordinal,
+        round_ordinal=request.round_ordinal,
+        target_round_ordinal=request.round_ordinal,
     )
     return AgentAttemptFailed(durable_failure)
 
@@ -602,6 +613,7 @@ class DbosAgentAttemptStore:
                 if (
                     run.state is not RunState.STARTED
                     or run.current_node_id != request.node_id
+                    or run.current_round_ordinal != request.round_ordinal
                 ):
                     raise RunTransitionConflict(
                         "prepared attempt no longer owns current node"
@@ -638,7 +650,9 @@ class DbosAgentAttemptStore:
             }:
                 return AgentAttemptPossiblyRan(durable)
             if durable.state is AgentAttemptState.SUCCEEDED:
-                completion = completion_after_node(graph, request.node_id)
+                completion = completion_after_node(
+                    graph, request.node_id, request.round_ordinal
+                )
                 _require_completed_attempt_head(run, request, completion)
                 return AgentAttemptSucceeded(durable, completion)
             raise AssertionError("closed agent attempt state was not exhaustive")
@@ -759,6 +773,7 @@ class DbosAgentAttemptStore:
                 durable.state is not AgentAttemptState.LAUNCH_ARMED
                 or run.state is not RunState.STARTED
                 or run.current_node_id != request.node_id
+                or run.current_round_ordinal != request.round_ordinal
             ):
                 raise RunTransitionConflict(
                     "only the armed current attempt can succeed"
@@ -837,15 +852,19 @@ class DbosAgentAttemptStore:
                 raise RunTransitionConflict("agent success lost its attempt CAS")
             record_attempt_ended(connection, attempt_id.value)
             durable_success = _load_attempt(connection, attempt_id)
-            completion = completion_after_node(graph, request.node_id)
+            completion = completion_after_node(
+                graph, request.node_id, request.round_ordinal
+            )
             match completion:
-                case RunContinues(node_id):
+                case RunContinues(node_id, target_round):
                     target_state = RunState.STARTED
                     target_node_id = node_id
+                    target_round_ordinal = target_round
                     terminal = False
                 case RunCompletes():
                     target_state = RunState.COMPLETED
                     target_node_id = request.node_id
+                    target_round_ordinal = request.round_ordinal
                     terminal = True
                 case _ as unreachable:
                     assert_never(unreachable)
@@ -863,6 +882,8 @@ class DbosAgentAttemptStore:
                 agent_attempt_id=attempt_id,
                 attempt_ordinal=execution.ordinal,
                 agent_receipt_hash=receipt.receipt_hash,
+                round_ordinal=request.round_ordinal,
+                target_round_ordinal=target_round_ordinal,
             )
             return AgentAttemptSucceeded(durable_success, completion)
 

@@ -9,6 +9,7 @@ from fastapi.openapi.models import OpenAPI
 from fastapi.openapi.utils import get_openapi
 
 from atelier2.api.problems import (
+    ARTIFACT_PROBLEM_CODES,
     BUDGET_DOCUMENT_PROBLEM_CODES,
     PROBLEM_DEFINITIONS,
     PROBLEM_TYPE_PREFIX,
@@ -145,6 +146,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/agent-configuration-revisions", "get"): (
         "invalid-revision-hash",
         "invalid-request",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (API_PREFIX + "/artifacts", "post"): (
+        *ARTIFACT_PROBLEM_CODES,
+        "unsupported-media-type",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",

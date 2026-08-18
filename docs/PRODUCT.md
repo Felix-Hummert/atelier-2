@@ -57,12 +57,15 @@ authentication-profile revision; the complete matrix is frozen into that run.
 Each configuration also binds a typed requested execution capability. Migrated
 configuration revisions retain their original V1 hash and mean `headless`; new
 API publications use the capability-aware V2 hash format and name the capability
-they request, `headless` or `interactive`. A caller that omits it publishes
-`headless`, byte-identically to a publication made before the field could be
-sent. Publication binds an executor key, not a capability, so a configuration
-may request more than today's executors serve. An executor registry must attest
-`headless`, and a run requesting a capability absent from its exact
-provider/executor entry is refused before any provider process starts. A
+they request, `headless`, `headless_with_tools`, or `interactive`. A caller that
+omits it publishes `headless`, byte-identically to a publication made before the
+field could be sent. Publication binds an executor key, not a capability, so a
+configuration may request more than today's executors serve. Every executor
+registry entry must attest at least one capability an unattended attempt can ask
+for — `headless` or `headless_with_tools` — because the runtime drives every
+attempt and stands at no terminal; a run requesting a capability absent from its
+exact provider/executor entry is refused before any provider process starts,
+whichever direction the mismatch runs. A
 nonterminal run is refused on restart before its factory opens when that
 attestation has disappeared.
 Before invoking the exact configured provider/executor, the runtime persists one
@@ -218,14 +221,56 @@ billed provider is unauthenticated on this API. OS-enforced isolation remains
 the planned stronger boundary; until it lands, these refusals are what keep the
 tool-free premise true.
 
+An agent node may also use tools itself, through a second Claude executor of the
+same deployment rather than a widening of the first. It is armed separately,
+because it is a separate grant: naming a Claude executable still serves only the
+tool-free call. Its invocation drops the tool ban and names one closed set of the
+CLI's built-in tools twice — as the tools it offers and as the tools it
+pre-approves, which is the only grant the CLI honours once this deployment asks
+it to scrub subprocess environments — and keeps every other switch and the whole
+environment of the tool-free call. It attests exactly one capability,
+`headless_with_tools`, and no other; a node reaches it only where its own durable
+binding asked for that capability, and a binding that asks the tool-free executor
+for tools, or this one for a tool-free call, is refused before the run exists.
+Because a version answer is not startability, the deployment starts this exact
+argument vector once at composition with no job and reads the CLI's own refusal
+of a missing argument, with an unknown flag beside it as the control; neither
+call reaches a model. The executor claims no operating-system isolation and does
+not pretend the lease is one: the process runs as the serving user and its tools
+reach what that user reaches, the workspace is where it is started rather than a
+boundary it is held inside, and what it writes there falls with the attempt.
+Unlike the tool-free call, it has no one-call conformance matrix against a real
+subscription answer yet: that a real answer uses exactly these tools and brings
+no customization back with them is the half one billed call still has to
+establish, which is why nothing composes this executor unless an operator armed
+it by name and the packaged deployment does not.
+
 Workflow format V3 is authored in full and executed in one shape. The parser accepts a
 format-3 document into its own closed model — the five node kinds with the field
 matrix each requires, refuses, or accepts, `depends_on` as the only control edge,
 the join rule in its three arities, the input sources a node may read — another
 node's output, that node's terminal receipt, a context entry, and the order the
-graph itself was started with — the two context-edge kinds, and graph-level inputs
-and outputs — and refuses every forbidden form naming the node and the field it
-concerns, including each retired V1 or V2 key with its replacement. Unsafe YAML is
+graph itself was started with — the two context-edge kinds, graph-level inputs
+and outputs, and the loops that repeat a stretch of the graph — and refuses every
+forbidden form naming the node and the field it concerns, including each retired
+V1 or V2 key with its replacement.
+
+A document may declare that a stretch of its own graph repeats. The declaration
+names the loop, the nodes it repeats and a maximum number of rounds that has no
+default: an unbounded loop is refused by name, as is a body the declared edges do
+not order in one uninterrupted stretch, a node two loops claim, and a loop
+repeating a node nothing declares. A control edge pointing backwards stays refused
+as the cycle it always was, so the declaration is the only legal way back. A run
+whose document declares a loop runs the body again from its first node while
+rounds remain and ends when the bound is reached, through the terminal path every
+other node ends by. Every round of every looped node is its own node execution
+with its own deterministic identity, durable request, receipt, produced value,
+durable workflow and event in the chain the terminal hash recomputes over — while
+the first round of a node keeps byte for byte the identity it had before any loop
+existed. Reaching the bound is the only way out this build has: a result that ends
+a loop early does not yet steer an edge, and a loop body may hold only agent
+nodes, with a value read out of a loop refused by name because no rule here says
+which round wrote it. Unsafe YAML is
 refused by name too, before any vocabulary is read: an
 anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
 a document that is not UTF-8 without a byte order mark, and one nested past the
@@ -428,7 +473,9 @@ inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs
 (the list accepts a `state` filter so a consumer can ask which runs wait;
 a page is admitted by one `PageLimit`, not a restated 1-to-100;
 a persisted run format is one `WorkflowFormatVersion`,
-not a restated 1-2-3 CHECK);
+not a restated 1-2-3 CHECK;
+a cancelled attempt's cleanup disposition is one
+`AgentAttemptCancellationDisposition`, not restated tokens on query and SSE);
 list and inspect a V3 run from the published document it was started
 against, not today's executable parse;
 read the agent receipts a run has written;
@@ -551,7 +598,9 @@ produced to standard output, with the run, its revision, its terminal hash and
 one hash per output on standard error. Every publication is idempotent and the
 run identity is derived from the published hashes unless the operator names one,
 so the same command run twice reports the first run instead of paying for a
-second. The client owns nothing: it holds no durable state, adds no route, and
+second. That identity compare pins authored `--input` orders the same way it
+already pinned `run_inputs`, so a retry of the operator door is
+`DurableRunExisting` rather than a conflict. The client owns nothing: it holds no durable state, adds no route, and
 hands the service's typed problems on unchanged, whether the service refused an
 answer or ended the event stream with its own failure frame. A run that stops on
 a decision the command cannot make — a waiting node, an unknown effect outcome, a
@@ -564,8 +613,16 @@ the exact bytes are stored under the run and the name its author declared,
 immutably, and the agent whose node reads that order is handed it -- so one
 published revision serves every order instead of one revision per distinct input.
 An order is refused before any row exists when it is missing, undeclared,
-supplied twice, pinned to another schema than the document named, or is a value
-that schema does not admit. Only an order the graph declares binds today; an
+supplied twice, pinned to another schema than the document named, is a value
+that schema does not admit, or names an artifact nobody published. An order need
+no longer be written into the start it travels in: material larger than the
+inline bound is published once as a content-addressed artifact -- the SHA-256 of
+its exact bytes is its address, publishing the same bytes twice is the same
+artifact -- and the order carries that address instead of the bytes. The start
+resolves it before anything is written, the schema judges the resolved bytes, and
+the agent is handed all of them, so a full pull-request diff reaches its reviewer
+while the inline bound stays strict. Only an order the graph declares binds
+today; an
 input reading another node's output, a node receipt, a context entry or an
 authored constant is refused by the source it named. A workflow name is no
 longer among what is missing either: `--name` runs the revision a catalog name
@@ -573,11 +630,26 @@ holds, asked of the service before anything is written and at the lineage member
 `--position` names, so an operator starts named work without translating a name
 into a hash by hand. `--input NAME=VALUE` and `--input-file NAME=PATH` fill the
 `graph_inputs` that workflow declared: the command publishes nothing for them
-and hands the exact JSON bytes to `POST /runs`. A name the document never
+and hands the exact JSON bytes to `POST /runs` inline. Ordering an artifact from
+the command line, and any surface that lists or reads stored artifacts back, are
+not built. A name the document never
 declared, a declared name that is missing, and a value that is not valid JSON
 for the schema the document pinned are each refused by name; a typed 422 from
 the service is handed on in the service's own words. An output contract that
 could decide an exit code still does not exist.
+
+That API now also has a third door: `atelier2 mcp` speaks MCP on standard
+input and standard output against the same public HTTP API. A client launches
+it as a child. There is no listener, no port and no token. The four tools
+are `list_workflows` (catalog name, lineage and head), `start_run` (the
+revision a name holds, the same resolution `run --name` asks), `run_status`
+(the run resource as the API answers it) and `answer_wait` (the #194 door).
+Each call is the HTTP door; a typed problem is returned unchanged, field
+pointers included. The API has no caller authentication: #82 is human OIDC
+and ADR 0009 (machine credentials) is not landed, so this child invents
+none and refuses any service that is not a literal loopback address — the
+same trust the browser already has on this machine. Instants on the run
+wait for #355; this door does not invent them.
 
 A node can now say which tool it needs and have it redeemed. A `tools` entry is
 a published tool grant the document pins by hash, exactly as an output pins its
@@ -639,21 +711,26 @@ version carries no binding rather than an invented one. What is still not proven
 is the request hash's own preimage: the job bytes it is taken over have no
 durable home, so a verifier copies that hash rather than recomputing it.
 
-The canonical store is schema V16. A fresh store is created as exact V16 and
+The canonical store is schema V20. A fresh store is created as exact V20 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
 access bindings, and the immutable declared context packages, node-execution request
 preimages and run configuration snapshots those receipts name, and the immutable
 orders a run was started with, the immutable proof of every redeemed tool
-grant, and the receipt hash an agent completion binds. The catalog adapter founds a lineage
+grant, the receipt hash an agent completion binds, immutable content-addressed
+artifacts an order may name instead of carrying their bytes, and the round a
+declared loop was turning when each run, event and agent receipt was written. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
 founding, unpublished member, wrong kind, or retired lineage is refused by
-name. Measurements and policy activations are not in this profile. V13 through
-V15 remain published predecessor objects; exact V7 through V15 files are refused
-by runtime without mutation, with no runtime migration or downgrade. An offline
-`atelier2 migrate` command raises an exact V13, V14 or V15 store to the current
+name. Measurements and policy activations are not in this profile. Every schema
+from V9 up to the one just below current remains a published predecessor
+object -- `schema.py` names each as its own `V*_SCHEMA_HANDOFF` constant -- and
+an exact file at V7 through the version just below current is refused by
+runtime without mutation, with no runtime migration or downgrade. An offline
+`atelier2 migrate` command raises an exact store on any source version
+`schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder still names to the current
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.

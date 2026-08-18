@@ -40,7 +40,7 @@ from atelier2.api.wire.events import (
     WaitingInputEventResourceV2,
     WaitingInputEventResourceV3,
 )
-from atelier2.api.wire.resources import NodeRailResource
+from atelier2.api.wire.resources import CancellationDispositionName, NodeRailResource
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.executions import (
     KINDS_NO_V1_RUN_CARRIES,
@@ -205,13 +205,7 @@ def _run_event_resource_v2(
             "command_id": event.cancellation_command_id,
             "replacement": cast(Literal["NONE", "ONE"], event.replacement),
             "disposition": cast(
-                Literal[
-                    "NEVER_LAUNCHED",
-                    "EXITED_BEFORE_SIGNAL",
-                    "REAPED_AFTER_TERM",
-                    "REAPED_AFTER_KILL",
-                    "OWNER_LOST_AFTER_PARENT_DEATH",
-                ],
+                CancellationDispositionName,
                 event.cancellation_disposition,
             ),
             "replacement_attempt_id": event.replacement_attempt_id,
@@ -349,13 +343,7 @@ def _run_event_resource_v3(
             "command_id": event.cancellation_command_id,
             "replacement": cast(Literal["NONE", "ONE"], event.replacement),
             "disposition": cast(
-                Literal[
-                    "NEVER_LAUNCHED",
-                    "EXITED_BEFORE_SIGNAL",
-                    "REAPED_AFTER_TERM",
-                    "REAPED_AFTER_KILL",
-                    "OWNER_LOST_AFTER_PARENT_DEATH",
-                ],
+                CancellationDispositionName,
                 event.cancellation_disposition,
             ),
             "replacement_attempt_id": event.replacement_attempt_id,

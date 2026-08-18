@@ -5,16 +5,25 @@ import struct
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
 
 MAXIMUM_AGENT_FIELD_CHARACTERS = 1_024
 MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
-# What a process accepts as stdin (or the job file Grok reads). A separate
-# decision from the durable answer bound; they share a number today and must
-# not be derived from each other (#88).
-MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
+# What a process accepts as stdin (or the job file Grok reads). Still a separate
+# decision from the durable answer bound above, which it must not be derived
+# from (#88) -- an agent that may be handed a large brief is not thereby allowed
+# to answer with one.
+#
+# It is the artifact bound because a job is the instruction plus the material the
+# node reads, and the largest single piece of material is an artifact: a smaller
+# number here would admit an order at the start door and then make it
+# unreachable by the agent it was written for, which is the wall a full
+# pull-request diff hit. What a given provider accepts is a narrower, separate
+# limit each invocation still declares at the process port.
+MAXIMUM_AGENT_PROCESS_INPUT_BYTES = MAXIMUM_ARTIFACT_BYTES
 # Current process-frame ceiling, earned by the measured JSON frame of every
 # Claude Code this repository admits (see the Claude subscription adapter's
 # conformance set); each invocation still declares its exact lower limit at the
@@ -63,7 +72,25 @@ class AuthMode(StrEnum):
 
 class AgentExecutionCapability(StrEnum):
     HEADLESS = "headless"
+    HEADLESS_WITH_TOOLS = "headless_with_tools"
     INTERACTIVE = "interactive"
+
+
+UNATTENDED_AGENT_EXECUTION_CAPABILITIES = frozenset(
+    {
+        AgentExecutionCapability.HEADLESS,
+        AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+    }
+)
+"""Every capability an attempt can ask for with no operator at a terminal.
+
+The durable runtime drives every attempt itself and stands at no terminal, so an
+executor declaring only `INTERACTIVE` would name one no run could ever reach.
+The two members differ in what the invocation may touch, not in who drives it:
+`HEADLESS` is one text-in/text-out call, `HEADLESS_WITH_TOOLS` is a call whose
+process may also use the provider's own tools inside the workspace its attempt
+leased.
+"""
 
 
 class AgentConfigurationRevisionFormatVersion(IntEnum):
@@ -321,6 +348,7 @@ class AgentExecutionRequestV2:
     executor_operational_identity: AgentExecutorOperationalIdentity
     job_bytes: bytes
     declared_output_schema_bytes: bytes | None = None
+    round_ordinal: int = FIRST_ROUND_ORDINAL
     request_hash: AgentExecutionRequestHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -337,7 +365,7 @@ class AgentExecutionRequestV2:
             if not self.declared_output_schema_bytes:
                 raise ValueError("declared output schema bytes must be nonempty")
         expected_execution = NodeExecutionId.for_node(
-            self.run_id, self.workflow_revision_hash, self.node_id
+            self.run_id, self.workflow_revision_hash, self.node_id, self.round_ordinal
         )
         if self.node_execution_id != expected_execution:
             raise ValueError(
@@ -405,13 +433,14 @@ class AgentReceiptV2:
     output_bytes: bytes
     output_hash: AgentOutputHash
     receipt_hash: AgentReceiptHash
+    round_ordinal: int = FIRST_ROUND_ORDINAL
 
     def __post_init__(self) -> None:
         _require_bounded_text(self.node_id, "agent receipt node id")
         _require_bounded_text(self.profile_id, "auth profile id")
         _require_bounded_text(self.model, "agent model")
         if self.node_execution_id != NodeExecutionId.for_node(
-            self.run_id, self.workflow_revision_hash, self.node_id
+            self.run_id, self.workflow_revision_hash, self.node_id, self.round_ordinal
         ):
             raise ValueError(
                 "agent receipt execution identity differs from its binding"
@@ -545,6 +574,7 @@ class AgentReceiptV2:
             result.output_bytes,
             output_hash,
             receipt_hash,
+            request.round_ordinal,
         )
 
 

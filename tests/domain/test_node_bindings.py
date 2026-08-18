@@ -32,7 +32,13 @@ from atelier2.contracts.node_bindings import (
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.run_bindings import AnyRun, RunBindingConflict, RunV2
-from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    Run,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant, ToolGrantCapability
 from tests.scenarios.agents import resolved_agent_binding
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
@@ -40,6 +46,7 @@ from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 RUN_ID = RunId("bindings/one-run")
 NODE_ID = "build"
 A_PIN = ProjectSourcePin("a1" * 20, "b2" * 20)
+A_LATER_ROUND = 3
 A_GRANT = DeclaredToolGrant(
     ANY_JSON_SCHEMA.revision_hash, ToolGrantCapability.RUN_PROJECT_VERIFICATION
 )
@@ -234,11 +241,22 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
         AgentNodeBindingV2(
             resolved_agent_binding(), "build it", A_GRANT, A_PIN, A_SCHEMA_DOCUMENT
         ),
+        AgentNodeBindingV2(
+            resolved_agent_binding(), "build it", round_ordinal=A_LATER_ROUND
+        ),
         ActionNodeBinding(),
         WaitNodeBinding(),
         SubworkflowNodeBinding((2, 3)),
     ),
-    ids=["agent", "agent-v2", "agent-v2 pinned", "action", "wait", "subworkflow"],
+    ids=[
+        "agent",
+        "agent-v2",
+        "agent-v2 pinned",
+        "agent-v2 in a later round",
+        "action",
+        "wait",
+        "subworkflow",
+    ],
 )
 @pytest.mark.proves(
     "a-durable-binding-row-is-read-back-only-in-a-shape-this-engine-writes"
@@ -262,6 +280,7 @@ def test_the_durable_form_of_a_pinned_agent_node_is_the_row_already_written() ->
         "type": "agent-v2",
         "role": "builder",
         "job": "build it",
+        "round_ordinal": FIRST_ROUND_ORDINAL,
         "configuration_hash": resolved.configuration.revision_hash.value,
         "auth_hash": resolved.auth_profile.revision_hash.value,
         "profile_id": "max",

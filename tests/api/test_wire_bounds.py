@@ -121,7 +121,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "WorkflowNodePreviewResourceV3.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "StartRunRequestResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunRequestResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
-    "StartRunOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,
+    "InlineOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,

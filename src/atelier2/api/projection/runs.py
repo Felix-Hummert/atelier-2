@@ -17,6 +17,7 @@ from atelier2.api.wire.resources import (
     AgentBindingResourceV2,
     AgentReceiptResource,
     AnyRunResource,
+    CancellationDispositionName,
     NodeAnswerResource,
     NodeDetailResource,
     NodeProvenanceResource,
@@ -264,10 +265,9 @@ def _run_resource_v2(
                         command_id=attempt.cancellation.command_id,
                         replacement=attempt.cancellation.replacement.value,
                         redrive_state=attempt.cancellation.redrive_state.value,
-                        disposition=(
-                            None
-                            if attempt.cancellation.disposition is None
-                            else attempt.cancellation.disposition.value
+                        disposition=cast(
+                            CancellationDispositionName | None,
+                            attempt.cancellation.disposition,
                         ),
                     )
                 ),

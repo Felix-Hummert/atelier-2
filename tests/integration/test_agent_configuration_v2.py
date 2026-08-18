@@ -13,6 +13,7 @@ from httpx import Response
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.node_binding_codec import (
     decode_node_binding,
@@ -159,6 +160,7 @@ def _api_client(runtime: DbosRuntime) -> TestClient:
                 catalog_resolver=DbosCatalogStore(runtime.engine),
                 catalog_admissions=DbosCatalogStore(runtime.engine),
                 published_revision_registry=DbosCatalogStore(runtime.engine),
+                artifact_publisher=DbosArtifactStore(runtime.engine),
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
@@ -318,6 +320,31 @@ def test_old_node_binding_payload_replays_and_new_payload_carries_contract() -> 
     assert newly_encoded.resolved_binding.configuration == current
     assert replayed.declared_output_schema_bytes is None
     assert newly_encoded.declared_output_schema_bytes is None
+
+
+@pytest.mark.proves("every-round-of-a-loop-is-its-own-durable-execution")
+def test_a_recorded_binding_that_names_no_round_is_refused_by_name() -> None:
+    """Which execution a recovered node is may not be guessed back into place.
+
+    A binding without a round is a binding this build never wrote, and reading
+    it as the first round would silently make a later round answer for the
+    first. The refusal says so instead of filling the gap in.
+    """
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    roundless = _encoded_binding(configuration, auth, include_contract=True)
+    del roundless["round_ordinal"]
+
+    with pytest.raises(RunBindingConflict) as refused:
+        decode_node_binding(roundless)
+
+    assert "missing a key" in str(refused.value)
 
 
 def test_a_declared_schema_document_reaches_the_request_as_its_published_bytes() -> (

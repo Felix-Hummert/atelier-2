@@ -679,7 +679,7 @@ def test_duplicate_v2_registry_key_is_refused_before_any_factory_opens(
     assert not (tmp_path / "effects.sqlite").exists()
 
 
-def test_v2_registry_without_headless_capability_is_refused_before_open(
+def test_v2_registry_without_an_unattended_capability_is_refused_before_open(
     tmp_path: Path,
 ) -> None:
     factory = RecordingAgentExecutorFactoryV2(
@@ -690,12 +690,43 @@ def test_v2_registry_without_headless_capability_is_refused_before_open(
         capability_set=frozenset({AgentExecutionCapability.INTERACTIVE}),
     )
 
-    with pytest.raises(ValueError, match="headless capability"):
+    with pytest.raises(ValueError, match="unattended capability"):
         _runtime_with_v2(tmp_path, (factory,))
 
     assert factory.opens == 0
     assert not (tmp_path / "atelier.sqlite").exists()
     assert not (tmp_path / "effects.sqlite").exists()
+
+
+@pytest.mark.parametrize(
+    "capability",
+    (AgentExecutionCapability.HEADLESS, AgentExecutionCapability.HEADLESS_WITH_TOOLS),
+)
+def test_either_unattended_capability_alone_composes_a_v2_registry(
+    tmp_path: Path, capability: AgentExecutionCapability
+) -> None:
+    """A tool-bearing executor may decline plain headless and still be composed.
+
+    The runtime drives every attempt itself, so what it requires of an executor
+    is that some unattended capability can reach it -- not that the tool-free
+    one always can.
+    """
+
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic",
+        "claude/v1",
+        "one-unattended-operation",
+        b"",
+        capability_set=frozenset({capability}),
+    )
+
+    runtime = _runtime_with_v2(tmp_path, (factory,))
+    try:
+        assert runtime.agent_executor_registry.declared_capabilities(
+            factory.key
+        ) == frozenset({capability})
+    finally:
+        runtime.close()
 
 
 def test_v2_factory_identity_is_captured_once_before_open(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentRefused,
     WorkflowRefusal,
@@ -35,7 +36,7 @@ MAXIMUM_DOCUMENT_NAME_BYTES = 200
 MAXIMUM_DOCUMENT_DESCRIPTION_BYTES = 4 * 1024
 
 type JoinRule = Literal["all_succeeded", "all_terminal"]
-type AgentMode = Literal["headless", "interactive"]
+type AgentMode = Literal["headless", "headless_with_tools", "interactive"]
 
 DEFAULT_SINGLE_DEPENDENCY_JOIN: JoinRule = "all_succeeded"
 
@@ -205,6 +206,23 @@ class IterateBlock(_ClosedV3Model):
     carry: Annotated[tuple[IterationCarry, ...], DeclaredSequence] = ()
 
 
+class LoopDeclaration(_ClosedV3Model):
+    """One stretch of this graph, run again from its head a bounded number of times.
+
+    The loop is the only legal way back. A `depends_on` edge pointing backwards
+    stays refused as a cycle, unconditionally, so the graph a reader walks is
+    still the acyclic one ADR 0002 decided; what repeats is declared beside the
+    edges rather than hidden inside them.
+
+    `maximum_rounds` has no default. An unbounded loop must not be reachable by
+    omission, because a run nobody can bound is a run nobody can pay for.
+    """
+
+    id: NonemptyString
+    body: Annotated[tuple[NonemptyString, ...], DeclaredSequence, Field(min_length=1)]
+    maximum_rounds: int
+
+
 class _NodeV3(_ClosedV3Model):
     id: NonemptyString
     depends_on: Annotated[tuple[NonemptyString, ...], DeclaredSequence] = ()
@@ -296,6 +314,7 @@ class WorkflowGraphV3(_ClosedV3Model):
     graph_inputs: Annotated[tuple[GraphInput, ...], DeclaredSequence] = ()
     graph_outputs: Annotated[tuple[GraphOutput, ...], DeclaredSequence] = ()
     nodes: Annotated[tuple[WorkflowNodeV3, ...], DeclaredSequence, Field(min_length=1)]
+    loops: Annotated[tuple[LoopDeclaration, ...], DeclaredSequence] = ()
 
     @field_validator("name")
     @classmethod
@@ -326,6 +345,7 @@ class WorkflowGraphV3(_ClosedV3Model):
             _refuse_broken_iteration(node, self)
             _refuse_unconfirmed_operator_outputs(node)
         _refuse_broken_graph_boundary(self)
+        _refuse_broken_loops(self)
         return self
 
     def node(self, node_id: str) -> WorkflowNodeV3:
@@ -351,6 +371,30 @@ class WorkflowGraphV3(_ClosedV3Model):
         if not node.depends_on:
             return None
         return node.join or DEFAULT_SINGLE_DEPENDENCY_JOIN
+
+    def loop_of(self, node_id: str) -> LoopDeclaration | None:
+        """The loop that repeats this node, or None where nothing repeats it.
+
+        One node belongs to at most one loop; two loops claiming it is refused
+        while the document is read, so this answer is never a choice.
+        """
+        self.node(node_id)
+        for loop in self.loops:
+            if node_id in loop.body:
+                return loop
+        return None
+
+    def declared_rounds_of(self, node_id: str) -> range:
+        """Every round this node may run in, from the document alone.
+
+        A bounded loop is what makes this answerable before anything runs, and
+        answerable is the point: a durable record that must exist before a round
+        can be receipted has to be writable before the round starts.
+        """
+        loop = self.loop_of(node_id)
+        if loop is None:
+            return range(FIRST_ROUND_ORDINAL, FIRST_ROUND_ORDINAL + 1)
+        return range(FIRST_ROUND_ORDINAL, FIRST_ROUND_ORDINAL + loop.maximum_rounds)
 
     def dependency_closure(self, node_id: str) -> frozenset[str]:
         """Every node reachable by following `depends_on` from this node."""
@@ -819,6 +863,91 @@ def _refuse_broken_graph_boundary(graph: WorkflowGraphV3) -> None:
         )
 
 
+def _refuse_broken_loops(graph: WorkflowGraphV3) -> None:
+    """Hold every declared loop to what the graph alone can judge about it.
+
+    Three things are decided here and nowhere else: that the loop is bounded,
+    that no node is claimed by two loops, and that the body is one uninterrupted
+    stretch of the order the edges already declare. The third is what keeps the
+    construct from becoming a second scheduler: repeating a scattered set of
+    nodes would need a rule for what happens between them, and no owner decides
+    that.
+    """
+    duplicate = _first_duplicate(loop.id for loop in graph.loops)
+    if duplicate is not None:
+        raise _refuse(
+            WorkflowRefusalReason.DUPLICATE_NAME,
+            "loops",
+            f"two loops claim the id {duplicate!r}",
+        )
+    repeated: dict[str, str] = {}
+    for loop in graph.loops:
+        if not 1 <= loop.maximum_rounds <= MAXIMUM_SIGNED_INT64:
+            raise _refuse(
+                WorkflowRefusalReason.UNBOUNDED_ITERATION,
+                "maximum_rounds",
+                f"{loop.maximum_rounds} is no round count; loop {loop.id!r} "
+                f"declares 1..{MAXIMUM_SIGNED_INT64} rounds",
+            )
+        for member in loop.body:
+            if member in repeated:
+                raise _refuse(
+                    WorkflowRefusalReason.DUPLICATE_NAME,
+                    "loops",
+                    f"node {member!r} is repeated by loop {repeated[member]!r} "
+                    f"and by loop {loop.id!r}",
+                    member,
+                )
+            repeated[member] = loop.id
+        _refuse_body_that_is_not_one_line(loop, graph)
+
+
+def _refuse_body_that_is_not_one_line(
+    loop: LoopDeclaration, graph: WorkflowGraphV3
+) -> None:
+    declared = {node.id for node in graph.nodes}
+    for member in loop.body:
+        if member not in declared:
+            raise _refuse(
+                WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE,
+                "loops",
+                f"loop {loop.id!r} repeats {member!r}, which is not declared",
+            )
+    body = set(loop.body)
+    head, *rest = loop.body
+    if set(graph.node(head).depends_on) & body:
+        raise _refuse(
+            WorkflowRefusalReason.LOOP_BODY_NOT_ONE_LINE,
+            "loops",
+            f"loop {loop.id!r} enters at {head!r}, which already depends on a "
+            "node the same loop repeats",
+            head,
+        )
+    walked = [head]
+    for member in rest:
+        if tuple(graph.node(member).depends_on) != (walked[-1],):
+            raise _refuse(
+                WorkflowRefusalReason.LOOP_BODY_NOT_ONE_LINE,
+                "loops",
+                f"loop {loop.id!r} repeats {member!r} after {walked[-1]!r}, and "
+                "no single declared edge orders it there",
+                member,
+            )
+        walked.append(member)
+    for node in graph.nodes:
+        if node.id in body:
+            continue
+        entered = set(node.depends_on) & body
+        if entered - {loop.body[-1]}:
+            raise _refuse(
+                WorkflowRefusalReason.LOOP_BODY_NOT_ONE_LINE,
+                "loops",
+                f"loop {loop.id!r} is left at {min(entered)!r}, which is "
+                "not the round's last node",
+                node.id,
+            )
+
+
 _ITERATION_FIELD_REFUSALS: Mapping[str, WorkflowRefusalReason] = {
     "maximum_rounds": WorkflowRefusalReason.UNBOUNDED_ITERATION,
     "seed": WorkflowRefusalReason.ITERATION_CARRY_UNBOUND,
@@ -840,6 +969,7 @@ _VOCABULARY_FIELDS = frozenset(
         IterateBlock,
         IterationGreenCondition,
         IterationCarry,
+        LoopDeclaration,
         RequiredContextEntry,
         AvailableContextEntry,
         VersionedReference,
@@ -1107,7 +1237,48 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     unbound_prompt = _unbound_wait_forms(graph)
     if unbound_prompt is not None:
         return unbound_prompt
+    unrepeatable = _unrepeatable_loop_forms(graph)
+    if unrepeatable is not None:
+        return unrepeatable
     return _unbound_input_sources(graph)
+
+
+def _unrepeatable_loop_forms(graph: WorkflowGraphV3) -> str | None:
+    """What a declared loop asks for that no round of this build carries.
+
+    Two things are still nobody's. A round is a second execution of a node, and
+    only the Agent kind mints one today -- a repeated Wait would ask the same
+    person the same question under an identity the answer path does not carry.
+    And a value read *out of* a loop names no round: the reader would have to
+    say which round wrote it, and choosing is the verdict-driven continuation
+    this head does not build.
+    """
+    for loop in graph.loops:
+        repeated = sorted(
+            {
+                graph.node(member).type
+                for member in loop.body
+                if not isinstance(graph.node(member), AgentNodeV3)
+            }
+        )
+        if repeated:
+            return f"node kinds no round repeats in loop {loop.id!r}: " + ", ".join(
+                repeated
+            )
+    for node in graph.nodes:
+        if graph.loop_of(node.id) is not None:
+            continue
+        for source in _declared_reads(node):
+            if not isinstance(source, NodeOutputSource):
+                continue
+            loop = graph.loop_of(source.node)
+            if loop is not None:
+                return (
+                    f"node {node.id!r} reads {source.output!r} of {source.node!r}, "
+                    f"which loop {loop.id!r} writes once per round, and no rule "
+                    "here names which round it reads"
+                )
+    return None
 
 
 def _unbound_wait_forms(graph: WorkflowGraphV3) -> str | None:

@@ -47,6 +47,7 @@ from atelier2.contracts.run_projections import (
     RunPage,
 )
 from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
     RunId,
     RunState,
     WorkflowRevision,
@@ -230,6 +231,7 @@ def _seed_history(
                 "event_sequence": event.event_sequence,
                 "node_id": event.node_id,
                 "node_execution_id": event.node_execution_id.value,
+                "round_ordinal": event.round_ordinal,
                 "event_kind": event.event_kind.value,
                 "payload": event.payload,
                 "payload_hash": event.payload_hash.value,
@@ -273,6 +275,7 @@ def _seed_history(
                     if sink_node_id is not None
                     else ("final" if state is RunState.COMPLETED else "agent")
                 ),
+                current_round_ordinal=FIRST_ROUND_ORDINAL,
                 state=state.value,
                 state_version=head,
                 last_event_sequence=head,
@@ -660,6 +663,7 @@ def test_event_query_keeps_one_old_snapshot_when_history_appends_between_selects
                     event_sequence=sequence,
                     node_id=f"node-{sequence}",
                     node_execution_id=_digest(f"execution-{run_id.value}-{sequence}"),
+                    round_ordinal=FIRST_ROUND_ORDINAL,
                     event_kind=RunEventKind.AGENT_COMPLETED.value,
                     payload=payload,
                     payload_hash=hashlib.sha256(payload).hexdigest(),
@@ -813,6 +817,7 @@ def _seed_runs(
                     "workflow_format_version": 1,
                     "agent_binding_set_hash": None,
                     "current_node_id": "agent",
+                    "current_round_ordinal": FIRST_ROUND_ORDINAL,
                     "state": RunState.STARTED.value,
                     "state_version": 0,
                     "last_event_sequence": 0,
@@ -860,6 +865,7 @@ def test_run_core_text_limits_refuse_before_mapper_without_selecting_bootstrap_i
                 workflow_format_version=1,
                 agent_binding_set_hash=None,
                 current_node_id=current_node_id,
+                current_round_ordinal=FIRST_ROUND_ORDINAL,
                 state=RunState.STARTED.value,
                 state_version=0,
                 last_event_sequence=0,
@@ -1167,6 +1173,7 @@ nodes:
                     "workflow_format_version": 1,
                     "agent_binding_set_hash": None,
                     "current_node_id": "action",
+                    "current_round_ordinal": FIRST_ROUND_ORDINAL,
                     "state": RunState.WAITING_RECONCILIATION.value,
                     "state_version": 1,
                     "last_event_sequence": 1,

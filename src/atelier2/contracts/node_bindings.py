@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from atelier2.contracts.agents import ResolvedAgentBinding
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.run_bindings import RunBindingConflict
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
 
 
@@ -50,6 +51,14 @@ class AgentNodeBindingV2:
     tool_grant: DeclaredToolGrant | None = None
     project_source: ProjectSourcePin | None = None
     declared_output_schema_document: str | None = None
+    round_ordinal: int = FIRST_ROUND_ORDINAL
+    """Which round of a declared loop this binding was composed in.
+
+    It travels inside the binding because the binding is what a recovery
+    replays: reading the run again at launch would ask a row that may already
+    stand in the next round, and the recovered node would silently bind an
+    execution it never was.
+    """
 
     def __post_init__(self) -> None:
         if self.tool_grant is not None and self.project_source is None:

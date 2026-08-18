@@ -16,10 +16,12 @@ from fastapi.testclient import TestClient
 
 from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
+    CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY,
     ClaudeSubscriptionSettings,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -38,7 +40,10 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
-from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
+from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    AgentExecutionCapability,
+)
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.host import main
 from atelier2.host.address import DEFAULT_HOST
@@ -223,6 +228,7 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
         catalog_resolver=DbosCatalogStore(runtime.engine),
         catalog_admissions=DbosCatalogStore(runtime.engine),
         published_revision_registry=DbosCatalogStore(runtime.engine),
+        artifact_publisher=DbosArtifactStore(runtime.engine),
     )
 
 
@@ -284,6 +290,7 @@ def test_the_host_bounds_admit_exactly_what_the_durable_contract_accepts() -> No
 def served_settings(
     tmp_path: Path,
     claude_subscription: ClaudeSubscriptionSettings | None = None,
+    claude_workspace_tools: bool = False,
     host: str = DEFAULT_HOST,
     scratch_root: Path | None = None,
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS,
@@ -309,6 +316,7 @@ def served_settings(
             else agent_scratch_root(tmp_path)
         ),
         claude_subscription=claude_subscription,
+        claude_workspace_tools=claude_workspace_tools,
         limits=api_limits(**tuning),
         sqlite_lock_timeout_seconds=sqlite_lock_timeout_seconds,
     )
@@ -343,6 +351,45 @@ def test_a_declared_claude_deployment_offers_its_executor_to_every_run(
         )
     finally:
         runtime.close()
+
+
+def test_the_workspace_tool_executor_is_served_only_where_it_was_armed(
+    tmp_path: Path,
+) -> None:
+    """Naming a Claude executable grants a tool-free call and nothing more.
+
+    The second executor lets a node's own process read, write and run commands
+    as the serving user, so it is a grant of its own: it appears in the registry
+    only where the operator armed it, and every run served without it can only
+    reach the tool-free one.
+    """
+
+    deployment = tmp_path / "claude-deployment"
+    deployment.mkdir()
+    settings = served_settings(
+        tmp_path,
+        claude_subscription=claude_subscription_deployment(deployment, INERT_CLAUDE),
+        claude_workspace_tools=True,
+    )
+
+    _app, runtime = compose_application(settings)
+
+    try:
+        assert runtime.agent_executor_registry.keys == frozenset(
+            {CLAUDE_SUBSCRIPTION_EXECUTOR_KEY, CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY}
+        )
+        assert runtime.agent_executor_registry.declared_capabilities(
+            CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY
+        ) == frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS})
+    finally:
+        runtime.close()
+
+
+def test_arming_the_workspace_tools_without_a_claude_deployment_is_refused(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="second executor"):
+        served_settings(tmp_path, claude_workspace_tools=True)
 
 
 def serve_arguments(tmp_path: Path, *extra: str) -> list[str]:

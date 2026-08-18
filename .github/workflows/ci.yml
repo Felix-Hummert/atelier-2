@@ -22,6 +22,8 @@ jobs:
   frontend:
     name: "Cockpit: types, lint, tests, e2e"
     runs-on: ubuntu-latest
+    # ~3min üblich, gemessen 18.08. (10 grüne main-Runs; mean 157s, max 255s)
+    timeout-minutes: 8
     defaults:
       run:
         working-directory: frontend
@@ -123,6 +125,8 @@ jobs:
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
+    # ~1min üblich, gemessen 18.08. (10 grüne main-Runs; mean 7s, max 11s)
+    timeout-minutes: 3
     steps:
       - name: Check out the event commit with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -145,6 +149,8 @@ jobs:
   quality:
     name: "Python: architecture, lint, types, tests"
     runs-on: ubuntu-24.04
+    # ~4min üblich, gemessen 18.08. (10 grüne main-Runs; mean 180s, max 229s)
+    timeout-minutes: 10
     steps:
       - name: Check out the event commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -340,6 +346,8 @@ jobs:
     name: Crash recovery
     needs: quality
     runs-on: ubuntu-latest
+    # ~2min üblich, gemessen 18.08. (10 grüne main-Runs; mean 84s, max 91s)
+    timeout-minutes: 5
     steps:
       - name: Check out the event commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -406,6 +414,8 @@ jobs:
     needs: [frontend, quality, crash-recovery]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    # ~1min üblich, gemessen 18.08. (10 grüne main-Runs; mean 16s, max 39s)
+    timeout-minutes: 3
     steps:
       - name: Check out the event commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -468,6 +478,8 @@ jobs:
     needs: quality
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    # ~1min üblich, gemessen 18.08. (10 grüne main-Runs; mean 3s, max 5s)
+    timeout-minutes: 3
     steps:
       - name: Hold the required check name
         run: test "${{ needs.quality.result }}" = "success"
@@ -477,6 +489,8 @@ jobs:
     needs: frontend
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    # ~1min üblich, gemessen 18.08. (10 grüne main-Runs; mean 3s, max 4s)
+    timeout-minutes: 3
     steps:
       - name: Hold the required check name
         run: test "${{ needs.frontend.result }}" = "success"

@@ -22,7 +22,12 @@ from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
 )
 
-MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES = 262_144
+# The launch frame carries the process's whole standard input base64-encoded --
+# four characters per three bytes -- beside its argv, environment and working
+# directory. Twice the input bound is that expansion with the rest of the
+# envelope's room left over, so every input this product admits can be launched.
+# As a literal it silently fell below a raised input bound instead.
+MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES = 2 * MAXIMUM_AGENT_PROCESS_INPUT_BYTES
 MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES = 4_096
 CONTROL_FRAME_TIMEOUT_SECONDS = 1.0
 

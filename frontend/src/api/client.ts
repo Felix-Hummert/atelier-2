@@ -288,7 +288,9 @@ const agentConfigurationInputSchema = z
     model: z.string().min(1).max(1_024),
     auth_profile_revision_hash: sha256,
     executor_revision: z.string().min(1).max(1_024),
-    requested_capability: z.enum(["headless", "interactive"]).optional()
+    requested_capability: z
+      .enum(["headless", "headless_with_tools", "interactive"])
+      .optional()
   })
   .strict();
 
@@ -296,7 +298,7 @@ const agentConfigurationRevisionSchema = agentConfigurationInputSchema
   .extend({
     provider_id: z.string().min(1).max(64),
     auth_mode: z.enum(["subscription", "api_key"]),
-    requested_capability: z.enum(["headless", "interactive"]),
+    requested_capability: z.enum(["headless", "headless_with_tools", "interactive"]),
     agent_configuration_revision_hash: sha256
   })
   .strict();
@@ -826,6 +828,8 @@ export const problemDefinitions = {
   "invalid-request": { status: 422, title: "Invalid request" },
   "invalid-base64": { status: 422, title: "Invalid base64" },
   "invalid-workflow-document": { status: 422, title: "Invalid workflow document" },
+  "artifact-empty": { status: 422, title: "Artifact refused" },
+  "artifact-too-large": { status: 422, title: "Artifact refused" },
   "schema-document-too-large": { status: 422, title: "Invalid schema document" },
   "schema-document-not-utf8": { status: 422, title: "Invalid schema document" },
   "schema-document-carries-byte-order-mark": { status: 422, title: "Invalid schema document" },
@@ -903,6 +907,8 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant("invalid-request", problemDefinitions["invalid-request"]),
   problemVariant("invalid-base64", problemDefinitions["invalid-base64"]),
   problemVariant("invalid-workflow-document", problemDefinitions["invalid-workflow-document"]),
+  problemVariant("artifact-empty", problemDefinitions["artifact-empty"]),
+  problemVariant("artifact-too-large", problemDefinitions["artifact-too-large"]),
   problemVariant("schema-document-too-large", problemDefinitions["schema-document-too-large"]),
   problemVariant("schema-document-not-utf8", problemDefinitions["schema-document-not-utf8"]),
   problemVariant("schema-document-carries-byte-order-mark", problemDefinitions["schema-document-carries-byte-order-mark"]),

@@ -67,6 +67,15 @@ MAXIMUM_SCHEMA_DOCUMENT_BYTES = 16_384
 # own decision: a value is bounded because a run must not be asked to carry an
 # order nobody can read, a schema because a published revision must not cost
 # unbounded work to read.
+#
+# What this height protects is the *inline* route and only that: a value written
+# into a start request is copied through the wire body, the request record and
+# the durable order row, so it is held several times over before anything reads
+# it, and it is the one route a caller can flood without publishing anything
+# first. Sixteen kilobytes is what a hand-written order is; material larger than
+# that is published as an artifact and ordered by its address
+# (`atelier2.contracts.artifacts`), which is why this bound stays strict instead
+# of growing with the largest payload anybody has.
 MAXIMUM_INSTANCE_DOCUMENT_BYTES = 16_384
 MAXIMUM_SCHEMA_CONTAINER_DEPTH = 32
 MAXIMUM_SCHEMA_VALUES = 4_096
@@ -306,7 +315,11 @@ def read_schema_document(document: bytes) -> SchemaDocumentVerdict:
     return _validated_against_the_draft(decoded.value)
 
 
-def read_instance_document(instance: bytes, schema: SchemaAccepted) -> InstanceVerdict:
+def read_instance_document(
+    instance: bytes,
+    schema: SchemaAccepted,
+    maximum_bytes: int = MAXIMUM_INSTANCE_DOCUMENT_BYTES,
+) -> InstanceVerdict:
     """Whether these exact bytes are a value that accepted schema admits.
 
     It takes an accepted schema rather than bytes on purpose: evaluating against
@@ -317,11 +330,19 @@ def read_instance_document(instance: bytes, schema: SchemaAccepted) -> InstanceV
     bound first, then decoding, then the depth and value bounds, and only then
     the evaluation. Hostile input costs a length check rather than a walk, and
     nothing reaches the evaluator that has not already been measured.
+
+    `maximum_bytes` is the caller's, because the byte bound belongs to the route
+    the value arrived by rather than to this evaluation: a value written inline
+    is bounded at `MAXIMUM_INSTANCE_DOCUMENT_BYTES`, one published as an artifact
+    at `MAXIMUM_ARTIFACT_BYTES`, and a caller that has already refused past its
+    own door would otherwise have to refuse a second time under a bound it does
+    not own. What keeps the evaluation itself decidable is the depth and value
+    count below, which no caller may raise.
     """
-    if len(instance) > MAXIMUM_INSTANCE_DOCUMENT_BYTES:
+    if len(instance) > maximum_bytes:
         return InstanceRefused(
             InstanceRefusal.INSTANCE_TOO_LARGE,
-            f"{len(instance)} bytes exceeds {MAXIMUM_INSTANCE_DOCUMENT_BYTES}",
+            f"{len(instance)} bytes exceeds {maximum_bytes}",
         )
     try:
         text = instance.decode("utf-8")

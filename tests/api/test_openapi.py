@@ -71,6 +71,7 @@ RECEIPT_PATH = API_PREFIX + "/runs/{public_ref}/receipt"
 
 EXPECTED_PATHS = {
     API_PREFIX + "/health",
+    API_PREFIX + "/artifacts",
     API_PREFIX + "/auth-profile-revisions",
     API_PREFIX + "/agent-configuration-revisions",
     API_PREFIX + "/schema-revisions",
@@ -111,6 +112,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         "GET",
         API_PREFIX + "/agent-configuration-revisions",
         "list_agent_configuration_revisions_route",
+    ),
+    (
+        "POST",
+        API_PREFIX + "/artifacts",
+        "publish_artifact_route",
     ),
     (
         "POST",
@@ -161,6 +167,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/auth-profile-revisions", "get"): {"200"},
     (API_PREFIX + "/agent-configuration-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-configuration-revisions", "get"): {"200"},
+    (API_PREFIX + "/artifacts", "post"): {"200", "201"},
     (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
@@ -228,9 +235,11 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds the shape of the published workflow document and binds the
-    publication body to it, in place of the opaque string it declared before.
-    Refreshing the artefact alongside a refactor is what this test still refuses.
+    it. This head widens one closed vocabulary: `headless_with_tools` joins the
+    requested capability a configuration may publish and the mode an agent node
+    may declare, so a caller can bind a node to an executor whose invocation
+    carries tools. Refreshing the artefact alongside a refactor is what this test
+    still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
@@ -381,7 +390,7 @@ def test_openapi_offers_the_capability_and_demands_it_back() -> None:
     request = _referenced_schema(schema, operation["requestBody"]["content"])
     capability = {
         "type": "string",
-        "enum": ["headless", "interactive"],
+        "enum": ["headless", "headless_with_tools", "interactive"],
         "title": "Requested Capability",
     }
 

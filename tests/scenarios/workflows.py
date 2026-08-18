@@ -55,3 +55,41 @@ nodes:
 V3_DOCUMENT_NAME = "Implement a candidate, then review it for defects"
 V3_NODE_COUNT = 2
 V3_CONTROL_EDGE_LINE = b"    depends_on: [implement]\n"
+
+
+LOOPED_LINE_NODE_IDS = ("implement", "review")
+LOOPED_LINE_MAXIMUM_ROUNDS = 3
+LOOPED_LINE_DOCUMENT = (
+    b"""format_version: 3
+name: Build and review, three rounds at most
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+"""
+    + declared_output()
+    + b"""  - id: review
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Check what the node before you did.
+    depends_on: [implement]
+    inputs:
+      - name: candidate
+        from: {node: implement, output: result}
+"""
+    + declared_output()
+    + b"""loops:
+  - id: until_reviewed
+    body: [implement, review]
+    maximum_rounds: 3
+"""
+)
+"""The two-node loop every round-aware scenario drives.
+
+It is the shape the workshop actually runs by hand -- build, then review, then
+build again -- cut to the thinnest form that still proves a round: two agent
+nodes, the second reading the first, and a declared bound that ends it.
+"""
