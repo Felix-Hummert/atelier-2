@@ -6,11 +6,12 @@ addition removed, then a format-3 run that already wrote one event. That is the
 today's owner.
 
 V14 and V15 each added a table, so dropping those tables was the whole reversal.
-Every version after them instead reshapes a table V13 already had, so the
-fixture also restores each of those tables' published V13 shape below. The
-literals are not second owners of the current tables: they are the frozen
-artifacts V13 really carried, and the pinned V13 fingerprint refuses them the
-moment a character drifts.
+Every version after them instead reshapes a table V13 already had -- V21 is the
+capability CHECK on `agent_configuration_revisions` -- so the fixture also
+restores each of those tables' published V13 shape below. The literals are not
+second owners of the current tables: they are the frozen artifacts V13 really
+carried, and the pinned V13 fingerprint refuses them the moment a character
+drifts.
 """
 
 from __future__ import annotations
@@ -52,6 +53,10 @@ from atelier2.adapters.dbos.schema import (
     runs,
     tool_redemptions,
     workflow_revisions,
+)
+from atelier2.contracts.agents import (
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineage
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
@@ -227,6 +232,14 @@ END
 ARCHIVED_ATTEMPT_ID = "ab" * 32
 ARCHIVED_ATTEMPT_FAILURE_CODE = "PROCESS_EXITED_UNSUCCESSFULLY"
 ARCHIVED_RECEIPT_NODE_EXECUTION_ID = "99" * 32
+ARCHIVED_AGENT_CONFIGURATION_HASH = "66" * 32
+ARCHIVED_AGENT_MODEL = "archived-model"
+"""The published configuration an old store already carried.
+
+The capability hop rebuilds the table this row lives in, so the fixture's own
+published binding is what proves the rows came over: a hop that rebuilt an empty
+table would prove the shape and nothing about what stood in it.
+"""
 
 
 def _logical_dump(database_path: Path) -> tuple[str, ...]:
@@ -287,6 +300,46 @@ def _restore_predecessor_runs(connection: Connection) -> None:
     connection.execute(sa.text("DROP TABLE runs"))
     connection.execute(sa.text(_PREDECESSOR_RUNS_DDL))
     connection.execute(sa.text(_PRODUCT_TRIGGERS["runs_binding_no_update"]))
+    connection.execute(sa.text("PRAGMA foreign_keys=ON"))
+
+
+_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS_DDL = """
+CREATE TABLE agent_configuration_revisions (
+revision_hash TEXT NOT NULL, 
+model TEXT NOT NULL, 
+auth_profile_revision_hash TEXT NOT NULL, 
+executor_revision TEXT NOT NULL, 
+revision_format_version INTEGER NOT NULL, 
+requested_capability TEXT NOT NULL, 
+PRIMARY KEY (revision_hash), 
+UNIQUE (revision_hash, auth_profile_revision_hash, model, executor_revision), 
+UNIQUE (revision_hash, auth_profile_revision_hash, model, executor_revision, revision_format_version, requested_capability), 
+CHECK (length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'), 
+CHECK (length(model) BETWEEN 1 AND 1024), 
+CHECK (length(auth_profile_revision_hash) = 64 AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'), 
+CHECK (length(executor_revision) BETWEEN 1 AND 1024), 
+CHECK (revision_format_version IN (1, 2)), 
+CHECK (requested_capability IN ('headless', 'interactive')), 
+CHECK (revision_format_version = 2 OR requested_capability = 'headless'), 
+FOREIGN KEY(auth_profile_revision_hash) REFERENCES auth_profile_revisions (revision_hash)
+)
+"""
+
+
+def _restore_predecessor_agent_configuration_revisions(
+    connection: Connection,
+) -> None:
+    triggers = (
+        "agent_configuration_revisions_no_update",
+        "agent_configuration_revisions_no_delete",
+    )
+    connection.execute(sa.text("PRAGMA foreign_keys=OFF"))
+    for trigger in triggers:
+        connection.execute(sa.text(f"DROP TRIGGER {trigger}"))
+    connection.execute(sa.text("DROP TABLE agent_configuration_revisions"))
+    connection.execute(sa.text(_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS_DDL))
+    for trigger in triggers:
+        connection.execute(sa.text(_PRODUCT_TRIGGERS[trigger]))
     connection.execute(sa.text("PRAGMA foreign_keys=ON"))
 
 
@@ -428,7 +481,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
     execution = "11" * 32
     receipt = "ef" * 32
     auth_profile_revision_hash = "55" * 32
-    agent_configuration_revision_hash = "66" * 32
+    agent_configuration_revision_hash = ARCHIVED_AGENT_CONFIGURATION_HASH
     binding_set_hash = "77" * 32
     agent_receipt_hash = "dd" * 32
     with engine.connect() as connection:
@@ -441,6 +494,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
         _restore_predecessor_agent_attempts(connection)
         _restore_predecessor_runs(connection)
         _restore_predecessor_node_execution_requests(connection)
+        _restore_predecessor_agent_configuration_revisions(connection)
         connection.execute(
             atelier_schema_versions.update()
             .where(atelier_schema_versions.c.version == SCHEMA_VERSION)
@@ -519,7 +573,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
         connection.execute(
             agent_configuration_revisions.insert().values(
                 revision_hash=agent_configuration_revision_hash,
-                model="archived-model",
+                model=ARCHIVED_AGENT_MODEL,
                 auth_profile_revision_hash=auth_profile_revision_hash,
                 executor_revision="archived-executor",
                 revision_format_version=1,
@@ -718,6 +772,35 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
         assert str(archived["event_hash"]) == expected.event_hash.value
         assert archived["agent_receipt_hash"] is None
         assert event_from_record(archived) == expected
+        configuration = (
+            connection.execute(sa.select(agent_configuration_revisions))
+            .mappings()
+            .one()
+        )
+        assert configuration["revision_hash"] == ARCHIVED_AGENT_CONFIGURATION_HASH
+        assert configuration["model"] == ARCHIVED_AGENT_MODEL
+        assert configuration["requested_capability"] == (
+            AgentExecutionCapability.HEADLESS.value
+        )
+    # The widened vocabulary really arrived: the migrated store now publishes a
+    # configuration the predecessor's CHECK would have refused.
+    with engine.begin() as connection:
+        connection.execute(
+            agent_configuration_revisions.insert().values(
+                revision_hash="cd" * 32,
+                model=ARCHIVED_AGENT_MODEL,
+                auth_profile_revision_hash=str(
+                    configuration["auth_profile_revision_hash"]
+                ),
+                executor_revision="claude-subscription-tools/v1",
+                revision_format_version=(
+                    AgentConfigurationRevisionFormatVersion.V2.value
+                ),
+                requested_capability=(
+                    AgentExecutionCapability.HEADLESS_WITH_TOOLS.value
+                ),
+            )
+        )
     engine.dispose()
 
 
@@ -861,11 +944,12 @@ def test_a_refused_receipt_column_hop_rolls_back_every_earlier_step(
 def test_a_refused_failure_code_hop_rolls_back_every_earlier_step(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
 ) -> None:
-    """The final hop refuses, so the three that already ran are undone with it.
+    """A middle hop refuses, so the three that already ran are undone with it.
 
     The failure-code hop rebuilds `agent_attempts` under a parking name, so any
     object already holding that name is a collision the hop refuses by name --
-    after the three earlier steps completed inside the same transaction.
+    after the three earlier steps completed inside the same transaction, and
+    before the hops that follow it can run at all.
     """
     database_path = tmp_path / "atelier.sqlite"
     _create_populated_v13_store(database_path)
@@ -919,6 +1003,49 @@ def test_a_refused_round_column_hop_rolls_back_every_earlier_step(
 
     shown = capsys.readouterr()
     assert "runs_before_the_round_column" in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (13,)
+
+
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        pytest.param(
+            "CREATE TABLE "
+            "agent_configuration_revisions_before_workspace_tools(wrong TEXT)",
+            id="table",
+        ),
+        pytest.param(
+            "CREATE VIEW agent_configuration_revisions_before_workspace_tools "
+            "AS SELECT 1 AS wrong",
+            id="view",
+        ),
+    ],
+)
+def test_a_refused_capability_hop_rolls_back_every_earlier_step(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
+) -> None:
+    """The last hop refuses, so every step that already ran is undone with it.
+
+    It rebuilds `agent_configuration_revisions` under a parking name, so any
+    object already holding that name is a collision it refuses by name -- after
+    every earlier step completed inside the same transaction.
+    """
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v13_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(collision_sql)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "agent_configuration_revisions_before_workspace_tools" in shown.err
     assert "will not alter" in shown.err
     assert _logical_dump(database_path) == before
     with sqlite3.connect(database_path) as connection:

@@ -19,6 +19,7 @@ from atelier2.adapters.claude_subscription import (
     CREDENTIAL_RECORD_ENTRY,
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
+    ClaudeWorkspaceToolExecutorFactory,
 )
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_store import commit_agent_completed, load_graph
@@ -264,9 +265,17 @@ nodes:
 
 
 def claude_subscription_runtime(
-    root: Path, settings: ClaudeSubscriptionSettings
+    root: Path,
+    settings: ClaudeSubscriptionSettings,
+    *,
+    workspace_tools: bool = False,
 ) -> DbosRuntime:
-    """The production runtime, serving exactly the Claude subscription executor."""
+    """The production runtime, serving the Claude executors this scenario arms.
+
+    The workspace-tool executor is a second, separately armed grant of the same
+    deployment, so a scenario asks for it the way an operator does instead of
+    getting it because a Claude executable was named.
+    """
 
     return DbosRuntime(
         DbosRuntimeSettings(
@@ -280,7 +289,14 @@ def claude_subscription_runtime(
             EffectDestination("claude-subscription-test"),
         ),
         ExactOutputAgentExecutorFactory(),
-        (ClaudeSubscriptionExecutorFactory(settings),),
+        (
+            ClaudeSubscriptionExecutorFactory(settings),
+            *(
+                (ClaudeWorkspaceToolExecutorFactory(settings),)
+                if workspace_tools
+                else ()
+            ),
+        ),
     )
 
 
@@ -288,6 +304,9 @@ def claude_subscription_publication(
     runtime: DbosRuntime,
     model: str = "claude-haiku-4-5",
     requested_capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
+    executor_revision: AgentExecutorRevision = (
+        CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision
+    ),
 ) -> tuple[AgentConfigurationRevision, WorkflowRevision]:
     """Publish one configuration and workflow through the production catalog.
 
@@ -305,7 +324,7 @@ def claude_subscription_publication(
     configuration = AgentConfigurationRevision(
         model,
         auth.revision_hash,
-        CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
+        executor_revision,
         requested_capability,
         AgentConfigurationRevisionFormatVersion.V2,
     )
@@ -320,11 +339,14 @@ def claude_subscription_start(
     run_name: str,
     model: str = "claude-haiku-4-5",
     requested_capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
+    executor_revision: AgentExecutorRevision = (
+        CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision
+    ),
 ) -> tuple[DurablePublishedRunResult, WorkflowRevision]:
     """Ask the production starter for one run bound to this executor."""
 
     configuration, workflow = claude_subscription_publication(
-        runtime, model, requested_capability
+        runtime, model, requested_capability, executor_revision
     )
     started = DbosDurableRunStarter(
         runtime.engine, runtime.settings, runtime.agent_executor_registry
@@ -341,12 +363,23 @@ def claude_subscription_start(
 
 
 def claude_subscription_attempt(
-    runtime: DbosRuntime, run_name: str, model: str = "claude-haiku-4-5"
+    runtime: DbosRuntime,
+    run_name: str,
+    model: str = "claude-haiku-4-5",
+    requested_capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
+    executor_revision: AgentExecutorRevision = (
+        CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision
+    ),
+    operational_identity: AgentExecutorOperationalIdentity = (
+        CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY
+    ),
 ) -> AgentAttemptExecution:
     """One durable run whose only agent node is bound to this executor."""
 
     run_id = RunId(run_name)
-    started, workflow = claude_subscription_start(runtime, run_name, model)
+    started, workflow = claude_subscription_start(
+        runtime, run_name, model, requested_capability, executor_revision
+    )
     assert isinstance(started, DurableRunCreated)
     assert isinstance(started.run, RunV2)
     return agent_attempt_execution(
@@ -356,7 +389,7 @@ def claude_subscription_attempt(
             workflow.revision_hash,
             "build",
             started.run.agent_bindings[0],
-            CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
+            operational_identity,
             b"build",
         )
     )
