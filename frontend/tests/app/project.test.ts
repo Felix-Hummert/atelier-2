@@ -145,12 +145,17 @@ describe("every level names the way back up", () => {
     });
     await screen.findByRole("heading", { name: "Run run" });
 
-    await fireEvent.click(screen.getByRole("link", { name: "This workshop" }));
+    const trail = screen.getByRole("navigation", { name: "Where you are" });
+    await fireEvent.click(within(trail).getByRole("link", { name: "This workshop" }));
 
     expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier/project");
 
-    await fireEvent.click(screen.getByRole("link", { name: "Studio" }));
+    await fireEvent.click(
+      within(screen.getByRole("navigation", { name: "Where you are" })).getByRole("link", {
+        name: "Studio"
+      })
+    );
 
     expect((await screen.findByRole("heading", { name: "Studio" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier");
