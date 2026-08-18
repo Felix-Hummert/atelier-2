@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Never
@@ -495,6 +495,24 @@ def emitting(
         output.hex(),
         frame_bytes=frame_bytes,
     )
+
+
+def answering_each_execution(
+    answers: Mapping[tuple[str, int], bytes],
+) -> AgentCommandFactory:
+    """A command whose process writes the answer this exact node and round owes.
+
+    A scenario where a round's answer decides what happens next needs a provider
+    that can say something different in the second round than in the first, and
+    the request already carries which execution it is. A missing entry raises
+    rather than falling back on a default: the scenario would otherwise be
+    proving something about an answer nobody wrote down.
+    """
+
+    def command(request: AgentExecutionRequestV2) -> AgentProcessCommand:
+        return emitting(answers[(request.node_id, request.round_ordinal)])(request)
+
+    return command
 
 
 _PROVIDER_WRITES_STANDARD_ERROR_AND_EXITS = "import os, sys; os.write(2, bytes.fromhex(sys.argv[1])); sys.exit(int(sys.argv[2]))"

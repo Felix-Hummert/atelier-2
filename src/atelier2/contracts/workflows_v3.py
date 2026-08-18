@@ -17,6 +17,7 @@ from pydantic import (
 
 from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
+from atelier2.contracts.verdicts import VERDICT_ANSWER_SCHEMA, Verdict
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentRefused,
     WorkflowRefusal,
@@ -57,6 +58,20 @@ def _declared_sequence(value: object) -> object:
 
 
 DeclaredSequence = BeforeValidator(_declared_sequence)
+
+
+def _declared_verdict(value: object) -> object:
+    """An authored token, read by the vocabulary that owns it.
+
+    A document is written as text, so the token arrives as a string; the closed
+    set is where it becomes a verdict or is refused. Reading it here rather than
+    restating the tokens as a second literal type is what keeps one owner of the
+    vocabulary the engine, the store and the author all speak.
+    """
+    return Verdict(value) if type(value) is str else value
+
+
+DeclaredVerdict = BeforeValidator(_declared_verdict)
 
 
 def _bounded_authored_text(text: str, subject: str, maximum_bytes: int) -> str:
@@ -206,6 +221,25 @@ class IterateBlock(_ClosedV3Model):
     carry: Annotated[tuple[IterationCarry, ...], DeclaredSequence] = ()
 
 
+class LoopVerdictCondition(_ClosedV3Model):
+    """The word that sends this loop around again, and the node that says it.
+
+    It names a verdict the node's own answer carries under the contract this
+    product owns -- never prose an agent wrote, and never a value read by
+    matching text. The node's declared output pins that contract by revision
+    hash, which the document refuses to omit, so what the engine reads back into
+    the control flow was already judged before it was read.
+
+    The node is written down rather than derived from the body, because which
+    answer ends a round is the one thing a reader of the document should not
+    have to know the engine's rule to see. That it must be the node whose
+    completion closes the round is what the document refuses when it is not.
+    """
+
+    node: NonemptyString
+    verdict: Annotated[Verdict, DeclaredVerdict]
+
+
 class LoopDeclaration(_ClosedV3Model):
     """One stretch of this graph, run again from its head a bounded number of times.
 
@@ -214,13 +248,17 @@ class LoopDeclaration(_ClosedV3Model):
     still the acyclic one ADR 0002 decided; what repeats is declared beside the
     edges rather than hidden inside them.
 
-    `maximum_rounds` has no default. An unbounded loop must not be reachable by
-    omission, because a run nobody can bound is a run nobody can pay for.
+    `maximum_rounds` has no default, and a declared verdict does not soften it.
+    An unbounded loop must not be reachable by omission, because a run nobody
+    can bound is a run nobody can pay for -- and a loop whose only exit is a
+    verdict is a loop the agent producing that verdict could keep alive forever.
+    The bound is the fallback that always holds; the verdict is the earlier exit.
     """
 
     id: NonemptyString
     body: Annotated[tuple[NonemptyString, ...], DeclaredSequence, Field(min_length=1)]
     maximum_rounds: int
+    repeat_while: LoopVerdictCondition | None = None
 
 
 class _NodeV3(_ClosedV3Model):
@@ -452,6 +490,24 @@ class BranchingAdvanceUnsupported(ValueError):
         )
         self.node_id = node_id
         self.dependents = dependents
+
+
+class LoopVerdictNotRead(ValueError):
+    """A loop that a verdict steers was asked to continue without one.
+
+    The document says this node's answer chooses between another round and the
+    way out, so continuing without having read it would be choosing an edge by
+    default -- silently, and in the expensive direction as often as not. The
+    caller that has the answer is the caller that may ask.
+    """
+
+    def __init__(self, loop_id: str, node_id: str) -> None:
+        super().__init__(
+            f"loop {loop_id!r} continues on the verdict of node {node_id!r}, "
+            "and none was read"
+        )
+        self.loop_id = loop_id
+        self.node_id = node_id
 
 
 def _dependents_of(graph: WorkflowGraphV3, node_id: str) -> tuple[str, ...]:
@@ -900,6 +956,7 @@ def _refuse_broken_loops(graph: WorkflowGraphV3) -> None:
                 )
             repeated[member] = loop.id
         _refuse_body_that_is_not_one_line(loop, graph)
+        _refuse_a_verdict_the_loop_could_not_read(loop, graph)
 
 
 def _refuse_body_that_is_not_one_line(
@@ -948,6 +1005,63 @@ def _refuse_body_that_is_not_one_line(
             )
 
 
+def _refuse_a_verdict_the_loop_could_not_read(
+    loop: LoopDeclaration, graph: WorkflowGraphV3
+) -> None:
+    """Hold a declared verdict exit to the two things the document alone decides.
+
+    The engine reads a verdict at exactly one moment -- when the node closing a
+    round has completed -- so a condition reading any other node names a moment
+    that never comes. And it reads the verdict out of a value the schema seam
+    has already judged, so the deciding node's one output must pin the contract
+    that vocabulary is published under. Both are answerable here, before
+    anything is stored, which is what keeps a run from starting towards a
+    continuation nobody could decide.
+    """
+    condition = loop.repeat_while
+    if condition is None:
+        return
+    if condition.node != loop.body[-1]:
+        raise _refuse(
+            WorkflowRefusalReason.LOOP_VERDICT_NODE_NOT_THE_ROUND_END,
+            "loops",
+            f"loop {loop.id!r} reads the verdict of {condition.node!r}, and only "
+            f"{loop.body[-1]!r} closes its round",
+            condition.node,
+        )
+    pinned = tuple(
+        output.schema_reference.revision
+        for output in graph.node(condition.node).outputs
+    )
+    if pinned != (VERDICT_ANSWER_SCHEMA.revision_hash.value,):
+        raise _refuse(
+            WorkflowRefusalReason.LOOP_VERDICT_UNREADABLE,
+            "loops",
+            f"loop {loop.id!r} reads the verdict of {condition.node!r}, whose one "
+            "output must pin the published verdict contract "
+            f"{VERDICT_ANSWER_SCHEMA.revision_hash.value}",
+            condition.node,
+        )
+
+
+def verdict_condition_of(
+    graph: AnyWorkflowDocument, node_id: str
+) -> LoopVerdictCondition | None:
+    """The loop continuation this node's own verdict decides, or None where none is.
+
+    One reader for every executable format, the shape `is_sink_node` already
+    gives the terminal rule: only a format-3 document declares a loop, so the
+    other formats answer honestly rather than making each caller ask which
+    spelling it is holding.
+    """
+    if not isinstance(graph, WorkflowGraphV3):
+        return None
+    loop = graph.loop_of(node_id)
+    if loop is None or loop.repeat_while is None:
+        return None
+    return loop.repeat_while if loop.repeat_while.node == node_id else None
+
+
 _ITERATION_FIELD_REFUSALS: Mapping[str, WorkflowRefusalReason] = {
     "maximum_rounds": WorkflowRefusalReason.UNBOUNDED_ITERATION,
     "seed": WorkflowRefusalReason.ITERATION_CARRY_UNBOUND,
@@ -970,6 +1084,7 @@ _VOCABULARY_FIELDS = frozenset(
         IterationGreenCondition,
         IterationCarry,
         LoopDeclaration,
+        LoopVerdictCondition,
         RequiredContextEntry,
         AvailableContextEntry,
         VersionedReference,

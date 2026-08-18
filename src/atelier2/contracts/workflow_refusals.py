@@ -35,6 +35,8 @@ class WorkflowRefusalReason(StrEnum):
     ITERATION_GREEN_CONDITION_UNPROVABLE = "iteration_green_condition_unprovable"
     ITERATION_CARRY_UNBOUND = "iteration_carry_unbound"
     LOOP_BODY_NOT_ONE_LINE = "loop_body_not_one_line"
+    LOOP_VERDICT_NODE_NOT_THE_ROUND_END = "loop_verdict_node_not_the_round_end"
+    LOOP_VERDICT_UNREADABLE = "loop_verdict_unreadable"
 
 
 @dataclass(frozen=True, slots=True)

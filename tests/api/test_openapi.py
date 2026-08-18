@@ -235,8 +235,9 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds the loops a format 3 graph may declare to the published
-    grammar, so a publisher reads the bounded way back from the door.
+    it. This head adds the verdict a declared loop may repeat on, with the closed
+    vocabulary it is written in, so a publisher reads the early way out of a loop
+    from the door as well as the bounded way back.
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 

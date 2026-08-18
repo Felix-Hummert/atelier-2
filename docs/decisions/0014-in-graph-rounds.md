@@ -1,7 +1,10 @@
 # ADR 0014: A declared loop repeats a stretch of one graph, and the round is the fourth dimension of a node execution identity
 
 - Status: ACCEPTED 2026-08-18 — the document form, the round identity, the durable
-  round and the bound-reaching end are implemented; the result-driven end is not
+  round and the bound-reaching end are implemented; the result-driven end this
+  record left undecided is decided by
+  [ADR 0015](0015-verdict-steered-continuation.md), which leaves everything below
+  standing and adds the earlier exit
 - Supersedes: the structural finding of
   [ADR 0013](0013-bounded-iteration.md) — "A loop inside one graph is therefore
   identity-impossible" — and, with it, ADR 0013's decision that a round is a child
@@ -102,7 +105,7 @@ as it already holds `node_id` and `node_execution_id` together.
 iteration out of that vocabulary are unaffected by this record and still hold:
 round seven has its own attempt 1 and at most its own replacement 2.
 
-### Reaching the bound is the only way out, and the run ends where any node ends
+### Reaching the bound is a way out, and the run ends where any node ends
 
 The last node of a round hands back to the loop's head while rounds remain. When
 the bound is reached, the loop is simply not taken and the ordinary rule decides —
@@ -111,8 +114,9 @@ terminal state, no new failure word, no new vocabulary.** A run whose loop is
 exhausted ends through the path that already exists.
 
 A result that ends a loop early — a review verdict steering the next edge — is
-**not** decided here and is not built. It is #25's second head, and until it lands
-the round count is the only thing a loop answers to.
+**not** decided here. It is #25's second head, and
+[ADR 0015](0015-verdict-steered-continuation.md) is where it was decided; the
+bound this record made mandatory stays mandatory beside it.
 
 ### A round owes its own evidence
 

@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, require_exact_round_ordinal
+from atelier2.contracts.verdicts import Verdict
 
 if TYPE_CHECKING:
     from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
@@ -333,6 +334,7 @@ def completion_after_node(
     graph: AnyWorkflowDocument,
     node_id: str,
     round_ordinal: int = FIRST_ROUND_ORDINAL,
+    verdict: Verdict | None = None,
 ) -> NodeCompletion:
     """Decide continuation once, without inventing a successor for the sink.
 
@@ -343,15 +345,22 @@ def completion_after_node(
     waiting dependents is the ready set #86 owns.
 
     A declared loop adds the one move the edges cannot express, and adds nothing
-    else: the last node of a round hands back to the first while rounds are left.
-    Reaching the declared bound is the only way out of a loop this build has --
-    a result that ends it early is the verdict-driven continuation of #25's
-    second head -- so an exhausted loop simply falls through to the rule above
-    and ends where any other node would.
+    else: the last node of a round hands back to the first. Two things end it,
+    and they are read in this order. A verdict the author declared is the early
+    exit -- the round's own answer says whether the work goes round again -- and
+    the declared bound is the fallback that holds whatever the verdict says. A
+    loop that ends either way falls through to the rule above and ends where any
+    other node would, with no word invented for it.
+
+    The verdict travels in rather than being read here, because reading it is a
+    durable act -- the value a round produced -- and this rule stays a decision
+    about the document. A loop that declares one and is asked without it refuses
+    by name instead of continuing in whichever direction the omission implies.
     """
     # V3's vocabulary is built on this module's, so `workflows_v3` imports here and
     # never the other way at module scope; reading its rules needs this import.
     from atelier2.contracts.workflows_v3 import (
+        LoopVerdictNotRead,
         WorkflowGraphV3,
         is_sink_node,
         linear_successor_id,
@@ -360,12 +369,13 @@ def completion_after_node(
     require_exact_round_ordinal(round_ordinal)
     if isinstance(graph, WorkflowGraphV3):
         loop = graph.loop_of(node_id)
-        if (
-            loop is not None
-            and node_id == loop.body[-1]
-            and round_ordinal < loop.maximum_rounds
-        ):
-            return RunContinues(loop.body[0], round_ordinal + 1)
+        if loop is not None and node_id == loop.body[-1]:
+            condition = loop.repeat_while
+            if condition is not None and verdict is None:
+                raise LoopVerdictNotRead(loop.id, node_id)
+            round_again = condition is None or verdict is condition.verdict
+            if round_again and round_ordinal < loop.maximum_rounds:
+                return RunContinues(loop.body[0], round_ordinal + 1)
         if is_sink_node(graph, node_id):
             return RunCompletes()
         successor_id = linear_successor_id(graph, node_id)

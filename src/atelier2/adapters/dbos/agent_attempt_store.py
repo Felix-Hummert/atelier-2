@@ -20,6 +20,7 @@ from atelier2.adapters.dbos.run_store import (
     _agent_receipt_v2_values,
     _tool_redemption_from_record,
     _tool_redemption_values,
+    load_kept_value,
     load_node_outputs,
     load_run_inputs,
     why_a_value_its_declared_schema_refuses,
@@ -85,6 +86,7 @@ from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
+from atelier2.contracts.verdicts import Verdict, read_verdict
 from atelier2.contracts.workflows import (
     AgentNodeV2,
     NodeCompletion,
@@ -93,7 +95,11 @@ from atelier2.contracts.workflows import (
     WorkflowGraphV2,
     completion_after_node,
 )
-from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    WorkflowGraphV3,
+    verdict_condition_of,
+)
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
@@ -433,6 +439,24 @@ def _fail_current_attempt(
     return AgentAttemptFailed(durable_failure)
 
 
+def _kept_verdict(
+    session: Any,
+    graph: WorkflowGraphV2 | WorkflowGraphV3,
+    request: AgentExecutionRequestV2,
+) -> Verdict | None:
+    """The verdict a finished execution of this node steers its loop with.
+
+    Asked only where the document says a verdict decides something, so a run
+    that steers nothing reads nothing. Where it does decide, the answer comes
+    back from what that round kept rather than from anything recomputed: this is
+    the recovery path, and the continuation it reports has to be the one the
+    success write already took.
+    """
+    if verdict_condition_of(graph, request.node_id) is None:
+        return None
+    return read_verdict(load_kept_value(session, request.node_execution_id))
+
+
 def _keep_tool_redemption(
     connection: Any,
     execution: AgentAttemptExecution,
@@ -647,7 +671,10 @@ class DbosAgentAttemptStore:
                 return AgentAttemptPossiblyRan(durable)
             if durable.state is AgentAttemptState.SUCCEEDED:
                 completion = completion_after_node(
-                    graph, request.node_id, request.round_ordinal
+                    graph,
+                    request.node_id,
+                    request.round_ordinal,
+                    _kept_verdict(connection, graph, request),
                 )
                 _require_completed_attempt_head(run, request, completion)
                 return AgentAttemptSucceeded(durable, completion)
@@ -847,8 +874,17 @@ class DbosAgentAttemptStore:
             if updated.rowcount != 1:
                 raise RunTransitionConflict("agent success lost its attempt CAS")
             durable_success = _load_attempt(connection, attempt_id)
+            # Read from the answer in hand rather than from what was just kept:
+            # these are the same bytes the artifact holds, and asking the store
+            # for what this transaction wrote a moment ago would put a second
+            # reader between an answer and the edge it steers.
             completion = completion_after_node(
-                graph, request.node_id, request.round_ordinal
+                graph,
+                request.node_id,
+                request.round_ordinal,
+                None
+                if verdict_condition_of(graph, request.node_id) is None
+                else read_verdict(result.output_bytes),
             )
             match completion:
                 case RunContinues(node_id, target_round):

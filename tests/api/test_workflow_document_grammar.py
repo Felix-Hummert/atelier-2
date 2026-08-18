@@ -20,6 +20,7 @@ from atelier2.adapters.yaml_workflows import (
     InvalidWorkflowDocument,
     parse_workflow_document,
 )
+from atelier2.contracts.verdicts import VERDICT_ANSWER_SCHEMA, Verdict
 from atelier2.contracts.workflow_documents import WORKFLOW_DOCUMENT_FORMATS
 from atelier2.contracts.workflow_refusals import WorkflowRefusalReason
 from tests.scenarios.api import (
@@ -31,8 +32,10 @@ from tests.scenarios.api import (
     published_workflow_grammar_reference,
 )
 from tests.scenarios.workflows import (
+    ANY_JSON_SCHEMA,
     LOOPED_LINE_DOCUMENT,
     V3_DOCUMENT,
+    VERDICT_LOOP_DOCUMENT,
     declared_output,
 )
 
@@ -121,6 +124,14 @@ DOCUMENT_CASES = (
         LOOPED_LINE_DOCUMENT.replace(b"    maximum_rounds: 3\n", b""),
         False,
     ),
+    DocumentCase("a loop a verdict steers", VERDICT_LOOP_DOCUMENT, True),
+    DocumentCase(
+        "a verdict outside the closed vocabulary",
+        VERDICT_LOOP_DOCUMENT.replace(
+            f"verdict: {Verdict.REVISE.value}".encode(), b"verdict: whenever"
+        ),
+        False,
+    ),
 )
 
 
@@ -152,6 +163,19 @@ WHOLE_DOCUMENT_CASES = (
             b"body: [implement, review]", b"body: [review, implement]"
         ),
         WorkflowRefusalReason.LOOP_BODY_NOT_ONE_LINE,
+    ),
+    WholeDocumentCase(
+        "a verdict read from a node that does not close the round",
+        VERDICT_LOOP_DOCUMENT.replace(b"{node: review,", b"{node: implement,"),
+        WorkflowRefusalReason.LOOP_VERDICT_NODE_NOT_THE_ROUND_END,
+    ),
+    WholeDocumentCase(
+        "a verdict read from an answer under another contract",
+        VERDICT_LOOP_DOCUMENT.replace(
+            VERDICT_ANSWER_SCHEMA.revision_hash.value.encode("ascii"),
+            ANY_JSON_SCHEMA.revision_hash.value.encode("ascii"),
+        ),
+        WorkflowRefusalReason.LOOP_VERDICT_UNREADABLE,
     ),
 )
 
