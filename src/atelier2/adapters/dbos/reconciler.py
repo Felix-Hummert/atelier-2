@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
@@ -12,15 +10,15 @@ from atelier2.adapters.dbos.effect_store import (
     command_snapshot_from_record,
     intent_snapshot_from_record,
 )
+from atelier2.adapters.dbos.names import QUEUE_NAME, RECONCILE_WORKFLOW_NAME
 from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents, reconcile_commands
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.dbos.workflow import QUEUE_NAME, RECONCILE_WORKFLOW_NAME
+from atelier2.adapters.dbos.workflow_ids import reconcile_workflow_id_for
 from atelier2.contracts.effects import (
     EffectIntentState,
     OperatorFoundEffect,
     ReconcileCommand,
-    ReconcileCommandId,
     ReconcileCommandState,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
@@ -32,15 +30,6 @@ from atelier2.ports.effects import (
     DurableReconciliationResult,
     DurableReconciliationTargetMissing,
 )
-
-RECONCILE_WORKFLOW_ID_PREFIX = "atelier2-reconcile-"
-
-
-def reconcile_workflow_id_for(command_id: ReconcileCommandId) -> str:
-    return (
-        RECONCILE_WORKFLOW_ID_PREFIX
-        + hashlib.sha256(command_id.value.encode()).hexdigest()
-    )
 
 
 class DbosEffectReconcileCommander:

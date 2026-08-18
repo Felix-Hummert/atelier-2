@@ -259,7 +259,6 @@ class WaitAnswer:
     node_execution_id: NodeExecutionId
     answer_bytes: bytes
     answer_hash: Sha256Hash = field(init=False)
-    answer_workflow_id: str = field(init=False)
 
     def __post_init__(self) -> None:
         if self.node_id == "":
@@ -269,9 +268,6 @@ class WaitAnswer:
         ):
             raise ValueError("answer execution identity differs from its node binding")
         object.__setattr__(self, "answer_hash", Sha256Hash.of(self.answer_bytes))
-        object.__setattr__(
-            self, "answer_workflow_id", answer_workflow_id_for(self.node_execution_id)
-        )
 
 
 @dataclass(frozen=True)
@@ -293,32 +289,11 @@ class SubmitWaitAnswerRequest:
             raise ValueError("answer node id must be nonempty")
 
 
-def node_workflow_id_for(execution_id: NodeExecutionId) -> str:
-    digest = Sha256Hash.of(
-        frame("node-workflow-id/v1", execution_id.value.encode("ascii"))
-    )
-    return f"atelier2-node-{digest.value}"
-
-
 def logical_effect_key_for(execution_id: NodeExecutionId) -> LogicalEffectKey:
     digest = Sha256Hash.of(
         frame("logical-effect-key/v1", execution_id.value.encode("ascii"))
     )
     return LogicalEffectKey(f"atelier2-node-effect-{digest.value}")
-
-
-def answer_workflow_id_for(execution_id: NodeExecutionId) -> str:
-    digest = Sha256Hash.of(
-        frame("answer-workflow-id/v1", execution_id.value.encode("ascii"))
-    )
-    return f"atelier2-answer-{digest.value}"
-
-
-def subworkflow_workflow_id_for(execution_id: NodeExecutionId) -> str:
-    digest = Sha256Hash.of(
-        frame("subworkflow-workflow-id/v1", execution_id.value.encode("ascii"))
-    )
-    return f"atelier2-subworkflow-{digest.value}"
 
 
 def terminal_hash_for(

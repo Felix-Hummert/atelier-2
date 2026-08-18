@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from atelier2.adapters.dbos.starter import bootstrap_workflow_id_for
-from atelier2.adapters.dbos.workflow import (
+from atelier2.adapters.dbos.names import (
     BOOTSTRAP_STEP_NAME,
     COMMIT_STEP_NAME,
     OBSERVE_STEP_NAME,
     RESOLVE_STEP_NAME,
 )
+from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
 from atelier2.contracts.runs import RunId
 
 CRASHED = 86

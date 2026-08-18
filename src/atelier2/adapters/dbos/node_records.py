@@ -31,6 +31,7 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.application.bind_node_execution import bind_node_execution
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
     DeclaredContextPackageHash,
     NodeArtifact,
@@ -39,7 +40,10 @@ from atelier2.contracts.node_records_v3 import (
     PersistedReceiptDisposition,
     ReceiptOutput,
     RunInput,
+    node_receipt_reason_names_a_schema_judgment,
+    store_node_receipt_reason,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
@@ -113,6 +117,8 @@ def keep_node_receipt(
     disposition: PersistedReceiptDisposition,
     reason: str,
     artifact: NodeArtifact | None = None,
+    schema_revision: PublishedRevisionHash | None = None,
+    value_hash: Sha256Hash | None = None,
 ) -> NodeReceipt | None:
     """The one terminal receipt of one node execution, with its value where it has one.
 
@@ -128,6 +134,11 @@ def keep_node_receipt(
     A succeeded execution keeps its produced value as `node-artifact/v3` first,
     because the receipt's output row is bound to that artifact by key -- the value
     a receipt names is the value the store holds, or neither exists.
+
+    A schema judgment carries the identity it judged. Those values already exist
+    at the write -- the pinned revision and the hash of the exact decoded bytes
+    -- and a judged receipt that dropped them would keep the verdict and throw
+    away the evidence.
     """
     bound = _bound_request(connection, node_execution_id)
     if bound is None:
@@ -156,6 +167,12 @@ def keep_node_receipt(
                 artifact.output_name, artifact.schema_revision, artifact.value_hash
             ),
         )
+        schema_revision = artifact.schema_revision
+        value_hash = artifact.value_hash
+    if node_receipt_reason_names_a_schema_judgment(reason) and (
+        schema_revision is None or value_hash is None
+    ):
+        raise ValueError("a judged node-receipt/v3 names the schema identity it judged")
     receipt = NodeReceipt(
         node_execution_id,
         disposition,
@@ -163,6 +180,8 @@ def keep_node_receipt(
         request_hash,
         package_hash,
         outputs,
+        schema_revision=schema_revision,
+        value_hash=value_hash,
     )
     connection.execute(
         node_receipts_v3.insert()
@@ -170,7 +189,9 @@ def keep_node_receipt(
         .values(
             node_execution_id=receipt.node_execution_id.value,
             disposition=receipt.disposition.value,
-            reason=receipt.reason,
+            reason=store_node_receipt_reason(
+                receipt.reason, receipt.schema_revision, receipt.value_hash
+            ),
             request_hash=receipt.request_hash.value,
             context_package_hash=receipt.context_package_hash.value,
             receipt_hash=receipt.receipt_hash.value,

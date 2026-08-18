@@ -9,10 +9,10 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 
-from atelier2.adapters.dbos.agent_attempt_store import (
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.names import (
     CANCELLATION_WORKFLOW_NAME,
     REPLACEMENT_WORKFLOW_NAME,
-    DbosAgentAttemptStore,
 )
 from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,

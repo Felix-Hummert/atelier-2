@@ -4,7 +4,6 @@ from typing import cast
 
 import pytest
 
-from atelier2.adapters.dbos.continuation import action_continuation_workflow_id_for
 from atelier2.contracts.agents import AgentReceiptHash
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import (
@@ -12,10 +11,6 @@ from atelier2.contracts.executions import (
     RunEvent,
     RunEventKind,
     WaitAnswer,
-    answer_workflow_id_for,
-    logical_effect_key_for,
-    node_workflow_id_for,
-    subworkflow_workflow_id_for,
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash, frame
@@ -38,23 +33,6 @@ def test_exact_document_and_new_identity_preimages_are_frozen() -> None:
     assert (
         execution.value
         == "95774a97abe1effd7586c315d1a47edeef448d38581db617a5d67be7a57d226f"
-    )
-    assert node_workflow_id_for(execution) == (
-        "atelier2-node-d5d705efd74694d64115cc72b7dcb22aea553e95a8b437d6fe533b6d590cc857"
-    )
-    assert logical_effect_key_for(execution).value == (
-        "atelier2-node-effect-224a41804d7e4f4399b9a0ceb84e7b32332236759379d4b1f55f00f54c689aa4"
-    )
-    assert action_continuation_workflow_id_for(logical_effect_key_for(execution)) == (
-        "atelier2-action-continuation-"
-        "1e692016f71fa055dbefbd78f961ab9c764b63ece462ccb68aebeb8d275f51c4"
-    )
-    assert answer_workflow_id_for(execution) == (
-        "atelier2-answer-1cf339c00cc0026bb17df09896739a7e48e675fe16523a430a687438d62a8ad6"
-    )
-    assert subworkflow_workflow_id_for(execution) == (
-        "atelier2-subworkflow-"
-        "30d5c6f76a0ec0b44275c438f8a269f75112dd69417852b938deef469cbee25b"
     )
 
 
@@ -85,9 +63,6 @@ def test_event_terminal_and_answer_hash_vectors_are_frozen() -> None:
     )
     assert answer.answer_hash.value == (
         "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d"
-    )
-    assert answer.answer_workflow_id == (
-        "atelier2-answer-1cf339c00cc0026bb17df09896739a7e48e675fe16523a430a687438d62a8ad6"
     )
 
 

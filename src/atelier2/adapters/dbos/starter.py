@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from typing import assert_never
 
 import sqlalchemy as sa
@@ -14,6 +13,7 @@ from atelier2.adapters.dbos.agent_catalog import (
     auth_profile_from_record,
 )
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.dbos.node_records import persist_bound_node_executions
 from atelier2.adapters.dbos.run_store import (
     entry_node_of,
@@ -32,7 +32,7 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.dbos.workflow import QUEUE_NAME, WORKFLOW_NAME
+from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
 from atelier2.adapters.yaml_workflows import (
     WorkflowFormatNotExecutable,
     parse_executable_workflow_document,
@@ -102,12 +102,6 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionExisting,
     DurableRevisionPublicationResult,
 )
-
-WORKFLOW_ID_PREFIX = "atelier2-run-"
-
-
-def bootstrap_workflow_id_for(run_id: RunId) -> str:
-    return WORKFLOW_ID_PREFIX + hashlib.sha256(run_id.value.encode()).hexdigest()
 
 
 def _v3_run_configuration(

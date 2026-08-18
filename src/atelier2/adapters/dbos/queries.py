@@ -67,7 +67,10 @@ from atelier2.contracts.executions import (
     logical_effect_key_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.node_records_v3 import PersistedReceiptDisposition
+from atelier2.contracts.node_records_v3 import (
+    PersistedReceiptDisposition,
+    read_stored_node_receipt_reason,
+)
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_events import (
@@ -449,7 +452,10 @@ def _node_receipt_refusal(
     disposition = PersistedReceiptDisposition(str(record.disposition))
     if disposition is PersistedReceiptDisposition.SUCCEEDED:
         return None
-    return str(record.reason)
+    reason, _schema_revision, _value_hash = read_stored_node_receipt_reason(
+        str(record.reason)
+    )
+    return reason
 
 
 def _node_job_and_refusal(
