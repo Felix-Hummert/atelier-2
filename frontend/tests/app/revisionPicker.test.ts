@@ -133,6 +133,13 @@ afterEach(() => {
 });
 
 describe("the saved-workflow picker", () => {
+  it("names the empty listing instead of offering a silent choice", async () => {
+    renderPicker([]);
+
+    expect(await screen.findByText("No saved workflows yet.")).toBeTruthy();
+    expect(screen.queryByRole("radio", { name: /saved-revision|unnamed/i })).toBeNull();
+  });
+
   it("offers a named workflow by its name and keeps the exact hash under details", async () => {
     renderPicker([namedRevision()]);
 
@@ -507,5 +514,155 @@ describe("the picker groups revisions that share a published name", () => {
 
     expect(screen.queryByLabelText(/Revisions of/)).toBeNull();
     expect(screen.queryByLabelText(/^Revision of /)).toBeNull();
+  });
+
+  it("proves(a-picker-row-carries-its-catalog-state-in-its-shape): ready, unlisted, unnamable and refused rows differ by form", async () => {
+    const readyName = "ready-line";
+    const unlistedName = "unlisted-line";
+    const cockpitApi = api(
+      [
+        decodedRow({
+          revision_hash: "1".repeat(64),
+          format_version: 3,
+          executable: true,
+          not_executable_reason: null,
+          name: readyName,
+          description: null
+        }),
+        decodedRow({
+          revision_hash: "2".repeat(64),
+          format_version: 3,
+          executable: true,
+          not_executable_reason: null,
+          name: unlistedName,
+          description: null
+        }),
+        decodedRow({
+          revision_hash: "5".repeat(64),
+          format_version: 3,
+          executable: true,
+          not_executable_reason: null,
+          name: "Der erste Lauf",
+          description: null
+        }),
+        namedRevision()
+      ],
+      {
+        getRevisionByName: vi.fn(async (asked: string) => {
+          if (asked === readyName) {
+            return {
+              display_name: readyName,
+              lineage_id: "e".repeat(64),
+              revision_hash: "1".repeat(64),
+              revision_number: 1
+            };
+          }
+          throw new CockpitRequestError(
+            "No lineage of this kind holds that name at that position.",
+            {
+              type: "urn:atelier2:problem:v1:catalog-name-not-found",
+              title: "Catalog name not found",
+              status: 404,
+              detail: "No lineage of this kind holds that name at that position."
+            },
+            true
+          );
+        })
+      }
+    );
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    const ready = await screen.findByRole("article", { name: readyName });
+    const unlisted = await screen.findByRole("article", { name: unlistedName });
+    const unnamable = await screen.findByRole("article", { name: "Der erste Lauf" });
+    const refused = screen.getByRole("article", {
+      name: "Implement a candidate, then review it for defects"
+    });
+    await waitFor(() => expect(unlisted.getAttribute("data-catalog-form")).toBe("unlisted"));
+    expect(ready.getAttribute("data-catalog-form")).toBe("ready");
+    expect(unnamable.getAttribute("data-catalog-form")).toBe("unnamable");
+    expect(refused.getAttribute("data-catalog-form")).toBe("refused");
+    expect(refused.getAttribute("data-catalog-form")).not.toBe(
+      unlisted.getAttribute("data-catalog-form")
+    );
+    expect(ready.getAttribute("data-catalog-form")).not.toBe(
+      refused.getAttribute("data-catalog-form")
+    );
+  });
+
+  it("proves(a-chosen-workflow-collapses-the-picker-onto-its-start): hides the rest of the list and sits the start form under the chosen card", async () => {
+    const first = "first-line";
+    const second = "second-line";
+    const firstHash = "3".repeat(64);
+    const cockpitApi = api(
+      [
+        decodedRow({
+          revision_hash: firstHash,
+          format_version: 3,
+          executable: true,
+          not_executable_reason: null,
+          name: first,
+          description: null
+        }),
+        decodedRow({
+          revision_hash: "4".repeat(64),
+          format_version: 3,
+          executable: true,
+          not_executable_reason: null,
+          name: second,
+          description: null
+        })
+      ],
+      {
+        getRevisionByName: vi.fn(async (asked: string) => ({
+          display_name: asked,
+          lineage_id: "e".repeat(64),
+          revision_hash: asked === first ? firstHash : "4".repeat(64),
+          revision_number: 1
+        })),
+        getWorkflowRevision: vi.fn(async () => ({
+          revision_hash: firstHash,
+          document_base64: "YQ==",
+          graph: {
+            format_version: 3 as const,
+            executable: true as const,
+            not_executable_reason: null,
+            node_count: 1,
+            agent_roles: [] as string[],
+            orders: [],
+            node_previews: [
+              {
+                id: "only",
+                kind: "wait" as const,
+                role: null,
+                instruction_start: null,
+                depends_on: []
+              }
+            ],
+            name: first,
+            description: null
+          }
+        }))
+      }
+    );
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByRole("article", { name: second });
+    await fireEvent.click(screen.getByRole("radio", { name: new RegExp(first) }));
+
+    await screen.findByRole("heading", { name: "Run ID" });
+    expect(screen.queryByRole("article", { name: second })).toBeNull();
+    expect(screen.getByRole("article", { name: first }).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Change" }).isConnected).toBe(true);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Change" }));
+
+    expect((await screen.findByRole("article", { name: second })).isConnected).toBe(true);
+    expect(screen.queryByRole("heading", { name: "Run ID" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
   });
 });

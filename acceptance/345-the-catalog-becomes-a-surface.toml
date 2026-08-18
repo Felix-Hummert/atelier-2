@@ -1,0 +1,14 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/345"
+
+# Slice 1: the picker is reorganised so a choice and its start sit in one
+# glance, and catalog/start refusals are a shape, not only extra words.
+# Details-substance, the edit door, and origin/proof anchors stay a later PR.
+
+[[sentence]]
+id = "a-chosen-workflow-collapses-the-picker-onto-its-start"
+text = "After an operator chooses a saved workflow, the list collapses onto that card with a Change path and the start form sits directly under it, so the rest of the catalog no longer sits between the choice and what it starts."
+
+[[sentence]]
+id = "a-picker-row-carries-its-catalog-state-in-its-shape"
+text = "A selectable workflow, an Unlisted name, an Unnamable title and a row that cannot be started each have their own shape on the picker, so the operator can tell a choice from a named refusal without reading the card."

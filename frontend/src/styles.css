@@ -469,7 +469,57 @@ small {
 
 .saved-workflow {
   display: grid;
+  grid-template-columns: 0.7rem minmax(0, 1fr);
   gap: 0.5rem;
+  align-items: stretch;
+}
+
+.saved-workflow-body {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.saved-workflow-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.form-mark {
+  border-radius: 0.25rem 0 0 0.25rem;
+  min-height: 2.75rem;
+}
+
+.saved-workflow.form-ready .form-mark {
+  background: var(--accent);
+}
+
+.saved-workflow.form-unlisted .form-mark {
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--ink-faint) 0 0.28rem,
+    transparent 0.28rem 0.55rem
+  );
+}
+
+.saved-workflow.form-unnamable .form-mark,
+.saved-workflow.form-retired .form-mark {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--warning) 0 0.2rem,
+    transparent 0.2rem 0.4rem
+  );
+}
+
+.saved-workflow.form-refused .form-mark {
+  background: var(--paper);
+  box-shadow: inset 0 0 0 0.14rem var(--ink-faint);
+}
+
+.saved-workflow.form-refused .revision-option {
+  background: var(--chip);
 }
 
 .revision-label {
