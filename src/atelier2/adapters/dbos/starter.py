@@ -479,7 +479,10 @@ class DbosDurableRunStarter:
                         .mappings()
                         .one_or_none()
                     )
-                    if existing_record is not None:
+                    # Authored orders are not `run_inputs` yet. Comparing them
+                    # here would treat every honest retry as a different order.
+                    # Those starts fall through, pin, and use the compare below.
+                    if existing_record is not None and not _authored_orders(request):
                         if (
                             str(existing_record["revision_hash"])
                             != request.revision_hash.value
