@@ -26,13 +26,11 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
-from atelier2.contracts.agent_attempts import (
-    AgentAttemptFailureCode,
-    driving_workflow_id,
-)
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,

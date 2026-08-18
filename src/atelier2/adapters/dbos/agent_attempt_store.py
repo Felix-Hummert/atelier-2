@@ -7,6 +7,11 @@ import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.names import (
+    CANCELLATION_WORKFLOW_NAME,
+    QUEUE_NAME,
+    REPLACEMENT_WORKFLOW_NAME,
+)
 from atelier2.adapters.dbos.node_records import keep_node_receipt
 from atelier2.adapters.dbos.run_store import (
     AgentReceiptConflict,
@@ -31,6 +36,11 @@ from atelier2.adapters.dbos.schema import (
     tool_redemptions,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.dbos.workflow_ids import (
+    cancellation_workflow_id_for,
+    driving_workflow_id,
+    replacement_workflow_id_for,
+)
 from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agent_attempts import (
     TERMINAL_AGENT_ATTEMPT_STATES,
@@ -47,8 +57,6 @@ from atelier2.contracts.agent_attempts import (
     CancelAgentAttemptRequest,
     ProcessExitSignature,
     WatchdogGenerationId,
-    driving_workflow_id,
-    replacement_workflow_id_for,
 )
 from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
@@ -99,9 +107,6 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptReplacementNotAllowed,
     AgentAttemptSucceeded,
 )
-
-CANCELLATION_WORKFLOW_NAME = "atelier2_agent_attempt_cancellation"
-REPLACEMENT_WORKFLOW_NAME = "atelier2_agent_attempt_replacement"
 
 # DBOS owns this table and these tokens; the store only reads them, and only to
 # answer whether a workflow it enqueued itself is still going to run. Reaching
@@ -879,8 +884,6 @@ class DbosAgentAttemptStore:
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttemptCancellationResult:
-        from atelier2.adapters.dbos.workflow import QUEUE_NAME
-
         client: DBOSClient | None = None
         try:
             with canonical_write_transaction(self._engine) as connection:
@@ -944,7 +947,7 @@ class DbosAgentAttemptStore:
                     or int(current_ordinal or 0) != attempt.attempt_ordinal
                 ):
                     return AgentAttemptCancellationNotCurrent()
-                workflow_id = request.workflow_id
+                workflow_id = cancellation_workflow_id_for(request)
                 updated = connection.execute(
                     agent_attempts.update()
                     .where(
@@ -1006,8 +1009,6 @@ class DbosAgentAttemptStore:
         process_owner_id: AgentProcessOwnerId | None,
         watchdog_generation_id: WatchdogGenerationId | None,
     ) -> AgentAttemptCancellationAccepted:
-        from atelier2.adapters.dbos.workflow import QUEUE_NAME
-
         with canonical_write_transaction(self._engine) as connection:
             attempt = _load_attempt(connection, request.attempt_id)
             cancellation = attempt.cancellation

@@ -7,12 +7,8 @@ import sqlalchemy as sa
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
 from atelier2.adapters.agent_processes import AgentProcessSupervisor
-from atelier2.adapters.dbos.agent_attempt_store import (
-    CANCELLATION_WORKFLOW_NAME,
-    REPLACEMENT_WORKFLOW_NAME,
-)
+from atelier2.adapters.dbos.advancer import prepare_graph_action
 from atelier2.adapters.dbos.continuation import (
-    ACTION_CONTINUATION_WORKFLOW_NAME,
     checkpoint_confirmed_action,
     schedule_confirmed_action_continuation,
 )
@@ -22,6 +18,27 @@ from atelier2.adapters.dbos.effect_store import (
     observe_adapter,
     observe_reconcile_command,
     resolve_observation,
+)
+from atelier2.adapters.dbos.names import (
+    ACTION_CONTINUATION_WORKFLOW_NAME,
+    ACTION_PREPARE_STEP_NAME,
+    AGENT_COMMIT_STEP_NAME,
+    ANSWER_COMMIT_STEP_NAME,
+    ANSWER_WORKFLOW_NAME,
+    BOOTSTRAP_STEP_NAME,
+    CANCELLATION_WORKFLOW_NAME,
+    COMMIT_STEP_NAME,
+    EFFECT_WORKFLOW_NAME,
+    NODE_BINDING_STEP_NAME,
+    NODE_WORKFLOW_NAME,
+    OBSERVE_STEP_NAME,
+    RECONCILE_WORKFLOW_NAME,
+    REPLACEMENT_WORKFLOW_NAME,
+    RESOLVE_STEP_NAME,
+    SUBWORKFLOW_COMMIT_STEP_NAME,
+    SUBWORKFLOW_WORKFLOW_NAME,
+    WAIT_COMMIT_STEP_NAME,
+    WORKFLOW_NAME,
 )
 from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
@@ -37,6 +54,11 @@ from atelier2.adapters.dbos.run_store import (
     load_wait_answer,
 )
 from atelier2.adapters.dbos.schema import published_revisions
+from atelier2.adapters.dbos.workflow_ids import (
+    effect_workflow_id_for,
+    node_workflow_id_for,
+    subworkflow_workflow_id_for,
+)
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
@@ -72,8 +94,6 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     NodeExecutionId,
-    node_workflow_id_for,
-    subworkflow_workflow_id_for,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
@@ -114,24 +134,6 @@ from atelier2.ports.project_verification import (
     PinnedProjectSource,
 )
 
-WORKFLOW_NAME = "atelier2_durable_run"
-NODE_WORKFLOW_NAME = "atelier2_graph_node"
-EFFECT_WORKFLOW_NAME = "atelier2_effect"
-RECONCILE_WORKFLOW_NAME = "atelier2_reconcile_effect"
-ANSWER_WORKFLOW_NAME = "atelier2_wait_answer"
-SUBWORKFLOW_WORKFLOW_NAME = "atelier2_add_subworkflow"
-QUEUE_NAME = "atelier2-durable-runs"
-
-BOOTSTRAP_STEP_NAME = "bootstrap-run-binding"
-NODE_BINDING_STEP_NAME = "node-binding/0"
-AGENT_COMMIT_STEP_NAME = "agent-commit/1"
-ACTION_PREPARE_STEP_NAME = "action-prepare/1"
-WAIT_COMMIT_STEP_NAME = "wait-commit/1"
-SUBWORKFLOW_COMMIT_STEP_NAME = "subworkflow-commit/1"
-ANSWER_COMMIT_STEP_NAME = "answer-commit/1"
-OBSERVE_STEP_NAME = "observe/0"
-RESOLVE_STEP_NAME = "resolve/1"
-COMMIT_STEP_NAME = "commit/2"
 CANCELLATION_REDRIVE_SECONDS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0)
 
 
@@ -706,11 +708,6 @@ def register_durable_run_workflow(
                 case _ as unreachable:
                     assert_never(unreachable)
         if binding["type"] == "action":
-            from atelier2.adapters.dbos.advancer import (
-                effect_workflow_id_for,
-                prepare_graph_action,
-            )
-
             logical_key = str(
                 datasource.run_tx_step(
                     {"name": ACTION_PREPARE_STEP_NAME},

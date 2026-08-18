@@ -9,19 +9,18 @@ from pathlib import Path
 
 import pytest
 
-from atelier2.adapters.dbos.advancer import effect_workflow_id_for
-from atelier2.adapters.dbos.continuation import action_continuation_workflow_id_for
-from atelier2.adapters.dbos.workflow import (
+from atelier2.adapters.dbos.names import (
     COMMIT_STEP_NAME,
     OBSERVE_STEP_NAME,
     RESOLVE_STEP_NAME,
 )
-from atelier2.contracts.effects import LogicalEffectKey
-from atelier2.contracts.executions import (
-    NodeExecutionId,
-    logical_effect_key_for,
+from atelier2.adapters.dbos.workflow_ids import (
+    action_continuation_workflow_id_for,
+    effect_workflow_id_for,
     node_workflow_id_for,
 )
+from atelier2.contracts.effects import LogicalEffectKey
+from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
 

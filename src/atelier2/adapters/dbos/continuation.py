@@ -4,23 +4,11 @@ from typing import Any
 
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
+from atelier2.adapters.dbos.names import ACTION_CHECKPOINT_STEP_NAME
 from atelier2.adapters.dbos.run_store import commit_action_completed
+from atelier2.adapters.dbos.workflow_ids import action_continuation_workflow_id_for
 from atelier2.contracts.effects import LogicalEffectKey
-from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import WorkflowRevisionHash
-
-ACTION_CONTINUATION_WORKFLOW_NAME = "atelier2_action_continuation"
-ACTION_CHECKPOINT_STEP_NAME = "action-checkpoint/0"
-
-
-def action_continuation_workflow_id_for(logical_key: LogicalEffectKey) -> str:
-    digest = Sha256Hash.of(
-        frame(
-            "action-continuation-workflow-id/v1",
-            logical_key.value.encode("utf-8"),
-        )
-    )
-    return f"atelier2-action-continuation-{digest.value}"
 
 
 def checkpoint_confirmed_action(

@@ -32,9 +32,9 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
-    bootstrap_workflow_id_for,
 )
 from atelier2.adapters.dbos.workflow import bootstrap_run_binding
+from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.publish_workflow_revision import (

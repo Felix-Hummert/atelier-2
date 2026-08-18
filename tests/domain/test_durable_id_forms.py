@@ -9,9 +9,8 @@ This table pins whole vectors rather than prefixes, for every one of the ten
 derivations the engine has, and for the surrounding space and non-ASCII input
 that separate an exact identity from a normalised one. A prefix test stays green
 while the tail drifts; a vector test cannot. Every value below was computed from
-the production owner and
-pasted, never hand-derived here: a test that recomputes the form it is checking
-would agree with any form at all. That is also what lets the table survive a
+the production owner and pasted, never hand-derived here: a test that recomputes
+the form it is checking would agree with any form at all. That is also what lets the table survive a
 move — an owner may change address, and the bytes may not.
 
 The ten do not share one derivation, and this table deliberately does not make
@@ -24,24 +23,24 @@ from __future__ import annotations
 
 import pytest
 
-from atelier2.adapters.dbos.advancer import effect_workflow_id_for
-from atelier2.adapters.dbos.continuation import action_continuation_workflow_id_for
-from atelier2.adapters.dbos.reconciler import reconcile_workflow_id_for
-from atelier2.adapters.dbos.starter import bootstrap_workflow_id_for
+from atelier2.adapters.dbos.workflow_ids import (
+    action_continuation_workflow_id_for,
+    answer_workflow_id_for,
+    bootstrap_workflow_id_for,
+    cancellation_workflow_id_for,
+    effect_workflow_id_for,
+    node_workflow_id_for,
+    reconcile_workflow_id_for,
+    replacement_workflow_id_for,
+    subworkflow_workflow_id_for,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
-    replacement_workflow_id_for,
 )
 from atelier2.contracts.effects import LogicalEffectKey, ReconcileCommandId
-from atelier2.contracts.executions import (
-    NodeExecutionId,
-    answer_workflow_id_for,
-    logical_effect_key_for,
-    node_workflow_id_for,
-    subworkflow_workflow_id_for,
-)
+from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 RUN = RunId("run-1")
@@ -123,7 +122,7 @@ DURABLE_ID_VECTORS = (
         id="reconcile-padded-command",
     ),
     pytest.param(
-        CANCELLATION.workflow_id,
+        cancellation_workflow_id_for(CANCELLATION),
         "atelier2-agent-cancel-"
         "efe2df443d8ee5df44a8bce70199c036ee782f3b2c87cdd5aaece8a2fd4f9fa1",
         id="agent-cancellation",
