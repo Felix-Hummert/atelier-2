@@ -1340,6 +1340,63 @@ def test_every_v3_form_no_runtime_binds_is_refused_by_name(document: bytes) -> N
         parse_executable_workflow_document(document)
 
 
+def _with_join(rule: bytes) -> bytes:
+    return TWO_AGENT_CHAIN.replace(
+        b"    depends_on: [implement]\n",
+        b"    depends_on: [implement]\n    join: %s\n" % rule,
+    )
+
+
+SCHEDULING_FORMS_NOTHING_BINDS: dict[str, tuple[bytes, str]] = {
+    # `all_terminal` over a single dependency is the one authored form of ADR
+    # 0006 that starts a successor on a failed upstream. Nothing here does that,
+    # so an author who wrote it must read the word they wrote rather than a run
+    # that ignored it and blocked anyway.
+    "a join that would start a successor on a failure": (
+        _with_join(b"all_terminal"),
+        "join",
+    ),
+    # The redundant spelling of the default is refused for the same reason: an
+    # admitted `all_succeeded` would be the one join that happens to match what
+    # the runtime does, and the next author would read that as a bound form.
+    "the default join spelled out": (_with_join(b"all_succeeded"), "join"),
+    "a pinned retry policy": (
+        ONE_AGENT_DOCUMENT
+        + b"    retry: {ref: build_retry, revision: %s}\n" % (b"f" * 64),
+        "retry",
+    ),
+}
+"""The two forms #57 sentences 4 and 5 name, in the shape an author writes them.
+
+Both are parse-valid and both are unbound, so the only thing standing between an
+author and a run that silently ignored their sentence is that the refusal says
+which sentence it ignored.
+"""
+
+
+@pytest.mark.parametrize(
+    ("document", "form"),
+    SCHEDULING_FORMS_NOTHING_BINDS.values(),
+    ids=SCHEDULING_FORMS_NOTHING_BINDS,
+)
+@pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
+def test_a_scheduling_form_nothing_binds_is_refused_under_its_own_word(
+    document: bytes, form: str
+) -> None:
+    """The refusal uses the author's word, not a description of the shape.
+
+    A run of this build applies exactly one join -- the omitted single-dependency
+    `all_succeeded` -- and it applies it by never advancing past a node that did
+    not succeed. Every authored join and every pinned retry policy is therefore a
+    sentence nobody carries out, and the whole value of refusing it is that the
+    author can find the line they wrote.
+    """
+    with pytest.raises(InvalidWorkflowDocument) as refused:
+        parse_executable_workflow_document(document)
+
+    assert form in str(refused.value)
+
+
 ORDERED_AGENT_DOCUMENT = b"""format_version: 3
 name: One agent that reads an order
 graph_inputs:

@@ -7,6 +7,7 @@ import pytest
 
 from atelier2.contracts.agent_attempts import (
     AGENT_ATTEMPT_ORDINAL,
+    MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttempt,
     AgentAttemptCancellation,
@@ -19,6 +20,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
+    ProcessExitSignature,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
@@ -224,3 +226,83 @@ def test_a_cancellation_ignores_progress_the_request_never_carries() -> None:
     )
 
     assert attested.matches(_cancel_request())
+
+
+@pytest.mark.parametrize(
+    ("return_code", "named"),
+    (
+        (1, "exited with code 1"),
+        (127, "exited with code 127"),
+        (-9, "killed by signal 9"),
+        (0, "exited with code 0 leaving an answer its executor could not read"),
+    ),
+    ids=("a nonzero exit", "a shell not-found exit", "a signal", "a clean exit"),
+)
+def test_an_exit_signature_says_which_of_the_three_endings_happened(
+    return_code: int, named: str
+) -> None:
+    """Three endings share one failure code, and the receipt tells them apart.
+
+    `PROCESS_EXITED_UNSUCCESSFULLY` covers a child that failed, one that was
+    killed, and one that exited cleanly leaving an answer its executor could
+    not read. A receipt that only repeated the code would leave an operator
+    with the same question the code was supposed to answer.
+    """
+    assert ProcessExitSignature(return_code, b"").named().startswith(f"{named};")
+
+
+def test_a_process_that_said_nothing_reads_as_silence_rather_than_as_emptiness() -> (
+    None
+):
+    """Honestly empty is its own answer, never an absent one."""
+    assert (
+        ProcessExitSignature(1, b"")
+        .named()
+        .endswith("it wrote nothing to standard error")
+    )
+
+
+def test_a_short_standard_error_is_kept_whole() -> None:
+    assert (
+        ProcessExitSignature(2, b"grok: rate limited")
+        .named()
+        .endswith("standard error: grok: rate limited")
+    )
+
+
+def test_only_the_tail_of_a_long_standard_error_reaches_the_receipt() -> None:
+    """A receipt is a sentence an operator reads, not the provider's log.
+
+    The tail rather than the head, because the words that explain an ending are
+    the last ones a dying process wrote, and the receipt says how much of how
+    much it is keeping so nobody mistakes the fragment for the whole.
+    """
+    said = b"a" * 400_000 + b"the last words"
+    named = ProcessExitSignature(3, said).named()
+
+    assert named.endswith("the last words")
+    assert (
+        f"last {MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES} of {len(said)} "
+        "standard error bytes: "
+    ) in named
+    assert len(named) < 2 * MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES
+
+
+def test_a_terminal_control_sequence_a_provider_wrote_cannot_reach_a_terminal() -> None:
+    """This reason is printed by the command line, so it may not drive a cursor."""
+    named = ProcessExitSignature(1, b"\x1b[2Jcleared\x07").named()
+
+    assert "\x1b" not in named and "\x07" not in named
+    assert "cleared" in named
+
+
+def test_bytes_that_are_not_text_are_replaced_rather_than_raised_over() -> None:
+    """A provider's standard error is external input; a receipt still has to land."""
+    assert "\ufffd" in ProcessExitSignature(1, b"broken \xff\xfe end").named()
+
+
+def test_an_exit_signature_refuses_an_untyped_return_code_or_standard_error() -> None:
+    with pytest.raises(TypeError):
+        ProcessExitSignature("1", b"")  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        ProcessExitSignature(1, "said")  # type: ignore[arg-type]

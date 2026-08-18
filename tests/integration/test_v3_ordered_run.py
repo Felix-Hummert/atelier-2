@@ -17,6 +17,7 @@ shape this work was frozen for once already.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -30,6 +31,7 @@ from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     context_packages_v3,
     node_execution_requests_v3,
+    node_receipts_v3,
     run_inputs_v3,
     runs,
 )
@@ -66,6 +68,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -87,6 +90,7 @@ from atelier2.ports.published_revisions import (
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
+    dying,
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
@@ -99,6 +103,7 @@ PORTIONS_SCHEMA = PublishedRevision(
 NOT_A_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "nonsense"}')
 
 ORDER_NAME = "order"
+DYING_COOK_SAID = b"cook: this provider takes no order that long"
 
 
 def ordered_document(schema_hash: PublishedRevisionHash) -> bytes:
@@ -127,9 +132,21 @@ nodes:
 
 
 @pytest.fixture
-def cook() -> RecordingAgentExecutorFactoryV2:
-    """The provider this run reaches, kept so the job it was handed can be read."""
-    return RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", b'"cooked"')
+def cook(request: pytest.FixtureRequest) -> RecordingAgentExecutorFactoryV2:
+    """The provider this run reaches, kept so the job it was handed can be read.
+
+    The runtime opens its executors when it is built, before a test body runs,
+    so a test whose subject is how the provider *ends* hands its command in
+    here rather than assigning one afterwards. Without a parameter the provider
+    is the child that writes the declared answer.
+    """
+    return RecordingAgentExecutorFactoryV2(
+        "exact",
+        "exact/v1",
+        "exact-op",
+        b'"cooked"',
+        command=getattr(request, "param", None),
+    )
 
 
 @pytest.fixture
@@ -508,6 +525,18 @@ def test_one_published_revision_serves_two_different_orders(
             ORDER_NAME,
             id="value-refused",
         ),
+        pytest.param(
+            (
+                order(
+                    json.dumps(
+                        {"portions": "x" * MAXIMUM_INSTANCE_DOCUMENT_BYTES}
+                    ).encode()
+                ),
+            ),
+            V3InputRefusal.VALUE_REFUSED,
+            ORDER_NAME,
+            id="value-larger-than-this-stack-carries",
+        ),
     ],
 )
 def test_an_order_the_start_cannot_honour_is_refused_by_name_leaving_nothing(
@@ -728,3 +757,89 @@ def test_the_same_run_started_with_the_same_order_stays_idempotent(
     answer = start(runtime, workflow, bindings, run_id, order(b'{"portions": 2}'))
 
     assert isinstance(answer, DurableRunExisting), answer
+
+
+def wait_for_receipt(
+    runtime: DbosRuntime,
+    run_id: RunId,
+    revision: WorkflowRevisionHash,
+    node_id: str,
+) -> str:
+    """The reason on one node's terminal receipt, once the launched run wrote it.
+
+    A failing node leaves its run `STARTED`, so waiting for a run state would
+    wait for something that never comes: the receipt is the terminal fact here.
+    """
+    execution_id = NodeExecutionId.for_node(run_id, revision, node_id).value
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        with runtime.engine.connect() as connection:
+            reason = connection.scalar(
+                sa.select(node_receipts_v3.c.reason).where(
+                    node_receipts_v3.c.node_execution_id == execution_id
+                )
+            )
+        if reason is not None:
+            return str(reason)
+        time.sleep(0.025)
+    raise AssertionError(f"node {node_id!r} of {run_id.value!r} never got a receipt")
+
+
+@pytest.mark.proves("a-dead-process-ends-its-attempt-durably-named")
+@pytest.mark.parametrize(
+    "cook", (dying(3, DYING_COOK_SAID),), indirect=True, ids=("a child that dies",)
+)
+def test_a_provider_process_that_dies_leaves_the_run_a_readable_reason(
+    runtime: DbosRuntime, cook: RecordingAgentExecutorFactoryV2
+) -> None:
+    """The whole vertical of the class that bit live, with a real dying child.
+
+    A decoder answering a failure would prove the store and not the chain: what
+    an operator was missing is the standard error of a process nobody kept, so
+    the proof has to start at a child that really wrote it and really exited.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    run_id = RunId("v3/gestorbener-prozess")
+    assert isinstance(
+        start(runtime, workflow, bindings, run_id, order(b'{"portions": 4}')),
+        DurableRunCreated,
+    )
+
+    runtime.launch()
+
+    reason = wait_for_receipt(
+        runtime, run_id, WorkflowRevisionHash(workflow.revision_hash.value), "cook"
+    )
+    assert reason.startswith("process-exited-unsuccessfully: ")
+    assert "exited with code 3" in reason
+    assert DYING_COOK_SAID.decode() in reason
+
+
+def test_an_order_the_size_of_a_diff_review_reaches_the_agent_whole(
+    runtime: DbosRuntime, cook: RecordingAgentExecutorFactoryV2
+) -> None:
+    """The measurement behind the `desk/review-pr313` class, taken here.
+
+    Those runs died `PROCESS_EXITED_UNSUCCESSFULLY` with a diff-review order of
+    this size while short orders went through, and the first guess was that the
+    order never survived the way it is handed over. It does: neither provider
+    puts a prompt in `argv`, this stack carries an order of that size whole into
+    the job the agent is handed, and the run reaches its terminal state. What
+    this stack does bound is the door -- an order past
+    `MAXIMUM_INSTANCE_DOCUMENT_BYTES` is refused by name before a row exists,
+    which is the neighbouring case above and not a silent death. The remaining
+    suspect is therefore the provider itself, and the receipt this head writes
+    is what will finally say so in the provider's own words.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime, ANY_JSON_SCHEMA)
+    diff = json.dumps({"diff": "x" * 14_000}).encode()
+    run_id = RunId("v3/diff-review-order")
+    assert isinstance(
+        start(runtime, workflow, bindings, run_id, order(diff, ANY_JSON_SCHEMA)),
+        DurableRunCreated,
+    )
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.COMPLETED)
+
+    assert diff in jobs_handed_to(cook)[0]

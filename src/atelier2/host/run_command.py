@@ -67,6 +67,7 @@ from atelier2.api.wire.resources import (
     AuthProfileRevisionResource,
     CatalogAdmissionResource,
     CatalogNameResolutionResource,
+    NodeDetailResource,
     ProblemResource,
     StreamFailureResource,
     WorkflowRevisionDetailResource,
@@ -138,6 +139,7 @@ _catalog_admission_resource = TypeAdapter(CatalogAdmissionResource)
 _run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
 _acted_event_resource = TypeAdapter[ActedEventResource](ActedEventResource)
 _stream_failure_resource = TypeAdapter(StreamFailureResource)
+_node_detail_resource = TypeAdapter(NodeDetailResource)
 
 
 class RunCommandRefusal(Exception):
@@ -707,11 +709,7 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                         )
                     )
                 case AgentFailedEventResourceV2() | AgentFailedEventResourceV3():
-                    raise RunNeedsAnotherActor(
-                        f"agent attempt {event.attempt_id} of node {event.node_id} "
-                        f"failed with {event.failure_code}; only an operator "
-                        "replacement continues this run"
-                    )
+                    raise _why_the_run_stops(api, public_run_reference, event)
                 case WaitingInputEventResource() | WaitingInputEventResourceV2():
                     raise RunNeedsAnotherActor(
                         f"node {event.node_id} is waiting for an "
@@ -725,6 +723,41 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                         "command makes none"
                     )
     return RunHistory(tuple(outputs), last_cursor)
+
+
+def _why_the_run_stops(
+    api: str,
+    public_run_reference: str,
+    event: AgentFailedEventResourceV2 | AgentFailedEventResourceV3,
+) -> RunNeedsAnotherActor:
+    """The failure an operator is handed, with the reason read where it lives.
+
+    The event stream carries the failure code and deliberately nothing more: it
+    is a surface anybody may subscribe to, so a provider's own words stay off
+    it. They belong to the node's durable receipt, which the service answers on
+    the same node resource the console panel reads -- so this asks there rather
+    than growing a second vocabulary for one fact.
+
+    An attempt whose reason nothing recorded is reported as exactly that. A run
+    from before the receipt writer, or a node whose failure nobody judged, must
+    not read like a run whose reason was empty prose.
+    """
+
+    node = quote(event.node_id, safe="")
+    detail = _decoded(
+        _node_detail_resource,
+        _get(f"{api}{RUN_PATH}/{public_run_reference}/nodes/{node}"),
+        "a node detail",
+    )
+    named = (
+        f"failed with {event.failure_code}, and no reason was recorded"
+        if detail.refusal is None
+        else f"failed with {event.failure_code}: {detail.refusal}"
+    )
+    return RunNeedsAnotherActor(
+        f"agent attempt {event.attempt_id} of node {event.node_id} {named}; "
+        "only an operator replacement continues this run"
+    )
 
 
 def _decoded_output(output_base64: str) -> bytes:
