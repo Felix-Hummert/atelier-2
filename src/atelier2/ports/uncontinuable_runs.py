@@ -9,10 +9,11 @@ from atelier2.contracts.runs import RunId
 
 class UncontinuableRunStore(Protocol):
     def uncontinuable_runs(self) -> tuple[RunId, ...]:
-        """Every STARTED run whose current node has terminally failed.
+        """Every STARTED run whose current node can no longer continue.
 
-        A non-terminal attempt on that run is a replacement still in flight,
-        so those rows stay out.
+        The current node's last attempt is already FAILED or INTERRUPTED, and
+        no non-terminal attempt is still in flight. A V1 run stays out: the
+        frozen V1 wire cannot end as FAILED.
         """
         ...
 
@@ -20,7 +21,7 @@ class UncontinuableRunStore(Protocol):
         """End that run as FAILED under the events it already has.
 
         Returns False when another writer ended it first. Does not write a
-        new event: the AGENT_FAILED that made the line uncontinuable is
-        already there; this only lifts the snapshot to match.
+        new event: the AGENT_FAILED or AGENT_INTERRUPTED that made the line
+        uncontinuable is already there; this only lifts the snapshot to match.
         """
         ...

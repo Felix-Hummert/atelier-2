@@ -1,4 +1,4 @@
-"""Store half of serve-start run convergence: STARTED rows that already failed."""
+"""Store half of serve-start run convergence: STARTED rows nothing can continue."""
 
 from __future__ import annotations
 
@@ -18,6 +18,17 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.executions import terminal_hash_for
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
+
+_UNCONTINUABLE_ATTEMPT_STATES = (
+    AgentAttemptState.FAILED,
+    AgentAttemptState.INTERRUPTED,
+)
+"""The two current-node endings that leave a STARTED run with nowhere to go.
+
+CANCELLED is not one of them: a replacement may still be in flight, and this
+slice does not own cancel or shutdown edges.
+"""
 
 
 class DbosUncontinuableRunStore:
@@ -26,18 +37,22 @@ class DbosUncontinuableRunStore:
 
     def uncontinuable_runs(self) -> tuple[RunId, ...]:
         terminal_attempt = tuple(state.value for state in TERMINAL_AGENT_ATTEMPT_STATES)
+        uncontinuable_attempt = tuple(
+            state.value for state in _UNCONTINUABLE_ATTEMPT_STATES
+        )
         with self._engine.connect() as connection:
             rows = connection.execute(
                 sa.select(runs.c.run_id)
                 .where(
                     runs.c.state == RunState.STARTED.value,
+                    runs.c.workflow_format_version != int(WorkflowFormatVersion.V1),
                     sa.exists(
                         sa.select(1)
                         .select_from(agent_attempts)
                         .where(
                             agent_attempts.c.run_id == runs.c.run_id,
                             agent_attempts.c.node_id == runs.c.current_node_id,
-                            agent_attempts.c.state == AgentAttemptState.FAILED.value,
+                            agent_attempts.c.state.in_(uncontinuable_attempt),
                         )
                     ),
                     ~sa.exists(
@@ -64,6 +79,7 @@ class DbosUncontinuableRunStore:
                         runs.c.state,
                         runs.c.state_version,
                         runs.c.last_event_sequence,
+                        runs.c.workflow_format_version,
                     ).where(runs.c.run_id == run_id.value)
                 )
                 .mappings()
@@ -71,7 +87,9 @@ class DbosUncontinuableRunStore:
             )
             if record is None or str(record["state"]) != RunState.STARTED.value:
                 return False
-            if not _current_node_has_failed_attempt(connection, record):
+            if int(record["workflow_format_version"]) == int(WorkflowFormatVersion.V1):
+                return False
+            if not _current_node_has_uncontinuable_attempt(connection, record):
                 return False
             event_hashes = tuple(
                 Sha256Hash(str(value))
@@ -106,7 +124,7 @@ class DbosUncontinuableRunStore:
             return updated.rowcount == 1
 
 
-def _current_node_has_failed_attempt(
+def _current_node_has_uncontinuable_attempt(
     connection: Any, record: Mapping[Any, Any]
 ) -> bool:
     found = connection.scalar(
@@ -114,7 +132,9 @@ def _current_node_has_failed_attempt(
         .where(
             agent_attempts.c.run_id == str(record["run_id"]),
             agent_attempts.c.node_id == str(record["current_node_id"]),
-            agent_attempts.c.state == AgentAttemptState.FAILED.value,
+            agent_attempts.c.state.in_(
+                tuple(state.value for state in _UNCONTINUABLE_ATTEMPT_STATES)
+            ),
         )
         .limit(1)
     )
