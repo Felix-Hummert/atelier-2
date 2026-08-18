@@ -186,6 +186,9 @@ class ScriptedCatalog:
     def list_agent_configuration_revisions(self, after: Any, limit: int) -> Any:
         raise AssertionError("a publication under test listed the catalog")
 
+    def list_auth_profile_revisions(self, after: Any, limit: int) -> Any:
+        raise AssertionError("a publication under test listed the catalog")
+
 
 class ScriptedStarter:
     def __init__(self, answer: Any) -> None:

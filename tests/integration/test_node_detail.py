@@ -72,7 +72,12 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
-from atelier2.ports.run_queries import NodeDetailFound, NodeQueryMissing
+from atelier2.ports.run_queries import (
+    NodeDetailFound,
+    NodeQueryMissing,
+    RunQueryMissing,
+    RunReceiptsFound,
+)
 from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
@@ -295,6 +300,16 @@ def test_a_finished_node_answers_its_job_its_value_and_who_produced_it(
     assert detail.provenance.request_hash == handed.request_hash.value
     assert detail.provenance.request_hash != detail.job_hash
 
+    receipts = durable_queries(runtime.engine).list_run_receipts(RUN)
+    assert isinstance(receipts, RunReceiptsFound), receipts
+    assert {item.node_id for item in receipts.items} == {"implement", "review"}
+    implement = next(item for item in receipts.items if item.node_id == "implement")
+    assert implement.receipt_hash.value == detail.provenance.receipt_hash
+    assert implement.request_hash.value == detail.provenance.request_hash
+    assert implement.output_bytes == ANSWER
+    assert implement.auth_profile_revision_hash.value
+    assert implement.binding_set_hash.value
+
 
 @pytest.mark.proves("a-node-that-stops-the-run-says-what-it-is-waiting-on")
 def test_the_node_that_stops_the_run_names_the_refusal_that_stops_it(
@@ -337,6 +352,10 @@ def test_a_node_the_run_does_not_declare_is_refused_by_name(
         durable_queries(runtime.engine).get_node_detail(RUN, "not-a-node"),
         NodeQueryMissing,
     )
+    assert isinstance(
+        durable_queries(runtime.engine).list_run_receipts(RunId("not-a-run")),
+        RunQueryMissing,
+    )
 
 
 @pytest.mark.proves("a-node-that-stops-the-run-says-what-it-is-waiting-on")
@@ -361,6 +380,9 @@ def test_a_node_whose_predecessor_has_not_written_carries_no_refusal(
     assert detail.job is None
     assert detail.answer is None
     assert detail.provenance is None
+    receipts = durable_queries(runtime.engine).list_run_receipts(RUN)
+    assert isinstance(receipts, RunReceiptsFound), receipts
+    assert receipts.items == ()
 
 
 @pytest.mark.proves("a-node-that-stops-the-run-says-what-it-is-waiting-on")

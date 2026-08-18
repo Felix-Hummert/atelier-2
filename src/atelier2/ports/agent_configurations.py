@@ -19,12 +19,22 @@ class AgentConfigurationRevisionPage:
 
 
 @dataclass(frozen=True)
+class AuthProfileRevisionPage:
+    items: tuple[AuthProfileRevision, ...]
+    next_after: AuthProfileRevisionHash | None
+
+
+@dataclass(frozen=True)
 class CatalogReadUnavailable:
     detail: str | None = None
 
 
 type ListAgentConfigurationRevisionsResult = (
     AgentConfigurationRevisionPage | CatalogReadUnavailable | DurableStateCorrupt
+)
+
+type ListAuthProfileRevisionsResult = (
+    AuthProfileRevisionPage | CatalogReadUnavailable | DurableStateCorrupt
 )
 
 
@@ -116,3 +126,7 @@ class AgentConfigurationCatalog(Protocol):
     def list_agent_configuration_revisions(
         self, after: AgentConfigurationRevisionHash | None, limit: int
     ) -> ListAgentConfigurationRevisionsResult: ...
+
+    def list_auth_profile_revisions(
+        self, after: AuthProfileRevisionHash | None, limit: int
+    ) -> ListAuthProfileRevisionsResult: ...

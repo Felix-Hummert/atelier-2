@@ -1296,20 +1296,127 @@ textarea {
   color: var(--muted);
 }
 
+.studio-home {
+  display: grid;
+  grid-template-areas: "board" "chat";
+  min-height: 100%;
+}
+
+.studio-chat {
+  grid-area: chat;
+  padding: 1.1rem 1.2rem 1.5rem;
+  border-top: 1px dashed var(--line);
+  color: var(--muted);
+}
+
+.studio-chat-head h2 {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 1.15rem;
+}
+
+.studio-chat-head p {
+  margin: 0.15rem 0 0.85rem;
+  font-size: 0.82rem;
+}
+
+.studio-chat p {
+  margin: 0;
+}
+
+.studio-board {
+  grid-area: board;
+  min-width: 0;
+}
+
+@media (min-width: 720px) {
+  .studio-home {
+    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+    grid-template-areas: "chat board";
+    align-items: stretch;
+  }
+
+  .studio-chat {
+    border-top: none;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+  }
+}
+
 .inbox {
-  margin-top: 1rem;
-  border-color: var(--warning);
+  margin-top: 0.25rem;
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
 .inbox h2,
 .chat-door h2 {
-  margin: 0 0 0.6rem;
+  margin: 0 0 0.25rem;
   font-size: 1.05rem;
 }
 
-.inbox .run-card code {
+.inbox-count {
+  margin: 0 0 0.75rem;
   color: var(--muted);
-  word-break: break-all;
+  font-size: 0.88rem;
+}
+
+.inbox-cards {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.inbox-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--r-lg);
+  background: var(--panel2);
+  color: inherit;
+  text-decoration: none;
+  box-shadow: var(--shadow);
+}
+
+.inbox-mark {
+  flex: none;
+  color: var(--warning);
+}
+
+.inbox-what {
+  flex: 1;
+  min-width: 0;
+}
+
+.inbox-what strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inbox-what small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.inbox-go {
+  flex: none;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.82rem;
+  font-weight: 650;
 }
 
 .project-card {
@@ -1317,6 +1424,10 @@ textarea {
   gap: 0.35rem;
   border-left: 4px solid var(--accent);
   padding: 1.05rem 1.25rem 1.15rem;
+}
+
+.project-card.live {
+  border-left-color: var(--warning);
 }
 
 .project-head {

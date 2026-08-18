@@ -15,6 +15,7 @@ from atelier2.api.wire.resources import (
     AgentAttemptCancellationResourceV2,
     AgentAttemptResourceV2,
     AgentBindingResourceV2,
+    AgentReceiptResource,
     AnyRunResource,
     NodeAnswerResource,
     NodeDetailResource,
@@ -27,6 +28,7 @@ from atelier2.api.wire.resources import (
     NoWaitingResource,
     NoWaitingResourceV2,
     PublicAttemptStateName,
+    RunReceiptResource,
     RunResource,
     RunResourceV2,
     RunResourceV3,
@@ -38,6 +40,7 @@ from atelier2.api.wire.resources import (
     WaitingResourceV2,
 )
 from atelier2.application.project_node_rail import NodeRailEntry, project_node_rail
+from atelier2.contracts.agents import AgentReceiptV2
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_projections import (
     NodeDetail,
@@ -304,4 +307,38 @@ def node_detail_resource(detail: NodeDetail) -> NodeDetailResource:
             receipt_hash=detail.provenance.receipt_hash,
         ),
         refusal=detail.refusal,
+    )
+
+
+def agent_receipt_resource(receipt: AgentReceiptV2) -> AgentReceiptResource:
+    """One stored agent receipt, every hash-preimage field, bytes as base64."""
+
+    return AgentReceiptResource(
+        request_hash=receipt.request_hash.value,
+        node_execution_id=receipt.node_execution_id.value,
+        run_id=receipt.run_id.value,
+        workflow_revision_hash=receipt.workflow_revision_hash.value,
+        node_id=receipt.node_id,
+        role=receipt.role.value,
+        binding_set_hash=receipt.binding_set_hash.value,
+        agent_configuration_revision_hash=(
+            receipt.agent_configuration_revision_hash.value
+        ),
+        auth_profile_revision_hash=receipt.auth_profile_revision_hash.value,
+        profile_id=receipt.profile_id,
+        revision_number=receipt.revision_number,
+        provider_id=receipt.provider_id.value,
+        auth_mode=receipt.auth_mode.value,
+        model=receipt.model,
+        executor_revision=receipt.executor_revision.value,
+        executor_operational_identity=receipt.executor_operational_identity.value,
+        output_base64=encode_canonical_base64(receipt.output_bytes),
+        output_hash=receipt.output_hash.value,
+        receipt_hash=receipt.receipt_hash.value,
+    )
+
+
+def run_receipt_resource(items: tuple[AgentReceiptV2, ...]) -> RunReceiptResource:
+    return RunReceiptResource(
+        items=tuple(agent_receipt_resource(receipt) for receipt in items)
     )
