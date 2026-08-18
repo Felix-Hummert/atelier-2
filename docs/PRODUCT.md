@@ -349,9 +349,19 @@ the same transaction as the agent receipt. A refused answer ends its attempt
 bytes as `node-artifact/v3` beside its `succeeded` receipt. The run stands on
 the node that produced the refused answer, the node detail reads the stored
 reason back, and a run started before this writer existed stays honestly absent
-in those tables. The bounded vocabulary deliberately not written here: cancelled
-and blocked receipt dispositions, and a receipt for a process-exit failure --
-nothing judged that output, so nothing receipts it yet.
+in those tables.
+
+The other way an attempt ends badly now says as much. A provider process that
+leaves no usable answer ends `FAILED` under `PROCESS_EXITED_UNSUCCESSFULLY` on
+that same seam, and its `failed` receipt carries what the supervision saw --
+how the child ended (an exit code, a signal, or a clean exit whose answer no
+executor could read) and a bounded tail of its standard error, under the token
+`process-exited-unsuccessfully`. The node detail and the `run` command read that
+reason back, and an ending nothing recorded is reported as exactly that rather
+than as an empty one. Standard error stops at the receipt: the `AGENT_FAILED`
+event keeps carrying the bare failure code, so the event stream stays a bounded
+surface anybody may subscribe to. The bounded vocabulary deliberately not
+written here: cancelled and blocked receipt dispositions.
 
 An agent is authored as one markdown file. Its frontmatter is a closed set of
 `name`, `description`, an optional `model`, and an optional `tools` declaration;

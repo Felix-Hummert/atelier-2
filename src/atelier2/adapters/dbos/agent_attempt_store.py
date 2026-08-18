@@ -45,6 +45,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
+    ProcessExitSignature,
     WatchdogGenerationId,
     driving_workflow_id,
     replacement_workflow_id_for,
@@ -353,26 +354,26 @@ def _fail_current_attempt(
     execution: AgentAttemptExecution,
     durable: AgentAttempt,
     failure: AgentAttemptFailureCode,
-    receipt_reason: str | None = None,
+    receipt_reason: str,
 ) -> AgentAttemptFailed:
     """One durable failure seam for every way an armed attempt ends badly.
 
     The attempt turns `FAILED` under its named code, the `AGENT_FAILED` event
     carries that code, and the run stays `STARTED` on the node -- the exact
     shape a process failure has always left behind, so a reader needs one
-    vocabulary for both. `receipt_reason` is the schema owner's verdict where
-    one judged; a process that died produced nothing anybody judged, so it
-    writes no node receipt here -- that absence is a named gap on #295.
+    vocabulary for both. `receipt_reason` is the words of whoever judged this
+    ending -- the schema owner where an answer was refused, the supervision
+    where a process died -- and every way through here carries one, because a
+    failure whose reason is nowhere is the silent death this seam exists to end.
     """
     request = execution.request
     attempt_id = execution.attempt_id
-    if receipt_reason is not None:
-        keep_node_receipt(
-            connection,
-            request.node_execution_id,
-            PersistedReceiptDisposition.FAILED,
-            receipt_reason,
-        )
+    keep_node_receipt(
+        connection,
+        request.node_execution_id,
+        PersistedReceiptDisposition.FAILED,
+        receipt_reason,
+    )
     updated = connection.execute(
         agent_attempts.update()
         .where(
@@ -842,8 +843,17 @@ class DbosAgentAttemptStore:
             return AgentAttemptSucceeded(durable_success, completion)
 
     def complete_known_failure(
-        self, execution: AgentAttemptExecution
+        self, execution: AgentAttemptExecution, exit_signature: ProcessExitSignature
     ) -> AgentAttemptFailed:
+        """End the attempt whose process left no answer, and say what it left.
+
+        The exit signature is the only account of this ending anybody has: the
+        provider judged nothing, so the words come from the supervision that
+        watched it die. They reach the `failed` `node-receipt/v3` on the same
+        seam a refused answer uses, and no further -- the `AGENT_FAILED` event
+        keeps carrying the bare code, so the stream stays the bounded surface a
+        reader may subscribe to without reading a provider's own output.
+        """
         request = execution.request
         with canonical_write_transaction(self._engine) as connection:
             run, _graph = _validate_request(connection, request)
@@ -860,6 +870,10 @@ class DbosAgentAttemptStore:
                 execution,
                 durable,
                 AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+                node_receipt_reason(
+                    NodeReceiptReason.PROCESS_EXITED_UNSUCCESSFULLY,
+                    exit_signature.named(),
+                ),
             )
 
     def request_cancellation(

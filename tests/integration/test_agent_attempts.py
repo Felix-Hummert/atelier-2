@@ -87,6 +87,7 @@ from tests.scenarios.agents import (
     decode_process_exit,
     emitting,
     launching,
+    process_exit,
     runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_queries
@@ -682,7 +683,9 @@ def test_each_terminal_write_failpoint_rolls_back_the_whole_attempt(
                     agent_attempt_execution(request), AgentExecutionResult(b"done")
                 )
             else:
-                store.complete_known_failure(agent_attempt_execution(request))
+                store.complete_known_failure(
+                    agent_attempt_execution(request), process_exit()
+                )
 
         with runtime.engine.connect() as connection:
             attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
@@ -745,7 +748,9 @@ def test_attempt_trigger_rejects_terminal_rewrite_and_mismatched_receipt(
         store = DbosAgentAttemptStore(runtime.engine)
         store.prepare(agent_attempt_execution(request))
         store.claim(agent_attempt_execution(request))
-        failed = store.complete_known_failure(agent_attempt_execution(request))
+        failed = store.complete_known_failure(
+            agent_attempt_execution(request), process_exit()
+        )
 
         with pytest.raises(IntegrityError), runtime.engine.begin() as connection:
             connection.execute(

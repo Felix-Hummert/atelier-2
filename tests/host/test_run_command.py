@@ -33,6 +33,7 @@ from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
     AgentNodeResourceV2,
     AuthProfileRevisionResource,
+    NodeDetailResource,
     NodeRailResource,
     NodeStateName,
     NoWaitingResource,
@@ -108,6 +109,7 @@ BINDING_DOCUMENT = json.dumps(
 RUNS_URL_PATH = API_PREFIX + RUN_PATH
 RUN_URL_PATH = f"{RUNS_URL_PATH}/{PUBLIC_RUN_REFERENCE}"
 EVENTS_URL_PATH = f"{RUN_URL_PATH}/events"
+NODE_DETAIL_URL_PATH = f"{RUN_URL_PATH}/nodes/{AGENT_NODE_ID}"
 
 
 @dataclass(frozen=True)
@@ -399,6 +401,36 @@ def agent_failed() -> str:
     ).model_dump_json()
 
 
+def node_detail(refusal: str | None) -> Answer:
+    """The node resource the command asks why a run stopped where it did.
+
+    `refusal` absent is its own answer: a node whose ending nobody recorded is
+    not a node that failed for no reason, and the command says which it read.
+    """
+
+    return Answer(
+        NodeDetailResource(
+            run_id="unread-by-the-command",
+            public_run_reference=PUBLIC_RUN_REFERENCE,
+            node_id=AGENT_NODE_ID,
+            state=NodeState.FAILED,
+            job_base64=None,
+            job_hash=None,
+            answer=None,
+            provenance=None,
+            refusal=refusal,
+        )
+        .model_dump_json()
+        .encode()
+    )
+
+
+PROCESS_DIED_REASON = (
+    "process-exited-unsuccessfully: exited with code 1; "
+    "standard error: grok: prompt file rejected"
+)
+
+
 def waiting_for_input() -> str:
     return WaitingInputEventResourceV2(
         workflow_format_version=2,
@@ -439,6 +471,11 @@ def serving_answers(
         "start": ("POST", RUNS_URL_PATH, started_run()),
         "events": ("GET", EVENTS_URL_PATH, event_stream(agent_completed())),
         "run": ("GET", RUN_URL_PATH, completed_run()),
+        "node_detail": (
+            "GET",
+            NODE_DETAIL_URL_PATH,
+            node_detail(PROCESS_DIED_REASON),
+        ),
     }
     return {
         (method, path): [replacements.get(name, answer)]
@@ -676,6 +713,42 @@ def test_a_failed_agent_attempt_ends_the_command_unsuccessfully(
     assert (exit_code, printed.out) == (1, b"")
     assert b"PROCESS_EXITED_UNSUCCESSFULLY" in printed.err
     assert ATTEMPT_ID.encode() in printed.err
+
+
+@pytest.mark.proves("a-dead-process-ends-its-attempt-durably-named")
+@pytest.mark.parametrize(
+    ("stored", "named"),
+    (
+        (PROCESS_DIED_REASON, PROCESS_DIED_REASON),
+        (None, "no reason was recorded"),
+    ),
+    ids=("a reason the node kept", "a failure nothing recorded"),
+)
+def test_a_failed_attempt_is_reported_with_the_reason_its_node_kept(
+    order: list[str],
+    capsysbinary: pytest.CaptureFixture[bytes],
+    stored: str | None,
+    named: str,
+) -> None:
+    """The failure code alone was the question, not the answer.
+
+    `PROCESS_EXITED_UNSUCCESSFULLY` told an operator that a provider died and
+    nothing about why, which is the whole complaint behind the runs this head
+    was cut for. The reason lives on the node the attempt was running, so the
+    command asks there -- and an ending nobody recorded is reported as that
+    rather than as an empty reason.
+    """
+    with ScriptedService(
+        serving_answers(
+            events=event_stream(agent_failed()), node_detail=node_detail(stored)
+        )
+    ) as service:
+        exit_code = run_command(order, service)
+
+    reported = capsysbinary.readouterr().err.decode()
+    assert exit_code == 1
+    assert "PROCESS_EXITED_UNSUCCESSFULLY" in reported
+    assert named in reported
 
 
 def agent_failed_v3() -> str:

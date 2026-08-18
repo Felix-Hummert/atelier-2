@@ -9,6 +9,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
+    ProcessExitSignature,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import AgentExecutionResult
@@ -148,8 +149,16 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         ...
 
     def complete_known_failure(
-        self, execution: AgentAttemptExecution
-    ) -> AgentAttemptFailed: ...
+        self, execution: AgentAttemptExecution, exit_signature: ProcessExitSignature
+    ) -> AgentAttemptFailed:
+        """End this attempt on the process that produced no usable answer.
+
+        `exit_signature` is what the supervision saw -- how the child ended and
+        the standard error it left -- and it is durably named in the node
+        receipt this write keeps, because otherwise the only record of why a
+        provider died is a log line nobody kept.
+        """
+        ...
 
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
