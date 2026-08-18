@@ -142,7 +142,8 @@ describe("mobile run entry", () => {
           graph: {
             format_version: 3 as const,
             executable: false as const,
-            not_executable_reason: "agent forms nothing binds yet: outputs" as const,
+            not_executable_reason:
+              "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges" as const,
             agent_roles: [],
             orders: [],
             node_count: 1,
@@ -178,9 +179,8 @@ describe("mobile run entry", () => {
     // Extension, named: this pinned "format 3 is not executable yet", which is the
     // version blame the server's own rule avoids. The reason it now serves names
     // the authored form nothing binds, which is what the sentence asks for.
-    expect(
-      screen.getByText(/agent forms nothing binds yet: outputs/i).isConnected
-    ).toBe(true);
+    expect(screen.getByText(/Add one outputs: entry/i).isConnected).toBe(true);
+    expect(screen.queryByText(/agent-output-shape-unavailable/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -430,7 +430,8 @@ describe("mobile run entry", () => {
 
     const notice = await screen.findByRole("alert");
     expect(notice.textContent).toContain("Durable state is corrupt");
-    expect(notice.textContent).toContain("Stop mutation and inspect the durable store.");
+    expect(notice.textContent).toContain("Refresh the page");
+    expect(notice.textContent).not.toContain("Stop mutation and inspect the durable store.");
     const badge = screen.getByRole("status").textContent;
     expect(badge).toContain("Stopped");
     expect(badge).not.toContain("Live");

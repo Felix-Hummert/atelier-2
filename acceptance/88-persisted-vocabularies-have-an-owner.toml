@@ -1,18 +1,14 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/88"
 
-# This head takes four of the eight lines the audit cut for #88. The other four
-# are named here rather than quietly folded in, because a vocabulary item that
-# reports itself finished while half its list stands is the drift it exists to
-# remove:
+# Four sentences. Residues named rather than quietly folded in:
 #
-#   - Hygiene-4, the page limit travelling as a bare int through routes and the
-#     stream. It is the D2 shape (a bound the reader should hold), and D2 was a
-#     head of its own for the same reason: the parameter has to die at every call
-#     site at once. It does not fit beside four unrelated lines.
-#   - H7's ownerless columns. This head makes every CHECK over an owned vocabulary
-#     prove the full admitted set through SQLite grammar; what remains is the
-#     handful of columns with no Python owner at all (`runs.workflow_format_version`
+#   - Hygiene-4, the page limit. Closed: `PageLimit` / `MAXIMUM_PAGE_ITEMS` is
+#     the one owner; the event page, the HTTP `limit`, and the durable query
+#     adapters derive that bound.
+#   - H7's ownerless columns. Every CHECK over an owned vocabulary proves the
+#     full admitted set through SQLite grammar; what remains is the handful of
+#     columns with no Python owner at all (`runs.workflow_format_version`
 #     among them), and minting those owners is a contract decision, not a
 #     hygiene edit.
 #   - M5, the predecessor control-frame strings. The direct-systemd Manager

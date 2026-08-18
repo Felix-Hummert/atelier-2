@@ -195,8 +195,14 @@ The existing provenance convention is not relaxed: every sentence still names
 its source object, in `Distilled-From` and again at `Quelle`. A sentence with
 no source is removed, not sourced afterwards.
 
-This change does not add a machine check over the template. The shape is
-written so one can be added later without inventing the fields.
+The acceptance gate reads this shape. It refuses a duplicate identifier, a
+heading without a sentence, a status that is not `DRAFT`, `AGREED`, or
+`SUPERSEDED`, a missing field, a `Beweis` that is neither `UNGEBUNDEN` nor
+identifiers a story declared, and a non-empty `Offen` that names no owner or
+that sits on an `AGREED` sentence. An `AGREED` sentence that is honestly
+`UNGEBUNDEN` is listed as debt rather than refused. It does not read
+document-level `## Open questions`, journey files, or `Distilled-From`
+freshness — those remain named successors.
 
 ### Provenance
 
@@ -322,7 +328,9 @@ because most sentences predate the requirement documents, and the gate reports
 how many carry it rather than failing over the ones that do not — a count that
 is visible is a count somebody can lower. What it will not accept is a rule no
 document declares: a link nobody can follow reads as filed and answers wrongly,
-which is the drawer this field exists to close.
+which is the drawer this field exists to close. The same gate reads the
+requirement template in the other direction; the sentence-template section owns
+that bound.
 
 ### What a landing states, and the written exemption
 
@@ -378,12 +386,17 @@ proves: every claim in this repository names a sentence some story declared
 proves: every claim was honoured by a passing test in this pipeline's reports
 proves: a proposed landing states its sentences by identifier, or why it has none
 proves: a sentence that names a requirement names one a document declares
+proves: every requirement identifier is unique, carries a sentence, a valid status, and the template fields
+proves: a Beweis names existing acceptance identifiers or the word UNGEBUNDEN
+proves: a non-empty Offen names an owner and is only allowed on DRAFT
 does not prove: that a test carries its sentence in meaning - review judges that
 does not prove: that a stated exemption is honest - review judges that
 does not prove: that a bound sentence serves its requirement - review judges that
+does not refuse: an AGREED sentence that is honestly UNGEBUNDEN - it lists them
 does not measure: how much of the shelf is bound - it counts and says so
 does not prove: that a body edited after this run still says what it said - review sees the edit
 does not measure: any ratio, case count, or coverage target
+does not measure: document-level Open questions, journey files, or Distilled-From freshness
 ```
 <!-- acceptance-gate-bound:end -->
 

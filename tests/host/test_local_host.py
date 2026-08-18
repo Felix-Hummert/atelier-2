@@ -699,7 +699,7 @@ def test_a_served_instance_reads_the_page_size_it_was_configured_with(
         # Asked of the composed application, not of the record that carries the
         # number: a settings field nobody reads would satisfy the record and
         # leave the served instance on its old value.
-        assert app.state.api_context.limits.event_page_size == 7
+        assert app.state.api_context.limits.event_page_size.value == 7
     finally:
         runtime.close()
 
@@ -715,7 +715,7 @@ def test_a_served_instance_reads_the_page_size_it_was_configured_with(
             "1.0",
             "multiplier must be greater than one",
         ),
-        ("--event-page-size", "0", "event_page_size must be a positive integer"),
+        ("--event-page-size", "0", "page limit must be an integer from 1 to 100"),
         (
             "--sqlite-lock-timeout-seconds",
             "-1",

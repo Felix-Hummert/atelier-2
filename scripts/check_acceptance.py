@@ -25,7 +25,22 @@ REQUIREMENTS_DIRECTORY = Path("docs/requirements")
 # The identifier the requirement template publishes, and only it. The template's
 # own `REQ-<bereich>-<nn>` placeholder is not an identifier and never matches.
 REQUIREMENT_IDENTIFIER = re.compile(r"^REQ-[A-Z0-9]+-[0-9]{2}$")
-REQUIREMENT_HEADING = re.compile(r"^### (REQ-[A-Z0-9]+-[0-9]{2}):", re.MULTILINE)
+REQUIREMENT_DOCUMENT_NAME = re.compile(r"^\d{4}-.+\.md$")
+REQUIREMENT_BLOCK_HEADING = re.compile(r"^### (REQ-[A-Z0-9]+-[0-9]{2}):\s*(.*)$")
+TEMPLATE_FIELD_NAMES = (
+    "Status",
+    "Quelle",
+    "Begründung",
+    "Journeys",
+    "Beweis",
+    "Offen",
+)
+TEMPLATE_FIELD_LINE = re.compile(
+    r"^(Status|Quelle|Begründung|Journeys|Beweis|Offen):\s*(.*)$"
+)
+VALID_REQUIREMENT_STATUSES = frozenset({"DRAFT", "AGREED", "SUPERSEDED"})
+UNBOUND_PROOF = "UNGEBUNDEN"
+OWNER_MARK = "Eigentümer"
 
 PROOF_MARKER = "proves"
 PYTHON_MARKER_NAMESPACE = "mark"
@@ -69,12 +84,17 @@ HONESTY_BOUND = (
     "proves: every claim was honoured by a passing test in this pipeline's reports",
     "proves: a proposed landing states its sentences by identifier, or why it has none",
     "proves: a sentence that names a requirement names one a document declares",
+    "proves: every requirement identifier is unique, carries a sentence, a valid status, and the template fields",
+    "proves: a Beweis names existing acceptance identifiers or the word UNGEBUNDEN",
+    "proves: a non-empty Offen names an owner and is only allowed on DRAFT",
     "does not prove: that a test carries its sentence in meaning - review judges that",
     "does not prove: that a stated exemption is honest - review judges that",
     "does not prove: that a bound sentence serves its requirement - review judges that",
+    "does not refuse: an AGREED sentence that is honestly UNGEBUNDEN - it lists them",
     "does not measure: how much of the shelf is bound - it counts and says so",
     "does not prove: that a body edited after this run still says what it said - review sees the edit",
     "does not measure: any ratio, case count, or coverage target",
+    "does not measure: document-level Open questions, journey files, or Distilled-From freshness",
     "```",
 )
 
@@ -150,12 +170,24 @@ class LandingBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class RequirementRule:
+    identifier: str
+    sentence: str
+    status: str
+    proof: str
+    open_question: str
+    located_in: Path
+    missing_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptanceTrace:
     sentences: tuple[AcceptanceSentence, ...]
     claims: tuple[ProofClaim, ...]
     proofs: tuple[ReportedProof, ...]
     landing: LandingBinding | None
     problems: tuple[str, ...]
+    requirement_rules: tuple[RequirementRule, ...] = ()
 
 
 def read_declared_sentences(project_root: Path) -> tuple[AcceptanceSentence, ...]:
@@ -207,12 +239,76 @@ def read_declaration_document(declaration: Path, location: Path) -> dict[str, An
 def read_declared_requirements(project_root: Path) -> frozenset[str]:
     """Every rule identifier the requirement documents publish."""
 
+    return frozenset(rule.identifier for rule in read_requirement_rules(project_root))
+
+
+def read_requirement_rules(project_root: Path) -> tuple[RequirementRule, ...]:
     directory = project_root / REQUIREMENTS_DIRECTORY
-    return frozenset(
-        match
-        for document in sorted(directory.glob("*.md"))
-        for match in REQUIREMENT_HEADING.findall(document.read_text(encoding="utf-8"))
+    if not directory.is_dir():
+        return ()
+    rules: list[RequirementRule] = []
+    for document in sorted(directory.iterdir()):
+        if not REQUIREMENT_DOCUMENT_NAME.match(document.name):
+            continue
+        rules.extend(
+            read_requirement_document(document, document.relative_to(project_root))
+        )
+    return tuple(rules)
+
+
+def read_requirement_document(
+    document: Path, location: Path
+) -> tuple[RequirementRule, ...]:
+    lines = document.read_text(encoding="utf-8").splitlines()
+    rules: list[RequirementRule] = []
+    index = 0
+    while index < len(lines):
+        heading = REQUIREMENT_BLOCK_HEADING.match(lines[index])
+        if heading is None:
+            index += 1
+            continue
+        index += 1
+        body_start = index
+        while index < len(lines) and not lines[index].startswith("##"):
+            index += 1
+        rules.append(
+            parse_requirement_block(
+                heading.group(1), heading.group(2), lines[body_start:index], location
+            )
+        )
+    return tuple(rules)
+
+
+def parse_requirement_block(
+    identifier: str, sentence: str, body: list[str], location: Path
+) -> RequirementRule:
+    collected: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in body:
+        field = TEMPLATE_FIELD_LINE.match(line)
+        if field is not None:
+            name = field.group(1)
+            if name is None:
+                continue
+            current = name
+            collected[name] = [field.group(2) or ""]
+            continue
+        if current is not None:
+            collected[current].append(line)
+    return RequirementRule(
+        identifier,
+        sentence.strip(),
+        first_token("\n".join(collected.get("Status", ()))),
+        "\n".join(collected.get("Beweis", ())).strip(),
+        "\n".join(collected.get("Offen", ())).strip(),
+        location,
+        tuple(name for name in TEMPLATE_FIELD_NAMES if name not in collected),
     )
+
+
+def first_token(text: str) -> str:
+    stripped = text.strip()
+    return stripped.split()[0] if stripped else ""
 
 
 def read_sentence_entry(entry: Any, story: str, location: Path) -> AcceptanceSentence:
@@ -688,20 +784,142 @@ def require_declared_requirements(
             )
 
 
+def requirement_template_problems(
+    rules: tuple[RequirementRule, ...], declared_sentences: frozenset[str]
+) -> tuple[str, ...]:
+    problems: list[str] = []
+    seen: dict[str, Path] = {}
+    for rule in rules:
+        if rule.identifier in seen:
+            problems.append(
+                f"{rule.located_in} publishes {rule.identifier!r} again; "
+                f"first seen in {seen[rule.identifier]}"
+            )
+        else:
+            seen[rule.identifier] = rule.located_in
+        if not rule.sentence:
+            problems.append(
+                f"{rule.located_in} publishes {rule.identifier!r} without a sentence"
+            )
+        for field in rule.missing_fields:
+            problems.append(
+                f"{rule.located_in} publishes {rule.identifier!r} without the "
+                f"template field {field}"
+            )
+        if (
+            "Status" not in rule.missing_fields
+            and rule.status not in VALID_REQUIREMENT_STATUSES
+        ):
+            problems.append(
+                f"{rule.located_in} publishes {rule.identifier!r} with status "
+                f"{rule.status!r}; status is DRAFT, AGREED, or SUPERSEDED"
+            )
+        if "Beweis" not in rule.missing_fields:
+            problems.extend(beweis_problems(rule, declared_sentences))
+        if "Offen" not in rule.missing_fields:
+            problems.extend(offen_problems(rule))
+    return tuple(problems)
+
+
+def beweis_problems(
+    rule: RequirementRule, declared_sentences: frozenset[str]
+) -> tuple[str, ...]:
+    if not rule.proof:
+        return (
+            (
+                f"{rule.located_in} publishes {rule.identifier!r} with an empty "
+                "Beweis; name identifiers or UNGEBUNDEN"
+            ),
+        )
+    tokens = tuple(rule.proof.split())
+    if tokens[0] == UNBOUND_PROOF:
+        remainder = tokens[1:]
+        if remainder and any(
+            SENTENCE_IDENTIFIER.match(token) is not None for token in remainder
+        ):
+            return (
+                (
+                    f"{rule.located_in} publishes {rule.identifier!r} with Beweis "
+                    "mixing UNGEBUNDEN and identifiers"
+                ),
+            )
+        return ()
+    problems: list[str] = []
+    for token in tokens:
+        if SENTENCE_IDENTIFIER.match(token) is None:
+            problems.append(
+                f"{rule.located_in} publishes {rule.identifier!r} with Beweis "
+                f"{token!r}; a Beweis is identifiers or UNGEBUNDEN"
+            )
+        elif token not in declared_sentences:
+            problems.append(
+                f"{rule.located_in} publishes {rule.identifier!r} with Beweis "
+                f"{token!r}, which no story declares"
+            )
+    return tuple(problems)
+
+
+def offen_problems(rule: RequirementRule) -> tuple[str, ...]:
+    if not rule.open_question:
+        return ()
+    if rule.status == "AGREED":
+        return (
+            (
+                f"{rule.located_in} publishes {rule.identifier!r} as AGREED with "
+                "an open question; Offen is only for DRAFT"
+            ),
+        )
+    if OWNER_MARK not in rule.open_question:
+        return (
+            (
+                f"{rule.located_in} publishes {rule.identifier!r} with Offen that "
+                "names no owner"
+            ),
+        )
+    return ()
+
+
 def trace_acceptance(
     project_root: Path, reports_directory: Path, pull_request_body: Path | None
 ) -> AcceptanceTrace:
     sentences = read_declared_sentences(project_root)
-    require_declared_requirements(sentences, read_declared_requirements(project_root))
+    rules = read_requirement_rules(project_root)
+    require_declared_requirements(
+        sentences, frozenset(rule.identifier for rule in rules)
+    )
     claims = read_source_claims(project_root)
     proofs = read_passing_proofs(reports_directory)
     landing = (
         None if pull_request_body is None else read_landing_binding(pull_request_body)
     )
-    problems = acceptance_problems(sentences, claims, proofs) + (
-        () if landing is None else landing_problems(landing, sentences)
+    problems = (
+        acceptance_problems(sentences, claims, proofs)
+        + requirement_template_problems(
+            rules, frozenset(sentence.identifier for sentence in sentences)
+        )
+        + (() if landing is None else landing_problems(landing, sentences))
     )
-    return AcceptanceTrace(sentences, claims, proofs, landing, problems)
+    return AcceptanceTrace(sentences, claims, proofs, landing, problems, rules)
+
+
+def render_requirement_template(rules: tuple[RequirementRule, ...]) -> str:
+    unbound = tuple(rule for rule in rules if is_unbound_proof(rule.proof))
+    agreed_unbound = tuple(rule for rule in unbound if rule.status == "AGREED")
+    line = (
+        f"Requirement template: {len(rules)} identifier(s), {len(unbound)} UNGEBUNDEN"
+    )
+    if not agreed_unbound:
+        return line
+    named = ", ".join(rule.identifier for rule in agreed_unbound)
+    return (
+        f"{line}\nRequirement debt: {len(agreed_unbound)} AGREED "
+        f"identifier(s) carry UNGEBUNDEN: {named}"
+    )
+
+
+def is_unbound_proof(proof: str) -> bool:
+    tokens = proof.split()
+    return not tokens or tokens[0] == UNBOUND_PROOF
 
 
 def render_requirement_coverage(sentences: tuple[AcceptanceSentence, ...]) -> str:
@@ -775,6 +993,7 @@ def main() -> int:
         flush=True,
     )
     print(render_requirement_coverage(trace.sentences), flush=True)
+    print(render_requirement_template(trace.requirement_rules), flush=True)
     print(render_landing(trace.landing), flush=True)
     print(render_honesty_bound(), flush=True)
     return 0

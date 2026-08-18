@@ -398,6 +398,10 @@ publish secret-free auth-profile and agent-configuration revisions and list
 both; publish
 exact JSON Schema revisions; publish and
 inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs
+(the list accepts a `state` filter so a consumer can ask which runs wait;
+a page is admitted by one `PageLimit`, not a restated 1-to-100);
+list and inspect a V3 run from the published document it was started
+against, not today's executable parse;
 (the list accepts a `state` filter so a consumer can ask which runs wait);
 read the agent receipts a run has written;
 an `invalid-request` names the field and reason the validator already knew;
@@ -431,7 +435,8 @@ resolves, and older members sit in a collapsed revision choice. A name with
 one listed revision has no empty submenu. Unnamed documents stay one row
 each, as they did. Details repeats what the published graph already answers —
 format, roles and node count where the V3 resource carries them, executability,
-and hash. The V3 graph also answers an excerpt of each node — id, kind, role,
+and hash. A known start-refusal or problem token is shown as a sentence with
+a next action; an unknown token stays raw. The V3 graph also answers an excerpt of each node — id, kind, role,
 the bounded start of an agent instruction, and the authored `depends_on`
 edges. A wait has a prompt, not an instruction, so that field is empty there.
 An entry node answers an empty edge list. The authored node stays in the

@@ -17,7 +17,6 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos import queries as queries_module
-from atelier2.adapters.dbos import run_store
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.runtime import create_canonical_engine
@@ -299,10 +298,10 @@ def test_projection_document_limit_refuses_before_workflow_parse(
             )
         )
 
-    def unexpected_parse(_revision_hash: object, _document: bytes) -> object:
+    def unexpected_parse(_document: bytes) -> object:
         raise AssertionError("oversized durable document reached the YAML parser")
 
-    monkeypatch.setattr(queries_module, "graph_from_document", unexpected_parse)
+    monkeypatch.setattr(queries_module, "parse_workflow_document", unexpected_parse)
     result = durable_queries(
         engine,
         WorkflowPublicationLimits(
@@ -1096,14 +1095,14 @@ def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
     )
     _seed_runs(engine, assignments)
     parse_calls = 0
-    original_parse = run_store.parse_executable_workflow_document
+    original_parse = queries_module.parse_workflow_document
 
     def count_parse(document: bytes):
         nonlocal parse_calls
         parse_calls += 1
         return original_parse(document)
 
-    monkeypatch.setattr(run_store, "parse_executable_workflow_document", count_parse)
+    monkeypatch.setattr(queries_module, "parse_workflow_document", count_parse)
     selects = 0
 
     def count_selects(

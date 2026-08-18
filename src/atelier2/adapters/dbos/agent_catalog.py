@@ -24,6 +24,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevisionHash,
     ProviderId,
 )
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.ports.agent_configurations import (
     AgentConfigurationCatalog,
     AgentConfigurationRevisionCollision,
@@ -234,8 +235,10 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
     def list_agent_configuration_revisions(
         self, after: AgentConfigurationRevisionHash | None, limit: int
     ) -> ListAgentConfigurationRevisionsResult:
-        if type(limit) is not int or not 1 <= limit <= 100:
-            raise ValueError("revision page limit must be an integer from 1 to 100")
+        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+            raise ValueError(
+                f"revision page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+            )
         try:
             with self._engine.connect() as connection:
                 statement = sa.select(agent_configuration_revisions)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import sqlite3
 import time
@@ -23,7 +24,6 @@ from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
     _agent_receipt_v2_from_record,
     event_from_record,
-    graph_from_document,
     load_node_outputs,
     load_run_inputs,
     run_from_record_with_bindings,
@@ -68,6 +68,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import PersistedReceiptDisposition
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -249,6 +250,8 @@ def _validate_bounded_record(
             )
         projection_limit.validate_field_length(len(str(value)))
 
+
+_LOG = logging.getLogger("atelier2")
 
 _V3_WORKFLOW_FORMAT_VERSION = 3
 _AGENT_FAILURE_FORMATS = frozenset((2, _V3_WORKFLOW_FORMAT_VERSION))
@@ -642,8 +645,10 @@ class DbosQueries:
     def list_workflow_revisions(
         self, after: WorkflowRevisionHash | None, limit: int
     ) -> ListWorkflowRevisionsResult:
-        if type(limit) is not int or not 1 <= limit <= 100:
-            raise ValueError("revision page limit must be an integer from 1 to 100")
+        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+            raise ValueError(
+                f"revision page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+            )
         try:
             with self._connection() as connection:
                 statement = sa.select(workflow_revisions.c.revision_hash)
@@ -682,8 +687,10 @@ class DbosQueries:
         refused to use, which is the byte cost the budget exists to bound.
         """
 
-        if type(limit) is not int or not 1 <= limit <= 100:
-            raise ValueError("revision page limit must be an integer from 1 to 100")
+        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+            raise ValueError(
+                f"revision page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+            )
         try:
             with self._connection() as connection:
                 statement = sa.select(
@@ -854,7 +861,12 @@ class DbosQueries:
             return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
+        except (ValueError, RuntimeError, DatabaseError) as error:
+            _LOG.error(
+                "run get projection failed",
+                exc_info=error,
+                extra={"event": "run_get_projection_corrupt"},
+            )
             return QueryDurableStateCorrupt()
 
     def list_runs(
@@ -863,8 +875,10 @@ class DbosQueries:
         limit: int,
         state: RunState | None = None,
     ) -> ListRunsResult:
-        if type(limit) is not int or not 1 <= limit <= 100:
-            raise ValueError("run page limit must be an integer from 1 to 100")
+        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+            raise ValueError(
+                f"run page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+            )
         try:
             with self._connection() as connection:
                 statement = _bounded_projection_select(
@@ -911,7 +925,12 @@ class DbosQueries:
             return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
-        except (UnicodeEncodeError, ValueError, RuntimeError, DatabaseError):
+        except (UnicodeEncodeError, ValueError, RuntimeError, DatabaseError) as error:
+            _LOG.error(
+                "run list projection failed",
+                exc_info=error,
+                extra={"event": "run_list_projection_corrupt"},
+            )
             return QueryDurableStateCorrupt()
 
     def get_reconciliation_retry_target(
@@ -1023,7 +1042,15 @@ class DbosQueries:
         graphs = {}
         for revision_hash, document in revision_records.items():
             self._projection_limit.validate_document(document)
-            graph = graph_from_document(revision_hash, document)
+            stored = WorkflowRevision(document)
+            if stored.revision_hash != revision_hash:
+                raise RevisionHashCollision(
+                    "durable workflow revision bytes disagree with their hash"
+                )
+            # A run already started against these bytes. Today's executable
+            # parse may refuse the same document; listing and inspecting it
+            # is a read of published history, not a start.
+            graph = parse_workflow_document(document)
             self._projection_limit.validate_graph(graph)
             graphs[revision_hash] = graph
         for run in loaded_runs:
@@ -1288,8 +1315,10 @@ class DbosQueries:
         after_sequence: int,
         limit: int,
     ) -> ReadRunEventPageResult:
-        if type(limit) is not int or not 1 <= limit <= 100:
-            raise ValueError("event page limit must be an integer from 1 to 100")
+        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+            raise ValueError(
+                f"event page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+            )
         try:
             with self._connection() as connection:
                 run_record = (
