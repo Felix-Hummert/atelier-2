@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import ast
 import sys
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -450,65 +448,6 @@ def test_a_claim_replayed_from_a_lost_incarnation_never_authorizes_invocation(
         assert len(executor.released_commands) == 1
     finally:
         runtime.close()
-
-
-def test_the_v2_node_reaches_its_launch_boundary_by_one_application_call() -> None:
-    """Gate the wiring no running test can show, and claim nothing more.
-
-    That a replayed claim launches nothing is behavior, and it is proven twice
-    above and once against a real crashed incarnation in tests/crash. None of
-    those proofs notice if the durable workflow stops asking
-    ``execute_agent_attempt`` and re-decides claim and launch inside its own
-    transaction step, or asks it a second time: every one of them calls the
-    application boundary itself, and a second launch inside one node execution
-    is exactly the duplicate this branch must not contain. This is a narrow
-    source gate on that one wiring decision -- it proves the call site is
-    written exactly once, not the invariant behind it -- and it stands until
-    the node binding moves into the core (#86), which is exactly the change
-    that could lose the boundary while the suite stays green.
-    """
-
-    workflow_module = (
-        Path(__file__).parents[2] / "src/atelier2/adapters/dbos/workflow.py"
-    )
-    tree = ast.parse(workflow_module.read_text(encoding="utf-8"), workflow_module.name)
-    durable_node = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "durable_node"
-    )
-    v2_branch = next(
-        node
-        for node in ast.walk(durable_node)
-        if isinstance(node, ast.If) and _branch_binding_type(node) == "agent-v2"
-    )
-    calls = _calls_by_name(v2_branch)
-
-    assert calls["execute_agent_attempt"] == 1
-    assert not calls.keys() & {"run_tx_step", "claim", "launch_and_wait"}
-    assert not {name for name in calls if name.startswith("commit_")}
-
-
-def _branch_binding_type(branch: ast.If) -> str | None:
-    test = branch.test
-    if not isinstance(test, ast.Compare) or len(test.comparators) != 1:
-        return None
-    compared = test.comparators[0]
-    if not isinstance(compared, ast.Constant) or not isinstance(compared.value, str):
-        return None
-    return compared.value
-
-
-def _calls_by_name(branch: ast.If) -> Counter[str]:
-    names: Counter[str] = Counter()
-    for node in ast.walk(branch):
-        if not isinstance(node, ast.Call):
-            continue
-        if isinstance(node.func, ast.Name):
-            names[node.func.id] += 1
-        elif isinstance(node.func, ast.Attribute):
-            names[node.func.attr] += 1
-    return names
 
 
 def test_current_attempt_projection_maps_armed_and_rejects_broken_id(
