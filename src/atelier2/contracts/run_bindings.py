@@ -19,6 +19,10 @@ from atelier2.contracts.runs import (
 )
 
 
+class RunBindingConflict(RuntimeError):
+    """A durable run binding does not hold: what is bound and what is read differ."""
+
+
 @dataclass(frozen=True)
 class RunV2:
     run_id: RunId

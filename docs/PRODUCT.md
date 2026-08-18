@@ -446,7 +446,9 @@ inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs
 (the list accepts a `state` filter so a consumer can ask which runs wait;
 a page is admitted by one `PageLimit`, not a restated 1-to-100;
 a persisted run format is one `WorkflowFormatVersion`,
-not a restated 1-2-3 CHECK);
+not a restated 1-2-3 CHECK;
+a cancelled attempt's cleanup disposition is one
+`AgentAttemptCancellationDisposition`, not restated tokens on query and SSE);
 list and inspect a V3 run from the published document it was started
 against, not today's executable parse;
 read the agent receipts a run has written;
@@ -579,8 +581,16 @@ the exact bytes are stored under the run and the name its author declared,
 immutably, and the agent whose node reads that order is handed it -- so one
 published revision serves every order instead of one revision per distinct input.
 An order is refused before any row exists when it is missing, undeclared,
-supplied twice, pinned to another schema than the document named, or is a value
-that schema does not admit. Only an order the graph declares binds today; an
+supplied twice, pinned to another schema than the document named, is a value
+that schema does not admit, or names an artifact nobody published. An order need
+no longer be written into the start it travels in: material larger than the
+inline bound is published once as a content-addressed artifact -- the SHA-256 of
+its exact bytes is its address, publishing the same bytes twice is the same
+artifact -- and the order carries that address instead of the bytes. The start
+resolves it before anything is written, the schema judges the resolved bytes, and
+the agent is handed all of them, so a full pull-request diff reaches its reviewer
+while the inline bound stays strict. Only an order the graph declares binds
+today; an
 input reading another node's output, a node receipt, a context entry or an
 authored constant is refused by the source it named. A workflow name is no
 longer among what is missing either: `--name` runs the revision a catalog name
@@ -588,7 +598,9 @@ holds, asked of the service before anything is written and at the lineage member
 `--position` names, so an operator starts named work without translating a name
 into a hash by hand. `--input NAME=VALUE` and `--input-file NAME=PATH` fill the
 `graph_inputs` that workflow declared: the command publishes nothing for them
-and hands the exact JSON bytes to `POST /runs`. A name the document never
+and hands the exact JSON bytes to `POST /runs` inline. Ordering an artifact from
+the command line, and any surface that lists or reads stored artifacts back, are
+not built. A name the document never
 declared, a declared name that is missing, and a value that is not valid JSON
 for the schema the document pinned are each refused by name; a typed 422 from
 the service is handed on in the service's own words. An output contract that
@@ -654,22 +666,23 @@ version carries no binding rather than an invented one. What is still not proven
 is the request hash's own preimage: the job bytes it is taken over have no
 durable home, so a verifier copies that hash rather than recomputing it.
 
-The canonical store is schema V19. A fresh store is created as exact V19 and
+The canonical store is schema V20. A fresh store is created as exact V20 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
 access bindings, and the immutable declared context packages, node-execution request
 preimages and run configuration snapshots those receipts name, and the immutable
 orders a run was started with, the immutable proof of every redeemed tool
-grant, the receipt hash an agent completion binds, and the round a declared loop
-was turning when each run, event and agent receipt was written. The catalog adapter founds a lineage
+grant, the receipt hash an agent completion binds, immutable content-addressed
+artifacts an order may name instead of carrying their bytes, and the round a
+declared loop was turning when each run, event and agent receipt was written. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
 founding, unpublished member, wrong kind, or retired lineage is refused by
 name. Measurements and policy activations are not in this profile. V13 through
-V18 remain published predecessor objects; exact V7 through V18 files are refused
+V19 remain published predecessor objects; exact V7 through V19 files are refused
 by runtime without mutation, with no runtime migration or downgrade. An offline
-`atelier2 migrate` command raises an exact V13 store or later to the current
+`atelier2 migrate` command raises an exact V13 through V19 store to the current
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.

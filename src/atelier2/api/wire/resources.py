@@ -24,7 +24,10 @@ from atelier2.api.references import (
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
-from atelier2.contracts.agent_attempts import REPLACEMENT_AGENT_ATTEMPT_ORDINAL
+from atelier2.contracts.agent_attempts import (
+    REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+    AgentAttemptCancellationDisposition,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -43,6 +46,16 @@ class HealthResource(ApiModel):
     status: Literal["serving"]
     source_commit: str
     source_tree: str
+
+
+class ArtifactResource(ApiModel):
+    """The address of one published artifact, and nothing else.
+
+    Publication is bytes in, address out. The content is not echoed: the caller
+    already holds the exact bytes they posted, and the address is their identity.
+    """
+
+    artifact_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
 class SchemaRevisionResource(ApiModel):
@@ -573,6 +586,17 @@ PublicAttemptStateName = Literal[
     PublicAgentAttemptState.FAILED,
 ]
 
+# Same closed-union form: the served document keeps the five tokens inline
+# instead of moving them behind an enum component. The members come from the
+# owner; restating the strings here would let query and SSE drift apart.
+CancellationDispositionName = Literal[
+    AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+    AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
+    AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
+    AgentAttemptCancellationDisposition.REAPED_AFTER_KILL,
+    AgentAttemptCancellationDisposition.OWNER_LOST_AFTER_PARENT_DEATH,
+]
+
 
 class AgentAttemptResourceV2(ApiModel):
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
@@ -605,16 +629,7 @@ class AgentAttemptCancellationResourceV2(ApiModel):
     command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     replacement: Literal["NONE", "ONE"]
     redrive_state: Literal["PENDING", "OWNER_NOT_LOCAL", "CLEANUP_ATTESTED"]
-    disposition: (
-        Literal[
-            "NEVER_LAUNCHED",
-            "EXITED_BEFORE_SIGNAL",
-            "REAPED_AFTER_TERM",
-            "REAPED_AFTER_KILL",
-            "OWNER_LOST_AFTER_PARENT_DEATH",
-        ]
-        | None
-    )
+    disposition: CancellationDispositionName | None
 
     @model_validator(mode="after")
     def validate_attestation_shape(self) -> AgentAttemptCancellationResourceV2:

@@ -104,8 +104,8 @@ class StartRunRequestResourceV2(ApiModel):
     )
 
 
-class StartRunOrderResource(ApiModel):
-    """One order as a caller supplies it: a name and the exact JSON text.
+class InlineOrderResource(ApiModel):
+    """One order written into the start itself: a name and the exact JSON text.
 
     The document pins the schema. The value is the exact bytes the operator
     wrote, as UTF-8 text, so a pretty-printed file and a one-line flag stay
@@ -114,6 +114,21 @@ class StartRunOrderResource(ApiModel):
 
     name: str = Field(min_length=1)
     value: str = Field(min_length=1, max_length=MAXIMUM_INSTANCE_DOCUMENT_BYTES)
+
+
+class ArtifactOrderResource(ApiModel):
+    """One order whose value is an artifact already published: a name and its address.
+
+    It is a second shape rather than a second optional field, so a start cannot
+    say both and cannot say neither, and so a reader never has to guess whether
+    a string is a value or an address.
+    """
+
+    name: str = Field(min_length=1)
+    artifact: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+AnyStartRunOrderResource = InlineOrderResource | ArtifactOrderResource
 
 
 class StartRunRequestResourceV3(ApiModel):
@@ -125,7 +140,7 @@ class StartRunRequestResourceV3(ApiModel):
     agent_bindings: tuple[StartRunAgentBindingResourceV2, ...] = Field(
         max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
     )
-    orders: tuple[StartRunOrderResource, ...] = Field(strict=False)
+    orders: tuple[AnyStartRunOrderResource, ...] = Field(strict=False)
 
 
 AnyStartRunRequestResource = (

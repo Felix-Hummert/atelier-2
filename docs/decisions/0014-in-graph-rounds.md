@@ -157,10 +157,16 @@ for an oversight.
 
 ## Consequences
 
-- The store moves to schema version 19: a round on the run and on every event, the
-  node execution request keyed by its execution, and the agent receipt's
-  once-per-run key dropped. Every carried row is read as round one, which is what
-  those rows are — not a default filled in to make a column fit.
+- The store moves to schema version 20: a round on the run and on every event and
+  agent receipt, the node execution request keyed by its execution, and the agent
+  receipt's once-per-run key dropped. Every carried row is read as round one,
+  which is what those rows are — not a default filled in to make a column fit.
+- The hop exposed a latent defect in the migration chain and fixes it: a rebuild
+  step materialised its table from the *live* declaration, which is only ever the
+  current shape, so the first hop to touch a table an earlier hop had already
+  rebuilt broke the chain in the middle. Published predecessor shapes now have
+  their own owner, and one shared rebuild carries every row by reading both
+  tables rather than a hand-kept column list.
 - `completion_after_node` gains the round, and every reader of a completion — the
   node workflow, the attempt store's recovery path, the replacement workflow —
   answers with the same round or refuses.

@@ -71,6 +71,7 @@ RECEIPT_PATH = API_PREFIX + "/runs/{public_ref}/receipt"
 
 EXPECTED_PATHS = {
     API_PREFIX + "/health",
+    API_PREFIX + "/artifacts",
     API_PREFIX + "/auth-profile-revisions",
     API_PREFIX + "/agent-configuration-revisions",
     API_PREFIX + "/schema-revisions",
@@ -111,6 +112,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         "GET",
         API_PREFIX + "/agent-configuration-revisions",
         "list_agent_configuration_revisions_route",
+    ),
+    (
+        "POST",
+        API_PREFIX + "/artifacts",
+        "publish_artifact_route",
     ),
     (
         "POST",
@@ -161,6 +167,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/auth-profile-revisions", "get"): {"200"},
     (API_PREFIX + "/agent-configuration-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-configuration-revisions", "get"): {"200"},
+    (API_PREFIX + "/artifacts", "post"): {"200", "201"},
     (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},

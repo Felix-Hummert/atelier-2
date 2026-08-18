@@ -79,6 +79,13 @@ WORKFLOW_FORMAT_RESTATED = re.compile(
     r"|_V3_WORKFLOW_FORMAT_VERSION = 3"
     r"|if version == [123]:"
 )
+CANCEL_TOKEN_RESTATED = re.compile(
+    r'"NEVER_LAUNCHED"'
+    r'|"EXITED_BEFORE_SIGNAL"'
+    r'|"REAPED_AFTER_TERM"'
+    r'|"REAPED_AFTER_KILL"'
+    r'|"OWNER_LOST_AFTER_PARENT_DEATH"'
+)
 
 
 @pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")
@@ -119,6 +126,25 @@ def test_a_workflow_format_is_written_once_and_derived_everywhere() -> None:
         "contracts/run_events.py",
     ):
         assert WORKFLOW_FORMAT_RESTATED.search(source_of(relative)) is None, relative
+
+
+@pytest.mark.proves("a-cancel-token-is-written-once-and-derived-everywhere")
+def test_a_cancel_token_is_written_once_and_derived_everywhere() -> None:
+    """The five cleanup tokens have one owner; query and SSE name it, they do not retype it."""
+
+    owner = source_of("contracts/agent_attempts.py")
+    assert 'NEVER_LAUNCHED = "NEVER_LAUNCHED"' in owner
+    assert 'EXITED_BEFORE_SIGNAL = "EXITED_BEFORE_SIGNAL"' in owner
+    assert 'REAPED_AFTER_TERM = "REAPED_AFTER_TERM"' in owner
+    assert 'REAPED_AFTER_KILL = "REAPED_AFTER_KILL"' in owner
+    assert 'OWNER_LOST_AFTER_PARENT_DEATH = "OWNER_LOST_AFTER_PARENT_DEATH"' in owner
+    for relative in (
+        "api/wire/resources.py",
+        "api/wire/events.py",
+        "api/projection/events.py",
+        "api/projection/runs.py",
+    ):
+        assert CANCEL_TOKEN_RESTATED.search(source_of(relative)) is None, relative
 
 
 @pytest.mark.proves("a-persisted-bound-is-written-once-and-derived-everywhere")

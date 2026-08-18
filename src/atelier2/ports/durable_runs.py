@@ -7,6 +7,11 @@ from typing import Protocol
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
 from atelier2.contracts.node_records_v3 import RunInput
+from atelier2.contracts.orders import (
+    ArtifactOrderValue,
+    AuthoredOrderValue,
+    InlineOrderValue,
+)
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
@@ -103,6 +108,7 @@ class V3InputRefusal(StrEnum):
     DUPLICATED = "duplicated"
     SCHEMA_MISMATCH = "schema-mismatch"
     VALUE_REFUSED = "value-refused"
+    UNKNOWN_ARTIFACT = "unknown-artifact"
 
 
 @dataclass(frozen=True)
@@ -121,20 +127,23 @@ class DurableV3StartInputRefused:
 
 @dataclass(frozen=True)
 class AuthoredOrder:
-    """An order as a caller supplies it: a name and the exact value bytes.
+    """An order as a caller supplies it: a name and where its value comes from.
 
     The document pins the schema. A caller that also named a schema would
     be repeating a decision they do not own; the start looks the pin up.
+
+    The value is inline bytes or the address of a published artifact, and the
+    start resolves the second into the first before anything reads it.
     """
 
     name: str
-    value: bytes
+    value: AuthoredOrderValue
 
     def __post_init__(self) -> None:
         if self.name == "":
             raise ValueError("an order names a nonempty input")
-        if not isinstance(self.value, bytes):
-            raise TypeError("an order carries exact bytes")
+        if not isinstance(self.value, (InlineOrderValue, ArtifactOrderValue)):
+            raise TypeError("an order names where its value comes from")
 
 
 @dataclass(frozen=True)

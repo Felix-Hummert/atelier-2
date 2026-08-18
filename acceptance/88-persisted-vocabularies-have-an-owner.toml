@@ -18,8 +18,10 @@ story = "https://github.com/FlexOr2/atelier-2/issues/88"
 #     `agent_process_watchdog.py`, `agent_processes.py`, their protocol, and their
 #     proof. Giving condemned frames a new enum would preserve the predecessor;
 #     the direct-systemd proofs rescued before deletion remain with #15.
-#   - The cancel-token proof over query and SSE. Test-only, and it wants the
-#     live-stream harness rather than the projection seam this head worked in.
+#   - The cancel-token over query and SSE. Closed: `AgentAttemptCancellationDisposition`
+#     is the one owner; the query resource, the SSE event resources, and both
+#     event-projection casts name that closed union. The live-stream harness
+#     that would replay a cancelled run through HTTP is not this sentence.
 #
 # What the sentences below share is the shape of the defect: a number or a
 # name written twice, agreeing today, with nothing red on the day they stop.
@@ -49,3 +51,7 @@ text = "The set of event kinds a V1 run cannot carry has one owner that both the
 [[sentence]]
 id = "a-schema-check-cannot-silently-narrow-an-owned-vocabulary"
 text = "Every SQLite CHECK that names a contract-owned persisted vocabulary is parsed under the SQLite dialect and preserves the complete owned member set; equality, reversed equality, positive or negative membership, inequality and Boolean nesting cannot silently remove a member, and an unrecognised predicate on that vocabulary fails the guard by name."
+
+[[sentence]]
+id = "a-cancel-token-is-written-once-and-derived-everywhere"
+text = "The cleanup disposition a cancelled attempt carries is written once at AgentAttemptCancellationDisposition and derived on the query resource and the SSE event resources, so a renamed or added token cannot leave one surface on the old spelling."

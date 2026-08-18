@@ -82,9 +82,8 @@ does not open a runtime.
 The file is inspected, then raised one published step at a time. Each step
 ends with the fingerprint [ADR 0001](decisions/0001-durable-runtime.md) names.
 Any doubt rolls the transaction back, so a failed hop leaves the predecessor
-unaltered. The built steps start at schema version 13; which versions can be
-raised is what the command reports, and [ADR 0001](decisions/0001-durable-runtime.md)
-records what each step did. Older published predecessors, and unknown or future
+unaltered. Today the built steps run from schema version 13 to the current one, each
+either an additive table home or a rebuild that copies every predecessor row. Older published predecessors, and unknown or future
 versions, are refused by name. A store already on the current schema is left
 unaltered and said to be already current.
 

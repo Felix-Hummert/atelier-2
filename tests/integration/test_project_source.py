@@ -15,22 +15,24 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import cast
 
 import pytest
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
-from atelier2.adapters.dbos.workflow import (
-    EncodedAgentBindingV2,
-    RunBindingConflict,
-    _pinned_project,
+from atelier2.adapters.dbos.node_binding_codec import (
+    decode_node_binding,
+    encode_node_binding,
 )
 from atelier2.adapters.leased_directory import LeasedDirectoryChanged
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import declared_project
+from atelier2.application.bind_node import pinned_project
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
+from atelier2.contracts.node_bindings import AgentNodeBindingV2
+from atelier2.contracts.project_sources import ProjectSourcePin
+from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
@@ -39,12 +41,13 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
-from atelier2.ports.project_source import ProjectSourcePin, ProjectSourceUnavailable
+from atelier2.ports.project_source import ProjectSourceUnavailable
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
     agent_attempt_execution,
     leased_directory_identity,
+    resolved_agent_binding,
     runtime_workspace_owner,
 )
 from tests.scenarios.projects import (
@@ -253,10 +256,13 @@ def test_the_provider_starts_in_the_pinned_tree_of_its_own_lease(
         runtime.close()
 
 
-def durably_bound(**pinned: str) -> EncodedAgentBindingV2:
-    """One node's durable binding, carrying only what this decision reads of it."""
+def durably_bound(**pinned: str) -> dict[str, object]:
+    """A durable binding this adapter writes, changed only in what it pinned."""
 
-    return cast(EncodedAgentBindingV2, pinned)
+    encoded = dict(
+        encode_node_binding(AgentNodeBindingV2(resolved_agent_binding(), "build"))
+    )
+    return {**encoded, **pinned}
 
 
 A_GRANT = {
@@ -275,14 +281,14 @@ def test_a_half_encoded_pin_refuses_rather_than_guessing_the_other_half(
     half: dict[str, str],
 ) -> None:
     with pytest.raises(RunBindingConflict, match="partly encoded"):
-        _pinned_project(durably_bound(**half), None)
+        decode_node_binding(durably_bound(**half))
 
 
 @pytest.mark.proves("a-pin-no-source-can-answer-for-refuses-before-the-claim")
 def test_a_pin_that_names_no_objects_refuses_the_binding_that_carries_it() -> None:
     with pytest.raises(RunBindingConflict, match="unknown value"):
-        _pinned_project(
-            durably_bound(project_commit="the tip", project_tree="b2" * 20), None
+        decode_node_binding(
+            durably_bound(project_commit="the tip", project_tree="b2" * 20)
         )
 
 
@@ -291,7 +297,7 @@ def test_a_grant_bound_without_a_pinned_source_refuses_by_what_is_missing() -> N
     """A grant is redeemed against a tree, so a grant with no tree redeems nothing."""
 
     with pytest.raises(RunBindingConflict, match="pinned none"):
-        _pinned_project(durably_bound(**A_GRANT), None)
+        decode_node_binding(durably_bound(**A_GRANT))
 
 
 @pytest.mark.proves("a-pin-no-source-can-answer-for-refuses-before-the-claim")
@@ -299,11 +305,13 @@ def test_a_pinned_source_no_runtime_was_given_refuses_rather_than_running_blind(
     tmp_path: Path,
 ) -> None:
     pin = git_project(tmp_path / "project", {MANIFEST.name: COMMITTED})
+    binding = decode_node_binding(
+        durably_bound(project_commit=pin.commit, project_tree=pin.tree)
+    )
 
+    assert isinstance(binding, AgentNodeBindingV2)
     with pytest.raises(RunBindingConflict, match="was given none"):
-        _pinned_project(
-            durably_bound(project_commit=pin.commit, project_tree=pin.tree), None
-        )
+        pinned_project(binding, None)
 
 
 def test_a_binding_pinning_a_source_and_no_grant_works_in_that_tree_and_redeems_none(
@@ -311,11 +319,12 @@ def test_a_binding_pinning_a_source_and_no_grant_works_in_that_tree_and_redeems_
 ) -> None:
     root = tmp_path / "project"
     pin = git_project(root, {MANIFEST.name: COMMITTED})
-
-    project = _pinned_project(
-        durably_bound(project_commit=pin.commit, project_tree=pin.tree),
-        declared_project(root),
+    binding = decode_node_binding(
+        durably_bound(project_commit=pin.commit, project_tree=pin.tree)
     )
+
+    assert isinstance(binding, AgentNodeBindingV2)
+    project = pinned_project(binding, declared_project(root))
 
     assert project is not None
     assert (project.pin, project.grant) == (pin, None)

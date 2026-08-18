@@ -18,6 +18,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_PROVIDER_ID_CHARACTERS,
     MAXIMUM_SIGNED_INT64,
 )
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
@@ -29,7 +30,7 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
@@ -40,6 +41,7 @@ _VERSION_FIFTEEN = 15
 _VERSION_SIXTEEN = 16
 _VERSION_SEVENTEEN = 17
 _VERSION_EIGHTEEN = 18
+_VERSION_NINETEEN = 19
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -59,11 +61,14 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # output ends its attempt under its own name instead of borrowing the process
 # exit's or killing the driver. V18 admits FAILED as a run state, so a line
 # whose open node paths have terminally failed ends under the node's own
-# reason instead of standing STARTED with nothing to continue it. V19 gives the
-# round a declared loop is turning a durable home on the run and on every event
-# it writes, keys a node execution request by the execution rather than by the
-# request it repeats, and drops the receipt key that said one agent receipt per
-# node per run -- a sentence that stopped being true when a node could run twice.
+# reason instead of standing STARTED with nothing to continue it. V19 gives
+# content-addressed material a durable, immutable home, so an order larger than
+# the inline bound travels as the address of bytes published once instead of not
+# travelling at all. V20 gives the round a declared loop is turning a durable
+# home on the run and on every event and agent receipt it writes, keys a node
+# execution request by the execution rather than by the request it repeats, and
+# drops the receipt key that said one agent receipt per node per run -- a
+# sentence that stopped being true when a node could run twice.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -77,7 +82,8 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     16: "97605fb330cb6382d52a554d644015f631cccea3759c04c27de3ca5f1fea9c3a",
     17: "2f3a11d0b4d67e375259ca732c7243c95d19fa763e03785b0bd4a83c1b1359d2",
     18: "c60275544c9984adccff79e3a4f5ab6eeab5ea1683306adf1d2faa7dbb51e29d",
-    19: "1d787bf0f9b6de10e79d48911e8c964e0f0dac5d0b6ff17248f21de62dd865ab",
+    19: "a861d9087da05c112f88ae8ec573f57338b5ef1d04f36553922c505127b34298",
+    20: "09752981999444ee4129cfe29b7322b79d2ff378f91d1af5050342eff78b8637",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -118,6 +124,10 @@ V17_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V18_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_EIGHTEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_EIGHTEEN],
+)
+V19_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_NINETEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_NINETEEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1156,6 +1166,18 @@ node_receipts_v3 = sa.Table(
         ),
     ),
 )
+artifacts = sa.Table(
+    "artifacts",
+    metadata,
+    sa.Column("artifact_hash", sa.Text, primary_key=True),
+    sa.Column("content", sa.LargeBinary, nullable=False),
+    sa.CheckConstraint(
+        "length(artifact_hash) = 64 AND artifact_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(content) BETWEEN 1 AND {MAXIMUM_ARTIFACT_BYTES}",
+    ),
+)
 run_inputs_v3 = sa.Table(
     "run_inputs_v3",
     metadata,
@@ -1308,6 +1330,18 @@ _PRODUCT_TRIGGERS = {
                          run_configuration_revision_hash
         ON runs BEGIN
           SELECT RAISE(ABORT, 'run bindings are immutable');
+        END
+    """,
+    "artifacts_no_update": """
+        CREATE TRIGGER artifacts_no_update
+        BEFORE UPDATE ON artifacts BEGIN
+          SELECT RAISE(ABORT, 'artifacts are immutable');
+        END
+    """,
+    "artifacts_no_delete": """
+        CREATE TRIGGER artifacts_no_delete
+        BEFORE DELETE ON artifacts BEGIN
+          SELECT RAISE(ABORT, 'artifacts are immutable');
         END
     """,
     "run_inputs_v3_no_update": """
@@ -1923,18 +1957,23 @@ def _table_fingerprint(
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
+    if version in {SCHEMA_VERSION, _VERSION_NINETEEN}:
+        return PRODUCT_TABLE_NAMES
     if version in {
-        SCHEMA_VERSION,
         _VERSION_EIGHTEEN,
         _VERSION_SEVENTEEN,
         _VERSION_SIXTEEN,
         _VERSION_FIFTEEN,
     }:
-        return PRODUCT_TABLE_NAMES
+        return PRODUCT_TABLE_NAMES - {artifacts.name}
     if version == _VERSION_FOURTEEN:
-        return PRODUCT_TABLE_NAMES - {tool_redemptions.name}
+        return PRODUCT_TABLE_NAMES - {artifacts.name, tool_redemptions.name}
     if version == _VERSION_THIRTEEN:
-        return PRODUCT_TABLE_NAMES - {run_inputs_v3.name, tool_redemptions.name}
+        return PRODUCT_TABLE_NAMES - {
+            artifacts.name,
+            run_inputs_v3.name,
+            tool_redemptions.name,
+        }
     raise UnsupportedSchemaVersion(version)
 
 
@@ -2221,8 +2260,8 @@ def _rebuild_product_table(
 
     `filled_columns` names the value each carried row gets in a column the
     predecessor does not have. A column that needs one and has none is refused
-    here by name — the store would otherwise answer with an integrity error about
-    a column the operator never heard of.
+    here by name -- the store would otherwise answer with an integrity error
+    about a column the operator never heard of.
     """
 
     # The fingerprint this store was checked against says nothing about objects
@@ -2307,6 +2346,10 @@ _AGENT_RECEIPTS_V2_TRIGGERS = (
     "agent_receipts_v2_no_update",
     "agent_receipts_v2_no_delete",
 )
+_NODE_EXECUTION_REQUESTS_TRIGGERS = (
+    "node_execution_requests_v3_no_update",
+    "node_execution_requests_v3_no_delete",
+)
 _PREDECESSOR_AGENT_ATTEMPTS = "agent_attempts_before_the_refusal_code"
 
 
@@ -2350,10 +2393,6 @@ def _apply_v17_to_v18(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_SEVENTEEN, _VERSION_EIGHTEEN)
 
 
-_NODE_EXECUTION_REQUESTS_TRIGGERS = (
-    "node_execution_requests_v3_no_update",
-    "node_execution_requests_v3_no_delete",
-)
 _PREDECESSOR_ROUNDLESS_RUNS = "runs_before_the_round_column"
 _PREDECESSOR_ROUNDLESS_RUN_EVENTS = "run_events_before_the_round_column"
 _PREDECESSOR_REQUEST_KEYED_REQUESTS = (
@@ -2362,12 +2401,13 @@ _PREDECESSOR_REQUEST_KEYED_REQUESTS = (
 _PREDECESSOR_ONCE_PER_RUN_AGENT_RECEIPTS = "agent_receipts_v2_before_the_round"
 
 
-def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
+def _apply_v19_to_v20(connection: sqlite3.Connection) -> None:
     """Give the round a durable home, and read every stored row as round one.
 
-    Every run and every event this store already holds was written before a
-    document could declare a loop, so each of them stands in the first round --
-    that is a fact about them, not a default filled in to make the column fit.
+    Every run, event and agent receipt this store already holds was written
+    before a document could declare a loop, so each of them stands in the first
+    round -- that is a fact about them, not a default filled in to make a column
+    fit.
 
     Two keys go with it, because both said "once per run" about something that
     is now once per round. A node execution request keyed by the request hash
@@ -2381,7 +2421,7 @@ def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
         runs,
         _PREDECESSOR_ROUNDLESS_RUNS,
         ("runs_binding_no_update",),
-        _VERSION_EIGHTEEN,
+        _VERSION_NINETEEN,
         SCHEMA_VERSION,
         {runs.c.current_round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
     )
@@ -2390,7 +2430,7 @@ def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
         run_events,
         _PREDECESSOR_ROUNDLESS_RUN_EVENTS,
         _RUN_EVENTS_TRIGGERS,
-        _VERSION_EIGHTEEN,
+        _VERSION_NINETEEN,
         SCHEMA_VERSION,
         {run_events.c.round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
     )
@@ -2399,7 +2439,7 @@ def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
         node_execution_requests_v3,
         _PREDECESSOR_REQUEST_KEYED_REQUESTS,
         _NODE_EXECUTION_REQUESTS_TRIGGERS,
-        _VERSION_EIGHTEEN,
+        _VERSION_NINETEEN,
         SCHEMA_VERSION,
     )
     _rebuild_product_table(
@@ -2407,11 +2447,11 @@ def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
         agent_receipts_v2,
         _PREDECESSOR_ONCE_PER_RUN_AGENT_RECEIPTS,
         _AGENT_RECEIPTS_V2_TRIGGERS,
-        _VERSION_EIGHTEEN,
+        _VERSION_NINETEEN,
         SCHEMA_VERSION,
         {agent_receipts_v2.c.round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
     )
-    _raise_declared_version(connection, _VERSION_EIGHTEEN, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_NINETEEN, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2445,7 +2485,17 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_FIFTEEN, _VERSION_SIXTEEN, _apply_v15_to_v16),
     _SchemaMigrationStep(_VERSION_SIXTEEN, _VERSION_SEVENTEEN, _apply_v16_to_v17),
     _SchemaMigrationStep(_VERSION_SEVENTEEN, _VERSION_EIGHTEEN, _apply_v17_to_v18),
-    _SchemaMigrationStep(_VERSION_EIGHTEEN, SCHEMA_VERSION, _apply_v18_to_v19),
+    _SchemaMigrationStep(
+        _VERSION_EIGHTEEN,
+        _VERSION_NINETEEN,
+        _added_table_step(
+            artifacts,
+            ("artifacts_no_update", "artifacts_no_delete"),
+            _VERSION_EIGHTEEN,
+            _VERSION_NINETEEN,
+        ),
+    ),
+    _SchemaMigrationStep(_VERSION_NINETEEN, SCHEMA_VERSION, _apply_v19_to_v20),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
