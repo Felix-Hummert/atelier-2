@@ -1,4 +1,4 @@
-"""The operator's command line: serve, run, resolve, or migrate a store."""
+"""The operator's command line: serve, run, resolve, migrate, or speak MCP."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ from atelier2.adapters.grok_subscription import (
 )
 from atelier2.adapters.project_verification import declared_project
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
+from atelier2.host.mcp_command import execute_mcp
 from atelier2.host.migrate_command import describe_migration, execute_migrate
 from atelier2.host.run_command import (
     DEFAULT_CATALOG_POSITION,
@@ -129,6 +130,22 @@ There is no verdict exit code: output contracts (issue #57) do not exist yet,
 so the exit code reports the run's disposition and nothing more.
 """
 
+
+MCP_DESCRIPTION = """\
+Speak MCP on standard input and standard output against a served Atelier API.
+
+This command starts no listener and invents no credential. It is a child
+process a client launches, and it talks to the public HTTP API of --service
+exactly as the browser and `run` already do. The API has no caller
+authentication today: #82 is human OIDC, ADR 0009 (machine credentials) is
+not landed, so this child refuses any service that is not a literal
+loopback address rather than pretending a token exists.
+
+The four tools are list_workflows, start_run, run_status and answer_wait.
+Each one calls an existing door. A typed problem from the service is the
+tool's own answer, field pointers included.
+"""
+
 BINDING_SEPARATOR = "="
 
 
@@ -143,6 +160,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return _resolve(parser, parsed)
     if parsed.command == "migrate":
         return _migrate(parsed)
+    if parsed.command == "mcp":
+        return execute_mcp(parsed.service, sys.stdin.buffer, sys.stdout.buffer)
     parser.error("a command is required")
 
 
@@ -627,6 +646,20 @@ def _argument_parser() -> argparse.ArgumentParser:
             "this run's own identity; without it the identity is derived from "
             "the published workflow and bindings, so repeating the command "
             "reports the same run instead of starting another"
+        ),
+    )
+    mcp_parser = commands.add_parser(
+        "mcp",
+        help="speak MCP on standard input against a loopback Atelier API",
+        description=MCP_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    mcp_parser.add_argument(
+        "--service",
+        default=DEFAULT_SERVICE_URL,
+        help=(
+            "the served Atelier API to call (default "
+            f"{DEFAULT_SERVICE_URL}); must be a literal loopback address"
         ),
     )
     return parser

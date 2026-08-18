@@ -1,0 +1,41 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/112"
+
+# Kopf 1: stdio only. Four tools, each a client of a door that already exists.
+# The rights legs (scoped token, actor attribution, budget) are named as
+# absent: the API has no caller authentication, #82 is human OIDC, ADR 0009
+# is not landed. This slice invents none of them and therefore refuses any
+# service that is not loopback.
+#
+# What is deliberately absent, and why:
+#
+#   - NO LISTENER, PORT, OR TOKEN. A child process a client launches is the
+#     same trust as the browser on this machine. A network surface would
+#     widen that trust; the item's stop condition forbids it while a billed
+#     executor can be composed and no per-binding budget exists.
+#   - NO TIMES ON run_status. #355 has not landed. The tool returns the run
+#     resource the API already answers; it does not invent instants.
+#   - NO get_receipt, NO publish tool, NO stream. Those wait on their own
+#     doors or on a later slice.
+#   - NO ACTOR IN THE TOOL DESCRIPTION. ADR 0009 §9 forbids calling a
+#     caller-asserted string attribution.
+
+[[sentence]]
+id = "mcp-tools-are-the-published-http-doors"
+requirement = "REQ-KATALOG-02"
+text = "The four stdio tools list_workflows, start_run, run_status and answer_wait are named once, their input schemas are derived from the wire models those HTTP doors already publish, start_run references the published WorkflowDocument grammar instead of copying it, and a removed or renamed HTTP path turns the adapter red."
+
+[[sentence]]
+id = "mcp-and-http-never-diverge"
+requirement = "REQ-KATALOG-02"
+text = "An unadmitted name, a missing run and an unanswerable wait are the same typed ApiProblem on the MCP path and on the HTTP path — same type, title, status, detail and field pointers — and a start by name posts the same POST /runs body the HTTP door already owns."
+
+[[sentence]]
+id = "a-stdio-client-lists-starts-and-reads-a-named-run"
+requirement = "REQ-KATALOG-02"
+text = "A stdio MCP client lists the catalog as name, lineage and head, starts the revision that name holds through the same resolution run --name asks, and reads that run's status as terminal, against a fake executor, with no second persistence and no invented credential."
+
+[[sentence]]
+id = "a-non-loopback-mcp-service-is-refused-without-inventing-auth"
+requirement = "REQ-ZUGANG-04"
+text = "The MCP child refuses a service that is not a literal loopback address and invents no token: the API has no caller authentication, #82 is human OIDC, and ADR 0009 is not landed, so the bound is the same loopback trust the browser already has."

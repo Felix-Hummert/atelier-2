@@ -588,6 +588,19 @@ for the schema the document pinned are each refused by name; a typed 422 from
 the service is handed on in the service's own words. An output contract that
 could decide an exit code still does not exist.
 
+That API now also has a third door: `atelier2 mcp` speaks MCP on standard
+input and standard output against the same public HTTP API. A client launches
+it as a child. There is no listener, no port and no token. The four tools
+are `list_workflows` (catalog name, lineage and head), `start_run` (the
+revision a name holds, the same resolution `run --name` asks), `run_status`
+(the run resource as the API answers it) and `answer_wait` (the #194 door).
+Each call is the HTTP door; a typed problem is returned unchanged, field
+pointers included. The API has no caller authentication: #82 is human OIDC
+and ADR 0009 (machine credentials) is not landed, so this child invents
+none and refuses any service that is not a literal loopback address — the
+same trust the browser already has on this machine. Instants on the run
+wait for #355; this door does not invent them.
+
 A node can now say which tool it needs and have it redeemed. A `tools` entry is
 a published tool grant the document pins by hash, exactly as an output pins its
 schema, so what a node may do is byte-pinned like every other material it names;
