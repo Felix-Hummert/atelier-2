@@ -575,7 +575,9 @@ produced to standard output, with the run, its revision, its terminal hash and
 one hash per output on standard error. Every publication is idempotent and the
 run identity is derived from the published hashes unless the operator names one,
 so the same command run twice reports the first run instead of paying for a
-second. The client owns nothing: it holds no durable state, adds no route, and
+second. That identity compare pins authored `--input` orders the same way it
+already pinned `run_inputs`, so a retry of the operator door is
+`DurableRunExisting` rather than a conflict. The client owns nothing: it holds no durable state, adds no route, and
 hands the service's typed problems on unchanged, whether the service refused an
 answer or ended the event stream with its own failure frame. A run that stops on
 a decision the command cannot make — a waiting node, an unknown effect outcome, a
@@ -687,9 +689,12 @@ and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
 founding, unpublished member, wrong kind, or retired lineage is refused by
-name. Measurements and policy activations are not in this profile. V13 through
-V19 remain published predecessor objects; exact V7 through V19 files are refused
-by runtime without mutation, with no runtime migration or downgrade. An offline
-`atelier2 migrate` command raises an exact V13 through V19 store to the current
+name. Measurements and policy activations are not in this profile. Every schema
+from V9 up to the one just below current remains a published predecessor
+object -- `schema.py` names each as its own `V*_SCHEMA_HANDOFF` constant -- and
+an exact file at V7 through the version just below current is refused by
+runtime without mutation, with no runtime migration or downgrade. An offline
+`atelier2 migrate` command raises an exact store on any source version
+`schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder still names to the current
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.
