@@ -1,0 +1,11 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/338"
+
+# Flake 2 of #338: the V3 run page closed the event stream when the run was
+# already COMPLETED, so a second event still in the page never arrived. The
+# stream now closes on completeness — applied last_sequence matches the run's
+# own latest cursor — not on run state alone.
+
+[[sentence]]
+id = "a-v3-stream-closes-only-when-every-event-has-arrived"
+text = "A V3 run page that is following live keeps the event stream open until the events it has applied match the latest cursor the run itself names, so a run that has already ended still shows every node that finished, not only the first one the page happened to read."

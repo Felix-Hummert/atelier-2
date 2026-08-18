@@ -5,7 +5,7 @@ import App from "../../src/App.svelte";
 import { CockpitRequestError, type CockpitApi, type RunV3 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
-import { publicReference, revisionHash as digest } from "../support/workflowV1";
+import { eventCursor, publicReference, revisionHash as digest } from "../support/workflowV1";
 
 const configurationHash = "c".repeat(64);
 const terminalHash = "d".repeat(64);
@@ -128,6 +128,44 @@ describe("a version 3 run in the cockpit", () => {
     });
     await waitFor(() => expect(arriving.textContent).toContain("the draft"));
     expect(arriving.textContent).toContain("implement");
+  });
+
+  it("proves(a-v3-stream-closes-only-when-every-event-has-arrived): keeps the stream open until the applied events match the run cursor", async () => {
+    const feed = new FakeRunEventFeed();
+    const ended = v3Run({
+      state: "COMPLETED",
+      terminal_hash: terminalHash,
+      current_node_id: "review",
+      latest_event_cursor: eventCursor(2),
+      node_rail: [
+        { node_id: "implement", state: "succeeded", attempt: null },
+        { node_id: "review", state: "succeeded", attempt: null }
+      ]
+    });
+    const getRun = vi.fn().mockResolvedValueOnce(v3Run()).mockResolvedValue(ended);
+    const cockpitApi = api(v3Run(), { getRun, openRunEvents: feed.open });
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
+    feed.handlers?.opened();
+    feed.handlers?.event(JSON.stringify(await completedEvent("implement", "the draft", 1)));
+
+    const arriving = await screen.findByRole("list", { name: "Events as they arrive" });
+    await waitFor(() => expect(arriving.textContent).toContain("implement"));
+    expect(within(arriving).getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Following live");
+    expect(feed.close).not.toHaveBeenCalled();
+
+    feed.handlers?.event(JSON.stringify(await completedEvent("review", "looks good", 2)));
+
+    await waitFor(() => expect(arriving.textContent).toContain("review"));
+    expect(within(arriving).getAllByRole("listitem")).toHaveLength(2);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Where this run stands").textContent).toContain("Ended")
+    );
+    expect(feed.close).toHaveBeenCalled();
   });
 
   it("shows the terminal hash once the run has ended", async () => {
