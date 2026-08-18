@@ -984,8 +984,11 @@ test("opening Details on a saved V3 workflow shows each node with its role and i
   await expect(
     page.getByRole("radio", { name: /Implement a candidate, then review it for defects/ })
   ).toBeVisible();
-  const details = page.locator("details.revision-details").filter({ hasText: revisionHash });
-  await details.getByText("Details", { exact: true }).click();
+  const row = page.getByRole("article", {
+    name: "Implement a candidate, then review it for defects"
+  });
+  await row.getByText("Details", { exact: true }).click();
+  const details = row.locator("details.revision-details");
   await expect(details).toContainText("implement");
   await expect(details).toContainText("builder");
   await expect(details).toContainText("Implement every acceptance sentence of the bound story.");
@@ -1188,17 +1191,17 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   await expect(row).toContainText("Add one outputs: entry");
   await expect(row).not.toContainText("agent-output-shape-unavailable");
   await expect(row).not.toContainText("The first admitted member.");
-  await expect(row.getByLabel(`Revisions of ${lineageName}`)).toBeVisible();
-
-  await row.getByText("Revisions", { exact: true }).click();
+  await row.getByText("Details", { exact: true }).click();
+  await expect(row.getByRole("heading", { name: "Revisions" })).toBeVisible();
   await row.getByLabel(`Revision of ${lineageName}`).selectOption({ label: "Earlier" });
   await expect(row.getByRole("radio")).toBeEnabled();
   await expect(row).toContainText("The first admitted member.");
   await expect(row).not.toContainText("Cannot be started");
 
-  await row.getByText("Details", { exact: true }).click();
   const details = row.locator("details.revision-details");
   await expect(details).toContainText("Write the first admitted draft.");
+  await expect(details).not.toContainText(olderHash);
+  await details.getByRole("button", { name: "Workflow revision" }).click();
   await expect(details).toContainText(olderHash);
   await expect(details).not.toContainText(newestHash);
 
