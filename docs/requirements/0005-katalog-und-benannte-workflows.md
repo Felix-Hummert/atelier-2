@@ -76,6 +76,9 @@ Beweis:     a-published-revision-becomes-a-named-lineage-over-the-api
             a-later-revision-joins-the-lineage-that-already-holds-its-name
             an-admission-the-catalog-refuses-is-named-by-its-own-reason
             a-workflow-published-over-the-api-is-named-over-the-api
+            a-cli-published-v3-workflow-is-named-and-then-run-by-that-name
+            a-cockpit-published-v3-workflow-is-named-over-the-api
+            an-unadmitted-or-uncatalogable-published-name-is-named-in-the-picker
 Offen:      - Der Picker fehlt, der eine Mitgliedschaft und einen Namen anbietet (Eigentümer: #131-Familie, Ziel: Oberfläche)
 
 ## Open questions
@@ -102,9 +105,10 @@ REQ-KATALOG-02 is bound to `a-name-is-answerable-over-the-api` and
 `acceptance/111-a-name-is-answerable-over-the-api.toml`. The in-process
 supervised-start sentence that used to stand here described a door with no
 production caller and is retired with it.
-REQ-KATALOG-05 is bound to the three sentences declared in
+REQ-KATALOG-05 is bound to the sentences declared in
 `acceptance/213-a-workflow-is-named-and-admitted-over-the-api.toml` and to
 `a-workflow-published-over-the-api-is-named-over-the-api` in
 `acceptance/228-a-published-workflow-can-be-named.toml`: the publication door
-the operator already has is enough to name the workflow.
+the operator already has is enough to name the workflow, and the CLI and
+cockpit now perform that second act after a V3 publish.
 REQ-KATALOG-01 is `UNGEBUNDEN`.

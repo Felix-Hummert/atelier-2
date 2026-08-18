@@ -11,17 +11,26 @@ from dataclasses import dataclass
 
 from atelier2.contracts.effects import EffectReceipt
 from atelier2.contracts.executions import RunEvent
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
 @dataclass(frozen=True)
 class PersistedRunEvent:
     event: RunEvent
     receipt: EffectReceipt | None
-    workflow_format_version: int = 1
+    workflow_format_version: WorkflowFormatVersion = WorkflowFormatVersion.V1
 
     def __post_init__(self) -> None:
-        if self.workflow_format_version not in (1, 2, 3):
+        value = self.workflow_format_version
+        if type(value) is bool:
             raise ValueError("persisted event workflow format must be V1, V2, or V3")
+        try:
+            version = WorkflowFormatVersion(value)
+        except ValueError:
+            raise ValueError(
+                "persisted event workflow format must be V1, V2, or V3"
+            ) from None
+        object.__setattr__(self, "workflow_format_version", version)
 
 
 @dataclass(frozen=True)

@@ -37,6 +37,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
     AgentAttemptId,
     AgentAttemptState,
+    ProcessExitSignature,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -469,6 +470,33 @@ def emitting(
     )
 
 
+_PROVIDER_WRITES_STANDARD_ERROR_AND_EXITS = "import os, sys; os.write(2, bytes.fromhex(sys.argv[1])); sys.exit(int(sys.argv[2]))"
+
+
+def dying(
+    return_code: int,
+    standard_error: bytes = b"",
+    *,
+    frame_bytes: int = SCENARIO_PROVIDER_FRAME_BYTES,
+) -> AgentCommandFactory:
+    """A command whose process says exactly this on standard error and ends thus.
+
+    A real child rather than a decoder answering a failure, because what a dead
+    provider left behind only exists if a process really wrote it: supervision
+    has to have collected the exit status and the standard error for anything
+    downstream to be able to name them.
+    """
+
+    return launching(
+        sys.executable,
+        "-c",
+        _PROVIDER_WRITES_STANDARD_ERROR_AND_EXITS,
+        standard_error.hex(),
+        str(return_code),
+        frame_bytes=frame_bytes,
+    )
+
+
 def refusing(reason: str) -> Callable[[Any], Never]:
     """A command or decoder for an executor this scenario must never reach."""
 
@@ -488,6 +516,18 @@ def decode_process_exit(
             AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
         )
     return AgentExecutionResult(completion.standard_output)
+
+
+def process_exit(
+    return_code: int = 1, standard_error: bytes = b""
+) -> ProcessExitSignature:
+    """What supervision saw of a child no executor could read an answer from.
+
+    The defaults are the plainest such ending -- a nonzero exit that said
+    nothing -- for the scenarios whose subject is the write, not the exit.
+    """
+
+    return ProcessExitSignature(return_code, standard_error)
 
 
 def decoding_to(output: bytes) -> AgentCompletionDecoder:

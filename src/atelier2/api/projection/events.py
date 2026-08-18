@@ -48,6 +48,7 @@ from atelier2.contracts.executions import (
     is_canonical_integer_bytes,
 )
 from atelier2.contracts.run_events import PersistedRunEvent
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
 def run_event_resource(
@@ -59,9 +60,9 @@ def run_event_resource(
     a V1 reader keeps deriving and the rail passed here is dropped.
     """
 
-    if projection.workflow_format_version == 2:
+    if projection.workflow_format_version is WorkflowFormatVersion.V2:
         return _run_event_resource_v2(projection, node_rail)
-    if projection.workflow_format_version == 3:
+    if projection.workflow_format_version is WorkflowFormatVersion.V3:
         return _run_event_resource_v3(projection, node_rail)
     event = projection.event
     if event.event_kind in KINDS_NO_V1_RUN_CARRIES:

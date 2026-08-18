@@ -11,7 +11,11 @@ so `run` publishes each of them from the operator's own files on every
 invocation. A workflow revision can be looked up by the name its lineage
 carries, which is what `resolve` asks and what `run --name` runs, through the
 same question so the two cannot disagree; `run --workflow` publishes the document
-it was handed instead. All three publications are idempotent: identical
+it was handed instead, and when those bytes are a V3 document whose authored
+name the catalog can hold it then names that revision through
+`POST /workflow-lineages` — publication and admission stay two HTTP acts.
+A title the catalog grammar refuses is left unpublished-to-the-catalog so the
+hash start still happens. All three publications are idempotent: identical
 bytes answer with the same hash and change nothing. The run identity is derived
 from those hashes and from the orders `--input` / `--input-file` supplied, so
 repeating the same command reports the first run again instead of starting -
@@ -25,6 +29,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import IO, Final
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
@@ -46,6 +51,8 @@ from atelier2.api.wire.events import (
     WaitingInputEventResourceV2,
 )
 from atelier2.api.wire.requests import (
+    AdmitCatalogMemberRequestResource,
+    FoundCatalogLineageRequestResource,
     PublishAgentConfigurationRevisionRequestResource,
     PublishAuthProfileRevisionRequestResource,
     StartRunAgentBindingResourceV2,
@@ -58,11 +65,14 @@ from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
     AnyRunResource,
     AuthProfileRevisionResource,
+    CatalogAdmissionResource,
     CatalogNameResolutionResource,
+    NodeDetailResource,
     ProblemResource,
     StreamFailureResource,
     WorkflowRevisionDetailResource,
 )
+from atelier2.contracts.catalog_v3 import CatalogLineageDisplayName
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import RunState
@@ -73,8 +83,11 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 AUTH_PROFILE_PATH = "/auth-profile-revisions"
 AGENT_CONFIGURATION_PATH = "/agent-configuration-revisions"
 WORKFLOW_REVISION_PATH = "/workflow-revisions"
+WORKFLOW_LINEAGE_PATH = "/workflow-lineages"
 RUN_PATH = "/runs"
 DEFAULT_CATALOG_POSITION: Final = "head"
+COMMAND_CATALOG_ACTOR: Final = "atelier2-run"
+PROBLEM_TYPE_PREFIX: Final = "urn:atelier2:problem:v1:"
 
 JSON_MEDIA_TYPE = "application/json"
 YAML_MEDIA_TYPE = "application/yaml"
@@ -122,9 +135,11 @@ _auth_profile_resource = TypeAdapter(AuthProfileRevisionResource)
 _agent_configuration_resource = TypeAdapter(AgentConfigurationRevisionResource)
 _workflow_revision_resource = TypeAdapter(WorkflowRevisionDetailResource)
 _catalog_name_resolution_resource = TypeAdapter(CatalogNameResolutionResource)
+_catalog_admission_resource = TypeAdapter(CatalogAdmissionResource)
 _run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
 _acted_event_resource = TypeAdapter[ActedEventResource](ActedEventResource)
 _stream_failure_resource = TypeAdapter(StreamFailureResource)
+_node_detail_resource = TypeAdapter(NodeDetailResource)
 
 
 class RunCommandRefusal(Exception):
@@ -141,6 +156,10 @@ class ServiceUnreachable(RunCommandRefusal):
 
 class ServiceRefused(RunCommandRefusal):
     """The service answered a typed problem instead of the resource asked for."""
+
+    def __init__(self, message: str, problem: ProblemResource | None = None) -> None:
+        super().__init__(message)
+        self.problem = problem
 
 
 class UnreadableServiceAnswer(RunCommandRefusal):
@@ -229,6 +248,8 @@ class RunOrder:
     bindings: tuple[AgentBindingSource, ...]
     run_id: str | None
     orders: tuple[SuppliedOrder, ...] = ()
+    catalog_actor: str = COMMAND_CATALOG_ACTOR
+    catalog_activated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -315,12 +336,25 @@ def describe_resolution(resolution: NameResolution) -> str:
     )
 
 
+def catalog_activated_at(now: datetime | None = None) -> str:
+    """The catalog's activation instant, RFC 3339 UTC at second precision."""
+
+    instant = datetime.now(UTC) if now is None else now.astimezone(UTC)
+    return instant.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def execute_run(order: RunOrder) -> RunReport:
-    """Publish what the run binds, start it, and report the run that ended."""
+    """Publish what the run binds, name a V3 revision, start it, and report it."""
 
     api = _api_url(order.service_url)
     bindings = tuple(_published_binding(api, source) for source in order.bindings)
-    revision_hash = _published_workflow_revision(api, order.workflow_document)
+    activated_at = order.catalog_activated_at or catalog_activated_at()
+    revision_hash = _published_workflow_revision(
+        api,
+        order.workflow_document,
+        actor=order.catalog_actor,
+        activated_at=activated_at,
+    )
     return _run_published_revision(
         api, revision_hash, bindings, order.run_id, order.orders
     )
@@ -485,13 +519,94 @@ def _unpublishable_binding(role: str, error: ValidationError) -> UnusableRunOrde
     )
 
 
-def _published_workflow_revision(api: str, document: bytes) -> str:
+def _published_workflow_revision(
+    api: str, document: bytes, *, actor: str, activated_at: str
+) -> str:
     revision = _decoded(
         _workflow_revision_resource,
         _post(api + WORKFLOW_REVISION_PATH, document, media_type=YAML_MEDIA_TYPE),
         "a workflow revision",
     )
+    _admit_published_v3(api, revision, actor=actor, activated_at=activated_at)
     return revision.revision_hash
+
+
+def _admit_published_v3(
+    api: str,
+    revision: WorkflowRevisionDetailResource,
+    *,
+    actor: str,
+    activated_at: str,
+) -> None:
+    """Name a just-published V3 revision through the existing admission door.
+
+    Publication does not found a lineage. This is the second act: POST
+    /workflow-lineages, or POST …/members when that authored name is already
+    held. A title the catalog grammar refuses is skipped so the hash start
+    still happens.
+    """
+
+    if revision.graph.format_version != 3:
+        return
+    try:
+        CatalogLineageDisplayName(revision.graph.name)
+    except (TypeError, ValueError):
+        return
+    founding = FoundCatalogLineageRequestResource(
+        revision_hash=revision.revision_hash,
+        actor=actor,
+        activated_at=activated_at,
+    )
+    try:
+        _decoded(
+            _catalog_admission_resource,
+            _post(
+                api + WORKFLOW_LINEAGE_PATH,
+                founding.model_dump_json(exclude_none=True).encode(),
+            ),
+            "a catalog admission",
+        )
+        return
+    except ServiceRefused as refused:
+        code = _problem_code(refused)
+        if code in {"catalog-revision-owned", "invalid-request"}:
+            return
+        if code != "catalog-name-held":
+            raise
+    resolution = _decoded(
+        _catalog_name_resolution_resource,
+        _get(
+            f"{api}{WORKFLOW_REVISION_PATH}/by-name/"
+            f"{quote(revision.graph.name, safe='')}"
+        ),
+        "a catalog name",
+    )
+    member = AdmitCatalogMemberRequestResource(
+        revision_hash=revision.revision_hash,
+        actor=actor,
+        activated_at=activated_at,
+    )
+    try:
+        _decoded(
+            _catalog_admission_resource,
+            _post(
+                f"{api}{WORKFLOW_LINEAGE_PATH}/{resolution.lineage_id}/members",
+                member.model_dump_json().encode(),
+            ),
+            "a catalog admission",
+        )
+    except ServiceRefused as refused:
+        if _problem_code(refused) == "catalog-revision-owned":
+            return
+        raise
+
+
+def _problem_code(refused: ServiceRefused) -> str | None:
+    if refused.problem is None:
+        return None
+    if refused.problem.type.startswith(PROBLEM_TYPE_PREFIX):
+        return refused.problem.type.removeprefix(PROBLEM_TYPE_PREFIX)
+    return refused.problem.type
 
 
 def _start_request(
@@ -594,11 +709,7 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                         )
                     )
                 case AgentFailedEventResourceV2() | AgentFailedEventResourceV3():
-                    raise RunNeedsAnotherActor(
-                        f"agent attempt {event.attempt_id} of node {event.node_id} "
-                        f"failed with {event.failure_code}; only an operator "
-                        "replacement continues this run"
-                    )
+                    raise _why_the_run_stops(api, public_run_reference, event)
                 case WaitingInputEventResource() | WaitingInputEventResourceV2():
                     raise RunNeedsAnotherActor(
                         f"node {event.node_id} is waiting for an "
@@ -612,6 +723,41 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                         "command makes none"
                     )
     return RunHistory(tuple(outputs), last_cursor)
+
+
+def _why_the_run_stops(
+    api: str,
+    public_run_reference: str,
+    event: AgentFailedEventResourceV2 | AgentFailedEventResourceV3,
+) -> RunNeedsAnotherActor:
+    """The failure an operator is handed, with the reason read where it lives.
+
+    The event stream carries the failure code and deliberately nothing more: it
+    is a surface anybody may subscribe to, so a provider's own words stay off
+    it. They belong to the node's durable receipt, which the service answers on
+    the same node resource the console panel reads -- so this asks there rather
+    than growing a second vocabulary for one fact.
+
+    An attempt whose reason nothing recorded is reported as exactly that. A run
+    from before the receipt writer, or a node whose failure nobody judged, must
+    not read like a run whose reason was empty prose.
+    """
+
+    node = quote(event.node_id, safe="")
+    detail = _decoded(
+        _node_detail_resource,
+        _get(f"{api}{RUN_PATH}/{public_run_reference}/nodes/{node}"),
+        "a node detail",
+    )
+    named = (
+        f"failed with {event.failure_code}, and no reason was recorded"
+        if detail.refusal is None
+        else f"failed with {event.failure_code}: {detail.refusal}"
+    )
+    return RunNeedsAnotherActor(
+        f"agent attempt {event.attempt_id} of node {event.node_id} {named}; "
+        "only an operator replacement continues this run"
+    )
 
 
 def _decoded_output(output_base64: str) -> bytes:
@@ -698,22 +844,24 @@ def _open(request: Request, timeout: float | None) -> IO[bytes]:
     try:
         return urlopen(request, timeout=timeout)
     except HTTPError as refusal:
-        raise ServiceRefused(_described_problem(refusal)) from refusal
+        raise _service_refused(refusal) from refusal
     except URLError as unreachable:
         raise ServiceUnreachable(
             f"no Atelier service answered at {request.full_url}: {unreachable.reason}"
         ) from unreachable
 
 
-def _described_problem(refusal: HTTPError) -> str:
+def _service_refused(refusal: HTTPError) -> ServiceRefused:
     """Hand the service's own typed refusal on, without inventing prose for it."""
 
     answered = refusal.read()
     try:
         problem = ProblemResource.model_validate_json(answered)
     except ValidationError:
-        return f"{refusal.url} answered {refusal.status} {refusal.reason}"
-    return _refusal_sentence(refusal.url, problem)
+        return ServiceRefused(
+            f"{refusal.url} answered {refusal.status} {refusal.reason}"
+        )
+    return ServiceRefused(_refusal_sentence(refusal.url, problem), problem)
 
 
 def _refusal_sentence(url: str, problem: ProblemResource) -> str:

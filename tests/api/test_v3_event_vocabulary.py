@@ -19,6 +19,7 @@ from atelier2.api.wire.events import AgentCompletedEventResource
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from tests.api import test_agent_attempts as v2_events
 from tests.api.test_agent_attempts import SERVED_RAIL
 from tests.api.test_v1_event_vocabulary import v1_projection
@@ -43,7 +44,7 @@ def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
         agent_attempt_id=ATTEMPT_ID,
         attempt_ordinal=1,
     )
-    return PersistedRunEvent(event, None, 3)
+    return PersistedRunEvent(event, None, WorkflowFormatVersion.V3)
 
 
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
@@ -140,7 +141,7 @@ def test_a_v3_run_cannot_answer_with_a_kind_its_nodes_never_write() -> None:
             event_kind=RunEventKind.SUBWORKFLOW_COMPLETED,
             payload=b"5",
         ),
-        workflow_format_version=3,
+        workflow_format_version=WorkflowFormatVersion.V3,
         receipt=None,
     )
 
@@ -164,7 +165,7 @@ def test_restoring_the_v2_else_v1_dispatch_reds_the_v3_agent_cases(
 
     source = Path(events_module.__file__).read_text(encoding="utf-8")
     restored = source.replace(
-        "    if projection.workflow_format_version == 3:\n"
+        "    if projection.workflow_format_version is WorkflowFormatVersion.V3:\n"
         "        return _run_event_resource_v3(projection, node_rail)\n",
         "",
     )

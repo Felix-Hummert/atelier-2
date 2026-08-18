@@ -48,6 +48,7 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 _LENGTH_BOUND = re.compile(
     r"length\(([a-z_0-9]+)\)\s*(?:BETWEEN\s+\d+\s+AND\s+(\d+)|<=\s*(\d+)|=\s*(\d+))"
@@ -372,6 +373,7 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "run_events.event_kind": _values(RunEventKind),
     "run_events.replacement": _values(AgentAttemptReplacement),
     "runs.state": _values(RunState),
+    "runs.workflow_format_version": _values(WorkflowFormatVersion),
     "wait_answers.state": _values(WaitAnswerState),
     "node_receipts_v3.disposition": _values(PersistedReceiptDisposition),
     "published_revisions.kind": _values(RevisionKind),
@@ -400,9 +402,6 @@ gap visible and makes a column that loses its own membership CHECK a red test.
 """
 
 UNOWNED_VOCABULARIES: Mapping[str, str] = {
-    "runs.workflow_format_version": (
-        "the workflow format axis has no typed owner yet; #39/#47 introduce it"
-    ),
     "agent_attempts.state_version": (
         "a monotonic state-machine counter, not a closed vocabulary"
     ),

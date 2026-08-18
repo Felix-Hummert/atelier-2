@@ -24,6 +24,7 @@ from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import RunId
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.run_events import (
     PrepareRunEventStreamResult,
 )
@@ -72,7 +73,7 @@ def agent_completed(projection: RunProjection) -> PersistedRunEvent:
             attempt_ordinal=1,
         ),
         None,
-        2,
+        WorkflowFormatVersion.V2,
     )
 
 

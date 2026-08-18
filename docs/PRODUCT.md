@@ -137,12 +137,14 @@ provider factory and behaves exactly as before. When the
 operator also declares a Grok executable, workspace, and credential directory,
 the host composes one Grok subscription executor beside Claude. It runs the
 bound model headless through `grok --output-format json`, hands the job
-through `--prompt-file` rather than the argument vector, and grants the child
-only the serving host's search path plus one disposable invocation-private
-`HOME`/`GROK_HOME`. That home receives a private copy of the source
-`auth.json`; provider sessions and responses stay there and the entire home is
-removed after success, known failure, cancellation, retry refusal, or process
-error without touching another invocation. Before launch, `grok inspect`
+through `--prompt-file` rather than the argument vector, pins a turn
+ceiling on that same vector so a Diff-Review-sized order cannot run an
+unbounded loop, and grants the child only the serving host's search path
+plus one disposable invocation-private `HOME`/`GROK_HOME`. That home
+receives a private copy of the source `auth.json`; provider sessions and
+responses stay there and the entire home is removed after success, known
+failure, cancellation, retry refusal, or process error without touching
+another invocation. Before launch, `grok inspect`
 must report that exact home/configuration as its only configuration source,
 all external-compatibility imports disabled, and no ambient trust surface.
 The isolated read, edit, and test tools an agent needs to change its own
@@ -349,9 +351,19 @@ the same transaction as the agent receipt. A refused answer ends its attempt
 bytes as `node-artifact/v3` beside its `succeeded` receipt. The run stands on
 the node that produced the refused answer, the node detail reads the stored
 reason back, and a run started before this writer existed stays honestly absent
-in those tables. The bounded vocabulary deliberately not written here: cancelled
-and blocked receipt dispositions, and a receipt for a process-exit failure --
-nothing judged that output, so nothing receipts it yet.
+in those tables.
+
+The other way an attempt ends badly now says as much. A provider process that
+leaves no usable answer ends `FAILED` under `PROCESS_EXITED_UNSUCCESSFULLY` on
+that same seam, and its `failed` receipt carries what the supervision saw --
+how the child ended (an exit code, a signal, or a clean exit whose answer no
+executor could read) and a bounded tail of its standard error, under the token
+`process-exited-unsuccessfully`. The node detail and the `run` command read that
+reason back, and an ending nothing recorded is reported as exactly that rather
+than as an empty one. Standard error stops at the receipt: the `AGENT_FAILED`
+event keeps carrying the bare failure code, so the event stream stays a bounded
+surface anybody may subscribe to. The bounded vocabulary deliberately not
+written here: cancelled and blocked receipt dispositions.
 
 An agent is authored as one markdown file. Its frontmatter is a closed set of
 `name`, `description`, an optional `model`, and an optional `tools` declaration;
@@ -399,7 +411,9 @@ both; publish
 exact JSON Schema revisions; publish and
 inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs
 (the list accepts a `state` filter so a consumer can ask which runs wait;
-a page is admitted by one `PageLimit`, not a restated 1-to-100);
+a page is admitted by one `PageLimit`, not a restated 1-to-100;
+a persisted run format is one `WorkflowFormatVersion`,
+not a restated 1-2-3 CHECK);
 list and inspect a V3 run from the published document it was started
 against, not today's executable parse;
 read the agent receipts a run has written;
@@ -431,8 +445,12 @@ listing already publishes, not one row per revision hash. Several revisions
 that share a name collapse; the catalog head from
 `GET /workflow-revisions/by-name/{name}` is the default when that name
 resolves, and older members sit in a collapsed revision choice. A name with
-one listed revision has no empty submenu. Unnamed documents stay one row
-each, as they did. Details repeats what the published graph already answers —
+one listed revision has no empty submenu. A published title the catalog does
+not hold is named Unlisted when it is a legal catalog name and Unnamable when
+the title cannot be one — the picker does not swallow that 404. Unnamed
+documents stay one row each, as they did. A V3 publish from the CLI or the
+cockpit then names the revision through `POST /workflow-lineages`; publication
+and admission stay two HTTP acts. Details repeats what the published graph already answers —
 format, roles and node count where the V3 resource carries them, executability,
 and hash. A known start-refusal or problem token is shown as a sentence with
 a next action; an unknown token stays raw. The V3 graph also answers an excerpt of each node — id, kind, role,

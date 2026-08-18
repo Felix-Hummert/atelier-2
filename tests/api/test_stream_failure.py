@@ -35,6 +35,7 @@ from atelier2.contracts.run_events import (
     RunEventPage,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
     PrepareRunEventStreamResult,
@@ -135,7 +136,7 @@ def persisted_v1_cancellation() -> PersistedRunEvent:
             cancellation_disposition="NEVER_LAUNCHED",
         ),
         None,
-        workflow_format_version=1,
+        workflow_format_version=WorkflowFormatVersion.V1,
     )
 
 

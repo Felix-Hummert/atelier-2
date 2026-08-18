@@ -485,9 +485,16 @@ small {
 }
 
 .revision-description,
-.revision-refusal {
+.revision-refusal,
+.revision-catalog {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.revision-catalog {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .revision-hash {

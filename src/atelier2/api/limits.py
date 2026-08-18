@@ -18,6 +18,7 @@ from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import RunId
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
 def durable_projection_limit(limits: ApiLimits) -> WorkflowPublicationLimits:
@@ -158,7 +159,7 @@ class ApiLimits:
         self.require_encoded_payload(event.payload)
         if (
             event.event_kind is RunEventKind.AGENT_COMPLETED
-            and projection.workflow_format_version == 1
+            and projection.workflow_format_version is WorkflowFormatVersion.V1
         ) or event.event_kind is RunEventKind.WAIT_ANSWERED:
             self.require_field(event.payload.decode("utf-8"))
         receipt = projection.receipt

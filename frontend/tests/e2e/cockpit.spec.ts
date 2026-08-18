@@ -1272,6 +1272,108 @@ test("the studio inbox names a run that is waiting for a person", async ({ page 
   await expect(page).toHaveURL(new RegExp(`/atelier/runs/${reference.replace(".", "\\.")}$`));
 });
 
+test("publishing a V3 workflow from the cockpit names it so by-name answers", async ({
+  page
+}) => {
+  const api = "/atelier/api/v1";
+  const lineageName = "name-admission-213";
+  const schemaHash = await anyJsonSchema(page);
+  const yaml = [
+    "format_version: 3",
+    `name: ${lineageName}`,
+    "description: Named by the cockpit after publish.",
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Write the admitted draft.",
+    ...declaredOutput(schemaHash),
+    ""
+  ].join("\n");
+
+  await page.goto("/atelier/new");
+  await page.getByLabel("Publish YAML").check();
+  await page.getByLabel("Exact workflow YAML").fill(yaml);
+  await page.getByRole("button", { name: "Review publication" }).click();
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Run ID" })).toBeVisible({
+    timeout: 20_000
+  });
+
+  const head = await page.request.get(`${api}/workflow-revisions/by-name/${lineageName}`);
+  expect(head.status()).toBe(200);
+  const named = await head.json();
+  expect(named.display_name).toBe(lineageName);
+  expect(named.lineage_id).toMatch(/^[0-9a-f]{64}$/);
+  expect(named.revision_hash).toMatch(/^[0-9a-f]{64}$/);
+
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: "Saved workflow" }).check();
+  const row = page.getByRole("article", { name: lineageName });
+  await expect(row.getByRole("radio")).toBeVisible();
+  await expect(row).not.toContainText("Unlisted");
+  await expect(row).not.toContainText("Unnamable");
+  await page.screenshot({
+    path: "test-results/v3-picker-named-after-publish-desktop.png",
+    fullPage: true
+  });
+});
+
+test("a published name the catalog does not hold is named, not silent", async ({
+  page
+}) => {
+  const api = "/atelier/api/v1";
+  const unlisted = "unlisted-213";
+  const unnamable = "Der erste Lauf auf 213";
+  const schemaHash = await anyJsonSchema(page);
+  const unlistedYaml = [
+    "format_version: 3",
+    `name: ${unlisted}`,
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Published and never admitted.",
+    ...declaredOutput(schemaHash),
+    ""
+  ].join("\n");
+  const unnamableYaml = [
+    "format_version: 3",
+    `name: ${unnamable}`,
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: This title cannot be a catalog name.",
+    ""
+  ].join("\n");
+
+  expect(
+    (await page.request.post(`${api}/workflow-revisions`, {
+      headers: { "content-type": "application/yaml" },
+      data: unlistedYaml
+    })).status()
+  ).toBe(201);
+  expect(
+    (await page.request.post(`${api}/workflow-revisions`, {
+      headers: { "content-type": "application/yaml" },
+      data: unnamableYaml
+    })).status()
+  ).toBe(201);
+
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: "Saved workflow" }).check();
+  await expect(page.getByRole("article", { name: unlisted })).toContainText("Unlisted");
+  await expect(page.getByRole("article", { name: unnamable })).toContainText("Unnamable");
+  await page.screenshot({
+    path: "test-results/v3-picker-unlisted-unnamable-desktop.png",
+    fullPage: true
+  });
+});
+
 test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
   const api = "/atelier/api/v1";
   const schemaHash = await anyJsonSchema(page);
@@ -1313,7 +1415,7 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: `Run ${runId}` })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Answer needed" })).toBeVisible();
-  await expect(page.getByText("Wait ask")).toBeVisible();
+  await expect(page.getByText("Approve this, or name the blocking defect.")).toBeVisible();
   const card = page.getByRole("region", { name: "Answer needed" });
   await card.getByRole("textbox", { name: "Answer" }).fill("true");
   await card.getByRole("button", { name: "Answer" }).click();

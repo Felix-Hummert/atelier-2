@@ -63,6 +63,7 @@ from atelier2.contracts.schemas_v3 import (
     read_schema_document,
 )
 from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
     AgentNodeV2,
     WorkflowGraph,
@@ -433,7 +434,9 @@ class DbosDurableRunStarter:
                         if (
                             str(existing_record["revision_hash"])
                             != request.revision_hash.value
-                            or int(existing_record["workflow_format_version"])
+                            or WorkflowFormatVersion(
+                                int(existing_record["workflow_format_version"])
+                            )
                             != graph.format_version
                             or str(existing_record["agent_binding_set_hash"])
                             != binding_set.binding_set_hash.value
@@ -608,7 +611,9 @@ class DbosDurableRunStarter:
                     )
                     if (
                         run.revision_hash != request.revision_hash
-                        or int(existing_record["workflow_format_version"])
+                        or WorkflowFormatVersion(
+                            int(existing_record["workflow_format_version"])
+                        )
                         != graph.format_version
                         or existing_set != requested_set
                         or _stored_orders(connection, request.run_id)
