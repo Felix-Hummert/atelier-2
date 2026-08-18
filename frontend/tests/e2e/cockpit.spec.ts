@@ -1215,3 +1215,60 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   });
 });
 
+test("the studio inbox names a run that is waiting for a person", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const schemaHash = await anyJsonSchema(page);
+  const runId = "studio/waiting-inbox";
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      "name: Waiting in the studio",
+      "nodes:",
+      "  - id: ask",
+      "    type: wait",
+      "    prompt: Approve this, or name the blocking defect.",
+      ...declaredOutput(schemaHash, "approval"),
+      ""
+    ].join("\n")
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).revision_hash as string;
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 3,
+      run_id: runId,
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [],
+      orders: []
+    }
+  });
+  expect(started.status()).toBe(201);
+  const reference = (await started.json()).public_run_reference as string;
+
+  await expect(async () => {
+    const listed = await page.request.get(`${api}/runs?state=WAITING_INPUT&limit=50`);
+    expect(listed.status()).toBe(200);
+    const body = await listed.json();
+    expect(body.items.some((item: { run_id: string }) => item.run_id === runId)).toBe(true);
+  }).toPass({ timeout: 15_000 });
+
+  await page.goto("/atelier");
+  const inbox = page.getByRole("region", { name: "Waiting for you" });
+  const row = inbox.getByRole("link", { name: new RegExp(runId) });
+  await expect(row).toBeVisible();
+  await expect(row).toContainText("Answer");
+  const card = page.getByRole("article", { name: "This workshop" });
+  await expect(card).toContainText("waiting for you");
+
+  await page.screenshot({ path: "test-results/studio-inbox-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(row).toBeVisible();
+  await assertMobileSurface(page);
+  await page.screenshot({ path: "test-results/studio-inbox-390x844.png", fullPage: true });
+
+  await row.click();
+  await expect(page).toHaveURL(new RegExp(`/atelier/runs/${reference.replace(".", "\\.")}$`));
+});
+

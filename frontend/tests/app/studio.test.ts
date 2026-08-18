@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import type { CockpitApi, RunV1 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
-import { cockpitApiStub, pagedListRuns } from "../support/cockpitApi";
+import { cockpitApiStub, PAGE_CURSORS } from "../support/cockpitApi";
 import {
   completedRun,
   startedRun,
@@ -21,12 +21,19 @@ afterEach(() => {
   cleanup();
 });
 
+function listRunsByState(runs: RunV1[]) {
+  return vi.fn(async (_after?: string, state?: string) => ({
+    items: state === undefined ? runs : runs.filter((run) => run.state === state),
+    next_after: null
+  }));
+}
+
 function openStudio(runs: RunV1[] = [], overrides: Partial<CockpitApi> = {}) {
   window.history.replaceState(null, "", "/atelier");
   return render(App, {
     props: {
       cockpitApi: cockpitApiStub({
-        listRuns: vi.fn(async () => ({ items: runs, next_after: null })),
+        listRuns: listRunsByState(runs),
         ...overrides
       }),
       mutationJournal: new MutationJournal(sessionStorage)
@@ -43,6 +50,19 @@ describe("the studio is the level the workshop opens on", () => {
     expect(window.location.pathname).toBe("/atelier");
   });
 
+  it("asks the durable list by the states the card and inbox can name", async () => {
+    const listRuns = listRunsByState([startedRun()]);
+    openStudio([startedRun()], { listRuns });
+    await screen.findByRole("article", { name: "This workshop" });
+
+    expect(listRuns.mock.calls.map(([, state]) => state).sort()).toEqual([
+      "COMPLETED",
+      "STARTED",
+      "WAITING_INPUT",
+      "WAITING_RECONCILIATION"
+    ]);
+  });
+
   it("carries one project card for this installation, with counts it can read", async () => {
     openStudio([
       startedRun({ public_run_reference: "run1.YQ" }),
@@ -55,6 +75,7 @@ describe("the studio is the level the workshop opens on", () => {
 
     expect(within(card).getByText("2 running").isConnected).toBe(true);
     expect(within(card).getByText("1 waiting for you").isConnected).toBe(true);
+    expect(within(card).getByText("1 landed").isConnected).toBe(true);
     expect(within(card).getAllByRole("link")).toHaveLength(1);
   });
 
@@ -79,14 +100,26 @@ describe("the inbox names what waits for a human", () => {
     render(App, {
       props: {
         cockpitApi: cockpitApiStub({
-          listRuns: pagedListRuns([
-            [
-              startedRun({ public_run_reference: "run1.YQ" }),
-              waitingInputRun({ public_run_reference: "run1.Yg" }),
-              completedRun({ public_run_reference: "run1.ZA" })
-            ],
-            [waitingReconciliationRun({ public_run_reference: "run1.Yw" })]
-          ])
+          listRuns: vi.fn(async (after?: string, state?: string) => {
+            if (state === "WAITING_INPUT") {
+              return after === undefined
+                ? {
+                    items: [waitingInputRun({ public_run_reference: "run1.Yg" })],
+                    next_after: PAGE_CURSORS[0] ?? null
+                  }
+                : {
+                    items: [waitingInputRun({ public_run_reference: "run1.YQ" })],
+                    next_after: null
+                  };
+            }
+            if (state === "WAITING_RECONCILIATION") {
+              return {
+                items: [waitingReconciliationRun({ public_run_reference: "run1.Yw" })],
+                next_after: null
+              };
+            }
+            return { items: [], next_after: null };
+          })
         }),
         mutationJournal: new MutationJournal(sessionStorage)
       }
@@ -95,8 +128,8 @@ describe("the inbox names what waits for a human", () => {
     const inbox = await screen.findByRole("region", { name: "Waiting for you" });
 
     const waiting = within(inbox).getAllByRole("link");
-    expect(waiting).toHaveLength(2);
-    expect(within(inbox).getByText("Answer").isConnected).toBe(true);
+    expect(waiting).toHaveLength(3);
+    expect(within(inbox).getAllByText("Answer")).toHaveLength(2);
     expect(within(inbox).getByText("Reconcile").isConnected).toBe(true);
   });
 

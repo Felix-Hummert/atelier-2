@@ -980,7 +980,7 @@ export interface HttpResult<T> {
 }
 
 export interface CockpitApi {
-  listRuns(after?: string): Promise<RunPage>;
+  listRuns(after?: string, state?: AnyRun["state"]): Promise<RunPage>;
   listWorkflowRevisions(after?: string): Promise<WorkflowRevisionPage>;
   listAgentConfigurationRevisions(after?: string): Promise<AgentConfigurationRevisionPage>;
   getRevisionByName(name: string): Promise<CatalogNameResolution>;
@@ -1024,17 +1024,22 @@ export class CockpitRequestError extends Error {
   }
 }
 
+function runListTarget(after?: string, state?: AnyRun["state"]): string {
+  const query = new URLSearchParams({ limit: "50" });
+  if (after !== undefined) query.set("after", after);
+  if (state !== undefined) query.set("state", state);
+  return `/atelier/api/v1/runs?${query.toString()}`;
+}
+
 export function createCockpitApi(
   fetcher: typeof fetch = globalThis.fetch,
   eventSourceFactory: EventSourceFactory = (target) => new EventSource(target)
 ): CockpitApi {
   return {
-    listRuns: (after?: string) =>
+    listRuns: (after?: string, state?: AnyRun["state"]) =>
       requestJson(
         fetcher,
-        after === undefined
-          ? "/atelier/api/v1/runs?limit=50"
-          : `/atelier/api/v1/runs?limit=50&after=${encodeURIComponent(after)}`,
+        runListTarget(after, state),
         {},
         [200],
         runPageSchema
