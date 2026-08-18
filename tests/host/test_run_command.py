@@ -33,6 +33,7 @@ from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
     AgentNodeResourceV2,
     AuthProfileRevisionResource,
+    CatalogAdmissionResource,
     NodeRailResource,
     NodeStateName,
     NoWaitingResource,
@@ -44,6 +45,8 @@ from atelier2.api.wire.resources import (
     StreamFailureResource,
     SubworkflowNodeResource,
     WorkflowGraphResourceV2,
+    WorkflowGraphResourceV3,
+    WorkflowNodePreviewResourceV3,
     WorkflowRevisionDetailResource,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -52,8 +55,10 @@ from atelier2.host import main
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
     AUTH_PROFILE_PATH,
+    COMMAND_CATALOG_ACTOR,
     JSON_MEDIA_TYPE,
     RUN_PATH,
+    WORKFLOW_LINEAGE_PATH,
     WORKFLOW_REVISION_PATH,
     AgentRoleBinding,
     NameOrder,
@@ -1360,3 +1365,225 @@ def test_the_run_help_describes_input_instead_of_deferring_it(
     assert "--input" in shown
     assert "--input-file" in shown
     assert "follows issue #38" not in shown
+
+
+V3_WORKFLOW_NAME = "diff-review"
+V3_WORKFLOW_DOCUMENT = b"""format_version: 3
+name: diff-review
+description: Review a bound diff.
+nodes:
+  - id: draft
+    type: agent
+    role: writer
+    mode: headless
+    instruction: Review the bound diff.
+"""
+ILLEGAL_V3_NAME = "Der erste Lauf auf V14"
+ILLEGAL_V3_DOCUMENT = b"""format_version: 3
+name: Der erste Lauf auf V14
+nodes:
+  - id: draft
+    type: agent
+    role: writer
+    mode: headless
+    instruction: The first live V14 run.
+"""
+LINEAGES_URL_PATH = API_PREFIX + WORKFLOW_LINEAGE_PATH
+MEMBERS_URL_PATH = f"{LINEAGES_URL_PATH}/{LINEAGE_ID}/members"
+V3_BY_NAME_URL_PATH = f"{API_PREFIX}{WORKFLOW_REVISION_PATH}/by-name/{V3_WORKFLOW_NAME}"
+
+
+def published_v3_workflow_revision(name: str = V3_WORKFLOW_NAME) -> Answer:
+    document = V3_WORKFLOW_DOCUMENT if name == V3_WORKFLOW_NAME else ILLEGAL_V3_DOCUMENT
+    return Answer(
+        WorkflowRevisionDetailResource(
+            revision_hash=REVISION_HASH,
+            document_base64=encode_canonical_base64(document),
+            graph=WorkflowGraphResourceV3(
+                format_version=3,
+                executable=True,
+                not_executable_reason=None,
+                node_count=1,
+                agent_roles=("writer",),
+                orders=(),
+                node_previews=(
+                    WorkflowNodePreviewResourceV3(
+                        id="draft",
+                        kind="agent",
+                        role="writer",
+                        instruction_start="Review the bound diff.",
+                        depends_on=(),
+                    ),
+                ),
+                name=name,
+                description="Review a bound diff."
+                if name == V3_WORKFLOW_NAME
+                else None,
+            ),
+        )
+        .model_dump_json()
+        .encode()
+    )
+
+
+def founded_lineage(revision_number: int = 1) -> Answer:
+    return Answer(
+        CatalogAdmissionResource(
+            display_name=V3_WORKFLOW_NAME,
+            lineage_id=LINEAGE_ID,
+            revision_hash=REVISION_HASH,
+            revision_number=revision_number,
+        )
+        .model_dump_json()
+        .encode(),
+        status=HTTPStatus.CREATED,
+    )
+
+
+def v3_serving_answers() -> dict[tuple[str, str], list[Answer]]:
+    answers = serving_answers(workflow_revision=published_v3_workflow_revision())
+    answers[("POST", LINEAGES_URL_PATH)] = [founded_lineage()]
+    return answers
+
+
+@pytest.fixture
+def v3_order(tmp_path: Path) -> Iterator[list[str]]:
+    workflow = tmp_path / "workflow.yaml"
+    workflow.write_bytes(V3_WORKFLOW_DOCUMENT)
+    binding = tmp_path / "writer.json"
+    binding.write_bytes(BINDING_DOCUMENT)
+    yield ["run", "--workflow", str(workflow), "--binding", f"{AGENT_ROLE}={binding}"]
+
+
+@pytest.mark.proves("a-cli-published-v3-workflow-is-named-and-then-run-by-that-name")
+def test_publishing_a_v3_document_names_it_through_the_admission_door(
+    v3_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """Publication stays POST /workflow-revisions; naming is the second act."""
+    with ScriptedService(v3_serving_answers()) as service:
+        exit_code = run_command(v3_order, service)
+        founded = json.loads(service.sent("POST", LINEAGES_URL_PATH)[0])
+        asked = [(call.method, call.path) for call in service.calls]
+
+    assert exit_code == 0
+    assert founded == {
+        "revision_hash": REVISION_HASH,
+        "actor": COMMAND_CATALOG_ACTOR,
+        "activated_at": founded["activated_at"],
+    }
+    assert founded["activated_at"].endswith("Z")
+    assert "T" in founded["activated_at"]
+    assert asked.index(("POST", LINEAGES_URL_PATH)) > asked.index(
+        ("POST", API_PREFIX + WORKFLOW_REVISION_PATH)
+    )
+    assert asked.index(("POST", RUNS_URL_PATH)) > asked.index(
+        ("POST", LINEAGES_URL_PATH)
+    )
+    assert capsysbinary.readouterr().out == AGENT_OUTPUT
+
+
+@pytest.mark.proves("a-cli-published-v3-workflow-is-named-and-then-run-by-that-name")
+def test_a_named_run_starts_the_revision_the_just_published_name_holds(
+    v3_order: list[str],
+    named_order: list[str],
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    answers = v3_serving_answers()
+    answers[("GET", V3_BY_NAME_URL_PATH)] = [
+        Answer(
+            json.dumps(
+                {
+                    "display_name": V3_WORKFLOW_NAME,
+                    "lineage_id": LINEAGE_ID,
+                    "revision_hash": REVISION_HASH,
+                    "revision_number": 1,
+                }
+            ).encode()
+        )
+    ]
+    with ScriptedService(answers) as service:
+        published = run_command(v3_order, service)
+        named = run_command(
+            ["run", "--name", V3_WORKFLOW_NAME, *named_order[3:]], service
+        )
+        published_again = service.sent("POST", API_PREFIX + WORKFLOW_REVISION_PATH)
+
+    assert (published, named) == (0, 0)
+    assert len(published_again) == 1
+    assert capsysbinary.readouterr().out == AGENT_OUTPUT + AGENT_OUTPUT
+
+
+def test_a_v2_document_run_does_not_found_a_lineage(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    with ScriptedService(serving_answers()) as service:
+        exit_code = run_command(order, service)
+        founded = service.sent("POST", LINEAGES_URL_PATH)
+
+    assert (exit_code, founded) == (0, [])
+    assert capsysbinary.readouterr().out == AGENT_OUTPUT
+
+
+def test_an_illegal_catalog_name_still_starts_and_founds_nothing(
+    tmp_path: Path, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    workflow = tmp_path / "workflow.yaml"
+    workflow.write_bytes(ILLEGAL_V3_DOCUMENT)
+    binding = tmp_path / "writer.json"
+    binding.write_bytes(BINDING_DOCUMENT)
+    answers = serving_answers(
+        workflow_revision=published_v3_workflow_revision(ILLEGAL_V3_NAME)
+    )
+    with ScriptedService(answers) as service:
+        exit_code = run_command(
+            [
+                "run",
+                "--workflow",
+                str(workflow),
+                "--binding",
+                f"{AGENT_ROLE}={binding}",
+            ],
+            service,
+        )
+        founded = service.sent("POST", LINEAGES_URL_PATH)
+
+    assert (exit_code, founded) == (0, [])
+    assert capsysbinary.readouterr().out == AGENT_OUTPUT
+
+
+def test_a_held_name_admits_the_new_revision_into_that_lineage(
+    v3_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    answers = v3_serving_answers()
+    answers[("POST", LINEAGES_URL_PATH)] = [
+        problem_answer(
+            HTTPStatus.CONFLICT,
+            "urn:atelier2:problem:v1:catalog-name-held",
+            "Catalog name is held",
+            "Another lineage already holds that name.",
+        )
+    ]
+    answers[("GET", V3_BY_NAME_URL_PATH)] = [
+        Answer(
+            json.dumps(
+                {
+                    "display_name": V3_WORKFLOW_NAME,
+                    "lineage_id": LINEAGE_ID,
+                    "revision_hash": REVISION_HASH,
+                    "revision_number": 1,
+                }
+            ).encode()
+        )
+    ]
+    answers[("POST", MEMBERS_URL_PATH)] = [founded_lineage(revision_number=2)]
+    with ScriptedService(answers) as service:
+        exit_code = run_command(v3_order, service)
+        members = json.loads(service.sent("POST", MEMBERS_URL_PATH)[0])
+
+    assert exit_code == 0
+    assert members == {
+        "revision_hash": REVISION_HASH,
+        "actor": COMMAND_CATALOG_ACTOR,
+        "activated_at": members["activated_at"],
+    }
+    assert capsysbinary.readouterr().out == AGENT_OUTPUT

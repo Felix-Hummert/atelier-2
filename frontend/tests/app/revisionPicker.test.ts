@@ -4,7 +4,11 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import { workflowRevisionSummarySchema, type CockpitApi } from "../../src/api/client";
+import {
+  CockpitRequestError,
+  workflowRevisionSummarySchema,
+  type CockpitApi
+} from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { utf8Base64 } from "../support/exactBytes";
@@ -442,6 +446,56 @@ describe("the picker groups revisions that share a published name", () => {
     await screen.findByRole("radio", { name: new RegExp(lineageName) });
 
     expect(vi.mocked(cockpitApi.getRevisionByName).mock.calls).toEqual([[lineageName]]);
+  });
+
+  it("proves(an-unadmitted-or-uncatalogable-published-name-is-named-in-the-picker): names a legal missing name as unlisted", async () => {
+    const legalName = "diff-review";
+    const cockpitApi = api(
+      [
+        decodedRow({
+          revision_hash: namedHash,
+          format_version: 3,
+          executable: true,
+          not_executable_reason: null,
+          name: legalName,
+          description: null
+        })
+      ],
+      {
+        getRevisionByName: vi.fn(async () => {
+          throw new CockpitRequestError(
+            "No lineage of this kind holds that name at that position.",
+            {
+              type: "urn:atelier2:problem:v1:catalog-name-not-found",
+              title: "Catalog name not found",
+              status: 404,
+              detail: "No lineage of this kind holds that name at that position."
+            },
+            true
+          );
+        })
+      }
+    );
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByRole("radio", { name: new RegExp(legalName) });
+    expect(screen.getByText("Unlisted")).toBeTruthy();
+    expect(vi.mocked(cockpitApi.getRevisionByName).mock.calls).toEqual([[legalName]]);
+  });
+
+  it("proves(an-unadmitted-or-uncatalogable-published-name-is-named-in-the-picker): names the live illegal title without asking the catalog", async () => {
+    const cockpitApi = api([namedRevision()]);
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByRole("radio", {
+      name: /Implement a candidate, then review it for defects/
+    });
+    expect(screen.getByText("Unnamable")).toBeTruthy();
+    expect(cockpitApi.getRevisionByName).not.toHaveBeenCalled();
   });
 
   it("does not show an empty revision submenu for a lineage with one revision", async () => {
