@@ -204,6 +204,7 @@ def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
 @pytest.mark.proves("a-run-carries-when-it-started-and-ended")
 def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
     runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The whole point of the family: started once, it finishes by itself.
 
@@ -214,6 +215,13 @@ def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
     """
     started_runtime, recording = runtime
     workflow, bindings = publish_two_node_line(started_runtime)
+    first_transition = RecordedAt("2026-08-18T15:00:01Z")
+    terminal_transition = RecordedAt("2026-08-18T15:00:02Z")
+    transition_clock = iter((first_transition, terminal_transition))
+    monkeypatch.setattr(
+        "atelier2.adapters.dbos.run_transitions.recorded_instant",
+        lambda now=None: next(transition_clock),
+    )
 
     started = DbosDurableRunStarter(
         started_runtime.engine,
@@ -280,7 +288,8 @@ def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
         )
         RecordedAt(str(instant["started_at"]))
         RecordedAt(str(instant["ended_at"]))
-        assert str(instant["started_at"]) <= str(instant["ended_at"])
+        assert str(instant["ended_at"]) == terminal_transition.value
+        assert str(instant["ended_at"]) != first_transition.value
         for record in connection.execute(
             sa.select(attempt_instants)
             .select_from(
@@ -293,10 +302,15 @@ def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
         ).mappings():
             RecordedAt(str(record["started_at"]))
             RecordedAt(str(record["ended_at"]))
-        for record in connection.execute(
-            sa.select(event_instants).where(event_instants.c.run_id == RUN.value)
-        ).mappings():
-            RecordedAt(str(record["recorded_at"]))
+        event_times = tuple(
+            RecordedAt(str(value))
+            for value in connection.execute(
+                sa.select(event_instants.c.recorded_at)
+                .where(event_instants.c.run_id == RUN.value)
+                .order_by(event_instants.c.event_sequence)
+            ).scalars()
+        )
+        assert event_times == (first_transition, terminal_transition)
 
     assert events == [
         (1, "implement", RunEventKind.AGENT_COMPLETED.value, PROVIDER_OUTPUT),

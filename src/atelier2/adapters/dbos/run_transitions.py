@@ -59,6 +59,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.when import RecordedAt, recorded_instant
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
     ActionNode,
@@ -373,7 +374,7 @@ def _existing_event(
     )
 
 
-def _insert_event(session: Any, event: RunEvent) -> None:
+def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -> None:
     session.execute(
         run_events.insert().values(
             run_id=event.run_id.value,
@@ -408,7 +409,7 @@ def _insert_event(session: Any, event: RunEvent) -> None:
             ),
         )
     )
-    record_event_instant(session, event.run_id.value, event.event_sequence)
+    record_event_instant(session, event.run_id.value, event.event_sequence, at=at)
 
 
 def _commit_event(
@@ -467,6 +468,7 @@ def _commit_event(
         and not is_sink_node(graph, target_node_id)
     ):
         raise RunTransitionConflict("terminal transition must finish the run's sink")
+    instant = recorded_instant()
     sequence = current.last_event_sequence + 1
     event = RunEvent(
         run_id,
@@ -484,7 +486,7 @@ def _commit_event(
     )
     terminal_hash: Sha256Hash | None = None
     if terminal:
-        _insert_event(session, event)
+        _insert_event(session, event, at=instant)
         prior_hashes = tuple(
             Sha256Hash(str(value))
             for value in session.execute(
@@ -515,9 +517,9 @@ def _commit_event(
     if updated.rowcount != 1:
         raise RunTransitionConflict("run transition lost its state/version CAS")
     if terminal:
-        record_run_ended(session, run_id.value)
+        record_run_ended(session, run_id.value, at=instant)
     if not terminal:
-        _insert_event(session, event)
+        _insert_event(session, event, at=instant)
     return TransitionSnapshot(
         run_id,
         revision_hash,
