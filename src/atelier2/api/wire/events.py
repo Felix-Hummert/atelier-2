@@ -15,6 +15,7 @@ from atelier2.api.references import (
 )
 from atelier2.api.wire.resources import (
     ApiModel,
+    CancellationDispositionName,
     EffectReceiptResource,
     NodeRailResource,
 )
@@ -130,13 +131,7 @@ class AgentCancelledEventResourceV2(RunEventBaseResourceV2):
     attempt_ordinal: Literal[1, 2]
     command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     replacement: Literal["NONE", "ONE"]
-    disposition: Literal[
-        "NEVER_LAUNCHED",
-        "EXITED_BEFORE_SIGNAL",
-        "REAPED_AFTER_TERM",
-        "REAPED_AFTER_KILL",
-        "OWNER_LOST_AFTER_PARENT_DEATH",
-    ]
+    disposition: CancellationDispositionName
     replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 
@@ -146,13 +141,7 @@ class AgentInterruptedEventResourceV2(RunEventBaseResourceV2):
     attempt_ordinal: Literal[1, 2]
     command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     replacement: Literal["NONE", "ONE"]
-    disposition: Literal[
-        "NEVER_LAUNCHED",
-        "EXITED_BEFORE_SIGNAL",
-        "REAPED_AFTER_TERM",
-        "REAPED_AFTER_KILL",
-        "OWNER_LOST_AFTER_PARENT_DEATH",
-    ]
+    disposition: CancellationDispositionName
     replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 
@@ -254,13 +243,7 @@ class AgentCancelledEventResourceV3(RunEventBaseResourceV3):
     attempt_ordinal: Literal[1, 2]
     command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     replacement: Literal["NONE", "ONE"]
-    disposition: Literal[
-        "NEVER_LAUNCHED",
-        "EXITED_BEFORE_SIGNAL",
-        "REAPED_AFTER_TERM",
-        "REAPED_AFTER_KILL",
-        "OWNER_LOST_AFTER_PARENT_DEATH",
-    ]
+    disposition: CancellationDispositionName
     replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 
@@ -270,13 +253,7 @@ class AgentInterruptedEventResourceV3(RunEventBaseResourceV3):
     attempt_ordinal: Literal[1, 2]
     command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     replacement: Literal["NONE", "ONE"]
-    disposition: Literal[
-        "NEVER_LAUNCHED",
-        "EXITED_BEFORE_SIGNAL",
-        "REAPED_AFTER_TERM",
-        "REAPED_AFTER_KILL",
-        "OWNER_LOST_AFTER_PARENT_DEATH",
-    ]
+    disposition: CancellationDispositionName
     replacement_attempt_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 

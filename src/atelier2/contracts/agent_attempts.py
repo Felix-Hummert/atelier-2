@@ -167,6 +167,12 @@ class AgentAttemptRedriveState(StrEnum):
 
 
 class AgentAttemptCancellationDisposition(StrEnum):
+    """How cleanup of a cancelled attempt settled.
+
+    One closed set, written once. The query resource and the SSE event
+    resources name these members rather than restating the tokens.
+    """
+
     NEVER_LAUNCHED = "NEVER_LAUNCHED"
     EXITED_BEFORE_SIGNAL = "EXITED_BEFORE_SIGNAL"
     REAPED_AFTER_TERM = "REAPED_AFTER_TERM"
