@@ -27,7 +27,10 @@ id = "every-durable-workflow-id-keeps-its-exact-form-when-its-owner-moves"
 text = "All ten durable identities this engine mints - bootstrap, node, answer, subworkflow, logical-effect, effect, action-continuation, reconcile, agent-cancellation and agent-replacement - are pinned as whole literal strings in one table, so moving their derivations to a single owner cannot change one byte of an identity that durable rows already carry."
 
 [[sentence]]
-<<<<<<< HEAD
+id = "a-run-transition-answers-one-state-or-one-named-refusal"
+text = "Every state-and-event pair a durable run transition admits or refuses is pinned as one whole answer - the state and node the run then stands on, or the refusal in the words of the rule that refused it - so moving those transitions to a single owner beneath the stores that call them cannot change one answer a durable run already depends on."
+
+[[sentence]]
 id = "a-node-binding-is-decided-where-no-store-can-be-reached"
 text = "What every kind of node binds - a V1 agent, a V2 or V3 agent under its run's role matrix, an action, a wait, a subworkflow - is decided by pure functions over a run and a document, so each of the five forms and each of its named refusals is provable with no database, no queue and no provider behind it."
 
@@ -38,7 +41,3 @@ text = "A recorded node-binding row round-trips through the typed contract byte 
 [[sentence]]
 id = "a-legacy-node-binding-row-replays-into-the-typed-decision"
 text = "A run crashed after its node binding was recorded finishes after a restart that hands it the one shape written before the configuration contract existed - neither revision_format_version nor requested_capability - reaching its terminal state with one provider invocation per node and no second one."
-=======
-id = "a-run-transition-answers-one-state-or-one-named-refusal"
-text = "Every state-and-event pair a durable run transition admits or refuses is pinned as one whole answer - the state and node the run then stands on, or the refusal in the words of the rule that refused it - so moving those transitions to a single owner beneath the stores that call them cannot change one answer a durable run already depends on."
->>>>>>> origin/main
