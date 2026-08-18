@@ -157,7 +157,8 @@ describe("the material field on start", () => {
     expect(screen.queryByText("Issue")).toBeNull();
     expect(screen.queryByText("URL")).toBeNull();
 
-    await fireEvent.click(screen.getByRole("radio", { name: /One agent/ }));
+    await fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    await fireEvent.click(await screen.findByRole("radio", { name: /One agent/ }));
     await waitFor(() => {
       expect(screen.queryByRole("article", { name: /^Order / })).toBeNull();
     });

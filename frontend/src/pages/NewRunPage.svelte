@@ -105,6 +105,10 @@
   let selectedHashByKey: Record<string, string> = {};
   let chosenRowKey: string | null = null;
   $: savedRows = groupSavedWorkflows(revisions.confirmed?.items ?? [], newestByName);
+  $: visibleRows =
+    chosenRowKey === null
+      ? savedRows
+      : savedRows.filter((row) => row.key === chosenRowKey);
 
   /**
    * Whether this cockpit can carry a run of that revision.
@@ -171,6 +175,23 @@
       return "This published title cannot be a catalog name.";
     }
     return "This catalog name was retired.";
+  }
+
+  function catalogFormOf(
+    revision: WorkflowRevisionSummary,
+    state: CatalogNameState | undefined
+  ): "ready" | "unlisted" | "unnamable" | "retired" | "refused" {
+    if (!cockpitCanShow(revision)) return "refused";
+    if (state === undefined || state.kind === "admitted") return "ready";
+    return state.kind;
+  }
+
+  function changeChosenWorkflow(): void {
+    chosenRowKey = null;
+    draft = null;
+    selectionGeneration += 1;
+    operation = null;
+    failureMessage = null;
   }
 
   async function chooseSaved(revisionHash: string): Promise<void> {
@@ -714,66 +735,94 @@
   {#if mode === "saved"}
     <fieldset class="revision-picker">
       <legend>Saved workflow</legend>
-      {#each savedRows as row (row.key)}
+      {#each visibleRows as row (row.key)}
         {@const revision = selectedRevisionOf(row, selectedHashByKey[row.key])}
-        <article class="saved-workflow" aria-label={row.name ?? revision.revision_hash}>
-          <label class="revision-option" class:unstartable={!cockpitCanShow(revision)}>
-            <input type="radio" name="saved-revision" value={row.key} disabled={busy || !cockpitCanShow(revision)} onchange={() => { chosenRowKey = row.key; void chooseSaved(revision.revision_hash); }} />
-            <span class="revision-label">
-              {#if revision.name === null}
-                <code class="revision-hash">{revision.revision_hash}</code>
-                <span class="muted">unnamed — format {revision.format_version} declares no name</span>
-              {:else}
-                <strong class="revision-name">{revision.name}</strong>
-                {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
-                {#if catalogStateLabel(catalogByName[revision.name]) !== null}
-                  <span class="revision-catalog">
-                    {catalogStateLabel(catalogByName[revision.name])}
-                    <InfoHint
-                      label={`Why ${catalogStateLabel(catalogByName[revision.name])?.toLowerCase()}`}
-                      exact={catalogStateHint(catalogByName[revision.name]) ?? ""}
-                    />
-                  </span>
-                {/if}
-              {/if}
-              {#if !revision.executable}
-                <span class="revision-refusal">{cannotBeStarted(revision.not_executable_reason)}</span>
-              {/if}
-            </span>
-          </label>
-          {#if row.revisions.length > 1 && row.name !== null}
-            <details class="revision-history">
-              <summary aria-label={`Revisions of ${row.name}`}>Revisions</summary>
-              <label class="revision-choice">
-                <select
-                  value={revision.revision_hash}
-                  onchange={(event) => setRowRevision(row, event.currentTarget.value)}
-                  disabled={busy}
-                  aria-label={`Revision of ${row.name}`}
-                >
-                  {#each row.revisions as choice (choice.revision_hash)}
-                    <option value={choice.revision_hash}>{revisionChoiceLabel(choice, row.revisions[0]?.revision_hash ?? choice.revision_hash)}</option>
-                  {/each}
-                </select>
-              </label>
-            </details>
-          {/if}
-          {#if revision.name !== null}
-            <details class="revision-details">
-              <summary aria-label={`Details for ${revision.name}`} onclick={() => { void revealPublishedGraph(revision.revision_hash); }}>Details</summary>
-              <p class="revision-facts">
-                {publishedRevisionFacts(revision, publishedGraphs[revision.revision_hash])}
-                {#if revealingHash === revision.revision_hash} · Loading workflow…{/if}
-              </p>
-              {#if publishedNodePreviews(publishedGraphs[revision.revision_hash]) !== null}
-                <WorkflowGraphDrawing
-                  previews={publishedNodePreviews(publishedGraphs[revision.revision_hash]) ?? []}
-                  showExcerpt={true}
+        {@const catalogForm = catalogFormOf(
+          revision,
+          revision.name === null ? undefined : catalogByName[revision.name]
+        )}
+        <article
+          class="saved-workflow form-{catalogForm}"
+          data-catalog-form={catalogForm}
+          aria-label={row.name ?? revision.revision_hash}
+        >
+          <span class="form-mark" aria-hidden="true"></span>
+          <div class="saved-workflow-body">
+            <div class="saved-workflow-choice">
+              <label class="revision-option" class:unstartable={!cockpitCanShow(revision)}>
+                <input
+                  type="radio"
+                  name="saved-revision"
+                  value={row.key}
+                  checked={chosenRowKey === row.key}
+                  disabled={busy || !cockpitCanShow(revision)}
+                  onchange={() => {
+                    chosenRowKey = row.key;
+                    void chooseSaved(revision.revision_hash);
+                  }}
                 />
+                <span class="revision-label">
+                  {#if revision.name === null}
+                    <code class="revision-hash">{revision.revision_hash}</code>
+                    <span class="muted">unnamed — format {revision.format_version} declares no name</span>
+                  {:else}
+                    <strong class="revision-name">{revision.name}</strong>
+                    {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
+                    {#if catalogStateLabel(catalogByName[revision.name]) !== null}
+                      <span class="revision-catalog">
+                        {catalogStateLabel(catalogByName[revision.name])}
+                        <InfoHint
+                          label={`Why ${catalogStateLabel(catalogByName[revision.name])?.toLowerCase()}`}
+                          exact={catalogStateHint(catalogByName[revision.name]) ?? ""}
+                        />
+                      </span>
+                    {/if}
+                  {/if}
+                  {#if !revision.executable}
+                    <span class="revision-refusal">{cannotBeStarted(revision.not_executable_reason)}</span>
+                  {/if}
+                </span>
+              </label>
+              {#if chosenRowKey === row.key}
+                <button type="button" class="quiet" disabled={busy} onclick={changeChosenWorkflow}>
+                  Change
+                </button>
               {/if}
-              <code class="revision-hash">{revision.revision_hash}</code>
-            </details>
-          {/if}
+            </div>
+            {#if row.revisions.length > 1 && row.name !== null}
+              <details class="revision-history">
+                <summary aria-label={`Revisions of ${row.name}`}>Revisions</summary>
+                <label class="revision-choice">
+                  <select
+                    value={revision.revision_hash}
+                    onchange={(event) => setRowRevision(row, event.currentTarget.value)}
+                    disabled={busy}
+                    aria-label={`Revision of ${row.name}`}
+                  >
+                    {#each row.revisions as choice (choice.revision_hash)}
+                      <option value={choice.revision_hash}>{revisionChoiceLabel(choice, row.revisions[0]?.revision_hash ?? choice.revision_hash)}</option>
+                    {/each}
+                  </select>
+                </label>
+              </details>
+            {/if}
+            {#if revision.name !== null}
+              <details class="revision-details">
+                <summary aria-label={`Details for ${revision.name}`} onclick={() => { void revealPublishedGraph(revision.revision_hash); }}>Details</summary>
+                <p class="revision-facts">
+                  {publishedRevisionFacts(revision, publishedGraphs[revision.revision_hash])}
+                  {#if revealingHash === revision.revision_hash} · Loading workflow…{/if}
+                </p>
+                {#if publishedNodePreviews(publishedGraphs[revision.revision_hash]) !== null}
+                  <WorkflowGraphDrawing
+                    previews={publishedNodePreviews(publishedGraphs[revision.revision_hash]) ?? []}
+                    showExcerpt={true}
+                  />
+                {/if}
+                <code class="revision-hash">{revision.revision_hash}</code>
+              </details>
+            {/if}
+          </div>
         </article>
       {/each}
       {#if revisions.request.state === "loading"}<p class="status" role="status">Loading saved workflows…</p>{/if}
