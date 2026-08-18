@@ -228,7 +228,8 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds `GET /auth-profile-revisions` and `GET /runs/{ref}/receipt`.
+    it. This head adds the shape of the published workflow document and binds the
+    publication body to it, in place of the opaque string it declared before.
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
@@ -321,7 +322,9 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
     assert publication_body == {
         "required": True,
         "content": {
-            "application/yaml": {"schema": {"type": "string", "format": "binary"}}
+            "application/yaml": {
+                "schema": {"$ref": "#/components/schemas/WorkflowDocument"}
+            }
         },
     }
     schema_publication_body = schema["paths"][API_PREFIX + "/schema-revisions"]["post"][
