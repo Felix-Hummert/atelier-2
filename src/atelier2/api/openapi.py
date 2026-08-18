@@ -53,8 +53,21 @@ from atelier2.contracts.executions import (
     KINDS_NO_V1_RUN_CARRIES,
     RunEventKind,
 )
+from atelier2.contracts.workflow_documents import WORKFLOW_DOCUMENT_FORMATS
 
 API_PREFIX = "/atelier/api/v1"
+_COMPONENT_REFERENCE = "#/components/schemas/{model}"
+WORKFLOW_DOCUMENT_COMPONENT = "WorkflowDocument"
+WORKFLOW_DOCUMENT_GRAMMAR_SCOPE = (
+    "The shape one published workflow document must have, derived from the models "
+    "the publication reads it against. It decides the form: which keys each node "
+    "kind carries, how a control edge and a value handover are written, and which "
+    "format versions exist at all. It does not decide what only the whole document "
+    "answers -- that every named node, output and graph input resolves, that no "
+    "cycle closes, that a join is declared where several edges meet, and whether "
+    "this build executes the result. Each of those is refused by its own name when "
+    "the document is published."
+)
 EVENT_PATH = API_PREFIX + "/runs/{public_ref}/events"
 CANCELLATION_PATH = (
     API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations"
@@ -323,6 +336,7 @@ def install_custom_openapi(app: FastAPI) -> None:
         _remove_32_sse_fields(schema)
         _install_problem_components(schema)
         _install_problem_responses(schema)
+        _install_workflow_document_grammar(schema)
         _install_publication_request_body(schema)
         _install_event_components(schema)
         _install_parameter_contracts(schema)
@@ -336,11 +350,57 @@ def install_custom_openapi(app: FastAPI) -> None:
     custom_openapi()
 
 
+def _install_workflow_document_grammar(schema: dict[str, Any]) -> None:
+    """Publish the grammar a workflow document is read against, from its models.
+
+    The document arrives as YAML bytes, so nothing the framework generates can
+    describe its inside; without this, the one thing a consumer has to author
+    himself is the one thing the API never says. It is derived rather than
+    written: the same formats the parser dispatches on, each rendered from the
+    model that decides it.
+    """
+
+    components = schema.setdefault("components", {}).setdefault("schemas", {})
+    variants: list[dict[str, str]] = []
+    for document_format in WORKFLOW_DOCUMENT_FORMATS.values():
+        generated = document_format.model.model_json_schema(
+            ref_template=_COMPONENT_REFERENCE
+        )
+        for name, definition in generated.pop("$defs", {}).items():
+            _install_component(components, name, definition)
+        _install_component(components, document_format.model.__name__, generated)
+        variants.append(
+            {"$ref": _COMPONENT_REFERENCE.format(model=document_format.model.__name__)}
+        )
+    _install_component(
+        components,
+        WORKFLOW_DOCUMENT_COMPONENT,
+        {"description": WORKFLOW_DOCUMENT_GRAMMAR_SCOPE, "oneOf": variants},
+    )
+
+
+def _install_component(
+    components: dict[str, Any], name: str, definition: dict[str, Any]
+) -> None:
+    """Add one derived component, refusing to publish a second meaning of a name."""
+
+    published = components.get(name)
+    if published is not None and published != definition:
+        raise RuntimeError(f"two different components claim the name {name!r}")
+    components[name] = definition
+
+
 def _install_publication_request_body(schema: dict[str, Any]) -> None:
     schema["paths"][API_PREFIX + "/workflow-revisions"]["post"]["requestBody"] = {
         "required": True,
         "content": {
-            "application/yaml": {"schema": {"type": "string", "format": "binary"}}
+            "application/yaml": {
+                "schema": {
+                    "$ref": _COMPONENT_REFERENCE.format(
+                        model=WORKFLOW_DOCUMENT_COMPONENT
+                    )
+                }
+            }
         },
     }
     schema["paths"][API_PREFIX + "/schema-revisions"]["post"]["requestBody"] = {

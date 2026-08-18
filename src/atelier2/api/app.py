@@ -205,14 +205,19 @@ def create_app(
         raise ValueError("source_commit must be injected at application construction")
     if not source_tree:
         raise ValueError("source_tree must be injected at application construction")
+    openapi_document_path = API_PREFIX + "/openapi.json"
     app = FastAPI(
         title="Atelier 2 durable workflow API",
         version="1",
-        openapi_url=API_PREFIX + "/openapi.json",
+        openapi_url=openapi_document_path,
         docs_url=None,
         redoc_url=None,
     )
-    install_problem_handlers(app, versioned_run_start_path=API_PREFIX + "/runs")
+    install_problem_handlers(
+        app,
+        versioned_run_start_path=API_PREFIX + "/runs",
+        openapi_document_path=openapi_document_path,
+    )
     app.add_middleware(
         RequestBodyLimitMiddleware,
         maximum_body_bytes=limits.maximum_request_body_bytes,
