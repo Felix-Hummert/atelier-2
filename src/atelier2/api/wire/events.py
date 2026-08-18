@@ -224,7 +224,11 @@ class AgentCompletedEventResourceV3(RunEventBaseResourceV3):
 
 class AgentFailedEventResourceV3(RunEventBaseResourceV3):
     event: Literal["AGENT_FAILED"]
-    failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY", "OUTPUT_SCHEMA_REFUSED"]
+    failure_code: Literal[
+        "PROCESS_EXITED_UNSUCCESSFULLY",
+        "OUTPUT_SCHEMA_REFUSED",
+        "AGENT_REFUSED",
+    ]
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
 

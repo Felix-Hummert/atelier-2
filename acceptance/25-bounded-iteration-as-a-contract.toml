@@ -136,3 +136,15 @@ text = "The continuation a verdict steers is decided from the value that round d
 [[sentence]]
 id = "the-verdict-vocabulary-and-its-published-contract-are-one-owner"
 text = "The verdict vocabulary and the published contract an answer carrying a verdict is judged by are one owner: every verdict this product owns is admitted by that contract, and bytes it does not admit never reach an edge."
+
+[[sentence]]
+id = "a-node-may-declare-a-named-agent-refusal"
+text = "An agent node's output may declare a refusal form whose reason sentence is required, and the parsed document reads that declaration back; a node that declares none has no refusal door."
+
+[[sentence]]
+id = "a-declared-refusal-ends-the-attempt-as-agent-refused"
+text = "When a node declared the refusal form and the executor answers with that form, the attempt ends FAILED under AGENT_REFUSED, the node receipt carries the agent's reason, and the run ends FAILED on the same node with no retry."
+
+[[sentence]]
+id = "success-and-schema-refusal-stay-the-same-when-refusal-is-undeclared"
+text = "A node that did not declare a refusal still treats refusal-shaped bytes as a schema miss when its success schema refuses them, and a node that declared a refusal still accepts bytes its success schema admits."

@@ -61,6 +61,10 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_refusals import (
+    AGENT_REFUSAL_SCHEMA,
+    agent_refusal_reason,
+)
 from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
@@ -804,6 +808,18 @@ class DbosAgentAttemptStore:
             node = graph.node(request.node_id)
             if isinstance(node, AgentNodeV3):
                 declared = node.outputs[0]
+                if declared.refusal is not None:
+                    named = agent_refusal_reason(result.output_bytes)
+                    if named is not None:
+                        return _fail_current_attempt(
+                            connection,
+                            execution,
+                            durable,
+                            AgentAttemptFailureCode.AGENT_REFUSED,
+                            node_receipt_reason(NodeReceiptReason.AGENT_REFUSED, named),
+                            AGENT_REFUSAL_SCHEMA.revision_hash,
+                            Sha256Hash.of(result.output_bytes),
+                        )
                 refusal = why_a_value_its_declared_schema_refuses(
                     connection, node.id, declared, result.output_bytes
                 )

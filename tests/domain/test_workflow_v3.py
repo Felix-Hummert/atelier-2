@@ -1189,6 +1189,35 @@ def test_iteration_is_refused_on_every_node_kind_that_runs_no_child(
     assert (refusal.node, refusal.field) == (node_id, "iterate")
 
 
+REFUSAL_LINE = "        refusal: {reason: required}"
+
+
+@pytest.mark.proves("a-node-may-declare-a-named-agent-refusal")
+def test_a_declared_output_refusal_reads_back_as_authored() -> None:
+    document = DOCUMENT.replace(
+        b"        schema: {ref: workspace_candidate, revision: schema-candidate}\n",
+        b"        schema: {ref: workspace_candidate, revision: schema-candidate}\n"
+        + REFUSAL_LINE.encode()
+        + b"\n",
+        1,
+    )
+    parsed = graph(document)
+    implement = parsed.node("implement")
+    assert isinstance(implement, AgentNodeV3)
+    assert implement.outputs[0].refusal is not None
+    assert implement.outputs[0].refusal.reason == "required"
+    review = parsed.node("code_review")
+    assert isinstance(review, AgentNodeV3)
+    assert review.outputs[0].refusal is None
+
+
+@pytest.mark.proves("a-node-may-declare-a-named-agent-refusal")
+def test_an_output_without_a_refusal_declaration_has_none() -> None:
+    implement = graph().node("implement")
+    assert isinstance(implement, AgentNodeV3)
+    assert implement.outputs[0].refusal is None
+
+
 @pytest.mark.parametrize(
     ("document", "reason", "node", "field"), REFUSALS.values(), ids=REFUSALS
 )
