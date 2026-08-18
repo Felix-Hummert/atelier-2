@@ -57,12 +57,15 @@ authentication-profile revision; the complete matrix is frozen into that run.
 Each configuration also binds a typed requested execution capability. Migrated
 configuration revisions retain their original V1 hash and mean `headless`; new
 API publications use the capability-aware V2 hash format and name the capability
-they request, `headless` or `interactive`. A caller that omits it publishes
-`headless`, byte-identically to a publication made before the field could be
-sent. Publication binds an executor key, not a capability, so a configuration
-may request more than today's executors serve. An executor registry must attest
-`headless`, and a run requesting a capability absent from its exact
-provider/executor entry is refused before any provider process starts. A
+they request, `headless`, `headless_with_tools`, or `interactive`. A caller that
+omits it publishes `headless`, byte-identically to a publication made before the
+field could be sent. Publication binds an executor key, not a capability, so a
+configuration may request more than today's executors serve. Every executor
+registry entry must attest at least one capability an unattended attempt can ask
+for — `headless` or `headless_with_tools` — because the runtime drives every
+attempt and stands at no terminal; a run requesting a capability absent from its
+exact provider/executor entry is refused before any provider process starts,
+whichever direction the mismatch runs. A
 nonterminal run is refused on restart before its factory opens when that
 attestation has disappeared.
 Before invoking the exact configured provider/executor, the runtime persists one
@@ -217,6 +220,30 @@ Serving it on a reachable address is refused at startup, because starting a
 billed provider is unauthenticated on this API. OS-enforced isolation remains
 the planned stronger boundary; until it lands, these refusals are what keep the
 tool-free premise true.
+
+An agent node may also use tools itself, through a second Claude executor of the
+same deployment rather than a widening of the first. It is armed separately,
+because it is a separate grant: naming a Claude executable still serves only the
+tool-free call. Its invocation drops the tool ban and names one closed set of the
+CLI's built-in tools twice — as the tools it offers and as the tools it
+pre-approves, which is the only grant the CLI honours once this deployment asks
+it to scrub subprocess environments — and keeps every other switch and the whole
+environment of the tool-free call. It attests exactly one capability,
+`headless_with_tools`, and no other; a node reaches it only where its own durable
+binding asked for that capability, and a binding that asks the tool-free executor
+for tools, or this one for a tool-free call, is refused before the run exists.
+Because a version answer is not startability, the deployment starts this exact
+argument vector once at composition with no job and reads the CLI's own refusal
+of a missing argument, with an unknown flag beside it as the control; neither
+call reaches a model. The executor claims no operating-system isolation and does
+not pretend the lease is one: the process runs as the serving user and its tools
+reach what that user reaches, the workspace is where it is started rather than a
+boundary it is held inside, and what it writes there falls with the attempt.
+Unlike the tool-free call, it has no one-call conformance matrix against a real
+subscription answer yet: that a real answer uses exactly these tools and brings
+no customization back with them is the half one billed call still has to
+establish, which is why nothing composes this executor unless an operator armed
+it by name and the packaged deployment does not.
 
 Workflow format V3 is authored in full and executed in one shape. The parser accepts a
 format-3 document into its own closed model — the five node kinds with the field

@@ -30,7 +30,7 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
@@ -42,6 +42,7 @@ _VERSION_SIXTEEN = 16
 _VERSION_SEVENTEEN = 17
 _VERSION_EIGHTEEN = 18
 _VERSION_NINETEEN = 19
+_VERSION_TWENTY = 20
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -68,7 +69,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # home on the run and on every event and agent receipt it writes, keys a node
 # execution request by the execution rather than by the request it repeats, and
 # drops the receipt key that said one agent receipt per node per run -- a
-# sentence that stopped being true when a node could run twice.
+# sentence that stopped being true when a node could run twice. V21 admits
+# headless_with_tools as a requested capability, so a configuration may durably
+# ask for an executor whose invocation carries the provider's own tools.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -84,6 +87,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     18: "c60275544c9984adccff79e3a4f5ab6eeab5ea1683306adf1d2faa7dbb51e29d",
     19: "a861d9087da05c112f88ae8ec573f57338b5ef1d04f36553922c505127b34298",
     20: "09752981999444ee4129cfe29b7322b79d2ff378f91d1af5050342eff78b8637",
+    21: "6c4705f2960d1669a596ae8f3c857dd0ac15c4c94b71b4bb5998d1bac672cefe",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -128,6 +132,10 @@ V18_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V19_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINETEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_NINETEEN],
+)
+V20_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -287,7 +295,9 @@ agent_configuration_revisions = sa.Table(
         f"length(executor_revision) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
     sa.CheckConstraint("revision_format_version IN (1, 2)"),
-    sa.CheckConstraint("requested_capability IN ('headless', 'interactive')"),
+    sa.CheckConstraint(
+        "requested_capability IN ('headless', 'headless_with_tools', 'interactive')"
+    ),
     sa.CheckConstraint(
         "revision_format_version = 2 OR requested_capability = 'headless'"
     ),
@@ -1957,7 +1967,7 @@ def _table_fingerprint(
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
-    if version in {SCHEMA_VERSION, _VERSION_NINETEEN}:
+    if version in {SCHEMA_VERSION, _VERSION_TWENTY, _VERSION_NINETEEN}:
         return PRODUCT_TABLE_NAMES
     if version in {
         _VERSION_EIGHTEEN,
@@ -2422,7 +2432,7 @@ def _apply_v19_to_v20(connection: sqlite3.Connection) -> None:
         _PREDECESSOR_ROUNDLESS_RUNS,
         ("runs_binding_no_update",),
         _VERSION_NINETEEN,
-        SCHEMA_VERSION,
+        _VERSION_TWENTY,
         {runs.c.current_round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
     )
     _rebuild_product_table(
@@ -2431,7 +2441,7 @@ def _apply_v19_to_v20(connection: sqlite3.Connection) -> None:
         _PREDECESSOR_ROUNDLESS_RUN_EVENTS,
         _RUN_EVENTS_TRIGGERS,
         _VERSION_NINETEEN,
-        SCHEMA_VERSION,
+        _VERSION_TWENTY,
         {run_events.c.round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
     )
     _rebuild_product_table(
@@ -2440,7 +2450,7 @@ def _apply_v19_to_v20(connection: sqlite3.Connection) -> None:
         _PREDECESSOR_REQUEST_KEYED_REQUESTS,
         _NODE_EXECUTION_REQUESTS_TRIGGERS,
         _VERSION_NINETEEN,
-        SCHEMA_VERSION,
+        _VERSION_TWENTY,
     )
     _rebuild_product_table(
         connection,
@@ -2448,10 +2458,40 @@ def _apply_v19_to_v20(connection: sqlite3.Connection) -> None:
         _PREDECESSOR_ONCE_PER_RUN_AGENT_RECEIPTS,
         _AGENT_RECEIPTS_V2_TRIGGERS,
         _VERSION_NINETEEN,
-        SCHEMA_VERSION,
+        _VERSION_TWENTY,
         {agent_receipts_v2.c.round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
     )
-    _raise_declared_version(connection, _VERSION_NINETEEN, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_NINETEEN, _VERSION_TWENTY)
+
+
+_AGENT_CONFIGURATION_REVISIONS_TRIGGERS = (
+    "agent_configuration_revisions_no_update",
+    "agent_configuration_revisions_no_delete",
+)
+_PREDECESSOR_TOOL_FREE_CONFIGURATIONS = (
+    "agent_configuration_revisions_before_workspace_tools"
+)
+
+
+def _apply_v20_to_v21(connection: sqlite3.Connection) -> None:
+    """Admit headless_with_tools as a requested capability, and keep every row.
+
+    SQLite cannot widen a table CHECK in place, so this is the same rebuild every
+    shape hop is. Every stored configuration requests `headless` or
+    `interactive`, which the widened constraint still admits, and no stored one
+    can name the tool executor either, because no predecessor store could publish
+    it -- so no row is reinterpreted and none needs a value filled in.
+    """
+
+    _rebuild_product_table(
+        connection,
+        agent_configuration_revisions,
+        _PREDECESSOR_TOOL_FREE_CONFIGURATIONS,
+        _AGENT_CONFIGURATION_REVISIONS_TRIGGERS,
+        _VERSION_TWENTY,
+        SCHEMA_VERSION,
+    )
+    _raise_declared_version(connection, _VERSION_TWENTY, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2495,7 +2535,8 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
             _VERSION_NINETEEN,
         ),
     ),
-    _SchemaMigrationStep(_VERSION_NINETEEN, SCHEMA_VERSION, _apply_v19_to_v20),
+    _SchemaMigrationStep(_VERSION_NINETEEN, _VERSION_TWENTY, _apply_v19_to_v20),
+    _SchemaMigrationStep(_VERSION_TWENTY, SCHEMA_VERSION, _apply_v20_to_v21),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
