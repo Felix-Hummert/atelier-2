@@ -1,6 +1,7 @@
 <script lang="ts">
   import { THE_ONE_PROJECT } from "../lib/project";
   import type { CockpitRoute } from "../lib/route";
+  import { wrapDisplayCopy } from "../lib/displayCopy";
   import {
     WORKSHOP_DESTINATIONS,
     activeWorkshopDestination,
@@ -50,12 +51,12 @@
           }}
         >
           <span class="nav-destination-mark" aria-hidden="true">{destinationMarks[destination.id]}</span>
-          <span class="nav-destination-label">{destination.label}</span>
+          <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
         </a>
       {:else}
         <span class="nav-destination unavailable" aria-disabled="true" title={destination.vision}>
           <span class="nav-destination-mark" aria-hidden="true">{destinationMarks[destination.id]}</span>
-          <span class="nav-destination-label">{destination.label}</span>
+          <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
           <small class="nav-destination-vision">{destination.visionRef}</small>
         </span>
       {/if}
