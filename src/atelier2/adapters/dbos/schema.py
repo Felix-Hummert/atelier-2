@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -12,6 +12,7 @@ from sqlalchemy.dialects import sqlite as sqlite_dialect
 from sqlalchemy.engine import Engine
 from sqlalchemy.schema import CreateIndex, CreateTable
 
+from atelier2.adapters.dbos.published_schema_shapes import PUBLISHED_TABLE_SHAPES
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -19,6 +20,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
@@ -28,7 +30,7 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
@@ -39,6 +41,7 @@ _VERSION_FIFTEEN = 15
 _VERSION_SIXTEEN = 16
 _VERSION_SEVENTEEN = 17
 _VERSION_EIGHTEEN = 18
+_VERSION_NINETEEN = 19
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -61,7 +64,11 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # reason instead of standing STARTED with nothing to continue it. V19 gives
 # content-addressed material a durable, immutable home, so an order larger than
 # the inline bound travels as the address of bytes published once instead of not
-# travelling at all.
+# travelling at all. V20 gives the round a declared loop is turning a durable
+# home on the run and on every event and agent receipt it writes, keys a node
+# execution request by the execution rather than by the request it repeats, and
+# drops the receipt key that said one agent receipt per node per run -- a
+# sentence that stopped being true when a node could run twice.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -76,6 +83,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     17: "2f3a11d0b4d67e375259ca732c7243c95d19fa763e03785b0bd4a83c1b1359d2",
     18: "c60275544c9984adccff79e3a4f5ab6eeab5ea1683306adf1d2faa7dbb51e29d",
     19: "a861d9087da05c112f88ae8ec573f57338b5ef1d04f36553922c505127b34298",
+    20: "09752981999444ee4129cfe29b7322b79d2ff378f91d1af5050342eff78b8637",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -117,6 +125,10 @@ V18_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_EIGHTEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_EIGHTEEN],
 )
+V19_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_NINETEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_NINETEEN],
+)
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[SCHEMA_VERSION],
@@ -152,6 +164,7 @@ runs = sa.Table(
     sa.Column("workflow_format_version", sa.Integer, nullable=False),
     sa.Column("agent_binding_set_hash", sa.Text, nullable=True),
     sa.Column("current_node_id", sa.Text, nullable=False),
+    sa.Column("current_round_ordinal", sa.Integer, nullable=False),
     sa.Column("state", sa.Text, nullable=False),
     sa.Column("state_version", sa.Integer, nullable=False),
     sa.Column("last_event_sequence", sa.Integer, nullable=False),
@@ -166,6 +179,7 @@ runs = sa.Table(
     sa.UniqueConstraint("run_id", "revision_hash", "agent_binding_set_hash"),
     sa.CheckConstraint("length(run_id) > 0"),
     sa.CheckConstraint("length(current_node_id) > 0"),
+    sa.CheckConstraint(f"current_round_ordinal >= {FIRST_ROUND_ORDINAL}"),
     sa.CheckConstraint(
         "workflow_format_version IN ("
         + ", ".join(str(int(member)) for member in WorkflowFormatVersion)
@@ -539,7 +553,11 @@ agent_receipts_v2 = sa.Table(
     sa.Column("output_bytes", sa.LargeBinary, nullable=False),
     sa.Column("output_hash", sa.Text, nullable=False),
     sa.Column("receipt_hash", sa.Text, nullable=False, unique=True),
-    sa.UniqueConstraint("run_id", "workflow_revision_hash", "node_id"),
+    sa.Column("round_ordinal", sa.Integer, nullable=False),
+    # One receipt per node *execution* -- the primary key above says it, and it
+    # says it exactly. A second key over (run, revision, node) said the same
+    # thing while a node ran once per run, and said something false the moment a
+    # declared loop ran it again.
     sa.ForeignKeyConstraint(
         (
             "run_id",
@@ -638,6 +656,7 @@ agent_receipts_v2 = sa.Table(
     sa.CheckConstraint(
         "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
+    sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
 )
 tool_redemptions = sa.Table(
     "tool_redemptions",
@@ -824,6 +843,7 @@ run_events = sa.Table(
     sa.Column("event_sequence", sa.Integer, nullable=False),
     sa.Column("node_id", sa.Text, nullable=False),
     sa.Column("node_execution_id", sa.Text, nullable=False),
+    sa.Column("round_ordinal", sa.Integer, nullable=False),
     sa.Column("event_kind", sa.Text, nullable=False),
     sa.Column("payload", sa.LargeBinary, nullable=False),
     sa.Column("payload_hash", sa.Text, nullable=False),
@@ -860,6 +880,7 @@ run_events = sa.Table(
     sa.CheckConstraint(
         "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
     ),
+    sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
     sa.CheckConstraint(
         "event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED', "
         "'AGENT_CANCEL_REQUESTED', 'AGENT_CANCELLED', 'AGENT_INTERRUPTED', "
@@ -1185,8 +1206,14 @@ run_configuration_revisions = sa.Table(
 node_execution_requests_v3 = sa.Table(
     "node_execution_requests_v3",
     metadata,
-    sa.Column("request_hash", sa.Text, primary_key=True),
-    sa.Column("node_execution_id", sa.Text, nullable=False),
+    # The execution is the key, not the request. Two rounds of one looped node
+    # are asked the same thing until a result differs between them, so their
+    # request preimages are identical and their hashes are one value -- while
+    # the executions are two, and each owes its own receipt. Keying by the hash
+    # made the second round's row vanish into the first and left its receipt
+    # with nothing to bind.
+    sa.Column("request_hash", sa.Text, nullable=False),
+    sa.Column("node_execution_id", sa.Text, primary_key=True),
     sa.Column(
         "run_configuration_revision_hash",
         sa.Text,
@@ -1930,7 +1957,7 @@ def _table_fingerprint(
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, _VERSION_NINETEEN}:
         return PRODUCT_TABLE_NAMES
     if version in {
         _VERSION_EIGHTEEN,
@@ -2174,6 +2201,120 @@ def _added_table_step(
     return apply
 
 
+def _table_shape_at(version: int, table: sa.Table) -> str:
+    """The `CREATE TABLE` text this table has at one published schema version.
+
+    The current version is the declaration; every earlier one is a record, and
+    `published_schema_shapes` says why it may not be derived.
+    """
+    if version == SCHEMA_VERSION:
+        return str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+    frozen_shape = PUBLISHED_TABLE_SHAPES.get((version, table.name))
+    if frozen_shape is None:
+        raise StoreMigrationRefused(
+            f"no published shape of {table.name} at schema version {version} is "
+            "recorded, so this hop cannot rebuild it"
+        )
+    return frozen_shape
+
+
+def _column_names(connection: sqlite3.Connection, table_name: str) -> tuple[str, ...]:
+    return tuple(
+        str(record[1])
+        for record in connection.execute(f"PRAGMA table_info({table_name})")
+    )
+
+
+def _columns_a_row_must_carry(
+    connection: sqlite3.Connection, table_name: str
+) -> frozenset[str]:
+    """The columns of this table no stored row may leave empty.
+
+    Read from the table SQLite actually holds rather than from the declaration:
+    a rebuild materialises the shape of its own target version, and only the
+    newest of those is the declaration.
+    """
+    return frozenset(
+        str(record[1])
+        for record in connection.execute(f"PRAGMA table_info({table_name})")
+        if int(record[3]) == 1 and record[4] is None
+    )
+
+
+def _rebuild_product_table(
+    connection: sqlite3.Connection,
+    table: sa.Table,
+    parked_name: str,
+    triggers: tuple[str, ...],
+    source_version: int,
+    target_version: int,
+    filled_columns: Mapping[str, str] = {},
+) -> None:
+    """Republish one table in its target shape and carry every stored row over.
+
+    SQLite changes neither a key nor a constraint in place, so every shape hop is
+    this same rebuild: park the predecessor, create the target shape, copy by
+    column name, drop the predecessor. Which columns are carried is read from the
+    two tables themselves rather than hand-kept per step, so a column a hop adds
+    is simply not carried and a column it drops simply stops being.
+
+    `filled_columns` names the value each carried row gets in a column the
+    predecessor does not have. A column that needs one and has none is refused
+    here by name -- the store would otherwise answer with an integrity error
+    about a column the operator never heard of.
+    """
+
+    # The fingerprint this store was checked against says nothing about objects
+    # outside the product schema, so any object holding the parking name is
+    # refused before the first statement rather than overwritten.
+    if connection.execute(
+        "SELECT name FROM sqlite_master WHERE name=?", (parked_name,)
+    ).fetchone():
+        raise StoreMigrationRefused(
+            f"schema version {source_version} already has {parked_name}; "
+            "this command will not alter it"
+        )
+    indexes = sorted(table.indexes, key=lambda index: index.name or "")
+    for trigger in triggers:
+        connection.execute(f"DROP TRIGGER {trigger}")
+    for index in indexes:
+        connection.execute(f"DROP INDEX {index.name}")
+    # Children declare their foreign keys on this table by name, and a plain
+    # rename would rewrite them to point at the predecessor this hop drops.
+    connection.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        connection.execute(f"ALTER TABLE {table.name} RENAME TO {parked_name}")
+    finally:
+        connection.execute("PRAGMA legacy_alter_table=OFF")
+    connection.execute(_table_shape_at(target_version, table))
+    parked_columns = set(_column_names(connection, parked_name))
+    carried = [
+        name for name in _column_names(connection, table.name) if name in parked_columns
+    ]
+    unfillable = (
+        _columns_a_row_must_carry(connection, table.name)
+        - parked_columns
+        - set(filled_columns)
+    )
+    if unfillable:
+        raise StoreMigrationRefused(
+            f"schema version {target_version} adds {', '.join(sorted(unfillable))} to "
+            f"{table.name} and no value is declared for the rows already stored"
+        )
+    written = ", ".join(carried + list(filled_columns))
+    read = ", ".join(carried + list(filled_columns.values()))
+    connection.execute(
+        f"INSERT INTO {table.name} ({written}) SELECT {read} FROM {parked_name}"
+    )
+    connection.execute(f"DROP TABLE {parked_name}")
+    for index in indexes:
+        connection.execute(
+            str(CreateIndex(index).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger in triggers:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+
+
 _RUN_EVENTS_TRIGGERS = ("run_events_no_update", "run_events_no_delete")
 _PREDECESSOR_RUN_EVENTS = "run_events_before_the_receipt_column"
 
@@ -2181,53 +2322,19 @@ _PREDECESSOR_RUN_EVENTS = "run_events_before_the_receipt_column"
 def _apply_v15_to_v16(connection: sqlite3.Connection) -> None:
     """Give an event the column v3 of its hash binds, and keep every stored row.
 
-    SQLite can only append a column behind a table's constraints, while the
-    shape this store is checked against is the one the table declaration
-    renders, so the hop rebuilds `run_events` in the published order and copies
-    each predecessor row verbatim. Nothing already written is reinterpreted: an
-    event from before this version carries NULL, which is what "this attempt
-    recorded no receipt binding" means, and never an invented hash.
+    Nothing already written is reinterpreted: an event from before this version
+    carries NULL, which is what "this attempt recorded no receipt binding"
+    means, and never an invented hash.
     """
 
-    # The rebuild parks the predecessor under this name, and the fingerprint
-    # this store was checked against says nothing about objects outside the
-    # product schema. Any object holding the name is therefore refused before
-    # the first statement, so the collision is named rather than raised.
-    if connection.execute(
-        "SELECT name FROM sqlite_master WHERE name=?",
-        (_PREDECESSOR_RUN_EVENTS,),
-    ).fetchone():
-        raise StoreMigrationRefused(
-            f"schema version {_VERSION_FIFTEEN} already has "
-            f"{_PREDECESSOR_RUN_EVENTS}; this command will not alter it"
-        )
-    indexes = sorted(run_events.indexes, key=lambda index: index.name or "")
-    carried = ", ".join(
-        column.name
-        for column in run_events.columns
-        if column.name != run_events.c.agent_receipt_hash.name
+    _rebuild_product_table(
+        connection,
+        run_events,
+        _PREDECESSOR_RUN_EVENTS,
+        _RUN_EVENTS_TRIGGERS,
+        _VERSION_FIFTEEN,
+        _VERSION_SIXTEEN,
     )
-    for trigger in _RUN_EVENTS_TRIGGERS:
-        connection.execute(f"DROP TRIGGER {trigger}")
-    for index in indexes:
-        connection.execute(f"DROP INDEX {index.name}")
-    connection.execute(
-        f"ALTER TABLE {run_events.name} RENAME TO {_PREDECESSOR_RUN_EVENTS}"
-    )
-    connection.execute(
-        str(CreateTable(run_events).compile(dialect=sqlite_dialect.dialect()))
-    )
-    connection.execute(
-        f"INSERT INTO {run_events.name} ({carried}) "
-        f"SELECT {carried} FROM {_PREDECESSOR_RUN_EVENTS}"
-    )
-    connection.execute(f"DROP TABLE {_PREDECESSOR_RUN_EVENTS}")
-    for index in indexes:
-        connection.execute(
-            str(CreateIndex(index).compile(dialect=sqlite_dialect.dialect()))
-        )
-    for trigger in _RUN_EVENTS_TRIGGERS:
-        connection.execute(_PRODUCT_TRIGGERS[trigger])
     _raise_declared_version(connection, _VERSION_FIFTEEN, _VERSION_SIXTEEN)
 
 
@@ -2235,54 +2342,32 @@ _AGENT_ATTEMPTS_TRIGGERS = (
     "agent_attempts_state_transition",
     "agent_attempts_no_delete",
 )
+_AGENT_RECEIPTS_V2_TRIGGERS = (
+    "agent_receipts_v2_no_update",
+    "agent_receipts_v2_no_delete",
+)
+_NODE_EXECUTION_REQUESTS_TRIGGERS = (
+    "node_execution_requests_v3_no_update",
+    "node_execution_requests_v3_no_delete",
+)
 _PREDECESSOR_AGENT_ATTEMPTS = "agent_attempts_before_the_refusal_code"
 
 
 def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
     """Admit the refusal's own failure code, and keep every stored row.
 
-    SQLite cannot widen a table CHECK in place, so the hop rebuilds
-    `agent_attempts` in the published order and copies each predecessor row
-    verbatim: every stored FAILED attempt already carries
-    `PROCESS_EXITED_UNSUCCESSFULLY`, which the widened constraint still admits,
-    and nothing is reinterpreted.
-
-    `tool_redemptions` declares a foreign key on this table by name, so the
-    rename out runs under `legacy_alter_table`: without it the rename would
-    rewrite the child's declaration to follow the parked name, and the child
-    would then reference a table this hop drops. The published fingerprint the
-    runner takes after the hop covers the child's declaration, so a rewrite
-    that slipped through would refuse the step rather than land.
+    Every stored FAILED attempt already carries `PROCESS_EXITED_UNSUCCESSFULLY`,
+    which the widened constraint still admits, so nothing is reinterpreted.
     """
 
-    if connection.execute(
-        "SELECT name FROM sqlite_master WHERE name=?",
-        (_PREDECESSOR_AGENT_ATTEMPTS,),
-    ).fetchone():
-        raise StoreMigrationRefused(
-            f"schema version {_VERSION_SIXTEEN} already has "
-            f"{_PREDECESSOR_AGENT_ATTEMPTS}; this command will not alter it"
-        )
-    for trigger in _AGENT_ATTEMPTS_TRIGGERS:
-        connection.execute(f"DROP TRIGGER {trigger}")
-    connection.execute("PRAGMA legacy_alter_table=ON")
-    try:
-        connection.execute(
-            f"ALTER TABLE {agent_attempts.name} RENAME TO {_PREDECESSOR_AGENT_ATTEMPTS}"
-        )
-    finally:
-        connection.execute("PRAGMA legacy_alter_table=OFF")
-    connection.execute(
-        str(CreateTable(agent_attempts).compile(dialect=sqlite_dialect.dialect()))
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        _PREDECESSOR_AGENT_ATTEMPTS,
+        _AGENT_ATTEMPTS_TRIGGERS,
+        _VERSION_SIXTEEN,
+        _VERSION_SEVENTEEN,
     )
-    carried = ", ".join(column.name for column in agent_attempts.columns)
-    connection.execute(
-        f"INSERT INTO {agent_attempts.name} ({carried}) "
-        f"SELECT {carried} FROM {_PREDECESSOR_AGENT_ATTEMPTS}"
-    )
-    connection.execute(f"DROP TABLE {_PREDECESSOR_AGENT_ATTEMPTS}")
-    for trigger in _AGENT_ATTEMPTS_TRIGGERS:
-        connection.execute(_PRODUCT_TRIGGERS[trigger])
     _raise_declared_version(connection, _VERSION_SIXTEEN, _VERSION_SEVENTEEN)
 
 
@@ -2292,38 +2377,81 @@ _PREDECESSOR_RUNS = "runs_before_failed_state"
 def _apply_v17_to_v18(connection: sqlite3.Connection) -> None:
     """Admit FAILED as a run ending, and keep every stored row.
 
-    SQLite cannot widen a table CHECK in place, so the hop rebuilds `runs` in
-    the published order and copies each predecessor row verbatim: every stored
-    run is still STARTED, waiting, or COMPLETED, which the widened constraint
-    still admits, and nothing is reinterpreted. Inventory that should have
-    ended is a serve-start convergence, not this hop's job.
-
-    Children declare foreign keys on this table by name, so the rename out
-    runs under `legacy_alter_table`.
+    Every stored run is still STARTED, waiting, or COMPLETED, which the widened
+    constraint still admits, and nothing is reinterpreted. Inventory that should
+    have ended is a serve-start convergence, not this hop's job.
     """
 
-    if connection.execute(
-        "SELECT name FROM sqlite_master WHERE name=?",
-        (_PREDECESSOR_RUNS,),
-    ).fetchone():
-        raise StoreMigrationRefused(
-            f"schema version {_VERSION_SEVENTEEN} already has "
-            f"{_PREDECESSOR_RUNS}; this command will not alter it"
-        )
-    connection.execute("DROP TRIGGER runs_binding_no_update")
-    connection.execute("PRAGMA legacy_alter_table=ON")
-    try:
-        connection.execute(f"ALTER TABLE {runs.name} RENAME TO {_PREDECESSOR_RUNS}")
-    finally:
-        connection.execute("PRAGMA legacy_alter_table=OFF")
-    connection.execute(str(CreateTable(runs).compile(dialect=sqlite_dialect.dialect())))
-    carried = ", ".join(column.name for column in runs.columns)
-    connection.execute(
-        f"INSERT INTO {runs.name} ({carried}) SELECT {carried} FROM {_PREDECESSOR_RUNS}"
+    _rebuild_product_table(
+        connection,
+        runs,
+        _PREDECESSOR_RUNS,
+        ("runs_binding_no_update",),
+        _VERSION_SEVENTEEN,
+        _VERSION_EIGHTEEN,
     )
-    connection.execute(f"DROP TABLE {_PREDECESSOR_RUNS}")
-    connection.execute(_PRODUCT_TRIGGERS["runs_binding_no_update"])
     _raise_declared_version(connection, _VERSION_SEVENTEEN, _VERSION_EIGHTEEN)
+
+
+_PREDECESSOR_ROUNDLESS_RUNS = "runs_before_the_round_column"
+_PREDECESSOR_ROUNDLESS_RUN_EVENTS = "run_events_before_the_round_column"
+_PREDECESSOR_REQUEST_KEYED_REQUESTS = (
+    "node_execution_requests_v3_before_the_execution_key"
+)
+_PREDECESSOR_ONCE_PER_RUN_AGENT_RECEIPTS = "agent_receipts_v2_before_the_round"
+
+
+def _apply_v19_to_v20(connection: sqlite3.Connection) -> None:
+    """Give the round a durable home, and read every stored row as round one.
+
+    Every run, event and agent receipt this store already holds was written
+    before a document could declare a loop, so each of them stands in the first
+    round -- that is a fact about them, not a default filled in to make a column
+    fit.
+
+    Two keys go with it, because both said "once per run" about something that
+    is now once per round. A node execution request keyed by the request hash
+    made the second round of a node vanish into the first, and an agent receipt
+    keyed by (run, revision, node) refused the second round outright; each is
+    replaced by the node execution key that says the same thing exactly.
+    """
+
+    _rebuild_product_table(
+        connection,
+        runs,
+        _PREDECESSOR_ROUNDLESS_RUNS,
+        ("runs_binding_no_update",),
+        _VERSION_NINETEEN,
+        SCHEMA_VERSION,
+        {runs.c.current_round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
+    )
+    _rebuild_product_table(
+        connection,
+        run_events,
+        _PREDECESSOR_ROUNDLESS_RUN_EVENTS,
+        _RUN_EVENTS_TRIGGERS,
+        _VERSION_NINETEEN,
+        SCHEMA_VERSION,
+        {run_events.c.round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
+    )
+    _rebuild_product_table(
+        connection,
+        node_execution_requests_v3,
+        _PREDECESSOR_REQUEST_KEYED_REQUESTS,
+        _NODE_EXECUTION_REQUESTS_TRIGGERS,
+        _VERSION_NINETEEN,
+        SCHEMA_VERSION,
+    )
+    _rebuild_product_table(
+        connection,
+        agent_receipts_v2,
+        _PREDECESSOR_ONCE_PER_RUN_AGENT_RECEIPTS,
+        _AGENT_RECEIPTS_V2_TRIGGERS,
+        _VERSION_NINETEEN,
+        SCHEMA_VERSION,
+        {agent_receipts_v2.c.round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
+    )
+    _raise_declared_version(connection, _VERSION_NINETEEN, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2359,14 +2487,15 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_SEVENTEEN, _VERSION_EIGHTEEN, _apply_v17_to_v18),
     _SchemaMigrationStep(
         _VERSION_EIGHTEEN,
-        SCHEMA_VERSION,
+        _VERSION_NINETEEN,
         _added_table_step(
             artifacts,
             ("artifacts_no_update", "artifacts_no_delete"),
             _VERSION_EIGHTEEN,
-            SCHEMA_VERSION,
+            _VERSION_NINETEEN,
         ),
     ),
+    _SchemaMigrationStep(_VERSION_NINETEEN, SCHEMA_VERSION, _apply_v19_to_v20),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

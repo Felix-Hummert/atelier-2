@@ -149,6 +149,7 @@ _RUN_PROJECTION_COLUMNS: tuple[sa.Column[Any], ...] = (
     runs.c.workflow_format_version,
     runs.c.agent_binding_set_hash,
     runs.c.current_node_id,
+    runs.c.current_round_ordinal,
     runs.c.state,
     runs.c.state_version,
     runs.c.last_event_sequence,

@@ -106,7 +106,12 @@ def bind_node(
             else node_job(node.instruction, orders, results)
         )
         return AgentNodeBindingV2(
-            resolved, job, tool_grant, project_source, declared_output_schema_document
+            resolved,
+            job,
+            tool_grant,
+            project_source,
+            declared_output_schema_document,
+            run.current_round_ordinal,
         )
     if isinstance(node, ActionNode):
         return ActionNodeBinding()
@@ -155,7 +160,9 @@ def agent_execution_request_v2(
         )
     try:
         return AgentExecutionRequestV2(
-            NodeExecutionId.for_node(run_id, revision_hash, node_id),
+            NodeExecutionId.for_node(
+                run_id, revision_hash, node_id, binding.round_ordinal
+            ),
             run_id,
             revision_hash,
             node_id,
@@ -163,6 +170,7 @@ def agent_execution_request_v2(
             operational_identity,
             binding.job.encode("utf-8"),
             _published_schema_bytes(binding),
+            binding.round_ordinal,
         )
     except (TypeError, ValueError) as error:
         raise RunBindingConflict(

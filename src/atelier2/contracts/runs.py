@@ -47,6 +47,22 @@ TERMINAL_RUN_STATES = frozenset({RunState.COMPLETED, RunState.FAILED})
 failure lifts the node's own ending rather than inventing a third word."""
 
 
+FIRST_ROUND_ORDINAL = 1
+"""The round a run stands in until a declared loop turns it on.
+
+A run whose document declares no loop never leaves this round, and a node no
+loop repeats runs exactly once wherever it sits. Naming the one rather than
+spelling it at every call site is what keeps "the round this belongs to" one
+sentence across the identity, the durable row and the continuation rule.
+"""
+
+
+def require_exact_round_ordinal(round_ordinal: int) -> None:
+    """A round ordinal is a whole count from one, and nothing else is admitted."""
+    if type(round_ordinal) is not int or round_ordinal < FIRST_ROUND_ORDINAL:
+        raise ValueError(f"a round ordinal is a whole count from {FIRST_ROUND_ORDINAL}")
+
+
 @dataclass(frozen=True)
 class Run:
     run_id: RunId
@@ -56,6 +72,7 @@ class Run:
     state_version: int
     last_event_sequence: int
     terminal_hash: Sha256Hash | None = None
+    current_round_ordinal: int = FIRST_ROUND_ORDINAL
 
     @staticmethod
     def validate_head(
@@ -64,6 +81,7 @@ class Run:
         state_version: int,
         last_event_sequence: int,
         terminal_hash: Sha256Hash | None,
+        current_round_ordinal: int = FIRST_ROUND_ORDINAL,
     ) -> None:
         if current_node_id == "":
             raise ValueError("current_node_id must be nonempty")
@@ -71,6 +89,7 @@ class Run:
             raise ValueError("run versions and cursors must be nonnegative")
         if (state in TERMINAL_RUN_STATES) != (terminal_hash is not None):
             raise ValueError("only an ended run has a terminal hash")
+        require_exact_round_ordinal(current_round_ordinal)
 
     def __post_init__(self) -> None:
         self.validate_head(
@@ -79,4 +98,5 @@ class Run:
             self.state_version,
             self.last_event_sequence,
             self.terminal_hash,
+            self.current_round_ordinal,
         )

@@ -14,7 +14,12 @@ from atelier2.adapters.dbos.run_store import (
 )
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import initialize_schema, runs, workflow_revisions
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 
 _DOCUMENT = b"""format_version: 1
 start: agent
@@ -51,6 +56,7 @@ def _seed_run_standing_on(engine: Engine, node_id: str) -> WorkflowRevision:
                 revision_hash=revision.revision_hash.value,
                 workflow_format_version=1,
                 current_node_id=node_id,
+                current_round_ordinal=FIRST_ROUND_ORDINAL,
                 state=RunState.STARTED.value,
                 state_version=0,
                 last_event_sequence=0,

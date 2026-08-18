@@ -51,6 +51,7 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
     RevisionHashCollision,
     Run,
     RunId,
@@ -117,6 +118,7 @@ def run_from_record(record: Mapping[Any, Any]) -> Run:
         int(record["state_version"]),
         int(record["last_event_sequence"]),
         None if terminal is None else Sha256Hash(str(terminal)),
+        int(record["current_round_ordinal"]),
     )
 
 
@@ -218,8 +220,9 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
         int(record["last_event_sequence"]),
     )
     terminal_hash = None if terminal is None else Sha256Hash(str(terminal))
+    round_ordinal = int(record["current_round_ordinal"])
     if version is WorkflowFormatVersion.V2:
-        return RunV2(*head, terminal_hash)
+        return RunV2(*head, terminal_hash, round_ordinal)
     configuration = record["run_configuration_revision_hash"]
     if configuration is None:
         raise RunTransitionConflict(
@@ -229,6 +232,7 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
         *head,
         RunConfigurationRevisionHash(str(configuration)),
         terminal_hash,
+        round_ordinal,
     )
 
 
@@ -279,6 +283,30 @@ def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
         raise RunTransitionConflict("WAITING_RECONCILIATION must name an Action node")
     if run.state is RunState.COMPLETED and not is_sink_node(graph, run.current_node_id):
         raise RunTransitionConflict("COMPLETED must name the run's sink node")
+    _require_a_round_the_graph_declares(run, graph)
+
+
+def _require_a_round_the_graph_declares(
+    run: AnyRun, graph: AnyWorkflowDocument
+) -> None:
+    """Hold the round the run stands in to what its own document permits.
+
+    Two ways a stored round could be a lie, and both are read here rather than
+    trusted: a node no loop repeats standing anywhere but in the first round,
+    and a looped node standing past the bound its author declared. Either would
+    mean a durable row naming an execution the document cannot produce.
+    """
+    if not isinstance(graph, WorkflowGraphV3):
+        if run.current_round_ordinal != FIRST_ROUND_ORDINAL:
+            raise RunTransitionConflict("only a format-3 document declares a loop")
+        return
+    loop = graph.loop_of(run.current_node_id)
+    if loop is None:
+        if run.current_round_ordinal != FIRST_ROUND_ORDINAL:
+            raise RunTransitionConflict("a node no loop repeats runs in one round")
+        return
+    if run.current_round_ordinal > loop.maximum_rounds:
+        raise RunTransitionConflict("run stands past the loop's declared bound")
 
 
 def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
@@ -309,6 +337,7 @@ def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
         None
         if record["agent_receipt_hash"] is None
         else AgentReceiptHash(str(record["agent_receipt_hash"])),
+        int(record["round_ordinal"]),
     )
     if event.payload_hash.value != record["payload_hash"]:
         raise RunTransitionConflict("durable event payload hash disagrees")
@@ -322,6 +351,7 @@ def _existing_event(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
+    round_ordinal: int,
     event_kind: RunEventKind,
     payload: bytes,
     receipt_logical_key: LogicalEffectKey | None,
@@ -329,12 +359,16 @@ def _existing_event(
     agent_attempt_id: AgentAttemptId | None = None,
     agent_receipt_hash: AgentReceiptHash | None = None,
 ) -> TransitionSnapshot | None:
+    # The round takes part in the lookup, not only in the comparison: a looped
+    # node writes one event of this kind per round, and a retry means "the same
+    # round again" rather than "some round of this node".
     record = (
         session.execute(
             sa.select(run_events).where(
                 run_events.c.run_id == run_id.value,
                 run_events.c.revision_hash == revision_hash.value,
                 run_events.c.node_id == node_id,
+                run_events.c.round_ordinal == round_ordinal,
                 run_events.c.event_kind == event_kind.value,
                 (
                     run_events.c.agent_attempt_id.is_(None)
@@ -349,7 +383,9 @@ def _existing_event(
     if record is None:
         return None
     event = event_from_record(record)
-    expected_execution = NodeExecutionId.for_node(run_id, revision_hash, node_id)
+    expected_execution = NodeExecutionId.for_node(
+        run_id, revision_hash, node_id, round_ordinal
+    )
     if (
         event.node_execution_id != expected_execution
         or event.payload != payload
@@ -369,6 +405,7 @@ def _existing_event(
         current.state_version,
         current.last_event_sequence,
         event,
+        current.current_round_ordinal,
     )
 
 
@@ -405,6 +442,7 @@ def _insert_event(session: Any, event: RunEvent) -> None:
                 if event.agent_receipt_hash is None
                 else event.agent_receipt_hash.value
             ),
+            round_ordinal=event.round_ordinal,
         )
     )
 
@@ -425,12 +463,15 @@ def _commit_event(
     agent_attempt_id: AgentAttemptId | None = None,
     attempt_ordinal: int | None = None,
     agent_receipt_hash: AgentReceiptHash | None = None,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+    target_round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> TransitionSnapshot:
     existing = _existing_event(
         session,
         run_id,
         revision_hash,
         node_id,
+        round_ordinal,
         event_kind,
         payload,
         receipt_logical_key,
@@ -444,6 +485,7 @@ def _commit_event(
     if (
         current.revision_hash != revision_hash
         or current.current_node_id != node_id
+        or current.current_round_ordinal != round_ordinal
         or current.state is not expected_state
     ):
         raise RunTransitionConflict("run is not at the transition's exact source")
@@ -471,7 +513,7 @@ def _commit_event(
         revision_hash,
         sequence,
         node_id,
-        NodeExecutionId.for_node(run_id, revision_hash, node_id),
+        NodeExecutionId.for_node(run_id, revision_hash, node_id, round_ordinal),
         event_kind,
         payload,
         receipt_logical_key,
@@ -479,6 +521,7 @@ def _commit_event(
         None if agent_attempt_id is None else agent_attempt_id.value,
         attempt_ordinal,
         agent_receipt_hash=agent_receipt_hash,
+        round_ordinal=round_ordinal,
     )
     terminal_hash: Sha256Hash | None = None
     if terminal:
@@ -498,12 +541,14 @@ def _commit_event(
             runs.c.run_id == run_id.value,
             runs.c.revision_hash == revision_hash.value,
             runs.c.current_node_id == node_id,
+            runs.c.current_round_ordinal == round_ordinal,
             runs.c.state == expected_state.value,
             runs.c.state_version == current.state_version,
             runs.c.last_event_sequence == current.last_event_sequence,
         )
         .values(
             current_node_id=target_node_id,
+            current_round_ordinal=target_round_ordinal,
             state=target_state.value,
             state_version=current.state_version + 1,
             last_event_sequence=sequence,
@@ -522,6 +567,7 @@ def _commit_event(
         current.state_version + 1,
         sequence,
         event,
+        target_round_ordinal,
     )
 
 

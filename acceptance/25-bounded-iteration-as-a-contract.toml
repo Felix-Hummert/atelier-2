@@ -3,12 +3,21 @@ story = "https://github.com/FlexOr2/atelier-2/issues/25"
 
 # This file does not list every sentence of #25, and that is deliberate.
 #
-# This head is the document surface of ADR 0013: the `iterate` block parses as a
-# closed model, and every rule the document can judge *by itself* refuses by
-# name. It makes bounded iteration declarable. It does not make it run: no V3
-# document can become a run yet (`parse_executable_workflow_document` refuses
-# format 3, and `runs.workflow_format_version IN (1, 2)` refuses the row), and
-# that gate belongs to #63.
+# The first three heads are the document and boundary surface of ADR 0013: the
+# `iterate` block -- a bounded repetition of a *child run* -- parses as a closed
+# model and is bound against the child. It stays declarable and stays
+# unexecutable: no runtime interprets a `subworkflow` node.
+#
+# The fourth head is the engine, under ADR 0014 and the operator rulings of
+# 19.08.: a document declares a loop over a stretch of *its own* graph, and the
+# engine turns its rounds with an identity each round owns. The five sentences it
+# proves are the last five below. What that head deliberately does not build is
+# named rather than implied: reaching the declared bound is the ONLY way out of a
+# loop this build has. A result that ends a loop early -- a review verdict
+# steering the next edge -- is #25's second engine head, and so is the agent's own
+# named refusal. The V1 merge node and the `binding_constraint` the operator ruled
+# on 19.08. are a third, thinner cut on existing machinery. None of the three is
+# claimed here.
 #
 # Six sentences of #25 therefore have no proof of any kind here and are named
 # rather than quietly dropped:
@@ -22,6 +31,11 @@ story = "https://github.com/FlexOr2/atelier-2/issues/25"
 #   7.  Round K+1 reads round K's result, and every round is its own unrolled
 #       stage of the durable truth. Needs #63 and the V3 Join/Ready/Scheduler
 #       owner ADR 0008 names.
+#
+# Two forms now say "repeat, at most N times" -- ADR 0013's child-run `iterate`
+# and ADR 0014's in-graph loop. ADR 0014 names that seam and leaves it open for
+# usage evidence rather than retiring either by guess. Neither counts as the
+# other's proof.
 #
 # Sentence 2 was split into 2a and 2b, sentence 3 into 3a and 3b; the binding
 # head declares 2b, 3b and 4 below, so all four halves and the preview are now
@@ -76,3 +90,23 @@ text = "Before any start, the preview names every iteration node with its maximu
 [[sentence]]
 id = "iteration-is-refused-on-a-node-kind-that-cannot-carry-it"
 text = "A node kind that runs no child of its own is refused by name when it declares an iteration, rather than carrying a field it could never honour."
+
+[[sentence]]
+id = "a-loop-over-a-stretch-of-the-graph-is-declarable"
+text = "A workflow document may declare that a stretch of its own graph repeats, naming the loop, the nodes it repeats and the maximum number of rounds, and the parsed document reads it back exactly as authored; a document that declares no loop repeats nothing."
+
+[[sentence]]
+id = "a-loop-without-a-bound-is-refused-by-name"
+text = "A declared loop whose maximum number of rounds is absent, or is anything other than a whole positive count within the declared range, is refused by name before the document can be stored, published or started."
+
+[[sentence]]
+id = "a-loop-the-graph-cannot-turn-is-refused-by-name"
+text = "A loop is refused by name when it repeats a node the document does not declare, when its body is not one uninterrupted stretch of the order the declared edges already give, when two loops claim the same node or the same id; and a control edge pointing backwards stays refused as the cycle it is, so the declaration remains the only legal way back."
+
+[[sentence]]
+id = "a-declared-loop-runs-its-rounds-and-ends-at-its-bound"
+text = "A started run whose document declares a loop runs the loop's body again from its first node while rounds remain, and ends when the declared bound is reached — through the terminal path every other node ends by, with no word invented for it."
+
+[[sentence]]
+id = "every-round-of-a-loop-is-its-own-durable-execution"
+text = "Every round of every looped node is its own node execution: its own deterministic identity, its own durable request, receipt, produced value and durable workflow, and its own event in the chain the terminal hash recomputes over — while the first round of a node keeps byte-for-byte the identity it had before any loop existed."

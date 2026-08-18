@@ -24,6 +24,7 @@ number is never reused and never renumbered.
 - [ADR 0011: A project is a store root; the root bounds where a project exists, and destroying it is the only removal](0011-project-isolation.md)
 - [ADR 0012: Acceptance sentences are declared in the repository and proven by the run reports](0012-acceptance-trace-format.md)
 - [ADR 0013: A bounded `iterate` block repeats a subworkflow until a receipt says green](0013-bounded-iteration.md)
+- [ADR 0014: A declared loop repeats a stretch of one graph, and the round is the fourth dimension of a node execution identity](0014-in-graph-rounds.md)
 
 Each record carries its own status, and this index deliberately does not repeat
 it, because a second copy of a status is the next thing to go stale. How much of

@@ -59,6 +59,7 @@ class EncodedAgentBindingV2(TypedDict):
     type: Literal["agent-v2"]
     role: str
     job: str
+    round_ordinal: int
     tool_revision_hash: NotRequired[str]
     tool_capability: NotRequired[str]
     project_commit: NotRequired[str]
@@ -106,6 +107,7 @@ _AGENT_V2_KEYS = frozenset(
         "type",
         "role",
         "job",
+        "round_ordinal",
         "configuration_hash",
         "auth_hash",
         "profile_id",
@@ -178,6 +180,7 @@ def _encode_agent_v2(binding: AgentNodeBindingV2) -> EncodedAgentBindingV2:
         "type": "agent-v2",
         "role": binding.resolved.role.value,
         "job": binding.job,
+        "round_ordinal": binding.round_ordinal,
         "configuration_hash": configuration.revision_hash.value,
         "auth_hash": auth.revision_hash.value,
         "profile_id": auth.profile_id,
@@ -218,6 +221,7 @@ def _decode_agent_v2(encoded: Mapping[str, object]) -> AgentNodeBindingV2:
         _declared_tool_grant(encoded),
         _declared_source_pin(encoded),
         _declared_output_schema_document(encoded),
+        _whole_number(encoded, "round_ordinal"),
     )
 
 
