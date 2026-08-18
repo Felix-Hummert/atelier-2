@@ -49,6 +49,7 @@ from atelier2.adapters.dbos.run_store import (
     entry_node_of,
     load_graph,
     load_node_outputs,
+    load_published_schema_document,
     load_run,
     load_run_inputs,
     load_wait_answer,
@@ -175,6 +176,7 @@ class EncodedAgentBindingV2(TypedDict):
     executor_revision: str
     revision_format_version: NotRequired[int]
     requested_capability: NotRequired[str]
+    output_schema_document: NotRequired[str]
 
 
 class EncodedActionBinding(TypedDict):
@@ -313,6 +315,10 @@ def _node_binding(
             if pinned is not None:
                 encoded["tool_revision_hash"] = pinned.revision_hash.value
                 encoded["tool_capability"] = pinned.capability.value
+            if isinstance(node, AgentNodeV3):
+                encoded["output_schema_document"] = _declared_output_schema_document(
+                    session, node
+                )
             if project is not None:
                 source_pin = project.source.head()
                 encoded["project_commit"] = source_pin.commit
@@ -366,6 +372,32 @@ def _pinned_tool_grant(
     if isinstance(grant, ToolGrantRefused):
         raise RunBindingConflict(f"the pinned tool revision is no grant: {grant}")
     return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
+
+
+def _declared_output_schema_document(session: Any, node: AgentNodeV3) -> str:
+    """The exact published document the node's one output pinned.
+
+    Same bytes the schema seam later judges. The binding carries them so the
+    provider flag cannot invent a second serialization.
+    """
+    if not node.outputs:
+        raise RunBindingConflict("a V3 agent node has no declared output schema")
+    declared = node.outputs[0]
+    document = load_published_schema_document(
+        session, declared.schema_reference.revision
+    )
+    if document is None:
+        raise RunBindingConflict(
+            f"the schema node {node.id!r} pinned for output "
+            f"{declared.name!r} left the registry"
+        )
+    try:
+        return document.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunBindingConflict(
+            f"the schema node {node.id!r} pinned for output "
+            f"{declared.name!r} is not UTF-8"
+        ) from error
 
 
 def _declared_tool_grant(binding: EncodedAgentBindingV2) -> DeclaredToolGrant | None:
@@ -486,6 +518,11 @@ def _agent_request_v2(
         raise RunBindingConflict(
             "runtime executor lacks the durably requested capability"
         )
+    schema_text = binding.get("output_schema_document")
+    if schema_text is not None and type(schema_text) is not str:
+        raise RunBindingConflict(
+            "a durable output schema document carries a value of the wrong type"
+        )
     try:
         resolved = ResolvedAgentBinding(AgentRole(binding["role"]), configuration, auth)
         return AgentExecutionRequestV2(
@@ -496,6 +533,7 @@ def _agent_request_v2(
             resolved,
             operational_identity,
             binding["job"].encode("utf-8"),
+            None if schema_text is None else schema_text.encode("utf-8"),
         )
     except (TypeError, ValueError) as error:
         raise RunBindingConflict(
