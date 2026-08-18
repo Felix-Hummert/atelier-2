@@ -682,9 +682,12 @@ and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
 founding, unpublished member, wrong kind, or retired lineage is refused by
-name. Measurements and policy activations are not in this profile. V13 through
-V19 remain published predecessor objects; exact V7 through V19 files are refused
-by runtime without mutation, with no runtime migration or downgrade. An offline
-`atelier2 migrate` command raises an exact V13 through V19 store to the current
+name. Measurements and policy activations are not in this profile. Every schema
+from V9 up to the one just below current remains a published predecessor
+object -- `schema.py` names each as its own `V*_SCHEMA_HANDOFF` constant -- and
+an exact file at V7 through the version just below current is refused by
+runtime without mutation, with no runtime migration or downgrade. An offline
+`atelier2 migrate` command raises an exact store on any source version
+`schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder still names to the current
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.
