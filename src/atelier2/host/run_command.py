@@ -397,7 +397,10 @@ def _run_published_revision(
     run_id = asked_run_id or derived_run_id(revision_hash, bindings, orders)
     started = _decoded(
         _run_resource,
-        _post(api + RUN_PATH, _start_request(run_id, revision_hash, bindings, orders)),
+        _post(
+            api + RUN_PATH,
+            start_request_body(run_id, revision_hash, bindings, orders),
+        ),
         "a run",
     )
     reference = started.public_run_reference
@@ -611,12 +614,13 @@ def _problem_code(refused: ServiceRefused) -> str | None:
     return refused.problem.type
 
 
-def _start_request(
+def start_request_body(
     run_id: str,
     revision_hash: str,
     bindings: tuple[AgentRoleBinding, ...],
     orders: tuple[SuppliedOrder, ...] = (),
 ) -> bytes:
+    """The POST /runs body. One owner for `run` and the MCP start tool."""
     if orders:
         requested = StartRunRequestResourceV3(
             workflow_format_version=3,

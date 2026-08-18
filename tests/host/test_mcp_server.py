@@ -31,6 +31,8 @@ from atelier2.api.wire.resources import (
 from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
 from atelier2.host.mcp_command import (
+    JSONRPC_METHOD_NOT_FOUND,
+    dispatch_message,
     read_message,
     serve_mcp,
     write_message,
@@ -45,6 +47,11 @@ from atelier2.host.mcp_tools import (
     METHOD_TOOLS_LIST,
     McpToolName,
     tool_definitions,
+)
+from atelier2.host.run_command import (
+    AgentRoleBinding,
+    SuppliedOrder,
+    start_request_body,
 )
 from tests.api.test_openapi import served_app
 
@@ -449,42 +456,107 @@ def test_list_workflows_answers_the_same_catalog_resolution_http_would(
 
 
 @pytest.mark.proves("mcp-and-http-never-diverge")
+@pytest.mark.parametrize(
+    ("arguments", "bindings", "orders"),
+    (
+        ({"name": WORKFLOW_NAME, "run_id": "named-run"}, (), ()),
+        (
+            {
+                "name": WORKFLOW_NAME,
+                "run_id": "named-run",
+                "agent_bindings": [
+                    {
+                        "role": "builder",
+                        "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
+                    }
+                ],
+            },
+            (AgentRoleBinding("builder", AGENT_CONFIGURATION_HASH),),
+            (),
+        ),
+        (
+            {
+                "name": WORKFLOW_NAME,
+                "run_id": "named-run",
+                "agent_bindings": [
+                    {
+                        "role": "builder",
+                        "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
+                    }
+                ],
+                "orders": [{"name": "order", "value": '{"portions": 2}'}],
+            },
+            (AgentRoleBinding("builder", AGENT_CONFIGURATION_HASH),),
+            (SuppliedOrder("order", b'{"portions": 2}'),),
+        ),
+    ),
+    ids=("v1-bare", "v2-bindings", "v3-orders"),
+)
 def test_start_run_posts_the_same_start_body_the_http_door_already_owns(
     session: tuple[ScriptedService, StdioMcpSession],
+    arguments: dict[str, Any],
+    bindings: tuple[AgentRoleBinding, ...],
+    orders: tuple[SuppliedOrder, ...],
 ) -> None:
     service, client = session
-    payload, is_error = client.call_tool(
-        McpToolName.START_RUN.value,
-        {
-            "name": WORKFLOW_NAME,
-            "run_id": "named-run",
-            "agent_bindings": [
-                {
-                    "role": "builder",
-                    "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
-                }
-            ],
-        },
-    )
+    payload, is_error = client.call_tool(McpToolName.START_RUN.value, arguments)
 
     posted = json.loads(
         next(call.body for call in service.calls if call.path == RUNS_PATH)
     )
+    owned = json.loads(start_request_body("named-run", REVISION_HASH, bindings, orders))
     _status, http_body = http_json("GET", service.url + RUN_PATH)
 
     assert not is_error
     assert payload == http_body
-    assert posted == {
-        "workflow_format_version": 2,
-        "run_id": "named-run",
-        "workflow_revision_hash": REVISION_HASH,
-        "agent_bindings": [
+    assert posted == owned
+
+
+@pytest.mark.proves("a-jsonrpc-notification-gets-no-reply")
+def test_a_notification_produces_no_reply_frame() -> None:
+    assert (
+        dispatch_message(
+            "http://127.0.0.1:1",
             {
-                "role": "builder",
-                "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
-            }
-        ],
-    }
+                "jsonrpc": JSONRPC_VERSION,
+                "method": "notifications/cancelled",
+                "params": {"requestId": 1},
+            },
+        )
+        is None
+    )
+
+
+@pytest.mark.proves("a-jsonrpc-notification-gets-no-reply")
+def test_an_unknown_request_keeps_the_id_it_arrived_with() -> None:
+    reply = dispatch_message(
+        "http://127.0.0.1:1",
+        {"jsonrpc": JSONRPC_VERSION, "id": 7, "method": "notifications/cancelled"},
+    )
+
+    assert reply is not None
+    assert reply["id"] == 7
+    assert reply["error"]["code"] == JSONRPC_METHOD_NOT_FOUND
+
+
+@pytest.mark.proves("a-jsonrpc-notification-gets-no-reply")
+def test_a_cancelled_notification_does_not_steal_the_next_reply(
+    session: tuple[ScriptedService, StdioMcpSession],
+) -> None:
+    """The witness reproduction: cancelled must not emit {id: null, error}."""
+    _service, client = session
+    write_message(
+        client._writer,
+        {
+            "jsonrpc": JSONRPC_VERSION,
+            "method": "notifications/cancelled",
+            "params": {"requestId": 1},
+        },
+    )
+    listed = client.request(METHOD_TOOLS_LIST)
+
+    assert "result" in listed
+    assert "error" not in listed
 
 
 @pytest.mark.proves("a-non-loopback-mcp-service-is-refused-without-inventing-auth")

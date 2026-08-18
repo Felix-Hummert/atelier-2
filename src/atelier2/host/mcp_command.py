@@ -37,9 +37,6 @@ from atelier2.api.wire.requests import (
     InlineOrderResource,
     RevisionListingView,
     StartRunAgentBindingResourceV2,
-    StartRunRequestResource,
-    StartRunRequestResourceV2,
-    StartRunRequestResourceV3,
 )
 from atelier2.api.wire.resources import (
     AnyRunResource,
@@ -58,7 +55,6 @@ from atelier2.host.mcp_tools import (
     MCP_SERVER_NAME,
     MCP_SERVER_VERSION,
     METHOD_INITIALIZE,
-    METHOD_INITIALIZED,
     METHOD_PING,
     METHOD_TOOLS_CALL,
     METHOD_TOOLS_LIST,
@@ -73,12 +69,15 @@ from atelier2.host.run_command import (
     REQUEST_TIMEOUT_SECONDS,
     RUN_PATH,
     WORKFLOW_REVISION_PATH,
+    AgentRoleBinding,
     NameOrder,
     ServiceRefused,
     ServiceUnreachable,
+    SuppliedOrder,
     UnreadableServiceAnswer,
     UnusableRunOrder,
     resolve_published_name,
+    start_request_body,
 )
 
 _run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
@@ -106,6 +105,7 @@ class _JsonRpcRequest:
     message_id: object
     method: str
     params: Mapping[str, Any]
+    notification: bool = False
 
 
 def execute_mcp(service_url: str, stdin: IO[bytes], stdout: IO[bytes]) -> int:
@@ -142,7 +142,7 @@ def dispatch_message(service_url: str, raw: object) -> dict[str, Any] | None:
     parsed = _jsonrpc_request(raw)
     if isinstance(parsed, dict):
         return parsed
-    if parsed.method == METHOD_INITIALIZED:
+    if parsed.notification:
         return None
     if parsed.method == METHOD_INITIALIZE:
         return _result(parsed.message_id, _initialize_result())
@@ -211,6 +211,15 @@ def _content_length(headers: bytes) -> int:
 def _jsonrpc_request(raw: object) -> _JsonRpcRequest | dict[str, Any]:
     if not isinstance(raw, dict):
         return _error(None, JSONRPC_INVALID_REQUEST, "a JSON-RPC message is an object")
+    if "id" not in raw:
+        method = raw.get("method")
+        params = raw.get("params") or {}
+        return _JsonRpcRequest(
+            None,
+            method if isinstance(method, str) else "",
+            params if isinstance(params, dict) else {},
+            notification=True,
+        )
     message_id = raw.get("id")
     if raw.get("jsonrpc") != JSONRPC_VERSION:
         return _error(message_id, JSONRPC_INVALID_REQUEST, "jsonrpc must be 2.0")
@@ -222,8 +231,6 @@ def _jsonrpc_request(raw: object) -> _JsonRpcRequest | dict[str, Any]:
         params = {}
     if not isinstance(params, dict):
         return _error(message_id, JSONRPC_INVALID_PARAMS, "params must be an object")
-    if "id" not in raw:
-        return _JsonRpcRequest(None, method, params)
     return _JsonRpcRequest(message_id, method, params)
 
 
@@ -313,7 +320,19 @@ def start_run(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         _run_resource,
         _post(
             _api_url(service_url) + RUN_PATH,
-            _start_request(run_id, resolution.revision_hash, bindings, orders),
+            start_request_body(
+                run_id,
+                resolution.revision_hash,
+                tuple(
+                    AgentRoleBinding(
+                        binding.role, binding.agent_configuration_revision_hash
+                    )
+                    for binding in bindings
+                ),
+                tuple(
+                    SuppliedOrder(order.name, order.value.encode()) for order in orders
+                ),
+            ),
         ),
         "a run",
     )
@@ -392,40 +411,6 @@ def _orders(raw: object) -> tuple[InlineOrderResource, ...]:
         raise UnusableRunOrder(
             f"orders is not the start request's inline-order shape: {error}"
         ) from error
-
-
-def _start_request(
-    run_id: str,
-    revision_hash: str,
-    bindings: tuple[StartRunAgentBindingResourceV2, ...],
-    orders: tuple[InlineOrderResource, ...],
-) -> bytes:
-    """The same three POST /runs shapes `run` already writes, from the wire owner."""
-
-    if orders:
-        requested: (
-            StartRunRequestResource
-            | StartRunRequestResourceV2
-            | StartRunRequestResourceV3
-        ) = StartRunRequestResourceV3(
-            workflow_format_version=3,
-            run_id=run_id,
-            workflow_revision_hash=revision_hash,
-            agent_bindings=bindings,
-            orders=orders,
-        )
-    elif bindings:
-        requested = StartRunRequestResourceV2(
-            workflow_format_version=2,
-            run_id=run_id,
-            workflow_revision_hash=revision_hash,
-            agent_bindings=bindings,
-        )
-    else:
-        requested = StartRunRequestResource(
-            run_id=run_id, workflow_revision_hash=revision_hash
-        )
-    return requested.model_dump_json().encode()
 
 
 def _required_text(arguments: Mapping[str, Any], field: str) -> str:
