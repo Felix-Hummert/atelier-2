@@ -3,8 +3,10 @@
 ![The workshop — the house you arrive in](docs/atelier.jpg)
 
 Atelier 2 is intended to become a lean agentic orchestrator for versioned,
-configurable workflows. What it should become is stated in
-[GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1) and read into
+configurable workflows. Why it exists is the Desk/Doku reading in
+[docs/VISION.md](docs/VISION.md) of
+[GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1); what it
+must be able to do is read into
 [docs/requirements/](docs/requirements/README.md); what it currently is, in
 [docs/PRODUCT.md](docs/PRODUCT.md). Which documentation layer answers which
 question is mapped in [docs/README.md](docs/README.md).
@@ -14,7 +16,8 @@ question is mapped in [docs/README.md](docs/README.md).
 | Durable fact | Authoritative owner |
 | --- | --- |
 | Which documentation layer answers which question | [docs/README.md](docs/README.md) |
-| Implementation status, and product intent as a derived view | [docs/PRODUCT.md](docs/PRODUCT.md) |
+| Why this atelier exists (Desk/Doku reading of Issue #1; the issue wins) | [docs/VISION.md](docs/VISION.md) |
+| Implementation status | [docs/PRODUCT.md](docs/PRODUCT.md) |
 | The settled reading of a requirement thread (derived; the thread wins) | Documents indexed by [docs/requirements/README.md](docs/requirements/README.md) |
 | Editable human requirement | [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1), with revision rules in [docs/requirements/README.md](docs/requirements/README.md) |
 | Story acceptance sentences and their proofs | `acceptance/`, with schema and trace rules in [docs/requirements/README.md](docs/requirements/README.md) |
