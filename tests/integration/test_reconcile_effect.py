@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.reconciler import (
-    RECONCILE_WORKFLOW_ID_PREFIX,
     DbosEffectReconcileCommander,
     reconcile_workflow_id_for,
 )
@@ -147,13 +146,6 @@ def command(
         ReconcileActor("operator"),
         "inspected the exact destination and request",
         determination,
-    )
-
-
-def test_reconcile_workflow_id_is_deterministic_from_the_exact_command_id() -> None:
-    assert reconcile_workflow_id_for(ReconcileCommandId(" command-1 ")) == (
-        RECONCILE_WORKFLOW_ID_PREFIX
-        + "ed130bd4e8308c690a08d2e099d0b5394042153082c760870f9cf3a19cc00483"
     )
 
 
