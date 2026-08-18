@@ -1,8 +1,8 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/86"
 
-# One sentence, for the first of three heads. What the other two owe is named
-# rather than declared early:
+# Three sentences from two of three heads. What is still owed is named rather
+# than declared early:
 #
 #   - Head 1 also gives the DBOS names and the DBOS workflow ids one owner each.
 #     That half has no sentence here, because a table of vectors proves the
@@ -17,8 +17,10 @@ story = "https://github.com/FlexOr2/atelier-2/issues/86"
 #     belongs to #11's gate module. Head 2 measured the two cycles falling and
 #     reported the measurement rather than landing a second checker, so it
 #     declares only what a test of its own holds green.
-#   - Head 3 (the node binding as a contract) carries its own sentences when it
-#     lands.
+#   - Head 3 moved the decision and the request composition into the core. What
+#     it did NOT build has no sentence: "decision and enqueue as one port" is
+#     adopted here as ownership, and only the decision half has a caller today --
+#     nothing in the core enqueues, so no port was invented for the other half.
 
 [[sentence]]
 id = "every-durable-workflow-id-keeps-its-exact-form-when-its-owner-moves"
@@ -27,3 +29,15 @@ text = "All ten durable identities this engine mints - bootstrap, node, answer, 
 [[sentence]]
 id = "a-run-transition-answers-one-state-or-one-named-refusal"
 text = "Every state-and-event pair a durable run transition admits or refuses is pinned as one whole answer - the state and node the run then stands on, or the refusal in the words of the rule that refused it - so moving those transitions to a single owner beneath the stores that call them cannot change one answer a durable run already depends on."
+
+[[sentence]]
+id = "a-node-binding-is-decided-where-no-store-can-be-reached"
+text = "What every kind of node binds - a V1 agent, a V2 or V3 agent under its run's role matrix, an action, a wait, a subworkflow - is decided by pure functions over a run and a document, so each of the five forms and each of its named refusals is provable with no database, no queue and no provider behind it."
+
+[[sentence]]
+id = "a-durable-binding-row-is-read-back-only-in-a-shape-this-engine-writes"
+text = "A recorded node-binding row round-trips through the typed contract byte for byte, and a row that is unknown, partial, over-full, wrongly typed or disagrees with its own configuration or auth hash is refused by name rather than read as the one legacy shape."
+
+[[sentence]]
+id = "a-legacy-node-binding-row-replays-into-the-typed-decision"
+text = "A run crashed after its node binding was recorded finishes after a restart that hands it the one shape written before the configuration contract existed - neither revision_format_version nor requested_capability - reaching its terminal state with one provider invocation per node and no second one."

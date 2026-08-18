@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import os
+import pickle
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +16,7 @@ from atelier2.adapters.dbos.names import (
     AGENT_COMMIT_STEP_NAME,
     ANSWER_COMMIT_STEP_NAME,
     COMMIT_STEP_NAME,
+    NODE_BINDING_STEP_NAME,
     WAIT_COMMIT_STEP_NAME,
 )
 from atelier2.adapters.dbos.workflow_ids import (
@@ -22,6 +25,7 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     subworkflow_workflow_id_for,
 )
+from atelier2.contracts.agents import AgentConfigurationRevisionFormatVersion
 from atelier2.contracts.executions import (
     NodeExecutionId,
     logical_effect_key_for,
@@ -407,8 +411,13 @@ def initialize_and_seed(root: Path, run_id: str = "run-1") -> None:
     child(root, "seed", run_id, DOCUMENT.hex())
 
 
-def initialize_and_seed_v3(root: Path) -> None:
-    child(root, "seed-v3", V3_RUN_ID, V3_DOCUMENT.hex())
+def initialize_and_seed_v3(
+    root: Path,
+    configuration_format: AgentConfigurationRevisionFormatVersion = (
+        AgentConfigurationRevisionFormatVersion.V2
+    ),
+) -> None:
+    child(root, "seed-v3", V3_RUN_ID, V3_DOCUMENT.hex(), str(int(configuration_format)))
 
 
 def v3_node_workflow_id(node_id: str) -> str:
@@ -426,7 +435,13 @@ def v3_wait_node_execution(node_id: str) -> NodeExecutionId:
 
 def initialize_and_seed_v3_wait(root: Path) -> None:
     child(root, "initialize")
-    child(root, "seed-v3", V3_WAIT_RUN_ID, V3_WAIT_DOCUMENT.hex())
+    child(
+        root,
+        "seed-v3",
+        V3_WAIT_RUN_ID,
+        V3_WAIT_DOCUMENT.hex(),
+        str(int(AgentConfigurationRevisionFormatVersion.V2)),
+    )
 
 
 def wait_run_row(root: Path) -> tuple[object, ...]:
@@ -790,6 +805,72 @@ def test_v3_completed_attempt_reentry_starts_its_heir_exactly_once(
         "FROM runs WHERE run_id=?",
         (V3_RUN_ID,),
     ) == ("COMPLETED", "review", 2, terminal_hash)
+
+
+def strip_the_configuration_contract(root: Path, workflow_id: str) -> frozenset[str]:
+    """Rewrite one recorded binding into the shape written before the contract existed.
+
+    The row is read, changed and written back through DBOS' own recorded
+    encoding rather than a hand-built payload, so what the restart is handed is
+    a row this engine could have written -- an agent binding with neither
+    `revision_format_version` nor `requested_capability`.
+    """
+    with sqlite3.connect(root / "atelier.sqlite", timeout=30) as connection:
+        recorded = connection.execute(
+            "SELECT output FROM operation_outputs "
+            "WHERE workflow_uuid=? AND function_name=?",
+            (workflow_id, NODE_BINDING_STEP_NAME),
+        ).fetchone()
+        assert recorded is not None
+        binding = dict(pickle.loads(base64.b64decode(str(recorded[0]))))
+        removed = frozenset(binding) & {
+            "revision_format_version",
+            "requested_capability",
+        }
+        for key in removed:
+            del binding[key]
+        connection.execute(
+            "UPDATE operation_outputs SET output=? "
+            "WHERE workflow_uuid=? AND function_name=?",
+            (
+                base64.b64encode(pickle.dumps(binding)).decode("ascii"),
+                workflow_id,
+                NODE_BINDING_STEP_NAME,
+            ),
+        )
+    return removed
+
+
+@pytest.mark.proves("a-legacy-node-binding-row-replays-into-the-typed-decision")
+def test_a_legacy_binding_row_replays_without_a_second_provider_call(
+    tmp_path: Path,
+) -> None:
+    """The one durable shape older than the contract still drives its own run home."""
+    initialize_and_seed_v3(tmp_path, AgentConfigurationRevisionFormatVersion.V1)
+
+    child(
+        tmp_path,
+        "execute-v3-until-complete",
+        V3_RUN_ID,
+        str(tmp_path / "v3-successor-crash"),
+        "start-successor:review",
+        expected=CRASHED,
+    )
+
+    assert v3_cardinalities(tmp_path) == (1, 1, 1, 1)
+    assert strip_the_configuration_contract(
+        tmp_path, v3_node_workflow_id("implement")
+    ) == frozenset({"revision_format_version", "requested_capability"})
+
+    child(tmp_path, "execute-v3-until-complete", V3_RUN_ID, "NONE", "NONE")
+
+    assert v3_cardinalities(tmp_path) == (2, 2, 2, 2)
+    assert database_row(
+        tmp_path,
+        "atelier.sqlite",
+        "SELECT state,current_node_id,last_event_sequence FROM runs WHERE run_id=?",
+        (V3_RUN_ID,),
+    ) == ("COMPLETED", "review", 2)
 
 
 @pytest.mark.parametrize("torn_head", ["implement", "not-in-the-graph"])

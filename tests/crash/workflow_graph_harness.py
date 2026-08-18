@@ -182,6 +182,7 @@ def seed_v3(
     force_unknown_marker: Path,
     run_id: str,
     document: bytes,
+    revision_format_version: AgentConfigurationRevisionFormatVersion,
 ) -> None:
     lease = runtime(database, external, version, force_unknown_marker)
     try:
@@ -198,7 +199,7 @@ def seed_v3(
             auth.revision_hash,
             AgentExecutorRevision("exact/v1"),
             AgentExecutionCapability.HEADLESS,
-            AgentConfigurationRevisionFormatVersion.V2,
+            revision_format_version,
         )
         assert isinstance(
             catalog.publish_agent_configuration_revision(configuration),
@@ -403,7 +404,7 @@ def main() -> None:
             bytes.fromhex(document_hex),
         )
     elif command == "seed-v3":
-        run_id, document_hex = arguments
+        run_id, document_hex, configuration_format = arguments
         seed_v3(
             database,
             external,
@@ -411,6 +412,7 @@ def main() -> None:
             unknown_marker,
             run_id,
             bytes.fromhex(document_hex),
+            AgentConfigurationRevisionFormatVersion(int(configuration_format)),
         )
     elif command == "answer":
         run_id, node_id, answer = arguments
