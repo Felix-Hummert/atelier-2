@@ -476,7 +476,12 @@ Unnamed documents stay one row each, as they did. A V3 publish from the CLI or t
 cockpit then names the revision through `POST /workflow-lineages`; publication
 and admission stay two HTTP acts. Details repeats what the published graph already answers —
 format, roles and node count where the V3 resource carries them, executability,
-and hash. A known start-refusal or problem token is shown as a sentence with
+declared orders with the schema each pinned, the lineage's revision history,
+and the graph miniature. A hash sits behind a proof affordance — hidden until
+asked, copyable, naming what it seals. Edit shows the exact published YAML and
+publishes a new revision through the same door; a legal catalog name then
+joins the lineage. Per-node outputs stay in that document; the preview does
+not copy them. A known start-refusal or problem token is shown as a sentence with
 a next action; an unknown token stays raw. The V3 graph also answers an excerpt of each node — id, kind, role,
 the bounded start of an agent instruction, and the authored `depends_on`
 edges. A wait has a prompt, not an instruction, so that field is empty there.

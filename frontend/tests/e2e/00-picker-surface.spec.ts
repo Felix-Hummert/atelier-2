@@ -151,3 +151,133 @@ test("the picker names an empty listing", async ({ page }) => {
     fullPage: true
   });
 });
+
+test("Details shows published substance, an honest empty, and the edit door", async ({
+  page
+}) => {
+  const api = "/atelier/api/v1";
+  const schemaHash = await anyJsonSchema(page);
+  const portions = await page.request.post(`${api}/schema-revisions`, {
+    headers: { "content-type": "application/json" },
+    data: '{"type":"integer"}'
+  });
+  expect([200, 201]).toContain(portions.status());
+  const portionsHash = (await portions.json()).revision_hash as string;
+  const readyName = "details-ready-345";
+  const emptyName = "details-empty-345";
+  const refusedName = "Der Details auf 345";
+  const readyYaml = [
+    "format_version: 3",
+    `name: ${readyName}`,
+    "graph_inputs:",
+    "  - name: portions",
+    "    schema:",
+    "      ref: portions-schema",
+    `      revision: ${portionsHash}`,
+    "nodes:",
+    "  - id: implement",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Show the published substance.",
+    "    inputs:",
+    "      - name: portions",
+    "        from:",
+    "          graph_input: portions",
+    ...declaredOutput(schemaHash),
+    ""
+  ].join("\n");
+  const readyHash = await publishYaml(page, readyYaml);
+  await publishYaml(
+    page,
+    [
+      "format_version: 3",
+      `name: ${emptyName}`,
+      "nodes:",
+      "  - id: implement",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: No order is declared.",
+      ...declaredOutput(schemaHash),
+      ""
+    ].join("\n")
+  );
+  await publishYaml(
+    page,
+    [
+      "format_version: 3",
+      `name: ${refusedName}`,
+      "nodes:",
+      "  - id: implement",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: This title cannot be a catalog name.",
+      ""
+    ].join("\n")
+  );
+  expect(
+    (
+      await page.request.post(`${api}/workflow-lineages`, {
+        data: {
+          revision_hash: readyHash,
+          actor: "e2e",
+          activated_at: "2026-08-18T00:00:00Z"
+        }
+      })
+    ).status()
+  ).toBe(201);
+
+  await page.goto("/atelier/new");
+  const ready = page.getByRole("article", { name: readyName });
+  await ready.getByText("Details", { exact: true }).click();
+  await expect(ready.getByText("Show the published substance.")).toBeVisible();
+  await expect(ready.getByRole("region", { name: "Orders" })).toContainText("portions");
+  await expect(ready.getByRole("heading", { name: "Revisions" })).toBeVisible();
+  await expect(ready.getByText("One revision.")).toBeVisible();
+  await expect(ready).not.toContainText(readyHash);
+  await ready.getByRole("button", { name: "Workflow revision" }).click();
+  await expect(ready).toContainText(readyHash);
+  await expect(ready.getByText("Seals the published document.")).toBeVisible();
+  await page.screenshot({
+    path: "test-results/picker-details.png",
+    fullPage: true
+  });
+
+  const empty = page.getByRole("article", { name: emptyName });
+  await empty.getByText("Details", { exact: true }).click();
+  await expect(empty.getByText("No orders.")).toBeVisible();
+  await expect(empty.getByText("One revision.")).toBeVisible();
+  await page.screenshot({
+    path: "test-results/picker-details-empty.png",
+    fullPage: true
+  });
+
+  const refused = page.getByRole("article", { name: refusedName });
+  await refused.getByText("Details", { exact: true }).click();
+  await expect(refused).toContainText("Unnamable");
+  await expect(refused).toContainText("Cannot be started");
+  await expect(refused.getByRole("button", { name: "Edit" })).toBeVisible();
+  await page.screenshot({
+    path: "test-results/picker-details-refusal.png",
+    fullPage: true
+  });
+
+  await ready.getByRole("button", { name: "Edit" }).click();
+  const editor = ready.getByLabel("Exact workflow YAML");
+  await expect(editor).toHaveValue(new RegExp(`name: ${readyName}`));
+  await editor.fill(readyYaml.replace("Show the published substance.", "Edited substance."));
+  await ready.getByRole("button", { name: "Review publication" }).click();
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  const listed = page.getByRole("article", { name: readyName });
+  const choice = listed.getByLabel(`Revision of ${readyName}`);
+  await expect(choice).toBeVisible({ timeout: 20_000 });
+  const head = await page.request.get(`${api}/workflow-revisions/by-name/${readyName}`);
+  expect(head.status()).toBe(200);
+  const admitted = (await head.json()).revision_hash as string;
+  expect(admitted).not.toBe(readyHash);
+  await expect(choice).toHaveValue(admitted);
+  await expect(choice.locator(`option[value="${admitted}"]`)).toHaveText("Latest");
+});
+
