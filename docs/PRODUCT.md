@@ -402,7 +402,6 @@ inspect immutable workflow revisions; start, list, and inspect V1 or V2 runs
 a page is admitted by one `PageLimit`, not a restated 1-to-100);
 list and inspect a V3 run from the published document it was started
 against, not today's executable parse;
-(the list accepts a `state` filter so a consumer can ask which runs wait);
 read the agent receipts a run has written;
 an `invalid-request` names the field and reason the validator already knew;
 answer a waiting node; cancel the current V2 Agent attempt with an optional
