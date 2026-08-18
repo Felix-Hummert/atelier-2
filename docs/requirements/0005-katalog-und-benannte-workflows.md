@@ -47,6 +47,9 @@ Begründung: Zwei Dinge zu zwei Zeitpunkten, und das Trennen ist der ganze Satz.
 Journeys:
 Beweis:     a-name-is-answerable-over-the-api
             one-command-runs-the-workflow-a-name-holds
+            mcp-tools-are-the-published-http-doors
+            mcp-and-http-never-diverge
+            a-stdio-client-lists-starts-and-reads-a-named-run
 Offen:
 
 ### REQ-KATALOG-03: Ein Anzeigename aus genau 64 hexadezimalen Kleinbuchstaben wird beim Namen verweigert.
@@ -102,7 +105,10 @@ REQ-KATALOG-04 is bound to three sentences declared in
 `the-description-is-read-from-the-published-bytes-and-from-nowhere-else`.
 REQ-KATALOG-02 is bound to `a-name-is-answerable-over-the-api` and
 `one-command-runs-the-workflow-a-name-holds`, declared in
-`acceptance/111-a-name-is-answerable-over-the-api.toml`. The in-process
+`acceptance/111-a-name-is-answerable-over-the-api.toml`, and to the three
+MCP-door sentences declared in
+`acceptance/112-the-atelier-is-an-mcp-server.toml` that start and list by
+that same name. The in-process
 supervised-start sentence that used to stand here described a door with no
 production caller and is retired with it.
 REQ-KATALOG-05 is bound to the sentences declared in

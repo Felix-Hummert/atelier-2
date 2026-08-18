@@ -11,14 +11,34 @@ class BoundedProcessFailure(OSError): ...
 def bounded_process_answer(
     process: subprocess.Popen[bytes], timeout_seconds: float, maximum_output_bytes: int
 ) -> tuple[int, bytes]:
+    """What a process answered on standard output, under one bound and deadline."""
+
+    return_code, standard_output, _diagnostics = bounded_process_streams(
+        process, timeout_seconds, maximum_output_bytes
+    )
+    return return_code, standard_output
+
+
+def bounded_process_streams(
+    process: subprocess.Popen[bytes], timeout_seconds: float, maximum_output_bytes: int
+) -> tuple[int, bytes, bytes]:
+    """Both streams of a process, each under the same byte bound and deadline.
+
+    Most callers want the answer alone and take it through
+    `bounded_process_answer`. A caller reads the diagnostic stream too where
+    what it has to tell apart is only said there -- a program that refused its
+    arguments against one that accepted them, for instance.
+    """
+
     if process.stdout is None or process.stderr is None:
         raise BoundedProcessFailure("bounded process has no readable streams")
     streams = (process.stdout, process.stderr)
     deadline = time.monotonic() + timeout_seconds
     standard_output = bytearray()
+    standard_error = bytearray()
     try:
         with selectors.DefaultSelector() as selector:
-            for stream, output in zip(streams, (standard_output, bytearray())):
+            for stream, output in zip(streams, (standard_output, standard_error)):
                 descriptor = stream.fileno()
                 os.set_blocking(descriptor, False)
                 selector.register(descriptor, selectors.EVENT_READ, output)
@@ -46,7 +66,7 @@ def bounded_process_answer(
             raise BoundedProcessFailure(
                 "bounded process did not answer in time"
             ) from error
-        return return_code, bytes(standard_output)
+        return return_code, bytes(standard_output), bytes(standard_error)
     finally:
         _reap_process(process, deadline)
 
