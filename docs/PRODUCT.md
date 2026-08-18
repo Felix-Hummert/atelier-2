@@ -429,8 +429,12 @@ listing already publishes, not one row per revision hash. Several revisions
 that share a name collapse; the catalog head from
 `GET /workflow-revisions/by-name/{name}` is the default when that name
 resolves, and older members sit in a collapsed revision choice. A name with
-one listed revision has no empty submenu. Unnamed documents stay one row
-each, as they did. Details repeats what the published graph already answers —
+one listed revision has no empty submenu. A published title the catalog does
+not hold is named Unlisted when it is a legal catalog name and Unnamable when
+the title cannot be one — the picker does not swallow that 404. Unnamed
+documents stay one row each, as they did. A V3 publish from the CLI or the
+cockpit then names the revision through `POST /workflow-lineages`; publication
+and admission stay two HTTP acts. Details repeats what the published graph already answers —
 format, roles and node count where the V3 resource carries them, executability,
 and hash. A known start-refusal or problem token is shown as a sentence with
 a next action; an unknown token stays raw. The V3 graph also answers an excerpt of each node — id, kind, role,

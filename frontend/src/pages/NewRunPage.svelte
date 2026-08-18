@@ -11,6 +11,7 @@
     type WorkflowRevisionSummary
   } from "../api/client";
   import Breadcrumb from "../components/Breadcrumb.svelte";
+  import InfoHint from "../components/InfoHint.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
@@ -35,8 +36,16 @@
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
   import { cannotBeStarted, humanErrorMessage } from "../lib/humanRefusal";
   import {
+    admitPublishedRevision,
+    catalogActivatedAt,
+    COCKPIT_CATALOG_ACTOR
+  } from "../lib/catalogAdmission";
+  import {
+    catalogNameStateOf,
+    type CatalogNameState
+  } from "../lib/catalogName";
+  import {
     groupSavedWorkflows,
-    namesWithSeveralRevisions,
     revisionChoiceLabel,
     selectedRevisionOf,
     type SavedWorkflowRow
@@ -92,6 +101,7 @@
   $: busy = operation !== null;
   let selectionGeneration = 0;
   let newestByName: Record<string, string> = {};
+  let catalogByName: Record<string, CatalogNameState> = {};
   let selectedHashByKey: Record<string, string> = {};
   let chosenRowKey: string | null = null;
   $: savedRows = groupSavedWorkflows(revisions.confirmed?.items ?? [], newestByName);
@@ -115,32 +125,52 @@
     }
   }
 
-  async function resolveNewestByName(
+  async function resolveCatalogNames(
     items: readonly WorkflowRevisionSummary[]
-  ): Promise<Record<string, string>> {
+  ): Promise<{
+    newestByName: Record<string, string>;
+    catalogByName: Record<string, CatalogNameState>;
+  }> {
     const resolved: Record<string, string> = {};
+    const states: Record<string, CatalogNameState> = {};
     const listed = new Set(items.map((item) => item.revision_hash));
+    const names = [
+      ...new Set(
+        items.flatMap((item) => (item.name === null ? [] : [item.name]))
+      )
+    ];
     await Promise.all(
-      namesWithSeveralRevisions(items).map(async (name) => {
+      names.map(async (name) => {
         try {
-          const head = await cockpitApi.getRevisionByName(name);
-          if (listed.has(head.revision_hash)) resolved[name] = head.revision_hash;
-        } catch (error) {
-          if (!isAbsentCatalogName(error)) {
-            showFailure(error, "Some saved workflow names could not be resolved.");
+          const state = await catalogNameStateOf(name, (asked) =>
+            cockpitApi.getRevisionByName(asked)
+          );
+          states[name] = state;
+          if (state.kind === "admitted" && listed.has(state.revisionHash)) {
+            resolved[name] = state.revisionHash;
           }
+        } catch (error) {
+          showFailure(error, "Some saved workflow names could not be resolved.");
         }
       })
     );
-    return resolved;
+    return { newestByName: resolved, catalogByName: states };
   }
 
-  function isAbsentCatalogName(error: unknown): boolean {
-    if (!(error instanceof CockpitRequestError) || error.problem === null) return false;
-    return (
-      error.problem.type === "urn:atelier2:problem:v1:catalog-name-not-found" ||
-      error.problem.type === "urn:atelier2:problem:v1:catalog-lineage-retired"
-    );
+  function catalogStateLabel(state: CatalogNameState | undefined): string | null {
+    if (state === undefined || state.kind === "admitted") return null;
+    if (state.kind === "unlisted") return "Unlisted";
+    if (state.kind === "unnamable") return "Unnamable";
+    return "Retired";
+  }
+
+  function catalogStateHint(state: CatalogNameState | undefined): string | null {
+    if (state === undefined || state.kind === "admitted") return null;
+    if (state.kind === "unlisted") return "This published name is not a catalog member.";
+    if (state.kind === "unnamable") {
+      return "This published title cannot be a catalog name.";
+    }
+    return "This catalog name was retired.";
   }
 
   async function chooseSaved(revisionHash: string): Promise<void> {
@@ -173,7 +203,9 @@
     revisions = startLoading(revisions);
     try {
       const reading = await readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after));
-      newestByName = await resolveNewestByName(reading.revisions);
+      const catalog = await resolveCatalogNames(reading.revisions);
+      newestByName = catalog.newestByName;
+      catalogByName = catalog.catalogByName;
       revisions = confirmResource(revisions, {
         items: reading.revisions,
         next_after_revision_hash: null
@@ -434,6 +466,12 @@
 
   async function deliverPublication(mutation: PublishMutation): Promise<void> {
     const result = await cockpitApi.publish(mutation);
+    await admitPublishedRevision(
+      cockpitApi,
+      result.value,
+      COCKPIT_CATALOG_ACTOR,
+      catalogActivatedAt()
+    );
     const resolved = await mutationJournal.resolve(mutation.mutation_id, {
       type: "publication_response",
       status: result.status,
@@ -688,6 +726,15 @@
               {:else}
                 <strong class="revision-name">{revision.name}</strong>
                 {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
+                {#if catalogStateLabel(catalogByName[revision.name]) !== null}
+                  <span class="revision-catalog">
+                    {catalogStateLabel(catalogByName[revision.name])}
+                    <InfoHint
+                      label={`Why ${catalogStateLabel(catalogByName[revision.name])?.toLowerCase()}`}
+                      exact={catalogStateHint(catalogByName[revision.name]) ?? ""}
+                    />
+                  </span>
+                {/if}
               {/if}
               {#if !revision.executable}
                 <span class="revision-refusal">{cannotBeStarted(revision.not_executable_reason)}</span>

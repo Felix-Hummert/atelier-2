@@ -146,6 +146,45 @@ describe("starting a version 3 workflow from the picker", () => {
     expect(screen.getAllByRole("article", { name: /^Binding / })).toHaveLength(1);
   });
 
+  it("proves(a-cockpit-published-v3-workflow-is-named-over-the-api): names a legal published title after publish", async () => {
+    const legal = v3Revision(revisionHash, "YQ==");
+    legal.graph = { ...legal.graph, name: "diff-review" };
+    const cockpitApi = api({
+      publish: vi.fn(async () => ({ status: 201, value: legal })),
+      foundCatalogLineage: vi.fn(async () => ({
+        status: 201,
+        value: {
+          display_name: "diff-review",
+          lineage_id: "f".repeat(64),
+          revision_hash: revisionHash,
+          revision_number: 1
+        }
+      }))
+    });
+
+    render(App, {
+      props: {
+        cockpitApi,
+        mutationJournal: new MutationJournal(sessionStorage),
+        createRunId: () => "run-v3"
+      }
+    });
+    await fireEvent.click(await screen.findByLabelText("Publish YAML"));
+    await fireEvent.input(screen.getByLabelText("Exact workflow YAML"), {
+      target: { value: "format_version: 3\nname: diff-review\n" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Review publication" }));
+    const dialog = screen.getByRole("dialog", { name: "Publish this exact workflow?" });
+    await fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
+
+    await waitFor(() => expect(cockpitApi.foundCatalogLineage).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(cockpitApi.foundCatalogLineage).mock.calls[0]?.[0]).toEqual({
+      revision_hash: revisionHash,
+      actor: "atelier2-cockpit",
+      activated_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
+    });
+  });
+
   it("proves(a-v3-workflow-is-started-from-the-picker): starts it through the bound request its bindings describe", async () => {
     const cockpitApi = api();
     await publishAndBind(cockpitApi);
