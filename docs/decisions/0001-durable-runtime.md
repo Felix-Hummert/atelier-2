@@ -31,11 +31,13 @@ separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
 The runtime creates schema V21 only in a truly empty canonical store and reopens
-only an exact V21 product schema. V9 through V20 remain published predecessor
-objects (`V9_SCHEMA_HANDOFF` through `V20_SCHEMA_HANDOFF`) and are not opened or
-migrated by runtime. An exact V13 through V20 store advances to the current
-schema only through the offline `atelier2 migrate` command, one published step at
-a time; older published predecessors stay refused by name. Older, future,
+only an exact V21 product schema. Every schema from V9 up to the one just below
+current remains a published predecessor object -- `schema.py` names each as its
+own `V*_SCHEMA_HANDOFF` constant -- and none of them are opened or migrated by
+runtime. An exact store on any source version `schema.py`'s
+`_SCHEMA_MIGRATION_STEPS` ladder still names advances to the current schema only
+through the offline `atelier2 migrate` command, one published step at a time;
+older published predecessors stay refused by name. Older, future,
 malformed, or nonempty unowned stores are rejected without mutation. There is no
 runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 21 with
 product-schema fingerprint
@@ -197,15 +199,17 @@ Until a named maturity, the product does not promise store compatibility.
 rules that preserving hops, compatibility layers, and keeping old store shapes
 openable are unnecessary while the store is a prototype. Runtime still refuses
 every predecessor. The offline migrate command is the one exception: an exact
-V13 store or later is raised to the current schema, preserving product rows,
-because every step is additive in meaning: `run_inputs_v3` was empty in V13,
-`tool_redemptions` in V14, V16's `run_events.agent_receipt_hash` is NULL for
-every event a V15 store wrote, `artifacts` in V18, and V20's rounds are one for
-every run, event and agent receipt written before a document could declare a
-loop -- a fact about those rows, not a default filled in to make a column fit. Each such step rebuilds its table rather
-than appending a column, because SQLite can only append behind a table's
-constraints while the shape a store is checked against is the one the declaration
-renders; every predecessor row is copied verbatim into the rebuilt table.
+store on any source version `schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder
+still names is raised to the current schema one published step at a time,
+preserving every product row. Each step is either an additive table home
+(`_added_table_step`) or, where SQLite cannot widen a table's constraints in
+place, a rebuild that copies every predecessor row verbatim into the
+redeclared table -- each such rebuild reading every predecessor row as a fact
+about it, never inventing a default to make a widened column fit -- because
+the shape a store is checked against is the one the declaration renders.
+`_SCHEMA_MIGRATION_STEPS` is the one place that names which source versions
+are covered and what each hop does; the crash-test matrix above names what
+each hop proves about the rows it carries forward.
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the
