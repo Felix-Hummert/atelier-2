@@ -56,6 +56,7 @@ from atelier2.contracts.run_projections import (
     WaitingReconciliationProjection,
 )
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
     ActionNode,
     AgentNode,
@@ -128,7 +129,7 @@ def durable_event(
     node_id: str,
     kind: RunEventKind,
     *,
-    workflow_format_version: int = 1,
+    workflow_format_version: WorkflowFormatVersion = WorkflowFormatVersion.V1,
     attempt_ordinal: int | None = None,
 ) -> PersistedRunEvent:
     payload = b"1"
@@ -159,7 +160,11 @@ def durable_event(
 
 def v2_agent_event(kind: RunEventKind, sequence: int = 1) -> PersistedRunEvent:
     return durable_event(
-        sequence, "agent", kind, workflow_format_version=2, attempt_ordinal=1
+        sequence,
+        "agent",
+        kind,
+        workflow_format_version=WorkflowFormatVersion.V2,
+        attempt_ordinal=1,
     )
 
 
@@ -499,7 +504,11 @@ def v3_agent_event(
     kind: RunEventKind, sequence: int = 1, node_id: str = "implement"
 ) -> PersistedRunEvent:
     return durable_event(
-        sequence, node_id, kind, workflow_format_version=3, attempt_ordinal=1
+        sequence,
+        node_id,
+        kind,
+        workflow_format_version=WorkflowFormatVersion.V3,
+        attempt_ordinal=1,
     )
 
 

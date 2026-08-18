@@ -35,6 +35,7 @@ from atelier2.contracts.run_projections import (
     public_agent_attempt_state,
 )
 from atelier2.contracts.runs import RunState
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
     AgentNode,
     AgentNodeV2,
@@ -320,7 +321,10 @@ def _state_the_event_ended_in(
 def _attempt_the_event_proves(
     persisted: PersistedRunEvent | None,
 ) -> NodeRailAttempt | None:
-    if persisted is None or persisted.workflow_format_version not in (2, 3):
+    if persisted is None or persisted.workflow_format_version not in (
+        WorkflowFormatVersion.V2,
+        WorkflowFormatVersion.V3,
+    ):
         return None
     ordinal = persisted.event.attempt_ordinal
     durable_state = _ATTEMPT_STATES_PROVEN_BY_EVENT.get(persisted.event.event_kind)

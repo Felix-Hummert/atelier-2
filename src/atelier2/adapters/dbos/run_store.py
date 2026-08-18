@@ -90,6 +90,7 @@ from atelier2.contracts.tool_grants_v3 import (
     ToolGrantCapability,
     ToolRedemptionReceipt,
 )
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
     ActionNode,
     AgentNodeV2,
@@ -164,7 +165,8 @@ def graph_from_document(
 
 def run_from_record(record: Mapping[Any, Any]) -> Run:
     if (
-        int(record["workflow_format_version"]) != 1
+        WorkflowFormatVersion(int(record["workflow_format_version"]))
+        is not WorkflowFormatVersion.V1
         or record["agent_binding_set_hash"] is not None
     ):
         raise RunTransitionConflict("V1 run record carries a V2 binding")
@@ -181,12 +183,15 @@ def run_from_record(record: Mapping[Any, Any]) -> Run:
 
 
 def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> AnyRun:
-    version = int(record["workflow_format_version"])
-    if version == 1:
+    version = WorkflowFormatVersion(int(record["workflow_format_version"]))
+    if version is WorkflowFormatVersion.V1:
         return run_from_record(record)
     # A V3 run binds its agent roles exactly as a V2 run does, so the rows below
     # are read the same way; what differs about V3 lives in the graph, not here.
-    if version not in (2, 3) or record["agent_binding_set_hash"] is None:
+    if (
+        version not in (WorkflowFormatVersion.V2, WorkflowFormatVersion.V3)
+        or record["agent_binding_set_hash"] is None
+    ):
         raise RunTransitionConflict("run format version and binding set disagree")
     run_id = RunId(str(record["run_id"]))
     revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
@@ -275,7 +280,7 @@ def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> An
         int(record["last_event_sequence"]),
     )
     terminal_hash = None if terminal is None else Sha256Hash(str(terminal))
-    if version == 2:
+    if version is WorkflowFormatVersion.V2:
         return RunV2(*head, terminal_hash)
     configuration = record["run_configuration_revision_hash"]
     if configuration is None:

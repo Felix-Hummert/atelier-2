@@ -22,6 +22,7 @@ from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 RUN_ID = RunId("v1-event-vocabulary")
 REVISION_HASH = WorkflowRevisionHash("0" * 64)
@@ -82,7 +83,7 @@ def v1_projection(kind: RunEventKind) -> PersistedRunEvent:
             "NEVER_LAUNCHED" if kind in SETTLED_CANCELLATION_KINDS else None
         ),
     )
-    return PersistedRunEvent(event, receipt, 1)
+    return PersistedRunEvent(event, receipt, WorkflowFormatVersion.V1)
 
 
 UNPUBLISHED_KINDS = tuple(

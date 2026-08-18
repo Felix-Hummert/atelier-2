@@ -36,6 +36,7 @@ from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from tests.scenarios.api import api_limits
 
 SERVED_RAIL = (
@@ -169,7 +170,7 @@ def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
         agent_attempt_id=attempt.attempt_id.value,
         attempt_ordinal=1,
     )
-    persisted = PersistedRunEvent(event, None, 2)
+    persisted = PersistedRunEvent(event, None, WorkflowFormatVersion.V2)
     event_resource = run_event_resource(persisted, SERVED_RAIL)
     api_limits().require_event_projection(persisted)
 

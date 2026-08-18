@@ -45,6 +45,7 @@ from atelier2.contracts.effects import (
     EffectAdapterBinding,
     EffectDestination,
 )
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.agent_executions import (
     AgentExecutor,
     AgentExecutorFactory,
@@ -325,7 +326,7 @@ def _open_binding(
                         == agent_configuration_revisions.c.auth_profile_revision_hash,
                     )
                     .where(
-                        runs.c.workflow_format_version == 2,
+                        runs.c.workflow_format_version == WorkflowFormatVersion.V2,
                         runs.c.state != "COMPLETED",
                     )
                     .distinct()
