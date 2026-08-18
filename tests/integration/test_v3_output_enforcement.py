@@ -24,16 +24,28 @@ silent `STARTED`/`LAUNCH_ARMED` zombie (the live class of run 8846bf47).
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import json
+import os
+import stat
+import subprocess
+import sys
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
 
+from atelier2.adapters.claude_subscription import ClaudeSubscriptionExecutorFactory
+from atelier2.adapters.codex_subscription import (
+    CodexSandboxMode,
+    CodexSubscriptionExecutorFactory,
+    CodexSubscriptionSettings,
+)
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.node_records import keep_node_receipt
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
@@ -51,7 +63,12 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.grok_subscription import (
+    GrokSubscriptionExecutorFactory,
+    GrokSubscriptionSettings,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import (
     MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
@@ -84,7 +101,16 @@ from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEventKind,
 )
-from atelier2.contracts.node_records_v3 import NodeReceiptReason
+from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.node_records_v3 import (
+    DeclaredContextPackageHash,
+    NodeExecutionRequestHash,
+    NodeReceipt,
+    NodeReceiptReason,
+    PersistedReceiptDisposition,
+    node_receipt_reason,
+    read_stored_node_receipt_reason,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import (
@@ -103,14 +129,23 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
-from atelier2.ports.agent_executions import AgentExecutionResult
+from atelier2.ports.agent_executions import (
+    AgentExecutionResult,
+    AgentProcessCompletion,
+    AgentProcessInvocation,
+)
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
 from atelier2.ports.run_queries import NodeDetailFound
-from tests.scenarios.agents import agent_scratch_root, failing_agent_executor_factory
+from tests.scenarios.agents import (
+    agent_scratch_root,
+    claude_subscription_deployment,
+    failing_agent_executor_factory,
+    process_invocation,
+)
 from tests.scenarios.api import durable_queries
 
 PLAN_SCHEMA = PublishedRevision(
@@ -380,9 +415,13 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
         event["payload"]
     ) == AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED.value.encode("ascii")
     assert receipt["disposition"] == "failed"
-    reason = str(receipt["reason"])
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(receipt["reason"])
+    )
     assert reason.startswith(f"{NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value}: ")
     assert named in reason
+    assert schema_revision == PLAN_SCHEMA.revision_hash
+    assert value_hash == Sha256Hash.of(answered)
     assert receipt["request_hash"] == request["request_hash"]
     assert receipt["context_package_hash"] == request["context_package_hash"]
     assert (int(artifacts or 0), int(outputs or 0)) == (0, 0)
@@ -431,7 +470,12 @@ def test_the_answer_its_own_schema_admits_is_written_as_the_one_success(
     assert bytes(payload or b"") == THE_ANSWER_THE_SCHEMA_ADMITS
     assert bytes(kept or b"") == THE_ANSWER_THE_SCHEMA_ADMITS
     assert receipt["disposition"] == "succeeded"
-    assert str(receipt["reason"]) == NodeReceiptReason.OUTPUT_ACCEPTED.value
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(receipt["reason"])
+    )
+    assert reason == NodeReceiptReason.OUTPUT_ACCEPTED.value
+    assert schema_revision == PLAN_SCHEMA.revision_hash
+    assert value_hash == Sha256Hash.of(THE_ANSWER_THE_SCHEMA_ADMITS)
     assert receipt["request_hash"] == request["request_hash"]
     assert receipt["context_package_hash"] == request["context_package_hash"]
     assert bytes(artifact["value"]) == THE_ANSWER_THE_SCHEMA_ADMITS
@@ -897,3 +941,217 @@ def test_only_a_bounded_tail_of_what_the_process_said_becomes_durable(
     assert "closing-line" in reason
     assert "opening-line" not in reason
     assert len(reason) < 2 * MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES
+
+
+@pytest.mark.proves("a-judged-receipt-names-the-schema-identity-it-judged")
+def test_a_receipt_without_schema_identity_when_a_verdict_exists_is_refused(
+    runtime: DbosRuntime,
+) -> None:
+    """The mutation that bites: a judged receipt that drops the identity dies."""
+
+    execution = armed_attempt(runtime)
+    with (
+        pytest.raises(ValueError, match="schema identity"),
+        canonical_write_transaction(runtime.engine) as connection,
+    ):
+        keep_node_receipt(
+            connection,
+            execution.request.node_execution_id,
+            PersistedReceiptDisposition.FAILED,
+            node_receipt_reason(
+                NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, "instance-not-json"
+            ),
+        )
+
+
+@pytest.mark.proves("a-judged-receipt-names-the-schema-identity-it-judged")
+def test_an_old_receipt_without_schema_identity_remains_readable(
+    runtime: DbosRuntime,
+) -> None:
+    """A pre-identity row is honestly empty, not a refusal and not corruption."""
+
+    execution = armed_attempt(runtime)
+    words = node_receipt_reason(
+        NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, "instance-not-json"
+    )
+    with canonical_write_transaction(runtime.engine) as connection:
+        request = (
+            connection.execute(
+                sa.select(node_execution_requests_v3).where(
+                    node_execution_requests_v3.c.node_execution_id
+                    == execution.request.node_execution_id.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        receipt = NodeReceipt(
+            execution.request.node_execution_id,
+            PersistedReceiptDisposition.FAILED,
+            words,
+            NodeExecutionRequestHash(str(request["request_hash"])),
+            DeclaredContextPackageHash(str(request["context_package_hash"])),
+            (),
+        )
+        connection.execute(
+            node_receipts_v3.insert().values(
+                node_execution_id=receipt.node_execution_id.value,
+                disposition=receipt.disposition.value,
+                reason=words,
+                request_hash=receipt.request_hash.value,
+                context_package_hash=receipt.context_package_hash.value,
+                receipt_hash=receipt.receipt_hash.value,
+            )
+        )
+
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(words)
+    assert reason == words
+    assert schema_revision is None
+    assert value_hash is None
+    found = durable_queries(runtime.engine).get_node_detail(RUN, NODE)
+    assert isinstance(found, NodeDetailFound), found
+    assert found.detail.refusal == words
+
+
+def _write_executable(path: Path, source: str) -> Path:
+    path.write_text(f"#!{sys.executable}\n{source}", encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return path
+
+
+def _run_fake_process(script: str, working_directory: Path) -> AgentProcessCompletion:
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=working_directory,
+        capture_output=True,
+        check=False,
+    )
+    return AgentProcessCompletion(
+        completed.returncode, completed.stdout, completed.stderr
+    )
+
+
+def _fake_invocation(working_directory: Path) -> AgentProcessInvocation:
+    return process_invocation(
+        AgentAttemptId.of(b"parity-attempt"),
+        ("fake",),
+        working_directory,
+    )
+
+
+def _decoded_by_claude(directory: Path, payload: bytes) -> AgentExecutionResult:
+    working = directory / "lease"
+    working.mkdir(parents=True)
+    envelope = json.dumps(
+        {"type": "result", "is_error": False, "result": payload.decode("utf-8")}
+    )
+    deploy = directory / "deploy"
+    deploy.mkdir()
+    result = (
+        ClaudeSubscriptionExecutorFactory(
+            claude_subscription_deployment(deploy, "pass\n")
+        )
+        .open()
+        .decode_process_completion(
+            _fake_invocation(working),
+            _run_fake_process(f"import sys; sys.stdout.write({envelope!r})", working),
+        )
+    )
+    assert isinstance(result, AgentExecutionResult), result
+    return result
+
+
+def _decoded_by_codex(directory: Path, payload: bytes) -> AgentExecutionResult:
+    working = directory / "lease"
+    working.mkdir(parents=True)
+    credentials = directory / "codex-home"
+    credentials.mkdir()
+    result = (
+        CodexSubscriptionExecutorFactory(
+            CodexSubscriptionSettings(
+                _write_executable(directory / "codex", "pass\n"),
+                credentials,
+                os.environ.get("PATH", "/usr/bin"),
+                CodexSandboxMode.READ_ONLY,
+            )
+        )
+        .open()
+        .decode_process_completion(
+            _fake_invocation(working),
+            _run_fake_process(
+                f"from pathlib import Path; Path('last-message').write_bytes({payload!r})",
+                working,
+            ),
+        )
+    )
+    assert isinstance(result, AgentExecutionResult), result
+    return result
+
+
+def _decoded_by_grok(directory: Path, payload: bytes) -> AgentExecutionResult:
+    working = directory / "lease"
+    working.mkdir(parents=True)
+    workspace = directory / "workspace"
+    credentials = directory / "grok-home"
+    workspace.mkdir()
+    credentials.mkdir()
+    authentication = credentials / "auth.json"
+    authentication.write_bytes(b"{}")
+    authentication.chmod(0o600)
+    envelope = json.dumps({"text": payload.decode("utf-8")})
+    result = (
+        GrokSubscriptionExecutorFactory(
+            GrokSubscriptionSettings(
+                _write_executable(directory / "grok", "pass\n"),
+                workspace,
+                credentials,
+                os.environ.get("PATH", "/usr/bin"),
+            )
+        )
+        .open()
+        .decode_process_completion(
+            _fake_invocation(working),
+            _run_fake_process(f"import sys; sys.stdout.write({envelope!r})", working),
+        )
+    )
+    assert isinstance(result, AgentExecutionResult), result
+    return result
+
+
+@pytest.mark.proves("every-executor-meets-the-same-output-contract-seam")
+@pytest.mark.parametrize(
+    "decode",
+    (
+        pytest.param(_decoded_by_claude, id="claude"),
+        pytest.param(_decoded_by_codex, id="codex"),
+        pytest.param(_decoded_by_grok, id="grok"),
+    ),
+)
+def test_every_executor_adapter_refuses_a_schema_violation_on_the_same_seam(
+    runtime: DbosRuntime,
+    tmp_path: Path,
+    decode: Callable[[Path, bytes], AgentExecutionResult],
+) -> None:
+    """The #326 finding, now by proof: each adapter's decode hits the same seam.
+
+    A fake child writes that adapter's envelope around the same refused bytes.
+    Decode succeeds -- the provider answered -- and the success write names the
+    same refusal for all three. No billed call.
+    """
+
+    execution = armed_attempt(runtime)
+    result = decode(tmp_path / "adapter", THE_ANSWER_THE_SCHEMA_REFUSES)
+    assert result == AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+
+    outcome = DbosAgentAttemptStore(
+        runtime.engine, runtime.settings.application_version
+    ).complete_success(execution, result)
+
+    assert isinstance(outcome, AgentAttemptFailed), outcome
+    assert outcome.attempt.failure_code is AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
+    with runtime.engine.connect() as connection:
+        stored = connection.scalar(sa.select(node_receipts_v3.c.reason))
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(str(stored))
+    assert reason.startswith(f"{NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value}: ")
+    assert schema_revision == PLAN_SCHEMA.revision_hash
+    assert value_hash == Sha256Hash.of(THE_ANSWER_THE_SCHEMA_REFUSES)
