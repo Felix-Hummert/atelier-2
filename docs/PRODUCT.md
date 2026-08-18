@@ -448,7 +448,13 @@ decimal text only an `integer` wait can honestly produce.
 Public references are transport identifiers, not new domain identities, and
 retries report whether a command was newly accepted or already existed without
 duplicating its durable
-write or wake-up. [ADR 0003](decisions/0003-http-api.md) owns the API and resume
+write or wake-up. The API also describes the one body it takes as bytes: a
+guessed path is refused with the exact location of the OpenAPI document, and the
+workflow publication body there carries the shape of the document itself —
+derived from the models the publication reads it against, so no second
+description can drift. That shape decides the form; the rules only a whole
+document answers keep their named refusals at publication.
+[ADR 0003](decisions/0003-http-api.md) owns the API and resume
 contract.
 
 A narrow local cockpit can list runs, publish and start a workflow from `/new`,
