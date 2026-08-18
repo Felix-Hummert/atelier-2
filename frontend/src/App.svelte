@@ -8,6 +8,7 @@
     createRunId as makeRunId
   } from "./lib/mutationJournal";
   import { cockpitRoute } from "./lib/route";
+  import WorkshopShell from "./components/WorkshopShell.svelte";
   import NewRunPage from "./pages/NewRunPage.svelte";
   import RunCockpitPage from "./pages/RunCockpitPage.svelte";
   import ProjectPage from "./pages/ProjectPage.svelte";
@@ -32,9 +33,9 @@
   }
 </script>
 
-<svelte:head><meta name="theme-color" content="#f4f1e8" /><title>Atelier 2</title></svelte:head>
+<svelte:head><meta name="theme-color" content="#f2efe7" /><title>Atelier 2</title></svelte:head>
 
-<main>
+<WorkshopShell {route} {navigate}>
   {#if route.page === "studio"}
     <StudioPage {cockpitApi} {navigate} />
   {:else if route.page === "project"}
@@ -52,4 +53,4 @@
   {:else}
     <section><p class="eyebrow">Atelier 2</p><h1>Page not found</h1><a class="button" href="/atelier" onclick={(event) => { event.preventDefault(); navigate("/atelier"); }}>Studio</a></section>
   {/if}
-</main>
+</WorkshopShell>
