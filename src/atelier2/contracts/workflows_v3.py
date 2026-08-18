@@ -1364,9 +1364,11 @@ def _unrepeatable_loop_forms(graph: WorkflowGraphV3) -> str | None:
     Two things are still nobody's. A round is a second execution of a node, and
     only the Agent kind mints one today -- a repeated Wait would ask the same
     person the same question under an identity the answer path does not carry.
-    And a value read *out of* a loop names no round: the reader would have to
-    say which round wrote it, and choosing is the verdict-driven continuation
-    this head does not build.
+    And a value read *out of* a loop names no round: a run leaves the loop in
+    whichever round ended it and stands in the first round again outside, so the
+    reader would have to say which round wrote the value it reads, and no rule
+    here says. A declared verdict decides when a loop ends; it does not decide
+    that.
     """
     for loop in graph.loops:
         repeated = sorted(

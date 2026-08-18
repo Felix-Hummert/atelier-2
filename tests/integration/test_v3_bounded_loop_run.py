@@ -7,10 +7,10 @@ identity the round owns. Nothing here reaches into the engine — the loop is
 declared, the run is started through the public start seam, `launch()` hands it
 to the real queue, and what is asserted is what an operator would see afterwards.
 
-What is deliberately not proven here, because this head does not build it: a
-round that ends the loop early. Reaching the declared bound is the only way out
-of a loop this build has, and a result that says "green" steering the next edge
-is the verdict-driven continuation of #25's second head.
+This loop declares no verdict, so the bound is the only exit it has, and that is
+exactly what is under test: the rounds run to the declared end and the run ends
+there. A loop whose own answer ends it earlier is the verdict-steered kind, and
+`test_v3_verdict_exit_run.py` is where that is proven.
 """
 
 from __future__ import annotations
