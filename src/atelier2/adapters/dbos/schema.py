@@ -21,13 +21,25 @@ from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTER
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
+def _rfc3339_utc(column: str) -> str:
+    """RFC 3339 UTC at second precision."""
+
+    return f"(length({column}) = 20 AND {column} LIKE '____-__-__T__:__:__Z')"
+
+
+def _rfc3339_utc_or_null(column: str) -> str:
+    """A recording instant is absent, or RFC 3339 UTC at second precision."""
+
+    return f"({column} IS NULL OR {_rfc3339_utc(column)})"
+
+
 @dataclass(frozen=True)
 class ProductSchemaHandoff:
     version: int
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
@@ -37,6 +49,7 @@ _VERSION_FOURTEEN = 14
 _VERSION_FIFTEEN = 15
 _VERSION_SIXTEEN = 16
 _VERSION_SEVENTEEN = 17
+_VERSION_EIGHTEEN = 18
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -56,7 +69,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # output ends its attempt under its own name instead of borrowing the process
 # exit's or killing the driver. V18 admits FAILED as a run state, so a line
 # whose open node paths have terminally failed ends under the node's own
-# reason instead of standing STARTED with nothing to continue it.
+# reason instead of standing STARTED with nothing to continue it. V19 records
+# when a run, attempt, or event was written, as RFC 3339 UTC. Predecessor
+# rows stay NULL — no invented time.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -70,6 +85,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     16: "97605fb330cb6382d52a554d644015f631cccea3759c04c27de3ca5f1fea9c3a",
     17: "2f3a11d0b4d67e375259ca732c7243c95d19fa763e03785b0bd4a83c1b1359d2",
     18: "c60275544c9984adccff79e3a4f5ab6eeab5ea1683306adf1d2faa7dbb51e29d",
+    19: "09f40a50bdb972a336832aa16a30200225e096bedfefe0a387508e5ea611fc1a",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -106,6 +122,10 @@ V16_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V17_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_SEVENTEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_SEVENTEEN],
+)
+V18_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_EIGHTEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_EIGHTEEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -925,6 +945,37 @@ sa.Index(
     unique=True,
     sqlite_where=run_events.c.agent_attempt_id.is_not(None),
 )
+run_instants = sa.Table(
+    "run_instants",
+    metadata,
+    sa.Column("run_id", sa.Text, primary_key=True),
+    sa.Column("started_at", sa.Text, nullable=False),
+    sa.Column("ended_at", sa.Text, nullable=True),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(_rfc3339_utc("started_at")),
+    sa.CheckConstraint(_rfc3339_utc_or_null("ended_at")),
+)
+attempt_instants = sa.Table(
+    "attempt_instants",
+    metadata,
+    sa.Column("attempt_id", sa.Text, primary_key=True),
+    sa.Column("started_at", sa.Text, nullable=False),
+    sa.Column("ended_at", sa.Text, nullable=True),
+    sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(_rfc3339_utc("started_at")),
+    sa.CheckConstraint(_rfc3339_utc_or_null("ended_at")),
+)
+event_instants = sa.Table(
+    "event_instants",
+    metadata,
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("event_sequence", sa.Integer, nullable=False),
+    sa.Column("recorded_at", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("run_id", "event_sequence"),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint("event_sequence > 0"),
+    sa.CheckConstraint(_rfc3339_utc("recorded_at")),
+)
 wait_answers = sa.Table(
     "wait_answers",
     metadata,
@@ -1737,6 +1788,56 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'v3 node receipt access is immutable');
         END
     """,
+    "run_instants_start_no_update": """
+        CREATE TRIGGER run_instants_start_no_update
+        BEFORE UPDATE OF run_id, started_at ON run_instants BEGIN
+          SELECT RAISE(ABORT, 'run start instant is immutable');
+        END
+    """,
+    "run_instants_end_once": """
+        CREATE TRIGGER run_instants_end_once
+        BEFORE UPDATE OF ended_at ON run_instants
+        WHEN OLD.ended_at IS NOT NULL OR NEW.ended_at IS NULL BEGIN
+          SELECT RAISE(ABORT, 'run end instant is written once');
+        END
+    """,
+    "run_instants_no_delete": """
+        CREATE TRIGGER run_instants_no_delete
+        BEFORE DELETE ON run_instants BEGIN
+          SELECT RAISE(ABORT, 'run instants are immutable');
+        END
+    """,
+    "attempt_instants_start_no_update": """
+        CREATE TRIGGER attempt_instants_start_no_update
+        BEFORE UPDATE OF attempt_id, started_at ON attempt_instants BEGIN
+          SELECT RAISE(ABORT, 'attempt start instant is immutable');
+        END
+    """,
+    "attempt_instants_end_once": """
+        CREATE TRIGGER attempt_instants_end_once
+        BEFORE UPDATE OF ended_at ON attempt_instants
+        WHEN OLD.ended_at IS NOT NULL OR NEW.ended_at IS NULL BEGIN
+          SELECT RAISE(ABORT, 'attempt end instant is written once');
+        END
+    """,
+    "attempt_instants_no_delete": """
+        CREATE TRIGGER attempt_instants_no_delete
+        BEFORE DELETE ON attempt_instants BEGIN
+          SELECT RAISE(ABORT, 'attempt instants are immutable');
+        END
+    """,
+    "event_instants_no_update": """
+        CREATE TRIGGER event_instants_no_update
+        BEFORE UPDATE ON event_instants BEGIN
+          SELECT RAISE(ABORT, 'event instants are immutable');
+        END
+    """,
+    "event_instants_no_delete": """
+        CREATE TRIGGER event_instants_no_delete
+        BEFORE DELETE ON event_instants BEGIN
+          SELECT RAISE(ABORT, 'event instants are immutable');
+        END
+    """,
 }
 
 
@@ -1896,17 +1997,20 @@ def _table_fingerprint(
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
+    later = {run_instants.name, attempt_instants.name, event_instants.name}
+    if version == SCHEMA_VERSION:
+        return PRODUCT_TABLE_NAMES
     if version in {
-        SCHEMA_VERSION,
+        _VERSION_EIGHTEEN,
         _VERSION_SEVENTEEN,
         _VERSION_SIXTEEN,
         _VERSION_FIFTEEN,
     }:
-        return PRODUCT_TABLE_NAMES
+        return PRODUCT_TABLE_NAMES - later
     if version == _VERSION_FOURTEEN:
-        return PRODUCT_TABLE_NAMES - {tool_redemptions.name}
+        return PRODUCT_TABLE_NAMES - {tool_redemptions.name} - later
     if version == _VERSION_THIRTEEN:
-        return PRODUCT_TABLE_NAMES - {run_inputs_v3.name, tool_redemptions.name}
+        return PRODUCT_TABLE_NAMES - {run_inputs_v3.name, tool_redemptions.name} - later
     raise UnsupportedSchemaVersion(version)
 
 
@@ -2283,7 +2387,46 @@ def _apply_v17_to_v18(connection: sqlite3.Connection) -> None:
     )
     connection.execute(f"DROP TABLE {_PREDECESSOR_RUNS}")
     connection.execute(_PRODUCT_TRIGGERS["runs_binding_no_update"])
-    _raise_declared_version(connection, _VERSION_SEVENTEEN, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_SEVENTEEN, _VERSION_EIGHTEEN)
+
+
+_INSTANT_TABLES = (run_instants, attempt_instants, event_instants)
+_INSTANT_TRIGGERS = (
+    "run_instants_start_no_update",
+    "run_instants_end_once",
+    "run_instants_no_delete",
+    "attempt_instants_start_no_update",
+    "attempt_instants_end_once",
+    "attempt_instants_no_delete",
+    "event_instants_no_update",
+    "event_instants_no_delete",
+)
+
+
+def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
+    """Give runs, attempts, and events a home for the instant they were written.
+
+    Three additive tables, no reinterpretation of a predecessor row: a run that
+    already existed has no instant, which is what "this store never recorded
+    when" means, and never an invented clock.
+    """
+
+    for table in _INSTANT_TABLES:
+        existing = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table.name,),
+        ).fetchone()
+        if existing is not None:
+            raise StoreMigrationRefused(
+                f"schema version {_VERSION_EIGHTEEN} already has {table.name}; "
+                "this command will not alter it"
+            )
+        connection.execute(
+            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger in _INSTANT_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+    _raise_declared_version(connection, _VERSION_EIGHTEEN, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2316,7 +2459,8 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     ),
     _SchemaMigrationStep(_VERSION_FIFTEEN, _VERSION_SIXTEEN, _apply_v15_to_v16),
     _SchemaMigrationStep(_VERSION_SIXTEEN, _VERSION_SEVENTEEN, _apply_v16_to_v17),
-    _SchemaMigrationStep(_VERSION_SEVENTEEN, SCHEMA_VERSION, _apply_v17_to_v18),
+    _SchemaMigrationStep(_VERSION_SEVENTEEN, _VERSION_EIGHTEEN, _apply_v17_to_v18),
+    _SchemaMigrationStep(_VERSION_EIGHTEEN, SCHEMA_VERSION, _apply_v18_to_v19),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

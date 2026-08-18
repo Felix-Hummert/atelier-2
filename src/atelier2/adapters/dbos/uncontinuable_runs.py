@@ -8,6 +8,7 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.instants import record_run_ended
 from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.agent_attempts import (
@@ -100,6 +101,8 @@ class DbosUncontinuableRunStore:
                     terminal_hash=terminal_hash.value,
                 )
             )
+            if updated.rowcount == 1:
+                record_run_ended(connection, run_id.value)
             return updated.rowcount == 1
 
 

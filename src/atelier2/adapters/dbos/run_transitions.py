@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.agent_catalog import (
     agent_configuration_from_record,
     auth_profile_from_record,
 )
+from atelier2.adapters.dbos.instants import record_event_instant, record_run_ended
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     auth_profile_revisions,
@@ -407,6 +408,7 @@ def _insert_event(session: Any, event: RunEvent) -> None:
             ),
         )
     )
+    record_event_instant(session, event.run_id.value, event.event_sequence)
 
 
 def _commit_event(
@@ -512,6 +514,8 @@ def _commit_event(
     )
     if updated.rowcount != 1:
         raise RunTransitionConflict("run transition lost its state/version CAS")
+    if terminal:
+        record_run_ended(session, run_id.value)
     if not terminal:
         _insert_event(session, event)
     return TransitionSnapshot(

@@ -13,6 +13,7 @@ from atelier2.adapters.dbos.agent_catalog import (
     auth_profile_from_record,
 )
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.instants import record_run_started
 from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.dbos.node_records import persist_bound_node_executions
 from atelier2.adapters.dbos.run_store import entry_node_of
@@ -563,6 +564,8 @@ class DbosDurableRunStarter:
                 )
                 if existing_record is None:
                     raise RuntimeError("inserted run is not readable")
+                if inserted.rowcount == 1:
+                    record_run_started(connection, request.run_id.value)
                 if isinstance(graph, WorkflowGraph):
                     run = run_from_record(existing_record)
                 else:

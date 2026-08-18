@@ -34,11 +34,13 @@ from atelier2.adapters.dbos.run_transitions import (
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
+    attempt_instants,
     effect_intents,
     effect_receipts,
     node_receipts_v3,
     reconcile_commands,
     run_events,
+    run_instants,
     runs,
     workflow_revisions,
 )
@@ -97,6 +99,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
@@ -506,6 +509,36 @@ def _node_job_and_refusal(
     return composed, Sha256Hash.of(composed).value, None
 
 
+def _node_instants(
+    connection: Connection, run_id: RunId, node_id: str
+) -> tuple[RecordedAt | None, RecordedAt | None]:
+    """The first start and last end recorded for this node's attempts."""
+
+    rows = tuple(
+        connection.execute(
+            sa.select(attempt_instants.c.started_at, attempt_instants.c.ended_at)
+            .select_from(
+                attempt_instants.join(
+                    agent_attempts,
+                    attempt_instants.c.attempt_id == agent_attempts.c.attempt_id,
+                )
+            )
+            .where(
+                agent_attempts.c.run_id == run_id.value,
+                agent_attempts.c.node_id == node_id,
+            )
+            .order_by(agent_attempts.c.attempt_ordinal)
+        ).mappings()
+    )
+    if not rows:
+        return None, None
+    started = RecordedAt(str(rows[0]["started_at"]))
+    ended_values = [record["ended_at"] for record in rows]
+    if any(value is None for value in ended_values):
+        return started, None
+    return started, RecordedAt(str(max(str(value) for value in ended_values)))
+
+
 def _node_answer(
     connection: Connection,
     run_id: RunId,
@@ -805,6 +838,7 @@ class DbosQueries:
                 durable_refusal = _node_receipt_refusal(
                     connection, run_id, projection.run.revision_hash, node_id
                 )
+                started_at, ended_at = _node_instants(connection, run_id, node_id)
                 return NodeDetailFound(
                     NodeDetail(
                         run_id=run_id,
@@ -817,6 +851,8 @@ class DbosQueries:
                         refusal=durable_refusal
                         if durable_refusal is not None
                         else refusal,
+                        started_at=started_at,
+                        ended_at=ended_at,
                     )
                 )
         except ProjectionLimitExceeded:
@@ -1190,6 +1226,22 @@ class DbosQueries:
         if set(command_records) != set(owner_ids):
             raise RunTransitionConflict("reconciling intent command is missing")
 
+        instants: dict[str, tuple[RecordedAt, RecordedAt | None]] = {}
+        run_ids = tuple(run.run_id.value for run in loaded_runs)
+        instant_rows = (
+            connection.execute(
+                sa.select(run_instants).where(run_instants.c.run_id.in_(run_ids))
+            ).mappings()
+            if run_ids
+            else ()
+        )
+        for record in instant_rows:
+            ended = record["ended_at"]
+            instants[str(record["run_id"])] = (
+                RecordedAt(str(record["started_at"])),
+                None if ended is None else RecordedAt(str(ended)),
+            )
+
         projections = []
         for run in loaded_runs:
             reconciliation: WaitingReconciliationProjection | None = None
@@ -1249,12 +1301,15 @@ class DbosQueries:
                         )
                         for attempt_record in records_for_execution
                     )
+            instant = instants.get(run.run_id.value)
             projections.append(
                 RunProjection(
                     run,
                     graphs[run.revision_hash],
                     reconciliation,
                     attempt_projections,
+                    None if instant is None else instant[0],
+                    None if instant is None else instant[1],
                 )
             )
         return tuple(projections)

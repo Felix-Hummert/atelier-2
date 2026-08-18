@@ -34,9 +34,11 @@ from atelier2.adapters.dbos.schema import (
     _require_product_shape,
     agent_attempts,
     atelier_schema_versions,
+    attempt_instants,
     catalog_lineage_members,
     catalog_lineages,
     context_packages_v3,
+    event_instants,
     initialize_schema,
     node_execution_requests_v3,
     node_receipts_v3,
@@ -44,6 +46,7 @@ from atelier2.adapters.dbos.schema import (
     run_configuration_revisions,
     run_events,
     run_inputs_v3,
+    run_instants,
     runs,
     tool_redemptions,
     workflow_revisions,
@@ -331,6 +334,19 @@ def _create_populated_v13_store(database_path: Path) -> None:
         for table in (run_inputs_v3.name, tool_redemptions.name):
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
+            connection.execute(sa.text(f"DROP TABLE {table}"))
+        for trigger in (
+            "run_instants_start_no_update",
+            "run_instants_end_once",
+            "run_instants_no_delete",
+            "attempt_instants_start_no_update",
+            "attempt_instants_end_once",
+            "attempt_instants_no_delete",
+            "event_instants_no_update",
+            "event_instants_no_delete",
+        ):
+            connection.execute(sa.text(f"DROP TRIGGER {trigger}"))
+        for table in (run_instants.name, attempt_instants.name, event_instants.name):
             connection.execute(sa.text(f"DROP TABLE {table}"))
         _restore_predecessor_run_events(connection)
         _restore_predecessor_agent_attempts(connection)

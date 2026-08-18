@@ -543,7 +543,9 @@ const runV3Schema = z
     current_node_id: z.string().min(1),
     node_rail: z.array(nodeRailEntrySchema).min(1),
     terminal_hash: sha256.nullable(),
-    latest_event_cursor: eventCursor.nullable()
+    latest_event_cursor: eventCursor.nullable(),
+    started_at: z.string().nullable().optional(),
+    ended_at: z.string().nullable().optional()
   })
   .strict();
 
@@ -587,7 +589,9 @@ export const nodeDetailSchema = z
     job_hash: sha256.nullable(),
     answer: nodeAnswerSchema.nullable(),
     provenance: nodeProvenanceSchema.nullable(),
-    refusal: z.string().nullable()
+    refusal: z.string().nullable(),
+    started_at: z.string().nullable().optional(),
+    ended_at: z.string().nullable().optional()
   })
   .strict();
 

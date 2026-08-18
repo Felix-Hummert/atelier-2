@@ -7,6 +7,7 @@ import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.instants import record_attempt_ended, record_attempt_started
 from atelier2.adapters.dbos.names import (
     CANCELLATION_WORKFLOW_NAME,
     QUEUE_NAME,
@@ -404,6 +405,7 @@ def _fail_current_attempt(
     )
     if updated.rowcount != 1:
         raise RunTransitionConflict("agent failure lost its attempt CAS")
+    record_attempt_ended(connection, attempt_id.value)
     durable_failure = _load_attempt(connection, attempt_id)
     _commit_event(
         connection,
@@ -532,11 +534,13 @@ class DbosAgentAttemptStore:
                 existing = _load_attempt(connection, prepared.attempt_id)
                 _require_attempt_binding(existing, execution)
                 return existing
-            connection.execute(
+            inserted = connection.execute(
                 agent_attempts.insert()
                 .prefix_with("OR IGNORE")
                 .values(_attempt_values(prepared))
             )
+            if inserted.rowcount == 1:
+                record_attempt_started(connection, prepared.attempt_id.value)
             durable = _load_attempt(connection, prepared.attempt_id)
             _require_attempt_binding(durable, execution)
             return durable
@@ -831,6 +835,7 @@ class DbosAgentAttemptStore:
             )
             if updated.rowcount != 1:
                 raise RunTransitionConflict("agent success lost its attempt CAS")
+            record_attempt_ended(connection, attempt_id.value)
             durable_success = _load_attempt(connection, attempt_id)
             completion = completion_after_node(graph, request.node_id)
             match completion:
@@ -1091,6 +1096,7 @@ class DbosAgentAttemptStore:
             )
             if updated.rowcount != 1:
                 raise RunTransitionConflict("cleanup attestation lost its attempt CAS")
+            record_attempt_ended(connection, attempt.attempt_id.value)
             terminal = _load_attempt(connection, attempt.attempt_id)
             replacement_attempt_id = None
             if cancellation.replacement is AgentAttemptReplacement.ONE:
@@ -1112,6 +1118,7 @@ class DbosAgentAttemptStore:
                 connection.execute(
                     agent_attempts.insert().values(_attempt_values(replacement))
                 )
+                record_attempt_started(connection, replacement.attempt_id.value)
                 if self._application_version is None:
                     raise RunTransitionConflict(
                         "replacement submission requires the runtime application version"
