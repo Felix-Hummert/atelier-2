@@ -195,13 +195,14 @@ Until a named maturity, the product does not promise store compatibility.
 rules that preserving hops, compatibility layers, and keeping old store shapes
 openable are unnecessary while the store is a prototype. Runtime still refuses
 every predecessor. The offline migrate command is the one exception: an exact
-V13, V14 or V15 store is raised to the current schema, preserving product rows,
-because every step is additive: `run_inputs_v3` was empty in V13,
-`tool_redemptions` in V14, and V16's `run_events.agent_receipt_hash` is NULL for
-every event a V15 store wrote. That last step rebuilds `run_events` rather than
-appending a column, because SQLite can only append behind a table's constraints
-while the shape a store is checked against is the one the declaration renders;
-every predecessor row is copied verbatim into the rebuilt table.
+store on any source version `schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder
+still names is raised to the current schema one published step at a time,
+preserving every product row. Each step is either an additive table home
+(`_added_table_step`) or, where SQLite cannot widen a table's constraints in
+place, a rebuild that copies every predecessor row verbatim into the
+redeclared table, because the shape a store is checked against is the one the
+declaration renders. `_SCHEMA_MIGRATION_STEPS` is the one place that names
+which source versions are covered and what each hop does.
 
 SQLite remains a V1 single-user choice. Subprocess tests alone wrap DBOS
 2.29.0's private `SystemDatabase.record_operation_result` to kill in the
