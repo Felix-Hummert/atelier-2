@@ -250,7 +250,7 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         "--no-subagents",
         "--disable-web-search",
         "--max-turns",
-        "1",
+        "16",
     )
     invocation_home = Path(dict(command.environment)["GROK_HOME"])
     # The secret channel keeps its own directory; the ground the provider stands
