@@ -26,9 +26,9 @@ from atelier2.adapters.dbos.run_store import (
     commit_action_completed,
     commit_subworkflow_completed,
     commit_wait_answered,
-    commit_waiting_input,
     load_wait_answer,
 )
+from atelier2.adapters.dbos.run_transitions import commit_waiting_input
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
@@ -142,7 +142,9 @@ def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
                 state_version=1,
             )
         )
-        from atelier2.adapters.dbos.run_store import commit_reconciliation_required
+        from atelier2.adapters.dbos.run_transitions import (
+            commit_reconciliation_required,
+        )
 
         commit_reconciliation_required(
             connection,
@@ -276,7 +278,7 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
         async def first_event() -> ServerSentEvent:
             stream = aiter(
                 stream_server_events(
-                    PreparedEventStream(request.run_id, 0, 1, False, found.projection),
+                    PreparedEventStream(request.run_id, 0, 1, True, found.projection),
                     stream_page_reader(queries),
                     BoundedQueryRunner(1, admission_timeout_seconds=1),
                     page_size=PageLimit(1),

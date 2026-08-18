@@ -5,7 +5,7 @@ from typing import Any
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
-from atelier2.adapters.dbos.run_store import load_graph, load_run
+from atelier2.adapters.dbos.run_transitions import load_graph, load_run
 from atelier2.adapters.dbos.schema import effect_intents, run_events
 from atelier2.contracts.effects import (
     CanonicalRequest,

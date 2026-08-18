@@ -76,6 +76,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
     AgentAttemptId,
+    AgentAttemptProcessPhase,
     AgentAttemptReplacement,
     AgentAttemptState,
     CancelAgentAttemptRequest,
@@ -139,7 +140,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
-from atelier2.ports.run_queries import NodeDetailFound
+from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import (
     agent_scratch_root,
     claude_subscription_deployment,
@@ -371,7 +372,7 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
     assert durable_answer(runtime) == (
         0,
         1,
-        RunState.STARTED.value,
+        RunState.FAILED.value,
         AgentAttemptState.FAILED.value,
     )
     with runtime.engine.connect() as connection:
@@ -632,7 +633,7 @@ def test_a_refused_output_never_releases_the_node_behind_it(
     assert chain_after_the_answer(
         runtime, execution.request.workflow_revision_hash
     ) == ChainAfterTheAnswer(
-        RunState.STARTED.value, NODE, (NODE,), 0, ((NODE, "failed"),)
+        RunState.FAILED.value, NODE, (NODE,), 0, ((NODE, "failed"),)
     )
 
 
@@ -852,7 +853,7 @@ def test_a_process_that_died_leaves_a_failed_receipt_naming_what_it_left(
     assert durable_answer(runtime) == (
         0,
         1,
-        RunState.STARTED.value,
+        RunState.FAILED.value,
         AgentAttemptState.FAILED.value,
     )
     with runtime.engine.connect() as connection:
@@ -941,6 +942,161 @@ def test_only_a_bounded_tail_of_what_the_process_said_becomes_durable(
     assert "closing-line" in reason
     assert "opening-line" not in reason
     assert len(reason) < 2 * MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES
+
+
+@pytest.mark.proves("an-uncontinuable-run-ends-under-the-node-reason")
+def test_a_refused_answer_ends_the_run_as_failed(runtime: DbosRuntime) -> None:
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    store.complete_success(
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+
+    assert durable_answer(runtime)[2:] == (
+        RunState.FAILED.value,
+        AgentAttemptState.FAILED.value,
+    )
+    found = durable_queries(runtime.engine).get_run(RUN)
+    assert isinstance(found, RunFound), found
+    assert found.projection.run.state is RunState.FAILED
+    assert found.projection.run.terminal_hash is not None
+
+
+@pytest.mark.proves("a-serve-start-ends-uncontinuable-inventory")
+def test_a_serve_start_ends_a_started_run_whose_current_node_already_failed(
+    runtime: DbosRuntime,
+) -> None:
+    """The leftover inventory: attempt already FAILED, run still STARTED."""
+
+    from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
+    from atelier2.application.converge_uncontinuable_runs import (
+        converge_uncontinuable_runs,
+    )
+
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.complete_success(
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+    assert durable_answer(runtime)[2] == RunState.FAILED.value
+
+    with runtime.engine.connect() as connection:
+        reverted = connection.execute(
+            runs.update()
+            .where(runs.c.run_id == RUN.value)
+            .values(state=RunState.STARTED.value, terminal_hash=None)
+        )
+        assert reverted.rowcount == 1
+        connection.commit()
+
+    assert durable_answer(runtime)[2] == RunState.STARTED.value
+
+    ended = converge_uncontinuable_runs(DbosUncontinuableRunStore(runtime.engine))
+
+    assert ended == (RUN,)
+    assert durable_answer(runtime)[2] == RunState.FAILED.value
+    found = durable_queries(runtime.engine).get_run(RUN)
+    assert isinstance(found, RunFound), found
+    assert found.projection.run.terminal_hash is not None
+
+
+def leftover_started_run_whose_current_node_failed(
+    runtime: DbosRuntime,
+) -> AgentAttemptExecution:
+    """The leftover inventory shape: attempt already FAILED, run still STARTED."""
+
+    execution = armed_attempt(runtime)
+    attempts = DbosAgentAttemptStore(
+        runtime.engine, runtime.settings.application_version
+    )
+    attempts.complete_success(
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+    with runtime.engine.connect() as connection:
+        reverted = connection.execute(
+            runs.update()
+            .where(runs.c.run_id == RUN.value)
+            .values(state=RunState.STARTED.value, terminal_hash=None)
+        )
+        assert reverted.rowcount == 1
+        connection.commit()
+    assert durable_answer(runtime)[2] == RunState.STARTED.value
+    return execution
+
+
+def test_converge_uncontinuable_runs_does_not_end_a_run_that_can_still_continue(
+    runtime: DbosRuntime,
+) -> None:
+    """A replacement still in flight is not leftover inventory.
+
+    Dropping the ``~sa.exists`` clause lists this row, and this test dies.
+    """
+
+    from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
+    from atelier2.application.converge_uncontinuable_runs import (
+        converge_uncontinuable_runs,
+    )
+
+    execution = leftover_started_run_whose_current_node_failed(runtime)
+    store = DbosUncontinuableRunStore(runtime.engine)
+    replacement = AgentAttemptId.for_execution(
+        execution.request.node_execution_id,
+        execution.request.request_hash,
+        REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+    )
+    with runtime.engine.connect() as connection:
+        connection.execute(
+            agent_attempts.insert().values(
+                attempt_id=replacement.value,
+                node_execution_id=execution.request.node_execution_id.value,
+                request_hash=execution.request.request_hash.value,
+                executor_operational_identity=(
+                    execution.request.executor_operational_identity.value
+                ),
+                run_id=execution.request.run_id.value,
+                workflow_revision_hash=execution.request.workflow_revision_hash.value,
+                node_id=execution.request.node_id,
+                attempt_ordinal=REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+                state=AgentAttemptState.LAUNCH_ARMED.value,
+                state_version=1,
+                process_phase=AgentAttemptProcessPhase.NONE.value,
+            )
+        )
+        connection.commit()
+
+    assert store.uncontinuable_runs() == ()
+    assert converge_uncontinuable_runs(store) == ()
+    assert durable_answer(runtime)[2] == RunState.STARTED.value
+
+
+def test_converge_uncontinuable_runs_does_not_end_a_run_waiting_for_input(
+    runtime: DbosRuntime,
+) -> None:
+    """A run waiting for a person is not leftover inventory.
+
+    Dropping the STARTED filter lists this row, and this test dies.
+    """
+
+    from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
+    from atelier2.application.converge_uncontinuable_runs import (
+        converge_uncontinuable_runs,
+    )
+
+    leftover_started_run_whose_current_node_failed(runtime)
+    with runtime.engine.connect() as connection:
+        waiting = connection.execute(
+            runs.update()
+            .where(runs.c.run_id == RUN.value)
+            .values(state=RunState.WAITING_INPUT.value)
+        )
+        assert waiting.rowcount == 1
+        connection.commit()
+
+    store = DbosUncontinuableRunStore(runtime.engine)
+    assert store.uncontinuable_runs() == ()
+    assert converge_uncontinuable_runs(store) == ()
+    assert durable_answer(runtime)[2] == RunState.WAITING_INPUT.value
 
 
 @pytest.mark.proves("a-judged-receipt-names-the-schema-identity-it-judged")

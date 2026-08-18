@@ -80,6 +80,7 @@ def _run_v2() -> RunV2:
 def test_the_run_head_owner_accepts_an_open_head_and_a_completed_head() -> None:
     Run.validate_head("agent", RunState.STARTED, 0, 0, None)
     Run.validate_head("done", RunState.COMPLETED, 2, 4, _terminal_hash())
+    Run.validate_head("agent", RunState.FAILED, 2, 1, _terminal_hash())
 
 
 @pytest.mark.parametrize(

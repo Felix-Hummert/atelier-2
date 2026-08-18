@@ -15,19 +15,21 @@ from atelier2.adapters.dbos.names import (
 from atelier2.adapters.dbos.node_records import keep_node_receipt
 from atelier2.adapters.dbos.run_store import (
     AgentReceiptConflict,
-    RunTransitionConflict,
     ToolRedemptionConflict,
     _agent_receipt_v2_from_record,
     _agent_receipt_v2_values,
-    _commit_event,
-    _insert_event,
     _tool_redemption_from_record,
     _tool_redemption_values,
-    load_graph,
     load_node_outputs,
-    load_run,
     load_run_inputs,
     why_a_value_its_declared_schema_refuses,
+)
+from atelier2.adapters.dbos.run_transitions import (
+    RunTransitionConflict,
+    _commit_event,
+    _insert_event,
+    load_graph,
+    load_run,
 )
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -367,14 +369,15 @@ def _fail_current_attempt(
     """One durable failure seam for every way an armed attempt ends badly.
 
     The attempt turns `FAILED` under its named code, the `AGENT_FAILED` event
-    carries that code, and the run stays `STARTED` on the node -- the exact
-    shape a process failure has always left behind, so a reader needs one
-    vocabulary for both. `receipt_reason` is the words of whoever judged this
-    ending -- the schema owner where an answer was refused, the supervision
-    where a process died -- and every way through here carries one, because a
-    failure whose reason is nowhere is the silent death this seam exists to end.
-    A schema judgment also keeps the identity it judged; a process that died
-    judged nothing, so those fields stay honestly empty.
+    carries that code, and the run ends `FAILED` on the same node -- the node's
+    reason lifted one level, not a second vocabulary. Nothing remains that can
+    continue this line: a replacement is a later, conscious reopen, not a
+    STARTED row that still reads as "Running". `receipt_reason` is the words of
+    whoever judged this ending -- the schema owner where an answer was refused,
+    the supervision where a process died -- and every way through here carries
+    one, because a failure whose reason is nowhere is the silent death this
+    seam exists to end. A schema judgment also keeps the identity it judged; a
+    process that died judged nothing, so those fields stay honestly empty.
     """
     request = execution.request
     attempt_id = execution.attempt_id
@@ -410,8 +413,9 @@ def _fail_current_attempt(
         RunEventKind.AGENT_FAILED,
         failure.value.encode("ascii"),
         RunState.STARTED,
-        RunState.STARTED,
+        RunState.FAILED,
         request.node_id,
+        terminal=True,
         agent_attempt_id=attempt_id,
         attempt_ordinal=execution.ordinal,
     )

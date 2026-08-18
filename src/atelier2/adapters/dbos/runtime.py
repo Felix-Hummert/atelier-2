@@ -28,10 +28,14 @@ from atelier2.adapters.dbos.schema import (
     run_agent_bindings,
     runs,
 )
+from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
 from atelier2.adapters.dbos.workflow import register_durable_run_workflow
 from atelier2.adapters.project_verification import declared_project
 from atelier2.application.converge_driverless_attempts import (
     converge_driverless_attempts,
+)
+from atelier2.application.converge_uncontinuable_runs import (
+    converge_uncontinuable_runs,
 )
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
@@ -568,6 +572,7 @@ class _DbosProcessOwner:
             self._start(bound)
             bound.launched = True
             self._converge_driverless_attempts(bound)
+            self._converge_uncontinuable_runs(bound)
 
     @staticmethod
     def _converge_driverless_attempts(bound: _BoundRuntime) -> None:
@@ -588,6 +593,17 @@ class _DbosProcessOwner:
             bound.agent_process_supervisor,
             workspaces,
         )
+
+    @staticmethod
+    def _converge_uncontinuable_runs(bound: _BoundRuntime) -> None:
+        """End STARTED runs whose current node has already failed.
+
+        After driverless-attempt convergence: that path stops armed attempts
+        whose driver died. This path is the leftover half — the attempt is
+        already FAILED, the run still says STARTED, and nothing will move it.
+        """
+
+        converge_uncontinuable_runs(DbosUncontinuableRunStore(bound.engine))
 
     def initialize_storage(self, bound: _BoundRuntime) -> None:
         with self._lock:

@@ -263,9 +263,9 @@
     if (disposed || !isRunV3(read)) return;
     v3Run = read;
     // The run state only says the cursor will not grow. Completeness is
-    // last_sequence matching that cursor. Closing on COMPLETED alone drops
-    // an event still in the page (the 1-vs-2 flake).
-    if (read.state !== "COMPLETED") return;
+    // last_sequence matching that cursor. Closing on the terminal state alone
+    // drops an event still in the page (the 1-vs-2 flake).
+    if (read.state !== "COMPLETED" && read.state !== "FAILED") return;
     if (read.latest_event_cursor === null) return;
     const cursor = parseEventCursor(read.latest_event_cursor);
     if (cursor === null || cursor.publicRunReference !== read.public_run_reference) {

@@ -57,6 +57,7 @@ describe("the studio is the level the workshop opens on", () => {
 
     expect(listRuns.mock.calls.map(([, state]) => state).sort()).toEqual([
       "COMPLETED",
+      "FAILED",
       "STARTED",
       "WAITING_INPUT",
       "WAITING_RECONCILIATION"

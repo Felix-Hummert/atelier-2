@@ -361,7 +361,9 @@
       <h1 id="v3-run-title">Run {run.run_id}</h1>
     </div>
     <p class="standing" aria-label="Where this run stands">
-      <StateMark state={run.state === "COMPLETED" ? "succeeded" : "working"} />
+      <StateMark
+        state={run.state === "COMPLETED" ? "succeeded" : run.state === "FAILED" ? "failed" : "working"}
+      />
       <span class="following">
         {#if projection === null || projection.connection === "connecting"}
           Connecting…

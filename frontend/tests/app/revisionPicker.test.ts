@@ -151,8 +151,8 @@ describe("the saved-workflow picker", () => {
     expect(option.closest("label")?.textContent).not.toContain(namedHash);
     expect(screen.getByText("Builds the candidate, then reviews it for defects.")).toBeTruthy();
     const details = screen.getByText("Details").closest("details");
-    expect(details?.textContent).toContain(namedHash);
     expect(details?.open).toBe(false);
+    expect(details?.textContent).not.toContain(namedHash);
   });
 
   it("opening Details for a named V3 revision shows the published roles and node count, not only the hash", async () => {
@@ -183,6 +183,8 @@ describe("the saved-workflow picker", () => {
       "Cannot be started: This workflow declares no output on node 'implement'. Add one outputs: entry there and publish again."
     );
     expect(details?.textContent).not.toContain("agent-output-shape-unavailable");
+    expect(details?.textContent).not.toContain(namedHash);
+    await fireEvent.click(screen.getByRole("button", { name: "Workflow revision" }));
     expect(details?.textContent).toContain(namedHash);
     expect(details?.textContent).not.toBe(namedHash);
     expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_INSTRUCTION");
@@ -304,7 +306,7 @@ describe("the saved-workflow picker", () => {
 
     expect(option).toHaveProperty("disabled", false);
     expect(screen.getByText(unnamedHash)).toBeTruthy();
-    expect(screen.queryByText("Details")).toBeNull();
+    expect(screen.getByLabelText("Details for this unnamed workflow")).toBeTruthy();
   });
 
   it("leaves a startable revision selectable and says nothing about starting it", async () => {
@@ -433,6 +435,7 @@ describe("the picker groups revisions that share a published name", () => {
     expect(choice?.textContent).not.toContain("agent-output-shape-unavailable");
     expect(choice?.textContent).not.toContain("The first admitted member.");
 
+    await fireEvent.click(row.getByText("Details"));
     await fireEvent.change(row.getByLabelText(`Revision of ${lineageName}`), {
       target: { value: olderHash }
     });
@@ -664,5 +667,111 @@ describe("the picker groups revisions that share a published name", () => {
     expect((await screen.findByRole("article", { name: second })).isConnected).toBe(true);
     expect(screen.queryByRole("heading", { name: "Run ID" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+  });
+
+  it("proves(a-details-panel-shows-the-published-substance): names declared orders and an honest empty when the revision declares none", async () => {
+    const withOrders = {
+      ...namedDetail(),
+      graph: {
+        ...namedGraph(),
+        orders: [
+          {
+            name: "portions",
+            schema_ref: "portions-schema",
+            schema_revision: "e".repeat(64)
+          }
+        ]
+      }
+    };
+    const cockpitApi = api([namedRevision()], {
+      getWorkflowRevision: vi.fn(async () => withOrders)
+    });
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("radio", {
+      name: /Implement a candidate, then review it for defects/
+    });
+    await fireEvent.click(screen.getByText("Details"));
+
+    const orders = await screen.findByRole("region", { name: "Orders" });
+    expect(orders.textContent).toContain("portions");
+    expect(orders.textContent).toContain("portions-schema");
+    expect(orders.textContent).not.toContain("e".repeat(64));
+    await fireEvent.click(screen.getByRole("button", { name: "Schema of portions" }));
+    expect(orders.textContent).toContain("e".repeat(64));
+    expect(screen.queryByText("No orders.")).toBeNull();
+  });
+
+  it("proves(a-revision-hash-is-a-proof-anchor): hides the revision hash until asked and copies it", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(globalThis.navigator, { clipboard: { writeText } });
+    const cockpitApi = api([namedRevision()], {
+      getWorkflowRevision: vi.fn(async () => namedDetail())
+    });
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("radio", {
+      name: /Implement a candidate, then review it for defects/
+    });
+    await fireEvent.click(screen.getByText("Details"));
+
+    const details = screen.getByText("Details").closest("details");
+    expect(details?.textContent).not.toContain(namedHash);
+    await fireEvent.click(screen.getByRole("button", { name: "Workflow revision" }));
+    expect(details?.textContent).toContain(namedHash);
+    expect(screen.getByText("Seals the published document.")).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledWith(namedHash);
+  });
+
+  it("proves(a-published-document-can-be-edited-into-a-new-revision): shows the exact YAML and publishes it through the existing door", async () => {
+    const original = "job: NEVER_PARSE_THIS_INSTRUCTION\n";
+    const edited = "format_version: 3\nname: edited-line\n";
+    const newHash = "f".repeat(64);
+    const cockpitApi = api([namedRevision()], {
+      getWorkflowRevision: vi.fn(async () => namedDetail()),
+      publish: vi.fn(async () => ({
+        status: 201,
+        value: {
+          revision_hash: newHash,
+          document_base64: utf8Base64(edited),
+          graph: {
+            ...namedGraph(),
+            name: "edited-line",
+            executable: true,
+            not_executable_reason: null
+          }
+        }
+      })),
+      foundCatalogLineage: vi.fn(async () => ({
+        status: 201,
+        value: {
+          display_name: "edited-line",
+          lineage_id: "e".repeat(64),
+          revision_hash: newHash,
+          revision_number: 1
+        }
+      }))
+    });
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("radio", {
+      name: /Implement a candidate, then review it for defects/
+    });
+    await fireEvent.click(screen.getByText("Details"));
+    await fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    const editor = await screen.findByLabelText("Exact workflow YAML");
+    expect((editor as HTMLTextAreaElement).value).toBe(original);
+    await fireEvent.input(editor, { target: { value: edited } });
+    await fireEvent.click(screen.getByRole("button", { name: "Review publication" }));
+    const dialog = screen.getByRole("dialog", { name: "Publish this exact workflow?" });
+    await fireEvent.click(within(dialog).getByRole("button", { name: "Publish" }));
+
+    await waitFor(() => expect(cockpitApi.publish).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(cockpitApi.foundCatalogLineage)).toHaveBeenCalledTimes(1);
   });
 });

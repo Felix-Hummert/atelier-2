@@ -277,7 +277,7 @@ def _seed_history(
                 state_version=head,
                 last_event_sequence=head,
                 terminal_hash=_digest("terminal")
-                if state is RunState.COMPLETED
+                if state in {RunState.COMPLETED, RunState.FAILED}
                 else None,
             )
         )
@@ -1458,7 +1458,7 @@ def test_a_v3_page_carries_a_failed_agent_attempt_instead_of_refusing_it(
         engine,
         run_id=run_id,
         head=2,
-        state=RunState.STARTED,
+        state=RunState.FAILED,
         workflow_format_version=3,
         sink_node_id="working",
         head_event_kind=RunEventKind.AGENT_FAILED,
