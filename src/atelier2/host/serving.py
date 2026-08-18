@@ -51,6 +51,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.pages import PageLimit
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 from atelier2.host.logging import configure_process_logging
 
@@ -123,7 +124,7 @@ def api_limits(
         maximum_workflow_nodes=MAXIMUM_WORKFLOW_NODES,
         maximum_enriched_page_nodes=MAXIMUM_ENRICHED_PAGE_NODES,
         maximum_enriched_page_document_bytes=MAXIMUM_ENRICHED_PAGE_DOCUMENT_BYTES,
-        event_page_size=event_page_size,
+        event_page_size=PageLimit(event_page_size),
         maximum_control_queries=maximum_control_queries,
         maximum_event_poll_queries=maximum_event_poll_queries,
         maximum_query_admission_wait_milliseconds=(
