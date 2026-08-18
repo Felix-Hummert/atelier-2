@@ -33,6 +33,7 @@ import sqlalchemy as sa
 
 from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.node_binding_codec import EncodedAgentBindingV2
 from atelier2.adapters.dbos.run_store import (
     RunTransitionConflict,
     load_graph,
@@ -42,7 +43,7 @@ from atelier2.adapters.dbos.run_store import (
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import run_events, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
-from atelier2.adapters.dbos.workflow import EncodedAgentBindingV2, _node_binding
+from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.compose_node_job import node_job

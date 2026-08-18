@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from atelier2.adapters.dbos.run_store import (
+from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     validate_run_graph_binding,
 )

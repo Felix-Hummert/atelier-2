@@ -27,6 +27,7 @@ from atelier2.contracts.agent_attempts import AgentAttempt, AgentAttemptId
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant, ToolGrantCapability
 from atelier2.ports.agent_attempts import AgentAttemptClaimResult, AgentAttemptSucceeded
@@ -36,7 +37,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
-from atelier2.ports.project_source import ProjectSourcePin, ProjectSourceUnavailable
+from atelier2.ports.project_source import ProjectSourceUnavailable
 from atelier2.ports.project_verification import (
     PinnedProjectSource,
     ProjectVerificationOutcome,

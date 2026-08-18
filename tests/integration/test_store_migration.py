@@ -23,7 +23,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 from sqlalchemy.schema import CreateIndex
 
-from atelier2.adapters.dbos.run_store import event_from_record
+from atelier2.adapters.dbos.run_transitions import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     _PRODUCT_TRIGGERS,

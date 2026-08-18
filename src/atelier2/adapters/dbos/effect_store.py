@@ -5,6 +5,11 @@ from typing import Any, assert_never
 
 import sqlalchemy as sa
 
+from atelier2.adapters.dbos.run_transitions import (
+    commit_reconciliation_required,
+    commit_reconciliation_resolved,
+    load_run,
+)
 from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
@@ -343,11 +348,6 @@ def commit_resolution(
                 state_version=EFFECT_INTENT_VERSION_WAITING.value,
             )
         )
-        from atelier2.adapters.dbos.run_store import (
-            commit_reconciliation_required,
-            load_run,
-        )
-
         current = load_run(session, intent.binding.run_id)
         commit_reconciliation_required(
             session,
@@ -447,11 +447,6 @@ def commit_resolution(
         )
         if command_update.rowcount != 1:
             raise DurableEffectConflict("confirmation must apply its owning command")
-        from atelier2.adapters.dbos.run_store import (
-            commit_reconciliation_resolved,
-            load_run,
-        )
-
         current = load_run(session, intent.binding.run_id)
         commit_reconciliation_resolved(
             session,

@@ -14,7 +14,7 @@ from atelier2.adapters.dbos.names import (
     CANCELLATION_WORKFLOW_NAME,
     REPLACEMENT_WORKFLOW_NAME,
 )
-from atelier2.adapters.dbos.run_store import (
+from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     _insert_event,
     load_run,
