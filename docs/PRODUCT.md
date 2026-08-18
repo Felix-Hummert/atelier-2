@@ -318,7 +318,8 @@ its attempt through the same durable path a V2 node uses, and the heir its autho
 declared starts when its predecessor completes. A Wait node holds the run in
 `WAITING_INPUT` as a durable state rather than as work in progress: nothing is queued
 behind it, a restart finds it still waiting, and it moves only when a person answers.
-The V3 run page shows that wait as an answer card and sends the typed bytes through
+The V3 run page shows that wait as an answer card, with the authored question
+the published document already carries, and sends the typed bytes through
 the same `POST /runs/{ref}/answers` door the API already proved.
 What that answer may be is the node's own declaration — a V1 or V2 Wait names an
 `answer_type` and admits the canonical text of an integer, while a V3 Wait declares one

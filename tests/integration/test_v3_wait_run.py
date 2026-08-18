@@ -75,7 +75,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
-from atelier2.ports.run_queries import RunFound
+from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
@@ -353,6 +353,22 @@ def test_a_waiting_v3_run_reads_back_as_waiting_with_the_node_that_owes_a_move(
         (WAIT_NODE, NodeState.NEEDS_YOU.value),
         ("review", NodeState.QUEUED.value),
     ]
+
+
+@pytest.mark.proves("a-waiting-v3-run-is-answerable-on-its-run-page")
+def test_the_waiting_node_reading_carries_the_authored_prompt(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """The published document already names the question; this read passes it on."""
+    started, _ = runtime
+    start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+
+    found = durable_queries(started.engine).get_node_detail(RUN, WAIT_NODE)
+
+    assert isinstance(found, NodeDetailFound), found
+    assert found.detail.job == b"Approve this candidate, or name the blocking defect."
+    assert found.detail.job_hash == Sha256Hash.of(found.detail.job).value
 
 
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")

@@ -1077,6 +1077,11 @@ textarea {
   outline-offset: 3px;
 }
 
+.wait-question {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .wait-form {
   display: grid;
   gap: 0.65rem;

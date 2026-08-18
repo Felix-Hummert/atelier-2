@@ -84,7 +84,7 @@ text = "A V3 line whose author put a Wait node in it holds at that node as a dur
 
 [[sentence]]
 id = "a-waiting-v3-run-is-answerable-on-its-run-page"
-text = "A V3 run that is waiting for a person shows that wait on its own run page with an answer field; submitting sends the exact bytes through POST /runs/{ref}/answers and a named refusal of that door stays on the card."
+text = "A V3 run that is waiting for a person shows that wait's authored question on its own run page with an answer field; when the published document carries no question the card names that absence; submitting sends the exact bytes through POST /runs/{ref}/answers and a named refusal of that door stays on the card."
 
 # RETIRED WITH THE CALLERLESS SUPERVISED DOOR. This file declared
 # `a-supervised-v3-start-leaves-the-manifest-its-receipt-names` for a private

@@ -67,6 +67,12 @@
   let answerCard: V3AnswerCard;
   $: pendingAnswer = pendingWait === null ? null : waitAnswerText(pendingWait);
   $: waiting = run.state === "WAITING_INPUT";
+  type WaitQuestion =
+    | { kind: "loading" }
+    | { kind: "present"; text: string }
+    | { kind: "absent" }
+    | { kind: "failed"; message: string };
+  let waitQuestion: WaitQuestion = { kind: "loading" };
 
   /**
    * One click asks the server, and the server answers the whole node.
@@ -123,6 +129,61 @@
     void loadGraph();
     void loadPendingWait();
   });
+
+  $: if (waiting) void loadWaitQuestion();
+
+  type DecodedWaitJob =
+    | { kind: "missing" }
+    | { kind: "present"; text: string }
+    | { kind: "corrupt" };
+
+  function decodedWaitJob(jobBase64: string | null): DecodedWaitJob {
+    if (jobBase64 === null || jobBase64.length === 0) return { kind: "missing" };
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(
+        Uint8Array.from(atob(jobBase64), (character) => character.charCodeAt(0))
+      );
+      return text.length === 0 ? { kind: "missing" } : { kind: "present", text };
+    } catch {
+      return { kind: "corrupt" };
+    }
+  }
+
+  let waitQuestionKey = "";
+
+  async function loadWaitQuestion(): Promise<void> {
+    if (run.state !== "WAITING_INPUT") {
+      waitQuestion = { kind: "absent" };
+      waitQuestionKey = "";
+      return;
+    }
+    const key = `${run.public_run_reference}:${run.current_node_id}`;
+    if (key === waitQuestionKey) return;
+    waitQuestionKey = key;
+    waitQuestion = { kind: "loading" };
+    try {
+      const detail = await cockpitApi.getNodeDetail(
+        run.public_run_reference,
+        run.current_node_id
+      );
+      const decoded = decodedWaitJob(detail.job_base64);
+      if (decoded.kind === "present") {
+        waitQuestion = { kind: "present", text: decoded.text };
+      } else if (decoded.kind === "corrupt") {
+        waitQuestion = {
+          kind: "failed",
+          message: "The wait question could not be read."
+        };
+      } else {
+        waitQuestion = { kind: "absent" };
+      }
+    } catch (error) {
+      waitQuestion = {
+        kind: "failed",
+        message: humanErrorMessage(error, "The wait question could not be read.")
+      };
+    }
+  }
 
   async function loadPendingWait(): Promise<void> {
     if (run.state !== "WAITING_INPUT") {
@@ -316,9 +377,15 @@
   </header>
 
   {#if waiting}
+    {#if waitQuestion.kind === "failed"}
+      <ProblemNotice title="The wait question could not be read" message={waitQuestion.message} />
+    {/if}
     <V3AnswerCard
       bind:this={answerCard}
       nodeId={run.current_node_id}
+      question={waitQuestion.kind === "present" ? waitQuestion.text : null}
+      questionMissing={waitQuestion.kind === "absent"}
+      questionFailed={waitQuestion.kind === "failed"}
       pending={pendingWait}
       {pendingAnswer}
       accepted={waitAccepted}

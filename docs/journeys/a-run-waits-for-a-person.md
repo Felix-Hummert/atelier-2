@@ -12,8 +12,10 @@ What the cockpit shows of that state, on `main`:
 1. Studio lists the run under **Waiting for you**, move **Answer**.
 2. The project **This workshop** groups it the same way.
 3. Opening the V3 run shows the live graph, the rail, and an **Answer needed**
-   card for the waiting node. Submitting sends the typed bytes through
-   `POST /runs/{ref}/answers`. A named refusal of that door stays on the card.
+   card that names the authored wait question. Submitting sends the typed bytes
+   through `POST /runs/{ref}/answers`. A named refusal of that door stays on
+   the card. A wait whose published document carries no question is named as
+   such, not as a bare node id.
 4. V1/V2 runs keep their own **Integer answer** card. The door is the same.
 
 The V3 card is landed and e2e-proven on a wait-only run the test itself created.

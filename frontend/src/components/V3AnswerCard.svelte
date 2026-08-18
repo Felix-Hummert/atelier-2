@@ -2,6 +2,9 @@
   import type { WaitMutation } from "../lib/mutationJournal";
 
   export let nodeId: string;
+  export let question: string | null;
+  export let questionMissing: boolean;
+  export let questionFailed = false;
   export let pending: WaitMutation | null;
   export let pendingAnswer: string | null;
   export let accepted = false;
@@ -66,6 +69,13 @@
     {/if}
   {:else}
     <h2 id="v3-wait-action-title">Answer needed</h2>
+    {#if question !== null}
+      <p class="wait-question">{question}</p>
+    {:else if questionMissing}
+      <p class="muted">This wait node carries no question.</p>
+    {:else if !questionFailed}
+      <p class="muted" role="status">Looking…</p>
+    {/if}
     <form class="wait-form" onsubmit={submit} novalidate>
       <label for="v3-wait-answer">Answer</label>
       <textarea
