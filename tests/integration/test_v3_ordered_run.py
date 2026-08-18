@@ -26,6 +26,7 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
@@ -54,9 +55,15 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.artifacts import (
+    MAXIMUM_ARTIFACT_BYTES,
+    Artifact,
+    ArtifactHash,
+)
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import RunInput
+from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -73,6 +80,7 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
+from atelier2.ports.artifacts import ArtifactCreated, ArtifactExisting
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
     DurableRunCreated,
@@ -372,7 +380,7 @@ def test_an_authored_order_reaches_the_agent(
             run_id,
             workflow.revision_hash,
             bindings,
-            orders=(AuthoredOrder(ORDER_NAME, b'{"portions": 7}'),),
+            orders=(AuthoredOrder(ORDER_NAME, InlineOrderValue(b'{"portions": 7}')),),
         )
     )
     assert isinstance(created, DurableRunCreated), created
@@ -843,3 +851,224 @@ def test_an_order_the_size_of_a_diff_review_reaches_the_agent_whole(
     wait_for_state(runtime, run_id, RunState.COMPLETED)
 
     assert diff in jobs_handed_to(cook)[0]
+
+
+def artifact_order(runtime: DbosRuntime, content: bytes) -> AuthoredOrder:
+    """The order that says `read the artifact holding these bytes`."""
+    published = DbosArtifactStore(runtime.engine).publish_artifact(Artifact(content))
+    assert isinstance(published, (ArtifactCreated, ArtifactExisting)), published
+    return AuthoredOrder(
+        ORDER_NAME, ArtifactOrderValue(published.artifact.artifact_hash)
+    )
+
+
+def start_authored(
+    runtime: DbosRuntime,
+    workflow: WorkflowRevision,
+    bindings: AgentBindingSet,
+    run_id: RunId,
+    *orders: AuthoredOrder,
+) -> object:
+    return DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV3(
+            run_id, workflow.revision_hash, bindings, orders=tuple(orders)
+        )
+    )
+
+
+@pytest.mark.proves("a-full-pull-request-diff-reaches-its-agent-as-an-artifact")
+def test_a_hundred_kilobyte_diff_reaches_its_agent_as_an_artifact_ordered_by_address(
+    runtime: DbosRuntime, cook: RecordingAgentExecutorFactoryV2
+) -> None:
+    """The sentence this work exists for, end to end and byte exact.
+
+    A diff of this size cannot be written into a start: it is six times the
+    inline bound, which stays strict. Published as an artifact and ordered by
+    its address, the same bytes travel -- and the agent is handed all of them,
+    not a hash and not a truncation.
+
+    The chain carries the artifact's identity without being told to: an order's
+    stored `value_hash` is the SHA-256 of its bytes, and so is an artifact's
+    address, so the row that binds this run to its material names the exact
+    artifact it came from.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime, ANY_JSON_SCHEMA)
+    diff = json.dumps({"diff": "x" * 100_000}).encode()
+    assert len(diff) > 6 * MAXIMUM_INSTANCE_DOCUMENT_BYTES
+    ordered = artifact_order(runtime, diff)
+    run_id = RunId("v3/artifact-diff-order")
+
+    assert isinstance(
+        start_authored(runtime, workflow, bindings, run_id, ordered), DurableRunCreated
+    )
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.COMPLETED)
+
+    assert diff in jobs_handed_to(cook)[0]
+    with runtime.engine.connect() as connection:
+        stored = (
+            connection.execute(
+                sa.select(run_inputs_v3.c.value, run_inputs_v3.c.value_hash).where(
+                    run_inputs_v3.c.run_id == run_id.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert bytes(stored["value"]) == diff
+    assert isinstance(ordered.value, ArtifactOrderValue)
+    assert str(stored["value_hash"]) == ordered.value.artifact_hash.value
+
+
+@pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
+def test_an_order_naming_an_unpublished_artifact_is_refused_before_any_row(
+    runtime: DbosRuntime,
+) -> None:
+    """An address nobody published is a named refusal, never a run to clean up."""
+    workflow, bindings = publish_ordered_workflow(runtime)
+    run_id = RunId("v3/unknown-artifact")
+    absent = ArtifactHash("ab" * 32)
+
+    refused = start_authored(
+        runtime,
+        workflow,
+        bindings,
+        run_id,
+        AuthoredOrder(ORDER_NAME, ArtifactOrderValue(absent)),
+    )
+
+    assert isinstance(refused, DurableV3StartInputRefused), refused
+    assert refused.refusal is V3InputRefusal.UNKNOWN_ARTIFACT
+    assert refused.name == ORDER_NAME
+    assert absent.value in str(refused.detail)
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(runs)
+                .where(runs.c.run_id == run_id.value)
+            )
+            == 0
+        )
+
+
+@pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
+def test_an_inline_order_past_the_inline_bound_is_sent_to_the_artifact_door(
+    runtime: DbosRuntime,
+) -> None:
+    """The inline bound stays strict, and its refusal says where the material goes.
+
+    The same bytes are admitted as an artifact, so a refusal that only said
+    "too large" would leave an operator believing this stack cannot carry them.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime, ANY_JSON_SCHEMA)
+    oversized = json.dumps({"diff": "x" * MAXIMUM_INSTANCE_DOCUMENT_BYTES}).encode()
+
+    refused = start_authored(
+        runtime,
+        workflow,
+        bindings,
+        RunId("v3/inline-too-large"),
+        AuthoredOrder(ORDER_NAME, InlineOrderValue(oversized)),
+    )
+
+    assert isinstance(refused, DurableV3StartInputRefused), refused
+    assert refused.refusal is V3InputRefusal.VALUE_REFUSED
+    assert "artifact" in str(refused.detail)
+
+
+@pytest.mark.proves("a-full-pull-request-diff-reaches-its-agent-as-an-artifact")
+def test_the_public_start_route_orders_material_by_its_published_address(
+    runtime: DbosRuntime,
+) -> None:
+    """The operator door: publish the bytes, then start naming the address.
+
+    Two routes and one mechanism -- the artifact this POST publishes is the
+    material the start resolves, and nothing in between repeats the bytes.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime, ANY_JSON_SCHEMA)
+    binding = bindings.bindings[0]
+    diff = json.dumps({"diff": "x" * 100_000}).encode()
+    client = durable_api_client(runtime)
+
+    published = client.post(
+        API_PREFIX + "/artifacts",
+        content=diff,
+        headers={"content-type": "application/octet-stream"},
+    )
+    assert published.status_code == 201, published.text
+    address = published.json()["artifact_hash"]
+
+    started = client.post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": "v3/route-artifact-order",
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [{"name": ORDER_NAME, "artifact": address}],
+        },
+    )
+
+    assert started.status_code == 201, started.text
+    assert (
+        client.post(
+            API_PREFIX + "/artifacts",
+            content=diff,
+            headers={"content-type": "application/octet-stream"},
+        ).status_code
+        == 200
+    )
+    with runtime.engine.connect() as connection:
+        stored = (
+            connection.execute(
+                sa.select(run_inputs_v3.c.value).where(
+                    run_inputs_v3.c.run_id == "v3/route-artifact-order"
+                )
+            )
+            .scalars()
+            .one()
+        )
+    assert bytes(stored) == diff
+
+
+def test_a_body_past_the_artifact_bound_is_refused_before_the_route_reads_it(
+    runtime: DbosRuntime,
+) -> None:
+    """The transport bound is the artifact's own, and it bites at the edge.
+
+    Buffering material the store would refuse anyway is work an unauthenticated
+    caller gets to spend for free, so the refusal is taken from the declared
+    length before a byte of the body is read.
+    """
+    refused = durable_api_client(runtime).post(
+        API_PREFIX + "/artifacts",
+        content=b"x" * (MAXIMUM_ARTIFACT_BYTES + 1),
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    assert refused.status_code == 422
+    assert refused.json()["type"].endswith("artifact-too-large")
+
+
+def test_an_empty_artifact_is_refused_by_its_own_name(
+    runtime: DbosRuntime,
+) -> None:
+    refused = durable_api_client(runtime).post(
+        API_PREFIX + "/artifacts",
+        content=b"",
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    assert refused.status_code == 422
+    assert refused.json()["type"].endswith("artifact-empty")

@@ -7,9 +7,10 @@ today's owner.
 
 V14 and V15 each added a table, so dropping those tables was the whole reversal.
 V16 changes `run_events` itself, V17 changes `agent_attempts`, V18 changes
-`runs`, and V19 changes `agent_configuration_revisions`, so the fixture also
-restores those tables' published predecessor shapes below. The literals are not second owners of the current tables: they are the
-frozen artifacts the predecessor versions really carried, and the pinned V13
+`runs`, V19 added another table, and V20 changes `agent_configuration_revisions`,
+so the fixture also restores those tables' published predecessor shapes below.
+The literals are not second owners of the current tables: they are the frozen
+artifacts the predecessor versions really carried, and the pinned V13
 fingerprint refuses them the moment a character drifts.
 """
 
@@ -34,6 +35,7 @@ from atelier2.adapters.dbos.schema import (
     _require_product_shape,
     agent_attempts,
     agent_configuration_revisions,
+    artifacts,
     atelier_schema_versions,
     auth_profile_revisions,
     catalog_lineage_members,
@@ -397,7 +399,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
     execution = "11" * 32
     receipt = "ef" * 32
     with engine.connect() as connection:
-        for table in (run_inputs_v3.name, tool_redemptions.name):
+        for table in (artifacts.name, run_inputs_v3.name, tool_redemptions.name):
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
             connection.execute(sa.text(f"DROP TABLE {table}"))
@@ -607,6 +609,7 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
             connection.scalar(sa.select(sa.func.count()).select_from(tool_redemptions))
             == 0
         )
+        assert connection.scalar(sa.select(sa.func.count()).select_from(artifacts)) == 0
         archived = (
             connection.execute(
                 sa.select(run_events).where(run_events.c.run_id == ARCHIVED_RUN_ID)
@@ -793,11 +796,12 @@ def test_a_refused_receipt_column_hop_rolls_back_every_earlier_step(
 def test_a_refused_failure_code_hop_rolls_back_every_earlier_step(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
 ) -> None:
-    """The final hop refuses, so the three that already ran are undone with it.
+    """A middle hop refuses, so the three that already ran are undone with it.
 
     The failure-code hop rebuilds `agent_attempts` under a parking name, so any
     object already holding that name is a collision the hop refuses by name --
-    after the three earlier steps completed inside the same transaction.
+    after the three earlier steps completed inside the same transaction, and
+    before the hops that follow it can run at all.
     """
     database_path = tmp_path / "atelier.sqlite"
     _create_populated_v13_store(database_path)
@@ -836,11 +840,11 @@ def test_a_refused_failure_code_hop_rolls_back_every_earlier_step(
 def test_a_refused_capability_hop_rolls_back_every_earlier_step(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
 ) -> None:
-    """The capability hop refuses, so the four that already ran are undone with it.
+    """The last hop refuses, so every step that already ran is undone with it.
 
     It rebuilds `agent_configuration_revisions` under a parking name, so any
     object already holding that name is a collision it refuses by name -- after
-    the four earlier steps completed inside the same transaction.
+    every earlier step completed inside the same transaction.
     """
     database_path = tmp_path / "atelier.sqlite"
     _create_populated_v13_store(database_path)

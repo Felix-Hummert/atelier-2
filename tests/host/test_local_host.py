@@ -21,6 +21,7 @@ from atelier2.adapters.claude_subscription import (
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -227,6 +228,7 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
         catalog_resolver=DbosCatalogStore(runtime.engine),
         catalog_admissions=DbosCatalogStore(runtime.engine),
         published_revision_registry=DbosCatalogStore(runtime.engine),
+        artifact_publisher=DbosArtifactStore(runtime.engine),
     )
 
 

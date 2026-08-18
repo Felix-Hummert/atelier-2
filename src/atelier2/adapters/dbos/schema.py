@@ -17,6 +17,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_PROVIDER_ID_CHARACTERS,
     MAXIMUM_SIGNED_INT64,
 )
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
@@ -27,7 +28,7 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
@@ -38,6 +39,7 @@ _VERSION_FIFTEEN = 15
 _VERSION_SIXTEEN = 16
 _VERSION_SEVENTEEN = 17
 _VERSION_EIGHTEEN = 18
+_VERSION_NINETEEN = 19
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -57,9 +59,12 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # output ends its attempt under its own name instead of borrowing the process
 # exit's or killing the driver. V18 admits FAILED as a run state, so a line
 # whose open node paths have terminally failed ends under the node's own
-# reason instead of standing STARTED with nothing to continue it. V19 admits
-# headless_with_tools as a requested capability, so a configuration may durably
-# ask for an executor whose invocation carries the provider's own tools.
+# reason instead of standing STARTED with nothing to continue it. V19 gives
+# content-addressed material a durable, immutable home, so an order larger than
+# the inline bound travels as the address of bytes published once instead of not
+# travelling at all. V20 admits headless_with_tools as a requested capability,
+# so a configuration may durably ask for an executor whose invocation carries
+# the provider's own tools.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -73,7 +78,8 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     16: "97605fb330cb6382d52a554d644015f631cccea3759c04c27de3ca5f1fea9c3a",
     17: "2f3a11d0b4d67e375259ca732c7243c95d19fa763e03785b0bd4a83c1b1359d2",
     18: "c60275544c9984adccff79e3a4f5ab6eeab5ea1683306adf1d2faa7dbb51e29d",
-    19: "92b51ed16d57d18fb9069a07c70b6abb533a04f789356b82eccdc4cacb489fa2",
+    19: "a861d9087da05c112f88ae8ec573f57338b5ef1d04f36553922c505127b34298",
+    20: "0e844689df44b41370c9e801cd7a0f8ff447d1e25c6df3d856605014949a3a81",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -114,6 +120,10 @@ V17_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V18_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_EIGHTEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_EIGHTEEN],
+)
+V19_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_NINETEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_NINETEEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1145,6 +1155,18 @@ node_receipts_v3 = sa.Table(
         ),
     ),
 )
+artifacts = sa.Table(
+    "artifacts",
+    metadata,
+    sa.Column("artifact_hash", sa.Text, primary_key=True),
+    sa.Column("content", sa.LargeBinary, nullable=False),
+    sa.CheckConstraint(
+        "length(artifact_hash) = 64 AND artifact_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(content) BETWEEN 1 AND {MAXIMUM_ARTIFACT_BYTES}",
+    ),
+)
 run_inputs_v3 = sa.Table(
     "run_inputs_v3",
     metadata,
@@ -1291,6 +1313,18 @@ _PRODUCT_TRIGGERS = {
                          run_configuration_revision_hash
         ON runs BEGIN
           SELECT RAISE(ABORT, 'run bindings are immutable');
+        END
+    """,
+    "artifacts_no_update": """
+        CREATE TRIGGER artifacts_no_update
+        BEFORE UPDATE ON artifacts BEGIN
+          SELECT RAISE(ABORT, 'artifacts are immutable');
+        END
+    """,
+    "artifacts_no_delete": """
+        CREATE TRIGGER artifacts_no_delete
+        BEFORE DELETE ON artifacts BEGIN
+          SELECT RAISE(ABORT, 'artifacts are immutable');
         END
     """,
     "run_inputs_v3_no_update": """
@@ -1906,18 +1940,23 @@ def _table_fingerprint(
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
+    if version in {SCHEMA_VERSION, _VERSION_NINETEEN}:
+        return PRODUCT_TABLE_NAMES
     if version in {
-        SCHEMA_VERSION,
         _VERSION_EIGHTEEN,
         _VERSION_SEVENTEEN,
         _VERSION_SIXTEEN,
         _VERSION_FIFTEEN,
     }:
-        return PRODUCT_TABLE_NAMES
+        return PRODUCT_TABLE_NAMES - {artifacts.name}
     if version == _VERSION_FOURTEEN:
-        return PRODUCT_TABLE_NAMES - {tool_redemptions.name}
+        return PRODUCT_TABLE_NAMES - {artifacts.name, tool_redemptions.name}
     if version == _VERSION_THIRTEEN:
-        return PRODUCT_TABLE_NAMES - {run_inputs_v3.name, tool_redemptions.name}
+        return PRODUCT_TABLE_NAMES - {
+            artifacts.name,
+            run_inputs_v3.name,
+            tool_redemptions.name,
+        }
     raise UnsupportedSchemaVersion(version)
 
 
@@ -2306,7 +2345,7 @@ _PREDECESSOR_AGENT_CONFIGURATION_REVISIONS = (
 )
 
 
-def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
+def _apply_v19_to_v20(connection: sqlite3.Connection) -> None:
     """Admit headless_with_tools as a requested capability, and keep every row.
 
     SQLite cannot widen a table CHECK in place, so the hop rebuilds
@@ -2327,7 +2366,7 @@ def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
         (_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS,),
     ).fetchone():
         raise StoreMigrationRefused(
-            f"schema version {_VERSION_EIGHTEEN} already has "
+            f"schema version {_VERSION_NINETEEN} already has "
             f"{_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS}; "
             "this command will not alter it"
         )
@@ -2356,7 +2395,7 @@ def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP TABLE {_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS}")
     for trigger in _AGENT_CONFIGURATION_REVISIONS_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger])
-    _raise_declared_version(connection, _VERSION_EIGHTEEN, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_NINETEEN, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2390,7 +2429,17 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_FIFTEEN, _VERSION_SIXTEEN, _apply_v15_to_v16),
     _SchemaMigrationStep(_VERSION_SIXTEEN, _VERSION_SEVENTEEN, _apply_v16_to_v17),
     _SchemaMigrationStep(_VERSION_SEVENTEEN, _VERSION_EIGHTEEN, _apply_v17_to_v18),
-    _SchemaMigrationStep(_VERSION_EIGHTEEN, SCHEMA_VERSION, _apply_v18_to_v19),
+    _SchemaMigrationStep(
+        _VERSION_EIGHTEEN,
+        _VERSION_NINETEEN,
+        _added_table_step(
+            artifacts,
+            ("artifacts_no_update", "artifacts_no_delete"),
+            _VERSION_EIGHTEEN,
+            _VERSION_NINETEEN,
+        ),
+    ),
+    _SchemaMigrationStep(_VERSION_NINETEEN, SCHEMA_VERSION, _apply_v19_to_v20),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

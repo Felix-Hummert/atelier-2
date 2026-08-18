@@ -30,16 +30,16 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates the current schema only in a truly empty canonical store and
-reopens only an exact current product schema. V9 through V18 remain published
-predecessor objects (`V9_SCHEMA_HANDOFF` through `V18_SCHEMA_HANDOFF`) and are
-not opened or migrated by runtime. An exact V13 store and every published
-successor advance to the current schema only through the offline `atelier2
-migrate` command, one published step at a time; older published predecessors stay
-refused by name. Older, future, malformed, or nonempty unowned stores are
-rejected without mutation. There is no runtime downgrade. The published
-`PRODUCT_SCHEMA_HANDOFF` is version 19 with product-schema fingerprint
-`92b51ed16d57d18fb9069a07c70b6abb533a04f789356b82eccdc4cacb489fa2`.
+The runtime creates schema V20 only in a truly empty canonical store and reopens
+only an exact V20 product schema. V9 through V19 remain published predecessor
+objects (`V9_SCHEMA_HANDOFF` through `V19_SCHEMA_HANDOFF`) and are not opened or
+migrated by runtime. An exact V13 through V19 store advances to the current
+schema only through the offline `atelier2 migrate` command, one published step at
+a time; older published predecessors stay refused by name. Older, future,
+malformed, or nonempty unowned stores are rejected without mutation. There is no
+runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 20 with
+product-schema fingerprint
+`0e844689df44b41370c9e801cd7a0f8ff447d1e25c6df3d856605014949a3a81`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed

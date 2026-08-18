@@ -5,16 +5,25 @@ import struct
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 MAXIMUM_AGENT_FIELD_CHARACTERS = 1_024
 MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
-# What a process accepts as stdin (or the job file Grok reads). A separate
-# decision from the durable answer bound; they share a number today and must
-# not be derived from each other (#88).
-MAXIMUM_AGENT_PROCESS_INPUT_BYTES = 49_152
+# What a process accepts as stdin (or the job file Grok reads). Still a separate
+# decision from the durable answer bound above, which it must not be derived
+# from (#88) -- an agent that may be handed a large brief is not thereby allowed
+# to answer with one.
+#
+# It is the artifact bound because a job is the instruction plus the material the
+# node reads, and the largest single piece of material is an artifact: a smaller
+# number here would admit an order at the start door and then make it
+# unreachable by the agent it was written for, which is the wall a full
+# pull-request diff hit. What a given provider accepts is a narrower, separate
+# limit each invocation still declares at the process port.
+MAXIMUM_AGENT_PROCESS_INPUT_BYTES = MAXIMUM_ARTIFACT_BYTES
 # Current process-frame ceiling, earned by the measured JSON frame of every
 # Claude Code this repository admits (see the Claude subscription adapter's
 # conformance set); each invocation still declares its exact lower limit at the

@@ -53,10 +53,10 @@ from atelier2.api.wire.events import (
 from atelier2.api.wire.requests import (
     AdmitCatalogMemberRequestResource,
     FoundCatalogLineageRequestResource,
+    InlineOrderResource,
     PublishAgentConfigurationRevisionRequestResource,
     PublishAuthProfileRevisionRequestResource,
     StartRunAgentBindingResourceV2,
-    StartRunOrderResource,
     StartRunRequestResource,
     StartRunRequestResourceV2,
     StartRunRequestResourceV3,
@@ -633,9 +633,7 @@ def _start_request(
                 for binding in bindings
             ),
             orders=tuple(
-                StartRunOrderResource(
-                    name=order.name, value=order.value.decode("utf-8")
-                )
+                InlineOrderResource(name=order.name, value=order.value.decode("utf-8"))
                 for order in orders
             ),
         )

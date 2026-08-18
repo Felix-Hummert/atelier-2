@@ -19,7 +19,7 @@ from atelier2.api.limits import (
 )
 from atelier2.api.openapi import API_PREFIX, install_custom_openapi
 from atelier2.api.problems import install_problem_handlers
-from atelier2.api.routes import agents, events, health, revisions, runs
+from atelier2.api.routes import agents, artifacts, events, health, revisions, runs
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
 from atelier2.application.admit_catalog_member import (
     admit_catalog_member,
@@ -32,6 +32,7 @@ from atelier2.application.publish_agent_configurations import (
     publish_agent_configuration_revision,
     publish_auth_profile_revision,
 )
+from atelier2.application.publish_artifact import publish_artifact
 from atelier2.application.publish_budget_revision import publish_budget_revision
 from atelier2.application.publish_schema_revision import publish_schema_revision
 from atelier2.application.publish_workflow_revision import (
@@ -134,6 +135,9 @@ def bound_use_cases(
             ports.workflow_revision_publisher,
             ports.workflow_document_parser,
             projection_limit,
+        ),
+        publish_artifact=lambda content: publish_artifact(
+            content, ports.artifact_publisher
         ),
         publish_schema_revision=lambda document: publish_schema_revision(
             document, ports.published_revision_registry
@@ -262,6 +266,7 @@ def create_app(
     # `paths` keys, which the frozen artefact pins byte for byte.
     app.include_router(health.router)
     app.include_router(agents.router)
+    app.include_router(artifacts.router)
     app.include_router(revisions.router)
     app.include_router(runs.router)
     app.include_router(events.router)

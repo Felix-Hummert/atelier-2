@@ -12,6 +12,7 @@ from atelier2.adapters.dbos.agent_catalog import (
     agent_configuration_from_record,
     auth_profile_from_record,
 )
+from atelier2.adapters.dbos.artifact_store import read_stored_artifact
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.dbos.node_records import persist_bound_node_executions
@@ -42,8 +43,10 @@ from atelier2.contracts.agents import (
     AgentBindingSet,
     ResolvedAgentBinding,
 )
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import RunInput
+from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import (
@@ -57,6 +60,7 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.schemas_v3 import (
+    MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     InstanceRefused,
     SchemaRefused,
     read_instance_document,
@@ -143,14 +147,21 @@ def _authored_orders(request: AnyStartPublishedRunRequest) -> tuple[AuthoredOrde
 
 
 def _pin_authored_orders(
+    connection: Connection,
     graph: WorkflowGraphV3,
     run_configuration: RunConfigurationRevision,
     authored: tuple[AuthoredOrder, ...],
 ) -> tuple[RunInput, ...] | DurableV3StartInputRefused:
-    """Bind each authored order to the schema the document pinned.
+    """Bind each authored order to the schema the document pinned, and to its bytes.
 
     A caller does not name a schema hash. Repeating the pin would make a typo
     a SCHEMA_MISMATCH instead of the order the operator meant.
+
+    This is also where an order that names an artifact becomes an order that has
+    bytes. It resolves here rather than anywhere later for the reason every other
+    reference resolves at the start: what a run promised its author is settled
+    before the run exists, so an address nobody published refuses the start by
+    name instead of failing an attempt nobody could have foreseen.
     """
     declared = {entry.name for entry in graph.graph_inputs}
     names = [order.name for order in authored]
@@ -174,8 +185,45 @@ def _pin_authored_orders(
                 V3InputRefusal.SCHEMA_MISMATCH,
                 "the document pinned nothing",
             )
-        pinned_orders.append(RunInput(order.name, pinned, order.value))
+        value = _order_value_bytes(connection, order)
+        if isinstance(value, DurableV3StartInputRefused):
+            return value
+        pinned_orders.append(RunInput(order.name, pinned, value))
     return tuple(pinned_orders)
+
+
+def _order_value_bytes(
+    connection: Connection, order: AuthoredOrder
+) -> bytes | DurableV3StartInputRefused:
+    """The exact bytes one authored order is, whichever way it was supplied.
+
+    The inline bound bites here rather than at the schema reading below, because
+    it is a property of the route and not of the value: the same bytes are
+    admitted when they arrive as an artifact somebody published, and the refusal
+    an operator gets should say which door they were at.
+    """
+    match order.value:
+        case InlineOrderValue(content):
+            if len(content) > MAXIMUM_INSTANCE_DOCUMENT_BYTES:
+                return DurableV3StartInputRefused(
+                    order.name,
+                    V3InputRefusal.VALUE_REFUSED,
+                    f"{len(content)} inline bytes exceeds "
+                    f"{MAXIMUM_INSTANCE_DOCUMENT_BYTES}; publish material this "
+                    "large as an artifact and order its address",
+                )
+            return content
+        case ArtifactOrderValue(artifact_hash):
+            stored = read_stored_artifact(connection, artifact_hash)
+            if stored is None:
+                return DurableV3StartInputRefused(
+                    order.name,
+                    V3InputRefusal.UNKNOWN_ARTIFACT,
+                    f"no artifact carries the address {artifact_hash.value}",
+                )
+            return stored.content
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _refused_order(
@@ -240,7 +288,13 @@ def _refused_order(
                     f"a resolved schema revision is not one: {unreadable}"
                 )
             case schema:
-                verdict = read_instance_document(order.value, schema)
+                # The value is judged as it will be read, which for an ordered
+                # artifact is its full content: the route it arrived by already
+                # bounded it, and refusing it a second time under the inline
+                # bound would refuse what the artifact door admitted.
+                verdict = read_instance_document(
+                    order.value, schema, MAXIMUM_ARTIFACT_BYTES
+                )
         if isinstance(verdict, InstanceRefused):
             return DurableV3StartInputRefused(
                 name, V3InputRefusal.VALUE_REFUSED, str(verdict)
@@ -501,7 +555,9 @@ class DbosDurableRunStarter:
                     and run_configuration is not None
                     and isinstance(graph, WorkflowGraphV3)
                 ):
-                    pinned = _pin_authored_orders(graph, run_configuration, authored)
+                    pinned = _pin_authored_orders(
+                        connection, graph, run_configuration, authored
+                    )
                     if isinstance(pinned, DurableV3StartInputRefused):
                         return pinned
                     orders = pinned
