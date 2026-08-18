@@ -595,7 +595,9 @@ produced to standard output, with the run, its revision, its terminal hash and
 one hash per output on standard error. Every publication is idempotent and the
 run identity is derived from the published hashes unless the operator names one,
 so the same command run twice reports the first run instead of paying for a
-second. The client owns nothing: it holds no durable state, adds no route, and
+second. That identity compare pins authored `--input` orders the same way it
+already pinned `run_inputs`, so a retry of the operator door is
+`DurableRunExisting` rather than a conflict. The client owns nothing: it holds no durable state, adds no route, and
 hands the service's typed problems on unchanged, whether the service refused an
 answer or ended the event stream with its own failure frame. A run that stops on
 a decision the command cannot make — a waiting node, an unknown effect outcome, a
@@ -632,6 +634,19 @@ declared, a declared name that is missing, and a value that is not valid JSON
 for the schema the document pinned are each refused by name; a typed 422 from
 the service is handed on in the service's own words. An output contract that
 could decide an exit code still does not exist.
+
+That API now also has a third door: `atelier2 mcp` speaks MCP on standard
+input and standard output against the same public HTTP API. A client launches
+it as a child. There is no listener, no port and no token. The four tools
+are `list_workflows` (catalog name, lineage and head), `start_run` (the
+revision a name holds, the same resolution `run --name` asks), `run_status`
+(the run resource as the API answers it) and `answer_wait` (the #194 door).
+Each call is the HTTP door; a typed problem is returned unchanged, field
+pointers included. The API has no caller authentication: #82 is human OIDC
+and ADR 0009 (machine credentials) is not landed, so this child invents
+none and refuses any service that is not a literal loopback address — the
+same trust the browser already has on this machine. Instants on the run
+wait for #355; this door does not invent them.
 
 A node can now say which tool it needs and have it redeemed. A `tools` entry is
 a published tool grant the document pins by hash, exactly as an output pins its
