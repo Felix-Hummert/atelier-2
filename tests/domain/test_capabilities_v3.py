@@ -734,6 +734,57 @@ nodes:
     assert "interactive" in str(refusal.value) and "headless" in str(refusal.value)
 
 
+TOOL_USING_NODE = b"""format_version: 3
+name: Work the candidate in the workspace
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless_with_tools
+    instruction: Change the workspace and say what you changed.
+    outputs:
+      - name: candidate
+        schema: {ref: workspace_candidate, revision: schema-1}
+"""
+
+
+def test_a_node_requiring_tools_is_refused_against_a_tool_free_binding() -> None:
+    """A tool-free configuration cannot answer a node that declares tool work.
+
+    The refusal is the same one that guards the interactive mode, and it has to
+    be: running this node under a call that can touch nothing would deliver an
+    answer about a workspace nobody changed.
+    """
+
+    with pytest.raises(RoleBindingRefused) as refusal:
+        required(TOOL_USING_NODE)
+
+    assert (
+        refusal.value.refusal.reason
+        is RoleBindingRefusalReason.INCOMPATIBLE_EXECUTION_MODE
+    )
+    assert AgentExecutionCapability.HEADLESS_WITH_TOOLS.value in str(refusal.value)
+
+
+def test_the_same_node_binds_against_a_configuration_declaring_the_tool_capability() -> (
+    None
+):
+    tool_using = _binding(
+        "builder", "claude-opus-5", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    )
+
+    requirements = required(TOOL_USING_NODE, role_matrix=(tool_using,))
+
+    assert [requirement.capability for requirement in requirements] == [
+        RuntimeCapability.AGENT_EXECUTION,
+        RuntimeCapability.OUTPUT_VALIDATION,
+    ]
+    assert requirements[0].subject == CapabilitySubject(
+        AgentConfigurationSubject(tool_using.configuration.revision_hash.value),
+        "builder",
+    )
+
+
 def test_the_same_node_binds_against_a_configuration_declaring_that_mode() -> None:
     document = b"""format_version: 3
 name: Decide the candidate with the operator watching

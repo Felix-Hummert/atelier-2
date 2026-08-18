@@ -19,6 +19,7 @@ from atelier2.adapters.claude_subscription import (
     ClaudeManagedPolicyPresent,
     ClaudeSubscriptionSettings,
     attest_no_managed_policy,
+    attest_workspace_tool_invocation,
     verify_claude_capability,
 )
 from atelier2.adapters.codex_subscription import (
@@ -198,6 +199,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             agent_scratch_root=_attested_agent_scratch_root(parser, parsed),
             project_root=_declared_project_root(parser, parsed),
             claude_subscription=_claude_subscription_settings(parser, parsed),
+            claude_workspace_tools=parsed.claude_workspace_tools,
             grok_subscription=_grok_subscription_settings(parser, parsed),
             codex_subscription=_codex_subscription_settings(parser, parsed),
         )
@@ -376,6 +378,12 @@ def _claude_subscription_settings(
 
     declared = (parsed.claude_executable, parsed.claude_credential_directory)
     if all(value is None for value in declared):
+        if parsed.claude_workspace_tools:
+            parser.error(
+                "--claude-workspace-tools arms a second executor of the Claude "
+                "deployment, so it needs --claude-executable and "
+                "--claude-credential-directory beside it"
+            )
         return None
     if any(value is None for value in declared):
         parser.error(
@@ -399,6 +407,12 @@ def _claude_subscription_settings(
     try:
         attest_no_managed_policy(settings.credential_directory, MANAGED_POLICY_ROOTS)
         verify_claude_capability(settings.executable)
+        if parsed.claude_workspace_tools:
+            # Startability, not a version answer: the tool-bearing invocation is
+            # the one whose flags decide what a node's process may touch, so the
+            # deployment starts that exact vector once, here, rather than
+            # discovering at the first bound node that it never spawns.
+            attest_workspace_tool_invocation(settings)
     except (ClaudeExecutableUnsupported, ClaudeManagedPolicyPresent) as error:
         parser.error(str(error))
     return settings
@@ -510,6 +524,16 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--project-root", type=Path)
     serve_parser.add_argument("--claude-executable", type=Path)
     serve_parser.add_argument("--claude-credential-directory", type=Path)
+    serve_parser.add_argument(
+        "--claude-workspace-tools",
+        action="store_true",
+        help=(
+            "also serve the Claude executor whose invocation may read, write "
+            "and run commands where the attempt stands. It runs as this user "
+            "and is no sandbox; only a node whose binding requests the "
+            "headless_with_tools capability reaches it"
+        ),
+    )
     serve_parser.add_argument("--grok-executable", type=Path)
     serve_parser.add_argument("--grok-workspace", type=Path)
     serve_parser.add_argument("--grok-credential-directory", type=Path)

@@ -27,7 +27,7 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
@@ -37,6 +37,7 @@ _VERSION_FOURTEEN = 14
 _VERSION_FIFTEEN = 15
 _VERSION_SIXTEEN = 16
 _VERSION_SEVENTEEN = 17
+_VERSION_EIGHTEEN = 18
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -56,7 +57,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # output ends its attempt under its own name instead of borrowing the process
 # exit's or killing the driver. V18 admits FAILED as a run state, so a line
 # whose open node paths have terminally failed ends under the node's own
-# reason instead of standing STARTED with nothing to continue it.
+# reason instead of standing STARTED with nothing to continue it. V19 admits
+# headless_with_tools as a requested capability, so a configuration may durably
+# ask for an executor whose invocation carries the provider's own tools.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -70,6 +73,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     16: "97605fb330cb6382d52a554d644015f631cccea3759c04c27de3ca5f1fea9c3a",
     17: "2f3a11d0b4d67e375259ca732c7243c95d19fa763e03785b0bd4a83c1b1359d2",
     18: "c60275544c9984adccff79e3a4f5ab6eeab5ea1683306adf1d2faa7dbb51e29d",
+    19: "92b51ed16d57d18fb9069a07c70b6abb533a04f789356b82eccdc4cacb489fa2",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -106,6 +110,10 @@ V16_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V17_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_SEVENTEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_SEVENTEEN],
+)
+V18_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_EIGHTEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_EIGHTEEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -263,7 +271,9 @@ agent_configuration_revisions = sa.Table(
         f"length(executor_revision) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
     sa.CheckConstraint("revision_format_version IN (1, 2)"),
-    sa.CheckConstraint("requested_capability IN ('headless', 'interactive')"),
+    sa.CheckConstraint(
+        "requested_capability IN ('headless', 'headless_with_tools', 'interactive')"
+    ),
     sa.CheckConstraint(
         "revision_format_version = 2 OR requested_capability = 'headless'"
     ),
@@ -1898,6 +1908,7 @@ def _table_fingerprint(
 def _table_names_for_version(version: int) -> frozenset[str]:
     if version in {
         SCHEMA_VERSION,
+        _VERSION_EIGHTEEN,
         _VERSION_SEVENTEEN,
         _VERSION_SIXTEEN,
         _VERSION_FIFTEEN,
@@ -2283,7 +2294,69 @@ def _apply_v17_to_v18(connection: sqlite3.Connection) -> None:
     )
     connection.execute(f"DROP TABLE {_PREDECESSOR_RUNS}")
     connection.execute(_PRODUCT_TRIGGERS["runs_binding_no_update"])
-    _raise_declared_version(connection, _VERSION_SEVENTEEN, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_SEVENTEEN, _VERSION_EIGHTEEN)
+
+
+_AGENT_CONFIGURATION_REVISIONS_TRIGGERS = (
+    "agent_configuration_revisions_no_update",
+    "agent_configuration_revisions_no_delete",
+)
+_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS = (
+    "agent_configuration_revisions_before_workspace_tools"
+)
+
+
+def _apply_v18_to_v19(connection: sqlite3.Connection) -> None:
+    """Admit headless_with_tools as a requested capability, and keep every row.
+
+    SQLite cannot widen a table CHECK in place, so the hop rebuilds
+    `agent_configuration_revisions` in the published order and copies each
+    predecessor row verbatim: every stored configuration requests `headless` or
+    `interactive`, which the widened constraint still admits, and nothing is
+    reinterpreted. No stored configuration can name the tool executor either,
+    because no predecessor store could publish one.
+
+    `run_agent_bindings` declares a foreign key on this table by name, so the
+    rename out runs under `legacy_alter_table`: without it the rename would
+    rewrite the child's declaration to follow the parked name, and the child
+    would then reference a table this hop drops.
+    """
+
+    if connection.execute(
+        "SELECT name FROM sqlite_master WHERE name=?",
+        (_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS,),
+    ).fetchone():
+        raise StoreMigrationRefused(
+            f"schema version {_VERSION_EIGHTEEN} already has "
+            f"{_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS}; "
+            "this command will not alter it"
+        )
+    for trigger in _AGENT_CONFIGURATION_REVISIONS_TRIGGERS:
+        connection.execute(f"DROP TRIGGER {trigger}")
+    connection.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        connection.execute(
+            f"ALTER TABLE {agent_configuration_revisions.name} RENAME TO "
+            f"{_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS}"
+        )
+    finally:
+        connection.execute("PRAGMA legacy_alter_table=OFF")
+    connection.execute(
+        str(
+            CreateTable(agent_configuration_revisions).compile(
+                dialect=sqlite_dialect.dialect()
+            )
+        )
+    )
+    carried = ", ".join(column.name for column in agent_configuration_revisions.columns)
+    connection.execute(
+        f"INSERT INTO {agent_configuration_revisions.name} ({carried}) "
+        f"SELECT {carried} FROM {_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS}"
+    )
+    connection.execute(f"DROP TABLE {_PREDECESSOR_AGENT_CONFIGURATION_REVISIONS}")
+    for trigger in _AGENT_CONFIGURATION_REVISIONS_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+    _raise_declared_version(connection, _VERSION_EIGHTEEN, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2316,7 +2389,8 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     ),
     _SchemaMigrationStep(_VERSION_FIFTEEN, _VERSION_SIXTEEN, _apply_v15_to_v16),
     _SchemaMigrationStep(_VERSION_SIXTEEN, _VERSION_SEVENTEEN, _apply_v16_to_v17),
-    _SchemaMigrationStep(_VERSION_SEVENTEEN, SCHEMA_VERSION, _apply_v17_to_v18),
+    _SchemaMigrationStep(_VERSION_SEVENTEEN, _VERSION_EIGHTEEN, _apply_v17_to_v18),
+    _SchemaMigrationStep(_VERSION_EIGHTEEN, SCHEMA_VERSION, _apply_v18_to_v19),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

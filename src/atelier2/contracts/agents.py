@@ -63,7 +63,25 @@ class AuthMode(StrEnum):
 
 class AgentExecutionCapability(StrEnum):
     HEADLESS = "headless"
+    HEADLESS_WITH_TOOLS = "headless_with_tools"
     INTERACTIVE = "interactive"
+
+
+UNATTENDED_AGENT_EXECUTION_CAPABILITIES = frozenset(
+    {
+        AgentExecutionCapability.HEADLESS,
+        AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+    }
+)
+"""Every capability an attempt can ask for with no operator at a terminal.
+
+The durable runtime drives every attempt itself and stands at no terminal, so an
+executor declaring only `INTERACTIVE` would name one no run could ever reach.
+The two members differ in what the invocation may touch, not in who drives it:
+`HEADLESS` is one text-in/text-out call, `HEADLESS_WITH_TOOLS` is a call whose
+process may also use the provider's own tools inside the workspace its attempt
+leased.
+"""
 
 
 class AgentConfigurationRevisionFormatVersion(IntEnum):

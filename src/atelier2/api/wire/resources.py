@@ -82,7 +82,7 @@ class AgentConfigurationRevisionResource(ApiModel):
     )
     provider_id: str = Field(min_length=1, max_length=MAXIMUM_PROVIDER_ID_CHARACTERS)
     auth_mode: Literal["subscription", "api_key"]
-    requested_capability: Literal["headless", "interactive"]
+    requested_capability: Literal["headless", "headless_with_tools", "interactive"]
     agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 

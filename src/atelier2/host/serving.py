@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from atelier2.adapters.claude_subscription import (
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
+    ClaudeWorkspaceToolExecutorFactory,
 )
 from atelier2.adapters.codex_subscription import (
     CodexSubscriptionExecutorFactory,
@@ -174,6 +175,15 @@ class HostSettings:
     agent_scratch_root: Path | None = None
     project_root: Path | None = None
     claude_subscription: ClaudeSubscriptionSettings | None = None
+    claude_workspace_tools: bool = False
+    """Whether the Claude deployment also serves its tool-bearing executor.
+
+    A separate answer from the deployment itself, because it is a separate
+    grant: the tool-free executor is what a Claude deployment is, and the
+    tool-bearing one lets a node's own process read, write and run commands as
+    the serving user. An operator says yes to that once, here, and never as a
+    side effect of naming an executable.
+    """
     grok_subscription: GrokSubscriptionSettings | None = None
     codex_subscription: CodexSubscriptionSettings | None = None
 
@@ -242,6 +252,11 @@ class HostSettings:
                 "own, and a provider without a scratch root would share one "
                 "directory across every attempt"
             )
+        if self.claude_workspace_tools and self.claude_subscription is None:
+            raise ValueError(
+                "serving the Claude workspace-tool executor needs the Claude "
+                "deployment it is a second executor of"
+            )
         if self.agent_scratch_root is not None and not billed:
             raise ValueError(
                 "a scratch root without a provider executor serves nothing"
@@ -282,6 +297,11 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
             ()
             if claude_subscription is None
             else (ClaudeSubscriptionExecutorFactory(claude_subscription),)
+        ),
+        *(
+            (ClaudeWorkspaceToolExecutorFactory(claude_subscription),)
+            if claude_subscription is not None and settings.claude_workspace_tools
+            else ()
         ),
         *(
             ()

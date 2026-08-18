@@ -82,7 +82,9 @@ class PublishAgentConfigurationRevisionRequestResource(ApiModel):
     executor_revision: str = Field(
         min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
     )
-    requested_capability: Literal["headless", "interactive"] = "headless"
+    requested_capability: Literal["headless", "headless_with_tools", "interactive"] = (
+        "headless"
+    )
 
 
 class StartRunRequestResource(ApiModel):
