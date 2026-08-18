@@ -23,6 +23,7 @@ from atelier2.contracts.workflow_refusals import (
 )
 from atelier2.contracts.workflows import (
     AnyWorkflowGraph,
+    AnyWorkflowNode,
     NonemptyString,
     WaitNode,
     WorkflowGraph,
@@ -365,6 +366,7 @@ class WorkflowGraphV3(_ClosedV3Model):
 
 
 type AnyWorkflowDocument = AnyWorkflowGraph | WorkflowGraphV3
+type AnyWorkflowDocumentNode = AnyWorkflowNode | WorkflowNodeV3
 
 type AnyWaitNode = WaitNode | WaitNodeV3
 ANY_WAIT_NODE_KINDS = (WaitNode, WaitNodeV3)

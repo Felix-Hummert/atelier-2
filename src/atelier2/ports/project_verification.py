@@ -24,9 +24,10 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
-from atelier2.ports.project_source import ProjectSourcePin, ProjectSourceRepository
+from atelier2.ports.project_source import ProjectSourceRepository
 
 
 class ProjectVerificationUndeclared(Exception):

@@ -25,8 +25,9 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 from atelier2.adapters.leased_directory import entered_leased_directory
+from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
-from atelier2.ports.project_source import ProjectSourcePin, ProjectSourceUnavailable
+from atelier2.ports.project_source import ProjectSourceUnavailable
 
 _GIT_EXECUTABLE_NAME = "git"
 """Resolved from the serving process's own path, like every command a project names."""

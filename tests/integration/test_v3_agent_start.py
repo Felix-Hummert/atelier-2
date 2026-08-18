@@ -24,6 +24,7 @@ import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.node_binding_codec import EncodedAgentBindingV2
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
@@ -34,7 +35,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow import EncodedAgentBindingV2, _node_binding
+from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.project_verification import declared_project
@@ -53,7 +54,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.revisions_v3 import RevisionKind
-from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.run_bindings import RunBindingConflict, RunV3
 from atelier2.contracts.run_configuration_v3 import (
     ReferenceSite,
     ResolvedReference,
@@ -218,6 +219,28 @@ def test_a_started_v3_run_reads_back_as_its_own_shape(runtime: DbosRuntime) -> N
     assert isinstance(run, RunV3)
     assert [binding.role.value for binding in run.agent_bindings] == ["builder"]
     assert run.binding_set_hash == bindings.binding_set_hash
+
+
+@pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
+def test_the_durable_step_refuses_a_node_its_run_does_not_stand_on(
+    runtime: DbosRuntime,
+) -> None:
+    """The refusal a caller of the real adapter path sees, named and typed.
+
+    The run stands on `implement`, so a node workflow that woke for `review` --
+    the routine shape of a re-driven workflow whose run has moved on -- owns
+    nothing to bind. It is a `RunBindingConflict` rather than the store's
+    `RunTransitionConflict`, the same class its sibling precondition in
+    `bootstrap_run_binding` has always raised: neither writes a transition, both
+    refuse a durable binding that does not hold.
+    """
+    workflow, bindings = publish(runtime)
+    DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+
+    with pytest.raises(RunBindingConflict, match="does not own current STARTED node"):
+        _node_binding(runtime.datasource, RUN, workflow.revision_hash, "review", None)
 
 
 @pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
