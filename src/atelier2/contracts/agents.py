@@ -320,6 +320,7 @@ class AgentExecutionRequestV2:
     resolved_binding: ResolvedAgentBinding
     executor_operational_identity: AgentExecutorOperationalIdentity
     job_bytes: bytes
+    declared_output_schema_bytes: bytes | None = None
     request_hash: AgentExecutionRequestHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -330,6 +331,11 @@ class AgentExecutionRequestV2:
             raise ValueError(
                 f"agent request job bytes exceed {MAXIMUM_AGENT_PROCESS_INPUT_BYTES} bytes"
             )
+        if self.declared_output_schema_bytes is not None:
+            if type(self.declared_output_schema_bytes) is not bytes:
+                raise TypeError("declared output schema bytes must be bytes")
+            if not self.declared_output_schema_bytes:
+                raise ValueError("declared output schema bytes must be nonempty")
         expected_execution = NodeExecutionId.for_node(
             self.run_id, self.workflow_revision_hash, self.node_id
         )

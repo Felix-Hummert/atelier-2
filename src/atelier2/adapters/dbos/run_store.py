@@ -451,6 +451,21 @@ def refuse_an_output_its_schema_does_not_admit(
         )
 
 
+def load_published_schema_document(session: Any, revision: str) -> bytes | None:
+    """The exact published schema document this revision stores, or nothing.
+
+    This is the one read the output seam and the provider flag share. Callers
+    do not parse or reserialize: the stored bytes are the schema.
+    """
+    document = session.scalar(
+        sa.select(published_revisions.c.document).where(
+            published_revisions.c.kind == RevisionKind.SCHEMA.value,
+            published_revisions.c.revision_hash == revision,
+        )
+    )
+    return None if document is None else bytes(document)
+
+
 def why_a_value_its_declared_schema_refuses(
     session: Any,
     node_id: str,
@@ -466,19 +481,15 @@ def why_a_value_its_declared_schema_refuses(
     schema it froze is neither, and still raises -- that is the store disagreeing
     with itself.
     """
-    pinned = declared.schema_reference.revision
-    document = session.scalar(
-        sa.select(published_revisions.c.document).where(
-            published_revisions.c.kind == RevisionKind.SCHEMA.value,
-            published_revisions.c.revision_hash == pinned,
-        )
+    document = load_published_schema_document(
+        session, declared.schema_reference.revision
     )
     if document is None:
         raise RunTransitionConflict(
             f"the schema node {node_id!r} pinned for output "
             f"{declared.name!r} is absent from the store"
         )
-    schema = read_schema_document(bytes(document))
+    schema = read_schema_document(document)
     if isinstance(schema, SchemaRefused):
         raise RunTransitionConflict(
             f"the schema node {node_id!r} pinned for output "

@@ -189,6 +189,17 @@ def test_capability_v2_binding_request_and_receipt_hashes_are_fixed_vectors() ->
         receipt.receipt_hash.value
         == "a20f510d292e9a30af3414db23cc5168c5d539bba77847ce6161b00266dc2314"
     )
+    with_schema = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run_id, revision_hash, "agent"),
+        run_id,
+        revision_hash,
+        "agent",
+        resolved,
+        AgentExecutorOperationalIdentity("claude-process-17"),
+        b"implement the story",
+        b'{"type": "string"}',
+    )
+    assert with_schema.request_hash == request.request_hash
 
 
 def test_public_auth_and_configuration_contracts_have_only_exact_safe_fields() -> None:

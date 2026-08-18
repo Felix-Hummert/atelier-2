@@ -163,6 +163,7 @@ def subscription_request(
     model: str = "grok-4",
     auth_mode: AuthMode = AuthMode.SUBSCRIPTION,
     job: bytes = b"Reply with the single word pong",
+    declared_output_schema: bytes | None = None,
 ) -> AgentExecutionRequestV2:
     auth = AuthProfileRevision("grok-primary", 1, ProviderId("xai"), auth_mode)
     configuration = AgentConfigurationRevision(
@@ -182,6 +183,7 @@ def subscription_request(
         ResolvedAgentBinding(AgentRole("builder"), configuration, auth),
         GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
         job,
+        declared_output_schema,
     )
 
 
@@ -251,7 +253,12 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
-    request = subscription_request(model="grok-4", job=b"draw the owl")
+    # Distinctive spacing so a json.loads/dumps rewrite of the published
+    # document fails this pin rather than silently agreeing.
+    declared_schema = b'{"type": "string"}'
+    request = subscription_request(
+        model="grok-4", job=b"draw the owl", declared_output_schema=declared_schema
+    )
 
     workspace = leased_workspace(tmp_path)
     command = executor.prepare_process(request)
@@ -265,6 +272,8 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         str(settings.executable),
         "--output-format",
         "json",
+        "--json-schema",
+        '{"type": "string"}',
         "--model",
         "grok-4",
         "--prompt-file",
@@ -302,6 +311,10 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert isinstance(result, AgentExecutionResult)
     observed = json.loads(result.output_bytes)
     assert observed["arguments"][0] == str(settings.executable)
+    assert (
+        observed["arguments"][observed["arguments"].index("--json-schema") + 1]
+        == '{"type": "string"}'
+    )
     assert observed["job"] == "draw the owl"
     assert observed["stdin"] == ""
     assert observed["environment"]["GROK_HOME"] == str(invocation_home)
@@ -312,6 +325,18 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     executor.release_credential_channel(command)
     assert not invocation_home.exists()
     assert (settings.credential_directory / "auth.json").read_bytes() == b"{}"
+
+
+def test_a_node_without_a_declared_schema_does_not_invent_a_json_schema_flag(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+
+    command = executor.prepare_process(subscription_request())
+
+    assert "--json-schema" not in command.arguments
+    executor.release_credential_channel(command)
 
 
 def test_a_non_subscription_profile_is_refused_before_any_invocation(

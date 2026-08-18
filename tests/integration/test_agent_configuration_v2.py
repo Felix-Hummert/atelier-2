@@ -298,6 +298,66 @@ def test_old_node_binding_payload_replays_and_new_payload_carries_contract() -> 
 
     assert replayed.resolved_binding.configuration == legacy
     assert newly_encoded.resolved_binding.configuration == current
+    assert replayed.declared_output_schema_bytes is None
+    assert newly_encoded.declared_output_schema_bytes is None
+
+
+def test_a_declared_schema_document_reaches_the_request_as_its_published_bytes() -> (
+    None
+):
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    encoded = dict(_encoded_binding(configuration, auth, include_contract=True))
+    encoded["output_schema_document"] = '{"type": "string"}'
+
+    request = _agent_request_v2(
+        cast(EncodedAgentBindingV2, encoded),
+        RunId("schema/declared"),
+        WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
+        "build",
+        AgentExecutorOperationalIdentity("executor/test"),
+        frozenset({AgentExecutionCapability.HEADLESS}),
+    )
+    without_schema = _agent_request_v2(
+        _encoded_binding(configuration, auth, include_contract=True),
+        RunId("schema/declared"),
+        WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
+        "build",
+        AgentExecutorOperationalIdentity("executor/test"),
+        frozenset({AgentExecutionCapability.HEADLESS}),
+    )
+
+    assert request.declared_output_schema_bytes == b'{"type": "string"}'
+    assert request.request_hash == without_schema.request_hash
+
+
+def test_a_non_text_schema_document_on_the_binding_is_a_named_conflict() -> None:
+    auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("claude-cli/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    encoded = dict(_encoded_binding(configuration, auth, include_contract=True))
+    encoded["output_schema_document"] = {"type": "string"}
+
+    with pytest.raises(RunBindingConflict, match="output schema document"):
+        _agent_request_v2(
+            cast(EncodedAgentBindingV2, encoded),
+            RunId("schema/wrong-type"),
+            WorkflowRevision(b"format_version: 1\nstart: x\nnodes: []\n").revision_hash,
+            "build",
+            AgentExecutorOperationalIdentity("executor/test"),
+            frozenset({AgentExecutionCapability.HEADLESS}),
+        )
 
 
 @pytest.mark.parametrize(

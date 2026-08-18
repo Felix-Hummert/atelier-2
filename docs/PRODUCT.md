@@ -139,7 +139,10 @@ the host composes one Grok subscription executor beside Claude. It runs the
 bound model headless through `grok --output-format json`, takes only the
 envelope's final answer to the output seam — never the turn narration —
 and refuses an unreadable, empty, or answer-less envelope instead of
-recording the raw frame or the story of the run. The job travels
+recording the raw frame or the story of the run. When the node declared an
+output schema, the same published document bytes the seam later judges
+travel as `--json-schema`; the seam remains the last instance if the
+provider ignores the flag. The job travels
 through `--prompt-file` rather than the argument vector. The same
 vector pins a turn ceiling so a Diff-Review-sized order cannot run an
 unbounded loop, and the child inherits only the serving host's search path
