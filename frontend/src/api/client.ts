@@ -1022,7 +1022,7 @@ export interface CockpitApi {
     input: AgentConfigurationInput
   ): Promise<HttpResult<AgentConfigurationRevision>>;
   start(mutation: StartMutation): Promise<HttpResult<AnyRun>>;
-  answer(mutation: WaitMutation): Promise<HttpResult<Run>>;
+  answer(mutation: WaitMutation): Promise<HttpResult<AnyRun>>;
   reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
   getRun(publicReference: string): Promise<AnyRun>;
   getNodeDetail(publicReference: string, nodeId: string): Promise<NodeDetail>;
@@ -1194,7 +1194,7 @@ export function createCockpitApi(
           body: exactBody(mutation.body_base64)
         },
         [200, 202],
-        runSchema
+        anyRunSchema
       );
       if (
         result.value.public_run_reference !== mutation.public_run_reference ||

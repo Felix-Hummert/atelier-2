@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type { CockpitApi, RunV3 } from "../../src/api/client";
+import { CockpitRequestError, type CockpitApi, type RunV3 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { publicReference, revisionHash as digest } from "../support/workflowV1";
@@ -268,9 +268,24 @@ describe("a version 3 run that stops for a person", () => {
     };
   }
 
+  function waitNodeDetail(job: string | null = "Approve this, or name the blocking defect.") {
+    return {
+      run_id: "v3/a-person-approves",
+      public_run_reference: publicReference,
+      node_id: "approve",
+      state: "needs_you",
+      job_base64: job === null ? null : btoa(job),
+      job_hash: job === null ? null : "e".repeat(64),
+      answer: null,
+      provenance: null,
+      refusal: null
+    };
+  }
+
   it("proves(a-v3-line-stops-for-a-person-and-their-answer-carries-it-on): draws the node that owes a person a move as the one needing them", async () => {
     const cockpitApi = api(waitingRun(), {
-      getWorkflowRevision: vi.fn(async () => waitRevision())
+      getWorkflowRevision: vi.fn(async () => waitRevision()),
+      getNodeDetail: vi.fn(async () => waitNodeDetail() as never)
     });
 
     render(App, {
@@ -295,6 +310,7 @@ describe("a version 3 run that stops for a person", () => {
     const cockpitApi = api(waitingRun(), {
       getRun,
       getWorkflowRevision: vi.fn(async () => waitRevision()),
+      getNodeDetail: vi.fn(async () => waitNodeDetail() as never),
       openRunEvents: feed.open
     });
 
@@ -307,11 +323,102 @@ describe("a version 3 run that stops for a person", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "approve — Done" }).isConnected).toBe(true)
     );
-    // The answer reached the run through the API, never through this page: there
-    // is no answer card for a format-3 wait, so there is nothing here to settle
-    // and nothing to leave behind.
     expect(await journal.entries()).toEqual([]);
     expect(screen.queryByText("Run unavailable")).toBeNull();
+  });
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): shows the wait and sends the answer through the existing door", async () => {
+    const journal = new MutationJournal(sessionStorage);
+    const answer = vi.fn(async (mutation: { body_base64: string }) => {
+      void mutation;
+      return { status: 200, value: answeredRun() };
+    });
+    const cockpitApi = api(waitingRun(), {
+      getWorkflowRevision: vi.fn(async () => waitRevision()),
+      getNodeDetail: vi.fn(async () => waitNodeDetail() as never),
+      answer
+    });
+
+    render(App, { props: { cockpitApi, mutationJournal: journal } });
+
+    expect(await screen.findByRole("heading", { name: "Answer needed" })).toBeTruthy();
+    expect(
+      await screen.findByText("Approve this, or name the blocking defect.")
+    ).toBeTruthy();
+    expect(screen.getByText("Wait approve")).toBeTruthy();
+    await fireEvent.input(screen.getByLabelText("Answer"), {
+      target: { value: '"approved, with the second paragraph rewritten"' }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+
+    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
+    const mutation = answer.mock.calls[0]?.[0];
+    const body = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
+    expect(body).toEqual({
+      revision_hash: digest,
+      node_id: "approve",
+      answer_base64: btoa('"approved, with the second paragraph rewritten"')
+    });
+    expect(await screen.findByText(terminalHash)).toBeTruthy();
+  });
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): names a refused answer on the card", async () => {
+    const cockpitApi = api(waitingRun(), {
+      getWorkflowRevision: vi.fn(async () => waitRevision()),
+      getNodeDetail: vi.fn(async () => waitNodeDetail() as never),
+      answer: vi.fn(async () => {
+        throw new CockpitRequestError("The durable run is no longer waiting for this answer.", {
+          type: "urn:atelier2:problem:v1:answer-state-conflict",
+          title: "Answer state conflict",
+          status: 409,
+          detail: "The durable run is no longer waiting for this answer."
+        }, true);
+      })
+    });
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("heading", { name: "Answer needed" });
+    await fireEvent.input(screen.getByLabelText("Answer"), { target: { value: "true" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+
+    const alert = await screen.findByRole("alert", { name: "Send failed" });
+    expect(alert.textContent).toContain("The durable run is no longer waiting for this answer.");
+    expect(screen.getByLabelText("Answer").isConnected).toBe(true);
+  });
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): names an absent question instead of the bare node id", async () => {
+    const cockpitApi = api(waitingRun(), {
+      getWorkflowRevision: vi.fn(async () => waitRevision()),
+      getNodeDetail: vi.fn(async () => waitNodeDetail(null) as never)
+    });
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    expect(await screen.findByText("This wait node carries no question.")).toBeTruthy();
+    expect(screen.queryByText("Approve this, or name the blocking defect.")).toBeNull();
+  });
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): names a damaged question instead of an honest absence", async () => {
+    const cockpitApi = api(waitingRun(), {
+      getWorkflowRevision: vi.fn(async () => waitRevision()),
+      getNodeDetail: vi.fn(async () => ({
+        ...waitNodeDetail(),
+        job_base64: "////"
+      }) as never)
+    });
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    expect(await screen.findByText("The wait question could not be read")).toBeTruthy();
+    expect(screen.queryByText("This wait node carries no question.")).toBeNull();
+    const card = screen.getByRole("region", { name: "Answer needed" });
+    expect(within(card).queryByText("Looking…")).toBeNull();
   });
 });
 
