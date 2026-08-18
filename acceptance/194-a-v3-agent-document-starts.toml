@@ -79,10 +79,12 @@ text = "A V3 line whose author put a Wait node in it holds at that node as a dur
 # The pause above adds two of its own, named here rather than implied by the
 # sentence. A V3 run resource says it is WAITING_INPUT and names the node, and it
 # does not restate what that node asks: the prompt and the answer schema belong
-# to the document and are read from the workflow revision the run names. And the
-# cockpit has no form for typing a V3 answer -- the rail shows the pause and the
-# API takes the answer, which is where this head stops; the operator surface is
-# the UI trail's, not this one's.
+# to the document and are read from the workflow revision the run names. The run
+# page now answers that wait through the existing POST /runs/{ref}/answers door.
+
+[[sentence]]
+id = "a-waiting-v3-run-is-answerable-on-its-run-page"
+text = "A V3 run that is waiting for a person shows that wait on its own run page with an answer field; submitting sends the exact bytes through POST /runs/{ref}/answers and a named refusal of that door stays on the card."
 
 # RETIRED WITH THE CALLERLESS SUPERVISED DOOR. This file declared
 # `a-supervised-v3-start-leaves-the-manifest-its-receipt-names` for a private

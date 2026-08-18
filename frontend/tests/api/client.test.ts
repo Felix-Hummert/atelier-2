@@ -605,6 +605,55 @@ describe("the catalog name the picker asks for the head", () => {
   });
 });
 
+describe("answering a wait over the existing door", () => {
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): decodes a V3 run the answers door returns", async () => {
+    const run = {
+      workflow_format_version: 3,
+      run_id: "v3/answer-card",
+      public_run_reference: "run1.cnVu",
+      workflow_revision_hash: digest,
+      agent_binding_set_hash: digest,
+      run_configuration_revision_hash: digest,
+      agent_bindings: [],
+      state_version: 2,
+      state: "COMPLETED",
+      current_node_id: "ask",
+      node_rail: [{ node_id: "ask", state: "succeeded", attempt: null }],
+      terminal_hash: digest,
+      latest_event_cursor: "event1.cnVu.1"
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(run), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const mutation = {
+      mutation_id: "wait:run1.cnVu:ask",
+      kind: "wait" as const,
+      target: "/atelier/api/v1/runs/run1.cnVu/answers",
+      content_type: "application/json" as const,
+      body_base64: btoa(
+        JSON.stringify({
+          revision_hash: digest,
+          node_id: "ask",
+          answer_base64: btoa("true")
+        })
+      ),
+      public_run_reference: "run1.cnVu",
+      workflow_revision_hash: digest,
+      node_id: "ask",
+      answer_base64: btoa("true"),
+      answer_hash: digest
+    };
+
+    const answered = await createCockpitApi(fetcher).answer(mutation);
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe("/atelier/api/v1/runs/run1.cnVu/answers");
+    expect(answered).toEqual({ status: 200, value: run });
+  });
+});
+
 describe("the published agent-configuration listing", () => {
   it("asks the collection with the house page bound and decodes the item form", async () => {
     const item = {

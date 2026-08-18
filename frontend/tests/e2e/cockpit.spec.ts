@@ -1272,3 +1272,69 @@ test("the studio inbox names a run that is waiting for a person", async ({ page 
   await expect(page).toHaveURL(new RegExp(`/atelier/runs/${reference.replace(".", "\\.")}$`));
 });
 
+test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const schemaHash = await anyJsonSchema(page);
+  const runId = "v3/answer-card";
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      "name: answer-card-194",
+      "nodes:",
+      "  - id: ask",
+      "    type: wait",
+      "    prompt: Approve this, or name the blocking defect.",
+      ...declaredOutput(schemaHash, "approval"),
+      ""
+    ].join("\n")
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).revision_hash as string;
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 3,
+      run_id: runId,
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [],
+      orders: []
+    }
+  });
+  expect(started.status()).toBe(201);
+  const reference = (await started.json()).public_run_reference as string;
+
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${reference}`);
+    expect(read.status()).toBe(200);
+    expect((await read.json()).state).toBe("WAITING_INPUT");
+  }).toPass({ timeout: 15_000 });
+
+  await page.goto(`/atelier/runs/${reference}`);
+  await expect(page.getByRole("heading", { level: 1, name: `Run ${runId}` })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Answer needed" })).toBeVisible();
+  await expect(page.getByText("Wait ask")).toBeVisible();
+  const card = page.getByRole("region", { name: "Answer needed" });
+  await card.getByRole("textbox", { name: "Answer" }).fill("true");
+  await card.getByRole("button", { name: "Answer" }).click();
+  await expect(page.getByRole("heading", { name: /Answer pending|Answer needed|Answer uncertain/ })).toBeVisible();
+
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${reference}`);
+    expect(read.status()).toBe(200);
+    const body = await read.json();
+    expect(body.state).toBe("COMPLETED");
+    expect(body.run_id).toBe(runId);
+    expect(body.terminal_hash).toMatch(/^[0-9a-f]{64}$/);
+  }).toPass({ timeout: 20_000 });
+
+  await page.goto(`/atelier/runs/${reference}`);
+  await expect(page.getByRole("heading", { name: "Answer needed" })).toHaveCount(0);
+  await expect(page.getByText(/not yet/)).toHaveCount(0);
+
+  await page.screenshot({
+    path: "test-results/v3-answer-card-desktop.png",
+    fullPage: true
+  });
+});
+

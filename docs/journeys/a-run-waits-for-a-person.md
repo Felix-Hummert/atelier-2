@@ -11,13 +11,11 @@ What the cockpit shows of that state, on `main`:
 
 1. Studio lists the run under **Waiting for you**, move **Answer**.
 2. The project **This workshop** groups it the same way.
-3. Opening the V3 run shows the live graph and the rail; the waiting node is
-   the current one. There is no **Answer needed** card on this page. That card
-   — **Integer answer** and **Answer** — exists only on V1/V2 runs.
-4. The answer that finished `desk/beleg-menschen-tor` went through the
-   published door `POST /runs/{ref}/answers`.
+3. Opening the V3 run shows the live graph, the rail, and an **Answer needed**
+   card for the waiting node. Submitting sends the typed bytes through
+   `POST /runs/{ref}/answers`. A named refusal of that door stays on the card.
+4. V1/V2 runs keep their own **Integer answer** card. The door is the same.
 
-The older-format card is landed and e2e-proven. It is a different format's
-surface. This journey does not pretend the V3 page has it.
+The V3 card is landed and e2e-proven on a wait-only run the test itself created.
 
 Illustriert: REQ-UI-01, REQ-QUEUE-13

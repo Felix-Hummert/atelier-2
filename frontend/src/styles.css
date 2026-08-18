@@ -1081,7 +1081,8 @@ textarea {
   font-weight: 800;
 }
 
-.wait-form input {
+.wait-form input,
+.wait-form textarea {
   min-height: 44px;
 }
 
