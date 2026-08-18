@@ -9,22 +9,22 @@ from pathlib import Path
 
 import pytest
 
-from atelier2.adapters.dbos.continuation import (
+from atelier2.adapters.dbos.names import (
     ACTION_CHECKPOINT_STEP_NAME,
-    action_continuation_workflow_id_for,
-)
-from atelier2.adapters.dbos.workflow import (
     AGENT_COMMIT_STEP_NAME,
     ANSWER_COMMIT_STEP_NAME,
     COMMIT_STEP_NAME,
     WAIT_COMMIT_STEP_NAME,
 )
-from atelier2.contracts.executions import (
-    NodeExecutionId,
+from atelier2.adapters.dbos.workflow_ids import (
+    action_continuation_workflow_id_for,
     answer_workflow_id_for,
-    logical_effect_key_for,
     node_workflow_id_for,
     subworkflow_workflow_id_for,
+)
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    logical_effect_key_for,
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash

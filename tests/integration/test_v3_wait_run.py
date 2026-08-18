@@ -25,6 +25,7 @@ from dbos import DBOS
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
@@ -32,7 +33,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow import ANSWER_WORKFLOW_NAME
+from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.runs import run_resource
@@ -59,7 +60,6 @@ from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEventKind,
     WaitAnswerState,
-    node_workflow_id_for,
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash

@@ -18,6 +18,7 @@ from atelier2.adapters.agent_processes import (
 )
 from atelier2.adapters.agent_workspaces import LocalAgentAttemptWorkspaceOwner
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.names import QUEUE_NAME
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     agent_receipts,
@@ -27,7 +28,7 @@ from atelier2.adapters.dbos.schema import (
     run_agent_bindings,
     runs,
 )
-from atelier2.adapters.dbos.workflow import QUEUE_NAME, register_durable_run_workflow
+from atelier2.adapters.dbos.workflow import register_durable_run_workflow
 from atelier2.adapters.project_verification import declared_project
 from atelier2.application.converge_driverless_attempts import (
     converge_driverless_attempts,

@@ -12,8 +12,8 @@ from __future__ import annotations
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
-from atelier2.adapters.dbos.advancer import effect_workflow_id_for
 from atelier2.adapters.dbos.advancer import prepare_graph_action as _prepare
+from atelier2.adapters.dbos.names import EFFECT_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
@@ -22,7 +22,7 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.dbos.workflow import EFFECT_WORKFLOW_NAME, QUEUE_NAME
+from atelier2.adapters.dbos.workflow_ids import effect_workflow_id_for
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,

@@ -9,11 +9,16 @@ from threading import Barrier
 import pytest
 import sqlalchemy as sa
 
-from atelier2.adapters.dbos.continuation import action_continuation_workflow_id_for
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
+from atelier2.adapters.dbos.workflow_ids import (
+    action_continuation_workflow_id_for,
+    answer_workflow_id_for,
+    node_workflow_id_for,
+    subworkflow_workflow_id_for,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
@@ -40,10 +45,7 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import (
     NodeExecutionId,
     SubmitWaitAnswerRequest,
-    answer_workflow_id_for,
     logical_effect_key_for,
-    node_workflow_id_for,
-    subworkflow_workflow_id_for,
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
