@@ -120,7 +120,7 @@
 
   type GraphRequest =
     | { state: "loading" }
-    | { state: "ready"; previews: Extract<WorkflowRevisionDetail["graph"], { format_version: 3 }>["node_previews"] }
+    | { state: "ready"; previews: Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["node_previews"] }
     | { state: "failed"; message: string };
 
   let graphRequest: GraphRequest = { state: "loading" };
@@ -338,10 +338,10 @@
     graphRequest = { state: "loading" };
     try {
       const revision = await cockpitApi.getWorkflowRevision(run.workflow_revision_hash);
-      if (revision.revision_hash !== run.workflow_revision_hash) {
+      if (revision.workflow_revision_hash !== run.workflow_revision_hash) {
         throw new Error("The workflow revision did not match the durable run.");
       }
-      if (revision.graph.format_version !== 3) {
+      if (revision.graph.workflow_format_version !== 3) {
         throw new Error("The bound revision is not a V3 graph.");
       }
       graphRequest = { state: "ready", previews: revision.graph.node_previews };

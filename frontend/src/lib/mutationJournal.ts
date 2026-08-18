@@ -162,7 +162,7 @@ async function waitAnswerMutation(
   const answerBase64 = encodeBase64(answerBytes);
   const body = new TextEncoder().encode(
     JSON.stringify({
-      revision_hash: workflowRevisionHash,
+      workflow_revision_hash: workflowRevisionHash,
       node_id: nodeId,
       answer_base64: answerBase64
     })
@@ -605,7 +605,7 @@ async function requireWait(envelope: WaitMutation): Promise<void> {
   );
   const publicReference = route?.[1];
   const body = requireJsonBody(envelope.body_base64);
-  requireExactKeys(body, ["revision_hash", "node_id", "answer_base64"]);
+  requireExactKeys(body, ["workflow_revision_hash", "node_id", "answer_base64"]);
   const answerBytes =
     typeof body.answer_base64 === "string"
       ? decodeCanonicalBase64(body.answer_base64)
@@ -616,9 +616,9 @@ async function requireWait(envelope: WaitMutation): Promise<void> {
     publicReference === undefined ||
     decodePublicRunReference(publicReference) === null ||
     envelope.public_run_reference !== publicReference ||
-    typeof body.revision_hash !== "string" ||
-    !digestPattern.test(body.revision_hash) ||
-    envelope.workflow_revision_hash !== body.revision_hash ||
+    typeof body.workflow_revision_hash !== "string" ||
+    !digestPattern.test(body.workflow_revision_hash) ||
+    envelope.workflow_revision_hash !== body.workflow_revision_hash ||
     typeof body.node_id !== "string" ||
     body.node_id.length === 0 ||
     envelope.node_id !== body.node_id ||
@@ -773,7 +773,7 @@ function waitEvidenceMatches(
   const publicReference = publicReferenceFromTarget(entry.target, "answers");
   return (
     evidence.public_run_reference === publicReference &&
-    evidence.workflow_revision_hash === body.revision_hash &&
+    evidence.workflow_revision_hash === body.workflow_revision_hash &&
     evidence.node_id === body.node_id &&
     evidence.answer === answer &&
     evidence.answer_hash === entry.answer_hash

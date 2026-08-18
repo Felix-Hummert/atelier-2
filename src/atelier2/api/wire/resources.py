@@ -65,7 +65,7 @@ class SchemaRevisionResource(ApiModel):
     already holds the exact bytes they posted, and the hash is their identity.
     """
 
-    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    schema_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
 
 class BudgetRevisionResource(ApiModel):
@@ -76,7 +76,7 @@ class BudgetRevisionResource(ApiModel):
     hash is what a node pins.
     """
 
-    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    budget_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
 
 class AuthProfileRevisionResource(ApiModel):
@@ -215,13 +215,13 @@ NodeResourceV2 = Annotated[
 
 
 class WorkflowGraphResource(ApiModel):
-    format_version: Literal[1]
+    workflow_format_version: Literal[1]
     start_node_id: str = Field(min_length=1)
     nodes: tuple[NodeResource, ...]
 
 
 class WorkflowGraphResourceV2(ApiModel):
-    format_version: Literal[2]
+    workflow_format_version: Literal[2]
     start_node_id: str = Field(min_length=1)
     nodes: tuple[NodeResourceV2, ...]
 
@@ -298,7 +298,7 @@ class WorkflowGraphResourceV3(ApiModel):
     `document_base64`.
     """
 
-    format_version: Literal[3]
+    workflow_format_version: Literal[3]
     executable: bool
     not_executable_reason: str | None
     node_count: int = Field(ge=1)
@@ -361,16 +361,16 @@ class WorkflowGraphResourceV3(ApiModel):
 
 AnyWorkflowGraphResource = Annotated[
     WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3,
-    Field(discriminator="format_version"),
+    Field(discriminator="workflow_format_version"),
 ]
 
 
 class WorkflowRevisionSummaryResource(ApiModel):
-    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
 
 class WorkflowRevisionDetailResource(ApiModel):
-    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     document_base64: str
     graph: AnyWorkflowGraphResource
 
@@ -382,7 +382,7 @@ class CatalogNameResolutionResource(ApiModel):
         min_length=1, max_length=MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
     )
     lineage_id: str = Field(pattern=REVISION_HASH_PATTERN)
-    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     revision_number: int = Field(ge=1)
 
 
@@ -393,7 +393,7 @@ class CatalogAdmissionResource(ApiModel):
         min_length=1, max_length=MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
     )
     lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     revision_number: int = Field(ge=1)
 
 
@@ -410,8 +410,8 @@ class WorkflowRevisionSummaryResourceV2(ApiModel):
     line invented to fill the column.
     """
 
-    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
-    format_version: Literal[1, 2, 3]
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    workflow_format_version: Literal[1, 2, 3]
     executable: bool
     not_executable_reason: str | None
     name: str | None

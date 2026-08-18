@@ -61,8 +61,8 @@ describe("the served vocabulary", () => {
   it("accepts a described revision built from the document's own field set", () => {
     const served = servedDocument.components.schemas.WorkflowRevisionSummaryResourceV2;
     const sample: Record<string, unknown> = {
-      revision_hash: "a".repeat(64),
-      format_version: 3,
+      workflow_revision_hash: "a".repeat(64),
+      workflow_format_version: 3,
       executable: false,
       not_executable_reason: "agent forms nothing binds yet: outputs",
       name: "Implement a candidate, then review it for defects",
@@ -109,10 +109,10 @@ describe("the served vocabulary", () => {
   it("decodes exactly the fields the published V3 graph serves", () => {
     const served = servedDocument.components.schemas.WorkflowGraphResourceV3;
     const sample = {
-      revision_hash: "a".repeat(64),
+      workflow_revision_hash: "a".repeat(64),
       document_base64: "YQ==",
       graph: {
-        format_version: 3 as const,
+        workflow_format_version: 3 as const,
         executable: true,
         not_executable_reason: null,
         node_count: 1,

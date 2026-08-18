@@ -44,10 +44,10 @@ function publishedAgent(changes: Partial<AgentConfigurationRevision> = {}): Agen
 
 function v3Revision(hash: string, documentBase64: string) {
   return {
-    revision_hash: hash,
+    workflow_revision_hash: hash,
     document_base64: documentBase64,
     graph: {
-      format_version: 3 as const,
+      workflow_format_version: 3 as const,
       executable: true as const,
       not_executable_reason: null,
       node_count: 1,

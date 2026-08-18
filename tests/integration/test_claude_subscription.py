@@ -978,7 +978,7 @@ def test_a_node_demanding_interactive_is_refused_as_a_conflict_over_http(
             json={
                 "workflow_format_version": 2,
                 "run_id": "claude-interactive-over-http",
-                "workflow_revision_hash": workflow.json()["revision_hash"],
+                "workflow_revision_hash": workflow.json()["workflow_revision_hash"],
                 "agent_bindings": [
                     {
                         "role": "builder",

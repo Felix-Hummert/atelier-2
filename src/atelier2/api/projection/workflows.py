@@ -147,7 +147,7 @@ def graph_resource(
     if isinstance(graph, WorkflowGraphV3):
         executable, not_executable_reason = _executability_of(graph)
         return WorkflowGraphResourceV3(
-            format_version=3,
+            workflow_format_version=3,
             executable=executable,
             not_executable_reason=not_executable_reason,
             node_count=len(graph.nodes),
@@ -171,14 +171,14 @@ def graph_resource(
     ordered = sorted(graph.nodes, key=lambda item: item.id.encode("utf-8"))
     if isinstance(graph, WorkflowGraph):
         return WorkflowGraphResource(
-            format_version=1,
+            workflow_format_version=1,
             start_node_id=graph.start,
             nodes=cast(
                 tuple[NodeResource, ...], tuple(node_resource(item) for item in ordered)
             ),
         )
     return WorkflowGraphResourceV2(
-        format_version=2,
+        workflow_format_version=2,
         start_node_id=graph.start,
         nodes=cast(
             tuple[NodeResourceV2, ...], tuple(node_resource(item) for item in ordered)
@@ -200,8 +200,8 @@ def workflow_revision_summary_resource(
     described = isinstance(graph, WorkflowGraphV3)
     executable, not_executable_reason = _executability_of(graph)
     return WorkflowRevisionSummaryResourceV2(
-        revision_hash=projection.revision.revision_hash.value,
-        format_version=graph.format_version,
+        workflow_revision_hash=projection.revision.revision_hash.value,
+        workflow_format_version=graph.format_version,
         executable=executable,
         not_executable_reason=not_executable_reason,
         name=graph.name if described else None,
@@ -224,7 +224,7 @@ def workflow_revision_detail_resource(
     projection: WorkflowRevisionProjection,
 ) -> WorkflowRevisionDetailResource:
     return WorkflowRevisionDetailResource(
-        revision_hash=projection.revision.revision_hash.value,
+        workflow_revision_hash=projection.revision.revision_hash.value,
         document_base64=encode_canonical_base64(projection.revision.document),
         graph=graph_resource(projection.graph),
     )

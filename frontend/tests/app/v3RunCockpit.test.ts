@@ -12,10 +12,10 @@ const terminalHash = "d".repeat(64);
 
 function v3Revision() {
   return {
-    revision_hash: digest,
+    workflow_revision_hash: digest,
     document_base64: "YQ==",
     graph: {
-      format_version: 3 as const,
+      workflow_format_version: 3 as const,
       executable: true as const,
       not_executable_reason: null,
       node_count: 2,
@@ -393,7 +393,7 @@ describe("a version 3 run that stops for a person", () => {
     const mutation = answer.mock.calls[0]?.[0];
     const body = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
     expect(body).toEqual({
-      revision_hash: digest,
+      workflow_revision_hash: digest,
       node_id: "approve",
       answer_base64: btoa('"approved, with the second paragraph rewritten"')
     });

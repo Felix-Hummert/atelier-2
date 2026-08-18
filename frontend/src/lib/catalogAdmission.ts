@@ -22,11 +22,11 @@ export async function admitPublishedRevision(
   actor: string,
   activatedAt: string
 ): Promise<void> {
-  if (revision.graph.format_version !== 3) return;
+  if (revision.graph.workflow_format_version !== 3) return;
   if (!isCatalogDisplayName(revision.graph.name)) return;
   try {
     await api.foundCatalogLineage({
-      revision_hash: revision.revision_hash,
+      workflow_revision_hash: revision.workflow_revision_hash,
       actor,
       activated_at: activatedAt
     });
@@ -38,7 +38,7 @@ export async function admitPublishedRevision(
   const head = await api.getRevisionByName(revision.graph.name);
   try {
     await api.admitCatalogMember(head.lineage_id, {
-      revision_hash: revision.revision_hash,
+      workflow_revision_hash: revision.workflow_revision_hash,
       actor,
       activated_at: activatedAt
     });

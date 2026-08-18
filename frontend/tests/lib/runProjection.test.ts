@@ -399,7 +399,7 @@ function streamFailure() {
 
 function v2Scenario() {
   const graph = {
-    format_version: 2 as const,
+    workflow_format_version: 2 as const,
     start_node_id: "agent",
     nodes: [
       { type: "agent" as const, node_id: "agent", role: "builder", job: "Build", next_node_id: "final" },

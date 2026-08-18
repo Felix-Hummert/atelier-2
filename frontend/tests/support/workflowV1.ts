@@ -18,10 +18,10 @@ export function eventCursor(sequence: number): string {
 
 export function workflowRevision(): WorkflowRevisionDetail {
   return {
-    revision_hash: revisionHash,
+    workflow_revision_hash: revisionHash,
     document_base64: "",
     graph: {
-      format_version: 1,
+      workflow_format_version: 1,
       start_node_id: "agent",
       nodes: [
         { type: "agent", node_id: "agent", job: "Build it", output: "candidate", next_node_id: "action" },

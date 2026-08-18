@@ -176,11 +176,11 @@ def publish_named_line(app: FastAPI) -> str:
         headers={"content-type": "application/yaml"},
     )
     assert workflow.status_code == 201, workflow.text
-    revision_hash = workflow.json()["revision_hash"]
+    revision_hash = workflow.json()["workflow_revision_hash"]
     named = api.post(
         API_PREFIX + "/workflow-lineages",
         json={
-            "revision_hash": revision_hash,
+            "workflow_revision_hash": revision_hash,
             "actor": "operator",
             "activated_at": "2026-08-17T00:00:00Z",
         },
@@ -270,4 +270,6 @@ def test_a_stdio_client_lists_the_catalog_starts_by_name_and_reads_terminal(
 
     assert ended["state"] == RunState.COMPLETED.value
     assert ended["terminal_hash"] is not None
-    assert ended["workflow_revision_hash"] == listed["items"][0]["revision_hash"]
+    assert (
+        ended["workflow_revision_hash"] == listed["items"][0]["workflow_revision_hash"]
+    )

@@ -13,10 +13,10 @@ const publicReference = "run1.cnVuLXYz";
 
 function v3Revision(hash: string, documentBase64: string) {
   return {
-    revision_hash: hash,
+    workflow_revision_hash: hash,
     document_base64: documentBase64,
     graph: {
-      format_version: 3 as const,
+      workflow_format_version: 3 as const,
       executable: true as const,
       not_executable_reason: null,
       node_count: 2,
@@ -156,7 +156,7 @@ describe("starting a version 3 workflow from the picker", () => {
         value: {
           display_name: "diff-review",
           lineage_id: "f".repeat(64),
-          revision_hash: revisionHash,
+          workflow_revision_hash: revisionHash,
           revision_number: 1
         }
       }))
@@ -179,7 +179,7 @@ describe("starting a version 3 workflow from the picker", () => {
 
     await waitFor(() => expect(cockpitApi.foundCatalogLineage).toHaveBeenCalledTimes(1));
     expect(vi.mocked(cockpitApi.foundCatalogLineage).mock.calls[0]?.[0]).toEqual({
-      revision_hash: revisionHash,
+      workflow_revision_hash: revisionHash,
       actor: "atelier2-cockpit",
       activated_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
     });
