@@ -25,6 +25,7 @@ silent `STARTED`/`LAUNCH_ARMED` zombie (the live class of run 8846bf47).
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -53,9 +54,13 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import (
+    REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+    AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
     AgentAttemptId,
+    AgentAttemptReplacement,
     AgentAttemptState,
+    CancelAgentAttemptRequest,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -86,7 +91,12 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
-from atelier2.ports.agent_attempts import AgentAttemptFailed, AgentAttemptSucceeded
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
+    AgentAttemptCancellationTerminalConflict,
+    AgentAttemptFailed,
+    AgentAttemptSucceeded,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -109,9 +119,11 @@ PLAN_SCHEMA = PublishedRevision(
 """What the node's author asked for: one object naming how many steps it plans."""
 
 NODE = "plan"
+SUCCESSOR = "review"
 INSTRUCTION = b"Answer with the plan this node declared."
 RUN = RunId("v3/output-contract")
 THE_ANSWER_THE_SCHEMA_ADMITS = b'{"steps": 3}'
+THE_ANSWER_THE_SCHEMA_REFUSES = b"Sure! I would plan this in three steps."
 
 
 def planning_document(schema: PublishedRevision) -> bytes:
@@ -130,6 +142,35 @@ nodes:
           ref: plan-schema
           revision: {schema.revision_hash.value}
 """.encode()
+
+
+def reviewed_planning_document(schema: PublishedRevision) -> bytes:
+    """The same node, followed by the one node that waits on what it produced.
+
+    Its author wrote no `join`, and that omission *is* `all_succeeded` -- the one
+    join ADR 0006 leaves implicit and the only one a run of this build applies.
+    So this document is where the join can be measured at all: whether the
+    successor starts is the whole observable difference between a released and a
+    blocked edge.
+    """
+    return (
+        planning_document(schema)
+        + f"""  - id: {SUCCESSOR}
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Judge the plan you were handed.
+    depends_on: [{NODE}]
+    inputs:
+      - name: plan
+        from: {{node: {NODE}, output: plan}}
+    outputs:
+      - name: verdict
+        schema:
+          ref: plan-schema
+          revision: {schema.revision_hash.value}
+""".encode()
+    )
 
 
 @pytest.fixture
@@ -156,8 +197,11 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
         started.close()
 
 
-def armed_attempt(runtime: DbosRuntime) -> AgentAttemptExecution:
-    """One started run of the planning document, armed at its one agent node."""
+def armed_attempt(
+    runtime: DbosRuntime, document: bytes | None = None
+) -> AgentAttemptExecution:
+    """One started run of a planning document, armed at its first agent node."""
+    document = planning_document(PLAN_SCHEMA) if document is None else document
     published = DbosCatalogStore(runtime.engine).publish_revision(PLAN_SCHEMA)
     assert isinstance(
         published, (PublishedRevisionCreated, PublishedRevisionExisting)
@@ -180,7 +224,7 @@ def armed_attempt(runtime: DbosRuntime) -> AgentAttemptExecution:
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
     )
-    workflow = WorkflowRevision(planning_document(PLAN_SCHEMA))
+    workflow = WorkflowRevision(document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     bindings = AgentBindingSet(
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
@@ -408,7 +452,7 @@ def test_the_refused_nodes_detail_names_the_durably_stored_reason(
     execution = armed_attempt(runtime)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     outcome = store.complete_success(
-        execution, AgentExecutionResult(b"Sure! I would plan this in three steps.")
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
     )
     assert isinstance(outcome, AgentAttemptFailed), outcome
 
@@ -457,6 +501,258 @@ def test_a_crash_inside_the_terminal_write_leaves_no_partial_receipt(
         RunState.STARTED.value,
         AgentAttemptState.LAUNCH_ARMED.value,
     )
+
+
+@dataclass(frozen=True)
+class ChainAfterTheAnswer:
+    """What an operator can read about a two-node chain once its first node ended."""
+
+    run_state: str
+    current_node_id: str
+    attempted_node_ids: tuple[str, ...]
+    artifact_count: int
+    receipt_dispositions: tuple[tuple[str, str], ...]
+
+
+def chain_after_the_answer(
+    runtime: DbosRuntime, revision_hash: WorkflowRevisionHash
+) -> ChainAfterTheAnswer:
+    """Read the chain's durable state, with every node named as its author did."""
+    node_of_execution = {
+        NodeExecutionId.for_node(RUN, revision_hash, node).value: node
+        for node in (NODE, SUCCESSOR)
+    }
+    with runtime.engine.connect() as connection:
+        run = (
+            connection.execute(
+                sa.select(runs.c.state, runs.c.current_node_id).where(
+                    runs.c.run_id == RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        attempted = tuple(
+            connection.scalars(
+                sa.select(agent_attempts.c.node_id)
+                .where(agent_attempts.c.run_id == RUN.value)
+                .order_by(agent_attempts.c.node_id)
+            )
+        )
+        artifacts = connection.scalar(
+            sa.select(sa.func.count()).select_from(node_artifacts_v3)
+        )
+        receipts = connection.execute(
+            sa.select(
+                node_receipts_v3.c.node_execution_id, node_receipts_v3.c.disposition
+            )
+        ).all()
+    return ChainAfterTheAnswer(
+        str(run["state"]),
+        str(run["current_node_id"]),
+        attempted,
+        int(artifacts or 0),
+        tuple(
+            sorted(
+                (node_of_execution[str(execution)], str(disposition))
+                for execution, disposition in receipts
+            )
+        ),
+    )
+
+
+@pytest.mark.proves("a-refused-output-never-releases-the-node-behind-it")
+def test_a_refused_output_never_releases_the_node_behind_it(
+    runtime: DbosRuntime,
+) -> None:
+    """`all_succeeded` blocks, measured where blocking is the whole difference.
+
+    The successor declares one dependency and no `join`, and ADR 0006 says that
+    omission *is* `all_succeeded`. The refusal therefore has to end the edge as
+    well as the node: the run does not move off the node that was refused, no
+    attempt is ever opened for the successor, and the successor holds no receipt
+    of its own -- it is not blocked by a receipt, it is simply never reached.
+    Nothing else may start it either: there is no path past a node that did not
+    succeed.
+    """
+    execution = armed_attempt(runtime, reviewed_planning_document(PLAN_SCHEMA))
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_success(
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+
+    assert isinstance(outcome, AgentAttemptFailed), outcome
+    assert chain_after_the_answer(
+        runtime, execution.request.workflow_revision_hash
+    ) == ChainAfterTheAnswer(
+        RunState.STARTED.value, NODE, (NODE,), 0, ((NODE, "failed"),)
+    )
+
+
+@pytest.mark.proves("a-refused-output-never-releases-the-node-behind-it")
+def test_the_answer_its_schema_admits_releases_the_node_behind_it(
+    runtime: DbosRuntime,
+) -> None:
+    """The contrast, so the block above cannot pass by never releasing anything.
+
+    One character of difference in the answer, and the same edge releases: the
+    run stands on the successor, the value the schema admitted is the one durable
+    artifact, and the refused node's receipt reads `succeeded` instead.
+    """
+    execution = armed_attempt(runtime, reviewed_planning_document(PLAN_SCHEMA))
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_success(
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_ADMITS)
+    )
+
+    assert isinstance(outcome, AgentAttemptSucceeded), outcome
+    assert chain_after_the_answer(
+        runtime, execution.request.workflow_revision_hash
+    ) == ChainAfterTheAnswer(
+        RunState.STARTED.value, SUCCESSOR, (NODE,), 1, ((NODE, "succeeded"),)
+    )
+
+
+def replacement_of(
+    runtime: DbosRuntime, execution: AgentAttemptExecution
+) -> AgentAttemptExecution:
+    """Stop this attempt with the one replacement the store mints, and arm it.
+
+    The replacement is the only retry construct a run of this build has: a second
+    attempt of the *same* node execution, under the same request hash, carrying
+    ordinal two. Everything a retry could duplicate is keyed by that shared node
+    execution, which is what makes the counts below the honest measurement.
+    """
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    armed = store.load(execution.attempt_id)
+    command = CancelAgentAttemptRequest(
+        RUN,
+        execution.attempt_id,
+        "retry-the-plan",
+        armed.state_version,
+        AgentAttemptReplacement.ONE,
+    )
+    assert isinstance(
+        store.request_cancellation(command), AgentAttemptCancellationAccepted
+    )
+    stopped = store.attest_cancellation_cleanup(
+        command, AgentAttemptCancellationDisposition.NEVER_LAUNCHED, None, None
+    )
+    replacement_attempt_id = stopped.replacement_attempt_id
+    assert replacement_attempt_id is not None, stopped
+    replacement = AgentAttemptExecution(
+        execution.request, replacement_attempt_id, REPLACEMENT_AGENT_ATTEMPT_ORDINAL
+    )
+    store.claim(replacement)
+    return replacement
+
+
+def kept_for_the_node_execution(
+    runtime: DbosRuntime,
+) -> tuple[int, int, tuple[str, ...]]:
+    """The artifacts kept, the attempts that stood, and every terminal receipt.
+
+    The attempt count is carried beside the records because it is what makes the
+    records mean something: one receipt after one attempt proves nothing about a
+    retry, and one receipt after two is the sentence.
+    """
+    with runtime.engine.connect() as connection:
+        artifacts = connection.scalar(
+            sa.select(sa.func.count()).select_from(node_artifacts_v3)
+        )
+        dispositions = tuple(
+            connection.scalars(sa.select(node_receipts_v3.c.disposition))
+        )
+        ordinals = tuple(
+            connection.scalars(
+                sa.select(agent_attempts.c.attempt_ordinal).order_by(
+                    agent_attempts.c.attempt_ordinal
+                )
+            )
+        )
+    return int(artifacts or 0), len(ordinals), dispositions
+
+
+@pytest.mark.proves("a-retry-is-held-to-the-same-contract-and-leaves-one-of-each")
+@pytest.mark.parametrize(
+    ("answered", "ending", "disposition", "artifacts"),
+    [
+        pytest.param(
+            THE_ANSWER_THE_SCHEMA_ADMITS,
+            AgentAttemptSucceeded,
+            "succeeded",
+            1,
+            id="admitted",
+        ),
+        pytest.param(
+            THE_ANSWER_THE_SCHEMA_REFUSES,
+            AgentAttemptFailed,
+            "failed",
+            0,
+            id="refused",
+        ),
+    ],
+)
+def test_a_replacement_attempt_answers_to_the_same_declared_schema(
+    runtime: DbosRuntime,
+    answered: bytes,
+    ending: type[AgentAttemptSucceeded | AgentAttemptFailed],
+    disposition: str,
+    artifacts: int,
+) -> None:
+    """A second attempt buys no second contract, and no second record.
+
+    The first attempt is stopped before it answered, so nothing it did is durable
+    and the node execution is still owed exactly one ending. Whatever the
+    replacement answers, the seam that judges it is the one the first attempt
+    would have met -- and what it leaves behind is one terminal receipt for the
+    node execution and, only where the schema admitted the bytes, one artifact.
+    Two attempts stand in the store; one ending stands for the node.
+    """
+    execution = armed_attempt(runtime)
+    replacement = replacement_of(runtime, execution)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_success(replacement, AgentExecutionResult(answered))
+
+    assert isinstance(outcome, ending), outcome
+    assert kept_for_the_node_execution(runtime) == (artifacts, 2, (disposition,))
+
+
+@pytest.mark.proves("a-retry-is-held-to-the-same-contract-and-leaves-one-of-each")
+def test_a_refused_output_can_never_be_retried_into_a_second_ending(
+    runtime: DbosRuntime,
+) -> None:
+    """Once the node execution has its ending, no retry construct can reach it.
+
+    This is the other half of "no second terminal receipt", and it holds one step
+    earlier than a write conflict would: the refusal ended the attempt, and the
+    replacement is minted by a cancellation, which an ended attempt refuses. So
+    the `failed` receipt is not defended against a second writer -- there is no
+    second writer to defend against, and the store says so in its own word rather
+    than by silently doing nothing.
+    """
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    refused = store.complete_success(
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+    assert isinstance(refused, AgentAttemptFailed), refused
+
+    retried = store.request_cancellation(
+        CancelAgentAttemptRequest(
+            RUN,
+            execution.attempt_id,
+            "retry-the-refused-plan",
+            refused.attempt.state_version,
+            AgentAttemptReplacement.ONE,
+        )
+    )
+
+    assert isinstance(retried, AgentAttemptCancellationTerminalConflict), retried
+    assert kept_for_the_node_execution(runtime) == (0, 1, ("failed",))
 
 
 def test_the_start_persists_the_request_and_package_the_receipt_will_bind(
