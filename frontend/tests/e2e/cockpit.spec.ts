@@ -977,7 +977,6 @@ test("opening Details on a saved V3 workflow shows each node with its role and i
     data: workflowYaml
   });
   expect(published.status()).toBe(201);
-  const revisionHash = (await published.json()).revision_hash as string;
 
   await page.goto("/atelier/new");
   await page.getByLabel("Saved workflow").check();

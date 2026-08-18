@@ -270,9 +270,14 @@ test("Details shows published substance, an honest empty, and the edit door", as
   await editor.fill(readyYaml.replace("Show the published substance.", "Edited substance."));
   await ready.getByRole("button", { name: "Review publication" }).click();
   await page.getByRole("button", { name: "Publish", exact: true }).click();
-  await expect(ready.getByRole("heading", { name: "Revisions" })).toBeVisible({
-    timeout: 20_000
-  });
-  await expect(ready.getByLabel(`Revision of ${readyName}`)).toBeVisible();
+  const listed = page.getByRole("article", { name: readyName });
+  const choice = listed.getByLabel(`Revision of ${readyName}`);
+  await expect(choice).toBeVisible({ timeout: 20_000 });
+  const head = await page.request.get(`${api}/workflow-revisions/by-name/${readyName}`);
+  expect(head.status()).toBe(200);
+  const admitted = (await head.json()).revision_hash as string;
+  expect(admitted).not.toBe(readyHash);
+  await expect(choice).toHaveValue(admitted);
+  await expect(choice.locator(`option[value="${admitted}"]`)).toHaveText("Latest");
 });
 
