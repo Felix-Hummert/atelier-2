@@ -139,7 +139,10 @@ the host composes one Grok subscription executor beside Claude. It runs the
 bound model headless through `grok --output-format json`, takes only the
 envelope's final answer to the output seam — never the turn narration —
 and refuses an unreadable, empty, or answer-less envelope instead of
-recording the raw frame or the story of the run. The job travels
+recording the raw frame or the story of the run. When the node declared an
+output schema, the same published document bytes the seam later judges
+travel as `--json-schema`; the seam remains the last instance if the
+provider ignores the flag. The job travels
 through `--prompt-file` rather than the argument vector. The same
 vector pins a turn ceiling so a Diff-Review-sized order cannot run an
 unbounded loop, and the child inherits only the serving host's search path
@@ -457,8 +460,11 @@ that share a name collapse; the catalog head from
 resolves, and older members sit in a collapsed revision choice. A name with
 one listed revision has no empty submenu. A published title the catalog does
 not hold is named Unlisted when it is a legal catalog name and Unnamable when
-the title cannot be one — the picker does not swallow that 404. Unnamed
-documents stay one row each, as they did. A V3 publish from the CLI or the
+the title cannot be one — the picker does not swallow that 404. Those
+refusals, and a row that cannot be started, each have their own shape, so a
+choice is not a muted twin of a refusal. After a choice the list collapses
+onto that card with a Change path, and the start form sits directly under it.
+Unnamed documents stay one row each, as they did. A V3 publish from the CLI or the
 cockpit then names the revision through `POST /workflow-lineages`; publication
 and admission stay two HTTP acts. Details repeats what the published graph already answers —
 format, roles and node count where the V3 resource carries them, executability,
@@ -469,8 +475,10 @@ edges. A wait has a prompt, not an instruction, so that field is empty there.
 An entry node answers an empty edge list. The authored node stays in the
 document bytes. A V3 run page draws that excerpt as topological layers and
 paints each node's state from the rail the server already walked — shape and
-colour together, no zoom, no drag. Details on the saved-workflow picker
-reuses the same drawing without run state. A chosen V3 revision that declares
+colour together, no zoom, no drag. The live event line stays open until the
+events it has applied match the latest cursor the run itself names, so a run
+that has already ended still shows every node that finished. Details on the
+saved-workflow picker reuses the same drawing without run state. A chosen V3 revision that declares
 orders shows one material field per order — the name and the schema the
 author pinned — and sends the typed text as `orders` on the start; a revision
 that declares none shows no field. Role

@@ -54,6 +54,7 @@ from atelier2.adapters.dbos.run_store import (
     entry_node_of,
     load_graph,
     load_node_outputs,
+    load_published_schema_document,
     load_run,
     load_run_inputs,
     load_wait_answer,
@@ -215,6 +216,9 @@ def _node_binding(
                 orders=orders,
                 results=results,
                 tool_grant=_pinned_tool_grant(session, node),
+                declared_output_schema_document=_declared_output_schema_document(
+                    session, node
+                ),
                 project_source=_pinned_source(node, project),
             )
         )
@@ -293,6 +297,37 @@ def _pinned_tool_grant(
     if isinstance(grant, ToolGrantRefused):
         raise RunBindingConflict(f"the pinned tool revision is no grant: {grant}")
     return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
+
+
+def _declared_output_schema_document(
+    session: Any, node: AnyWorkflowDocumentNode
+) -> str | None:
+    """The exact published document this node's one output pinned, as its own text.
+
+    Same bytes the schema seam later judges. The binding carries them so the
+    provider flag cannot invent a second serialization, and the text is decoded
+    here because this is the only place that knows which node pinned it.
+    """
+    if not isinstance(node, AgentNodeV3):
+        return None
+    if not node.outputs:
+        raise RunBindingConflict("a V3 agent node has no declared output schema")
+    declared = node.outputs[0]
+    document = load_published_schema_document(
+        session, declared.schema_reference.revision
+    )
+    if document is None:
+        raise RunBindingConflict(
+            f"the schema node {node.id!r} pinned for output "
+            f"{declared.name!r} left the registry"
+        )
+    try:
+        return document.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunBindingConflict(
+            f"the schema node {node.id!r} pinned for output "
+            f"{declared.name!r} is not UTF-8"
+        ) from error
 
 
 def register_durable_run_workflow(

@@ -75,6 +75,7 @@ _VERSION_PROBE_OUTPUT_BYTES = 4_096
 
 _OUTPUT_FORMAT_FLAG = "--output-format"
 _JSON_OUTPUT_FORMAT = "json"
+_JSON_SCHEMA_FLAG = "--json-schema"
 _MODEL_FLAG = "--model"
 _PROMPT_FILE_FLAG = "--prompt-file"
 _MAXIMUM_TURNS_FLAG = "--max-turns"
@@ -286,6 +287,28 @@ class GrokSubscriptionSettings:
             raise ValueError("the Grok auth.json must be a private regular file")
         if not self.search_path.strip():
             raise ValueError("the Grok executable search path must be nonempty")
+
+
+def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, ...]:
+    """The `--json-schema` pair, or nothing where the node declared none.
+
+    These are the exact published document bytes the output seam later
+    judges -- not a second serialization. Measured on grok 1.0.4: the flag
+    constrains the model and implies `--output-format json`; a provider that
+    ignores it is still refused by the seam. The CLI accepts
+    `{"type":"string"}` and refuses a boolean schema (`true`) with
+    "must be a JSON object describing a JSON Schema"; this seam does not
+    rewrite that form.
+    """
+    if declared_output_schema_bytes is None:
+        return ()
+    try:
+        return (
+            _JSON_SCHEMA_FLAG,
+            declared_output_schema_bytes.decode("utf-8"),
+        )
+    except UnicodeDecodeError as error:
+        raise ValueError("declared output schema bytes must be UTF-8") from error
 
 
 def _child_environment(
@@ -538,6 +561,7 @@ class GrokSubscriptionExecutor:
         registered = False
         try:
             attest_grok_containment(settings, state_directory)
+            schema_flag = _json_schema_flag(request.declared_output_schema_bytes)
             command = AgentProcessCommand(
                 (
                     # Measured on grok 1.0.4 (build d846eb93d9): `-p` is the
@@ -550,6 +574,7 @@ class GrokSubscriptionExecutor:
                     str(settings.executable),
                     _OUTPUT_FORMAT_FLAG,
                     _JSON_OUTPUT_FORMAT,
+                    *schema_flag,
                     _MODEL_FLAG,
                     binding.configuration.model,
                     _PROMPT_FILE_FLAG,

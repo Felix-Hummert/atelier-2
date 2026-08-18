@@ -73,6 +73,7 @@ class EncodedAgentBindingV2(TypedDict):
     executor_revision: str
     revision_format_version: NotRequired[int]
     requested_capability: NotRequired[str]
+    output_schema_document: NotRequired[str]
 
 
 class EncodedActionBinding(TypedDict):
@@ -123,6 +124,7 @@ _AGENT_V2_OPTIONAL_KEYS = frozenset(
         "project_tree",
         "revision_format_version",
         "requested_capability",
+        "output_schema_document",
     ]
 )
 
@@ -190,6 +192,8 @@ def _encode_agent_v2(binding: AgentNodeBindingV2) -> EncodedAgentBindingV2:
     if binding.tool_grant is not None:
         encoded["tool_revision_hash"] = binding.tool_grant.revision_hash.value
         encoded["tool_capability"] = binding.tool_grant.capability.value
+    if binding.declared_output_schema_document is not None:
+        encoded["output_schema_document"] = binding.declared_output_schema_document
     if binding.project_source is not None:
         encoded["project_commit"] = binding.project_source.commit
         encoded["project_tree"] = binding.project_source.tree
@@ -213,6 +217,7 @@ def _decode_agent_v2(encoded: Mapping[str, object]) -> AgentNodeBindingV2:
         _text(encoded, "job"),
         _declared_tool_grant(encoded),
         _declared_source_pin(encoded),
+        _declared_output_schema_document(encoded),
     )
 
 
@@ -305,6 +310,18 @@ def _declared_tool_grant(encoded: Mapping[str, object]) -> DeclaredToolGrant | N
         raise RunBindingConflict(
             "a durable tool grant carries an unknown value"
         ) from error
+
+
+def _declared_output_schema_document(encoded: Mapping[str, object]) -> str | None:
+    """The schema document a durable binding carries, or nothing where none was."""
+    if "output_schema_document" not in encoded:
+        return None
+    document = encoded["output_schema_document"]
+    if type(document) is not str:
+        raise RunBindingConflict(
+            "a durable output schema document carries a value of the wrong type"
+        )
+    return document
 
 
 def _declared_source_pin(encoded: Mapping[str, object]) -> ProjectSourcePin | None:

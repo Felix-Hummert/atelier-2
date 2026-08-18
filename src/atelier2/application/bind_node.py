@@ -75,6 +75,7 @@ def bind_node(
     results: tuple[DeliveredOutput, ...] = (),
     tool_grant: DeclaredToolGrant | None = None,
     project_source: ProjectSourcePin | None = None,
+    declared_output_schema_document: str | None = None,
 ) -> NodeBinding:
     """What this node binds: its form, and the material that form carries.
 
@@ -104,7 +105,9 @@ def bind_node(
             if isinstance(node, AgentNodeV2)
             else node_job(node.instruction, orders, results)
         )
-        return AgentNodeBindingV2(resolved, job, tool_grant, project_source)
+        return AgentNodeBindingV2(
+            resolved, job, tool_grant, project_source, declared_output_schema_document
+        )
     if isinstance(node, ActionNode):
         return ActionNodeBinding()
     if isinstance(node, ANY_WAIT_NODE_KINDS):
@@ -159,11 +162,18 @@ def agent_execution_request_v2(
             binding.resolved,
             operational_identity,
             binding.job.encode("utf-8"),
+            _published_schema_bytes(binding),
         )
     except (TypeError, ValueError) as error:
         raise RunBindingConflict(
             "V2 agent request contract carries an invalid combination"
         ) from error
+
+
+def _published_schema_bytes(binding: AgentNodeBindingV2) -> bytes | None:
+    """The schema document as the bytes it was published as, or nothing."""
+    document = binding.declared_output_schema_document
+    return None if document is None else document.encode("utf-8")
 
 
 def pinned_project(

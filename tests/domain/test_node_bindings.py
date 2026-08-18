@@ -43,6 +43,7 @@ A_PIN = ProjectSourcePin("a1" * 20, "b2" * 20)
 A_GRANT = DeclaredToolGrant(
     ANY_JSON_SCHEMA.revision_hash, ToolGrantCapability.RUN_PROJECT_VERIFICATION
 )
+A_SCHEMA_DOCUMENT = ANY_JSON_SCHEMA.document.decode("utf-8")
 V1_DOCUMENT = b"""format_version: 1
 start: build
 nodes:
@@ -230,7 +231,9 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
     (
         AgentNodeBinding("build it", "the draft"),
         AgentNodeBindingV2(resolved_agent_binding(), "build it"),
-        AgentNodeBindingV2(resolved_agent_binding(), "build it", A_GRANT, A_PIN),
+        AgentNodeBindingV2(
+            resolved_agent_binding(), "build it", A_GRANT, A_PIN, A_SCHEMA_DOCUMENT
+        ),
         ActionNodeBinding(),
         WaitNodeBinding(),
         SubworkflowNodeBinding((2, 3)),
@@ -254,7 +257,7 @@ def test_the_durable_form_of_a_pinned_agent_node_is_the_row_already_written() ->
     resolved = resolved_agent_binding()
 
     assert encode_node_binding(
-        AgentNodeBindingV2(resolved, "build it", A_GRANT, A_PIN)
+        AgentNodeBindingV2(resolved, "build it", A_GRANT, A_PIN, A_SCHEMA_DOCUMENT)
     ) == {
         "type": "agent-v2",
         "role": "builder",
@@ -271,6 +274,7 @@ def test_the_durable_form_of_a_pinned_agent_node_is_the_row_already_written() ->
         "requested_capability": "headless",
         "tool_revision_hash": ANY_JSON_SCHEMA.revision_hash.value,
         "tool_capability": "run-project-verification",
+        "output_schema_document": A_SCHEMA_DOCUMENT,
         "project_commit": "a1" * 20,
         "project_tree": "b2" * 20,
     }
@@ -344,6 +348,10 @@ def test_the_one_legacy_row_still_means_headless_under_the_first_format() -> Non
         (written(model="haiku"), "configuration fields differ from their durable hash"),
         (written(profile_id="nobody"), "auth fields differ from their durable hash"),
         (written(unexpected="whatever"), "a key its form does not declare"),
+        (
+            written(output_schema_document={"type": "string"}),
+            "output schema document carries a value of the wrong type",
+        ),
         (written(role=ABSENT), "a key its form declares"),
     ),
     ids=[
@@ -362,6 +370,7 @@ def test_the_one_legacy_row_still_means_headless_under_the_first_format() -> Non
         "configuration hash mismatch",
         "auth hash mismatch",
         "unknown key",
+        "schema document of the wrong type",
         "missing role",
     ],
 )

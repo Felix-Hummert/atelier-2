@@ -41,13 +41,15 @@ class AgentNodeBindingV2:
     A V3 Agent node binds through this same form rather than one of its own: same
     role matrix, same attempt store, same executor registry, and a second form
     saying the same thing is how the two would drift apart. What differs between
-    them is only how the job was composed, and that is decided before it arrives.
+    them is only how the job was composed and whether an output schema was
+    declared, and both are decided before they arrive here.
     """
 
     resolved: ResolvedAgentBinding
     job: str
     tool_grant: DeclaredToolGrant | None = None
     project_source: ProjectSourcePin | None = None
+    declared_output_schema_document: str | None = None
 
     def __post_init__(self) -> None:
         if self.tool_grant is not None and self.project_source is None:
