@@ -85,6 +85,7 @@ from atelier2.ports.durable_runs import (
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
+    DurableBindingConstraintRefused,
     DurableInvalidAgentBindings,
     DurablePublishedRunResult,
     DurableRunCreated,
@@ -347,6 +348,31 @@ def _resolved_graph_input_schema(
     return None
 
 
+def _refused_distinct_occupation(
+    graph: WorkflowGraphV3, resolved: tuple[ResolvedAgentBinding, ...]
+) -> DurableBindingConstraintRefused | None:
+    """Refuse a start whose `distinct_from` pair resolved to one occupation.
+
+    The document already held the names. This is the binding seam: same
+    configuration hash means the same agent sits on both nodes. Nothing
+    about judgment is compared. No process has started.
+    """
+
+    by_role = {binding.role.value: binding for binding in resolved}
+    for node in graph.nodes:
+        if not isinstance(node, AgentNodeV3) or node.binding_constraint is None:
+            continue
+        other = graph.node(node.binding_constraint.distinct_from)
+        assert isinstance(other, AgentNodeV3)
+        left = by_role[node.role]
+        right = by_role[other.role]
+        if left.configuration.revision_hash == right.configuration.revision_hash:
+            return DurableBindingConstraintRefused(
+                node.id, node.binding_constraint.distinct_from
+            )
+    return None
+
+
 class DbosDurableRunStarter:
     def __init__(
         self,
@@ -547,6 +573,12 @@ class DbosDurableRunStarter:
                             ResolvedAgentBinding(binding.role, configuration, auth)
                         )
                     resolved_bindings = tuple(resolved)
+                    if isinstance(graph, WorkflowGraphV3):
+                        occupied = _refused_distinct_occupation(
+                            graph, resolved_bindings
+                        )
+                        if occupied is not None:
+                            return occupied
                 else:
                     assert_never(graph)
 
