@@ -699,6 +699,7 @@ describe("the run listing the studio opens on", () => {
 
     const page = await createCockpitApi(fetcher).listRuns();
 
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/atelier/api/v1/runs?limit=50");
     expect(page.items).toHaveLength(1);
     expect(page.items[0]?.public_run_reference).toBe(publicReference);
     expect(page.items[0]?.state).toBe("STARTED");
@@ -715,6 +716,21 @@ describe("the run listing the studio opens on", () => {
     const page = await createCockpitApi(fetcher).listRuns();
 
     expect(page.items.map((run) => run.state)).toEqual(["STARTED", "STARTED"]);
+  });
+
+  it("asks the list for one durable state when the studio names that state", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], next_after: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    await createCockpitApi(fetcher).listRuns(undefined, "WAITING_INPUT");
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      "/atelier/api/v1/runs?limit=50&state=WAITING_INPUT"
+    );
   });
 });
 

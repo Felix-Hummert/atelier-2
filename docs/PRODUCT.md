@@ -453,10 +453,13 @@ this browser only — that is not the project-configuration owner for a
 recommended occupancy. The list is empty until a configuration is published,
 and says so. It opens in the Studio rather than in that list: one screen across the
 whole workshop naming every run that waits for a human — the durable states
-`WAITING_INPUT` and `WAITING_RECONCILIATION` — beside the one project of this
-installation, where an area with nothing in it names the next action that is
-possible today and the door to a conductor nobody has built yet says exactly
-that. Every level sits in the target-UI skeleton from mockup v4: a left rail
+`WAITING_INPUT` and `WAITING_RECONCILIATION`, each asked of the list by
+`state` — beside the one project of this installation, whose card counts
+what is running, what waits, and how many have landed. An area with nothing
+in it names the next action that is possible today. The chat column is the
+named door to the conductor (#7) and says it is not built, without an input
+that answers nobody. The listing has no clock, so the card does not invent
+when the last run landed. Every level sits in the target-UI skeleton from mockup v4: a left rail
 and a topbar. Studio and Projekte open today's pages; Runs, Library, and
 Settings are named and disabled with their vision reference. The topbar carries
 the atelier·2 wordmark and the one project. No page was added behind those
