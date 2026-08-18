@@ -3,6 +3,7 @@
 
   import {
     CockpitRequestError,
+    decodeCanonicalBase64,
     type AgentConfigurationRevision,
     type AuthProfileInput,
     type CockpitApi,
@@ -13,6 +14,7 @@
   import Breadcrumb from "../components/Breadcrumb.svelte";
   import InfoHint from "../components/InfoHint.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
+  import ProofAnchor from "../components/ProofAnchor.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
   import {
@@ -124,6 +126,7 @@
 
   function setRowRevision(row: SavedWorkflowRow, revisionHash: string): void {
     selectedHashByKey = { ...selectedHashByKey, [row.key]: revisionHash };
+    void revealPublishedGraph(revisionHash);
     if (chosenRowKey === row.key) {
       void chooseSaved(revisionHash);
     }
@@ -192,6 +195,8 @@
     selectionGeneration += 1;
     operation = null;
     failureMessage = null;
+    editingHash = null;
+    editYaml = null;
   }
 
   async function chooseSaved(revisionHash: string): Promise<void> {
@@ -214,6 +219,8 @@
     draft = null;
     failureMessage = null;
     chosenRowKey = null;
+    editingHash = null;
+    editYaml = null;
   }
 
   onMount(async () => {
@@ -274,12 +281,13 @@
     }
   }
 
-  async function reviewPublication(): Promise<void> {
+  async function reviewPublication(document = exactYaml): Promise<void> {
     failureMessage = null;
-    if (exactYaml.length === 0) {
+    if (document.length === 0) {
       failureMessage = "Enter the exact workflow YAML before publishing.";
       return;
     }
+    publicationDocument = document;
     publicationOpen = true;
     await tick();
     publicationDialog.focus();
@@ -297,7 +305,7 @@
     failureMessage = null;
     let prepared: PublishMutation | null = null;
     try {
-      prepared = await publicationMutation(exactYaml);
+      prepared = await publicationMutation(publicationDocument);
       await mutationJournal.prepare(prepared);
       await deliverPublication(prepared);
     } catch (error) {
@@ -342,8 +350,11 @@
     return [];
   }
 
-  let publishedGraphs: Record<string, WorkflowRevisionDetail["graph"]> = {};
+  let publishedDetails: Record<string, WorkflowRevisionDetail> = {};
   let revealingHash: string | null = null;
+  let editingHash: string | null = null;
+  let editYaml: string | null = null;
+  let publicationDocument = "";
 
   function publishedNodeCount(graph: WorkflowRevisionDetail["graph"] | undefined): number | null {
     return graph?.format_version === 3 ? graph.node_count : null;
@@ -357,6 +368,22 @@
 
   function publishedAgentRoles(graph: WorkflowRevisionDetail["graph"] | undefined): string[] | null {
     return graph?.format_version === 3 ? [...graph.agent_roles] : null;
+  }
+
+  function publishedOrders(
+    graph: WorkflowRevisionDetail["graph"] | undefined
+  ): Extract<WorkflowRevisionDetail["graph"], { format_version: 3 }>["orders"] | null {
+    return graph?.format_version === 3 ? graph.orders : null;
+  }
+
+  function yamlOfPublishedDocument(detail: WorkflowRevisionDetail): string | null {
+    const bytes = decodeCanonicalBase64(detail.document_base64);
+    if (bytes === null) return null;
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      return null;
+    }
   }
 
   function publishedRevisionFacts(
@@ -376,15 +403,29 @@
   }
 
   async function revealPublishedGraph(revisionHash: string): Promise<void> {
-    if (publishedGraphs[revisionHash] !== undefined) return;
+    if (publishedDetails[revisionHash] !== undefined) return;
     revealingHash = revisionHash;
     try {
       const revision = await cockpitApi.getWorkflowRevision(revisionHash);
-      publishedGraphs = { ...publishedGraphs, [revisionHash]: revision.graph };
+      publishedDetails = { ...publishedDetails, [revisionHash]: revision };
     } catch (error) {
       showFailure(error, "The workflow could not be loaded.");
     } finally {
       if (revealingHash === revisionHash) revealingHash = null;
+    }
+  }
+
+  async function openEdit(revisionHash: string): Promise<void> {
+    await revealPublishedGraph(revisionHash);
+    const detail = publishedDetails[revisionHash];
+    if (detail === undefined) return;
+    editingHash = revisionHash;
+    editYaml = yamlOfPublishedDocument(detail);
+    if (editYaml === null) {
+      showFailure(
+        new Error("The published document is not UTF-8."),
+        "The published document could not be read."
+      );
     }
   }
 
@@ -502,7 +543,16 @@
       document_base64: result.value.document_base64
     });
     if (!resolved) throw new Error("The publication response did not prove the exact request.");
+    editingHash = null;
+    editYaml = null;
     prepareDraft(result.value);
+    await loadRevisions();
+    const name = result.value.graph.format_version === 3 ? result.value.graph.name : null;
+    if (name !== null) {
+      const key = `named:${name}`;
+      selectedHashByKey = { ...selectedHashByKey, [key]: result.value.revision_hash };
+      chosenRowKey = key;
+    }
   }
 
   function prepareDraft(revision: WorkflowRevisionDetail): void {
@@ -741,6 +791,7 @@
           revision,
           revision.name === null ? undefined : catalogByName[revision.name]
         )}
+        {@const published = publishedDetails[revision.revision_hash]?.graph}
         <article
           class="saved-workflow form-{catalogForm}"
           data-catalog-form={catalogForm}
@@ -789,39 +840,113 @@
                 </button>
               {/if}
             </div>
-            {#if row.revisions.length > 1 && row.name !== null}
-              <details class="revision-history">
-                <summary aria-label={`Revisions of ${row.name}`}>Revisions</summary>
-                <label class="revision-choice">
-                  <select
-                    value={revision.revision_hash}
-                    onchange={(event) => setRowRevision(row, event.currentTarget.value)}
-                    disabled={busy}
-                    aria-label={`Revision of ${row.name}`}
-                  >
-                    {#each row.revisions as choice (choice.revision_hash)}
-                      <option value={choice.revision_hash}>{revisionChoiceLabel(choice, row.revisions[0]?.revision_hash ?? choice.revision_hash)}</option>
-                    {/each}
-                  </select>
-                </label>
-              </details>
-            {/if}
-            {#if revision.name !== null}
-              <details class="revision-details">
-                <summary aria-label={`Details for ${revision.name}`} onclick={() => { void revealPublishedGraph(revision.revision_hash); }}>Details</summary>
-                <p class="revision-facts">
-                  {publishedRevisionFacts(revision, publishedGraphs[revision.revision_hash])}
-                  {#if revealingHash === revision.revision_hash} · Loading workflow…{/if}
-                </p>
-                {#if publishedNodePreviews(publishedGraphs[revision.revision_hash]) !== null}
-                  <WorkflowGraphDrawing
-                    previews={publishedNodePreviews(publishedGraphs[revision.revision_hash]) ?? []}
-                    showExcerpt={true}
-                  />
+            <details
+              class="revision-details"
+              ontoggle={(event) => {
+                if (event.currentTarget.open) {
+                  void revealPublishedGraph(revision.revision_hash);
+                }
+              }}
+            >
+              <summary
+                aria-label={revision.name === null
+                  ? "Details for this unnamed workflow"
+                  : `Details for ${revision.name}`}
+                onclick={() => { void revealPublishedGraph(revision.revision_hash); }}
+              >Details</summary>
+              <p class="revision-facts">
+                {publishedRevisionFacts(revision, published)}
+                {#if revealingHash === revision.revision_hash} · Loading workflow…{/if}
+              </p>
+              {#if publishedNodePreviews(published) !== null}
+                <WorkflowGraphDrawing
+                  previews={publishedNodePreviews(published) ?? []}
+                  showExcerpt={true}
+                />
+              {/if}
+              {#if publishedOrders(published) !== null}
+                {#if publishedOrders(published)?.length}
+                  <section class="revision-orders" aria-label="Orders">
+                    <h3>Orders</h3>
+                    <ul>
+                      {#each publishedOrders(published) ?? [] as order (order.name)}
+                        <li>
+                          <strong>{order.name}</strong>
+                          <span class="muted">{order.schema_ref}</span>
+                          <ProofAnchor
+                            label={`Schema of ${order.name}`}
+                            seals="the published schema this order pinned"
+                            value={order.schema_revision}
+                          />
+                        </li>
+                      {/each}
+                    </ul>
+                  </section>
+                {:else}
+                  <p class="muted">No orders.</p>
                 {/if}
-                <code class="revision-hash">{revision.revision_hash}</code>
-              </details>
-            {/if}
+              {/if}
+              {#if row.name !== null}
+                <section class="revision-history" aria-label="Revisions">
+                  <h3>Revisions</h3>
+                  {#if row.revisions.length === 1}
+                    <p class="muted">One revision.</p>
+                  {:else}
+                    <label class="revision-choice">
+                      <select
+                        value={revision.revision_hash}
+                        onchange={(event) => setRowRevision(row, event.currentTarget.value)}
+                        disabled={busy}
+                        aria-label={`Revision of ${row.name}`}
+                      >
+                        {#each row.revisions as choice (choice.revision_hash)}
+                          <option value={choice.revision_hash}>{revisionChoiceLabel(choice, row.revisions[0]?.revision_hash ?? choice.revision_hash)}</option>
+                        {/each}
+                      </select>
+                    </label>
+                  {/if}
+                </section>
+              {/if}
+              <p class="revision-origin">
+                {#if revision.name === null}
+                  An unnamed published document.
+                {:else}
+                  {revision.name} → this revision.
+                {/if}
+                <ProofAnchor
+                  label="Workflow revision"
+                  seals="the published document"
+                  value={revision.revision_hash}
+                />
+              </p>
+              <button
+                type="button"
+                class="quiet"
+                disabled={busy}
+                onclick={() => { void openEdit(revision.revision_hash); }}
+              >Edit</button>
+              {#if editingHash === revision.revision_hash}
+                {#if editYaml === null}
+                  <p class="muted">The published document could not be read.</p>
+                {:else}
+                  <div class="field">
+                    <label for="edit-yaml">Exact workflow YAML</label>
+                    <textarea
+                      id="edit-yaml"
+                      rows="12"
+                      bind:value={editYaml}
+                      spellcheck="false"
+                      disabled={busy}
+                    ></textarea>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onclick={() => { void reviewPublication(editYaml ?? ""); }}
+                    >Review publication</button>
+                  </div>
+                {/if}
+              {/if}
+            </details>
           </div>
         </article>
       {/each}
@@ -833,7 +958,7 @@
     <div class="field">
       <label for="workflow-yaml">Exact workflow YAML</label>
       <textarea id="workflow-yaml" rows="12" bind:value={exactYaml} spellcheck="false" disabled={busy}></textarea>
-      <button bind:this={publicationTrigger} type="button" disabled={busy} onclick={reviewPublication}>Review publication</button>
+      <button bind:this={publicationTrigger} type="button" disabled={busy} onclick={() => { void reviewPublication(); }}>Review publication</button>
     </div>
   {/if}
 

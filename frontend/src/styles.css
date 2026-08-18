@@ -563,6 +563,29 @@ small {
   font-size: 0.85rem;
 }
 
+.revision-orders,
+.revision-origin {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.revision-orders ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.revision-orders li,
+.revision-origin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.proof-seals {
+  margin: 0 0 0.4rem;
+}
+
 .revision-details summary,
 .revision-history summary {
   display: flex;
