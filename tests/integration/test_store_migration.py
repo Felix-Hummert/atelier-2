@@ -6,10 +6,11 @@ addition removed, then a format-3 run that already wrote one event. That is the
 today's owner.
 
 V14 and V15 each added a table, so dropping those tables was the whole reversal.
-V16 changes `run_events` itself, so the fixture also restores that table's
-published predecessor shape below. The literal is not a second owner of the
-current table: it is the frozen artifact V13 through V15 really carried, and the
-pinned V13 fingerprint refuses it the moment a character drifts.
+V16 changes `run_events` itself and V17 changes `agent_attempts`, so the fixture
+also restores those tables' published predecessor shapes below. The literals are
+not second owners of the current tables: they are the frozen artifacts the
+predecessor versions really carried, and the pinned V13 fingerprint refuses
+them the moment a character drifts.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from atelier2.adapters.dbos.schema import (
     V13_SCHEMA_HANDOFF,
     MigrationRequired,
     _require_product_shape,
+    agent_attempts,
     atelier_schema_versions,
     catalog_lineage_members,
     catalog_lineages,
@@ -90,6 +92,137 @@ CREATE TABLE run_events (
 """
 
 
+_PREDECESSOR_AGENT_ATTEMPTS_DDL = """
+CREATE TABLE agent_attempts (
+    attempt_id TEXT NOT NULL,
+    node_execution_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    executor_operational_identity TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    workflow_revision_hash TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    attempt_ordinal INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    state_version INTEGER NOT NULL,
+    process_phase TEXT NOT NULL,
+    process_owner_id TEXT,
+    watchdog_generation_id TEXT,
+    cancellation_command_id TEXT,
+    cancellation_expected_state_version INTEGER,
+    replacement TEXT,
+    redrive_state TEXT,
+    cancellation_disposition TEXT,
+    cancellation_workflow_id TEXT,
+    failure_code TEXT,
+    receipt_hash TEXT,
+    PRIMARY KEY (attempt_id),
+    UNIQUE (node_execution_id, attempt_ordinal),
+    FOREIGN KEY(run_id, workflow_revision_hash) REFERENCES runs (run_id, revision_hash),
+    CHECK (length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(executor_operational_identity) BETWEEN 1 AND 1024),
+    CHECK (length(run_id) > 0),
+    CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(node_id) BETWEEN 1 AND 1024),
+    CHECK (attempt_ordinal IN (1, 2)),
+    CHECK (process_phase IN ('NONE', 'WATCHDOG_READY', 'LAUNCH_AUTHORIZED', 'PROCESS_OBSERVED', 'CLEANUP_ATTESTED')),
+    CHECK ((process_phase = 'NONE' AND process_owner_id IS NULL AND watchdog_generation_id IS NULL) OR (process_phase = 'CLEANUP_ATTESTED' AND cancellation_disposition = 'NEVER_LAUNCHED' AND process_owner_id IS NULL AND watchdog_generation_id IS NULL) OR (process_phase <> 'NONE' AND length(process_owner_id) BETWEEN 1 AND 1024 AND length(watchdog_generation_id) BETWEEN 1 AND 1024)),
+    CHECK ((cancellation_command_id IS NULL AND cancellation_expected_state_version IS NULL AND replacement IS NULL AND redrive_state IS NULL AND cancellation_disposition IS NULL AND cancellation_workflow_id IS NULL) OR (length(cancellation_command_id) BETWEEN 1 AND 1024 AND cancellation_expected_state_version >= 0 AND replacement IN ('NONE', 'ONE') AND redrive_state IN ('PENDING', 'OWNER_NOT_LOCAL', 'CLEANUP_ATTESTED') AND length(cancellation_workflow_id) > 0 AND ((redrive_state = 'CLEANUP_ATTESTED' AND cancellation_disposition IN ('NEVER_LAUNCHED', 'EXITED_BEFORE_SIGNAL', 'REAPED_AFTER_TERM', 'REAPED_AFTER_KILL', 'OWNER_LOST_AFTER_PARENT_DEATH')) OR (redrive_state <> 'CLEANUP_ATTESTED' AND cancellation_disposition IS NULL)))),
+    CHECK ((state = 'PREPARED' AND state_version = 0 AND process_phase = 'NONE' AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'PREPARED' AND state_version = 1 AND process_phase = 'WATCHDOG_READY' AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'LAUNCH_ARMED' AND state_version = 1 AND process_phase IN ('NONE', 'LAUNCH_AUTHORIZED') AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'LAUNCH_ARMED' AND state_version >= 2 AND process_phase IN ('LAUNCH_AUTHORIZED', 'PROCESS_OBSERVED') AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'CANCEL_REQUESTED' AND state_version >= 1 AND cancellation_command_id IS NOT NULL AND cancellation_disposition IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state IN ('CANCELLED', 'INTERRUPTED') AND state_version >= 2 AND process_phase = 'CLEANUP_ATTESTED' AND cancellation_command_id IS NOT NULL AND cancellation_disposition IS NOT NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'SUCCEEDED' AND state_version >= 2 AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NOT NULL) OR (state = 'FAILED' AND state_version >= 2 AND cancellation_command_id IS NULL AND failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY' AND receipt_hash IS NULL)),
+    UNIQUE (cancellation_workflow_id),
+    UNIQUE (receipt_hash),
+    FOREIGN KEY(receipt_hash) REFERENCES agent_receipts_v2 (receipt_hash) ON DELETE RESTRICT
+)
+"""
+
+_PREDECESSOR_AGENT_ATTEMPTS_TRIGGER_DDL = """
+CREATE TRIGGER agent_attempts_state_transition
+BEFORE UPDATE ON agent_attempts
+WHEN NOT (
+  OLD.attempt_id = NEW.attempt_id
+  AND OLD.node_execution_id = NEW.node_execution_id
+  AND OLD.request_hash = NEW.request_hash
+  AND OLD.executor_operational_identity = NEW.executor_operational_identity
+  AND OLD.run_id = NEW.run_id
+  AND OLD.workflow_revision_hash = NEW.workflow_revision_hash
+  AND OLD.node_id = NEW.node_id
+  AND OLD.attempt_ordinal = NEW.attempt_ordinal
+  AND NEW.state_version > OLD.state_version
+  AND (
+    (OLD.state = 'PREPARED' AND OLD.state_version = 0
+     AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+     AND NEW.state = 'PREPARED' AND NEW.state_version = 1
+     AND NEW.process_phase = 'WATCHDOG_READY'
+     AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+     AND NEW.cancellation_command_id IS NULL)
+    OR
+    (OLD.state = 'PREPARED'
+     AND NEW.state = 'LAUNCH_ARMED'
+     AND NEW.process_phase IN ('NONE', 'LAUNCH_AUTHORIZED')
+     AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+     AND NEW.cancellation_command_id IS NULL)
+    OR
+    (OLD.state = 'LAUNCH_ARMED'
+     AND OLD.process_phase = 'LAUNCH_AUTHORIZED'
+     AND NEW.state = 'LAUNCH_ARMED'
+     AND NEW.process_phase = 'PROCESS_OBSERVED'
+     AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+     AND NEW.cancellation_command_id IS NULL)
+    OR
+    (OLD.state = 'LAUNCH_ARMED'
+     AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+     AND NEW.state = 'SUCCEEDED'
+     AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NOT NULL
+     AND NEW.cancellation_command_id IS NULL
+     AND EXISTS (
+       SELECT 1 FROM agent_receipts_v2 AS receipt
+       WHERE receipt.receipt_hash = NEW.receipt_hash
+         AND receipt.request_hash = NEW.request_hash
+         AND receipt.executor_operational_identity = NEW.executor_operational_identity
+         AND receipt.node_execution_id = NEW.node_execution_id
+         AND receipt.run_id = NEW.run_id
+         AND receipt.workflow_revision_hash = NEW.workflow_revision_hash
+         AND receipt.node_id = NEW.node_id
+     ))
+    OR
+    (OLD.state = 'LAUNCH_ARMED'
+     AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+     AND NEW.state = 'FAILED'
+     AND NEW.failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY'
+     AND NEW.receipt_hash IS NULL
+     AND NEW.cancellation_command_id IS NULL)
+    OR
+    (OLD.state IN ('PREPARED', 'LAUNCH_ARMED')
+     AND OLD.cancellation_command_id IS NULL
+     AND NEW.state = 'CANCEL_REQUESTED'
+     AND NEW.cancellation_command_id IS NOT NULL
+     AND NEW.cancellation_expected_state_version = OLD.state_version
+     AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+    OR
+    (OLD.state = 'CANCEL_REQUESTED'
+     AND NEW.state = 'CANCEL_REQUESTED'
+     AND OLD.cancellation_command_id = NEW.cancellation_command_id
+     AND NEW.redrive_state = 'OWNER_NOT_LOCAL'
+     AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+    OR
+    (OLD.state = 'CANCEL_REQUESTED'
+     AND NEW.state IN ('CANCELLED', 'INTERRUPTED')
+     AND OLD.cancellation_command_id = NEW.cancellation_command_id
+     AND NEW.process_phase = 'CLEANUP_ATTESTED'
+     AND NEW.redrive_state = 'CLEANUP_ATTESTED'
+     AND NEW.cancellation_disposition IS NOT NULL
+     AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+  )
+) BEGIN
+  SELECT RAISE(ABORT, 'invalid agent attempt transition');
+END
+"""
+
+ARCHIVED_ATTEMPT_ID = "ab" * 32
+ARCHIVED_ATTEMPT_FAILURE_CODE = "PROCESS_EXITED_UNSUCCESSFULLY"
+
+
 def _logical_dump(database_path: Path) -> tuple[str, ...]:
     with sqlite3.connect(database_path) as connection:
         return tuple(connection.iterdump())
@@ -108,6 +241,16 @@ def _restore_predecessor_run_events(connection: Connection) -> None:
         connection.execute(CreateIndex(index))
     for trigger in triggers:
         connection.execute(sa.text(_PRODUCT_TRIGGERS[trigger]))
+
+
+def _restore_predecessor_agent_attempts(connection: Connection) -> None:
+    triggers = ("agent_attempts_state_transition", "agent_attempts_no_delete")
+    for trigger in triggers:
+        connection.execute(sa.text(f"DROP TRIGGER {trigger}"))
+    connection.execute(sa.text("DROP TABLE agent_attempts"))
+    connection.execute(sa.text(_PREDECESSOR_AGENT_ATTEMPTS_DDL))
+    connection.execute(sa.text(_PREDECESSOR_AGENT_ATTEMPTS_TRIGGER_DDL))
+    connection.execute(sa.text(_PRODUCT_TRIGGERS["agent_attempts_no_delete"]))
 
 
 def _archived_completion(revision_hash: WorkflowRevisionHash) -> RunEvent:
@@ -149,6 +292,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
             connection.execute(sa.text(f"DROP TABLE {table}"))
         _restore_predecessor_run_events(connection)
+        _restore_predecessor_agent_attempts(connection)
         connection.execute(
             atelier_schema_versions.update()
             .where(atelier_schema_versions.c.version == SCHEMA_VERSION)
@@ -213,6 +357,24 @@ def _create_populated_v13_store(database_path: Path) -> None:
                 last_event_sequence=1,
                 terminal_hash=None,
                 run_configuration_revision_hash=configuration,
+            )
+        )
+        connection.execute(
+            agent_attempts.insert().values(
+                attempt_id=ARCHIVED_ATTEMPT_ID,
+                node_execution_id=execution,
+                request_hash=request,
+                executor_operational_identity="operational/archived",
+                run_id=ARCHIVED_RUN_ID,
+                workflow_revision_hash=published.revision_hash.value,
+                node_id="cook",
+                attempt_ordinal=1,
+                state="FAILED",
+                state_version=2,
+                process_phase="PROCESS_OBSERVED",
+                process_owner_id="owner/archived",
+                watchdog_generation_id="generation/archived",
+                failure_code=ARCHIVED_ATTEMPT_FAILURE_CODE,
             )
         )
         archived = _archived_completion(
@@ -287,6 +449,17 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
         assert (
             connection.scalar(sa.select(node_receipts_v3.c.disposition)) == "succeeded"
         )
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(
+                    agent_attempts.c.attempt_id == ARCHIVED_ATTEMPT_ID
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert attempt["state"] == "FAILED"
+        assert attempt["failure_code"] == ARCHIVED_ATTEMPT_FAILURE_CODE
         assert (
             connection.scalar(sa.select(sa.func.count()).select_from(run_inputs_v3))
             == 0
@@ -428,6 +601,47 @@ def test_a_refused_receipt_column_hop_rolls_back_every_earlier_step(
 
     shown = capsys.readouterr()
     assert "run_events_before_the_receipt_column" in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (13,)
+
+
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        pytest.param(
+            "CREATE TABLE agent_attempts_before_the_refusal_code(wrong TEXT)",
+            id="table",
+        ),
+        pytest.param(
+            "CREATE VIEW agent_attempts_before_the_refusal_code AS SELECT 1 AS wrong",
+            id="view",
+        ),
+    ],
+)
+def test_a_refused_failure_code_hop_rolls_back_every_earlier_step(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
+) -> None:
+    """The final hop refuses, so the three that already ran are undone with it.
+
+    The failure-code hop rebuilds `agent_attempts` under a parking name, so any
+    object already holding that name is a collision the hop refuses by name --
+    after the three earlier steps completed inside the same transaction.
+    """
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v13_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(collision_sql)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "agent_attempts_before_the_refusal_code" in shown.err
     assert "will not alter" in shown.err
     assert _logical_dump(database_path) == before
     with sqlite3.connect(database_path) as connection:

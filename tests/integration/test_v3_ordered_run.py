@@ -27,7 +27,12 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import run_inputs_v3, runs
+from atelier2.adapters.dbos.schema import (
+    context_packages_v3,
+    node_execution_requests_v3,
+    run_inputs_v3,
+    runs,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -48,13 +53,19 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
     RevisionKind,
 )
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -263,6 +274,64 @@ def test_the_order_reaches_the_agent_and_is_stored_under_the_run(
     ]
 
     assert b'{"portions": 4}' in jobs_handed_to(cook)[0]
+
+
+@pytest.mark.proves("a-run-input-binds-as-a-materialized-package-member")
+def test_the_order_binds_into_the_persisted_context_package(
+    runtime: DbosRuntime,
+) -> None:
+    """#38 sentence 2b, literally: the order is a material member of the package.
+
+    The start persists the node's `context-package/v3`, and the stored manifest
+    binds the content hash of the exact order bytes the run carries -- a hash a
+    declared reference cannot produce and material can. The member is part of
+    the package's identity: the same document started with a different order is
+    a different package.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    first = RunId("v3/mit-order")
+    second = RunId("v3/mit-anderer-order")
+    assert isinstance(
+        start(runtime, workflow, bindings, first, order(b'{"portions": 2}')),
+        DurableRunCreated,
+    )
+    assert isinstance(
+        start(runtime, workflow, bindings, second, order(b'{"portions": 3}')),
+        DurableRunCreated,
+    )
+
+    revision = WorkflowRevisionHash(workflow.revision_hash.value)
+    with runtime.engine.connect() as connection:
+        packages = {
+            run_id: _persisted_package(connection, run_id, revision)
+            for run_id in (first, second)
+        }
+    first_hash, first_manifest = packages[first]
+    second_hash, _second_manifest = packages[second]
+    bound = order(b'{"portions": 2}').value_hash.value.encode("ascii")
+    assert bound in first_manifest
+    assert first_hash != second_hash
+
+
+def _persisted_package(
+    connection: sa.engine.Connection,
+    run_id: RunId,
+    revision: WorkflowRevisionHash,
+) -> tuple[str, bytes]:
+    """The stored package of this run's cook node: its hash and exact manifest."""
+    package_hash = connection.scalar(
+        sa.select(node_execution_requests_v3.c.context_package_hash).where(
+            node_execution_requests_v3.c.node_execution_id
+            == NodeExecutionId.for_node(run_id, revision, "cook").value
+        )
+    )
+    manifest = connection.scalar(
+        sa.select(context_packages_v3.c.manifest).where(
+            context_packages_v3.c.package_hash == package_hash
+        )
+    )
+    assert package_hash is not None and manifest is not None
+    return str(package_hash), bytes(manifest)
 
 
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")

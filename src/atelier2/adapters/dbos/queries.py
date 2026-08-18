@@ -33,6 +33,7 @@ from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
     effect_intents,
     effect_receipts,
+    node_receipts_v3,
     reconcile_commands,
     run_events,
     runs,
@@ -65,6 +66,7 @@ from atelier2.contracts.executions import (
     logical_effect_key_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.node_records_v3 import PersistedReceiptDisposition
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -411,6 +413,34 @@ def _current_attempt_projection(
     )
 
 
+def _node_receipt_refusal(
+    connection: Connection,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+) -> str | None:
+    """The durably named reason this node's execution ended without a success.
+
+    Read from `node-receipt/v3` where one exists: the receipt was written in
+    the transaction that ended the execution, so it is the store's own
+    statement and outranks a recomputation. A succeeded receipt refuses
+    nothing, and a run from before the family's writer has no receipt at all --
+    that absence is honest, never filled in here.
+    """
+    record = connection.execute(
+        sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
+            node_receipts_v3.c.node_execution_id
+            == NodeExecutionId.for_node(run_id, revision_hash, node_id).value
+        )
+    ).one_or_none()
+    if record is None:
+        return None
+    disposition = PersistedReceiptDisposition(str(record.disposition))
+    if disposition is PersistedReceiptDisposition.SUCCEEDED:
+        return None
+    return str(record.reason)
+
+
 def _node_job_and_refusal(
     connection: Connection,
     projection: RunProjection,
@@ -714,10 +744,13 @@ class DbosQueries:
         identity around those bytes. Doing it any other way would mean keeping
         a second copy of a value that already has an identity.
 
-        A refusal is recomputed for the same reason and is the point of this read:
-        when a node's own output does not satisfy the schema its author pinned,
-        the run stops there and today that reason exists only as an exception
-        inside the driver. Here it is named, so the operator is told why a run
+        A refusal has two voices and the durable one wins. When a node's own
+        output does not satisfy the schema its author pinned, the run stops
+        there and the terminal write names the reason in a `failed`
+        `node-receipt/v3`; that stored statement is read back here. A run from
+        before the record family's writer has no receipt and stays honestly
+        absent in those tables, so its refusal is still recomputed through the
+        composition owner -- named either way, so the operator is told why a run
         stands still instead of watching it stand still.
         """
 
@@ -740,6 +773,9 @@ class DbosQueries:
                 job, job_hash, refusal = _node_job_and_refusal(
                     connection, projection, node
                 )
+                durable_refusal = _node_receipt_refusal(
+                    connection, run_id, projection.run.revision_hash, node_id
+                )
                 return NodeDetailFound(
                     NodeDetail(
                         run_id=run_id,
@@ -749,7 +785,9 @@ class DbosQueries:
                         job_hash=job_hash,
                         answer=_node_answer(connection, run_id, projection, node_id),
                         provenance=_node_provenance(connection, run_id, node_id),
-                        refusal=refusal,
+                        refusal=durable_refusal
+                        if durable_refusal is not None
+                        else refusal,
                     )
                 )
         except ProjectionLimitExceeded:
@@ -1332,9 +1370,9 @@ class DbosQueries:
             and workflow_format_version not in _AGENT_FAILURE_FORMATS
         ):
             raise RunTransitionConflict("V1 run carries an agent failure event")
-        if event.event_kind is RunEventKind.AGENT_FAILED and event.payload != (
-            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value.encode("ascii")
-        ):
+        if event.event_kind is RunEventKind.AGENT_FAILED and event.payload not in {
+            code.value.encode("ascii") for code in AgentAttemptFailureCode
+        }:
             raise RunTransitionConflict("agent failure event payload is not canonical")
         if event.event_kind not in {
             RunEventKind.ACTION_RECONCILIATION_RESOLVED,

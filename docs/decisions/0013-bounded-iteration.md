@@ -233,12 +233,11 @@ established that *a published schema is a schema*: `read_schema_document(bytes)`
 Its second head added the other half of that owner's surface,
 `read_instance_document(bytes, schema)`, and its runtime head made it the gate on
 an agent's answer: a V3 node's decoded output is read against the schema it pinned
-before any success is written. **The evaluator therefore exists, and fact 2's other
-half still does not** — no `node-artifact/v3` row is written by anything, so there
-is no durable artifact to evaluate a round's `until` output from. Fact 2 stays
-unenforceable on that half, which is why the head that enforces it waits (see
-Delivery boundaries), and this record names the one evaluator so that a second is
-not built here.
+before any success is written. **The evaluator exists, and #295 gave the other
+half its writer**: a succeeded V3 agent node keeps its exact output as a
+`node-artifact/v3` row at the terminal write. What a round's evaluation still
+waits for is the round machinery itself (see Delivery boundaries), and this
+record names the one evaluator so that a second is not built here.
 
 Explicitly refused as a green source: an agent output that merely claims completion,
 a free-text match, an exit code without a receipt, and any condition over a non-sink
@@ -304,15 +303,17 @@ declarer".
    against the child, the capability attestation is extended, and a missing
    attestation refuses the whole run.
 4. **Durable rounds:** the `(parent_node_execution_id, round_ordinal)` binding, the
-   per-round evaluation and the one terminal receipt. **Not claimable** until three
-   owners exist: [#63](https://github.com/FlexOr2/atelier-2/issues/63) (a writer for
-   the V3 store's `node-artifact/v3` and `node-receipt/v3`, whose tables are
-   landed and whose rows nothing writes), the V3 Join/Ready/Scheduler owner ADR 0008
+   per-round evaluation and the one terminal receipt. **Not claimable** until two
+   owners exist: the V3 Join/Ready/Scheduler owner ADR 0008
    names and explicitly declares that slice unclaimable without, and
    [#16](https://github.com/FlexOr2/atelier-2/issues/16) (the durable failure
    token). [#57](https://github.com/FlexOr2/atelier-2/issues/57)'s instance
-   evaluator left this list when it landed and began gating every V3 success. This
-   boundary carries no size estimate: naming one before those three exist would be
+   evaluator left this list when it landed and began gating every V3 success, and
+   the record family's writer this list first waited on
+   ([#63](https://github.com/FlexOr2/atelier-2/issues/63)'s tables) left it with
+   [#295](https://github.com/FlexOr2/atelier-2/issues/295): the start persists
+   request and package, the terminal write keeps artifact and receipt. This
+   boundary carries no size estimate: naming one before those two exist would be
    invention.
 
 ## Required proof before implementation

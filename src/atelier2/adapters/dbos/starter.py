@@ -14,6 +14,7 @@ from atelier2.adapters.dbos.agent_catalog import (
     auth_profile_from_record,
 )
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.node_records import persist_bound_node_executions
 from atelier2.adapters.dbos.run_store import (
     entry_node_of,
     run_from_record,
@@ -647,6 +648,18 @@ class DbosDurableRunStarter:
                             }
                             for order in orders
                         ],
+                    )
+                if run_configuration is not None and isinstance(graph, WorkflowGraphV3):
+                    # After the orders, because an order this run carries is a
+                    # member of the package that binds it -- the content hash a
+                    # declared reference cannot produce and material can.
+                    persist_bound_node_executions(
+                        connection,
+                        request.run_id,
+                        WorkflowRevisionHash(request.revision_hash.value),
+                        graph,
+                        run_configuration,
+                        orders,
                     )
                 options: EnqueueOptions = {
                     "workflow_name": WORKFLOW_NAME,

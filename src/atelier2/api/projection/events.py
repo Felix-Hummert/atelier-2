@@ -41,6 +41,7 @@ from atelier2.api.wire.events import (
     WaitingInputEventResourceV3,
 )
 from atelier2.api.wire.resources import NodeRailResource
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.executions import (
     KINDS_NO_V1_RUN_CARRIES,
     RunEventKind,
@@ -299,13 +300,16 @@ def _run_event_resource_v3(
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
         failure_code = event.payload.decode("ascii")
-        if failure_code != "PROCESS_EXITED_UNSUCCESSFULLY":
+        if failure_code not in {code.value for code in AgentAttemptFailureCode}:
             raise ValueError("durable agent failure payload is not canonical")
         if event.agent_attempt_id is None or event.attempt_ordinal is None:
             raise ValueError("V3 agent failure has no exact attempt binding")
         return AgentFailedEventResourceV3(
             event=event.event_kind.value,
-            failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+            failure_code=cast(
+                Literal["PROCESS_EXITED_UNSUCCESSFULLY", "OUTPUT_SCHEMA_REFUSED"],
+                failure_code,
+            ),
             attempt_id=event.agent_attempt_id,
             attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
             **common,

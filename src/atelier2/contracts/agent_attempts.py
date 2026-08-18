@@ -75,6 +75,11 @@ TERMINAL_AGENT_ATTEMPT_STATES = frozenset(
 
 class AgentAttemptFailureCode(StrEnum):
     PROCESS_EXITED_UNSUCCESSFULLY = "PROCESS_EXITED_UNSUCCESSFULLY"
+    # The provider process ended fine; what it produced is what the schema its
+    # own author pinned refuses. A distinct member because folding it into the
+    # process code would write a durable statement about an exit that never
+    # happened; the schema owner's words travel in the node receipt's reason.
+    OUTPUT_SCHEMA_REFUSED = "OUTPUT_SCHEMA_REFUSED"
 
 
 class AgentAttemptReplacement(StrEnum):
@@ -331,8 +336,7 @@ class AgentAttempt:
             )
         else:
             valid = (
-                self.failure_code
-                is AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+                self.failure_code is not None
                 and self.receipt_hash is None
                 and self.cancellation is None
             )

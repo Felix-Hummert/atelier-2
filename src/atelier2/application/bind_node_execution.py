@@ -1,16 +1,17 @@
 """Assemble one V3 node's context package and the request that names it.
 
 **Why this exists.** `node-execution-request/v3` and `context-package/v3` are two
-of ADR 0006's four durable V3 records, and until now nothing in production built
-either: every request that reached the supervised start was assembled by its
-caller, and every manifest hash named bytes nobody kept. A record whose only
-author is a test is a record whose meaning is decided per caller.
+of ADR 0006's four durable V3 records, and every request that reached a start used
+to be assembled by its caller, with every manifest hash naming bytes nobody kept.
+A record whose only author is a test is a record whose meaning is decided per
+caller. Its production caller is the public start: one bound execution per node,
+written inside the serialized transaction that writes the run.
 
 **Why here and not in the store.** The store's job is that the record it is
 handed is whole and self-consistent. Deciding *what* a node was given is a
 composition over the document and its frozen resolution matrix, which is this
 layer's shape -- the same place `bind_run_configuration` already freezes that
-matrix. The host that will call both is #111's.
+matrix.
 
 **Why it never resolves a reference itself.** Every declared reference of the
 document was already resolved once, into the run configuration revision the run
@@ -30,8 +31,10 @@ from atelier2.contracts.node_records_v3 import (
     ContextPackageMember,
     DeclaredContextPackage,
     DeclaredOutput,
+    MaterializedOrderMember,
     NodeExecutionRequest,
     NodeKindV3,
+    RunInput,
     declared_context_package_of,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
@@ -43,6 +46,7 @@ from atelier2.contracts.run_configuration_v3 import (
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
+    GraphInputSource,
     SubworkflowNodeV3,
     WorkflowGraphV3,
     WorkflowNodeV3,
@@ -87,18 +91,34 @@ class NodeExecutionBindingUnsupported(Exception):
         self.declared = declared
 
 
+class NodeExecutionOrderMissing(Exception):
+    """This node reads an order the run it belongs to does not carry."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"the node reads an order named {name!r}, and the run carries none"
+        )
+        self.name = name
+
+
 def bind_node_execution(
     run_id: RunId,
     workflow_revision_hash: WorkflowRevisionHash,
     graph: WorkflowGraphV3,
     node_id: str,
     run_configuration: RunConfigurationRevision,
+    orders: tuple[RunInput, ...] = (),
 ) -> BoundNodeExecution:
     """What this node was asked to do, as the two records that say it.
 
     Refuses rather than fills a gap: a reference the frozen resolution does not
     carry is named with its site, because a request that quietly dropped it would
     describe a smaller task than the author wrote.
+
+    `orders` are the ones the run was started with, all of them; which of them
+    this node was given is decided here, from the `graph_input` sources its author
+    wrote. Handing in the run's whole order set rather than a pre-filtered one is
+    what keeps that decision with the document instead of with the caller.
     """
     if run_configuration.workflow_revision_hash != workflow_revision_hash:
         raise ValueError(
@@ -111,6 +131,7 @@ def bind_node_execution(
         run_id,
         node_id,
         _members_of(node, resolution),
+        _orders_of(node, orders),
     )
     request = NodeExecutionRequest(
         workflow_revision_hash=workflow_revision_hash,
@@ -189,6 +210,34 @@ def _members_of(
         )
         for required in node.required_context
     )
+
+
+def _orders_of(
+    node: WorkflowNodeV3, orders: tuple[RunInput, ...]
+) -> tuple[MaterializedOrderMember, ...]:
+    """The orders this node reads, bound by name to the bytes the run stored.
+
+    A node names an order through a `graph_input` source, and the run stores that
+    order under the same name -- so an order the node reads and the run does not
+    carry is a store that disagrees with the run it holds, refused here rather
+    than dropped into a package that would then describe a smaller task.
+
+    They are ordered by name, the same order the composition hands them to the
+    provider in, so the package member sequence and what the agent was given are
+    one statement rather than two that happen to agree.
+    """
+    read = {
+        entry.source.graph_input
+        for entry in node.inputs
+        if isinstance(entry.source, GraphInputSource)
+    }
+    if not read:
+        return ()
+    stored = {order.name: order for order in orders}
+    missing = sorted(read - stored.keys())
+    if missing:
+        raise NodeExecutionOrderMissing(missing[0])
+    return tuple(MaterializedOrderMember.of(stored[name]) for name in sorted(read))
 
 
 def _grants_of(

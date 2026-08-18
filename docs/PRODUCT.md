@@ -335,18 +335,23 @@ judge — or several — one value answered by another — is refused under the 
 provider process starts, while the document itself stays publishable. What comes
 back from the provider is then read against that schema by the profile owner
 above, inside the transaction that would have written the success and before its
-first row: an answer the schema refuses leaves no receipt, no completion event
-and no advanced run, so a run can no longer end successfully on work its own
-contract rejects. What that refusal does not yet do is leave a durable record of
-itself. The `node-artifact/v3` and `node-receipt/v3` tables exist and nothing
-writes them, so there is no `failed` receipt to carry the reason, and the one
-durable attempt-failure vocabulary the store enumerates carries no name for this
-refusal; a refused answer therefore leaves the run standing on the node that
-produced it, and the reason lives in the refusal rather than in the store. The
-refusal ends the node workflow, so the next serve start finds the attempt it
-left armed without a driver and converges it to `INTERRUPTED` -- the node then
-reads `interrupted` instead of `possibly ran` forever, which says the attempt
-was stopped, not why the answer was refused.
+first row: an answer the schema refuses leaves no agent receipt, no completion
+event and no advanced run, so a run can no longer end successfully on work its
+own contract rejects. The refusal is durable and named. The record family ADR
+0006 declared has its production writer: the public start persists each node's
+`node-execution-request/v3` and `context-package/v3` inside the start
+transaction -- an order the run carries binds into that package as a material
+member under its content hash -- and the terminal write ends the execution in
+the same transaction as the agent receipt. A refused answer ends its attempt
+`FAILED` under `OUTPUT_SCHEMA_REFUSED` with an `AGENT_FAILED` event, and the
+`failed` `node-receipt/v3` carries the schema owner's own words as its reason
+(`output-schema-refused: ...`); a success additionally keeps the exact produced
+bytes as `node-artifact/v3` beside its `succeeded` receipt. The run stands on
+the node that produced the refused answer, the node detail reads the stored
+reason back, and a run started before this writer existed stays honestly absent
+in those tables. The bounded vocabulary deliberately not written here: cancelled
+and blocked receipt dispositions, and a receipt for a process-exit failure --
+nothing judged that output, so nothing receipts it yet.
 
 An agent is authored as one markdown file. Its frontmatter is a closed set of
 `name`, `description`, an optional `model`, and an optional `tools` declaration;

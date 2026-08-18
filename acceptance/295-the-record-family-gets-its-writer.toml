@@ -1,0 +1,47 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/295"
+
+# THE FAMILY GOT ITS WRITER. `node-execution-request/v3`, `context-package/v3`,
+# `node-artifact/v3`, `node-receipt/v3` and `node_receipt_outputs_v3` landed
+# with #63 as tables, triggers and typed contracts, and then stood empty: the
+# writer they once had was a callerless foundation door, removed with the #216
+# seam (`6f0e316`). The desk ruling on #295 (measurement of 19.08.) decided the
+# family lives, because it owns the one promise the living path never held:
+# everything durable used to exist only on SUCCESS, and a schema-refused answer
+# was an exception that killed the driver -- run STARTED, attempt LAUNCH_ARMED,
+# no trace (the live zombie class of run 8846bf47).
+#
+# The writer has exactly two moments. The public start persists each node's
+# request and its declared context package inside the start transaction; the
+# terminal write ends the execution in the same transaction as the agent
+# receipt. #38's sentence 2b moved here and is now literally true: an order the
+# run carries binds into the persisted package as a material member under the
+# content hash of its exact stored bytes.
+#
+# NAMED OPEN, deliberately not written by this head:
+#
+#   - `cancelled` and `blocked` receipt dispositions: the cancellation path
+#     writes no node receipt yet; a cancelled execution stays receipt-less like
+#     a pre-writer one, and the vocabulary waits for its own head.
+#   - A `failed` receipt for `PROCESS_EXITED_UNSUCCESSFULLY`: nothing judged
+#     that output, so nothing receipts it yet; the attempt row and the
+#     `AGENT_FAILED` event remain that failure's durable naming.
+#   - `node-execution-request/v3` still carries `inputs=()`: the delivered
+#     predecessor-output envelopes need the ready set, which has no owner yet.
+#     The order members live in the package, not in the input envelopes.
+#   - Wait and other non-agent nodes get requests and packages at the start but
+#     no receipt at their terminal; their terminal writes have other owners.
+#   - Budget aggregates (ADR 0008) and round receipts (ADR 0013) stay with
+#     their own records; this head only used columns that exist.
+
+[[sentence]]
+id = "a-refused-output-ends-its-attempt-durably-named"
+text = "Exact decoded output bytes that the schema their own node pinned refuses end the attempt FAILED under OUTPUT_SCHEMA_REFUSED with an AGENT_FAILED event, and a failed node-receipt/v3 whose reason opens with the stable token output-schema-refused and carries the schema owner's own verdict, bound to the request and package the start persisted -- written in one transaction with nothing partial on a crash, while no agent receipt, no completion event and no advanced run appear, and the driver survives instead of leaving a silent STARTED/LAUNCH_ARMED zombie."
+
+[[sentence]]
+id = "a-succeeded-node-writes-artifact-and-receipt-atomically"
+text = "A V3 agent node's admitted answer is kept durably in the record family's own vocabulary, in the same transaction as its agent receipt: the exact produced bytes as node-artifact/v3, the succeeded node-receipt/v3 naming the request and package the start persisted, and the receipt-output row binding value hash and schema revision to that artifact."
+
+[[sentence]]
+id = "a-run-input-binds-as-a-materialized-package-member"
+text = "A run input binds into the node's persisted context-package/v3 as a materialized member: the stored manifest carries the content hash of the exact order bytes the run holds, and the same document started with a different order is a different package."

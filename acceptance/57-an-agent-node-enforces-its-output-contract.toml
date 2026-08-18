@@ -21,25 +21,25 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 # acceptance/66-agent-as-a-markdown-file.toml:
 #
 #   2.  "Gueltig schreibt atomar Artefakt, succeeded-node-receipt/v3 und
-#       Run-Ereignis; erst danach waechst Ready." (head 3) -- the success write is
-#       atomic today over the V2 receipt, the run event and the run's advance;
-#       what is absent is `node-artifact/v3` and `node-receipt/v3` THEMSELVES.
-#       #63 landed their tables, their immutability triggers and their typed
-#       contracts; nothing in the product writes a row into either yet.
+#       Run-Ereignis; erst danach waechst Ready." -- PROVEN at #295 (the record
+#       family's writer): the success write keeps `node-artifact/v3` and the
+#       `succeeded` `node-receipt/v3` in the same transaction as the V2 receipt,
+#       the run event and the run's advance. Declared as
+#       `a-succeeded-node-writes-artifact-and-receipt-atomically` in
+#       `295-the-record-family-gets-its-writer.toml`. The "erst danach waechst
+#       Ready" half waits for the Ready owner, which does not exist.
 #   3.  "Ungueltiges UTF-8/JSON, Schema-Abweichung oder Bound-Verletzung schreibt
 #       atomar ein failed-node-receipt/v3 mit stabilem Reason-Token,
 #       Schema-Revision und Hash der exakten decodierten Bytes; kein Artefakt und
-#       kein Success-Receipt." (head 3) -- HALF PROVEN, and the half that is not
-#       is named here rather than implied. Head 2 proves "kein Artefakt und kein
-#       Success-Receipt": the refusal is named in the words of the profile owner
-#       and nothing is written. It does NOT write a durable `failed` receipt,
-#       because there is no writer for `node-receipt/v3` (see 2 above) and the
-#       one durable attempt-failure vocabulary this product owns
-#       (`AgentAttemptFailureCode`) is enumerated in the store's own CHECK, so a
-#       second member is store movement this head was fenced out of. The
-#       consequence an operator sees is stated rather than hidden: a refused
-#       answer leaves the run standing on the node that produced it, with the
-#       reason live in the refusal and durable nowhere.
+#       kein Success-Receipt." -- head 2 proved "kein Artefakt und kein
+#       Success-Receipt"; #295 proved the durable `failed` receipt with the
+#       stable token `output-schema-refused` and the second
+#       `AgentAttemptFailureCode` member the store's CHECK now admits (V17).
+#       Declared as `a-refused-output-ends-its-attempt-durably-named` in
+#       `295-the-record-family-gets-its-writer.toml`. Still open from this
+#       sentence's wording: the receipt does not record the schema revision and
+#       the hash of the exact refused bytes as their own fields -- the reason
+#       carries the verdict, not the evidence bytes.
 #   4.  "Join bleibt ADR 0006: all_succeeded blockiert; all_terminal darf starten
 #       und erhaelt das Failure-Receipt." (head 3)
 #   5.  "Retry/Restart erzeugt weder zweites Artefakt noch zweites terminales
@@ -49,7 +49,8 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 #
 # The first sentence declared below is 1a, and 1a is EXPRESSLY NOT a substitute
 # for 1b: 1a proves the bound contract is a contract, 1b proves the core holds an
-# output to it. #57 is not verified and not retired while any of the five is open.
+# output to it. #57 is not verified and not retired while any of the open
+# sentences above is open.
 #
 # SHARPENED, not narrowed, by head 1b. The closed profile the first sentence
 # names grew three rules after Codex found that head 1 checked a reference's

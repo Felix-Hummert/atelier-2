@@ -26,7 +26,7 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
@@ -34,6 +34,7 @@ _VERSION_TWELVE = 12
 _VERSION_THIRTEEN = 13
 _VERSION_FOURTEEN = 14
 _VERSION_FIFTEEN = 15
+_VERSION_SIXTEEN = 16
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -48,7 +49,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # adds the immutable evidence of one redeemed tool grant: which command the
 # attempt ran, how it ended, and what it wrote. V16 gives an agent completion a
 # home for the receipt hash its event preimage now binds, so a recomputed
-# terminal hash proves under which binding the attempt ran.
+# terminal hash proves under which binding the attempt ran. V17 admits
+# OUTPUT_SCHEMA_REFUSED as a second attempt failure code, so a schema-refused
+# output ends its attempt under its own name instead of borrowing the process
+# exit's or killing the driver.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -60,6 +64,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     14: "6cf56491322e716fce9be2310584ed2b92533961b8fda341bfcc317182432f0a",
     15: "375e81d1c8967053951d1be0cab19cee274e35272f364feae15ec3413eb3c9b9",
     16: "97605fb330cb6382d52a554d644015f631cccea3759c04c27de3ca5f1fea9c3a",
+    17: "2f3a11d0b4d67e375259ca732c7243c95d19fa763e03785b0bd4a83c1b1359d2",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -88,6 +93,10 @@ V14_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V15_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_FIFTEEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FIFTEEN],
+)
+V16_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_SIXTEEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_SIXTEEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -775,7 +784,8 @@ agent_attempts = sa.Table(
         "AND failure_code IS NULL AND receipt_hash IS NOT NULL) OR "
         "(state = 'FAILED' AND state_version >= 2 "
         "AND cancellation_command_id IS NULL "
-        "AND failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY' "
+        "AND failure_code IN "
+        "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED') "
         "AND receipt_hash IS NULL)"
     ),
 )
@@ -1483,7 +1493,8 @@ _PRODUCT_TRIGGERS = {
             (OLD.state = 'LAUNCH_ARMED'
              AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
              AND NEW.state = 'FAILED'
-             AND NEW.failure_code = 'PROCESS_EXITED_UNSUCCESSFULLY'
+             AND NEW.failure_code IN
+               ('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED')
              AND NEW.receipt_hash IS NULL
              AND NEW.cancellation_command_id IS NULL)
             OR
@@ -1868,7 +1879,7 @@ def _table_fingerprint(
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
-    if version in {SCHEMA_VERSION, _VERSION_FIFTEEN}:
+    if version in {SCHEMA_VERSION, _VERSION_SIXTEEN, _VERSION_FIFTEEN}:
         return PRODUCT_TABLE_NAMES
     if version == _VERSION_FOURTEEN:
         return PRODUCT_TABLE_NAMES - {tool_redemptions.name}
@@ -2155,7 +2166,62 @@ def _apply_v15_to_v16(connection: sqlite3.Connection) -> None:
         )
     for trigger in _RUN_EVENTS_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger])
-    _raise_declared_version(connection, _VERSION_FIFTEEN, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_FIFTEEN, _VERSION_SIXTEEN)
+
+
+_AGENT_ATTEMPTS_TRIGGERS = (
+    "agent_attempts_state_transition",
+    "agent_attempts_no_delete",
+)
+_PREDECESSOR_AGENT_ATTEMPTS = "agent_attempts_before_the_refusal_code"
+
+
+def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
+    """Admit the refusal's own failure code, and keep every stored row.
+
+    SQLite cannot widen a table CHECK in place, so the hop rebuilds
+    `agent_attempts` in the published order and copies each predecessor row
+    verbatim: every stored FAILED attempt already carries
+    `PROCESS_EXITED_UNSUCCESSFULLY`, which the widened constraint still admits,
+    and nothing is reinterpreted.
+
+    `tool_redemptions` declares a foreign key on this table by name, so the
+    rename out runs under `legacy_alter_table`: without it the rename would
+    rewrite the child's declaration to follow the parked name, and the child
+    would then reference a table this hop drops. The published fingerprint the
+    runner takes after the hop covers the child's declaration, so a rewrite
+    that slipped through would refuse the step rather than land.
+    """
+
+    if connection.execute(
+        "SELECT name FROM sqlite_master WHERE name=?",
+        (_PREDECESSOR_AGENT_ATTEMPTS,),
+    ).fetchone():
+        raise StoreMigrationRefused(
+            f"schema version {_VERSION_SIXTEEN} already has "
+            f"{_PREDECESSOR_AGENT_ATTEMPTS}; this command will not alter it"
+        )
+    for trigger in _AGENT_ATTEMPTS_TRIGGERS:
+        connection.execute(f"DROP TRIGGER {trigger}")
+    connection.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        connection.execute(
+            f"ALTER TABLE {agent_attempts.name} RENAME TO {_PREDECESSOR_AGENT_ATTEMPTS}"
+        )
+    finally:
+        connection.execute("PRAGMA legacy_alter_table=OFF")
+    connection.execute(
+        str(CreateTable(agent_attempts).compile(dialect=sqlite_dialect.dialect()))
+    )
+    carried = ", ".join(column.name for column in agent_attempts.columns)
+    connection.execute(
+        f"INSERT INTO {agent_attempts.name} ({carried}) "
+        f"SELECT {carried} FROM {_PREDECESSOR_AGENT_ATTEMPTS}"
+    )
+    connection.execute(f"DROP TABLE {_PREDECESSOR_AGENT_ATTEMPTS}")
+    for trigger in _AGENT_ATTEMPTS_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+    _raise_declared_version(connection, _VERSION_SIXTEEN, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2186,7 +2252,8 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
             _VERSION_FIFTEEN,
         ),
     ),
-    _SchemaMigrationStep(_VERSION_FIFTEEN, SCHEMA_VERSION, _apply_v15_to_v16),
+    _SchemaMigrationStep(_VERSION_FIFTEEN, _VERSION_SIXTEEN, _apply_v15_to_v16),
+    _SchemaMigrationStep(_VERSION_SIXTEEN, SCHEMA_VERSION, _apply_v16_to_v17),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
@@ -2283,7 +2350,12 @@ def migrate_store(database_path: Path) -> StoreMigrationReport:
     connection = sqlite3.connect(str(database_path.resolve()), timeout=0)
     try:
         connection.execute("PRAGMA busy_timeout=0")
-        connection.execute("PRAGMA foreign_keys=ON")
+        # Deliberately OFF for the hop, per SQLite's own table-rebuild recipe:
+        # with enforcement on, renaming a table out rewrites every child
+        # declaration to follow the parked name, which the rebuild then drops.
+        # Row-level integrity is not waived -- the explicit foreign_key_check
+        # before the commit refuses the whole hop on any violation.
+        connection.execute("PRAGMA foreign_keys=OFF")
         try:
             connection.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError as error:
@@ -2327,6 +2399,13 @@ def migrate_store(database_path: Path) -> StoreMigrationReport:
                     )
                 )
                 current = current_step.target_version
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                tables = ", ".join(sorted({str(row[0]) for row in violations}))
+                raise StoreMigrationRefused(
+                    f"the migrated store violates foreign keys in {tables}; "
+                    "this command will not alter it"
+                )
             connection.commit()
         except BaseException:
             connection.rollback()

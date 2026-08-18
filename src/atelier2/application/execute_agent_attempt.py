@@ -97,6 +97,20 @@ def execute_agent_attempt(
             outcome = store.complete_success(
                 execution, result, _redeemed(execution, lease, project)
             )
+            if isinstance(outcome, AgentAttemptFailed):
+                _LOG.warning(
+                    "Agent attempt %s on node %s of run %s produced an output "
+                    "its own schema refuses; the refusal is durably named.",
+                    execution.attempt_id.value,
+                    execution.request.node_id,
+                    execution.request.run_id.value,
+                    extra={
+                        "event": "agent_attempt_output_refused",
+                        "run_id": execution.request.run_id.value,
+                        "node_id": execution.request.node_id,
+                        "attempt_id": execution.attempt_id.value,
+                    },
+                )
         supervisor.finalize(execution)
         workspaces.release(execution.attempt_id)
     finally:

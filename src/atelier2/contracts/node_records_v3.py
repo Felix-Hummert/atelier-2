@@ -62,6 +62,28 @@ class PersistedReceiptDisposition(StrEnum):
     BLOCKED = "blocked"
 
 
+class NodeReceiptReason(StrEnum):
+    """The stable tokens a receipt's reason opens with.
+
+    ADR 0006 gives a receipt a disposition and a reason, and a reason a reader
+    can only match by prose is a reason nobody can query. The token is the part
+    this product owns; what a schema owner said about one value follows it and
+    belongs to that owner.
+    """
+
+    OUTPUT_ACCEPTED = "output-accepted"
+    OUTPUT_SCHEMA_REFUSED = "output-schema-refused"
+
+
+def node_receipt_reason(token: NodeReceiptReason, verdict: str | None = None) -> str:
+    """One receipt reason: the owned token, and the words of whoever judged.
+
+    Composed in one place so a reader can split on the same separator every
+    writer used, rather than on the habit of the writer that happened to run.
+    """
+    return token.value if verdict is None else f"{token.value}: {verdict}"
+
+
 class ProjectedDeliveryStatus(StrEnum):
     """What an input envelope carries, including the projected `stale` status."""
 
@@ -173,6 +195,48 @@ class RunInput:
 
 
 @dataclass(frozen=True)
+class MaterializedOrderMember:
+    """One order the run was started with, as the package member that binds it.
+
+    ADR 0006's member is `(name, source revision, selector, content hash)`, and
+    `ContextPackageMember` above carries the declared half because no owner
+    materializes a selector against its source. An order is the one member that
+    *is* material: the start stored its exact bytes, so the content hash the ADR
+    asks for is in hand before the package is written.
+
+    It is a separate member form rather than a filled-in `ContextPackageMember`
+    for the reason `RunInput` already gives: what pins an order is a schema
+    revision, and writing that where a source revision belongs would be a lie in
+    a preimage rather than a reuse.
+    """
+
+    name: str
+    schema_revision: PublishedRevisionHash
+    value_hash: Sha256Hash
+
+    @classmethod
+    def of(cls, order: RunInput) -> MaterializedOrderMember:
+        """The member form of one stored order, hashed as the store keeps it."""
+        return cls(order.name, order.schema_revision, order.value_hash)
+
+    def __post_init__(self) -> None:
+        if self.name == "":
+            raise ValueError("an order member names a nonempty order")
+        if not isinstance(self.schema_revision, PublishedRevisionHash):
+            raise TypeError("an order member names a typed schema revision")
+        if not isinstance(self.value_hash, Sha256Hash):
+            raise TypeError("an order member names a typed content hash")
+
+    def framed(self) -> bytes:
+        return frame(
+            "context-package-order-member/v3",
+            self.name.encode("utf-8"),
+            _ascii_hash(self.schema_revision),
+            _ascii_hash(self.value_hash),
+        )
+
+
+@dataclass(frozen=True)
 class DeliveredOutput:
     """One value a node produced, handed to the node whose author reads it.
 
@@ -204,6 +268,7 @@ def declared_context_package_of(
     run_id: RunId,
     node_id: str,
     members: tuple[ContextPackageMember, ...],
+    orders: tuple[MaterializedOrderMember, ...] = (),
 ) -> DeclaredContextPackage:
     """The declared context one node was assembled with, as its own container.
 
@@ -220,6 +285,12 @@ def declared_context_package_of(
     The container is what the hash covers, so the workflow revision and the node
     it was assembled for are part of it: the same members reached for another
     node are another package.
+
+    Orders are the half that is material. They carry their own frame beside the
+    declared members rather than inside it, because they answer a different
+    question -- what somebody supplied, against what the document pinned -- and a
+    reader that could not tell the two apart would read a content hash as a
+    selector nobody materialized.
     """
     _require_node_id(node_id)
     return DeclaredContextPackage(
@@ -231,6 +302,10 @@ def declared_context_package_of(
             frame(
                 "context-package-declared-members/v3",
                 *(member.framed() for member in members),
+            ),
+            frame(
+                "context-package-order-members/v3",
+                *(order.framed() for order in orders),
             ),
         )
     )
