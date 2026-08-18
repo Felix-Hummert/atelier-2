@@ -18,6 +18,7 @@ from atelier2.adapters.dbos.effect_store import (
     intent_snapshot_from_record,
     receipt_from_record,
 )
+from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     agent_receipts,
@@ -32,6 +33,7 @@ from atelier2.adapters.dbos.schema import (
     wait_answers,
     workflow_revisions,
 )
+from atelier2.adapters.dbos.workflow_ids import answer_workflow_id_for
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
@@ -1238,7 +1240,8 @@ def wait_answer_snapshot_from_record(record: Mapping[Any, Any]) -> WaitAnswerSna
     )
     if (
         answer.answer_hash.value != record["answer_hash"]
-        or answer.answer_workflow_id != record["answer_workflow_id"]
+        or answer_workflow_id_for(answer.node_execution_id)
+        != record["answer_workflow_id"]
     ):
         raise RunTransitionConflict("durable wait answer hashes or identity disagree")
     return WaitAnswerSnapshot(
@@ -1274,8 +1277,6 @@ class DbosWaitAnswerer:
         self._application_version = application_version
 
     def submit_result(self, request: SubmitWaitAnswerRequest) -> DurableAnswerResult:
-        from atelier2.adapters.dbos.workflow import ANSWER_WORKFLOW_NAME, QUEUE_NAME
-
         try:
             with self._engine.connect() as read_connection:
                 document = read_connection.scalar(
@@ -1345,6 +1346,7 @@ class DbosWaitAnswerer:
                         execution_id,
                         request.answer_bytes,
                     )
+                    answer_workflow_id = answer_workflow_id_for(execution_id)
                     inserted = connection.execute(
                         wait_answers.insert()
                         .prefix_with("OR IGNORE")
@@ -1355,7 +1357,7 @@ class DbosWaitAnswerer:
                             node_execution_id=answer.node_execution_id.value,
                             answer_bytes=answer.answer_bytes,
                             answer_hash=answer.answer_hash.value,
-                            answer_workflow_id=answer.answer_workflow_id,
+                            answer_workflow_id=answer_workflow_id,
                             state=WaitAnswerState.PENDING.value,
                             state_version=0,
                         )
@@ -1407,7 +1409,7 @@ class DbosWaitAnswerer:
                     options: EnqueueOptions = {
                         "workflow_name": ANSWER_WORKFLOW_NAME,
                         "queue_name": QUEUE_NAME,
-                        "workflow_id": answer.answer_workflow_id,
+                        "workflow_id": answer_workflow_id,
                         "app_version": self._application_version,
                     }
                     client.enqueue_in_transaction(

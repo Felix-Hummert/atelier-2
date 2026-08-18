@@ -10,9 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy import exc
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos.advancer import effect_workflow_id_for
 from atelier2.adapters.dbos.effect_store import commit_resolution
-from atelier2.adapters.dbos.reconciler import reconcile_workflow_id_for
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
@@ -24,6 +22,10 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.dbos.workflow_ids import (
+    effect_workflow_id_for,
+    reconcile_workflow_id_for,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.effects import (
     AdapterRevision,

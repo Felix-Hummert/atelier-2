@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 import sqlalchemy as sa
@@ -16,7 +15,6 @@ from atelier2.contracts.effects import (
     EffectIntentSnapshot,
     EffectIntentState,
     EffectIntentStateVersion,
-    LogicalEffectKey,
 )
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -28,8 +26,6 @@ from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 
-EFFECT_WORKFLOW_ID_PREFIX = "atelier2-effect-"
-
 
 class EffectIntentIdentityConflict(RuntimeError):
     """A logical effect key was retried with different immutable input."""
@@ -37,13 +33,6 @@ class EffectIntentIdentityConflict(RuntimeError):
 
 class RunEffectConflict(RuntimeError):
     """A V1 run cannot prepare this effect against its durable run binding."""
-
-
-def effect_workflow_id_for(logical_key: LogicalEffectKey) -> str:
-    return (
-        EFFECT_WORKFLOW_ID_PREFIX
-        + hashlib.sha256(logical_key.value.encode()).hexdigest()
-    )
 
 
 def graph_action_intent(
