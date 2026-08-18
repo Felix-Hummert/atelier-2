@@ -1,9 +1,11 @@
-"""End every STARTED run whose open node path has already failed.
+"""End every STARTED run whose open node path can no longer continue.
 
-#302 stops attempts whose driver is gone. This is the half that item left
-ownerless: the attempt is already FAILED, the run still says STARTED, and
-nothing will ever move it. A serve start walks those rows and lifts the
-node's ending onto the run — the same reason, one level up.
+#302 stops attempts whose driver is gone and leaves them INTERRUPTED.
+#339 lifts a leftover FAILED attempt onto the run. This is the remaining
+half of that inventory: the attempt is already INTERRUPTED under
+`atelier2-driver-lost`, the run still says STARTED, and nothing will ever
+move it. A serve start walks those rows and lifts the existing ending onto
+the run — the same reason, one level up. A V1 row stays out.
 """
 
 from __future__ import annotations

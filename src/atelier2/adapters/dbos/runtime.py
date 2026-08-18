@@ -596,11 +596,12 @@ class _DbosProcessOwner:
 
     @staticmethod
     def _converge_uncontinuable_runs(bound: _BoundRuntime) -> None:
-        """End STARTED runs whose current node has already failed.
+        """End STARTED runs whose current node can no longer continue.
 
         After driverless-attempt convergence: that path stops armed attempts
-        whose driver died. This path is the leftover half — the attempt is
-        already FAILED, the run still says STARTED, and nothing will move it.
+        whose driver died and leaves them INTERRUPTED. This path is the
+        leftover half — the attempt is already FAILED or INTERRUPTED, the run
+        still says STARTED, and nothing will move it.
         """
 
         converge_uncontinuable_runs(DbosUncontinuableRunStore(bound.engine))
