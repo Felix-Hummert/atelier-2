@@ -4,6 +4,7 @@ import logging
 
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
+    ProcessExitSignature,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
@@ -92,7 +93,15 @@ def execute_agent_attempt(
                     "attempt_id": execution.attempt_id.value,
                 },
             )
-            outcome = store.complete_known_failure(execution)
+            # The completion, not the executor's verdict, carries how the child
+            # ended: an executor answers whether it could use the process, and
+            # only supervision saw the exit code and the standard error that
+            # says why. Composing the durable naming here keeps that one reading
+            # of one process, rather than asking every provider to repeat it.
+            outcome = store.complete_known_failure(
+                execution,
+                ProcessExitSignature(completion.return_code, completion.standard_error),
+            )
         else:
             outcome = store.complete_success(
                 execution, result, _redeemed(execution, lease, project)

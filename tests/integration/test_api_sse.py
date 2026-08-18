@@ -78,6 +78,7 @@ from tests.scenarios.agents import (
     agent_attempt_execution,
     agent_scratch_root,
     commit_configured_agent,
+    process_exit,
 )
 from tests.scenarios.api import (
     SSE_COMPLETE_HISTORY,
@@ -266,7 +267,7 @@ def test_agent_failed_stream_is_bounded_and_secret_free(
         store = DbosAgentAttemptStore(runtime.engine)
         store.prepare(agent_attempt_execution(request))
         store.claim(agent_attempt_execution(request))
-        store.complete_known_failure(agent_attempt_execution(request))
+        store.complete_known_failure(agent_attempt_execution(request), process_exit())
         queries = durable_queries(runtime.engine)
 
         found = queries.get_run(request.run_id)

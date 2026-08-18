@@ -54,6 +54,7 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import (
+    MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
@@ -61,6 +62,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     AgentAttemptState,
     CancelAgentAttemptRequest,
+    ProcessExitSignature,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -775,3 +777,123 @@ def test_the_start_persists_the_request_and_package_the_receipt_will_bind(
         )
     assert request["node_execution_id"] == execution.request.node_execution_id.value
     assert request["context_package_hash"] in package_hashes
+
+
+@pytest.mark.proves("a-dead-process-ends-its-attempt-durably-named")
+def test_a_process_that_died_leaves_a_failed_receipt_naming_what_it_left(
+    runtime: DbosRuntime,
+) -> None:
+    """The live class of `desk/review-pr313-b`: a provider dies, nobody can read why.
+
+    Everything a refused answer leaves was already durable; a dead process left
+    the attempt row and the event, which say *that* it failed and never *why* --
+    the provider's own last words lived in a log line and nowhere else. Now the
+    same seam keeps them: a `failed` `node-receipt/v3` under the process token,
+    carrying the exit and the standard error, bound to the request the start
+    persisted. The `AGENT_FAILED` event deliberately does not grow: it stays the
+    bare code, because the event stream is a surface anybody may subscribe to.
+    """
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_known_failure(
+        execution, ProcessExitSignature(1, b"grok: prompt file rejected")
+    )
+
+    assert isinstance(outcome, AgentAttemptFailed), outcome
+    assert (
+        outcome.attempt.failure_code
+        is AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+    )
+    assert durable_answer(runtime) == (
+        0,
+        1,
+        RunState.STARTED.value,
+        AgentAttemptState.FAILED.value,
+    )
+    with runtime.engine.connect() as connection:
+        event = (
+            connection.execute(
+                sa.select(run_events.c.event_kind, run_events.c.payload).where(
+                    run_events.c.run_id == RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        receipt = (
+            connection.execute(
+                sa.select(node_receipts_v3).where(
+                    node_receipts_v3.c.node_execution_id
+                    == execution.request.node_execution_id.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        request = (
+            connection.execute(sa.select(node_execution_requests_v3)).mappings().one()
+        )
+    assert event["event_kind"] == RunEventKind.AGENT_FAILED.value
+    assert bytes(
+        event["payload"]
+    ) == AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value.encode("ascii")
+    assert receipt["disposition"] == "failed"
+    reason = str(receipt["reason"])
+    assert reason.startswith(
+        f"{NodeReceiptReason.PROCESS_EXITED_UNSUCCESSFULLY.value}: "
+    )
+    assert "exited with code 1" in reason
+    assert "grok: prompt file rejected" in reason
+    assert receipt["request_hash"] == request["request_hash"]
+    assert receipt["context_package_hash"] == request["context_package_hash"]
+
+
+@pytest.mark.proves("a-dead-process-ends-its-attempt-durably-named")
+def test_the_dead_nodes_detail_names_what_supervision_saw(
+    runtime: DbosRuntime,
+) -> None:
+    """The operator's click answers the question the code alone never could.
+
+    A process failure has no schema owner to quote, so the node detail's reason
+    is the only voice this ending has -- and it is read from the store rather
+    than recomputed, because nothing can recompute what a process said as it
+    died.
+    """
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.complete_known_failure(execution, ProcessExitSignature(-9, b"out of memory"))
+
+    found = durable_queries(runtime.engine).get_node_detail(RUN, NODE)
+
+    assert isinstance(found, NodeDetailFound), found
+    refusal = found.detail.refusal
+    assert refusal is not None
+    assert refusal.startswith(
+        f"{NodeReceiptReason.PROCESS_EXITED_UNSUCCESSFULLY.value}: "
+    )
+    assert "killed by signal 9" in refusal
+    assert "out of memory" in refusal
+
+
+def test_only_a_bounded_tail_of_what_the_process_said_becomes_durable(
+    runtime: DbosRuntime,
+) -> None:
+    """A talkative provider cannot turn the receipt table into its log.
+
+    Supervision already collects far more standard error than a receipt should
+    hold, and the words that explain an ending are the last ones -- so the
+    stored reason keeps the tail under its own bound and the opening of a long
+    complaint never reaches the store at all.
+    """
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    said = b"opening-line " + b"z" * 100_000 + b" closing-line"
+
+    store.complete_known_failure(execution, ProcessExitSignature(1, said))
+
+    with runtime.engine.connect() as connection:
+        reason = str(connection.scalar(sa.select(node_receipts_v3.c.reason)))
+    assert "closing-line" in reason
+    assert "opening-line" not in reason
+    assert len(reason) < 2 * MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES
