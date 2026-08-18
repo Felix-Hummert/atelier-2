@@ -355,16 +355,18 @@ the same transaction as the agent receipt. A refused answer ends its attempt
 `FAILED` under `OUTPUT_SCHEMA_REFUSED` with an `AGENT_FAILED` event, and the
 `failed` `node-receipt/v3` carries the schema owner's own words as its reason
 (`output-schema-refused: ...`) and, on that same family, the schema revision
-and the hash of the exact decoded bytes the judgment used; a success
-additionally keeps the exact produced bytes as `node-artifact/v3` beside its
-`succeeded` receipt, and that receipt names the same identity. An older
-receipt written before those fields existed stays readable: the identity is
-honestly absent, not a refusal and not corruption. Claude, Codex and Grok
-each take a decoded answer through that same success-write seam; bytes the
-schema refuses end under the same token for all three. The run stands on
-the node that produced the refused answer, the node detail reads the stored
-reason back, and a run started before this writer existed stays honestly absent
-in those tables.
+and the hash of the exact decoded bytes the judgment used; the run itself ends
+`FAILED` under that same reason — the node's ending lifted one level, so the
+studio no longer lists it as Running. A success additionally keeps the exact
+produced bytes as `node-artifact/v3` beside its `succeeded` receipt, and that
+receipt names the same identity. An older receipt written before those fields
+existed stays readable: the identity is honestly absent, not a refusal and not
+corruption. Claude, Codex and Grok each take a decoded answer through that
+same success-write seam; bytes the schema refuses end under the same token
+for all three. The node detail reads the stored reason back, and a run started
+before this writer existed stays honestly absent in those tables. A store that
+still holds the old STARTED-after-failure shape is ended the same way at the
+next serve start.
 
 The other way an attempt ends badly now says as much. A provider process that
 leaves no usable answer ends `FAILED` under `PROCESS_EXITED_UNSUCCESSFULLY` on
@@ -448,7 +450,13 @@ decimal text only an `integer` wait can honestly produce.
 Public references are transport identifiers, not new domain identities, and
 retries report whether a command was newly accepted or already existed without
 duplicating its durable
-write or wake-up. [ADR 0003](decisions/0003-http-api.md) owns the API and resume
+write or wake-up. The API also describes the one body it takes as bytes: a
+guessed path is refused with the exact location of the OpenAPI document, and the
+workflow publication body there carries the shape of the document itself —
+derived from the models the publication reads it against, so no second
+description can drift. That shape decides the form; the rules only a whole
+document answers keep their named refusals at publication.
+[ADR 0003](decisions/0003-http-api.md) owns the API and resume
 contract.
 
 A narrow local cockpit can list runs, publish and start a workflow from `/new`,

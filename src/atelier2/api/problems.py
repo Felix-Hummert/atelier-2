@@ -28,7 +28,22 @@ the wire.
 """
 
 PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:"
+ROUTE_NOT_FOUND_ACTION = "Use a path described by this API's OpenAPI document"
+"""What a caller who guessed a path is told to read instead.
+
+A consumer holding nothing but a base URL meets this refusal first, so it is
+where the API says where its own description lives. The sentence is written
+once; where the document is served is the application's decision, and
+`route_not_found_detail` adds it rather than restating it here.
+"""
+
 _LOG = logging.getLogger("atelier2")
+
+
+def route_not_found_detail(openapi_document_path: str) -> str:
+    """The refusal a guessed path earns, naming the document that lists them."""
+
+    return f"{ROUTE_NOT_FOUND_ACTION} at {openapi_document_path}."
 
 
 def schema_document_problem_code(refusal: SchemaDocumentRefusal) -> str:
@@ -337,7 +352,7 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Reload the run before issuing another accountable command.",
     ),
     "route-not-found": ProblemDefinition(
-        404, "Route not found", "Use a path described by this API's OpenAPI document."
+        404, "Route not found", ROUTE_NOT_FOUND_ACTION + "."
     ),
     "method-not-allowed": ProblemDefinition(
         405, "Method not allowed", "Use the HTTP method described for this path."
@@ -406,7 +421,9 @@ def invalid_fields_from_validation(
     return tuple(fields)
 
 
-def install_problem_handlers(app: FastAPI, *, versioned_run_start_path: str) -> None:
+def install_problem_handlers(
+    app: FastAPI, *, versioned_run_start_path: str, openapi_document_path: str
+) -> None:
     @app.exception_handler(ApiProblem)
     async def typed_problem(_request: Request, error: ApiProblem) -> JSONResponse:
         return problem_response(error.code, error.detail, error.invalid_fields)
@@ -431,7 +448,9 @@ def install_problem_handlers(app: FastAPI, *, versioned_run_start_path: str) -> 
     @app.exception_handler(HTTPException)
     async def http_error(_request: Request, error: HTTPException) -> JSONResponse:
         if error.status_code == HTTPStatus.NOT_FOUND:
-            return problem_response("route-not-found")
+            return problem_response(
+                "route-not-found", route_not_found_detail(openapi_document_path)
+            )
         if error.status_code == HTTPStatus.METHOD_NOT_ALLOWED:
             return problem_response("method-not-allowed")
         return problem_response("internal-error")

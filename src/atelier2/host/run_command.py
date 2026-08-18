@@ -404,7 +404,10 @@ def _run_published_revision(
     reference = started.public_run_reference
     history = _read_history(api, reference)
     ended = _decoded(_run_resource, _get(f"{api}{RUN_PATH}/{reference}"), "a run")
-    if ended.state != RunState.COMPLETED or ended.terminal_hash is None:
+    if (
+        ended.state not in {RunState.COMPLETED, RunState.FAILED}
+        or ended.terminal_hash is None
+    ):
         raise RunUnfinished(
             f"the event history of run {reference} ended while the run was still "
             f"{ended.state}"
@@ -756,7 +759,7 @@ def _why_the_run_stops(
     )
     return RunNeedsAnotherActor(
         f"agent attempt {event.attempt_id} of node {event.node_id} {named}; "
-        "only an operator replacement continues this run"
+        "this run has ended; a new run continues the work"
     )
 
 

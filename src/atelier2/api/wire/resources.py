@@ -738,7 +738,9 @@ class RunResourceV2(ApiModel):
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
-    state: Literal["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED"]
+    state: Literal[
+        "STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED", "FAILED"
+    ]
     current_node: NodeResourceV2
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     agent_attempts: tuple[AgentAttemptResourceV2, ...] = Field(
@@ -768,6 +770,12 @@ class RunResourceV2(ApiModel):
                 and isinstance(self.waiting, WaitingReconciliationResourceV2)
                 and self.waiting.node_id == self.current_node.node_id
                 and self.terminal_hash is None
+            )
+        elif self.state == "FAILED":
+            valid = (
+                isinstance(self.current_node, AgentNodeResourceV2)
+                and isinstance(self.waiting, NoWaitingResourceV2)
+                and self.terminal_hash is not None
             )
         else:
             valid = (
@@ -818,7 +826,7 @@ class RunResourceV3(ApiModel):
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
-    state: Literal["STARTED", "WAITING_INPUT", "COMPLETED"]
+    state: Literal["STARTED", "WAITING_INPUT", "COMPLETED", "FAILED"]
     current_node_id: str = Field(min_length=1)
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
@@ -827,7 +835,7 @@ class RunResourceV3(ApiModel):
     @model_validator(mode="after")
     def validate_state_shape(self) -> RunResourceV3:
         """A terminal hash exists exactly when the run has ended, and never before."""
-        if (self.state == "COMPLETED") != (self.terminal_hash is not None):
+        if (self.state in {"COMPLETED", "FAILED"}) != (self.terminal_hash is not None):
             raise ValueError("V3 run state and terminal hash disagree")
         return self
 

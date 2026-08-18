@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+import yaml
 from fastapi.testclient import TestClient
 from httpx import Response
 
@@ -30,7 +31,13 @@ from atelier2.api.references import (
     encode_canonical_base64,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from tests.scenarios.api import api_limits, durable_queries, event_poll_backoff
+from tests.scenarios.api import (
+    api_limits,
+    discovered_openapi_document,
+    durable_queries,
+    event_poll_backoff,
+    published_workflow_grammar,
+)
 from tests.scenarios.runtime import exact_output_runtime
 from tests.scenarios.workflows import (
     V3_CONTROL_EDGE_LINE,
@@ -38,6 +45,8 @@ from tests.scenarios.workflows import (
     V3_DOCUMENT_NAME,
     V3_NODE_COUNT,
 )
+
+GUESSED_PATH = "/a-path-a-first-contact-guesses"
 
 V1_DOCUMENT = b"""format_version: 1
 start: agent
@@ -147,6 +156,33 @@ nodes:
       - name: result
         schema: {ref: any-json, revision: "%s"}
 """ % (b"e" * 64)
+
+
+@pytest.mark.proves("a-document-written-against-the-published-shape-is-published")
+def test_a_document_written_against_the_published_shape_is_taken_by_the_door(
+    runtime: DbosRuntime,
+) -> None:
+    """First contact, end to end: a refusal, a description, a stored revision.
+
+    Every step is an answer this API gave -- where its description is, which
+    body the publication takes, and what shape that body must have. Until the
+    description existed, this last step was the one thing a consumer could only
+    learn from the repository.
+    """
+    client = _client(runtime)
+    described = discovered_openapi_document(client, GUESSED_PATH)
+
+    published_workflow_grammar(described).validate(
+        yaml.safe_load(EXECUTABLE_V3_DOCUMENT)
+    )
+    created = _publish(client, EXECUTABLE_V3_DOCUMENT)
+
+    assert created.status_code == 201
+    assert (
+        created.json()["revision_hash"]
+        == hashlib.sha256(EXECUTABLE_V3_DOCUMENT).hexdigest()
+    )
+    assert created.json()["graph"]["executable"] is True
 
 
 @pytest.mark.proves("a-revision-says-which-form-it-waits-for-not-which-version-it-is")

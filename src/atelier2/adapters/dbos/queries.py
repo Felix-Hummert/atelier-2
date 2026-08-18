@@ -272,13 +272,13 @@ def _run_ending_event_predicate(
 
     A V3 line ends on its **agent** sink -- #194 H1b lifted the terminal
     condition off the subworkflow node onto the run -- and there neither half
-    identifies it alone. The kind cannot, because every agent node completes with
-    the same one. The node cannot either, and that is the less obvious half: an
-    attempt event is written at the node the run is standing on and advances the
-    run's head without moving it, so a healthy running history would have its
-    last event sitting on the current node and be read as an ending. What ends a
-    V3 run is the **completion** of the node it stands on, so both halves are
-    asked.
+    identifies it alone. The kind cannot, because every agent node completes or
+    fails with the same pair. The node cannot either, and that is the less
+    obvious half: an attempt event is written at the node the run is standing
+    on and advances the run's head without moving it, so a healthy running
+    history would have its last event sitting on the current node and be read
+    as an ending. What ends a V3 run is the **completion or failure** of the
+    node it stands on, so both halves are asked.
 
     Asking the run row rather than parsing its document keeps this cheap: it is a
     pre-flight before stream headers and a check beside a page read, never a
@@ -286,12 +286,17 @@ def _run_ending_event_predicate(
     """
 
     if workflow_format_version is WorkflowFormatVersion.V3:
-        completed = RunEventKind.AGENT_COMPLETED.value
-        return lambda endpoint: (
-            endpoint[0] == completed and endpoint[1] == current_node_id
-        )
+        ending = {
+            RunEventKind.AGENT_COMPLETED.value,
+            RunEventKind.AGENT_FAILED.value,
+        }
+        return lambda endpoint: endpoint[0] in ending and endpoint[1] == current_node_id
     terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value
-    return lambda endpoint: endpoint[0] == terminal_kind
+    failed = RunEventKind.AGENT_FAILED.value
+    return lambda endpoint: (
+        endpoint[0] == terminal_kind
+        or (endpoint[0] == failed and endpoint[1] == current_node_id)
+    )
 
 
 def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
@@ -1226,7 +1231,10 @@ class DbosQueries:
                 if not isinstance(run, (RunV2, RunV3)):
                     raise RunTransitionConflict("agent node belongs to a V1 run")
                 records_for_execution = attempt_records.get(execution.value, [])
-                if records_for_execution and run.state is not RunState.COMPLETED:
+                if records_for_execution and run.state not in {
+                    RunState.COMPLETED,
+                    RunState.FAILED,
+                }:
                     graph = graphs[run.revision_hash]
                     if not isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3)):
                         raise RunTransitionConflict("bound run has a V1 workflow graph")
@@ -1273,7 +1281,10 @@ class DbosQueries:
                 head = int(record["last_event_sequence"])
                 if after_sequence > head:
                     return CursorAhead()
-                terminal = str(record["state"]) == RunState.COMPLETED.value
+                terminal = str(record["state"]) in {
+                    RunState.COMPLETED.value,
+                    RunState.FAILED.value,
+                }
                 if head == 0:
                     first_sequence = connection.scalar(
                         sa.select(run_events.c.event_sequence)
@@ -1392,7 +1403,10 @@ class DbosQueries:
                         (str(record["event_kind"]), str(record["node_id"]))
                     )
                 )
-                terminal = str(run_record["state"]) == RunState.COMPLETED.value
+                terminal = str(run_record["state"]) in {
+                    RunState.COMPLETED.value,
+                    RunState.FAILED.value,
+                }
                 reached_head = bool(sequences) and sequences[-1] == head
                 if terminal_sequences not in ((), (head,)) or (
                     reached_head and ((terminal_sequences == (head,)) != terminal)

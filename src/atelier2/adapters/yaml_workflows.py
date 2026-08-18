@@ -25,6 +25,7 @@ from yaml.tokens import (
     Token,
 )
 
+from atelier2.contracts.workflow_documents import WORKFLOW_DOCUMENT_FORMATS
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentInvalid,
@@ -32,14 +33,9 @@ from atelier2.contracts.workflow_refusals import (
     WorkflowRefusal,
     WorkflowRefusalReason,
 )
-from atelier2.contracts.workflows import (
-    WorkflowGraph,
-    WorkflowGraphV2,
-)
 from atelier2.contracts.workflows_v3 import (
     AnyWorkflowDocument,
     WorkflowGraphV3,
-    validate_workflow_graph_v3,
     what_a_v3_document_still_waits_for,
 )
 
@@ -160,18 +156,16 @@ def parse_workflow_document(document: bytes) -> AnyWorkflowDocument:
                 "format_version",
                 "workflow format version must be a strict integer",
             )
-        version = loaded["format_version"]
-        if version == WorkflowFormatVersion.V1:
-            return WorkflowGraph.model_validate(loaded, strict=True)
-        if version == WorkflowFormatVersion.V2:
-            return WorkflowGraphV2.model_validate(loaded, strict=True)
-        if version == WorkflowFormatVersion.V3:
-            return validate_workflow_graph_v3(loaded)
-        raise _refused(
-            WorkflowRefusalReason.INVALID_VALUE,
-            "format_version",
-            f"workflow format version {version} is unsupported",
-        )
+        declared = loaded["format_version"]
+        try:
+            version = WorkflowFormatVersion(declared)
+        except ValueError as error:
+            raise _refused(
+                WorkflowRefusalReason.INVALID_VALUE,
+                "format_version",
+                f"workflow format version {declared} is unsupported",
+            ) from error
+        return WORKFLOW_DOCUMENT_FORMATS[version].read(loaded)
     except InvalidWorkflowDocument:
         raise
     except WorkflowDocumentRefused as refused:

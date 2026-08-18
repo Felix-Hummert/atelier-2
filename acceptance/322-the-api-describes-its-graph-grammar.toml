@@ -1,0 +1,42 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/322"
+
+# THE ONE THING THIS API TOOK AS OPAQUE BYTES NOW HAS A PUBLISHED SHAPE.
+#
+# Every route, problem and event frame was already described; the workflow
+# document was not. `POST /workflow-revisions` declared its body as
+# `{"type": "string", "format": "binary"}`, so what makes a document valid --
+# node kinds, `depends_on`, `from: {node, output}` and `graph_input` handovers,
+# wait nodes, the schema a declared output is bound to, `format_version` -- was
+# readable only in the repository. This head derives that shape from the models
+# the publication itself reads a document against, and hangs it on the body it
+# describes. There is no second, hand-kept description to drift.
+#
+# A shape decides the form, not what only the whole document answers: that every
+# named node, output and graph input resolves, that no cycle closes, that a join
+# is declared where several edges meet. Those keep their own named refusals at
+# publication, and the published description says so rather than implying a
+# completeness it does not have.
+#
+# What is deliberately absent, and why:
+#
+#   - THE ROUND-TRIP VOCABULARY (finding 2 of the #85 measurement). Whether every
+#     answer carries the words the next request is written with is a second head
+#     of the same story and stays open on #322.
+#   - A GRAMMAR ROUTE OF ITS OWN. The OpenAPI document is already the door a
+#     refusal points at; a second endpoint answering the same question would be a
+#     second owner to keep alive.
+#   - THE SHAPE OF A PUBLISHED SCHEMA REVISION. `POST /schema-revisions` still
+#     declares opaque bytes. Its profile has its own owner and its own wish.
+
+[[sentence]]
+id = "the-graph-grammar-is-reachable-from-the-base-url"
+text = "A consumer holding only a base URL is refused with the exact path of this API's OpenAPI document, and following that path to the publication body leads to a description of the workflow document naming every format version a document may declare."
+
+[[sentence]]
+id = "the-published-shape-is-the-grammar-the-publication-reads"
+text = "The published shape accepts exactly the documents the publication parser accepts and rejects exactly what it refuses, across format versions, node kinds, retired keys and handover forms; where the shape is silent because only the whole document answers, the publication still refuses by the name of the rule."
+
+[[sentence]]
+id = "a-document-written-against-the-published-shape-is-published"
+text = "A document a consumer wrote against the published shape and checked against it is accepted by the publication door and stored under its exact-bytes hash."

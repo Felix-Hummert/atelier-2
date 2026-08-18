@@ -1,0 +1,14 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/332"
+
+# A STARTED run whose current node has already failed is the lie the studio
+# listed as Running. The node's reason is the run's reason — no new failure
+# word. Inventory written before the lift ends the same way at serve start.
+
+[[sentence]]
+id = "an-uncontinuable-run-ends-under-the-node-reason"
+text = "A V3 run whose current node has terminally failed, with no replacement still in flight, ends as FAILED under that node's own reason rather than standing STARTED."
+
+[[sentence]]
+id = "a-serve-start-ends-uncontinuable-inventory"
+text = "A serve start ends every leftover STARTED run whose current node has already failed, under the events that run already has, so the studio lists those rows as Failed rather than Running."

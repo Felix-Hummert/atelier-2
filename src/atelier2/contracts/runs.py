@@ -39,6 +39,12 @@ class RunState(StrEnum):
     WAITING_RECONCILIATION = "WAITING_RECONCILIATION"
     WAITING_INPUT = "WAITING_INPUT"
     COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+TERMINAL_RUN_STATES = frozenset({RunState.COMPLETED, RunState.FAILED})
+"""The two ways a run ends. Success keeps `COMPLETED`; an uncontinuable
+failure lifts the node's own ending rather than inventing a third word."""
 
 
 @dataclass(frozen=True)
@@ -63,8 +69,8 @@ class Run:
             raise ValueError("current_node_id must be nonempty")
         if state_version < 0 or last_event_sequence < 0:
             raise ValueError("run versions and cursors must be nonnegative")
-        if (state is RunState.COMPLETED) != (terminal_hash is not None):
-            raise ValueError("only a completed run has a terminal hash")
+        if (state in TERMINAL_RUN_STATES) != (terminal_hash is not None):
+            raise ValueError("only an ended run has a terminal hash")
 
     def __post_init__(self) -> None:
         self.validate_head(

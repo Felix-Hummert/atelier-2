@@ -9,12 +9,13 @@ import type { AnyRun } from "../api/client";
  * run that silently waits for nobody. A version 3 run adds no state of its own --
  * it can only be started or completed -- so grouping it needed no new word.
  */
-export type RunStanding = "running" | "waiting" | "done";
+export type RunStanding = "running" | "waiting" | "failed" | "done";
 
 const standings: Record<AnyRun["state"], RunStanding> = {
   STARTED: "running",
   WAITING_INPUT: "waiting",
   WAITING_RECONCILIATION: "waiting",
+  FAILED: "failed",
   COMPLETED: "done"
 };
 
@@ -23,6 +24,7 @@ const humanMoves: Record<AnyRun["state"], string | null> = {
   STARTED: null,
   WAITING_INPUT: "Answer",
   WAITING_RECONCILIATION: "Reconcile",
+  FAILED: null,
   COMPLETED: null
 };
 
@@ -30,16 +32,23 @@ const humanMoves: Record<AnyRun["state"], string | null> = {
 export const standingWords: Record<RunStanding, string> = {
   running: "Running",
   waiting: "Waiting for you",
+  failed: "Failed",
   done: "Done"
 };
 
 /** The order the standings read in: what moves, what needs you, what is behind you. */
-export const standingOrder: readonly RunStanding[] = ["running", "waiting", "done"];
+export const standingOrder: readonly RunStanding[] = [
+  "running",
+  "waiting",
+  "failed",
+  "done"
+];
 
 /** The shape that carries the standing without colour, for eyes that read no colour. */
 export const standingMarks: Record<RunStanding, string> = {
   running: "▲",
   waiting: "⬢",
+  failed: "◇",
   done: "●"
 };
 
