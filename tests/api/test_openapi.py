@@ -67,6 +67,7 @@ def rendered_document(document: dict[str, Any]) -> str:
 
 
 NODE_DETAIL_PATH = API_PREFIX + "/runs/{public_ref}/nodes/{node_id}"
+RECEIPT_PATH = API_PREFIX + "/runs/{public_ref}/receipt"
 
 EXPECTED_PATHS = {
     API_PREFIX + "/health",
@@ -82,6 +83,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
     NODE_DETAIL_PATH,
+    RECEIPT_PATH,
     API_PREFIX + "/runs/{public_ref}/answers",
     API_PREFIX + "/runs/{public_ref}/reconciliations",
     CANCELLATION_PATH,
@@ -94,6 +96,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         "POST",
         API_PREFIX + "/auth-profile-revisions",
         "publish_auth_profile_revision_route",
+    ),
+    (
+        "GET",
+        API_PREFIX + "/auth-profile-revisions",
+        "list_auth_profile_revisions_route",
     ),
     (
         "POST",
@@ -137,6 +144,7 @@ EXPECTED_ROUTE_SEQUENCE = (
     ("GET", API_PREFIX + "/runs", "list_runs"),
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
     ("GET", NODE_DETAIL_PATH, "get_node_detail_route"),
+    ("GET", RECEIPT_PATH, "get_run_receipt_route"),
     ("POST", CANCELLATION_PATH, "cancel_agent_attempt_route"),
     ("POST", API_PREFIX + "/runs/{public_ref}/answers", "answer_run_route"),
     (
@@ -150,6 +158,7 @@ EXPECTED_ROUTE_SEQUENCE = (
 EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/health", "get"): {"200"},
     (API_PREFIX + "/auth-profile-revisions", "post"): {"200", "201"},
+    (API_PREFIX + "/auth-profile-revisions", "get"): {"200"},
     (API_PREFIX + "/agent-configuration-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-configuration-revisions", "get"): {"200"},
     (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
@@ -159,6 +168,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/runs", "post"): {"200", "201"},
     (API_PREFIX + "/runs", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
+    (RECEIPT_PATH, "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}/answers", "post"): {"200", "202"},
     (API_PREFIX + "/runs/{public_ref}/reconciliations", "post"): {"200", "202"},
     (CANCELLATION_PATH, "post"): {"200", "202"},
@@ -217,12 +227,9 @@ def test_no_endpoint_or_dependency_sends_the_request_path_through_a_thread() -> 
 def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
-    The artefact carries three regenerations: `invalid-request` grew field
-    pointers and `GET /runs` grew a `state` filter, a budget revision grew its
-    own publication route, and a format-3 run learned to wait — its resource
-    gained the WAITING_INPUT state and its event union the two wait kinds.
-    Those regenerations are the wire changes their heads declare; refreshing
-    the artefact alongside a refactor is what this test still refuses.
+    The artefact carries the declared wire changes of the heads that regenerated
+    it. This head adds `GET /auth-profile-revisions` and `GET /runs/{ref}/receipt`.
+    Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()

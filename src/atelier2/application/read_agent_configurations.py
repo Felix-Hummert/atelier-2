@@ -15,10 +15,14 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionHash,
     AuthProfileRevision,
+    AuthProfileRevisionHash,
 )
 from atelier2.ports.agent_configurations import AgentConfigurationCatalog
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionPage as PortAgentConfigurationRevisionPage,
+)
+from atelier2.ports.agent_configurations import (
+    AuthProfileRevisionPage as PortAuthProfileRevisionPage,
 )
 from atelier2.ports.agent_configurations import (
     CatalogReadUnavailable as PortCatalogReadUnavailable,
@@ -39,6 +43,17 @@ type ListAgentConfigurationRevisionsResult = (
 )
 
 
+@dataclass(frozen=True)
+class AuthProfileRevisionsListed:
+    items: tuple[AuthProfileRevision, ...]
+    next_after: AuthProfileRevisionHash | None
+
+
+type ListAuthProfileRevisionsResult = (
+    AuthProfileRevisionsListed | ReadUnavailable | DurableStateCorrupt
+)
+
+
 def list_agent_configuration_revisions(
     after: AgentConfigurationRevisionHash | None,
     limit: int,
@@ -47,6 +62,22 @@ def list_agent_configuration_revisions(
     match catalog.list_agent_configuration_revisions(after, limit):
         case PortAgentConfigurationRevisionPage(items, next_after):
             return AgentConfigurationRevisionsListed(items, next_after)
+        case PortCatalogReadUnavailable(detail):
+            return ReadUnavailable(detail)
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def list_auth_profile_revisions(
+    after: AuthProfileRevisionHash | None,
+    limit: int,
+    catalog: AgentConfigurationCatalog,
+) -> ListAuthProfileRevisionsResult:
+    match catalog.list_auth_profile_revisions(after, limit):
+        case PortAuthProfileRevisionPage(items, next_after):
+            return AuthProfileRevisionsListed(items, next_after)
         case PortCatalogReadUnavailable(detail):
             return ReadUnavailable(detail)
         case PortDurableStateCorrupt():

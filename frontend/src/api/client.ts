@@ -297,6 +297,17 @@ export const agentConfigurationRevisionPageSchema = z
   })
   .strict();
 
+/**
+ * The listing of published auth profiles, in the item form publication already
+ * answers with. Held to the frozen document by servedVocabulary.
+ */
+export const authProfileRevisionPageSchema = z
+  .object({
+    items: z.array(authProfileRevisionSchema),
+    next_after_revision_hash: sha256.nullable()
+  })
+  .strict();
+
 const operatorFoundSchema = z
   .object({
     type: z.literal("operator_found"),

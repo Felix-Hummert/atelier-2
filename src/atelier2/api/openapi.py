@@ -112,6 +112,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (API_PREFIX + "/auth-profile-revisions", "get"): (
+        "invalid-revision-hash",
+        "invalid-request",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (API_PREFIX + "/agent-configuration-revisions", "post"): (
         "invalid-request",
         "auth-profile-revision-not-found",
@@ -230,6 +237,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-public-run-reference",
         "run-not-found",
         "node-not-found",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (API_PREFIX + "/runs/{public_ref}/receipt", "get"): (
+        "invalid-public-run-reference",
+        "run-not-found",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -540,6 +554,12 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
             (API_PREFIX + "/runs/{public_ref}", "get", "public_ref", "path"),
             (
                 API_PREFIX + "/runs/{public_ref}/nodes/{node_id}",
+                "get",
+                "public_ref",
+                "path",
+            ),
+            (
+                API_PREFIX + "/runs/{public_ref}/receipt",
                 "get",
                 "public_ref",
                 "path",
