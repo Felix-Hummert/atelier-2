@@ -36,7 +36,8 @@ const namedRevision = () =>
     revision_hash: namedHash,
     format_version: 3,
     executable: false,
-    not_executable_reason: "agent forms nothing binds yet: outputs",
+    not_executable_reason:
+      "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
     name: "Implement a candidate, then review it for defects",
     description: "Builds the candidate, then reviews it for defects."
   });
@@ -61,7 +62,8 @@ function namedGraph() {
   return {
     format_version: 3 as const,
     executable: false as const,
-    not_executable_reason: "agent forms nothing binds yet: outputs",
+    not_executable_reason:
+      "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
     node_count: 2,
     agent_roles: ["builder", "reviewer"],
     orders: [],
@@ -166,7 +168,10 @@ describe("the saved-workflow picker", () => {
     });
     expect(details?.textContent).toMatch(new RegExp(`${graph.node_count}\\s*nodes`, "i"));
     expect(details?.textContent).toMatch(/format\s*3/i);
-    expect(details?.textContent).toContain("Cannot be started: agent forms nothing binds yet: outputs");
+    expect(details?.textContent).toContain(
+      "Cannot be started: This workflow declares no output on node 'implement'. Add one outputs: entry there and publish again."
+    );
+    expect(details?.textContent).not.toContain("agent-output-shape-unavailable");
     expect(details?.textContent).toContain(namedHash);
     expect(details?.textContent).not.toBe(namedHash);
     expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_INSTRUCTION");
@@ -227,7 +232,8 @@ describe("the saved-workflow picker", () => {
           revision_hash: namedHash,
           format_version: 3,
           executable: false,
-          not_executable_reason: "agent forms nothing binds yet: outputs",
+          not_executable_reason:
+      "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
           name: "Implement a candidate, then review it for defects",
           description: "Builds the candidate, then reviews it for defects."
         })
@@ -275,7 +281,8 @@ describe("the saved-workflow picker", () => {
     // Details now repeats the same published reason, so the row is no longer
     // the only place the words appear.
     for (const refusal of screen.getAllByText(/cannot be started/i)) {
-      expect(refusal.textContent).toContain("agent forms nothing binds yet: outputs");
+      expect(refusal.textContent).toContain("Add one outputs: entry");
+      expect(refusal.textContent).not.toContain("agent-output-shape-unavailable");
     }
   });
 
@@ -333,7 +340,8 @@ describe("the picker reads past its first page", () => {
       revision_hash: "c".repeat(64),
       format_version: 3,
       executable: false,
-      not_executable_reason: "agent forms nothing binds yet: outputs",
+      not_executable_reason:
+      "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
       name: "Sweep the suite and file what broke",
       description: null
     });
@@ -373,7 +381,8 @@ describe("the picker groups revisions that share a published name", () => {
       revision_hash: newestHash,
       format_version: 3,
       executable: false,
-      not_executable_reason: "agent forms nothing binds yet: outputs",
+      not_executable_reason:
+      "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
       name: lineageName,
       description: "The catalog head."
     });
@@ -407,7 +416,10 @@ describe("the picker groups revisions that share a published name", () => {
     const row = within(article);
     const choice = option.closest("label");
     expect(choice?.textContent).toContain("The catalog head.");
-    expect(choice?.textContent).toContain("Cannot be started: agent forms nothing binds yet: outputs");
+    expect(choice?.textContent).toContain(
+      "Cannot be started: This workflow declares no output on node 'implement'. Add one outputs: entry there and publish again."
+    );
+    expect(choice?.textContent).not.toContain("agent-output-shape-unavailable");
     expect(choice?.textContent).not.toContain("The first admitted member.");
 
     await fireEvent.change(row.getByLabelText(`Revision of ${lineageName}`), {

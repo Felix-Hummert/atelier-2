@@ -1185,6 +1185,8 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   await expect(row.getByRole("radio")).toBeDisabled();
   await expect(row).toContainText("The catalog head.");
   await expect(row).toContainText("Cannot be started");
+  await expect(row).toContainText("Add one outputs: entry");
+  await expect(row).not.toContainText("agent-output-shape-unavailable");
   await expect(row).not.toContainText("The first admitted member.");
   await expect(row.getByLabel(`Revisions of ${lineageName}`)).toBeVisible();
 
