@@ -1456,7 +1456,7 @@ export function encodePublicRunReference(runId: string): string {
   return `run1.${btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
 }
 
-function parseEventCursor(
+export function parseEventCursor(
   cursor: string
 ): { publicRunReference: string; sequence: number } | null {
   const match = /^event1\.([A-Za-z0-9_-]+)\.([1-9][0-9]*)$/.exec(cursor);

@@ -246,6 +246,9 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
         binding["configuration_hash"]
         == bindings.bindings[0].agent_configuration_revision_hash.value
     )
+    assert binding.get("output_schema_document") == ANY_JSON_SCHEMA.document.decode(
+        "utf-8"
+    )
     assert "project_commit" not in binding
 
 

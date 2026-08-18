@@ -139,7 +139,10 @@ the host composes one Grok subscription executor beside Claude. It runs the
 bound model headless through `grok --output-format json`, takes only the
 envelope's final answer to the output seam — never the turn narration —
 and refuses an unreadable, empty, or answer-less envelope instead of
-recording the raw frame or the story of the run. The job travels
+recording the raw frame or the story of the run. When the node declared an
+output schema, the same published document bytes the seam later judges
+travel as `--json-schema`; the seam remains the last instance if the
+provider ignores the flag. The job travels
 through `--prompt-file` rather than the argument vector. The same
 vector pins a turn ceiling so a Diff-Review-sized order cannot run an
 unbounded loop, and the child inherits only the serving host's search path
@@ -471,8 +474,10 @@ edges. A wait has a prompt, not an instruction, so that field is empty there.
 An entry node answers an empty edge list. The authored node stays in the
 document bytes. A V3 run page draws that excerpt as topological layers and
 paints each node's state from the rail the server already walked — shape and
-colour together, no zoom, no drag. Details on the saved-workflow picker
-reuses the same drawing without run state. A chosen V3 revision that declares
+colour together, no zoom, no drag. The live event line stays open until the
+events it has applied match the latest cursor the run itself names, so a run
+that has already ended still shows every node that finished. Details on the
+saved-workflow picker reuses the same drawing without run state. A chosen V3 revision that declares
 orders shows one material field per order — the name and the schema the
 author pinned — and sends the typed text as `orders` on the start; a revision
 that declares none shows no field. Role
