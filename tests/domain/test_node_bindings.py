@@ -11,8 +11,8 @@ from atelier2.application.bind_node import (
     agent_execution_request,
     agent_execution_request_v2,
     bind_node,
-    node_the_run_stands_on,
     pinned_project,
+    require_the_run_stands_on,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -103,9 +103,9 @@ def bound(
     tool_grant: DeclaredToolGrant | None = None,
     project_source: ProjectSourcePin | None = None,
 ) -> NodeBinding:
-    """The binding the durable step would record, driven through both decisions."""
-    graph = parse_workflow_document(document)
-    node = node_the_run_stands_on(run, run.revision_hash, graph, node_id)
+    """The binding the durable step would record, in the order the step reads it."""
+    require_the_run_stands_on(run, run.revision_hash, node_id)
+    node = parse_workflow_document(document).node(node_id)
     return bind_node(
         run,
         node,
@@ -193,11 +193,8 @@ def test_a_node_the_run_does_not_stand_on_refuses_before_anything_is_read(
     run: AnyRun, document: bytes, node_id: str
 ) -> None:
     with pytest.raises(RunBindingConflict, match="does not own current STARTED node"):
-        node_the_run_stands_on(
-            run,
-            WorkflowRevision(document).revision_hash,
-            parse_workflow_document(document),
-            node_id,
+        require_the_run_stands_on(
+            run, WorkflowRevision(document).revision_hash, node_id
         )
 
 

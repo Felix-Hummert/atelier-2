@@ -68,8 +68,8 @@ from atelier2.application.bind_node import (
     agent_execution_request,
     agent_execution_request_v2,
     bind_node,
-    node_the_run_stands_on,
     pinned_project,
+    require_the_run_stands_on,
 )
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
@@ -204,8 +204,9 @@ def _node_binding(
     def load() -> EncodedNodeBinding:
         session = datasource.sql_session()
         run = load_run(session, run_id)
+        require_the_run_stands_on(run, revision_hash, node_id)
         graph = load_graph(session, revision_hash)
-        node = node_the_run_stands_on(run, revision_hash, graph, node_id)
+        node = graph.node(node_id)
         orders, results = _agent_material(session, run_id, revision_hash, graph, node)
         return encode_node_binding(
             bind_node(

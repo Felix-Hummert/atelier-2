@@ -45,24 +45,19 @@ from atelier2.contracts.workflows import (
 from atelier2.contracts.workflows_v3 import (
     ANY_WAIT_NODE_KINDS,
     AgentNodeV3,
-    AnyWorkflowDocument,
     AnyWorkflowDocumentNode,
 )
 from atelier2.ports.project_verification import DeclaredProject, PinnedProjectSource
 
 
-def node_the_run_stands_on(
-    run: AnyRun,
-    revision_hash: WorkflowRevisionHash,
-    graph: AnyWorkflowDocument,
-    node_id: str,
-) -> AnyWorkflowDocumentNode:
-    """The node this run currently owns, or the refusal that it owns another.
+def require_the_run_stands_on(
+    run: AnyRun, revision_hash: WorkflowRevisionHash, node_id: str
+) -> None:
+    """Refuse unless this run stands on this node right now, reading nothing else.
 
-    It answers before anything is read for that node on purpose: the material a
-    node works on is resolved once, and resolving a project head or a producing
-    node's output for a node the run has already left would be work done against
-    a binding that will never be written.
+    It answers from the run row alone so that it can answer first: a node the run
+    has already left must be refused before its graph, its material or its
+    project head is resolved, because none of that will ever reach a binding.
     """
     if (
         run.revision_hash != revision_hash
@@ -70,7 +65,6 @@ def node_the_run_stands_on(
         or run.state is not RunState.STARTED
     ):
         raise RunBindingConflict("node workflow does not own current STARTED node")
-    return graph.node(node_id)
 
 
 def bind_node(
