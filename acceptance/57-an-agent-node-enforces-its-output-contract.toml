@@ -41,11 +41,38 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 #       the hash of the exact refused bytes as their own fields -- the reason
 #       carries the verdict, not the evidence bytes.
 #   4.  "Join bleibt ADR 0006: all_succeeded blockiert; all_terminal darf starten
-#       und erhaelt das Failure-Receipt." (head 3)
+#       und erhaelt das Failure-Receipt. Kein Sonderweg startet einen
+#       Nachfolger." -- head 3 proved the half that exists. The only join a run
+#       of this build applies is the omitted single-dependency `all_succeeded`,
+#       and it is applied by never advancing past a node that did not succeed;
+#       that is the last sentence declared below. Every AUTHORED join --
+#       `all_terminal` over one dependency included -- is refused before a run
+#       under its own word, proving `every-v3-shape-no-runtime-binds-is-refused-
+#       by-name` (194). STILL OPEN from this sentence: `all_terminal` delivery
+#       itself, and with it the `blocked` receipt ADR 0006 gives an unstarted
+#       dependent and the run termination that follows from it. A refused run
+#       stands still on its node instead, and its successor reads `queued`
+#       rather than `blocked`. Both belong to the ready set (#86) and the node
+#       state machine (#89); neither is buildable here without minting a
+#       scheduler this item does not own.
 #   5.  "Retry/Restart erzeugt weder zweites Artefakt noch zweites terminales
-#       Receipt." (head 3)
+#       Receipt." -- head 3 proved it over the one retry construct that exists:
+#       the replacement attempt (ordinal 2 on the same node execution, same
+#       request hash). That is the second-to-last sentence declared below.
+#       STILL OPEN from this sentence: an AUTHORED `retry` policy revision binds
+#       nothing and is refused before a run under its own word (194); the
+#       restart that re-arms a node from durable receipts alone is ADR 0001's
+#       and has no V3 owner yet.
 #   6.  "Derselbe Vertrag gilt fuer Claude und Codex; genau ein billbarer Canary
-#       nach allen lokalen Gates." (head 4)
+#       nach allen lokalen Gates." -- STILL OPEN, and not a build. A canary is
+#       no construct of this catalog: no node kind, no authored form, no runtime
+#       object carries the word, and `docs/COORDINATION.md` owns it as an
+#       operator gate ("Deploy, arming, canary runs: operator gates"). There is
+#       therefore nothing at the parse boundary to refuse and nothing for a
+#       builder head to run. The provider half of the sentence is measurable
+#       without a billable call and still unmeasured: enforcement sits in the
+#       success write, below every adapter, so Claude and Codex meet the same
+#       seam by construction rather than by proof.
 #
 # The first sentence declared below is 1a, and 1a is EXPRESSLY NOT a substitute
 # for 1b: 1a proves the bound contract is a contract, 1b proves the core holds an
@@ -90,3 +117,15 @@ text = "An agent node that declares no output, or more than one, is refused unde
 [[sentence]]
 id = "bytes-their-own-schema-refuses-never-become-a-success"
 text = "Exact decoded output bytes that the schema their own node pinned does not admit never produce a success: the refusal is named in the words of the schema profile owner, and no agent receipt, no completion event and no advanced run are written, while bytes that schema admits are still written as the one atomic success."
+
+# Head 3. The two constructs the item's sentences 4 and 5 name that this build
+# really has: the omitted single-dependency join, and the replacement attempt.
+# What each deliberately leaves open is written out in the header above.
+
+[[sentence]]
+id = "a-retry-is-held-to-the-same-contract-and-leaves-one-of-each"
+text = "A replacement attempt of a node execution answers to the same declared schema its first attempt would have met, and the node execution keeps one terminal receipt and -- only where the schema admitted the bytes -- one artifact, however many attempts stood in the store; once an output was refused, no replacement can be minted at all, so the refusal's failed receipt is the node execution's one and only ending."
+
+[[sentence]]
+id = "a-refused-output-never-releases-the-node-behind-it"
+text = "A node whose declared output its own schema refuses never releases the node that depends on it: the run does not move off the refused node, no attempt is ever opened for the successor and no artifact exists, while one character of difference in the same answer releases that same edge -- which is the omitted single-dependency all_succeeded of ADR 0006, applied by there being no path past a node that did not succeed."

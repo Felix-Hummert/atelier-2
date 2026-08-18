@@ -255,6 +255,21 @@ export const catalogNameResolutionSchema = z
   })
   .strict();
 
+export const catalogAdmissionSchema = z
+  .object({
+    display_name: z.string().min(1).max(128),
+    lineage_id: sha256,
+    revision_hash: sha256,
+    revision_number: positiveSafeInteger
+  })
+  .strict();
+
+export interface CatalogAdmissionInput {
+  revision_hash: string;
+  actor: string;
+  activated_at: string;
+}
+
 const authProfileInputSchema = z
   .object({
     profile_id: z.string().min(1).max(1_024),
@@ -944,6 +959,7 @@ export type RunPage = z.infer<typeof runPageSchema>;
 export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
 export type WorkflowRevisionSummary = z.infer<typeof workflowRevisionSummarySchema>;
 export type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
+export type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
 
 /**
  * The graph of a revision a run can hold. Only an executable format carries
@@ -995,6 +1011,11 @@ export interface CockpitApi {
   listWorkflowRevisions(after?: string): Promise<WorkflowRevisionPage>;
   listAgentConfigurationRevisions(after?: string): Promise<AgentConfigurationRevisionPage>;
   getRevisionByName(name: string): Promise<CatalogNameResolution>;
+  foundCatalogLineage(input: CatalogAdmissionInput): Promise<HttpResult<CatalogAdmission>>;
+  admitCatalogMember(
+    lineageId: string,
+    input: CatalogAdmissionInput
+  ): Promise<HttpResult<CatalogAdmission>>;
   publish(mutation: PublishMutation): Promise<HttpResult<WorkflowRevisionDetail>>;
   publishAuthProfile(input: AuthProfileInput): Promise<HttpResult<AuthProfileRevision>>;
   publishAgentConfiguration(
@@ -1082,6 +1103,38 @@ export function createCockpitApi(
         {},
         [200],
         catalogNameResolutionSchema
+      ),
+    foundCatalogLineage: (input) =>
+      requestJsonResult(
+        fetcher,
+        "/atelier/api/v1/workflow-lineages",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            revision_hash: input.revision_hash,
+            actor: input.actor,
+            activated_at: input.activated_at
+          })
+        },
+        [200, 201],
+        catalogAdmissionSchema
+      ),
+    admitCatalogMember: (lineageId, input) =>
+      requestJsonResult(
+        fetcher,
+        `/atelier/api/v1/workflow-lineages/${encodeURIComponent(lineageId)}/members`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            revision_hash: input.revision_hash,
+            actor: input.actor,
+            activated_at: input.activated_at
+          })
+        },
+        [200, 201],
+        catalogAdmissionSchema
       ),
     publish: async (mutation) =>
       requestJsonResult(
