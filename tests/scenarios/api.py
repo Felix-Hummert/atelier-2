@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Any, Never
 
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
@@ -25,6 +26,7 @@ from atelier2.adapters.yaml_workflows import (
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimits
+from atelier2.api.openapi import API_PREFIX
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.application.read_run_events import ReadRunEventsResult, read_run_events
@@ -324,6 +326,76 @@ def event_stream_client(queries: RunEventQueries) -> TestClient:
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
         )
+    )
+
+
+def described_api_client() -> TestClient:
+    """The composed HTTP boundary in front of no store at all.
+
+    What the API says about itself -- its document, and the refusal that names
+    where the document is -- is answered before any port is reached, so a test
+    that reads the description wires none.
+    """
+
+    return TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=api_ports(),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+
+def named_document_path(refusal_detail: str) -> str:
+    """The one path a refusal names, read out of the sentence that names it."""
+
+    named = [
+        word.rstrip(".") for word in refusal_detail.split() if word.startswith("/")
+    ]
+    return named[-1]
+
+
+def discovered_openapi_document(client: TestClient, guessed_path: str) -> Any:
+    """The description found the way a consumer must find it: knock, then read.
+
+    A first contact holds a base URL and nothing else. The path it guesses is
+    refused, the refusal names where the description lives, and that is the only
+    route by which a test here learns the document's own address.
+    """
+
+    refusal = client.get(guessed_path)
+    return client.get(named_document_path(refusal.json()["detail"])).json()
+
+
+def published_workflow_grammar_reference(openapi_document: Any) -> Any:
+    """What the publication body names as the document it takes.
+
+    Followed the way a consumer has to follow it -- publication path, its one
+    declared body, the reference that body names -- so nothing a test knows
+    about the shape came from the repository the API is served from.
+    """
+
+    body = openapi_document["paths"][API_PREFIX + "/workflow-revisions"]["post"][
+        "requestBody"
+    ]
+    (declared,) = body["content"].values()
+    return declared["schema"]
+
+
+def openapi_component(openapi_document: Any, reference: Any) -> Any:
+    """One component of a served document, resolved through the reference to it."""
+
+    name = reference["$ref"].rsplit("/", 1)[1]
+    return openapi_document["components"]["schemas"][name]
+
+
+def published_workflow_grammar(openapi_document: Any) -> Draft202012Validator:
+    """The published shape, assembled into the check a consumer would run."""
+
+    return Draft202012Validator(
+        {**openapi_document, **published_workflow_grammar_reference(openapi_document)}
     )
 
 

@@ -67,7 +67,14 @@ after its durable tail has been delivered.
 JSON resources and commands are closed typed models. Two publications take
 raw exact bytes rather than a typed model: workflow publication is
 `application/yaml`, and schema publication is `application/json` — JSON Schema
-is JSON, and the hash is of those exact bytes. Each schema-profile refusal the
+is JSON, and the hash is of those exact bytes. Taking bytes does not mean saying
+nothing about them: the workflow publication body carries the shape of the
+document, derived from the same models the publication reads it against rather
+than written a second time. The shape decides the form; whether a named edge
+resolves, whether a cycle closes and whether this build executes the result are
+statements about the whole document and keep their named refusals. A refused
+path names the location of the OpenAPI document, so a consumer holding only a
+base URL reaches all of this without guessing. Each schema-profile refusal the
 store already names is a distinct closed problem, not a generic invalid
 request. Centrally injected limits reject declared
 oversize bodies before route parsing and stop undeclared or chunked bodies while

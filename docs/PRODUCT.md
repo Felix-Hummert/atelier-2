@@ -450,7 +450,13 @@ decimal text only an `integer` wait can honestly produce.
 Public references are transport identifiers, not new domain identities, and
 retries report whether a command was newly accepted or already existed without
 duplicating its durable
-write or wake-up. [ADR 0003](decisions/0003-http-api.md) owns the API and resume
+write or wake-up. The API also describes the one body it takes as bytes: a
+guessed path is refused with the exact location of the OpenAPI document, and the
+workflow publication body there carries the shape of the document itself —
+derived from the models the publication reads it against, so no second
+description can drift. That shape decides the form; the rules only a whole
+document answers keep their named refusals at publication.
+[ADR 0003](decisions/0003-http-api.md) owns the API and resume
 contract.
 
 A narrow local cockpit can list runs, publish and start a workflow from `/new`,
@@ -462,8 +468,11 @@ that share a name collapse; the catalog head from
 resolves, and older members sit in a collapsed revision choice. A name with
 one listed revision has no empty submenu. A published title the catalog does
 not hold is named Unlisted when it is a legal catalog name and Unnamable when
-the title cannot be one — the picker does not swallow that 404. Unnamed
-documents stay one row each, as they did. A V3 publish from the CLI or the
+the title cannot be one — the picker does not swallow that 404. Those
+refusals, and a row that cannot be started, each have their own shape, so a
+choice is not a muted twin of a refusal. After a choice the list collapses
+onto that card with a Change path, and the start form sits directly under it.
+Unnamed documents stay one row each, as they did. A V3 publish from the CLI or the
 cockpit then names the revision through `POST /workflow-lineages`; publication
 and admission stay two HTTP acts. Details repeats what the published graph already answers —
 format, roles and node count where the V3 resource carries them, executability,
