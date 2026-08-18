@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import sqlite3
 import time
@@ -22,7 +23,6 @@ from atelier2.adapters.dbos.run_store import (
     NodeOutputSchemaRefused,
     RunTransitionConflict,
     event_from_record,
-    graph_from_document,
     load_node_outputs,
     load_run_inputs,
     run_from_record_with_bindings,
@@ -246,6 +246,8 @@ def _validate_bounded_record(
             )
         projection_limit.validate_field_length(len(str(value)))
 
+
+_LOG = logging.getLogger("atelier2")
 
 _V3_WORKFLOW_FORMAT_VERSION = 3
 _AGENT_FAILURE_FORMATS = frozenset((2, _V3_WORKFLOW_FORMAT_VERSION))
@@ -827,7 +829,12 @@ class DbosQueries:
             return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
+        except (ValueError, RuntimeError, DatabaseError) as error:
+            _LOG.error(
+                "run get projection failed",
+                exc_info=error,
+                extra={"event": "run_get_projection_corrupt"},
+            )
             return QueryDurableStateCorrupt()
 
     def list_runs(
@@ -884,7 +891,12 @@ class DbosQueries:
             return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
-        except (UnicodeEncodeError, ValueError, RuntimeError, DatabaseError):
+        except (UnicodeEncodeError, ValueError, RuntimeError, DatabaseError) as error:
+            _LOG.error(
+                "run list projection failed",
+                exc_info=error,
+                extra={"event": "run_list_projection_corrupt"},
+            )
             return QueryDurableStateCorrupt()
 
     def get_reconciliation_retry_target(
@@ -996,7 +1008,15 @@ class DbosQueries:
         graphs = {}
         for revision_hash, document in revision_records.items():
             self._projection_limit.validate_document(document)
-            graph = graph_from_document(revision_hash, document)
+            stored = WorkflowRevision(document)
+            if stored.revision_hash != revision_hash:
+                raise RevisionHashCollision(
+                    "durable workflow revision bytes disagree with their hash"
+                )
+            # A run already started against these bytes. Today's executable
+            # parse may refuse the same document; listing and inspecting it
+            # is a read of published history, not a start.
+            graph = parse_workflow_document(document)
             self._projection_limit.validate_graph(graph)
             graphs[revision_hash] = graph
         for run in loaded_runs:
