@@ -36,8 +36,10 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionCreated,
     AuthProfileRevisionExisting,
     AuthProfileRevisionMissing,
+    AuthProfileRevisionPage,
     CatalogReadUnavailable,
     ListAgentConfigurationRevisionsResult,
+    ListAuthProfileRevisionsResult,
     PublishAgentConfigurationRevisionResult,
     PublishAuthProfileRevisionResult,
 )
@@ -271,6 +273,38 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                 return AgentConfigurationRevisionPage(
                     tuple(items),
                     items[-1][0].revision_hash if has_more and items else None,
+                )
+        except (OperationalError, PoolTimeoutError):
+            return CatalogReadUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
+    def list_auth_profile_revisions(
+        self, after: AuthProfileRevisionHash | None, limit: int
+    ) -> ListAuthProfileRevisionsResult:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("revision page limit must be an integer from 1 to 100")
+        try:
+            with self._engine.connect() as connection:
+                statement = sa.select(auth_profile_revisions)
+                if after is not None:
+                    statement = statement.where(
+                        auth_profile_revisions.c.revision_hash > after.value
+                    )
+                records = tuple(
+                    connection.execute(
+                        statement.order_by(
+                            auth_profile_revisions.c.revision_hash
+                        ).limit(limit + 1)
+                    ).mappings()
+                )
+                has_more = len(records) > limit
+                items = tuple(
+                    auth_profile_from_record(record) for record in records[:limit]
+                )
+                return AuthProfileRevisionPage(
+                    items,
+                    items[-1].revision_hash if has_more and items else None,
                 )
         except (OperationalError, PoolTimeoutError):
             return CatalogReadUnavailable()

@@ -21,6 +21,7 @@ from atelier2.adapters.dbos.run_store import (
     NodeOutputNotWritten,
     NodeOutputSchemaRefused,
     RunTransitionConflict,
+    _agent_receipt_v2_from_record,
     event_from_record,
     graph_from_document,
     load_node_outputs,
@@ -109,6 +110,7 @@ from atelier2.ports.run_queries import (
     GetNodeDetailResult,
     GetReconciliationRetryTargetResult,
     GetRunResult,
+    ListRunReceiptsResult,
     ListRunsResult,
     NodeDetailFound,
     NodeQueryMissing,
@@ -117,6 +119,7 @@ from atelier2.ports.run_queries import (
     ReconciliationRetryTargetMissing,
     RunFound,
     RunQueryMissing,
+    RunReceiptsFound,
 )
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
@@ -792,6 +795,30 @@ class DbosQueries:
                 )
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()
+        except (OperationalError, PoolTimeoutError):
+            return ReadUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return QueryDurableStateCorrupt()
+
+    def list_run_receipts(self, run_id: RunId) -> ListRunReceiptsResult:
+        """The agent receipts this run has written, or why they cannot be read."""
+        try:
+            with self._connection() as connection:
+                present = connection.execute(
+                    sa.select(runs.c.run_id).where(runs.c.run_id == run_id.value)
+                ).first()
+                if present is None:
+                    return RunQueryMissing()
+                records = tuple(
+                    connection.execute(
+                        sa.select(agent_receipts_v2)
+                        .where(agent_receipts_v2.c.run_id == run_id.value)
+                        .order_by(agent_receipts_v2.c.node_id)
+                    ).mappings()
+                )
+                return RunReceiptsFound(
+                    tuple(_agent_receipt_v2_from_record(record) for record in records)
+                )
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):

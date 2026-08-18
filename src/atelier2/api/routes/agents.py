@@ -26,6 +26,7 @@ from atelier2.api.wire.requests import (
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionPageResource,
     AgentConfigurationRevisionResource,
+    AuthProfileRevisionPageResource,
     AuthProfileRevisionResource,
 )
 from atelier2.application.publish_agent_configurations import (
@@ -43,13 +44,17 @@ from atelier2.application.publish_agent_configurations import (
 )
 from atelier2.application.read_agent_configurations import (
     AgentConfigurationRevisionsListed,
+    AuthProfileRevisionsListed,
 )
 from atelier2.application.refusals import (
     DurableStateCorrupt,
     ReadUnavailable,
     WriteUnavailable,
 )
-from atelier2.contracts.agents import AgentConfigurationRevisionHash
+from atelier2.contracts.agents import (
+    AgentConfigurationRevisionHash,
+    AuthProfileRevisionHash,
+)
 
 router = APIRouter()
 
@@ -89,6 +94,44 @@ async def publish_auth_profile_revision_route(
         case _ as unreachable:
             assert_never(unreachable)
     return resource_response(auth_profile_revision_resource(stored), status)
+
+
+@router.get(
+    API_PREFIX + "/auth-profile-revisions",
+    response_model=AuthProfileRevisionPageResource,
+)
+async def list_auth_profile_revisions_route(
+    after_revision_hash: str | None = None,
+    limit: str = "50",
+    context: ApiContext = api_context_dependency,
+) -> AuthProfileRevisionPageResource:
+    after = None
+    if after_revision_hash is not None:
+        try:
+            after = AuthProfileRevisionHash(after_revision_hash)
+        except ValueError as error:
+            raise ApiProblem("invalid-revision-hash") from error
+    parsed_limit = parse_limit(limit)
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.list_auth_profile_revisions(after, parsed_limit),
+    )
+    match result:
+        case AuthProfileRevisionsListed(items, next_after):
+            return AuthProfileRevisionPageResource(
+                items=tuple(
+                    auth_profile_revision_resource(revision) for revision in items
+                ),
+                next_after_revision_hash=(
+                    None if next_after is None else next_after.value
+                ),
+            )
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 @router.post(

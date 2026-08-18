@@ -13,13 +13,17 @@ from atelier2.application.prepare_run_events import (
 from atelier2.application.prepare_run_events import RunNotFound as EventRunNotFound
 from atelier2.application.read_agent_configurations import (
     AgentConfigurationRevisionsListed,
+    AuthProfileRevisionsListed,
     list_agent_configuration_revisions,
+    list_auth_profile_revisions,
 )
 from atelier2.application.read_runs import (
     RunNotFound,
     RunRead,
+    RunReceiptsRead,
     RunsListed,
     get_run,
+    list_run_receipts,
     list_runs,
 )
 from atelier2.application.read_workflow_revisions import (
@@ -39,6 +43,7 @@ from atelier2.contracts.workflow_projections import (
 )
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionPage,
+    AuthProfileRevisionPage,
     CatalogReadUnavailable,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
@@ -50,6 +55,7 @@ from atelier2.ports.run_events import (
 from atelier2.ports.run_queries import (
     RunFound,
     RunQueryMissing,
+    RunReceiptsFound,
 )
 from atelier2.ports.workflow_revisions import (
     QueryDurableStateCorrupt,
@@ -111,6 +117,9 @@ class ScriptedQueries:
     def get_node_detail(self, run_id: Any, node_id: str) -> Any:
         return self._record(run_id, node_id)
 
+    def list_run_receipts(self, run_id: Any) -> Any:
+        return self._record(run_id)
+
     def prepare_run_event_stream(self, run_id: Any, after_sequence: int) -> Any:
         return self._record(run_id, after_sequence)
 
@@ -166,6 +175,15 @@ READS: list[
         lambda queries: list_runs(None, 50, queries),
         [
             (RunPage((RUN_PROJECTION,), RUN_ID), RunsListed((RUN_PROJECTION,), RUN_ID)),
+            *PORT_REFUSALS,
+        ],
+    ),
+    (
+        "list-run-receipts",
+        lambda queries: list_run_receipts(RUN_ID, queries),
+        [
+            (RunReceiptsFound(()), RunReceiptsRead(())),
+            (RunQueryMissing(), RunNotFound()),
             *PORT_REFUSALS,
         ],
     ),
@@ -253,4 +271,26 @@ def test_list_agent_configuration_revisions_becomes_this_layers_own_outcome() ->
     ):
         catalog: Any = Catalog(port_answer)
         assert list_agent_configuration_revisions(None, 50, catalog) == expected
+        assert catalog.asked == [(None, 50)]
+
+
+def test_list_auth_profile_revisions_becomes_this_layers_own_outcome() -> None:
+    listed = AuthProfileRevisionPage((), None)
+
+    class Catalog:
+        def __init__(self, answer: object) -> None:
+            self.answer = answer
+            self.asked: list[tuple[object, int]] = []
+
+        def list_auth_profile_revisions(self, after: object, limit: int) -> object:
+            self.asked.append((after, limit))
+            return self.answer
+
+    for port_answer, expected in (
+        (listed, AuthProfileRevisionsListed((), None)),
+        (CatalogReadUnavailable("store asleep"), ReadUnavailable("store asleep")),
+        (PortDurableStateCorrupt(), DurableStateCorrupt()),
+    ):
+        catalog: Any = Catalog(port_answer)
+        assert list_auth_profile_revisions(None, 50, catalog) == expected
         assert catalog.asked == [(None, 50)]

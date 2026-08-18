@@ -71,6 +71,7 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AgentConfigurationRevisionPage,
     AuthProfileRevisionCreated,
+    AuthProfileRevisionPage,
 )
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorCapabilityUnavailable,
@@ -817,6 +818,36 @@ def test_published_configurations_are_listed_over_the_api(tmp_path: Path) -> Non
         assert isinstance(stored, AgentConfigurationRevisionPage)
         assert len(stored.items) == 1
         assert stored.next_after is not None
+        stored_auth = catalog.list_auth_profile_revisions(None, 1)
+        assert isinstance(stored_auth, AuthProfileRevisionPage)
+        assert len(stored_auth.items) == 1
+        assert stored_auth.next_after is not None
+
+        auth_first = client.get(
+            API_PREFIX + "/auth-profile-revisions", params={"limit": "1"}
+        )
+        assert auth_first.status_code == 200
+        assert len(auth_first.json()["items"]) == 1
+        assert auth_first.json()["next_after_revision_hash"] is not None
+        auth_second = client.get(
+            API_PREFIX + "/auth-profile-revisions",
+            params={
+                "limit": "1",
+                "after_revision_hash": auth_first.json()["next_after_revision_hash"],
+            },
+        )
+        assert auth_second.status_code == 200
+        assert len(auth_second.json()["items"]) == 1
+        assert auth_second.json()["next_after_revision_hash"] is None
+        listed_profiles = {
+            item["profile_id"]
+            for item in auth_first.json()["items"] + auth_second.json()["items"]
+        }
+        assert listed_profiles == {"max", "team"}
+        for item in auth_first.json()["items"] + auth_second.json()["items"]:
+            assert item["provider_id"] == "anthropic"
+            assert item["auth_mode"] in {"subscription", "api_key"}
+            assert "secret" not in str(item).lower()
 
         empty = client.get(
             API_PREFIX + "/agent-configuration-revisions", params={"limit": "1"}
