@@ -24,11 +24,15 @@ HOST_CONFIGURATION_UNREADABLE = "host-configuration-unreadable"
 
 
 class ProjectUnknown(Exception):
-    """The id is not a project id."""
+    """The id is malformed, or names a project with no configured root.
+
+    The second case is ADR 0011's service refusal. The channel's missing row
+    remains `ProjectRootMissing`.
+    """
 
 
 class ProjectRootMissing(Exception):
-    """This project id has no configured root."""
+    """The channel has no root-path row for this project id."""
 
 
 class HostConfigurationUnreadable(Exception):
