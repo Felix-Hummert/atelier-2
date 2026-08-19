@@ -143,9 +143,13 @@ bound model headless through `grok --output-format json`, takes only the
 envelope's final answer to the output seam — never the turn narration —
 and refuses an unreadable, empty, or answer-less envelope instead of
 recording the raw frame or the story of the run. When the node declared an
-output schema, the same published document bytes the seam later judges
-travel as `--json-schema`; the seam remains the last instance if the
-provider ignores the flag. The job travels
+output schema that is not a bare `type: string`, the same published
+document bytes the seam later judges travel as `--json-schema`; the
+seam remains the last instance if the provider ignores the flag. A
+bare string schema does not take that flag: the model writes free
+text and the adapter serializes it as one JSON string, because
+constraining grok 1.0.4 to a string document produced announcements
+or trailing `<|eos|>` rather than a later answer. The job travels
 through `--prompt-file` rather than the argument vector. The same
 vector pins a turn ceiling so a Diff-Review-sized order cannot run an
 unbounded loop, and the child inherits only the serving host's search path
