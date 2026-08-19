@@ -3,11 +3,12 @@
 **DRAFT — Operator-Segnung ausstehend**
 
 This page is a Desk/Doku reading of
-[GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1) (body @
-`ca28be56`, 25489 bytes, SHA-256
-`ca28be560c82ca7f8b56df52d4914db3cd0a82efb3f50e740604b6e3065d5dc0`). It is not
-a second authority and not a copy of that issue. The issue wins. Nothing below
-is an operator sentence except a quotation taken from that body.
+[GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1) (body UTF-8
+26837 bytes including GitHub's trailing newline, SHA-256
+`070da2570c878ee8d1e37488c715cfa7af972af7c347a4554f273ef72047b3f6`, Operator
+amendment 19.08.2026). It is not a second authority and not a copy of that
+issue. The issue wins. Nothing below is an operator sentence except a quotation
+taken from that body.
 
 ## The reason
 
@@ -35,6 +36,20 @@ He keeps the workflow:
 Desk/Doku-Lesart of that sentence: Atelier may propose or compose. It does not
 add a hidden ceremony. Publish and start are separate acts. After start, the
 bound revision does not move.
+
+Coder and reviewer are the same node kind. The workflow names what a node
+**gets** (inputs, pinned source) and **may do** (capability, tools, grants);
+the agent definition is Markdown and defaults to everything. A follow-on node
+sees only mapped outputs, not the predecessor's throwaway directory. Landing
+(push, PR, merge) is one platform-adapter effect: an Action node, or the same
+effect as a grant on an Agent. The secret never enters the lease. A CI host may
+hold git and a token; the agent does not inherit them. The issue's own words:
+
+> „Coder-Knoten und Review-Knoten sind dieselbe Node-Art (`agent`). […]
+> Irreversible externe Mutationen wie Push, Merge oder Deploy laufen
+> ausschließlich über Intent, Readback und Receipt des Plattform-Adapters —
+> nie als Roh-`git push` im Provider-CLI-Stream, nie mit Token in der
+> Agent-Lease."
 
 ## What this page does not claim
 
