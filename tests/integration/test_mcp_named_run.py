@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import socket
 import time
 from collections.abc import Iterator
@@ -33,6 +35,7 @@ from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.runs import RunState
+from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 from atelier2.host.mcp_tools import McpToolName
 from tests.host.test_mcp_server import StdioMcpSession
 from tests.scenarios.agents import (
@@ -47,6 +50,8 @@ from tests.scenarios.api import (
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 WORKFLOW_NAME = "mcp-named-line"
+ARTIFACT_WORKFLOW_NAME = "mcp-artifact-line"
+ORDER_NAME = "order"
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
 DOCUMENT = (
     f"""format_version: 3
@@ -57,6 +62,27 @@ nodes:
     role: builder
     mode: headless
     instruction: Do the one thing this named run is for.
+""".encode()
+    + declared_output()
+)
+ORDERED_DOCUMENT = (
+    f"""format_version: 3
+name: {ARTIFACT_WORKFLOW_NAME}
+graph_inputs:
+  - name: {ORDER_NAME}
+    schema:
+      ref: order-schema
+      revision: {ANY_JSON_SCHEMA.revision_hash.value}
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Review the ordered material.
+    inputs:
+      - name: {ORDER_NAME}
+        from:
+          graph_input: {ORDER_NAME}
 """.encode()
     + declared_output()
 )
@@ -160,7 +186,7 @@ def live_server(app: FastAPI) -> Iterator[str]:
             assert not thread.is_alive()
 
 
-def publish_named_line(app: FastAPI) -> str:
+def publish_named_line(app: FastAPI, document: bytes = DOCUMENT) -> str:
     """Publish the schema, the named document, its lineage and one binding."""
 
     api = TestClient(app)
@@ -172,7 +198,7 @@ def publish_named_line(app: FastAPI) -> str:
     assert schema.status_code == 201, schema.text
     workflow = api.post(
         API_PREFIX + "/workflow-revisions",
-        content=DOCUMENT,
+        content=document,
         headers={"content-type": "application/yaml"},
     )
     assert workflow.status_code == 201, workflow.text
@@ -273,3 +299,58 @@ def test_a_stdio_client_lists_the_catalog_starts_by_name_and_reads_terminal(
     assert (
         ended["workflow_revision_hash"] == listed["items"][0]["workflow_revision_hash"]
     )
+
+
+@pytest.mark.proves("a-stdio-client-lists-starts-and-reads-a-named-run")
+def test_a_stdio_client_publishes_an_artifact_starts_by_address_and_reads_terminal(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    started_runtime, recording = runtime
+    app = application(started_runtime)
+    configuration_hash = publish_named_line(app, ORDERED_DOCUMENT)
+    ordered_material = json.dumps({"diff": "x" * 20_000}).encode()
+    assert len(ordered_material) > MAXIMUM_INSTANCE_DOCUMENT_BYTES
+
+    with live_server(app) as service_url:
+        client = StdioMcpSession(service_url)
+        try:
+            published, publish_failed = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value,
+                {
+                    "content_base64": base64.standard_b64encode(
+                        ordered_material
+                    ).decode("ascii")
+                },
+            )
+            assert not publish_failed
+            assert isinstance(published, dict)
+            address = str(published["artifact_hash"])
+
+            started, start_failed = client.call_tool(
+                McpToolName.START_RUN.value,
+                {
+                    "name": ARTIFACT_WORKFLOW_NAME,
+                    "run_id": "mcp/artifact-order",
+                    "agent_bindings": [
+                        {
+                            "role": "builder",
+                            "agent_configuration_revision_hash": configuration_hash,
+                        }
+                    ],
+                    "orders": [{"name": ORDER_NAME, "artifact_hash": address}],
+                },
+            )
+            assert not start_failed
+            assert isinstance(started, dict)
+            assert started["state"] == RunState.STARTED.value
+            reference = str(started["public_run_reference"])
+
+            started_runtime.launch()
+            ended = wait_for_terminal(client, reference)
+        finally:
+            client.close()
+
+    assert ended["state"] == RunState.COMPLETED.value
+    assert ended["terminal_hash"] is not None
+    assert recording.opened is not None
+    assert ordered_material in recording.opened.requests[0].job_bytes

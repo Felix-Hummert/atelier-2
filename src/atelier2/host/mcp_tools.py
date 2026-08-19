@@ -1,9 +1,11 @@
-"""The four MCP tools, named once, each bound to the HTTP doors they call.
+"""The MCP tools, named once, each bound to the HTTP doors they call.
 
 This is the one owner of the tool names and of the input schemas a client sees.
 The schemas are derived from the wire models those doors already publish: a
 second handwritten grammar here is how MCP and HTTP would drift. The published
 workflow-document grammar is referenced from `start_run`, not copied.
+`publish_artifact` is the JSON encoding of an octet-stream door: MCP cannot
+carry those bytes except as Base64.
 """
 
 from __future__ import annotations
@@ -11,14 +13,18 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from atelier2.api.openapi import API_PREFIX, WORKFLOW_DOCUMENT_COMPONENT
 from atelier2.api.wire.requests import (
     AnswerWaitRequestResource,
-    InlineOrderResource,
+    AnyStartRunOrderResource,
     StartRunAgentBindingResourceV2,
 )
 from atelier2.api.wire.resources import CatalogNameResolutionResource, ProblemResource
 from atelier2.host.run_command import DEFAULT_CATALOG_POSITION
+
+_START_RUN_ORDER = TypeAdapter(AnyStartRunOrderResource)
 
 MCP_SERVER_NAME = "atelier2"
 MCP_SERVER_VERSION = "0.0.0"
@@ -33,12 +39,13 @@ METHOD_PING = "ping"
 
 
 class McpToolName(StrEnum):
-    """The four tools this slice exposes. A fifth name is a different slice."""
+    """The five tools this door exposes, in the order a client lists them."""
 
     LIST_WORKFLOWS = "list_workflows"
     START_RUN = "start_run"
     RUN_STATUS = "run_status"
     ANSWER_WAIT = "answer_wait"
+    PUBLISH_ARTIFACT = "publish_artifact"
 
 
 McpHttpDoor = tuple[str, str]
@@ -55,6 +62,7 @@ MCP_TOOL_HTTP_DOORS: dict[McpToolName, tuple[McpHttpDoor, ...]] = {
     ),
     McpToolName.RUN_STATUS: (("get", API_PREFIX + "/runs/{public_ref}"),),
     McpToolName.ANSWER_WAIT: (("post", API_PREFIX + "/runs/{public_ref}/answers"),),
+    McpToolName.PUBLISH_ARTIFACT: (("post", API_PREFIX + "/artifacts"),),
 }
 
 
@@ -119,13 +127,42 @@ def tool_definitions() -> tuple[dict[str, Any], ...]:
             ),
             "inputSchema": _answer_wait_input_schema(),
         },
+        {
+            "name": McpToolName.PUBLISH_ARTIFACT.value,
+            "description": (
+                "Publish exact bytes through POST /artifacts as "
+                "application/octet-stream. content_base64 is this tool's JSON "
+                "encoding of those bytes because MCP JSON cannot carry "
+                "octet-stream; the HTTP door is not JSON. The answer is "
+                "ArtifactResource. Publishing the same bytes again is the same "
+                "artifact. Empty or oversized material is the service's typed "
+                "problem. No caller authentication exists; do not invent one."
+            ),
+            "inputSchema": _object_schema(
+                {
+                    "content_base64": {
+                        "type": "string",
+                        "description": (
+                            "Standard Base64 of the exact bytes to POST as "
+                            "application/octet-stream."
+                        ),
+                    }
+                },
+                required=("content_base64",),
+            ),
+        },
     )
 
 
 def _start_run_input_schema() -> dict[str, Any]:
     """Name plus the start body POST /runs already owns, minus the hash we resolve."""
 
-    return _object_schema(
+    published_orders = _START_RUN_ORDER.json_schema()
+    order_defs = published_orders.get("$defs", {})
+    order_schema = {
+        key: value for key, value in published_orders.items() if key != "$defs"
+    }
+    schema = _object_schema(
         {
             "name": {
                 "type": "string",
@@ -164,14 +201,16 @@ def _start_run_input_schema() -> dict[str, Any]:
                 "description": (
                     "The graph_inputs the published "
                     f"{WORKFLOW_DOCUMENT_COMPONENT} grammar names. Item shape "
-                    "is InlineOrderResource from POST /runs, not a second "
-                    "grammar."
+                    "is the POST /runs order union, not a second grammar."
                 ),
-                "items": InlineOrderResource.model_json_schema(),
+                "items": order_schema,
             },
         },
         required=("name", "run_id"),
     )
+    if order_defs:
+        schema["$defs"] = order_defs
+    return schema
 
 
 def _answer_wait_input_schema() -> dict[str, Any]:
