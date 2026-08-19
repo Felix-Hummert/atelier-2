@@ -99,7 +99,12 @@ DETERMINISTIC = published(
 CHILD_DETERMINISTIC = published(
     RevisionKind.DETERMINISTIC_OPERATION, "merge every review verdict"
 )
-ADAPTER = published(RevisionKind.ADAPTER_OPERATION, "comment on the requirement")
+ADAPTER = published(
+    RevisionKind.ADAPTER_OPERATION,
+    # Prose published under `adapter_operation` is refused now, for the same
+    # reason prose published under `tool` is: the resolution reads what it pins.
+    json.dumps({"operation": "open-pr"}),
+)
 
 REGISTRY_CONTENTS = (
     SCHEMA_CANDIDATE,

@@ -16,14 +16,17 @@ import pytest
 from atelier2.api.projection import events as events_module
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.references import encode_canonical_base64
-from atelier2.api.wire.events import AgentCompletedEventResource
+from atelier2.api.wire.events import (
+    ActionCompletedEventResourceV3,
+    AgentCompletedEventResource,
+)
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from tests.api import test_agent_attempts as v2_events
 from tests.api.test_agent_attempts import SERVED_RAIL
-from tests.api.test_v1_event_vocabulary import v1_projection
+from tests.api.test_v1_event_vocabulary import effect_receipt, v1_projection
 
 RUN_ID = RunId("v3-event-vocabulary")
 REVISION_HASH = WorkflowRevisionHash("0" * 64)
@@ -159,8 +162,83 @@ def test_format_3_wait_answered_carries_the_exact_bytes_a_person_sent() -> None:
 
 
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
+def test_format_3_action_completed_answers_with_the_v2_receipt_and_the_v3_rail() -> (
+    None
+):
+    receipt = effect_receipt()
+    event = RunEvent(
+        RUN_ID,
+        REVISION_HASH,
+        1,
+        "publish",
+        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "publish"),
+        RunEventKind.ACTION_COMPLETED,
+        receipt.result.payload,
+        receipt_logical_key=receipt.intent.binding.logical_key,
+        receipt_result_hash=receipt.result.payload_hash,
+    )
+    projection = PersistedRunEvent(event, receipt, WorkflowFormatVersion.V3)
+
+    resource = run_event_resource(projection, SERVED_RAIL)
+
+    dumped = resource.model_dump(mode="json")
+    assert dumped["workflow_format_version"] == 3
+    assert dumped["event"] == "ACTION_COMPLETED"
+    assert dumped["receipt"]["result_base64"] == encode_canonical_base64(
+        receipt.result.payload
+    )
+    assert dumped["node_rail"] == [
+        entry.model_dump(mode="json") for entry in SERVED_RAIL
+    ]
+    assert isinstance(resource, ActionCompletedEventResourceV3)
+
+
+@pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
+def test_dropping_the_v3_action_mapping_reds_the_open_pr_event(
+    tmp_path: Path,
+) -> None:
+    source = Path(events_module.__file__).read_text(encoding="utf-8")
+    needle = (
+        "    if event.event_kind is RunEventKind.ACTION_COMPLETED:\n"
+        "        if projection.receipt is None:\n"
+        "            raise ValueError("
+        '"completed V3 Action event has no receipt")\n'
+        "        return ActionCompletedEventResourceV3(\n"
+        "            event=event.event_kind.value,\n"
+        "            receipt=receipt_resource(projection.receipt),\n"
+        "            **common,\n"
+        "        )\n"
+    )
+    assert needle in source
+    restored = source.replace(needle, "", 1)
+    mutated = tmp_path / "events_no_v3_action.py"
+    mutated.write_text(restored, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "atelier2.api.projection.events_no_v3_action", mutated
+    )
+    assert spec is not None and spec.loader is not None
+    restored_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(restored_module)
+    receipt = effect_receipt()
+    event = RunEvent(
+        RUN_ID,
+        REVISION_HASH,
+        1,
+        "publish",
+        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "publish"),
+        RunEventKind.ACTION_COMPLETED,
+        receipt.result.payload,
+        receipt_logical_key=receipt.intent.binding.logical_key,
+        receipt_result_hash=receipt.result.payload_hash,
+    )
+    projection = PersistedRunEvent(event, receipt, WorkflowFormatVersion.V3)
+    with pytest.raises(ValueError, match="a V3 run cannot carry ACTION_COMPLETED"):
+        restored_module.run_event_resource(projection, SERVED_RAIL)
+
+
+@pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
 def test_a_v3_run_cannot_answer_with_a_kind_its_nodes_never_write() -> None:
-    """A V3 node is an Agent or a Wait, so a subworkflow completion is a lie."""
+    """A V3 line is Agent, Wait, or linear Action. Subworkflow completion is a lie."""
     subworkflow = PersistedRunEvent(
         event=RunEvent(
             run_id=RUN_ID,

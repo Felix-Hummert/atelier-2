@@ -161,7 +161,13 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
         ),
         state_version=run.state_version,
         state=cast(
-            Literal["STARTED", "WAITING_INPUT", "COMPLETED", "FAILED"],
+            Literal[
+                "STARTED",
+                "WAITING_RECONCILIATION",
+                "WAITING_INPUT",
+                "COMPLETED",
+                "FAILED",
+            ],
             run.state.value,
         ),
         current_node_id=run.current_node_id,

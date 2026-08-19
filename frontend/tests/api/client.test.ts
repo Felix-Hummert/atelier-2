@@ -101,6 +101,14 @@ function v2Event(eventName: string, fields: Record<string, unknown> = {}) {
   };
 }
 
+function v3Event(eventName: string, fields: Record<string, unknown> = {}) {
+  return {
+    ...event(eventName, fields),
+    workflow_format_version: 3,
+    node_rail: [{ node_id: "agent", state: "working", attempt: null }]
+  };
+}
+
 const v2Attempt = { attempt_id: digest, attempt_ordinal: 1 };
 const v2Cancellation = { ...v2Attempt, command_id: "cancel-1", replacement: "ONE" };
 
@@ -231,6 +239,14 @@ describe("closed API decoders", () => {
     event("WAIT_ANSWERED", { answer: "17", answer_hash: digest }),
     event("SUBWORKFLOW_COMPLETED", { result: 5, result_hash: digest })
   ])("decodes the closed durable event union: $event", (value) => {
+    expect(decodeRunEvent(value).event).toBe(value.event);
+  });
+
+  it.each([
+    v3Event("ACTION_RECONCILIATION_REQUIRED", { request_base64: "eA==", request_hash: digest }),
+    v3Event("ACTION_RECONCILIATION_RESOLVED", { receipt: receipt() }),
+    v3Event("ACTION_COMPLETED", { receipt: receipt() })
+  ])("decodes the V3 Action event family: $event", (value) => {
     expect(decodeRunEvent(value).event).toBe(value.event);
   });
 
