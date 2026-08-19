@@ -72,8 +72,7 @@
 
   interface OrderDraft {
     name: string;
-    schema_ref: string;
-    schema_revision: string;
+    schema: { ref: string; revision: string };
     value: string;
     error: string | null;
   }
@@ -433,8 +432,7 @@
     if (graph.workflow_format_version !== 3) return [];
     return graph.orders.map((order) => ({
       name: order.name,
-      schema_ref: order.schema_ref,
-      schema_revision: order.schema_revision,
+      schema: order.schema,
       value: "",
       error: null
     }));
@@ -456,7 +454,7 @@
   }
 
   function schemaHint(order: OrderDraft): string {
-    return `${order.schema_ref}@${order.schema_revision}`;
+    return `${order.schema.ref}@${order.schema.revision}`;
   }
 
   async function startDraft(): Promise<void> {
@@ -872,11 +870,11 @@
                       {#each publishedOrders(published) ?? [] as order (order.name)}
                         <li>
                           <strong>{order.name}</strong>
-                          <span class="muted">{order.schema_ref}</span>
+                          <span class="muted">{order.schema.ref}</span>
                           <ProofAnchor
                             label={`Schema of ${order.name}`}
                             seals="the published schema this order pinned"
-                            value={order.schema_revision}
+                            value={order.schema.revision}
                           />
                         </li>
                       {/each}

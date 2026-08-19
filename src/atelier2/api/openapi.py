@@ -218,7 +218,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "temporarily-unavailable",
         "internal-error",
     ),
-    (API_PREFIX + "/workflow-revisions/{revision_hash}", "get"): (
+    (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): (
         "invalid-revision-hash",
         "workflow-revision-not-found",
         "temporarily-unavailable",
@@ -656,9 +656,9 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
                 "query",
             ),
             (
-                API_PREFIX + "/workflow-revisions/{revision_hash}",
+                API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
                 "get",
-                "revision_hash",
+                "workflow_revision_hash",
                 "path",
             ),
         ),

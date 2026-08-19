@@ -308,9 +308,16 @@ def test_a_consumer_drives_four_round_trips_without_renaming_a_single_value(
 
     # The roles and the declared orders are lists of values rather than fields,
     # so they travel as values: the role the document binds, and the name the
-    # document demands at start.
+    # document demands at start. The schema hull is the author's own
+    # `schema: {ref, revision}` — carried, not rebuilt under other names.
     (role,) = graph["agent_roles"]
     (declared_order,) = graph["orders"]
+    assert carried(declared_order["schema"], "ref", "revision") == {
+        "ref": "order-schema",
+        "revision": carried(order_schema, "schema_revision_hash")[
+            "schema_revision_hash"
+        ],
+    }
     started = answered(
         client.post(
             RUN_PATH,

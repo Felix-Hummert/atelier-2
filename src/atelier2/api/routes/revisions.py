@@ -438,8 +438,8 @@ async def get_revision_by_name(
 ) -> CatalogNameResolutionResource:
     """Answer which revision a catalog name holds, and nothing about running it.
 
-    Registered before `/{revision_hash}` on purpose: that path would otherwise
-    claim `by-name` and refuse every name as a malformed hash.
+    Registered before `/{workflow_revision_hash}` on purpose: that path would
+    otherwise claim `by-name` and refuse every name as a malformed hash.
     """
 
     try:
@@ -477,14 +477,14 @@ async def get_revision_by_name(
 
 
 @router.get(
-    API_PREFIX + "/workflow-revisions/{revision_hash}",
+    API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
     response_model=WorkflowRevisionDetailResource,
 )
 async def get_revision(
-    revision_hash: str, context: ApiContext = api_context_dependency
+    workflow_revision_hash: str, context: ApiContext = api_context_dependency
 ) -> WorkflowRevisionDetailResource:
     try:
-        parsed = parse_revision_hash(revision_hash)
+        parsed = parse_revision_hash(workflow_revision_hash)
     except InvalidRevisionHash as error:
         raise ApiProblem("invalid-revision-hash") from error
     result = await run_control_query(

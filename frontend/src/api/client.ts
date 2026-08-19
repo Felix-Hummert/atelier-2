@@ -106,8 +106,8 @@ const workflowGraphV2Schema = z
  * `node_previews` is an excerpt — id, kind, role, instruction start, and the
  * authored `depends_on` edges — not the authored node. The browser must not
  * parse `document_base64` to learn the same facts. `orders` is the same class
- * of answer for the material a start must supply: name plus the schema the
- * author pinned, never the schema bytes.
+ * of answer for the material a start must supply: name plus the author's own
+ * `schema: {ref, revision}` hull, never the schema bytes.
  */
 const workflowNodePreviewSchema = z
   .object({
@@ -121,15 +121,21 @@ const workflowNodePreviewSchema = z
 
 export { workflowNodePreviewSchema };
 
-const workflowDeclaredOrderSchema = z
+const workflowDeclaredSchemaSchema = z
   .object({
-    name: z.string().min(1),
-    schema_ref: z.string().min(1),
-    schema_revision: z.string().min(1)
+    ref: z.string().min(1),
+    revision: z.string().min(1)
   })
   .strict();
 
-export { workflowDeclaredOrderSchema };
+const workflowDeclaredOrderSchema = z
+  .object({
+    name: z.string().min(1),
+    schema: workflowDeclaredSchemaSchema
+  })
+  .strict();
+
+export { workflowDeclaredOrderSchema, workflowDeclaredSchemaSchema };
 
 const workflowGraphV3Schema = z
   .object({
