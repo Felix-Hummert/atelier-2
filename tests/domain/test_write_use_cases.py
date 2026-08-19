@@ -26,6 +26,13 @@ from atelier2.application.cancel_agent_attempt import (
     ReplacementNotAllowed,
     cancel_agent_attempt,
 )
+from atelier2.application.publish_adapter_operation_revision import (
+    AdapterOperationPublicationCollision,
+    AdapterOperationPublicationCreated,
+    AdapterOperationPublicationExisting,
+    AdapterOperationPublicationInvalid,
+    publish_adapter_operation_revision,
+)
 from atelier2.application.publish_agent_configurations import (
     PUBLISHED_CONFIGURATION_FORMAT,
     AgentConfigurationRevisionCollision,
@@ -71,6 +78,7 @@ from atelier2.application.start_published_run import (
     RunCreated,
     start_published_run,
 )
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationRefusal
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptCancellation,
@@ -311,6 +319,10 @@ BUDGET_DOCUMENT = b'{"attempt_deadline_seconds": 900}'
 BUDGET_REVISION = PublishedRevision(RevisionKind.BUDGET_POLICY, BUDGET_DOCUMENT)
 TOOL_GRANT_DOCUMENT = b'{"capability": "run-project-verification"}'
 TOOL_GRANT_REVISION = PublishedRevision(RevisionKind.TOOL, TOOL_GRANT_DOCUMENT)
+ADAPTER_OPERATION_DOCUMENT = b'{"operation": "open-pr"}'
+ADAPTER_OPERATION_REVISION = PublishedRevision(
+    RevisionKind.ADAPTER_OPERATION, ADAPTER_OPERATION_DOCUMENT
+)
 
 
 class ScriptedRegistry:
@@ -437,6 +449,47 @@ def test_a_grant_this_runtime_cannot_redeem_is_refused_before_the_store_is_asked
 
     assert isinstance(result, ToolGrantPublicationInvalid)
     assert result.verdict.reason is ToolGrantRefusal.MISSING_CAPABILITY
+    assert registry.published == []
+
+
+@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        (
+            PublishedRevisionCreated(ADAPTER_OPERATION_REVISION),
+            AdapterOperationPublicationCreated(ADAPTER_OPERATION_REVISION),
+        ),
+        (
+            PublishedRevisionExisting(ADAPTER_OPERATION_REVISION),
+            AdapterOperationPublicationExisting(ADAPTER_OPERATION_REVISION),
+        ),
+        (PublishedRevisionCollision(), AdapterOperationPublicationCollision()),
+        *WRITE_REFUSALS,
+    ],
+    ids=lambda value: type(value).__name__,
+)
+def test_every_port_answer_of_an_adapter_operation_publication_becomes_this_layers_own_outcome(
+    port_answer: Any, expected: Any
+) -> None:
+    registry = ScriptedRegistry(port_answer)
+
+    assert (
+        publish_adapter_operation_revision(ADAPTER_OPERATION_DOCUMENT, registry)
+        == expected
+    )
+    assert registry.published == [ADAPTER_OPERATION_REVISION]
+
+
+def test_an_operation_this_runtime_cannot_perform_is_refused_before_the_store_is_asked() -> (
+    None
+):
+    registry = ScriptedRegistry(PublishedRevisionCreated(ADAPTER_OPERATION_REVISION))
+
+    result = publish_adapter_operation_revision(b"{}", registry)
+
+    assert isinstance(result, AdapterOperationPublicationInvalid)
+    assert result.verdict.reason is AdapterOperationRefusal.MISSING_OPERATION
     assert registry.published == []
 
 

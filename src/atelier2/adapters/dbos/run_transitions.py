@@ -63,11 +63,11 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.when import RecordedAt, recorded_instant
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
-    ActionNode,
     AgentNodeV2,
     WorkflowGraphV2,
 )
 from atelier2.contracts.workflows_v3 import (
+    ANY_ACTION_NODE_KINDS,
     ANY_WAIT_NODE_KINDS,
     AgentNodeV3,
     AnyWorkflowDocument,
@@ -280,7 +280,7 @@ def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
     ):
         raise RunTransitionConflict("WAITING_INPUT must name a Wait node")
     if run.state is RunState.WAITING_RECONCILIATION and not isinstance(
-        node, ActionNode
+        node, ANY_ACTION_NODE_KINDS
     ):
         raise RunTransitionConflict("WAITING_RECONCILIATION must name an Action node")
     if run.state is RunState.COMPLETED and not is_sink_node(graph, run.current_node_id):
@@ -499,7 +499,7 @@ def _commit_event(
     ):
         raise RunTransitionConflict("WAITING_INPUT target is not a Wait node")
     if target_state is RunState.WAITING_RECONCILIATION and not isinstance(
-        target_node, ActionNode
+        target_node, ANY_ACTION_NODE_KINDS
     ):
         raise RunTransitionConflict("WAITING_RECONCILIATION target is not an Action")
     if terminal != (target_state in {RunState.COMPLETED, RunState.FAILED}):

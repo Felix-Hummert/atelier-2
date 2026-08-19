@@ -713,11 +713,12 @@ def register_durable_run_workflow(
     def durable_action_continuation(logical_key: str, revision_hash: str) -> str:
         typed_key = LogicalEffectKey(logical_key)
         typed_revision = WorkflowRevisionHash(revision_hash)
-        run_id, successor = checkpoint_confirmed_action(
+        run_id, head, state = checkpoint_confirmed_action(
             datasource, typed_key, typed_revision
         )
-        start_node(RunId(run_id), typed_revision, successor)
-        return RunState.STARTED.value
+        if RunState(state) is RunState.STARTED:
+            start_node(RunId(run_id), typed_revision, head)
+        return state
 
     @DBOS.workflow(name=ANSWER_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_answer(run_id: str, revision_hash: str, node_id: str) -> str:

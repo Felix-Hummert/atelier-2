@@ -18,6 +18,7 @@ from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import (
     PROJECTION_LIMIT_DETAIL,
     ApiProblem,
+    adapter_operation_document_problem_code,
     budget_document_problem_code,
     schema_document_problem_code,
     tool_grant_document_problem_code,
@@ -33,6 +34,7 @@ from atelier2.api.wire.requests import (
     RevisionListingView,
 )
 from atelier2.api.wire.resources import (
+    AdapterOperationRevisionResource,
     AnyWorkflowRevisionPageResource,
     BudgetRevisionResource,
     CatalogAdmissionResource,
@@ -49,6 +51,12 @@ from atelier2.application.admit_catalog_member import (
     CatalogDisplayNameInvalid,
     CatalogExplicitNameRequired,
     CatalogRevisionUnpublished,
+)
+from atelier2.application.publish_adapter_operation_revision import (
+    AdapterOperationPublicationCollision,
+    AdapterOperationPublicationCreated,
+    AdapterOperationPublicationExisting,
+    AdapterOperationPublicationInvalid,
 )
 from atelier2.application.publish_budget_revision import (
     BudgetPublicationCollision,
@@ -226,6 +234,46 @@ async def publish_tool_grant_revision_route(
     return resource_response(
         ToolGrantRevisionResource(
             tool_grant_revision_hash=revision.revision_hash.value
+        ),
+        status,
+    )
+
+
+@router.post(
+    API_PREFIX + "/adapter-operation-revisions",
+    response_model=AdapterOperationRevisionResource,
+    status_code=HTTPStatus.CREATED,
+    responses={HTTPStatus.OK: {"model": AdapterOperationRevisionResource}},
+)
+async def publish_adapter_operation_revision_route(
+    request: Request, context: ApiContext = api_context_dependency
+) -> JSONResponse:
+    require_media_type(request, "application/json")
+    document = await request.body()
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.publish_adapter_operation_revision(document),
+    )
+    match result:
+        case AdapterOperationPublicationCreated(revision):
+            status = HTTPStatus.CREATED
+        case AdapterOperationPublicationExisting(revision):
+            status = HTTPStatus.OK
+        case AdapterOperationPublicationInvalid(verdict):
+            raise ApiProblem(
+                adapter_operation_document_problem_code(verdict.reason), str(verdict)
+            )
+        case AdapterOperationPublicationCollision():
+            raise ApiProblem("adapter-operation-revision-collision")
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return resource_response(
+        AdapterOperationRevisionResource(
+            adapter_operation_revision_hash=revision.revision_hash.value
         ),
         status,
     )

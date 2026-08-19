@@ -208,9 +208,10 @@ class RunEventBaseResourceV3(ApiModel):
 
     A format-3 line writes agent events through the same attempt store as V2 and
     its pauses through the same wait path, so the rail travels with all of them
-    the same way. V1 stays byte-frozen and cannot carry it. Action and
-    Subworkflow V3 resources are not invented here: no format-3 run persists
-    those kinds today.
+    the same way. A linear Action persists the same durable-effect kinds V2
+    already names, so those receipts travel here with the rail. V1 stays
+    byte-frozen and cannot carry it. Subworkflow V3 resources are not invented
+    here: no format-3 run persists that kind today.
     """
 
 
@@ -283,6 +284,22 @@ class WaitingInputEventResourceV3(RunEventBaseResourceV3):
     event: Literal["WAITING_INPUT"]
 
 
+class ActionReconciliationRequiredEventResourceV3(RunEventBaseResourceV3):
+    event: Literal["ACTION_RECONCILIATION_REQUIRED"]
+    request_base64: str
+    request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ActionReconciliationResolvedEventResourceV3(RunEventBaseResourceV3):
+    event: Literal["ACTION_RECONCILIATION_RESOLVED"]
+    receipt: EffectReceiptResource
+
+
+class ActionCompletedEventResourceV3(RunEventBaseResourceV3):
+    event: Literal["ACTION_COMPLETED"]
+    receipt: EffectReceiptResource
+
+
 class WaitAnsweredEventResourceV3(RunEventBaseResourceV3):
     """The exact bytes a person answered with, and the hash the run kept.
 
@@ -302,6 +319,9 @@ RunEventResourceV3 = Annotated[
     | AgentCancelRequestedEventResourceV3
     | AgentCancelledEventResourceV3
     | AgentInterruptedEventResourceV3
+    | ActionReconciliationRequiredEventResourceV3
+    | ActionReconciliationResolvedEventResourceV3
+    | ActionCompletedEventResourceV3
     | WaitingInputEventResourceV3
     | WaitAnsweredEventResourceV3,
     Field(discriminator="event"),

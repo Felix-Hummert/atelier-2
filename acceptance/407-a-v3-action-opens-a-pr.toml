@@ -1,0 +1,21 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/407"
+
+# FIRST SLICE: V3 Action open-pr through a fake GitHub adapter, no Agent grant.
+#
+# A format-3 line Agent → Action pins a published adapter-operation revision
+# named open-pr. The Action's request is the predecessor Agent output. The test
+# runtime injects a fake GitHub EffectAdapterFactory that records one branch and
+# pull-request number, carries the request hash in the pull-request body, and
+# answers a replay by readback. The token never enters the lease, a receipt, an
+# event or an API projection, and the lease listing has no .git. Live GitHub,
+# the Agent-grant twin, a mutated lease as the request, and flipping ADR 0010
+# to ACCEPTED are not this slice.
+
+[[sentence]]
+id = "an-open-pr-adapter-operation-is-published-and-pinned-by-a-v3-action"
+text = "An adapter-operation revision naming open-pr published through POST /adapter-operation-revisions is stored under its exact-bytes hash as kind adapter_operation, an unknown operation is refused by name before anything is stored, and a V3 Action that pins that hash is admitted as the linear successor of an Agent."
+
+[[sentence]]
+id = "a-v3-action-opens-one-pr-and-a-replay-does-not-create-a-twin"
+text = "A V3 Agent then Action line opens exactly one pull request through the GitHub adapter, a replay after crash finds that same pull request rather than a twin, and the lease, receipts, events and API projection carry neither a token nor a .git directory."

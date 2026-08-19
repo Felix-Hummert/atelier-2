@@ -77,6 +77,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/schema-revisions",
     API_PREFIX + "/budget-revisions",
     API_PREFIX + "/tool-grant-revisions",
+    API_PREFIX + "/adapter-operation-revisions",
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/by-name/{name}",
     API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
@@ -134,6 +135,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/tool-grant-revisions",
         "publish_tool_grant_revision_route",
     ),
+    (
+        "POST",
+        API_PREFIX + "/adapter-operation-revisions",
+        "publish_adapter_operation_revision_route",
+    ),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
     (
@@ -180,6 +186,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/artifacts", "post"): {"200", "201"},
     (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/tool-grant-revisions", "post"): {"200", "201"},
+    (API_PREFIX + "/adapter-operation-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
@@ -246,8 +253,9 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head admits `PROJECT_VERIFICATION_FAILED` on the V3 `AGENT_FAILED`
-    event. Refreshing the artefact alongside a refactor is what this test still
+    it. This head admits V3 Action events (`ACTION_COMPLETED` and the
+    reconciliation twins) beside the V24 `PROJECT_VERIFICATION_FAILED` member.
+    Refreshing the artefact alongside a refactor is what this test still
     refuses.
     """
 
@@ -358,6 +366,10 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
         "post"
     ]["requestBody"]
     assert grant_publication_body == schema_publication_body
+    operation_publication_body = schema["paths"][
+        API_PREFIX + "/adapter-operation-revisions"
+    ]["post"]["requestBody"]
+    assert operation_publication_body == schema_publication_body
 
     for path in (
         API_PREFIX + "/auth-profile-revisions",
