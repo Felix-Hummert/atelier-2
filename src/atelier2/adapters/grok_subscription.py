@@ -297,6 +297,31 @@ class GrokSubscriptionSettings:
             raise ValueError("the Grok executable search path must be nonempty")
 
 
+_BARE_STRING_SCHEMA_FIELDS = frozenset({"type", "minLength", "maxLength"})
+
+
+def _is_bare_string_schema(document: bytes | None) -> bool:
+    """A plain `type: string` schema, optionally with length bounds.
+
+    Measured 19.08.2026 on grok 1.0.4 / grok-4.6 (#392): sending this shape as
+    `--json-schema` forces one JSON document. The model fills it with an
+    announcement or trails `<|eos|>`. `structuredOutput` is the parsed `text`,
+    not a later answer — Extra-data leaves the twin absent
+    (`structuredOutputError`); an announcement twin is the same sentence.
+    Those bytes stay off the flag. Object schemas still travel.
+    """
+
+    if document is None:
+        return False
+    try:
+        payload = json.loads(document)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict) or payload.get("type") != "string":
+        return False
+    return set(payload) <= _BARE_STRING_SCHEMA_FIELDS
+
+
 def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, ...]:
     """The `--json-schema` pair, or nothing where the node declared none.
 
@@ -306,12 +331,16 @@ def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, 
     ignores it is still refused by the seam. The CLI accepts
     `{"type":"string"}` and refuses a boolean schema (`true`) with
     "must be a JSON object describing a JSON Schema"; this seam does not
-    rewrite that form. Re-measured 19.08.2026 on build d846eb93d9: the
-    completion then carries `structuredOutput` as the parsed `text`. The
-    decoder still takes `text`, because a string schema needs those JSON
-    bytes; the parsed value is the unquoted body.
+    rewrite that form. A bare string schema is the exception: the flag stays
+    off and the decoder serializes free `text` itself (see
+    `_is_bare_string_schema`). Re-measured 19.08.2026 on build d846eb93d9:
+    other schemas still carry `structuredOutput` as the parsed `text`. The
+    decoder still takes `text` for those, because a string body needs those
+    JSON bytes; the parsed value is the unquoted body.
     """
-    if declared_output_schema_bytes is None:
+    if declared_output_schema_bytes is None or _is_bare_string_schema(
+        declared_output_schema_bytes
+    ):
         return ()
     try:
         return (
@@ -596,6 +625,9 @@ class GrokSubscriptionExecutor:
     _closed: threading.Event = field(
         default_factory=threading.Event, init=False, compare=False, repr=False
     )
+    _string_schema_homes: set[Path] = field(
+        default_factory=set, init=False, compare=False, repr=False
+    )
 
     def _invocation_arguments(
         self,
@@ -623,6 +655,9 @@ class GrokSubscriptionExecutor:
         registered = False
         try:
             attest_grok_containment(settings, state_directory)
+            if _is_bare_string_schema(request.declared_output_schema_bytes):
+                with self._lifecycle_lock:
+                    self._string_schema_homes.add(state_directory)
             command = AgentProcessCommand(
                 self._invocation_arguments(
                     binding.configuration.model,
@@ -649,7 +684,6 @@ class GrokSubscriptionExecutor:
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
-        del invocation
         if completion.return_code != 0:
             return _UNUSABLE_PROVIDER_ANSWER
         if len(completion.standard_output) > GROK_SUBSCRIPTION_FRAME_BYTES:
@@ -667,10 +701,18 @@ class GrokSubscriptionExecutor:
         # assistant message. An empty or missing `text` is a named refusal —
         # passing `thought`, the parsed value, or the raw frame would hand
         # the schema seam the story of the run or an unquoted string body.
+        # A bare string schema never took that flag: free `text` is serialized
+        # here so the seam sees one JSON string by construction.
         text = envelope.get(_TEXT_FIELD)
         if not isinstance(text, str) or text == "":
             return _UNUSABLE_PROVIDER_ANSWER
-        output_bytes = text.encode("utf-8")
+        home = dict(invocation.command.environment).get(_HOME_VARIABLE)
+        with self._lifecycle_lock:
+            canonicalize = home is not None and Path(home) in self._string_schema_homes
+        if canonicalize:
+            output_bytes = json.dumps(text, ensure_ascii=False).encode("utf-8")
+        else:
+            output_bytes = text.encode("utf-8")
         if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
             return _UNUSABLE_PROVIDER_ANSWER
         return AgentExecutionResult(output_bytes)
@@ -698,6 +740,7 @@ class GrokSubscriptionExecutor:
             except FileNotFoundError:
                 pass
             self._invocation_directories.remove(directory)
+            self._string_schema_homes.discard(directory)
 
     def close(self) -> None:
         with self._lifecycle_lock:
@@ -709,10 +752,12 @@ class GrokSubscriptionExecutor:
                     shutil.rmtree(directory)
                 except FileNotFoundError:
                     self._invocation_directories.remove(directory)
+                    self._string_schema_homes.discard(directory)
                 except OSError as error:
                     errors.append(error)
                 else:
                     self._invocation_directories.remove(directory)
+                    self._string_schema_homes.discard(directory)
         if len(errors) == 1:
             raise errors[0]
         if errors:

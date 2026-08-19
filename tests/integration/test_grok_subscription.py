@@ -295,8 +295,9 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
     # Distinctive spacing so a json.loads/dumps rewrite of the published
-    # document fails this pin rather than silently agreeing.
-    declared_schema = b'{"type": "string"}'
+    # document fails this pin rather than silently agreeing. An object
+    # schema: a bare string no longer travels as `--json-schema`.
+    declared_schema = b'{"type": "object", "additionalProperties": false}'
     request = subscription_request(
         model="grok-4", job=b"draw the owl", declared_output_schema=declared_schema
     )
@@ -314,7 +315,7 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         "--output-format",
         "json",
         "--json-schema",
-        '{"type": "string"}',
+        '{"type": "object", "additionalProperties": false}',
         "--model",
         "grok-4",
         "--prompt-file",
@@ -354,7 +355,7 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert observed["arguments"][0] == str(settings.executable)
     assert (
         observed["arguments"][observed["arguments"].index("--json-schema") + 1]
-        == '{"type": "string"}'
+        == '{"type": "object", "additionalProperties": false}'
     )
     assert observed["job"] == "draw the owl"
     assert observed["stdin"] == ""
@@ -366,6 +367,51 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     executor.release_credential_channel(command)
     assert not invocation_home.exists()
     assert (settings.credential_directory / "auth.json").read_bytes() == b"{}"
+
+
+def test_a_bare_string_schema_does_not_travel_as_json_schema(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    request = subscription_request(
+        declared_output_schema=b'{"type": "string", "minLength": 1}'
+    )
+
+    command = executor.prepare_process(request)
+
+    assert "--json-schema" not in command.arguments
+    executor.release_credential_channel(command)
+
+
+def test_a_bare_string_schema_answer_is_serialized_as_a_json_string(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    request = subscription_request(declared_output_schema=b'{"type":"string"}')
+    command = executor.prepare_process(request)
+    invocation = leased(command, leased_workspace(tmp_path))
+    prose = "Befund 1: der Diff nennt die apt-Lock-Heilung."
+
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text=prose,
+                thought="Ich prüfe zuerst die Regeln.",
+            ),
+            b"",
+        ),
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert result == AgentExecutionResult(
+        json.dumps(prose, ensure_ascii=False).encode()
+    )
+    assert json.loads(result.output_bytes) == prose
+    executor.release_credential_channel(command)
 
 
 def test_a_node_without_a_declared_schema_does_not_invent_a_json_schema_flag(
