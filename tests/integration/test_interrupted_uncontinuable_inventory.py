@@ -1,11 +1,12 @@
 """Serve-start recovery of leftover INTERRUPTED runs.
 
-The five leftover STARTED rows after #339 are this class and its neighbours:
+The leftover STARTED rows after #339 are this class and its neighbours:
 an attempt already INTERRUPTED under atelier2-driver-lost, a silent successor
-whose durable node workflow is gone, and the two shapes the #339 guardians
-already protect. A silent successor whose node workflow is still pending
-under the running application version is named, not invented. This file
-prepares those rows and asks serve start to end only what it can name.
+whose durable node workflow is gone — with or without a durable request on
+the current node — and the two shapes the #339 guardians already protect. A
+silent successor whose node workflow is still pending under the running
+application version is named, not invented. This file prepares those rows
+and asks serve start to end only what it can name.
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
+    _PRODUCT_TRIGGERS,
     agent_attempts,
+    node_execution_requests_v3,
     node_receipts_v3,
     run_events,
     runs,
@@ -324,6 +327,23 @@ def silent_successor(runtime: DbosRuntime, run_id: RunId) -> AgentAttemptExecuti
     return execution
 
 
+def requestless_silent_successor(
+    runtime: DbosRuntime, run_id: RunId
+) -> AgentAttemptExecution:
+    """The measured leftover: successor never prepared a durable request.
+
+    A modern start writes every node's request in the start transaction.
+    The live row did not — keep_node_receipt returns None, and that is the
+    family. Production cannot delete a request, so the test drops the
+    immutability trigger only long enough to forget the current node's row.
+    """
+
+    execution = silent_successor(runtime, run_id)
+    _forget_current_node_request(runtime, run_id)
+    assert _current_request(runtime, run_id) is None
+    return execution
+
+
 def seed_v1_interrupted(runtime: DbosRuntime, run_id: RunId) -> None:
     """A V1 STARTED row with an INTERRUPTED attempt on the current node.
 
@@ -506,6 +526,53 @@ def _current_receipt(runtime: DbosRuntime, run_id: RunId) -> tuple[str, str] | N
         return None
     reason, _schema, _value = read_stored_node_receipt_reason(str(stored["reason"]))
     return str(stored["disposition"]), reason
+
+
+def _current_node_execution_id(runtime: DbosRuntime, run_id: RunId) -> NodeExecutionId:
+    with runtime.engine.connect() as connection:
+        record = (
+            connection.execute(
+                sa.select(
+                    runs.c.revision_hash,
+                    runs.c.current_node_id,
+                    runs.c.current_round_ordinal,
+                ).where(runs.c.run_id == run_id.value)
+            )
+            .mappings()
+            .one()
+        )
+    return NodeExecutionId.for_node(
+        run_id,
+        WorkflowRevisionHash(str(record["revision_hash"])),
+        str(record["current_node_id"]),
+        int(record["current_round_ordinal"]),
+    )
+
+
+def _current_request(runtime: DbosRuntime, run_id: RunId) -> str | None:
+    with runtime.engine.connect() as connection:
+        value = connection.scalar(
+            sa.select(node_execution_requests_v3.c.request_hash).where(
+                node_execution_requests_v3.c.node_execution_id
+                == _current_node_execution_id(runtime, run_id).value
+            )
+        )
+    return None if value is None else str(value)
+
+
+def _forget_current_node_request(runtime: DbosRuntime, run_id: RunId) -> None:
+    node_execution_id = _current_node_execution_id(runtime, run_id).value
+    with runtime.engine.begin() as connection:
+        connection.execute(sa.text("DROP TRIGGER node_execution_requests_v3_no_delete"))
+        deleted = connection.execute(
+            node_execution_requests_v3.delete().where(
+                node_execution_requests_v3.c.node_execution_id == node_execution_id
+            )
+        )
+        assert deleted.rowcount == 1
+        connection.execute(
+            sa.text(_PRODUCT_TRIGGERS["node_execution_requests_v3_no_delete"])
+        )
 
 
 @pytest.mark.proves("an-interrupted-uncontinuable-run-ends-under-driver-loss")
@@ -694,6 +761,33 @@ def test_converge_ends_a_silent_successor_whose_durable_workflow_is_the_dead_ver
     )
 
 
+@pytest.mark.proves("a-serve-start-ends-a-run-that-died-between-nodes")
+def test_converge_ends_a_silent_successor_that_never_received_a_request(
+    runtime: DbosRuntime,
+) -> None:
+    """The measured leftover: no durable request on the current node.
+
+    keep_node_receipt reads hashes from that row. Requiring a receipt
+    here is requiring a request nobody wrote. Serve start still ends
+    the run FAILED; the current node stays honestly receipt-less.
+    """
+
+    run_id = RunId("inventory/gap-requestless")
+    requestless_silent_successor(runtime, run_id)
+    before_events = _event_kinds(runtime, run_id)
+
+    ended = converge_uncontinuable_runs(
+        DbosUncontinuableRunStore(runtime.engine, runtime.settings.application_version)
+    )
+
+    assert ended == (run_id,)
+    assert _run_state(runtime, run_id) == RunState.FAILED.value
+    assert _terminal_hash(runtime, run_id) is not None
+    assert _attempt_state(runtime, run_id) == AgentAttemptState.SUCCEEDED.value
+    assert _event_kinds(runtime, run_id) == before_events
+    assert _current_receipt(runtime, run_id) is None
+
+
 def test_converge_does_not_end_a_v1_run(runtime: DbosRuntime) -> None:
     """The frozen V1 wire cannot end as FAILED.
 
@@ -720,6 +814,7 @@ def test_a_serve_start_ends_the_recoverable_class_cases_and_leaves_the_protected
     waiting = RunId("inventory/waiting")
     silent = RunId("inventory/silent")
     gap = RunId("inventory/gap")
+    gap_requestless = RunId("inventory/gap-requestless")
     v1 = RunId("inventory/v1")
     leftover_interrupted(runtime, interrupted)
     leftover_failed(runtime, failed)
@@ -739,6 +834,7 @@ def test_a_serve_start_ends_the_recoverable_class_cases_and_leaves_the_protected
         application_version=runtime.settings.application_version,
     )
     silent_successor(runtime, gap)
+    requestless_silent_successor(runtime, gap_requestless)
     seed_v1_interrupted(runtime, v1)
 
     runtime.launch()
@@ -754,4 +850,6 @@ def test_a_serve_start_ends_the_recoverable_class_cases_and_leaves_the_protected
         PersistedReceiptDisposition.FAILED.value,
         STOP_AFTER_DRIVER_LOSS,
     )
+    assert _run_state(runtime, gap_requestless) == RunState.FAILED.value
+    assert _current_receipt(runtime, gap_requestless) is None
     assert _run_state(runtime, v1) == RunState.STARTED.value

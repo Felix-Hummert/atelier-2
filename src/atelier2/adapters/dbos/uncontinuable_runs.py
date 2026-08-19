@@ -92,8 +92,8 @@ class DbosUncontinuableRunStore:
             )
             if not attempt_family and not gap_family:
                 return False
-            if gap_family and not _name_gap_ending(connection, record):
-                return False
+            if gap_family:
+                _name_gap_ending(connection, record)
             return _lift_started_run(connection, record, run_id)
 
 
@@ -257,8 +257,14 @@ def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, 
     return tuple(named)
 
 
-def _name_gap_ending(connection: Any, record: Mapping[Any, Any]) -> bool:
-    receipt = keep_node_receipt(
+def _name_gap_ending(connection: Any, record: Mapping[Any, Any]) -> None:
+    """Write the failed receipt when the current node has a durable request.
+
+    keep_node_receipt stays honestly receipt-less when no request was
+    written — that is not a refusal of the lift. Hashes are not invented.
+    """
+
+    keep_node_receipt(
         connection,
         NodeExecutionId.for_node(
             RunId(str(record["run_id"])),
@@ -269,7 +275,6 @@ def _name_gap_ending(connection: Any, record: Mapping[Any, Any]) -> bool:
         PersistedReceiptDisposition.FAILED,
         STOP_AFTER_DRIVER_LOSS,
     )
-    return receipt is not None
 
 
 def _lift_started_run(

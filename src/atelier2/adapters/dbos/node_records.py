@@ -138,8 +138,9 @@ def keep_node_receipt(
 
     A run started before this writer existed carries no durable request, and its
     execution stays honestly receipt-less -- returning ``None`` -- rather than
-    receipting a request nobody wrote. A run started by this writer cannot lack
-    the request: both rows leave the same start transaction as the run itself.
+    receipting a request nobody wrote. A later node that never prepared is the
+    same case. A run started by this writer cannot lack the request: both rows
+    leave the same start transaction as the run itself.
 
     A succeeded execution keeps its produced value as `node-artifact/v3` first,
     because the receipt's output row is bound to that artifact by key -- the value

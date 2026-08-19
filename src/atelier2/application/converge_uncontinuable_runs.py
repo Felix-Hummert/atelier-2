@@ -7,7 +7,8 @@ half of that inventory: the attempt is already INTERRUPTED under
 prepared and whose durable workflow will not recover, the run still says
 STARTED, and nothing will ever move it. A serve start walks those rows
 and lifts the existing ending onto the run — the same reason, one level
-up. A V1 row stays out.
+up. A gap node that never received a durable request stays honestly
+receipt-less; the lift does not invent one. A V1 row stays out.
 """
 
 from __future__ import annotations
