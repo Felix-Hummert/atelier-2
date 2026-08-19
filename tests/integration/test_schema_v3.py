@@ -128,6 +128,12 @@ def test_v2_tables_have_exact_secret_free_columns(tmp_path: Path) -> None:
             "provider_id",
             "auth_mode",
         ),
+        "host_project_root_revisions": (
+            "revision_hash",
+            "project_id",
+            "revision_number",
+            "root_path",
+        ),
         "agent_configuration_revisions": (
             "revision_hash",
             "model",

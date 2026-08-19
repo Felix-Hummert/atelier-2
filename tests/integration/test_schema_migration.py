@@ -31,6 +31,7 @@ from atelier2.adapters.dbos.schema import (
     V21_SCHEMA_HANDOFF,
     V22_SCHEMA_HANDOFF,
     V23_SCHEMA_HANDOFF,
+    V24_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -333,16 +334,22 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[23]
         == "6d8a3af85ecc40781c6eea454e33ae625de1cf6d8726ca5c502cdcc33eb2c124"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 24
+    assert V24_SCHEMA_HANDOFF.version == 24
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V24_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[24]
         == "ba573ba80dbdbb5d9b2a93bc6958b7544838915be3e0f5fc816cacc718dfe9c8"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 25
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[25]
+        == "4f671f393dae22c487ab76a026dfd4c6bad72e231f4a9e1ee5acb9e8f8d2849b"
     )
 
 
 @pytest.mark.parametrize(
-    "version", [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    "version", [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
 )
 def test_predecessor_store_is_refused_without_mutation(
     tmp_path: Path, version: int
