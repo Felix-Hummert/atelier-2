@@ -513,8 +513,9 @@ closed durable event history as a resumable server-sent event stream. A served V
 run also names the state of every node of the revision it is bound to, so a reader
 is told where each node stands instead of computing it: one pure function in the
 core derives that rail from the run snapshot, that revision, and the events since,
-with the snapshot authoritative only until an event overtakes it, and success
-carries exactly one name on the wire. Existing
+with the snapshot authoritative only until an event overtakes it. A failed
+terminal snapshot names the failed node and the attempt that ended it, so a list
+read matches the event stream. Success carries exactly one name on the wire. Existing
 V1 JSON and OpenAPI component bytes stay pinned so nothing widens them by
 accident — they moved once, deliberately, when every body learned to name a
 value the way the next request writes it — while exact V2 unions expose

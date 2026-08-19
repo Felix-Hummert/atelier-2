@@ -1,10 +1,14 @@
+import type { NodeState } from "./runProjection";
+
 /**
  * Words the V3 run page speaks. One owner, the #333 ruling: Prompt / Output / Log.
  *
  * Log is not here because the wire does not carry it (#104). Usage is not a
  * recorded receipt field, so its empty words live here rather than being
- * invented at the call site.
+ * invented at the call site. "Yet" is only for a node that may still write;
+ * a finished node is not waiting for those facts.
  */
+
 export const runPageCopy = {
   prompt: "Prompt",
   output: "Output",
@@ -12,9 +16,13 @@ export const runPageCopy = {
   duration: "Duration",
   usage: "Usage",
   usageMissing: "not recorded yet",
+  usageMissingEnded: "not recorded",
   promptEmpty: "Not composed yet.",
+  promptEmptyEnded: "Not composed.",
   outputEmpty: "Nothing written yet.",
+  outputEmptyEnded: "Nothing written.",
   whoEmpty: "No receipt yet.",
+  whoEmptyEnded: "No receipt.",
   finished: "What finished",
   terminalHash: "Terminal hash",
   runConfiguration: "Run configuration",
@@ -30,3 +38,30 @@ export const runPageCopy = {
   sealsConfiguration: "the bindings and inputs this run started under",
   sealsTerminal: "the finished run so an export can verify it"
 } as const;
+
+const ENDED_NODE_STATES: ReadonlySet<NodeState> = new Set([
+  "failed",
+  "succeeded",
+  "cancelled",
+  "interrupted"
+]);
+
+export function nodeHasEnded(state: NodeState): boolean {
+  return ENDED_NODE_STATES.has(state);
+}
+
+export function emptyPromptCopy(state: NodeState): string {
+  return nodeHasEnded(state) ? runPageCopy.promptEmptyEnded : runPageCopy.promptEmpty;
+}
+
+export function emptyOutputCopy(state: NodeState): string {
+  return nodeHasEnded(state) ? runPageCopy.outputEmptyEnded : runPageCopy.outputEmpty;
+}
+
+export function emptyWhoCopy(state: NodeState): string {
+  return nodeHasEnded(state) ? runPageCopy.whoEmptyEnded : runPageCopy.whoEmpty;
+}
+
+export function usageMissingCopy(state: NodeState): string {
+  return nodeHasEnded(state) ? runPageCopy.usageMissingEnded : runPageCopy.usageMissing;
+}

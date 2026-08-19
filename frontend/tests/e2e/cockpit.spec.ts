@@ -844,6 +844,14 @@ test("a node whose answer its own contract refuses never reports success", async
     expect(body.state).toBe("FAILED");
     expect(body.current_node_id).toBe("implement");
     expect(body.terminal_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.node_rail).toEqual([
+      {
+        node_id: "implement",
+        state: "failed",
+        attempt: { ordinal: 1, state: "FAILED" }
+      },
+      { node_id: "review", state: "queued", attempt: null }
+    ]);
   }).toPass({ timeout: 15_000 });
 
   await page.goto(`/atelier/project`);
@@ -855,14 +863,18 @@ test("a node whose answer its own contract refuses never reports success", async
   await expect(page.getByLabel("Run identity")).toHaveText("v3/the-silent-one");
   await expect(page.getByLabel("Where this run stands")).toContainText("Failed");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Done");
+  await expect(page.getByRole("button", { name: "implement — Failed" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Working/ })).toHaveCount(0);
 
-  await page.getByRole("button", { name: /implement/ }).click();
+  await page.getByRole("button", { name: "implement — Failed" }).click();
   // Nothing was written, so there is nothing to show as an output -- and the
   // panel says so honestly rather than dressing the silence as a value.
   await expect(page.getByRole("region", { name: "Prompt" })).toContainText(
     "Write three German sentences about code review."
   );
-  await expect(page.getByRole("region", { name: "Output" })).toContainText("Nothing written yet.");
+  await expect(page.getByRole("region", { name: "Output" })).toContainText("Nothing written.");
+  await expect(page.getByRole("region", { name: "Output" })).not.toContainText("yet");
+  await expect(page.getByText("a moment")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v3-node-refusal.png", fullPage: true });
 });
 
@@ -957,7 +969,8 @@ test("clicking a finished node shows its whole log", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Output" })).toContainText("V3 provider bytes");
   await expect(page.getByLabel("What finished")).toContainText("implement");
   await expect(page.getByLabel("What finished")).not.toContainText("V3 provider bytes");
-  await expect(page.getByText(/not recorded yet/)).toBeVisible();
+  await expect(page.getByText("not recorded")).toBeVisible();
+  await expect(page.getByText(/not recorded yet/)).toHaveCount(0);
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v3-node-detail.png", fullPage: true });
 });
