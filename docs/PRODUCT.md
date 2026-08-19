@@ -843,8 +843,8 @@ runtime without mutation, with no runtime migration or downgrade. An offline
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.
 
-On 2026-08-19 this landing measured how many concurrent fake-executor runs one
-SQLite instance carries. The harness is in-process ASGI on one event loop,
+On 2026-08-19 at `ed6376b` this landing measured how many concurrent
+fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,
 production query-admission bounds, a V3 one-agent document, and
 `RecordingAgentExecutorFactoryV2` — not Claude, Grok, or Codex. It carried 96
 concurrent runs without a named HTTP or stream refusal. The first observed

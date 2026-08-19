@@ -115,9 +115,9 @@ ATELIER2_LOAD_CONCURRENCY=96 uv run --locked pytest --dist loadgroup -n 0 tests/
 `-n 0` keeps the instance on one worker. The report names the start door, the
 event-write door, and one SSE reader per run, then the first observed pressure.
 Raise `ATELIER2_LOAD_CONCURRENCY` until a named refusal appears; the 503 knee
-was not reached at 96 on 2026-08-19 and stays leftover. Writer-lock, process
-spawn, watchdog cgroup, and memory are named only when the harness observes
-them.
+was not reached at 96 on 2026-08-19 (`ed6376b`) and stays leftover.
+Writer-lock, process spawn, watchdog cgroup, and memory are named only when
+the harness observes them.
 
 ## Verification
 
