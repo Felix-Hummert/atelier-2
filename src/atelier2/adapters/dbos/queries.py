@@ -1521,6 +1521,7 @@ class DbosQueries:
         after_run_id: RunId | None,
         after_sequence: int | None,
         limit: int,
+        excluded_identities: tuple[tuple[RunId, int], ...],
     ) -> ReadAttentionEventPageResult:
         if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
             raise ValueError(
@@ -1535,6 +1536,7 @@ class DbosQueries:
                     limit,
                     self._projection_limit,
                     self._event_projection,
+                    excluded_identities,
                 )
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()

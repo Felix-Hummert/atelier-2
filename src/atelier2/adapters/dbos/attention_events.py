@@ -16,9 +16,11 @@ from atelier2.adapters.dbos.schema import event_instants, run_events, runs
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import RunId
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.run_events import (
     AttentionCursorUnknown,
+    AttentionEvent,
     AttentionEventPage,
     ReadAttentionEventPageResult,
 )
@@ -45,6 +47,7 @@ def load_attention_event_page(
     limit: int,
     projection_limit: DurableProjectionLimit,
     project_event: _ProjectEvent,
+    excluded_identities: tuple[tuple[RunId, int], ...],
 ) -> ReadAttentionEventPageResult:
     from atelier2.adapters.dbos.queries import (
         _EVENT_FIELD_COLUMNS,
@@ -71,7 +74,7 @@ def load_attention_event_page(
             ),
         )
         .join(runs, runs.c.run_id == run_events.c.run_id)
-        .add_columns(runs.c.workflow_format_version)
+        .add_columns(runs.c.workflow_format_version, event_instants.c.recorded_at)
         .where(run_events.c.event_kind.in_(_ATTENTION_KIND_VALUES))
         .order_by(
             event_instants.c.recorded_at,
@@ -82,19 +85,12 @@ def load_attention_event_page(
     )
     if origin is not None:
         recorded_at, run_id, sequence = origin
+        identities = ((run_id, sequence),) + tuple(
+            (extra_run_id.value, extra_sequence)
+            for extra_run_id, extra_sequence in excluded_identities
+        )
         statement = statement.where(
-            sa.or_(
-                event_instants.c.recorded_at > recorded_at,
-                sa.and_(
-                    event_instants.c.recorded_at == recorded_at,
-                    run_events.c.run_id > run_id,
-                ),
-                sa.and_(
-                    event_instants.c.recorded_at == recorded_at,
-                    run_events.c.run_id == run_id,
-                    run_events.c.event_sequence > sequence,
-                ),
-            )
+            _same_instant_identity_exclusion(recorded_at, identities)
         )
     records = tuple(connection.execute(statement).mappings().all())
     events = []
@@ -106,14 +102,43 @@ def load_attention_event_page(
             field_columns=_EVENT_FIELD_COLUMNS,
         )
         events.append(
-            project_event(
-                connection,
-                record,
-                WorkflowFormatVersion(int(record["workflow_format_version"])),
-                projection_limit,
+            AttentionEvent(
+                project_event(
+                    connection,
+                    record,
+                    WorkflowFormatVersion(int(record["workflow_format_version"])),
+                    projection_limit,
+                ),
+                RecordedAt(str(record["recorded_at"])),
             )
         )
     return AttentionEventPage(tuple(events))
+
+
+def _same_instant_identity_exclusion(
+    recorded_at: str, identities: tuple[tuple[str, int], ...]
+) -> sa.ColumnElement[bool]:
+    """recorded_at > T OR (recorded_at == T AND identity not in the set)."""
+    later_instant = event_instants.c.recorded_at > recorded_at
+    unique_identities = tuple(dict.fromkeys(identities))
+    if not unique_identities:
+        return later_instant
+    already_emitted = sa.or_(
+        *[
+            sa.and_(
+                run_events.c.run_id == run_id,
+                run_events.c.event_sequence == sequence,
+            )
+            for run_id, sequence in unique_identities
+        ]
+    )
+    return sa.or_(
+        later_instant,
+        sa.and_(
+            event_instants.c.recorded_at == recorded_at,
+            sa.not_(already_emitted),
+        ),
+    )
 
 
 def _resume_origin(

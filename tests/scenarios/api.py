@@ -231,9 +231,12 @@ class UnusedPort:
 
 
 def unused_attention_event_page(
-    after_run_id: object, after_sequence: object, limit: object
+    after_run_id: object,
+    after_sequence: object,
+    limit: object,
+    excluded_identities: object = (),
 ) -> Never:
-    del after_run_id, after_sequence, limit
+    del after_run_id, after_sequence, limit, excluded_identities
     raise AssertionError("attention feed was not under test")
 
 

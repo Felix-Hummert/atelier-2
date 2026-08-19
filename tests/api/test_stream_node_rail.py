@@ -65,8 +65,11 @@ class OnePageOfEvents:
         after_run_id: RunId | None,
         after_sequence: int | None,
         limit: int,
+        excluded_identities: tuple[tuple[RunId, int], ...] = (),
     ) -> Never:
-        return unused_attention_event_page(after_run_id, after_sequence, limit)
+        return unused_attention_event_page(
+            after_run_id, after_sequence, limit, excluded_identities
+        )
 
 
 def agent_completed(projection: RunProjection) -> PersistedRunEvent:

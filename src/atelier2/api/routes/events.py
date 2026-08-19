@@ -136,7 +136,7 @@ async def prepare_attention_events(
         result = await run_control_query(
             context.control_runner,
             lambda: context.use_cases.read_attention_events(
-                after_run_id, after_sequence, 1
+                after_run_id, after_sequence, 1, ()
             ),
         )
         match result:

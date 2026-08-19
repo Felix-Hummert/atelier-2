@@ -143,7 +143,8 @@ class ApiUseCases:
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
     read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
     read_attention_events: Callable[
-        [RunId | None, int | None, int], ReadAttentionEventsResult
+        [RunId | None, int | None, int, tuple[tuple[RunId, int], ...]],
+        ReadAttentionEventsResult,
     ]
     publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
     publish_artifact: Callable[[bytes], PublishArtifactUseCaseResult]

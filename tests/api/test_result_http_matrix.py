@@ -923,8 +923,11 @@ class MatrixQueries:
         after_run_id: RunId | None,
         after_sequence: int | None,
         limit: int,
+        excluded_identities: tuple[tuple[RunId, int], ...] = (),
     ) -> object:
-        return unused_attention_event_page(after_run_id, after_sequence, limit)
+        return unused_attention_event_page(
+            after_run_id, after_sequence, limit, excluded_identities
+        )
 
 
 def _ports(case: RouteResultCase) -> ApiPorts:

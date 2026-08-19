@@ -17,12 +17,12 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
-from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import (
     AttentionCursorUnknown as PortAttentionCursorUnknown,
 )
 from atelier2.ports.run_events import (
+    AttentionEvent,
     AttentionEventPage,
     RunEventQueries,
 )
@@ -39,7 +39,7 @@ from atelier2.ports.workflow_revisions import (
 
 @dataclass(frozen=True)
 class AttentionEventsRead:
-    events: tuple[PersistedRunEvent, ...]
+    events: tuple[AttentionEvent, ...]
 
 
 @dataclass(frozen=True)
@@ -67,9 +67,12 @@ def read_attention_events(
     after_sequence: int | None,
     page_size: int,
     queries: RunEventQueries,
+    excluded_identities: tuple[tuple[RunId, int], ...] = (),
 ) -> ReadAttentionEventsResult:
     """One page of attention events after a cursor, or why there is none to hand on."""
-    match queries.read_attention_event_page(after_run_id, after_sequence, page_size):
+    match queries.read_attention_event_page(
+        after_run_id, after_sequence, page_size, excluded_identities
+    ):
         case AttentionEventPage(events):
             if len(events) > page_size:
                 return AttentionEventPageOversized()

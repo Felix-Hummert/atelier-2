@@ -136,11 +136,14 @@ def bound_use_cases(
             ports.run_event_queries,
         ),
         read_attention_events=(
-            lambda after_run_id, after_sequence, page_size: read_attention_events(
-                after_run_id,
-                after_sequence,
-                page_size,
-                ports.run_event_queries,
+            lambda after_run_id, after_sequence, page_size, excluded_identities=(): (
+                read_attention_events(
+                    after_run_id,
+                    after_sequence,
+                    page_size,
+                    ports.run_event_queries,
+                    excluded_identities,
+                )
             )
         ),
         publish_workflow_revision=lambda document: publish_workflow_revision(
