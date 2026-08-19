@@ -37,6 +37,7 @@ from atelier2.adapters.grok_subscription import (
     GrokExecutableUnsupported,
     GrokSubscriptionAuthModeUnsupported,
     GrokSubscriptionExecutorFactory,
+    GrokSubscriptionProcessCommand,
     GrokSubscriptionSettings,
     GrokWorkspaceToolExecutorFactory,
     attest_grok_workspace_tool_invocation,
@@ -411,6 +412,97 @@ def test_a_bare_string_schema_answer_is_serialized_as_a_json_string(
         json.dumps(prose, ensure_ascii=False).encode()
     )
     assert json.loads(result.output_bytes) == prose
+    executor.release_credential_channel(command)
+
+
+def test_a_bare_string_schema_marks_the_command_not_an_executor_set(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    command = executor.prepare_process(
+        subscription_request(declared_output_schema=b'{"type":"string"}')
+    )
+
+    assert isinstance(command, GrokSubscriptionProcessCommand)
+    assert command.serialize_free_text_as_json_string is True
+    executor.release_credential_channel(command)
+
+
+def test_canonicalization_reads_the_command_mark_not_home(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    prose = "Befund 1: der Diff nennt die apt-Lock-Heilung."
+    command = GrokSubscriptionProcessCommand(
+        ("grok",),
+        (),
+        standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        serialize_free_text_as_json_string=True,
+    )
+
+    result = executor.decode_process_completion(
+        leased(command, leased_workspace(tmp_path)),
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text=prose,
+                thought="Ich prüfe zuerst die Regeln.",
+            ),
+            b"",
+        ),
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert result == AgentExecutionResult(
+        json.dumps(prose, ensure_ascii=False).encode()
+    )
+
+
+def test_an_unmarked_command_does_not_quote_free_text(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    prose = "Befund 1: der Diff nennt die apt-Lock-Heilung."
+    command = GrokSubscriptionProcessCommand(
+        ("grok",),
+        (),
+        standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        serialize_free_text_as_json_string=False,
+    )
+
+    result = executor.decode_process_completion(
+        leased(command, leased_workspace(tmp_path)),
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text=prose,
+                thought="Ich prüfe zuerst die Regeln.",
+            ),
+            b"",
+        ),
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert result == AgentExecutionResult(prose.encode())
+
+
+def test_an_object_schema_does_not_mark_the_command_for_quoting(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    command = executor.prepare_process(
+        subscription_request(
+            declared_output_schema=b'{"type": "object", "additionalProperties": false}'
+        )
+    )
+
+    assert isinstance(command, GrokSubscriptionProcessCommand)
+    assert command.serialize_free_text_as_json_string is False
+    assert "--json-schema" in command.arguments
     executor.release_credential_channel(command)
 
 

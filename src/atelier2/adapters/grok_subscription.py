@@ -614,6 +614,20 @@ def _headless_arguments(
 
 
 @dataclass(frozen=True)
+class GrokSubscriptionProcessCommand(AgentProcessCommand):
+    """One Grok headless command plus the decode mark that travels with it.
+
+    A bare string schema never takes `--json-schema`. The model writes free
+    text; decode serializes it as one JSON string. That yes/no is this field,
+    set at prepare and read at decode. Spark 5341439755 / Desk 5341572142:
+    a HOME-keyed executor set was a prepare→decode state bridge. The
+    invocation is the correlation object; this executor holds none.
+    """
+
+    serialize_free_text_as_json_string: bool = field(default=False, kw_only=True)
+
+
+@dataclass(frozen=True)
 class GrokSubscriptionExecutor:
     settings: GrokSubscriptionSettings
     _invocation_directories: set[Path] = field(
@@ -624,9 +638,6 @@ class GrokSubscriptionExecutor:
     )
     _closed: threading.Event = field(
         default_factory=threading.Event, init=False, compare=False, repr=False
-    )
-    _string_schema_homes: set[Path] = field(
-        default_factory=set, init=False, compare=False, repr=False
     )
 
     def _invocation_arguments(
@@ -655,10 +666,7 @@ class GrokSubscriptionExecutor:
         registered = False
         try:
             attest_grok_containment(settings, state_directory)
-            if _is_bare_string_schema(request.declared_output_schema_bytes):
-                with self._lifecycle_lock:
-                    self._string_schema_homes.add(state_directory)
-            command = AgentProcessCommand(
+            command = GrokSubscriptionProcessCommand(
                 self._invocation_arguments(
                     binding.configuration.model,
                     job_file,
@@ -667,6 +675,9 @@ class GrokSubscriptionExecutor:
                 _child_environment(settings, state_directory),
                 b"",
                 standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+                serialize_free_text_as_json_string=_is_bare_string_schema(
+                    request.declared_output_schema_bytes
+                ),
             )
             with self._lifecycle_lock:
                 if self._closed.is_set():
@@ -702,13 +713,17 @@ class GrokSubscriptionExecutor:
         # passing `thought`, the parsed value, or the raw frame would hand
         # the schema seam the story of the run or an unquoted string body.
         # A bare string schema never took that flag: free `text` is serialized
-        # here so the seam sees one JSON string by construction.
+        # here so the seam sees one JSON string by construction. The yes/no
+        # travels on the command (see `GrokSubscriptionProcessCommand`);
+        # HOME and executor state are not consulted.
         text = envelope.get(_TEXT_FIELD)
         if not isinstance(text, str) or text == "":
             return _UNUSABLE_PROVIDER_ANSWER
-        home = dict(invocation.command.environment).get(_HOME_VARIABLE)
-        with self._lifecycle_lock:
-            canonicalize = home is not None and Path(home) in self._string_schema_homes
+        command = invocation.command
+        canonicalize = (
+            isinstance(command, GrokSubscriptionProcessCommand)
+            and command.serialize_free_text_as_json_string
+        )
         if canonicalize:
             output_bytes = json.dumps(text, ensure_ascii=False).encode("utf-8")
         else:
@@ -740,7 +755,6 @@ class GrokSubscriptionExecutor:
             except FileNotFoundError:
                 pass
             self._invocation_directories.remove(directory)
-            self._string_schema_homes.discard(directory)
 
     def close(self) -> None:
         with self._lifecycle_lock:
@@ -752,12 +766,10 @@ class GrokSubscriptionExecutor:
                     shutil.rmtree(directory)
                 except FileNotFoundError:
                     self._invocation_directories.remove(directory)
-                    self._string_schema_homes.discard(directory)
                 except OSError as error:
                     errors.append(error)
                 else:
                     self._invocation_directories.remove(directory)
-                    self._string_schema_homes.discard(directory)
         if len(errors) == 1:
             raise errors[0]
         if errors:
