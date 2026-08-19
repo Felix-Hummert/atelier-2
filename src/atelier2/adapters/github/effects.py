@@ -32,6 +32,8 @@ from atelier2.contracts.effects import (
     PerformedEffect,
 )
 
+_SQLITE_LOCK_TIMEOUT_SECONDS = 30.0
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS pull_requests(
   request_hash TEXT PRIMARY KEY,
@@ -118,7 +120,9 @@ class GitHubEffectAdapterFactory:
         database_path = self.database_path.resolve()
         if not database_path.is_file():
             return ()
-        with closing(sqlite3.connect(database_path, timeout=30.0)) as connection:
+        with closing(
+            sqlite3.connect(database_path, timeout=_SQLITE_LOCK_TIMEOUT_SECONDS)
+        ) as connection:
             rows = connection.execute(
                 "SELECT branch, pr_number, body, request_hash "
                 "FROM pull_requests ORDER BY pr_number"
@@ -151,7 +155,11 @@ class GitHubEffectAdapter:
         request_hash = intent.request.request_hash.value
         with (
             closing(
-                sqlite3.connect(self._database_path, timeout=30.0, isolation_level=None)
+                sqlite3.connect(
+                    self._database_path,
+                    timeout=_SQLITE_LOCK_TIMEOUT_SECONDS,
+                    isolation_level=None,
+                )
             ) as connection,
             connection,
         ):
@@ -213,7 +221,11 @@ class GitHubEffectAdapter:
 
     def _load(self, request_hash: str) -> tuple[str, int, str, str, bytes, str] | None:
         with (
-            closing(sqlite3.connect(self._database_path, timeout=30.0)) as connection,
+            closing(
+                sqlite3.connect(
+                    self._database_path, timeout=_SQLITE_LOCK_TIMEOUT_SECONDS
+                )
+            ) as connection,
             connection,
         ):
             return _row(

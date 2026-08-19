@@ -147,6 +147,12 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "SQLITE_LOCK_TIMEOUT_SECONDS' value without its owner -- a sweep "
         "follow-up on #251",
     ),
+    "adapters/github/effects.py::_SQLITE_LOCK_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "reader, writer, and list connections of the recorded GitHub effect "
+        "store; mirrors SQLITE_LOCK_TIMEOUT_SECONDS' value without its owner "
+        "-- a sweep follow-up on #251",
+    ),
 }
 """Every bare literal the operator families still contain, each with its owner.
 
