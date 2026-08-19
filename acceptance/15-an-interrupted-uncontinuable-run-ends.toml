@@ -5,8 +5,10 @@ story = "https://github.com/FlexOr2/atelier-2/issues/15"
 # already INTERRUPTED under atelier2-driver-lost, with nothing left that can
 # continue it. The attempt seam stays as #302 wrote it. This slice only lifts
 # the run snapshot, the same way #339 lifted FAILED leftovers. V1 cannot take
-# that lift — the frozen wire refuses FAILED — and a silent successor that
-# never prepared an attempt on the current node is named, not invented.
+# that lift — the frozen wire refuses FAILED — and a silent successor whose
+# node workflow is still pending under the running application version is
+# named, not invented. A silent successor whose durable node workflow is
+# missing or belongs to a version that will not be recovered is #375.
 
 [[sentence]]
 id = "an-interrupted-uncontinuable-run-ends-under-driver-loss"
@@ -14,4 +16,8 @@ text = "A STARTED run whose current node's last attempt is already terminal INTE
 
 [[sentence]]
 id = "a-serve-start-ends-interrupted-uncontinuable-inventory"
-text = "A serve start ends every leftover STARTED run whose current attempt is already INTERRUPTED and nothing can continue, and leaves WAITING_INPUT, a replacement still in flight, a V1 run, and a silent successor that never prepared an attempt on the current node standing."
+text = "A serve start ends every leftover STARTED run whose current attempt is already INTERRUPTED and nothing can continue, and leaves WAITING_INPUT, a replacement still in flight, a V1 run, and a silent successor whose durable node workflow is still pending under the running application version standing."
+
+[[sentence]]
+id = "a-serve-start-ends-a-run-that-died-between-nodes"
+text = "A STARTED run that advanced past a succeeded predecessor onto a node with no attempt, whose durable node workflow is missing or belongs to an application version that will not be recovered, ends as FAILED; the failed node-receipt/v3 on the current node names atelier2-driver-lost, no new event is written, and a silent successor whose node workflow is still pending under the running application version is left standing."
