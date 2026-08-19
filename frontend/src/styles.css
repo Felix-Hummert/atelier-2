@@ -350,15 +350,40 @@ small {
 
 .run-card {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.5rem 1rem;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   padding: 1rem;
   color: var(--ink);
   background: var(--paper);
   text-decoration: none;
+}
+
+.run-card-main {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.run-card-assignment,
+.run-card-when {
+  font-size: 0.82rem;
+}
+
+.run-card-when {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  text-align: right;
+}
+
+.run-card strong,
+.run-card .run-card-when time {
+  color: var(--ink);
 }
 
 .run-card span,

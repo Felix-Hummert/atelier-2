@@ -2,12 +2,14 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/sve
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type { CockpitApi, RunV1 } from "../../src/api/client";
+import type { CockpitApi, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
   completedRun,
   publicReference,
+  revisionHash,
   startedRun,
   waitingInputRun,
   waitingReconciliationRun,
@@ -33,11 +35,58 @@ function openAt(pathname: string, overrides: Partial<CockpitApi> = {}) {
   });
 }
 
-const openProject = (runs: RunV1[], overrides: Partial<CockpitApi> = {}) =>
+const openProject = (runs: Array<RunV1 | RunV3>, overrides: Partial<CockpitApi> = {}) =>
   openAt("/atelier/project", {
     listRuns: vi.fn(async () => ({ items: runs, next_after: null })),
     ...overrides
   });
+
+function listedV3Run(changes: Partial<RunV3> = {}): RunV3 {
+  return {
+    workflow_format_version: 3,
+    run_id: "v3/two-agents",
+    public_run_reference: publicReference,
+    workflow_revision_hash: revisionHash,
+    agent_binding_set_hash: "b".repeat(64),
+    run_configuration_revision_hash: "c".repeat(64),
+    agent_bindings: [],
+    state_version: 1,
+    state: "STARTED",
+    current_node_id: "review",
+    node_rail: [{ node_id: "review", state: "working", attempt: null }],
+    terminal_hash: null,
+    latest_event_cursor: null,
+    started_at: "2026-08-18T15:00:00Z",
+    ended_at: null,
+    ...changes
+  };
+}
+
+function listedV3Revision(name = "Two agents in a line"): WorkflowRevisionDetail {
+  return {
+    workflow_revision_hash: revisionHash,
+    document_base64: "YQ==",
+    graph: {
+      workflow_format_version: 3,
+      executable: true,
+      not_executable_reason: null,
+      node_count: 1,
+      agent_roles: ["builder"],
+      orders: [],
+      node_previews: [
+        {
+          id: "review",
+          kind: "agent",
+          role: "builder",
+          instruction_start: "Do the one thing.",
+          depends_on: []
+        }
+      ],
+      name,
+      description: null
+    }
+  };
+}
 
 describe("the project answers what is happening here", () => {
   it("heads the level with the one project of this installation", async () => {
@@ -71,11 +120,12 @@ describe("the project answers what is happening here", () => {
     expect(within(waiting).getByText("Answer").isConnected).toBe(true);
     expect(within(waiting).getByText("Reconcile").isConnected).toBe(true);
 
-    for (const group of ["Running", "Done"]) {
-      const rows = within(screen.getByRole("region", { name: group })).getAllByRole("link");
-      expect(rows.map((row) => row.textContent?.trim())).toEqual(
-        group === "Running" ? ["alpha"] : ["delta"]
+    for (const group of ["Running", "Done"] as const) {
+      const region = screen.getByRole("region", { name: group });
+      expect(within(region).getByText(group === "Running" ? "alpha" : "delta").isConnected).toBe(
+        true
       );
+      expect(within(region).getByText(THE_ONE_PROJECT).isConnected).toBe(true);
     }
   });
 
@@ -105,6 +155,57 @@ describe("the project answers what is happening here", () => {
 
     expect((await screen.findByText("Looking…")).isConnected).toBe(true);
     expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
+  });
+});
+
+describe("the project lists runs as the operator can scan them", () => {
+  it("names the sort and keeps the newest activity first even when the durable list answers oldest first", async () => {
+    openProject(
+      [
+        listedV3Run({
+          run_id: "older",
+          public_run_reference: "run1.b2xkZXI",
+          started_at: "2026-08-18T14:00:00Z"
+        }),
+        listedV3Run({
+          run_id: "newer",
+          public_run_reference: "run1.bmV3ZXI",
+          started_at: "2026-08-18T16:00:00Z"
+        })
+      ],
+      { getWorkflowRevision: vi.fn(async () => listedV3Revision()) }
+    );
+
+    const running = await screen.findByRole("region", { name: "Running" });
+    expect(screen.getByText("Newest first.").isConnected).toBe(true);
+    const rows = within(running).getAllByRole("link");
+    expect(rows[0]?.textContent).toContain("newer");
+    expect(rows[0]?.textContent).not.toContain("older");
+    expect(rows[1]?.textContent).toContain("older");
+  });
+
+  it("puts the local date and time on the row instead of behind a hover", async () => {
+    openProject([listedV3Run()], {
+      getWorkflowRevision: vi.fn(async () => listedV3Revision())
+    });
+
+    const row = await screen.findByRole("link", { name: /v3\/two-agents/ });
+    const stamp = row.querySelector("time");
+
+    expect(stamp?.getAttribute("datetime")).toBe("2026-08-18T15:00:00Z");
+    expect(stamp?.textContent).toContain("2026");
+    expect(screen.queryByRole("button", { name: "Exact time" })).toBeNull();
+  });
+
+  it("shows the project and the published workflow name on the row", async () => {
+    openProject([listedV3Run()], {
+      getWorkflowRevision: vi.fn(async () => listedV3Revision("Two agents in a line"))
+    });
+
+    const row = await screen.findByRole("link", { name: /v3\/two-agents/ });
+
+    expect(row.textContent).toContain(THE_ONE_PROJECT);
+    expect(row.textContent).toContain("Two agents in a line");
   });
 });
 
