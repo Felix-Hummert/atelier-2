@@ -68,7 +68,7 @@ describe("Wait control", () => {
     expect(answer).toHaveBeenCalledTimes(1);
     const firstRequest = answer.mock.calls[0]?.[0] as WaitMutation;
     expect(exactBody(firstRequest)).toBe(
-      JSON.stringify({ revision_hash: digest, node_id: "wait", answer_base64: "MTc=" })
+      JSON.stringify({ workflow_revision_hash: digest, node_id: "wait", answer_base64: "MTc=" })
     );
     expect(firstRequest.answer_hash).toBe(answerHash);
     expect(screen.getByRole("article", { name: "wait — Working" })).toBeTruthy();

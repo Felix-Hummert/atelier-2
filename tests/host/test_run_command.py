@@ -236,10 +236,10 @@ def published_agent_configuration() -> Answer:
 def published_workflow_revision() -> Answer:
     return Answer(
         WorkflowRevisionDetailResource(
-            revision_hash=REVISION_HASH,
+            workflow_revision_hash=REVISION_HASH,
             document_base64=encode_canonical_base64(WORKFLOW_DOCUMENT),
             graph=WorkflowGraphResourceV2(
-                format_version=2,
+                workflow_format_version=2,
                 start_node_id=AGENT_NODE_ID,
                 nodes=(
                     AgentNodeResourceV2(
@@ -958,7 +958,7 @@ def name_answer() -> Answer:
             {
                 "display_name": NAME,
                 "lineage_id": LINEAGE_ID,
-                "revision_hash": REVISION_HASH,
+                "workflow_revision_hash": REVISION_HASH,
                 "revision_number": REVISION_NUMBER,
             }
         ).encode()
@@ -1470,10 +1470,10 @@ def published_v3_workflow_revision(name: str = V3_WORKFLOW_NAME) -> Answer:
     document = V3_WORKFLOW_DOCUMENT if name == V3_WORKFLOW_NAME else ILLEGAL_V3_DOCUMENT
     return Answer(
         WorkflowRevisionDetailResource(
-            revision_hash=REVISION_HASH,
+            workflow_revision_hash=REVISION_HASH,
             document_base64=encode_canonical_base64(document),
             graph=WorkflowGraphResourceV3(
-                format_version=3,
+                workflow_format_version=3,
                 executable=True,
                 not_executable_reason=None,
                 node_count=1,
@@ -1504,7 +1504,7 @@ def founded_lineage(revision_number: int = 1) -> Answer:
         CatalogAdmissionResource(
             display_name=V3_WORKFLOW_NAME,
             lineage_id=LINEAGE_ID,
-            revision_hash=REVISION_HASH,
+            workflow_revision_hash=REVISION_HASH,
             revision_number=revision_number,
         )
         .model_dump_json()
@@ -1540,7 +1540,7 @@ def test_publishing_a_v3_document_names_it_through_the_admission_door(
 
     assert exit_code == 0
     assert founded == {
-        "revision_hash": REVISION_HASH,
+        "workflow_revision_hash": REVISION_HASH,
         "actor": COMMAND_CATALOG_ACTOR,
         "activated_at": founded["activated_at"],
     }
@@ -1568,7 +1568,7 @@ def test_a_named_run_starts_the_revision_the_just_published_name_holds(
                 {
                     "display_name": V3_WORKFLOW_NAME,
                     "lineage_id": LINEAGE_ID,
-                    "revision_hash": REVISION_HASH,
+                    "workflow_revision_hash": REVISION_HASH,
                     "revision_number": 1,
                 }
             ).encode()
@@ -1642,7 +1642,7 @@ def test_a_held_name_admits_the_new_revision_into_that_lineage(
                 {
                     "display_name": V3_WORKFLOW_NAME,
                     "lineage_id": LINEAGE_ID,
-                    "revision_hash": REVISION_HASH,
+                    "workflow_revision_hash": REVISION_HASH,
                     "revision_number": 1,
                 }
             ).encode()
@@ -1655,7 +1655,7 @@ def test_a_held_name_admits_the_new_revision_into_that_lineage(
 
     assert exit_code == 0
     assert members == {
-        "revision_hash": REVISION_HASH,
+        "workflow_revision_hash": REVISION_HASH,
         "actor": COMMAND_CATALOG_ACTOR,
         "activated_at": members["activated_at"],
     }

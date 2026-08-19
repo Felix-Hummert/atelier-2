@@ -140,7 +140,7 @@
   }> {
     const resolved: Record<string, string> = {};
     const states: Record<string, CatalogNameState> = {};
-    const listed = new Set(items.map((item) => item.revision_hash));
+    const listed = new Set(items.map((item) => item.workflow_revision_hash));
     const names = [
       ...new Set(
         items.flatMap((item) => (item.name === null ? [] : [item.name]))
@@ -326,7 +326,7 @@
    * were each written as "is this version 2", and each was really asking this.
    */
   function bindsAgentRoles(graph: WorkflowRevisionDetail["graph"]): boolean {
-    return graph.format_version === 2 || graph.format_version === 3;
+    return graph.workflow_format_version === 2 || graph.workflow_format_version === 3;
   }
 
   /**
@@ -339,8 +339,8 @@
    * roles" and "which start request" must not be collapsed into one answer.
    */
   function agentRolesOf(graph: WorkflowRevisionDetail["graph"]): string[] {
-    if (graph.format_version === 3) return [...graph.agent_roles];
-    if (graph.format_version === 2) {
+    if (graph.workflow_format_version === 3) return [...graph.agent_roles];
+    if (graph.workflow_format_version === 2) {
       return [
         ...new Set(
           graph.nodes.filter((node) => node.type === "agent").map((node) => node.role)
@@ -357,23 +357,23 @@
   let publicationDocument = "";
 
   function publishedNodeCount(graph: WorkflowRevisionDetail["graph"] | undefined): number | null {
-    return graph?.format_version === 3 ? graph.node_count : null;
+    return graph?.workflow_format_version === 3 ? graph.node_count : null;
   }
 
   function publishedNodePreviews(
     graph: WorkflowRevisionDetail["graph"] | undefined
-  ): Extract<WorkflowRevisionDetail["graph"], { format_version: 3 }>["node_previews"] | null {
-    return graph?.format_version === 3 ? graph.node_previews : null;
+  ): Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["node_previews"] | null {
+    return graph?.workflow_format_version === 3 ? graph.node_previews : null;
   }
 
   function publishedAgentRoles(graph: WorkflowRevisionDetail["graph"] | undefined): string[] | null {
-    return graph?.format_version === 3 ? [...graph.agent_roles] : null;
+    return graph?.workflow_format_version === 3 ? [...graph.agent_roles] : null;
   }
 
   function publishedOrders(
     graph: WorkflowRevisionDetail["graph"] | undefined
-  ): Extract<WorkflowRevisionDetail["graph"], { format_version: 3 }>["orders"] | null {
-    return graph?.format_version === 3 ? graph.orders : null;
+  ): Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["orders"] | null {
+    return graph?.workflow_format_version === 3 ? graph.orders : null;
   }
 
   function yamlOfPublishedDocument(detail: WorkflowRevisionDetail): string | null {
@@ -390,7 +390,7 @@
     revision: WorkflowRevisionSummary,
     graph: WorkflowRevisionDetail["graph"] | undefined
   ): string {
-    const parts = [`format ${revision.format_version}`];
+    const parts = [`format ${revision.workflow_format_version}`];
     const nodeCount = publishedNodeCount(graph);
     const roles = publishedAgentRoles(graph);
     if (nodeCount !== null) parts.push(`${nodeCount} nodes`);
@@ -430,7 +430,7 @@
   }
 
   function declaredOrdersOf(graph: WorkflowRevisionDetail["graph"]): OrderDraft[] {
-    if (graph.format_version !== 3) return [];
+    if (graph.workflow_format_version !== 3) return [];
     return graph.orders.map((order) => ({
       name: order.name,
       schema_ref: order.schema_ref,
@@ -482,13 +482,13 @@
         selected.orders.length > 0
           ? startMutationV3(
               selected.runId,
-              selected.revision.revision_hash,
+              selected.revision.workflow_revision_hash,
               bound,
               selected.orders.map((order) => ({ name: order.name, value: order.value }))
             )
-          : startMutationV2(selected.runId, selected.revision.revision_hash, bound);
+          : startMutationV2(selected.runId, selected.revision.workflow_revision_hash, bound);
     } else {
-      mutation = startMutation(selected.runId, selected.revision.revision_hash);
+      mutation = startMutation(selected.runId, selected.revision.workflow_revision_hash);
     }
     operation = "start";
     failureMessage = null;
@@ -539,7 +539,7 @@
       status: result.status,
       target: mutation.target,
       request_body_base64: mutation.body_base64,
-      revision_hash: result.value.revision_hash,
+      revision_hash: result.value.workflow_revision_hash,
       document_base64: result.value.document_base64
     });
     if (!resolved) throw new Error("The publication response did not prove the exact request.");
@@ -547,10 +547,10 @@
     editYaml = null;
     prepareDraft(result.value);
     await loadRevisions();
-    const name = result.value.graph.format_version === 3 ? result.value.graph.name : null;
+    const name = result.value.graph.workflow_format_version === 3 ? result.value.graph.name : null;
     if (name !== null) {
       const key = `named:${name}`;
-      selectedHashByKey = { ...selectedHashByKey, [key]: result.value.revision_hash };
+      selectedHashByKey = { ...selectedHashByKey, [key]: result.value.workflow_revision_hash };
       chosenRowKey = key;
     }
   }
@@ -791,11 +791,11 @@
           revision,
           revision.name === null ? undefined : catalogByName[revision.name]
         )}
-        {@const published = publishedDetails[revision.revision_hash]?.graph}
+        {@const published = publishedDetails[revision.workflow_revision_hash]?.graph}
         <article
           class="saved-workflow form-{catalogForm}"
           data-catalog-form={catalogForm}
-          aria-label={row.name ?? revision.revision_hash}
+          aria-label={row.name ?? revision.workflow_revision_hash}
         >
           <span class="form-mark" aria-hidden="true"></span>
           <div class="saved-workflow-body">
@@ -809,13 +809,13 @@
                   disabled={busy || !cockpitCanShow(revision)}
                   onchange={() => {
                     chosenRowKey = row.key;
-                    void chooseSaved(revision.revision_hash);
+                    void chooseSaved(revision.workflow_revision_hash);
                   }}
                 />
                 <span class="revision-label">
                   {#if revision.name === null}
-                    <code class="revision-hash">{revision.revision_hash}</code>
-                    <span class="muted">unnamed — format {revision.format_version} declares no name</span>
+                    <code class="revision-hash">{revision.workflow_revision_hash}</code>
+                    <span class="muted">unnamed — format {revision.workflow_format_version} declares no name</span>
                   {:else}
                     <strong class="revision-name">{revision.name}</strong>
                     {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
@@ -844,7 +844,7 @@
               class="revision-details"
               ontoggle={(event) => {
                 if (event.currentTarget.open) {
-                  void revealPublishedGraph(revision.revision_hash);
+                  void revealPublishedGraph(revision.workflow_revision_hash);
                 }
               }}
             >
@@ -852,11 +852,11 @@
                 aria-label={revision.name === null
                   ? "Details for this unnamed workflow"
                   : `Details for ${revision.name}`}
-                onclick={() => { void revealPublishedGraph(revision.revision_hash); }}
+                onclick={() => { void revealPublishedGraph(revision.workflow_revision_hash); }}
               >Details</summary>
               <p class="revision-facts">
                 {publishedRevisionFacts(revision, published)}
-                {#if revealingHash === revision.revision_hash} · Loading workflow…{/if}
+                {#if revealingHash === revision.workflow_revision_hash} · Loading workflow…{/if}
               </p>
               {#if publishedNodePreviews(published) !== null}
                 <WorkflowGraphDrawing
@@ -894,13 +894,13 @@
                   {:else}
                     <label class="revision-choice">
                       <select
-                        value={revision.revision_hash}
+                        value={revision.workflow_revision_hash}
                         onchange={(event) => setRowRevision(row, event.currentTarget.value)}
                         disabled={busy}
                         aria-label={`Revision of ${row.name}`}
                       >
-                        {#each row.revisions as choice (choice.revision_hash)}
-                          <option value={choice.revision_hash}>{revisionChoiceLabel(choice, row.revisions[0]?.revision_hash ?? choice.revision_hash)}</option>
+                        {#each row.revisions as choice (choice.workflow_revision_hash)}
+                          <option value={choice.workflow_revision_hash}>{revisionChoiceLabel(choice, row.revisions[0]?.workflow_revision_hash ?? choice.workflow_revision_hash)}</option>
                         {/each}
                       </select>
                     </label>
@@ -916,16 +916,16 @@
                 <ProofAnchor
                   label="Workflow revision"
                   seals="the published document"
-                  value={revision.revision_hash}
+                  value={revision.workflow_revision_hash}
                 />
               </p>
               <button
                 type="button"
                 class="quiet"
                 disabled={busy}
-                onclick={() => { void openEdit(revision.revision_hash); }}
+                onclick={() => { void openEdit(revision.workflow_revision_hash); }}
               >Edit</button>
-              {#if editingHash === revision.revision_hash}
+              {#if editingHash === revision.workflow_revision_hash}
                 {#if editYaml === null}
                   <p class="muted">The published document could not be read.</p>
                 {:else}
@@ -1045,7 +1045,7 @@
     {/if}
     <!-- Only a version 3 revision can be unexecutable: the older formats carry no
          such field, because everything they can express this build runs. -->
-    {#if draft.revision.graph.format_version === 3 && !draft.revision.graph.executable}
+    {#if draft.revision.graph.workflow_format_version === 3 && !draft.revision.graph.executable}
       <section class="start-card unstartable" aria-labelledby="start-title">
         <div>
           <p class="eyebrow">Published</p>

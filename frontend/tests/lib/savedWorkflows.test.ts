@@ -13,8 +13,8 @@ function named(
   changes: Partial<WorkflowRevisionSummary> = {}
 ): WorkflowRevisionSummary {
   return {
-    revision_hash: hashChar.repeat(64),
-    format_version: 3,
+    workflow_revision_hash: hashChar.repeat(64),
+    workflow_format_version: 3,
     executable: true,
     not_executable_reason: null,
     name,
@@ -25,8 +25,8 @@ function named(
 
 function unnamed(hashChar: string): WorkflowRevisionSummary {
   return {
-    revision_hash: hashChar.repeat(64),
-    format_version: 2,
+    workflow_revision_hash: hashChar.repeat(64),
+    workflow_format_version: 2,
     executable: true,
     not_executable_reason: null,
     name: null,
@@ -43,22 +43,22 @@ describe("grouping saved workflows by the name the listing already publishes", (
     });
 
     const rows = groupSavedWorkflows([older, newest], {
-      "drei-saetze-review-sehend": newest.revision_hash
+      "drei-saetze-review-sehend": newest.workflow_revision_hash
     });
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.name).toBe("drei-saetze-review-sehend");
-    expect(rows[0]?.revisions.map((item) => item.revision_hash)).toEqual([
-      newest.revision_hash,
-      older.revision_hash
+    expect(rows[0]?.revisions.map((item) => item.workflow_revision_hash)).toEqual([
+      newest.workflow_revision_hash,
+      older.workflow_revision_hash
     ]);
-    expect(selectedRevisionOf(rows[0]!).revision_hash).toBe(newest.revision_hash);
+    expect(selectedRevisionOf(rows[0]!).workflow_revision_hash).toBe(newest.workflow_revision_hash);
   });
 
   it("does not invent a submenu for a name that has one revision", () => {
     const only = named("a", "one-lineage");
 
-    const rows = groupSavedWorkflows([only], { "one-lineage": only.revision_hash });
+    const rows = groupSavedWorkflows([only], { "one-lineage": only.workflow_revision_hash });
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.revisions).toEqual([only]);
@@ -71,9 +71,9 @@ describe("grouping saved workflows by the name the listing already publishes", (
     const rows = groupSavedWorkflows([first, second]);
 
     expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.revisions.map((item) => item.revision_hash))).toEqual([
-      [first.revision_hash],
-      [second.revision_hash]
+    expect(rows.map((row) => row.revisions.map((item) => item.workflow_revision_hash))).toEqual([
+      [first.workflow_revision_hash],
+      [second.workflow_revision_hash]
     ]);
     expect(rows.every((row) => row.name === null)).toBe(true);
   });
@@ -96,16 +96,16 @@ describe("grouping saved workflows by the name the listing already publishes", (
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.revisions).toEqual([first, second]);
-    expect(selectedRevisionOf(rows[0]!).revision_hash).toBe(first.revision_hash);
+    expect(selectedRevisionOf(rows[0]!).workflow_revision_hash).toBe(first.workflow_revision_hash);
   });
 
   it("follows an explicit selection instead of the default head", () => {
     const older = named("a", "shared");
     const newest = named("b", "shared");
-    const row = groupSavedWorkflows([older, newest], { shared: newest.revision_hash })[0];
+    const row = groupSavedWorkflows([older, newest], { shared: newest.workflow_revision_hash })[0];
 
-    expect(selectedRevisionOf(row!, older.revision_hash).revision_hash).toBe(
-      older.revision_hash
+    expect(selectedRevisionOf(row!, older.workflow_revision_hash).workflow_revision_hash).toBe(
+      older.workflow_revision_hash
     );
   });
 
@@ -113,7 +113,7 @@ describe("grouping saved workflows by the name the listing already publishes", (
     const older = named("a", "shared");
     const newest = named("b", "shared");
 
-    expect(revisionChoiceLabel(newest, newest.revision_hash)).toBe("Latest");
-    expect(revisionChoiceLabel(older, newest.revision_hash)).toBe("Earlier");
+    expect(revisionChoiceLabel(newest, newest.workflow_revision_hash)).toBe("Latest");
+    expect(revisionChoiceLabel(older, newest.workflow_revision_hash)).toBe("Earlier");
   });
 });

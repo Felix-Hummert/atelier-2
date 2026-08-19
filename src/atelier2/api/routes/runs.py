@@ -98,6 +98,7 @@ from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
     AuthoredAgentBinding,
     AuthoredOrder,
+    BindingConstraintRefused,
     InvalidAgentBindings,
     RevisionMissing,
     RunCreated,
@@ -135,8 +136,8 @@ def _authored_order(order: AnyStartRunOrderResource) -> AuthoredOrder:
     match order:
         case InlineOrderResource(name=name, value=value):
             return AuthoredOrder(name, InlineOrderValue(value.encode()))
-        case ArtifactOrderResource(name=name, artifact=artifact):
-            return AuthoredOrder(name, ArtifactOrderValue(ArtifactHash(artifact)))
+        case ArtifactOrderResource(name=name, artifact_hash=artifact_hash):
+            return AuthoredOrder(name, ArtifactOrderValue(ArtifactHash(artifact_hash)))
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -191,6 +192,14 @@ async def start_run_route(
             )
         case InvalidAgentBindings():
             raise ApiProblem("invalid-agent-bindings")
+        case BindingConstraintRefused(node, distinct_from):
+            raise ApiProblem(
+                "binding-constraint-refused",
+                detail=(
+                    f"node {node!r} declares distinct_from {distinct_from!r} "
+                    "and both resolved to the same binding"
+                ),
+            )
         case AgentConfigurationRevisionMissing():
             raise ApiProblem("agent-configuration-revision-not-found")
         case StartAgentExecutorBindingUnavailable():
@@ -405,7 +414,7 @@ async def answer_run_route(
 ) -> JSONResponse:
     run_id = decode_public_reference(public_ref, context.limits)
     require_field(body.node_id, context.limits)
-    revision_hash = parse_revision_hash(body.revision_hash)
+    revision_hash = parse_revision_hash(body.workflow_revision_hash)
     answer_bytes = decode_base64(body.answer_base64, context.limits)
     result = await run_control_query(
         context.control_runner,

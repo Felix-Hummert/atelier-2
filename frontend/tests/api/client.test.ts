@@ -144,9 +144,9 @@ describe("closed API decoders", () => {
   ])("refuses a structurally invalid projected graph: %s", (_case, graph) => {
     expect(() =>
       decodeWorkflowRevisionDetail({
-        revision_hash: digest,
+        workflow_revision_hash: digest,
         document_base64: "",
-        graph: { format_version: 1, ...graph }
+        graph: { workflow_format_version: 1, ...graph }
       })
     ).toThrow();
   });
@@ -156,10 +156,10 @@ describe("closed API decoders", () => {
     (document_base64) => {
       expect(() =>
         decodeWorkflowRevisionDetail({
-          revision_hash: digest,
+          workflow_revision_hash: digest,
           document_base64,
           graph: {
-            format_version: 1,
+            workflow_format_version: 1,
             start_node_id: "final",
             nodes: [
               {
@@ -544,14 +544,14 @@ function servingRevisionsByView() {
     const described = String(target).includes("view=described");
     const item = described
       ? {
-          revision_hash: digest,
-          format_version: 3,
+          workflow_revision_hash: digest,
+          workflow_format_version: 3,
           executable: false,
           not_executable_reason: "agent forms nothing binds yet: outputs",
           name: "Nightly regression sweep",
           description: "Runs the sweep and files what it finds."
         }
-      : { revision_hash: digest };
+      : { workflow_revision_hash: digest };
     return new Response(
       JSON.stringify({ items: [item], next_after_revision_hash: null }),
       { status: 200, headers: { "content-type": "application/json" } }
@@ -568,8 +568,8 @@ describe("the saved-workflow listing the cockpit asks for", () => {
     expect(String(fetcher.mock.calls[0]?.[0])).toContain("view=described");
     expect(page.items).toEqual([
       {
-        revision_hash: digest,
-        format_version: 3,
+        workflow_revision_hash: digest,
+        workflow_format_version: 3,
         executable: false,
         not_executable_reason: "agent forms nothing binds yet: outputs",
         name: "Nightly regression sweep",
@@ -584,7 +584,7 @@ describe("the catalog name the picker asks for the head", () => {
     const body = {
       display_name: "drei-saetze-review-sehend",
       lineage_id: digest,
-      revision_hash: digest,
+      workflow_revision_hash: digest,
       revision_number: 2
     };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
@@ -608,7 +608,7 @@ describe("the catalog name the picker asks for the head", () => {
     const body = {
       display_name: "diff-review",
       lineage_id: digest,
-      revision_hash: digest,
+      workflow_revision_hash: digest,
       revision_number: 1
     };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
@@ -619,14 +619,14 @@ describe("the catalog name the picker asks for the head", () => {
     );
 
     const founded = await createCockpitApi(fetcher).foundCatalogLineage({
-      revision_hash: digest,
+      workflow_revision_hash: digest,
       actor: "atelier2-cockpit",
       activated_at: "2026-08-18T07:00:00Z"
     });
 
     expect(String(fetcher.mock.calls[0]?.[0])).toBe("/atelier/api/v1/workflow-lineages");
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
-      revision_hash: digest,
+      workflow_revision_hash: digest,
       actor: "atelier2-cockpit",
       activated_at: "2026-08-18T07:00:00Z"
     });
@@ -664,7 +664,7 @@ describe("answering a wait over the existing door", () => {
       content_type: "application/json" as const,
       body_base64: btoa(
         JSON.stringify({
-          revision_hash: digest,
+          workflow_revision_hash: digest,
           node_id: "ask",
           answer_base64: btoa("true")
         })
@@ -713,7 +713,7 @@ describe("the published agent-configuration listing", () => {
 describe("the graph a run is allowed to hold", () => {
   it("refuses a published V3 graph by name instead of reading it as an empty workflow", () => {
     const published = {
-      format_version: 3 as const,
+      workflow_format_version: 3 as const,
       executable: false as const,
       not_executable_reason: "agent forms nothing binds yet: outputs" as const,
       agent_roles: [],
@@ -740,7 +740,7 @@ describe("the graph a run is allowed to hold", () => {
   it("hands back an executable graph unchanged", () => {
     const graph = executableGraph(workflowRevision().graph);
 
-    expect(graph.format_version).toBe(1);
+    expect(graph.workflow_format_version).toBe(1);
     expect(executableGraph(graph)).toBe(graph);
   });
 });

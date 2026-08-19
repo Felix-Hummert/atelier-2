@@ -28,13 +28,13 @@ export function isCatalogDisplayName(value: string): boolean {
 
 export function catalogNameStateOf(
   name: string,
-  askByName: (name: string) => Promise<{ revision_hash: string }>
+  askByName: (name: string) => Promise<{ workflow_revision_hash: string }>
 ): Promise<CatalogNameState> {
   if (!isCatalogDisplayName(name)) {
     return Promise.resolve({ kind: "unnamable" });
   }
   return askByName(name).then(
-    (head) => ({ kind: "admitted" as const, revisionHash: head.revision_hash }),
+    (head) => ({ kind: "admitted" as const, revisionHash: head.workflow_revision_hash }),
     (error: unknown) => {
       const code = problemCode(error);
       if (code === "catalog-name-not-found") return { kind: "unlisted" as const };

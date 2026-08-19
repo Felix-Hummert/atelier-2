@@ -221,6 +221,16 @@ class IterateBlock(_ClosedV3Model):
     carry: Annotated[tuple[IterationCarry, ...], DeclaredSequence] = ()
 
 
+class BindingConstraint(_ClosedV3Model):
+    """A start-time occupation check between two agent nodes.
+
+    `distinct_from` promises the two nodes resolve to different agent
+    configuration revisions. It does not promise independent judgment.
+    """
+
+    distinct_from: NonemptyString
+
+
 class LoopVerdictCondition(_ClosedV3Model):
     """The word that sends this loop around again, and the node that says it.
 
@@ -285,6 +295,7 @@ class AgentNodeV3(_NodeV3):
     outputs: Annotated[tuple[NodeOutput, ...], DeclaredSequence] = ()
     budget: VersionedReference | None = None
     retry: VersionedReference | None = None
+    binding_constraint: BindingConstraint | None = None
 
     @field_validator("instruction")
     @classmethod
@@ -384,6 +395,7 @@ class WorkflowGraphV3(_ClosedV3Model):
             _refuse_unconfirmed_operator_outputs(node)
         _refuse_broken_graph_boundary(self)
         _refuse_broken_loops(self)
+        _refuse_broken_binding_constraints(self)
         return self
 
     def node(self, node_id: str) -> WorkflowNodeV3:
@@ -1044,6 +1056,52 @@ def _refuse_a_verdict_the_loop_could_not_read(
         )
 
 
+def _refuse_broken_binding_constraints(graph: WorkflowGraphV3) -> None:
+    """Hold `distinct_from` to two agent nodes with different roles.
+
+    The start check compares resolved configuration hashes. A reference that
+    names no node, this node, a node without a role, or a node that shares
+    this role cannot be a different occupation, so the document refuses it
+    before a start can pretend otherwise.
+    """
+
+    declared = {node.id: node for node in graph.nodes}
+    for node in graph.nodes:
+        if not isinstance(node, AgentNodeV3) or node.binding_constraint is None:
+            continue
+        other_id = node.binding_constraint.distinct_from
+        other = declared.get(other_id)
+        if other is None:
+            raise _refuse(
+                WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE,
+                "binding_constraint",
+                f"distinct_from names {other_id!r}, which is not declared",
+                node.id,
+            )
+        if other_id == node.id:
+            raise _refuse(
+                WorkflowRefusalReason.INVALID_VALUE,
+                "binding_constraint",
+                "distinct_from names this node, which cannot be a different occupation",
+                node.id,
+            )
+        if not isinstance(other, AgentNodeV3):
+            raise _refuse(
+                WorkflowRefusalReason.INVALID_VALUE,
+                "binding_constraint",
+                f"distinct_from names {other_id!r}, which has no agent binding",
+                node.id,
+            )
+        if other.role == node.role:
+            raise _refuse(
+                WorkflowRefusalReason.INVALID_VALUE,
+                "binding_constraint",
+                f"distinct_from names {other_id!r}, which shares role {node.role!r} "
+                "and so cannot be a different occupation",
+                node.id,
+            )
+
+
 def verdict_condition_of(
     graph: AnyWorkflowDocument, node_id: str
 ) -> LoopVerdictCondition | None:
@@ -1085,6 +1143,7 @@ _VOCABULARY_FIELDS = frozenset(
         IterationCarry,
         LoopDeclaration,
         LoopVerdictCondition,
+        BindingConstraint,
         RequiredContextEntry,
         AvailableContextEntry,
         VersionedReference,

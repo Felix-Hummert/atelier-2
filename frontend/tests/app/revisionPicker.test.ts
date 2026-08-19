@@ -37,8 +37,8 @@ const unnamedHash = "b".repeat(64);
 
 const namedRevision = () =>
   decodedRow({
-    revision_hash: namedHash,
-    format_version: 3,
+    workflow_revision_hash: namedHash,
+    workflow_format_version: 3,
     executable: false,
     not_executable_reason:
       "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
@@ -48,8 +48,8 @@ const namedRevision = () =>
 
 const unnamedRevision = () =>
   decodedRow({
-    revision_hash: unnamedHash,
-    format_version: 2,
+    workflow_revision_hash: unnamedHash,
+    workflow_format_version: 2,
     executable: true,
     not_executable_reason: null,
     name: null,
@@ -64,7 +64,7 @@ const unnamedRevision = () =>
  */
 function namedGraph() {
   return {
-    format_version: 3 as const,
+    workflow_format_version: 3 as const,
     executable: false as const,
     not_executable_reason:
       "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
@@ -94,7 +94,7 @@ function namedGraph() {
 
 function namedDetail() {
   return {
-    revision_hash: namedHash,
+    workflow_revision_hash: namedHash,
     document_base64: utf8Base64("job: NEVER_PARSE_THIS_INSTRUCTION\n"),
     graph: namedGraph()
   };
@@ -242,8 +242,8 @@ describe("the saved-workflow picker", () => {
     const cockpitApi = api(
       [
         decodedRow({
-          revision_hash: namedHash,
-          format_version: 3,
+          workflow_revision_hash: namedHash,
+          workflow_format_version: 3,
           executable: false,
           not_executable_reason:
       "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
@@ -253,7 +253,7 @@ describe("the saved-workflow picker", () => {
       ],
       {
         getWorkflowRevision: vi.fn(async () => ({
-          revision_hash: namedHash,
+          workflow_revision_hash: namedHash,
           document_base64: utf8Base64("prompt: NEVER_PARSE_THIS_PROMPT\n"),
           graph
         }))
@@ -322,9 +322,9 @@ describe("the saved-workflow picker", () => {
 function pagedApi(pages: ReturnType<typeof decodedRow>[][]): CockpitApi {
   return cockpitApiStub({
     listWorkflowRevisions: vi.fn(async (after?: string) => {
-      const index = after === undefined ? 0 : pages.findIndex((page) => page.at(-1)?.revision_hash === after) + 1;
+      const index = after === undefined ? 0 : pages.findIndex((page) => page.at(-1)?.workflow_revision_hash === after) + 1;
       const items = pages[index] ?? [];
-      const last = index + 1 < pages.length ? items.at(-1)?.revision_hash ?? null : null;
+      const last = index + 1 < pages.length ? items.at(-1)?.workflow_revision_hash ?? null : null;
       return { items, next_after_revision_hash: last };
     })
   });
@@ -350,8 +350,8 @@ describe("the picker reads past its first page", () => {
 
   it("names each disclosure by the workflow it belongs to", async () => {
     const second = decodedRow({
-      revision_hash: "c".repeat(64),
-      format_version: 3,
+      workflow_revision_hash: "c".repeat(64),
+      workflow_format_version: 3,
       executable: false,
       not_executable_reason:
       "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
@@ -380,8 +380,8 @@ describe("the picker groups revisions that share a published name", () => {
 
   function olderRevision() {
     return decodedRow({
-      revision_hash: olderHash,
-      format_version: 3,
+      workflow_revision_hash: olderHash,
+      workflow_format_version: 3,
       executable: true,
       not_executable_reason: null,
       name: lineageName,
@@ -391,8 +391,8 @@ describe("the picker groups revisions that share a published name", () => {
 
   function newestRevision() {
     return decodedRow({
-      revision_hash: newestHash,
-      format_version: 3,
+      workflow_revision_hash: newestHash,
+      workflow_format_version: 3,
       executable: false,
       not_executable_reason:
       "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges",
@@ -406,7 +406,7 @@ describe("the picker groups revisions that share a published name", () => {
       getRevisionByName: vi.fn(async () => ({
         display_name: lineageName,
         lineage_id: "e".repeat(64),
-        revision_hash: newestHash,
+        workflow_revision_hash: newestHash,
         revision_number: 2
       })),
       ...overrides
@@ -463,8 +463,8 @@ describe("the picker groups revisions that share a published name", () => {
     const cockpitApi = api(
       [
         decodedRow({
-          revision_hash: namedHash,
-          format_version: 3,
+          workflow_revision_hash: namedHash,
+          workflow_format_version: 3,
           executable: true,
           not_executable_reason: null,
           name: legalName,
@@ -525,24 +525,24 @@ describe("the picker groups revisions that share a published name", () => {
     const cockpitApi = api(
       [
         decodedRow({
-          revision_hash: "1".repeat(64),
-          format_version: 3,
+          workflow_revision_hash: "1".repeat(64),
+          workflow_format_version: 3,
           executable: true,
           not_executable_reason: null,
           name: readyName,
           description: null
         }),
         decodedRow({
-          revision_hash: "2".repeat(64),
-          format_version: 3,
+          workflow_revision_hash: "2".repeat(64),
+          workflow_format_version: 3,
           executable: true,
           not_executable_reason: null,
           name: unlistedName,
           description: null
         }),
         decodedRow({
-          revision_hash: "5".repeat(64),
-          format_version: 3,
+          workflow_revision_hash: "5".repeat(64),
+          workflow_format_version: 3,
           executable: true,
           not_executable_reason: null,
           name: "Der erste Lauf",
@@ -556,7 +556,7 @@ describe("the picker groups revisions that share a published name", () => {
             return {
               display_name: readyName,
               lineage_id: "e".repeat(64),
-              revision_hash: "1".repeat(64),
+              workflow_revision_hash: "1".repeat(64),
               revision_number: 1
             };
           }
@@ -602,16 +602,16 @@ describe("the picker groups revisions that share a published name", () => {
     const cockpitApi = api(
       [
         decodedRow({
-          revision_hash: firstHash,
-          format_version: 3,
+          workflow_revision_hash: firstHash,
+          workflow_format_version: 3,
           executable: true,
           not_executable_reason: null,
           name: first,
           description: null
         }),
         decodedRow({
-          revision_hash: "4".repeat(64),
-          format_version: 3,
+          workflow_revision_hash: "4".repeat(64),
+          workflow_format_version: 3,
           executable: true,
           not_executable_reason: null,
           name: second,
@@ -622,14 +622,14 @@ describe("the picker groups revisions that share a published name", () => {
         getRevisionByName: vi.fn(async (asked: string) => ({
           display_name: asked,
           lineage_id: "e".repeat(64),
-          revision_hash: asked === first ? firstHash : "4".repeat(64),
+          workflow_revision_hash: asked === first ? firstHash : "4".repeat(64),
           revision_number: 1
         })),
         getWorkflowRevision: vi.fn(async () => ({
-          revision_hash: firstHash,
+          workflow_revision_hash: firstHash,
           document_base64: "YQ==",
           graph: {
-            format_version: 3 as const,
+            workflow_format_version: 3 as const,
             executable: true as const,
             not_executable_reason: null,
             node_count: 1,
@@ -735,7 +735,7 @@ describe("the picker groups revisions that share a published name", () => {
       publish: vi.fn(async () => ({
         status: 201,
         value: {
-          revision_hash: newHash,
+          workflow_revision_hash: newHash,
           document_base64: utf8Base64(edited),
           graph: {
             ...namedGraph(),
@@ -750,7 +750,7 @@ describe("the picker groups revisions that share a published name", () => {
         value: {
           display_name: "edited-line",
           lineage_id: "e".repeat(64),
-          revision_hash: newHash,
+          workflow_revision_hash: newHash,
           revision_number: 1
         }
       }))

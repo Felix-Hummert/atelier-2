@@ -106,7 +106,7 @@ def test_a_schema_published_over_http_lets_a_chain_workflow_name_that_hash(
 
     assert (created.status_code, retried.status_code) == (201, 200)
     assert created.json() == retried.json()
-    schema_hash = created.json()["revision_hash"]
+    schema_hash = created.json()["schema_revision_hash"]
     assert schema_hash == PublishedRevisionHash.of(MEAL_SCHEMA).value
     resolved = DbosCatalogStore(runtime.engine).resolve(
         RevisionKind.SCHEMA, PublishedRevisionHash(schema_hash)
@@ -124,7 +124,7 @@ def test_a_schema_published_over_http_lets_a_chain_workflow_name_that_hash(
     graph = parse_workflow_document(chain_document(schema_hash))
     assert isinstance(graph, WorkflowGraphV3)
     snapshot = bind_run_configuration(
-        WorkflowRevisionHash(published.json()["revision_hash"]),
+        WorkflowRevisionHash(published.json()["workflow_revision_hash"]),
         graph,
         SubworkflowBinding(),
         AgentBindingSetHash.of(b"no agent roles"),

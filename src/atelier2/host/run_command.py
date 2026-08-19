@@ -321,7 +321,7 @@ def resolve_published_name(order: NameOrder) -> NameResolution:
     return NameResolution(
         resolved.display_name,
         resolved.lineage_id,
-        resolved.revision_hash,
+        resolved.workflow_revision_hash,
         resolved.revision_number,
     )
 
@@ -533,7 +533,7 @@ def _published_workflow_revision(
         "a workflow revision",
     )
     _admit_published_v3(api, revision, actor=actor, activated_at=activated_at)
-    return revision.revision_hash
+    return revision.workflow_revision_hash
 
 
 def _admit_published_v3(
@@ -551,14 +551,14 @@ def _admit_published_v3(
     still happens.
     """
 
-    if revision.graph.format_version != 3:
+    if revision.graph.workflow_format_version != 3:
         return
     try:
         CatalogLineageDisplayName(revision.graph.name)
     except (TypeError, ValueError):
         return
     founding = FoundCatalogLineageRequestResource(
-        revision_hash=revision.revision_hash,
+        workflow_revision_hash=revision.workflow_revision_hash,
         actor=actor,
         activated_at=activated_at,
     )
@@ -587,7 +587,7 @@ def _admit_published_v3(
         "a catalog name",
     )
     member = AdmitCatalogMemberRequestResource(
-        revision_hash=revision.revision_hash,
+        workflow_revision_hash=revision.workflow_revision_hash,
         actor=actor,
         activated_at=activated_at,
     )

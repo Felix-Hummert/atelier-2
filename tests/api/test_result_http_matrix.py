@@ -924,7 +924,7 @@ def _request(client: TestClient, case: RouteResultCase):
         return client.post(
             "/atelier/api/v1/runs/run1.cnVu/answers",
             json={
-                "revision_hash": REVISION.revision_hash.value,
+                "workflow_revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
                 "answer_base64": "Mw==",
             },
@@ -950,10 +950,10 @@ def _request(client: TestClient, case: RouteResultCase):
 
 def _success_body(operation: str) -> object:
     revision_body = {
-        "revision_hash": REVISION.revision_hash.value,
+        "workflow_revision_hash": REVISION.revision_hash.value,
         "document_base64": base64.b64encode(DOCUMENT).decode("ascii"),
         "graph": {
-            "format_version": 1,
+            "workflow_format_version": 1,
             "start_node_id": "final",
             "nodes": [
                 {
@@ -967,9 +967,9 @@ def _success_body(operation: str) -> object:
         },
     }
     if operation == "publish-schema":
-        return {"revision_hash": SCHEMA_REVISION.revision_hash.value}
+        return {"schema_revision_hash": SCHEMA_REVISION.revision_hash.value}
     if operation == "publish-budget":
-        return {"revision_hash": BUDGET_REVISION.revision_hash.value}
+        return {"budget_revision_hash": BUDGET_REVISION.revision_hash.value}
     if operation in {"publish", "revision-get"}:
         return revision_body
     if operation == "revision-list":
@@ -1093,7 +1093,7 @@ class UnreachedAnswer:
             "invalid-base64",
             "/atelier/api/v1/runs/run1.cnVu/answers",
             {
-                "revision_hash": REVISION.revision_hash.value,
+                "workflow_revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
                 "answer_base64": "not base64!!",
             },
@@ -1108,7 +1108,7 @@ class UnreachedAnswer:
             "unsupported-media-type",
             "/atelier/api/v1/runs/run1.cnVu/answers",
             {
-                "revision_hash": REVISION.revision_hash.value,
+                "workflow_revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
                 "answer_base64": "Mw==",
             },
@@ -1121,7 +1121,7 @@ class UnreachedAnswer:
             "two-rules-one-answer",
             "/atelier/api/v1/runs/run1.cnVu/answers",
             {
-                "revision_hash": "not-a-hash",
+                "workflow_revision_hash": "not-a-hash",
                 "node_id": "wait",
                 "answer_base64": "not base64!!",
             },

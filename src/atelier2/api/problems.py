@@ -181,6 +181,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Invalid agent bindings",
         "Bind every workflow agent role exactly once and no other role.",
     ),
+    "binding-constraint-refused": ProblemDefinition(
+        422,
+        "Binding constraint refused",
+        "Bind the constrained nodes to different agent configuration revisions. The constraint checks occupation, not independent judgment.",
+    ),
     "invalid-agent-attempt-id": ProblemDefinition(
         400,
         "Invalid agent attempt id",

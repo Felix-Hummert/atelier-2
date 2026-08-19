@@ -66,6 +66,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows_v3 import VersionedReference
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
@@ -305,6 +306,8 @@ def test_the_binding_of_a_node_pins_the_project_source_it_will_work_in(
 
 
 @pytest.mark.proves("a-v3-run-answers-over-http-with-its-own-resource")
+@pytest.mark.proves("a-run-carries-when-it-started-and-ended")
+@pytest.mark.proves("the-run-list-carries-when")
 def test_the_public_start_route_answers_a_v3_revision_with_its_run_resource(
     runtime: DbosRuntime,
 ) -> None:
@@ -343,6 +346,15 @@ def test_the_public_start_route_answers_a_v3_revision_with_its_run_resource(
     assert answered["state"] == RunState.STARTED.value
     assert answered["workflow_revision_hash"] == workflow.revision_hash.value
     assert answered["terminal_hash"] is None
+    assert answered["ended_at"] is None
+    RecordedAt(answered["started_at"])
+    listed = durable_api_client(runtime).get(API_PREFIX + "/runs")
+    assert listed.status_code == 200
+    listed_run = next(
+        item for item in listed.json()["items"] if item["run_id"] == RUN.value
+    )
+    assert listed_run["started_at"] == answered["started_at"]
+    assert listed_run["ended_at"] is None
     assert [entry["node_id"] for entry in answered["node_rail"]] == ["implement"]
     with runtime.engine.connect() as connection:
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 1

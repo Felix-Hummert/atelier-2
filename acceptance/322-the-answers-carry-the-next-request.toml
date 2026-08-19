@@ -1,0 +1,42 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/322"
+
+# WHAT AN ANSWER NAMES, THE NEXT REQUEST WRITES BACK UNCHANGED.
+#
+# Finding 2 of the #85 measurement: the API answered with values a consumer
+# could not hand back. The hash of a published workflow revision was
+# `revision_hash` on every revision and catalog answer and in the answers body,
+# and `workflow_revision_hash` on every run answer, every receipt, every SSE
+# frame and in the start body -- crossed, so neither direction passed through.
+# The format version split the same way. The address `POST /artifacts` answered
+# as `artifact_hash` had to be renamed to `artifact` to travel in an order. The
+# cost was visible inside this repository: the cockpit carried the translation
+# table by hand.
+#
+# A value on the wire is now named for what it identifies, not for where it
+# stands, which is the language the run resources, the receipts, all three SSE
+# families, the start and the agent surfaces already spoke. This is a breaking
+# pre-release migration with no external consumer, recorded in ADR 0003; the
+# cockpit, the command, the MCP door and the frozen document moved with it.
+#
+# What is deliberately absent, and why:
+#
+#   - THE PAGINATION CURSORS. `next_after_revision_hash` is written back as
+#     `after_revision_hash`, and `next_after` as `after`. The value travels
+#     unchanged and only the `next_` prefix moves; the three lists share that one
+#     word, so unifying it is its own owner's question.
+#   - THE FLATTENED REFERENCE HULL. A declared order answers `schema_ref` and
+#     `schema_revision` where the document writes `schema: {ref, revision}`. A
+#     consumer re-authoring a document has to rebuild that hull.
+#   - THE CANCELLATION'S EXPECTED VERSION. `CancelAgentAttemptRequestResource`
+#     demands `expected_attempt_state_version`, and no answer publishes an
+#     attempt's state version at all. That round-trip is not writable from any
+#     reading today, which is a missing value rather than a drifting name.
+
+[[sentence]]
+id = "a-consumer-writes-every-request-out-of-the-answers-it-read"
+text = "A consumer publishes what its document pins, publishes and names the document, resolves the name, lists the catalog, publishes the material its order carries, starts the run, answers the node that owes a person a move and reads the ended run -- assembling every field of every request out of a field the answers before it named, never translating one spelling into another."
+
+[[sentence]]
+id = "no-served-body-names-a-revision-or-a-format-without-saying-which"
+text = "No body the API publishes carries a property named `revision_hash` or `format_version`: each says which revision and which format it means, so a consumer reading the description alone knows what to write back. Only the published grammar of the authored workflow document keeps the bare words, because inside a document each means exactly one thing."

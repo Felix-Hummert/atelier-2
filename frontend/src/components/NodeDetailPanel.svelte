@@ -2,6 +2,7 @@
   import type { NodeDetail } from "../api/client";
   import InfoHint from "./InfoHint.svelte";
   import StateMark from "./StateMark.svelte";
+  import When from "./When.svelte";
 
   export let detail: NodeDetail;
   export let onClose: () => void;
@@ -104,11 +105,17 @@
       </p>
       <p class="hash"><code>{detail.provenance.receipt_hash}</code></p>
     {/if}
+    {#if detail.started_at}
+      <p class="when-ran">
+        Duration
+        <When startedAt={detail.started_at} endedAt={detail.ended_at ?? null} kind="duration" />
+      </p>
+    {/if}
     <p class="not-recorded">
-      Usage and duration
+      Usage
       <InfoHint
-        label="Why usage and duration are missing"
-        exact="No receipt records usage or duration, so this panel can prove what ran and what came out and cannot say what it cost or how long it took."
+        label="Why usage is missing"
+        exact="No receipt records usage, so this panel cannot say what the attempt cost. Time is recorded beside the attempt, not on the receipt."
       />
       <span class="muted">not recorded yet</span>
     </p>

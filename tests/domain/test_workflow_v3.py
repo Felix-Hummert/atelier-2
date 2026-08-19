@@ -1189,6 +1189,96 @@ def test_iteration_is_refused_on_every_node_kind_that_runs_no_child(
     assert (refusal.node, refusal.field) == (node_id, "iterate")
 
 
+CONSTRAINT = "binding_constraint: {distinct_from: implement}"
+
+
+@pytest.mark.proves("a-node-may-declare-it-must-not-share-another-nodes-binding")
+def test_a_declared_distinct_from_reads_back_as_authored() -> None:
+    parsed = graph(with_node_line("code_review", CONSTRAINT))
+
+    constrained = parsed.node("code_review")
+    assert isinstance(constrained, AgentNodeV3)
+    assert constrained.binding_constraint is not None
+    assert constrained.binding_constraint.distinct_from == "implement"
+    unbound = parsed.node("implement")
+    assert isinstance(unbound, AgentNodeV3)
+    assert unbound.binding_constraint is None
+
+
+@pytest.mark.proves("a-node-may-declare-it-must-not-share-another-nodes-binding")
+def test_an_undeclared_binding_constraint_is_absent() -> None:
+    review = graph().node("code_review")
+    assert isinstance(review, AgentNodeV3)
+    assert review.binding_constraint is None
+
+
+@pytest.mark.proves("a-distinct-from-the-document-cannot-honour-is-refused-by-name")
+@pytest.mark.parametrize(
+    ("line", "reason", "detail"),
+    (
+        (
+            "binding_constraint: {distinct_from: ghost}",
+            WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE,
+            "ghost",
+        ),
+        (
+            "binding_constraint: {distinct_from: code_review}",
+            WorkflowRefusalReason.INVALID_VALUE,
+            "this node",
+        ),
+        (
+            "binding_constraint: {distinct_from: approve}",
+            WorkflowRefusalReason.INVALID_VALUE,
+            "no agent binding",
+        ),
+    ),
+    ids=("unknown", "self", "wait node"),
+)
+def test_a_distinct_from_the_document_cannot_honour_is_refused(
+    line: str, reason: WorkflowRefusalReason, detail: str
+) -> None:
+    refusal = refusal_of(with_node_line("code_review", line))
+
+    assert refusal.reason is reason
+    assert (refusal.node, refusal.field) == ("code_review", "binding_constraint")
+    assert detail in refusal.detail
+
+
+@pytest.mark.proves("a-distinct-from-the-document-cannot-honour-is-refused-by-name")
+def test_distinct_from_a_node_that_shares_this_role_is_refused() -> None:
+    document = DOCUMENT.replace(b"    role: reviewer\n", b"    role: builder\n", 1)
+    refusal = refusal_of(with_node_line("code_review", CONSTRAINT, document))
+
+    assert refusal.reason is WorkflowRefusalReason.INVALID_VALUE
+    assert (refusal.node, refusal.field) == ("code_review", "binding_constraint")
+    assert "shares role" in refusal.detail
+
+
+@pytest.mark.proves("a-distinct-from-the-document-cannot-honour-is-refused-by-name")
+def test_binding_constraint_is_refused_on_a_node_without_a_binding() -> None:
+    refusal = refusal_of(with_node_line("approve", CONSTRAINT))
+
+    assert refusal.reason is WorkflowRefusalReason.REFUSED_FIELD
+    assert (refusal.node, refusal.field) == ("approve", "binding_constraint")
+
+
+@pytest.mark.proves("a-distinct-from-the-document-cannot-honour-is-refused-by-name")
+def test_the_document_gate_is_what_refuses_an_unknown_distinct_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "atelier2.contracts.workflows_v3._refuse_broken_binding_constraints",
+        lambda _graph: None,
+    )
+    parsed = graph(
+        with_node_line("code_review", "binding_constraint: {distinct_from: ghost}")
+    )
+    constrained = parsed.node("code_review")
+    assert isinstance(constrained, AgentNodeV3)
+    assert constrained.binding_constraint is not None
+    assert constrained.binding_constraint.distinct_from == "ghost"
+
+
 @pytest.mark.parametrize(
     ("document", "reason", "node", "field"), REFUSALS.values(), ids=REFUSALS
 )
