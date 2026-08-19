@@ -1,3 +1,13 @@
+"""The V1 wire, pinned byte for byte so nothing widens it by accident.
+
+These literals moved once, in the round-trip repair of #322: the workflow
+revision hash and the workflow format version are now spelled the same on every
+surface a consumer reads and writes, so `revision_hash` became
+`workflow_revision_hash` and `format_version` became `workflow_format_version`
+here too. That was a recorded migration with the cockpit carried along (ADR
+0003), not a widening -- which is the one thing these assertions still refuse.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -38,8 +48,8 @@ nodes:
 """
 _REVISION_HASH = "23ed14762efa2750a3f4997c44b80e79de0ba1d77c0e800abad3b85b812775a3"
 
-_DETAIL = b'{"revision_hash":"23ed14762efa2750a3f4997c44b80e79de0ba1d77c0e800abad3b85b812775a3","document_base64":"Zm9ybWF0X3ZlcnNpb246IDEKc3RhcnQ6IGFnZW50Cm5vZGVzOgogIC0ge2lkOiBmaW5hbCwgdHlwZTogc3Vid29ya2Zsb3csIG9wZXJhdGlvbjogYWRkLCBvcGVyYW5kczogWzIsIDNdLCBuZXh0OiBudWxsfQogIC0ge2lkOiB3YWl0LCB0eXBlOiB3YWl0LCBhbnN3ZXJfdHlwZTogaW50ZWdlciwgbmV4dDogZmluYWx9CiAgLSB7aWQ6IGFnZW50LCB0eXBlOiBhZ2VudCwgam9iOiB0ZXN0LCBvdXRwdXQ6IHBheWxvYWQsIG5leHQ6IHdhaXR9Cg==","graph":{"format_version":1,"start_node_id":"agent","nodes":[{"type":"agent","node_id":"agent","job":"test","output":"payload","next_node_id":"wait"},{"type":"subworkflow","node_id":"final","operation":"add","operands":[2,3],"next_node_id":null},{"type":"wait","node_id":"wait","answer_type":"integer","next_node_id":"final"}]}}'
-_PAGE = b'{"items":[{"revision_hash":"23ed14762efa2750a3f4997c44b80e79de0ba1d77c0e800abad3b85b812775a3"}],"next_after_revision_hash":null}'
+_DETAIL = b'{"workflow_revision_hash":"23ed14762efa2750a3f4997c44b80e79de0ba1d77c0e800abad3b85b812775a3","document_base64":"Zm9ybWF0X3ZlcnNpb246IDEKc3RhcnQ6IGFnZW50Cm5vZGVzOgogIC0ge2lkOiBmaW5hbCwgdHlwZTogc3Vid29ya2Zsb3csIG9wZXJhdGlvbjogYWRkLCBvcGVyYW5kczogWzIsIDNdLCBuZXh0OiBudWxsfQogIC0ge2lkOiB3YWl0LCB0eXBlOiB3YWl0LCBhbnN3ZXJfdHlwZTogaW50ZWdlciwgbmV4dDogZmluYWx9CiAgLSB7aWQ6IGFnZW50LCB0eXBlOiBhZ2VudCwgam9iOiB0ZXN0LCBvdXRwdXQ6IHBheWxvYWQsIG5leHQ6IHdhaXR9Cg==","graph":{"workflow_format_version":1,"start_node_id":"agent","nodes":[{"type":"agent","node_id":"agent","job":"test","output":"payload","next_node_id":"wait"},{"type":"subworkflow","node_id":"final","operation":"add","operands":[2,3],"next_node_id":null},{"type":"wait","node_id":"wait","answer_type":"integer","next_node_id":"final"}]}}'
+_PAGE = b'{"items":[{"workflow_revision_hash":"23ed14762efa2750a3f4997c44b80e79de0ba1d77c0e800abad3b85b812775a3"}],"next_after_revision_hash":null}'
 _START = b'{"run_id":"run","workflow_revision_hash":"23ed14762efa2750a3f4997c44b80e79de0ba1d77c0e800abad3b85b812775a3"}'
 _RUN = b'{"run_id":"run","public_run_reference":"run1.cnVu","workflow_revision_hash":"23ed14762efa2750a3f4997c44b80e79de0ba1d77c0e800abad3b85b812775a3","state_version":0,"state":"STARTED","current_node":{"type":"agent","node_id":"agent","job":"test","output":"payload","next_node_id":"wait"},"waiting":{"type":"NONE"},"terminal_hash":null,"latest_event_cursor":null}'
 _RUN_PAGE = b'{"items":[{"run_id":"run","public_run_reference":"run1.cnVu","workflow_revision_hash":"23ed14762efa2750a3f4997c44b80e79de0ba1d77c0e800abad3b85b812775a3","state_version":0,"state":"STARTED","current_node":{"type":"agent","node_id":"agent","job":"test","output":"payload","next_node_id":"wait"},"waiting":{"type":"NONE"},"terminal_hash":null,"latest_event_cursor":null}],"next_after":null}'
@@ -53,7 +63,7 @@ _OPENAPI_COMPONENT_HASHES = {
     "StartRunRequestResource": "4ecc26974cdabc9139f707ef4c499292ffe0556926bd9d986ce980e08dba2477",
     "SubworkflowNodeResource": "2df2bceb718fe14f0ae9a5c7a35ce163267124c91fe8d39b254f04320e149bca",
     "WaitNodeResource": "05d8408dabf5024819527496bbbb4fa327dc5ce679d7c0880d3e8b32edae617f",
-    "WorkflowGraphResource": "b36d8c8e5c8257572d71aa7aed952fa966dd737e75ab99a14bf365ed77e4b92e",
+    "WorkflowGraphResource": "2f8afbf0c4805ecc5e44c2dfb11e86584de53fc099d07f3412eddeac06e290f4",
 }
 
 
@@ -68,7 +78,7 @@ def test_v1_workflow_and_run_resources_keep_their_exact_raw_bytes() -> None:
         WorkflowRevisionProjection(revision, graph)
     )
     page = WorkflowRevisionPageResource(
-        items=(WorkflowRevisionSummaryResource(revision_hash=_REVISION_HASH),),
+        items=(WorkflowRevisionSummaryResource(workflow_revision_hash=_REVISION_HASH),),
         next_after_revision_hash=None,
     )
     start = StartRunRequestResource(run_id="run", workflow_revision_hash=_REVISION_HASH)

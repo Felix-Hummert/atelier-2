@@ -96,7 +96,7 @@ def test_a_budget_published_over_http_is_the_hash_an_agent_node_binds(
 
     assert (created.status_code, retried.status_code) == (201, 200)
     assert created.json() == retried.json()
-    budget_hash = created.json()["revision_hash"]
+    budget_hash = created.json()["budget_revision_hash"]
     assert budget_hash == PublishedRevisionHash.of(BUILD_BUDGET).value
 
     published = api.post(
@@ -109,7 +109,7 @@ def test_a_budget_published_over_http_is_the_hash_an_agent_node_binds(
     graph = parse_workflow_document(bounded_document(budget_hash))
     assert isinstance(graph, WorkflowGraphV3)
     snapshot = bind_run_configuration(
-        WorkflowRevisionHash(published.json()["revision_hash"]),
+        WorkflowRevisionHash(published.json()["workflow_revision_hash"]),
         graph,
         SubworkflowBinding(),
         AgentBindingSetHash.of(b"no agent roles"),

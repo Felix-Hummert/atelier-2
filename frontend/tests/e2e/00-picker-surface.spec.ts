@@ -7,7 +7,7 @@ async function publishSchema(page: Page, document: string): Promise<string> {
     data: document
   });
   expect([200, 201]).toContain(published.status());
-  return (await published.json()).revision_hash as string;
+  return (await published.json()).schema_revision_hash as string;
 }
 
 const anyJsonSchema = (page: Page): Promise<string> => publishSchema(page, "true");
@@ -28,7 +28,7 @@ async function publishYaml(page: Page, yaml: string): Promise<string> {
     data: yaml
   });
   expect(published.status()).toBe(201);
-  return (await published.json()).revision_hash as string;
+  return (await published.json()).workflow_revision_hash as string;
 }
 
 test("the picker names refusals by shape and collapses onto a chosen start", async ({
@@ -85,7 +85,7 @@ test("the picker names refusals by shape and collapses onto a chosen start", asy
   );
   const founded = await page.request.post(`${api}/workflow-lineages`, {
     data: {
-      revision_hash: readyHash,
+      workflow_revision_hash: readyHash,
       actor: "e2e",
       activated_at: "2026-08-18T00:00:00Z"
     }
@@ -162,7 +162,7 @@ test("Details shows published substance, an honest empty, and the edit door", as
     data: '{"type":"integer"}'
   });
   expect([200, 201]).toContain(portions.status());
-  const portionsHash = (await portions.json()).revision_hash as string;
+  const portionsHash = (await portions.json()).schema_revision_hash as string;
   const readyName = "details-ready-345";
   const emptyName = "details-empty-345";
   const refusedName = "Der Details auf 345";
@@ -221,7 +221,7 @@ test("Details shows published substance, an honest empty, and the edit door", as
     (
       await page.request.post(`${api}/workflow-lineages`, {
         data: {
-          revision_hash: readyHash,
+          workflow_revision_hash: readyHash,
           actor: "e2e",
           activated_at: "2026-08-18T00:00:00Z"
         }
@@ -275,7 +275,7 @@ test("Details shows published substance, an honest empty, and the edit door", as
   await expect(choice).toBeVisible({ timeout: 20_000 });
   const head = await page.request.get(`${api}/workflow-revisions/by-name/${readyName}`);
   expect(head.status()).toBe(200);
-  const admitted = (await head.json()).revision_hash as string;
+  const admitted = (await head.json()).workflow_revision_hash as string;
   expect(admitted).not.toBe(readyHash);
   await expect(choice).toHaveValue(admitted);
   await expect(choice.locator(`option[value="${admitted}"]`)).toHaveText("Latest");

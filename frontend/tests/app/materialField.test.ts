@@ -21,8 +21,8 @@ const portionsOrder = {
 
 function summary(hash: string, name: string) {
   return {
-    revision_hash: hash,
-    format_version: 3 as const,
+    workflow_revision_hash: hash,
+    workflow_format_version: 3 as const,
     executable: true,
     not_executable_reason: null,
     name,
@@ -32,7 +32,7 @@ function summary(hash: string, name: string) {
 
 function graph(orders: Array<typeof portionsOrder>, name: string) {
   return {
-    format_version: 3 as const,
+    workflow_format_version: 3 as const,
     executable: true as const,
     not_executable_reason: null,
     node_count: 1,
@@ -54,7 +54,7 @@ function graph(orders: Array<typeof portionsOrder>, name: string) {
 
 function detail(hash: string, orders: Array<typeof portionsOrder>, name: string) {
   return {
-    revision_hash: hash,
+    workflow_revision_hash: hash,
     document_base64: utf8Base64("job: NEVER_PARSE_THIS\n"),
     graph: graph(orders, name)
   };

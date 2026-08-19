@@ -19,10 +19,10 @@ function problem(code: string, status: number): Problem {
 
 function v3Revision(name: string): WorkflowRevisionDetail {
   return {
-    revision_hash: hash,
+    workflow_revision_hash: hash,
     document_base64: "YQ==",
     graph: {
-      format_version: 3,
+      workflow_format_version: 3,
       executable: true,
       not_executable_reason: null,
       node_count: 1,
@@ -50,7 +50,7 @@ describe("admitting a published V3 revision", () => {
       value: {
         display_name: "diff-review",
         lineage_id: lineageId,
-        revision_hash: hash,
+        workflow_revision_hash: hash,
         revision_number: 1
       }
     }));
@@ -63,7 +63,7 @@ describe("admitting a published V3 revision", () => {
     await admitPublishedRevision(api, v3Revision("diff-review"), actor, activatedAt);
 
     expect(foundCatalogLineage).toHaveBeenCalledWith({
-      revision_hash: hash,
+      workflow_revision_hash: hash,
       actor,
       activated_at: activatedAt
     });
@@ -95,7 +95,7 @@ describe("admitting a published V3 revision", () => {
       getRevisionByName: vi.fn(async () => ({
         display_name: "diff-review",
         lineage_id: lineageId,
-        revision_hash: "c".repeat(64),
+        workflow_revision_hash: "c".repeat(64),
         revision_number: 1
       })),
       admitCatalogMember: vi.fn(async () => ({
@@ -103,7 +103,7 @@ describe("admitting a published V3 revision", () => {
         value: {
           display_name: "diff-review",
           lineage_id: lineageId,
-          revision_hash: hash,
+          workflow_revision_hash: hash,
           revision_number: 2
         }
       }))
@@ -113,7 +113,7 @@ describe("admitting a published V3 revision", () => {
 
     expect(api.getRevisionByName).toHaveBeenCalledWith("diff-review");
     expect(api.admitCatalogMember).toHaveBeenCalledWith(lineageId, {
-      revision_hash: hash,
+      workflow_revision_hash: hash,
       actor,
       activated_at: activatedAt
     });

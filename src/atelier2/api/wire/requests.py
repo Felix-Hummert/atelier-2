@@ -47,7 +47,7 @@ class FoundCatalogLineageRequestResource(ApiModel):
     name because they do not carry one.
     """
 
-    revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    workflow_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     display_name: str | None = Field(
         default=None,
         min_length=1,
@@ -64,7 +64,7 @@ class AdmitCatalogMemberRequestResource(ApiModel):
     state it here would make an admission a rename.
     """
 
-    revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    workflow_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     actor: str = Field(min_length=1, max_length=MAXIMUM_CATALOG_ACTOR_CHARACTERS)
     activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
 
@@ -123,11 +123,12 @@ class ArtifactOrderResource(ApiModel):
 
     It is a second shape rather than a second optional field, so a start cannot
     say both and cannot say neither, and so a reader never has to guess whether
-    a string is a value or an address.
+    a string is a value or an address. The address is spelled the way the
+    publication answered it, so a caller writes back the field it just read.
     """
 
     name: str = Field(min_length=1)
-    artifact: str = Field(pattern=SHA256_HASH_PATTERN)
+    artifact_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
 AnyStartRunOrderResource = InlineOrderResource | ArtifactOrderResource
@@ -151,7 +152,7 @@ AnyStartRunRequestResource = (
 
 
 class AnswerWaitRequestResource(ApiModel):
-    revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     node_id: str = Field(min_length=1)
     answer_base64: str = Field(min_length=1)
 

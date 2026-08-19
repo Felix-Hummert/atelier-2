@@ -100,7 +100,7 @@ describe("mobile run entry", () => {
       publish: vi.fn(async (mutation) => ({
         status: 201,
         value: {
-          revision_hash: mutation.mutation_id.slice("publish:".length),
+          workflow_revision_hash: mutation.mutation_id.slice("publish:".length),
           document_base64: mutation.body_base64,
           graph: graph()
         }
@@ -137,10 +137,10 @@ describe("mobile run entry", () => {
       publish: vi.fn(async (mutation) => ({
         status: 201 as const,
         value: {
-          revision_hash: mutation.mutation_id.slice("publish:".length),
+          workflow_revision_hash: mutation.mutation_id.slice("publish:".length),
           document_base64: mutation.body_base64,
           graph: {
-            format_version: 3 as const,
+            workflow_format_version: 3 as const,
             executable: false as const,
             not_executable_reason:
               "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges" as const,
@@ -272,7 +272,7 @@ describe("mobile run entry", () => {
     expect(jsonBody(vi.mocked(cockpitApi.start).mock.calls[2]?.[0])).toEqual({
       workflow_format_version: 2,
       run_id: "run-v2",
-      workflow_revision_hash: publishedRevision!.revision_hash,
+      workflow_revision_hash: publishedRevision!.workflow_revision_hash,
       agent_bindings: [
         { role: "reviewer", agent_configuration_revision_hash: "c".repeat(64) },
         { role: "builder", agent_configuration_revision_hash: "d".repeat(64) }
@@ -281,10 +281,10 @@ describe("mobile run entry", () => {
     const card = await screen.findByRole("article", { name: "build — Working" });
     expect(card.textContent).toContain("builder");
     expect(card.textContent).toContain("Attempt 1 prepared");
-    eventFeed.handlers?.event(JSON.stringify(v2TerminalEvent(publishedRevision!.revision_hash)));
+    eventFeed.handlers?.event(JSON.stringify(v2TerminalEvent(publishedRevision!.workflow_revision_hash)));
     expect((await screen.findByRole("article", { name: "build — Done" })).textContent).toContain("Attempt 1 done");
     expect(screen.getByRole("article", { name: "review — Working" })).toBeTruthy();
-    eventFeed.handlers?.event(JSON.stringify({ ...v2TerminalEvent(publishedRevision!.revision_hash), event: "NODE_PROGRESS" }));
+    eventFeed.handlers?.event(JSON.stringify({ ...v2TerminalEvent(publishedRevision!.workflow_revision_hash), event: "NODE_PROGRESS" }));
     expect(await screen.findByText("Event invalid")).toBeTruthy();
   });
 
@@ -655,8 +655,8 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     listWorkflowRevisions: vi.fn(async () => ({
       items: [
         {
-          revision_hash: revisionHash,
-          format_version: 2 as const,
+          workflow_revision_hash: revisionHash,
+          workflow_format_version: 2 as const,
           executable: true,
           not_executable_reason: null,
           name: null,
@@ -694,14 +694,14 @@ function run(): RunV1 {
 }
 
 function revision(): WorkflowRevisionDetail {
-  return { revision_hash: revisionHash, document_base64: "", graph: graph() };
+  return { workflow_revision_hash: revisionHash, document_base64: "", graph: graph() };
 }
 
 function v2Revision(hash: string, documentBase64 = ""): WorkflowRevisionDetail {
   return {
-    revision_hash: hash, document_base64: documentBase64,
+    workflow_revision_hash: hash, document_base64: documentBase64,
     graph: {
-      format_version: 2, start_node_id: "build",
+      workflow_format_version: 2, start_node_id: "build",
       nodes: [
         { type: "agent", node_id: "review", role: "reviewer", job: "Review", next_node_id: "fix" },
         { type: "agent", node_id: "build", role: "builder", job: "Build", next_node_id: "review" },
@@ -803,7 +803,7 @@ async function fillBinding(index: number, values: readonly string[]): Promise<vo
 
 function graph() {
   return {
-    format_version: 1 as const,
+    workflow_format_version: 1 as const,
     start_node_id: "agent",
     nodes: [
       {

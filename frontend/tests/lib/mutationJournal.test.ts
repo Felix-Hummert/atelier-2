@@ -345,7 +345,7 @@ function wait(): MutationEnvelope {
 }
 
 function waitBody(node_id: string): string {
-  return JSON.stringify({ revision_hash: revisionHash, node_id, answer_base64: "MTc=" });
+  return JSON.stringify({ workflow_revision_hash: revisionHash, node_id, answer_base64: "MTc=" });
 }
 
 function reconciliation(): Extract<MutationEnvelope, { kind: "reconciliation" }> {

@@ -84,7 +84,7 @@ const nodeV2Schema = z.discriminatedUnion("type", [
 
 const workflowGraphV1Schema = z
   .object({
-    format_version: z.literal(1),
+    workflow_format_version: z.literal(1),
     start_node_id: z.string().min(1),
     nodes: z.array(nodeSchema)
   })
@@ -93,7 +93,7 @@ const workflowGraphV1Schema = z
 
 const workflowGraphV2Schema = z
   .object({
-    format_version: z.literal(2),
+    workflow_format_version: z.literal(2),
     start_node_id: z.string().min(1),
     nodes: z.array(nodeV2Schema)
   })
@@ -133,7 +133,7 @@ export { workflowDeclaredOrderSchema };
 
 const workflowGraphV3Schema = z
   .object({
-    format_version: z.literal(3),
+    workflow_format_version: z.literal(3),
     executable: z.boolean(),
     not_executable_reason: z.string().nullable(),
     node_count: z.number().int().positive(),
@@ -145,7 +145,7 @@ const workflowGraphV3Schema = z
   })
   .strict();
 
-const workflowGraphSchema = z.discriminatedUnion("format_version", [
+const workflowGraphSchema = z.discriminatedUnion("workflow_format_version", [
   workflowGraphV1Schema,
   workflowGraphV2Schema,
   workflowGraphV3Schema
@@ -216,8 +216,8 @@ function validateWorkflowGraph(
  */
 export const workflowRevisionSummarySchema = z
   .object({
-    revision_hash: sha256,
-    format_version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    workflow_revision_hash: sha256,
+    workflow_format_version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     executable: z.boolean(),
     not_executable_reason: z.string().nullable(),
     name: z.string().nullable(),
@@ -227,7 +227,7 @@ export const workflowRevisionSummarySchema = z
 
 export const workflowRevisionDetailSchema = z
   .object({
-    revision_hash: sha256,
+    workflow_revision_hash: sha256,
     document_base64: standardBase64,
     graph: workflowGraphSchema
   })
@@ -250,7 +250,7 @@ export const catalogNameResolutionSchema = z
   .object({
     display_name: z.string().min(1).max(128),
     lineage_id: sha256,
-    revision_hash: sha256,
+    workflow_revision_hash: sha256,
     revision_number: positiveSafeInteger
   })
   .strict();
@@ -259,13 +259,13 @@ export const catalogAdmissionSchema = z
   .object({
     display_name: z.string().min(1).max(128),
     lineage_id: sha256,
-    revision_hash: sha256,
+    workflow_revision_hash: sha256,
     revision_number: positiveSafeInteger
   })
   .strict();
 
 export interface CatalogAdmissionInput {
-  revision_hash: string;
+  workflow_revision_hash: string;
   actor: string;
   activated_at: string;
 }
@@ -1016,7 +1016,7 @@ export type ExecutableWorkflowGraph = Extract<
  * passed the refusal above.
  */
 export function executableGraph(graph: WorkflowGraph): ExecutableWorkflowGraph {
-  if (graph.format_version === 3) {
+  if (graph.workflow_format_version === 3) {
     throw new Error("a run cannot hold a revision no run can start");
   }
   return graph;
@@ -1140,7 +1140,7 @@ export function createCockpitApi(
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            revision_hash: input.revision_hash,
+            workflow_revision_hash: input.workflow_revision_hash,
             actor: input.actor,
             activated_at: input.activated_at
           })
@@ -1156,7 +1156,7 @@ export function createCockpitApi(
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            revision_hash: input.revision_hash,
+            workflow_revision_hash: input.workflow_revision_hash,
             actor: input.actor,
             activated_at: input.activated_at
           })
@@ -1285,7 +1285,7 @@ export function createCockpitApi(
         [200],
         workflowRevisionDetailSchema
       );
-      if (revision.revision_hash !== revisionHash) {
+      if (revision.workflow_revision_hash !== revisionHash) {
         throw new CockpitRequestError("The workflow response did not match the requested revision.");
       }
       return revision;

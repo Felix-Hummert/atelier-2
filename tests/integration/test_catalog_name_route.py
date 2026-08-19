@@ -85,7 +85,7 @@ def test_a_name_answers_with_the_revision_it_resolves_to(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["revision_hash"] == revision.revision_hash.value
+    assert body["workflow_revision_hash"] == revision.revision_hash.value
     assert body["display_name"] == NAME
     assert body["revision_number"] == 1
 
@@ -166,8 +166,8 @@ def test_a_position_answers_the_member_the_caller_asked_for(
     head = api.get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
     first_member = api.get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}?position=1")
 
-    assert head.json()["revision_hash"] == second.revision_hash.value
-    assert first_member.json()["revision_hash"] == first.revision_hash.value
+    assert head.json()["workflow_revision_hash"] == second.revision_hash.value
+    assert first_member.json()["workflow_revision_hash"] == first.revision_hash.value
 
 
 @pytest.mark.proves("a-name-the-catalog-cannot-honour-is-refused-by-its-own-reason")

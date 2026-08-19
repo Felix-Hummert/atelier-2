@@ -141,7 +141,10 @@ def test_a_valid_v3_document_publishes_as_one_immutable_hash_identified_revision
 
     assert (created.status_code, retried.status_code) == (201, 200)
     assert created.json() == retried.json()
-    assert created.json()["revision_hash"] == hashlib.sha256(V3_DOCUMENT).hexdigest()
+    assert (
+        created.json()["workflow_revision_hash"]
+        == hashlib.sha256(V3_DOCUMENT).hexdigest()
+    )
     assert created.json()["document_base64"] == encode_canonical_base64(V3_DOCUMENT)
     assert _row_count(runtime, workflow_revisions) == 1
 
@@ -181,7 +184,7 @@ def test_a_document_written_against_the_published_shape_is_taken_by_the_door(
 
     assert created.status_code == 201
     assert (
-        created.json()["revision_hash"]
+        created.json()["workflow_revision_hash"]
         == hashlib.sha256(EXECUTABLE_V3_DOCUMENT).hexdigest()
     )
     assert created.json()["graph"]["executable"] is True
@@ -199,7 +202,9 @@ def test_a_v3_revision_this_build_runs_reads_back_as_executable(
     refusal below cannot drift apart.
     """
     client = _client(runtime)
-    revision_hash = _publish(client, EXECUTABLE_V3_DOCUMENT).json()["revision_hash"]
+    revision_hash = _publish(client, EXECUTABLE_V3_DOCUMENT).json()[
+        "workflow_revision_hash"
+    ]
 
     read = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}")
 
@@ -249,7 +254,7 @@ nodes:
           graph_input: portions
 """
     client = _client(runtime)
-    revision_hash = _publish(client, document).json()["revision_hash"]
+    revision_hash = _publish(client, document).json()["workflow_revision_hash"]
 
     graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
         "graph"
@@ -277,14 +282,14 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
     """
     client = _client(runtime)
     published = _publish(client, V3_DOCUMENT)
-    revision_hash = published.json()["revision_hash"]
+    revision_hash = published.json()["workflow_revision_hash"]
 
     read = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}")
 
     assert read.status_code == 200
     assert read.json() == published.json()
     assert read.json()["graph"] == {
-        "format_version": 3,
+        "workflow_format_version": 3,
         "executable": False,
         "not_executable_reason": (
             "graph outputs nothing carries out of a run: verdict"
@@ -316,7 +321,7 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
         "description": None,
     }
     assert client.get(API_PREFIX + "/workflow-revisions").json() == {
-        "items": [{"revision_hash": revision_hash}],
+        "items": [{"workflow_revision_hash": revision_hash}],
         "next_after_revision_hash": None,
     }
 
@@ -338,7 +343,7 @@ def test_a_v3_revision_answers_an_instruction_start_not_the_authored_whole(
         f"    instruction: {authored}\n"
     ).encode()
     client = _client(runtime)
-    revision_hash = _publish(client, document).json()["revision_hash"]
+    revision_hash = _publish(client, document).json()["workflow_revision_hash"]
 
     graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
         "graph"
@@ -372,7 +377,7 @@ nodes:
         schema: {ref: decision, revision: schema-decision}
 """
     client = _client(runtime)
-    revision_hash = _publish(client, document).json()["revision_hash"]
+    revision_hash = _publish(client, document).json()["workflow_revision_hash"]
 
     graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
         "graph"
@@ -396,13 +401,13 @@ def test_a_v1_revision_does_not_invent_a_v3_node_preview(
     runtime: DbosRuntime,
 ) -> None:
     client = _client(runtime)
-    revision_hash = _publish(client, V1_DOCUMENT).json()["revision_hash"]
+    revision_hash = _publish(client, V1_DOCUMENT).json()["workflow_revision_hash"]
 
     graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
         "graph"
     ]
 
-    assert graph["format_version"] == 1
+    assert graph["workflow_format_version"] == 1
     assert "node_previews" not in graph
     assert "instruction_start" not in graph["nodes"][0]
     assert graph["nodes"][0]["job"] == "test"
@@ -412,13 +417,15 @@ def test_the_described_listing_does_not_carry_the_node_excerpt(
     runtime: DbosRuntime,
 ) -> None:
     client = _client(runtime)
-    revision_hash = _publish(client, EXECUTABLE_V3_DOCUMENT).json()["revision_hash"]
+    revision_hash = _publish(client, EXECUTABLE_V3_DOCUMENT).json()[
+        "workflow_revision_hash"
+    ]
 
     listed = client.get(API_PREFIX + "/workflow-revisions?view=described")
 
     assert listed.status_code == 200
     item = listed.json()["items"][0]
-    assert item["revision_hash"] == revision_hash
+    assert item["workflow_revision_hash"] == revision_hash
     assert "node_previews" not in item
     assert "nodes" not in item
 
@@ -427,7 +434,7 @@ def test_starting_a_run_on_a_v3_revision_is_refused_by_name_and_writes_no_run(
     runtime: DbosRuntime,
 ) -> None:
     client = _client(runtime)
-    revision_hash = _publish(client, V3_DOCUMENT).json()["revision_hash"]
+    revision_hash = _publish(client, V3_DOCUMENT).json()["workflow_revision_hash"]
 
     refused = client.post(
         API_PREFIX + "/runs",
@@ -444,7 +451,7 @@ def test_a_v1_revision_published_beside_a_v3_one_still_starts_its_run(
 ) -> None:
     client = _client(runtime)
     _publish(client, V3_DOCUMENT)
-    executable_hash = _publish(client, V1_DOCUMENT).json()["revision_hash"]
+    executable_hash = _publish(client, V1_DOCUMENT).json()["workflow_revision_hash"]
 
     started = client.post(
         API_PREFIX + "/runs",

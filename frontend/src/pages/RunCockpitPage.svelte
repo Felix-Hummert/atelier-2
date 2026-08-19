@@ -126,7 +126,7 @@
         return;
       }
       const revision =
-        snapshot.confirmed?.revision.revision_hash === run.workflow_revision_hash
+        snapshot.confirmed?.revision.workflow_revision_hash === run.workflow_revision_hash
           ? snapshot.confirmed.revision
           : await cockpitApi.getWorkflowRevision(run.workflow_revision_hash);
       requireBoundRevision(run, revision);
@@ -165,7 +165,7 @@
       (node) => node.node_id === run.current_node.node_id
     );
     if (
-      revision.revision_hash !== run.workflow_revision_hash ||
+      revision.workflow_revision_hash !== run.workflow_revision_hash ||
       currentNode === undefined ||
       JSON.stringify(currentNode) !== JSON.stringify(run.current_node)
     ) {
