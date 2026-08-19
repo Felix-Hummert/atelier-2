@@ -144,7 +144,10 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         A decoded result whose bytes the node's own pinned schema refuses is not
         an error of this call: the attempt ends `FAILED` under
         `OUTPUT_SCHEMA_REFUSED` with the refusal durably named, and the failed
-        outcome is returned rather than raised.
+        outcome is returned rather than raised. A granted project verification
+        that exits nonzero is the same kind of named failure, under
+        `PROJECT_VERIFICATION_FAILED`, with how the command ended in the receipt
+        reason and without a `tool_redemptions` row.
         """
         ...
 

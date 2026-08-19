@@ -30,8 +30,8 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V23 only in a truly empty canonical store and reopens
-only an exact V23 product schema. Every schema from V9 up to the one just below
+The runtime creates schema V24 only in a truly empty canonical store and reopens
+only an exact V24 product schema. Every schema from V9 up to the one just below
 current remains a published predecessor object -- `schema.py` names each as its
 own `V*_SCHEMA_HANDOFF` constant -- and none of them are opened or migrated by
 runtime. An exact store on any source version `schema.py`'s
@@ -39,9 +39,9 @@ runtime. An exact store on any source version `schema.py`'s
 through the offline `atelier2 migrate` command, one published step at a time;
 older published predecessors stay refused by name. Older, future,
 malformed, or nonempty unowned stores are rejected without mutation. There is no
-runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 23 with
+runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 24 with
 product-schema fingerprint
-`6d8a3af85ecc40781c6eea454e33ae625de1cf6d8726ca5c502cdcc33eb2c124`.
+`ba573ba80dbdbb5d9b2a93bc6958b7544838915be3e0f5fc816cacc718dfe9c8`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -168,6 +168,7 @@ provider contract.
 | V17 named refusal and the record family's writer | A fresh exact V17 store admits `OUTPUT_SCHEMA_REFUSED` beside the process-exit code, and the family writes: the public start persists `node-execution-request/v3` and `context-package/v3` per node -- an order the run carries binds in as a material member under its content hash -- and the terminal write ends the execution in the same transaction as the agent receipt: `failed` carrying the schema owner's reason on a refusal and the supervision's exit signature with a bounded standard-error tail on a dead process, `succeeded` with `node-artifact/v3` and its output binding on success; a judged receipt of either ending also names, on the same `node-receipt/v3` family, the schema revision and the hash of the exact decoded bytes it judged (older plain-reason rows stay readable); a crash inside that write leaves none of them, and a run from before the writer stays honestly receipt-less. A populated exact V16 store migrates through one transactional `agent_attempts` rebuild that keeps every attempt row and the child `tool_redemptions` declaration; a parked-name collision refuses by name and rolls back every earlier step; V16 joins the refused predecessors at runtime. |
 | V18 a run may end failed | A fresh exact V18 store admits `FAILED` as a run state, so a line whose open node paths have terminally failed ends under the node's own reason instead of standing STARTED with nothing to continue it. A populated exact V17 store migrates through one transactional `runs` rebuild that keeps every stored run; V17 joins the refused predecessors at runtime. |
 | V20 the round a loop turns | A fresh exact V20 store gives the round a durable home on the run and on every event and agent receipt it writes, keys a `node-execution-request/v3` by the execution rather than by the request it repeats, and drops the agent receipt key that said one receipt per node per run -- a sentence that stopped being true when a declared loop could run a node twice. Every round of every looped node is therefore its own request, receipt, artifact, agent receipt and durable workflow, and the first round of a node keeps byte for byte the identity it had before any loop existed. A populated exact V19 store migrates through four transactional table rebuilds that keep every stored row and read each as round one; a parked-name collision refuses by name and rolls back every earlier step; V19 joins the refused predecessors at runtime. Each rebuild materialises the shape of its own target version rather than the current declaration, so a hop that touches a table an earlier hop already rebuilt no longer breaks the chain in the middle. |
+| V24 named project-verification failure | A fresh exact V24 store admits `PROJECT_VERIFICATION_FAILED` beside the three existing attempt failure codes, so a granted verification that exits nonzero ends its attempt under its own name instead of writing a success. A populated exact V23 store migrates through one transactional `agent_attempts` rebuild that keeps every stored row; stored FAILED rows already carry one of the three old codes and nothing is reinterpreted; V23 joins the refused predecessors at runtime. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 | V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery with and without a surviving witness, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |

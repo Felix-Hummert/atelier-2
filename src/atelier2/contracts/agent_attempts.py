@@ -84,6 +84,11 @@ class AgentAttemptFailureCode(StrEnum):
     # would write that a schema refused what no schema saw, or that a process
     # died that exited cleanly.
     AGENT_REFUSED = "AGENT_REFUSED"
+    # The process ended fine and the bytes are a success the schema admits;
+    # the project's own granted check then exited nonzero. Folding this into
+    # the process code would write that the provider died; folding it into a
+    # schema or agent refusal would write that a form refused what no form saw.
+    PROJECT_VERIFICATION_FAILED = "PROJECT_VERIFICATION_FAILED"
 
 
 MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES = 2_048

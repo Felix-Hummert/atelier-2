@@ -789,6 +789,9 @@ class DbosAgentAttemptStore:
         `node-receipt/v3` carrying the schema owner's words, and the attempt on
         the same failure seam `PROCESS_EXITED_UNSUCCESSFULLY` runs on today, so
         the driver ends named instead of dying on an exception nobody stored.
+        A granted verification that exits nonzero is the same named seam under
+        `PROJECT_VERIFICATION_FAILED`, with how the command ended in the reason
+        and without a `tool_redemptions` row.
 
         A V3 success additionally keeps what the run now knows durably: the
         produced value as `node-artifact/v3` and the `succeeded`
@@ -839,6 +842,17 @@ class DbosAgentAttemptStore:
                         PublishedRevisionHash(declared.schema_reference.revision),
                         Sha256Hash.of(result.output_bytes),
                     )
+            if redemption is not None and redemption.exit_code != 0:
+                return _fail_current_attempt(
+                    connection,
+                    execution,
+                    durable,
+                    AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
+                    node_receipt_reason(
+                        NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
+                        f"exit {redemption.exit_code}",
+                    ),
+                )
             receipt = AgentReceiptV2.for_execution(
                 request, run.binding_set_hash, result
             )

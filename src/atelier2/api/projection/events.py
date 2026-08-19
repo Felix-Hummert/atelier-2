@@ -306,6 +306,7 @@ def _run_event_resource_v3(
                     "PROCESS_EXITED_UNSUCCESSFULLY",
                     "OUTPUT_SCHEMA_REFUSED",
                     "AGENT_REFUSED",
+                    "PROJECT_VERIFICATION_FAILED",
                 ],
                 failure_code,
             ),
