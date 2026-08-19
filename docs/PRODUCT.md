@@ -208,7 +208,14 @@ cannot start contains nothing and discovering that at the first run costs a
 run. The same startup proves the composed profile resolves the credential
 directory it was given, loads no user configuration, and configures no MCP
 server, so the operator's own Codex trust — including the per-project trust its
-configuration records — is never inherited by a served agent.
+configuration records — is never inherited by a served agent. For Claude,
+Grok, and Codex alike, pin and attest still run. A failure names
+`start_refusal` and omits the factory; serve stays up. A run that binds the
+refused executor is the same binding-unavailable refusal as a missing one,
+before any process starts. Two leftovers: the picker has no startability field
+yet, so an unstartable executor is simply absent rather than badged; and a
+nonterminal run already bound to that executor still raises
+`DbosRuntimeBindingConflict` at compose if the factory is omitted.
 
 The raw frame a provider writes has its own bound, distinct from the durable
 output bound, because the durable answer travels inside a JSON envelope. The
@@ -245,8 +252,7 @@ because a later CLI can change a control the containment depends on, and
 admitting it costs a rerun of that one-call matrix and a decision about this
 executor's operational identity. The same startup attests that this host
 carries no administrator-managed policy: policy is outside every switch above by
-design and can still start a child beside the credential directory, so a host
-carrying one is refused rather than served. Reading the
+design and can still start a child beside the credential directory. Reading the
 declared executable's version is itself the first execution of an external
 binary, so it is run with no environment at all, in an empty private directory,
 under a byte bound on both streams and a deadline that kills the whole probe
@@ -848,3 +854,15 @@ runtime without mutation, with no runtime migration or downgrade. An offline
 `schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder still names to the current
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.
+
+On 2026-08-19 at `ed6376b` this landing measured how many concurrent
+fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,
+production query-admission bounds, a V3 one-agent document, and
+`RecordingAgentExecutorFactoryV2` — not Claude, Grok, or Codex. It carried 96
+concurrent runs without a named HTTP or stream refusal. The first observed
+pressure was event-write latency: 0.42s at the CI n=2, 12.3s at n=96. The start
+door crossed the instance's 1s query-admission wait from n=16 (1.22s) and still
+answered 201. The 30s SQLite writer-lock timeout, process-spawn, watchdog
+cgroup, and memory failures were not observed. That is a measurement, not a
+capacity promise and not a Postgres or #312 decision. The 503 knee is leftover;
+[OPERATIONS.md](OPERATIONS.md) names the operator command that raises n.

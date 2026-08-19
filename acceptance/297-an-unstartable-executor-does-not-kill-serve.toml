@@ -1,0 +1,12 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/297"
+
+# The pin and the attest stay. What moved is the boundary: one unstartable
+# executor is a named refusal at its own start/bind seam, not a death sentence
+# for serve. Two leftovers: the picker badge until a startability field exists,
+# and a nonterminal run already bound to that executor still raising
+# DbosRuntimeBindingConflict at compose if the factory is omitted.
+
+[[sentence]]
+id = "an-unstartable-executor-does-not-kill-serve"
+text = "A declared executor whose pin or attest fails leaves the house serving; a run that binds it is refused as agent-executor-binding-unavailable before any process starts."
