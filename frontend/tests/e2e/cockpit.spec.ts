@@ -107,6 +107,9 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   const working = page.getByRole("article", { name: "build — Working" });
   await expect(working).toContainText("e2e · test-model");
   await expect(working).toContainText("Subscription · blocking/v1");
+  await expect(working).toHaveAttribute("data-live", "true");
+  await expect(page.getByText("Process log stays in the lease.")).toBeVisible();
+  await expect(page.getByRole("progressbar")).toHaveCount(0);
   await expect(async () => {
     await page.getByRole("button", { name: "Refresh" }).click();
     await expect(working).toContainText("possibly ran");
@@ -737,7 +740,12 @@ test("draws a running V3 chain as a graph while a node is still working", async 
   await expect(graph).toBeVisible();
   await expect(graph.getByRole("button", { name: /implement/ })).toBeVisible();
   await expect(graph.getByRole("button", { name: /review/ })).toBeVisible();
-  await expect(graph.getByRole("button", { name: /Working$/ })).toBeVisible({ timeout: 10_000 });
+  const working = graph.getByRole("button", { name: /Working$/ });
+  await expect(working).toBeVisible({ timeout: 10_000 });
+  await expect(working).toHaveAttribute("data-live", "true");
+  await expect(page.getByRole("region", { name: "Now" })).toBeVisible();
+  await expect(page.getByText("Process log stays in the lease.")).toBeVisible();
+  await expect(page.getByRole("progressbar")).toHaveCount(0);
   await expect(graph.locator('[data-node-id="implement"]')).toHaveAttribute("data-layer", "0");
   await expect(graph.locator('[data-node-id="review"]')).toHaveAttribute("data-layer", "1");
 

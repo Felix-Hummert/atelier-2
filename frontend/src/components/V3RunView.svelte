@@ -11,6 +11,7 @@
     type WorkflowRevisionDetail
   } from "../api/client";
   import { humanErrorMessage } from "../lib/humanRefusal";
+  import { eventTickerLabel, runShowsLiveWork, workingNodeId } from "../lib/liveWatch";
   import {
     MutationJournal,
     v3WaitMutation,
@@ -22,6 +23,7 @@
   import type { StreamProjection } from "../lib/runProjection";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { runPageCopy } from "../lib/runPageCopy";
+  import { protocolDetail, protocolTitle, streamStopped } from "../lib/streamStatus";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
@@ -36,6 +38,9 @@
   export let projection: StreamProjection | null = null;
   export let onRunRead: (run: RunV3) => void = () => {};
 
+  $: liveWatch = runShowsLiveWork(run);
+  $: workingId = workingNodeId(run);
+  $: latestEvent = projection?.events.at(-1) ?? null;
   /**
    * Completions and failures that arrived while the operator was watching.
    *
@@ -385,13 +390,19 @@
       />
       <span class="following">
         {#if projection === null || projection.connection === "connecting"}
-          Connecting…
+          {wrapDisplayCopy(runPageCopy.connecting)}
+        {:else if projection.connection === "reconnecting"}
+          {wrapDisplayCopy(runPageCopy.reconnecting)}
         {:else if projection.connection === "complete"}
-          Ended
-        {:else if projection.connection === "failed"}
-          Disconnected
+          {wrapDisplayCopy(runPageCopy.streamEnded)}
+        {:else if streamStopped(projection)}
+          {wrapDisplayCopy(
+            projection.protocol_problem !== null || projection.stream_failure !== null
+              ? runPageCopy.streamStopped
+              : runPageCopy.streamDisconnected
+          )}
         {:else}
-          Following live
+          {wrapDisplayCopy(runPageCopy.followingLive)}
         {/if}
       </span>
       <When
@@ -401,6 +412,35 @@
       />
     </p>
   </header>
+
+  {#if projection !== null && projection.stream_failure !== null}
+    <ProblemNotice problem={projection.stream_failure} />
+  {:else if projection !== null && protocolTitle(projection) !== null}
+    <ProblemNotice
+      title={protocolTitle(projection) ?? "Event invalid"}
+      message={protocolDetail(projection) ?? ""}
+    />
+  {/if}
+
+  {#if liveWatch}
+    <section class="live-watch" aria-label={wrapDisplayCopy(runPageCopy.now)} aria-live="polite">
+      {#if workingId !== null}
+        <p class="live-node" data-live-node={workingId}>
+          <StateMark state="working" />
+          <strong class="node-id">{workingId}</strong>
+        </p>
+      {/if}
+      {#if latestEvent !== null}
+        <p class="live-event">
+          <strong>{eventTickerLabel(latestEvent)}</strong>
+          <small>{latestEvent.node_id}</small>
+        </p>
+      {:else if projection?.connection === "live"}
+        <p class="muted" role="status">{wrapDisplayCopy(runPageCopy.noEventsYet)}</p>
+      {/if}
+      <p class="honest-absence">{wrapDisplayCopy(runPageCopy.processLogInLease)}</p>
+    </section>
+  {/if}
 
   {#if waiting}
     {#if waitQuestion.kind === "failed"}
@@ -430,10 +470,15 @@
     <ProblemNotice title="The graph could not be read" message={graphRequest.message} />
     <ol class="rail">
       {#each rail as entry (entry.node_id)}
-        <li class="rail-entry" class:current={entry.node_id === run.current_node_id}>
+        <li
+          class="rail-entry"
+          class:current={entry.node_id === run.current_node_id}
+          class:live-work={entry.state === "working"}
+        >
           <button
             type="button"
             class="node-button"
+            data-live={entry.state === "working" ? "true" : undefined}
             aria-expanded={openNodeId === entry.node_id}
             on:click={() => void openNode(entry.node_id)}
           >
@@ -524,6 +569,22 @@
   .run-identity { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.9rem; }
   .standing { display: flex; align-items: center; gap: 0.75rem; margin: 0; }
   .following { color: var(--muted); }
+  .live-watch {
+    display: grid;
+    gap: 0.5rem;
+    border: 1px solid var(--working);
+    border-radius: 0.75rem;
+    padding: 0.85rem 1rem;
+    background: color-mix(in srgb, var(--working) 8%, var(--paper));
+  }
+  .live-node { display: flex; align-items: center; gap: 0.6rem; margin: 0; }
+  .live-event {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin: 0;
+  }
   .events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
   .event { display: flex; align-items: baseline; gap: 0.6rem; }
   .refusal { margin: 0; padding: 0.6rem 0.75rem; border-radius: 0.4rem; border-left: 4px solid var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--warning); font-weight: 500; }

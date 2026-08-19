@@ -13,6 +13,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
+  import { nodeIsLiveWork } from "../lib/liveWatch";
   import type { NodeState } from "../lib/runProjection";
   import { layerWorkflowGraph } from "../lib/workflowGraph";
   import StateMark, { stateLabels } from "./StateMark.svelte";
@@ -132,9 +133,11 @@
                 type="button"
                 class="graph-node"
                 class:current={preview.id === currentNodeId}
+                class:live-work={nodeIsLiveWork(state)}
                 data-node-id={preview.id}
                 data-layer={layerIndex}
                 data-state={state}
+                data-live={nodeIsLiveWork(state) ? "true" : undefined}
                 aria-label={label}
                 aria-expanded={selectedNodeId === preview.id}
                 on:click={() => onSelect?.(preview.id)}
@@ -162,9 +165,11 @@
               <article
                 class="graph-node"
                 class:current={preview.id === currentNodeId}
+                class:live-work={nodeIsLiveWork(state)}
                 data-node-id={preview.id}
                 data-layer={layerIndex}
                 data-state={state}
+                data-live={nodeIsLiveWork(state) ? "true" : undefined}
                 aria-label={label}
               >
                 <header class="graph-node-header">
@@ -254,6 +259,10 @@
 
   .graph-node[data-state="working"] {
     border-left-color: var(--working);
+  }
+
+  .graph-node.live-work {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--working) 45%, transparent);
   }
 
   .graph-node[data-state="needs_you"] {

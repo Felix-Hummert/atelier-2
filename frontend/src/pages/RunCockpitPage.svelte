@@ -34,6 +34,8 @@
   } from "../lib/mutationJournal";
   import V3RunView from "../components/V3RunView.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
+  import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { runPageCopy } from "../lib/runPageCopy";
   import {
     confirmResource,
     decodeAndApplyDurableEvent,
@@ -45,10 +47,15 @@
     restartStreamProjection,
     startLoading,
     streamProjection,
-    type ConnectionState,
     type RetainedResource,
     type StreamProjection
   } from "../lib/runProjection";
+  import {
+    connectionLabel,
+    protocolDetail,
+    protocolTitle,
+    streamStopped
+  } from "../lib/streamStatus";
 
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
@@ -799,47 +806,6 @@
     }
   }
 
-  function streamStopped(value: StreamProjection): boolean {
-    return value.protocol_problem !== null || value.connection === "failed";
-  }
-
-  const connectionLabels = {
-    connecting: "Connecting",
-    live: "Live",
-    reconnecting: "Reconnecting",
-    complete: "Complete",
-    failed: "Stopped"
-  } as const satisfies Record<ConnectionState, string>;
-
-  function connectionLabel(value: StreamProjection): string {
-    return value.protocol_problem === null ? connectionLabels[value.connection] : "Stopped";
-  }
-
-  function protocolTitle(value: StreamProjection): string | null {
-    if (value.protocol_problem === null) return null;
-    return {
-      decoder: "Event invalid",
-      sequence_gap: "Event gap",
-      conflicting_duplicate: "Event conflict",
-      output_integrity: "Output mismatch"
-    }[value.protocol_problem.type];
-  }
-
-  function protocolDetail(value: StreamProjection): string | null {
-    const problem = value.protocol_problem;
-    if (problem === null) return null;
-    if (problem.type === "sequence_gap") {
-      return `Confirmed sequence ${problem.expected - 1}; received ${problem.received}.`;
-    }
-    if (problem.type === "conflicting_duplicate") {
-      return `Durable cursor ${problem.cursor} was replayed with different bytes.`;
-    }
-    if (problem.type === "output_integrity") {
-      return `Computed SHA-256 ${problem.received}; durable output says ${problem.expected}.`;
-    }
-    return "A durable event did not match the closed wire contract.";
-  }
-
   function exactEvent(event: RunEvent): string {
     const bytes = projection?.payload_bytes_by_cursor.get(event.cursor);
     return bytes === undefined ? JSON.stringify(event) : new globalThis.TextDecoder().decode(bytes);
@@ -897,6 +863,9 @@
       {:else if protocolTitle(projection) !== null}
         <ProblemNotice title={protocolTitle(projection) ?? "Event invalid"} message={protocolDetail(projection) ?? ""} />
       {/if}
+      {#if snapshot.confirmed.run.state === "STARTED"}
+        <p class="honest-absence">{wrapDisplayCopy(runPageCopy.processLogInLease)}</p>
+      {/if}
     {/if}
 
     <dl class="run-summary">
@@ -944,7 +913,7 @@
       {openFormNodeIds}
     />
 
-    <details class="event-log">
+    <details class="event-log" open={snapshot.confirmed.run.state === "STARTED"}>
       <summary>Events <span>{projection?.events.length ?? 0}</span></summary>
       {#if (projection?.events.length ?? 0) === 0}
         <p class="empty-event">No durable events yet.</p>

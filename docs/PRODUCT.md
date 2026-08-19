@@ -618,9 +618,14 @@ colour together, no zoom, no drag. The page leads with the published workflow
 name and keeps the run id as identity. A click into a node speaks Prompt and
 Output, never Asked or Answered; a hash sits behind a named, shortened, copyable
 proof affordance. The live event line names which node finished and does not
-paste the output the node already holds. The live event line stays open until the
-events it has applied match the latest cursor the run itself names, so a run
-that has already ended still shows every node that finished. Details on the
+paste the output the node already holds. A STARTED run paints the working node
+as live work, not as a finished card, and shows new events from the existing
+SSE door as they arrive. Empty, connecting, and failed stream states are each
+named as themselves. The process log is not on that door — it stays in the
+lease (#104) — and the page says so rather than inventing a progress bar. The
+live event line stays open until the events it has applied match the latest
+cursor the run itself names, so a run that has already ended still shows every
+node that finished. Details on the
 saved-workflow picker reuses the same drawing without run state. A chosen V3 revision that declares
 orders shows one material field per order — the name and the schema the
 author pinned — and sends the typed text as `orders` on the start; a revision
