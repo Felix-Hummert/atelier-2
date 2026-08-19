@@ -346,7 +346,14 @@ def _current_attempt_projection(
         else node_job(
             node.instruction,
             load_run_inputs(session, run.run_id, node),
-            load_node_outputs(session, run.run_id, run.revision_hash, graph, node),
+            load_node_outputs(
+                session,
+                run.run_id,
+                run.revision_hash,
+                graph,
+                node,
+                run.current_round_ordinal,
+            ),
         )
     ).encode("utf-8")
     exact_request = AgentExecutionRequestV2(
@@ -497,7 +504,12 @@ def _node_job_and_refusal(
             node.instruction,
             load_run_inputs(connection, run.run_id, node),
             load_node_outputs(
-                connection, run.run_id, run.revision_hash, projection.graph, node
+                connection,
+                run.run_id,
+                run.revision_hash,
+                projection.graph,
+                node,
+                run.current_round_ordinal,
             ),
         ).encode("utf-8")
     except NodeOutputNotWritten:

@@ -471,6 +471,26 @@ class WorkflowGraphV3(_ClosedV3Model):
         return frozenset(closure)
 
 
+def is_previous_round_data_edge(
+    graph: WorkflowGraphV3, reader_id: str, source_node: str
+) -> bool:
+    """Whether this read names a loop-mate the edges cannot order.
+
+    `depends_on` stays acyclic, so the head of a loop cannot name the tail as a
+    control predecessor. The value the tail wrote last round is still what the
+    next build must read, and that is a data edge onto a previous execution, not
+    a cycle in this round.
+    """
+    reader_loop = graph.loop_of(reader_id)
+    source_loop = graph.loop_of(source_node)
+    return (
+        reader_loop is not None
+        and source_loop is not None
+        and reader_loop.id == source_loop.id
+        and source_node not in graph.dependency_closure(reader_id)
+    )
+
+
 type AnyWorkflowDocument = AnyWorkflowGraph | WorkflowGraphV3
 type AnyWorkflowDocumentNode = AnyWorkflowNode | WorkflowNodeV3
 
@@ -773,7 +793,9 @@ def _refuse_unordered_data_edge(
             f"{subject} reads node {source.node!r}, which is not declared",
             node_id,
         )
-    if source.node not in closure:
+    if source.node not in closure and not is_previous_round_data_edge(
+        graph, node_id, source.node
+    ):
         raise _refuse(
             WorkflowRefusalReason.DATA_EDGE_OUTSIDE_CLOSURE,
             field,
@@ -1356,11 +1378,12 @@ V3_BOUND_INPUT_SOURCES = (GraphInputSource, NodeOutputSource)
 """Which `inputs` source a node may read, because the runtime actually binds it.
 
 An order the graph declares is supplied at the start and handed to the node. A
-node output is what the node before it produced: the runtime writes that value
-durably when the producing node completes, and hands it to the reader as part of
-the job. The remaining two sources -- a node's receipt and a context entry --
-name something nothing produces yet, so a document that reads one is refused by
-the source it named rather than started and quietly given nothing.
+node output is what one producing execution wrote: the same-round predecessor
+when `depends_on` orders it, or the immediately previous round when the source
+sits in the same loop and the edges cannot name it. The remaining two sources
+-- a node's receipt and a context entry -- name something nothing produces yet,
+so a document that reads one is refused by the source it named rather than
+started and quietly given nothing.
 """
 
 
