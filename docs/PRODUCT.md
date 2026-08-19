@@ -28,7 +28,12 @@ The intended product will:
   provider boundaries;
 - leave issues, pull requests, checks, reviews, merges, and history with the
   external development platform, while the core owns only its product concepts;
-  and
+- treat every agent node as the same kind — a code node and a review node
+  differ only by what the workflow gives and allows and by the agent Markdown;
+  a successor sees declared outputs, not the predecessor's workspace;
+- land a changed tree only through the platform adapter (an Action node, or
+  the same effect as a grant on an Agent), with the secret never in the lease
+  and no ambient CI credential; and
 - show which source, context, workflow, proof, landed object, and deployment a
   visible result represents instead of inventing a second truth.
 
