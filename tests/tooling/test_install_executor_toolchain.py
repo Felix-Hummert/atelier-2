@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -371,6 +372,14 @@ def test_the_default_root_follows_xdg_data_home(
     assert expected.is_file()
 
 
+def operations_claude_install_command(runbook: str) -> str:
+    for block in re.findall(r"```bash\n(.*?)```", runbook, flags=re.DOTALL):
+        for line in block.splitlines():
+            if "install_executor_toolchain.py" in line and "--provider claude" in line:
+                return line
+    raise AssertionError("OPERATIONS.md has no Claude toolchain install command")
+
+
 def test_operations_describes_the_pinned_toolchain_not_the_daily_cli() -> None:
     mapping = DOCUMENTATION_MAP.read_text(encoding="utf-8")
     runbook = OPERATIONS.read_text(encoding="utf-8")
@@ -383,3 +392,18 @@ def test_operations_describes_the_pinned_toolchain_not_the_daily_cli() -> None:
     assert "--codex-executable" in runbook
     assert "CONFORMANT_" in runbook
     assert "How is an executor toolchain pinned?" in mapping
+
+
+def test_the_operations_claude_fence_names_a_version_when_several_releases_are_conformant() -> (
+    None
+):
+    """A Claude fence without --version is exit 1; the runbook must not teach that."""
+
+    assert len(CONFORMANT_CLAUDE_VERSIONS) > 1
+    command = operations_claude_install_command(OPERATIONS.read_text(encoding="utf-8"))
+    tokens = command.split()
+    assert "--version" in tokens
+    stated = tokens[tokens.index("--version") + 1]
+    parts = stated.split(".")
+    assert len(parts) == 3 and all(part.isdigit() for part in parts)
+    assert (int(parts[0]), int(parts[1]), int(parts[2])) in CONFORMANT_CLAUDE_VERSIONS

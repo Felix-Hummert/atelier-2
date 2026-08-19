@@ -78,7 +78,7 @@ Install one already-conformant release into
 `${XDG_DATA_HOME:-$HOME/.local/share}/atelier2-toolchains`:
 
 ```bash
-uv run --locked python scripts/install_executor_toolchain.py --provider claude
+uv run --locked python scripts/install_executor_toolchain.py --provider claude --version 2.1.233
 uv run --locked python scripts/install_executor_toolchain.py --provider codex
 uv run --locked python scripts/install_executor_toolchain.py --provider grok --from /path/to/the-conformant-grok
 ```
@@ -86,8 +86,8 @@ uv run --locked python scripts/install_executor_toolchain.py --provider grok --f
 The script prints the absolute executable path. It imports
 `CONFORMANT_CLAUDE_VERSIONS`, `CONFORMANT_GROK_VERSIONS`, and
 `CONFORMANT_CODEX_VERSIONS` from the subscription adapters and does not keep a
-second list. If that set has more than one member, the command refuses and
-lists them; pass `--version` with one. After the tree lands, the script asks
+second list. Claude's set has more than one member, so the fenced command
+includes `--version` with one of them. After the tree lands, the script asks
 the binary `--version` and refuses an answer that is not that selected member.
 
 Claude and Codex are fetched with `npm install` into an isolated prefix
