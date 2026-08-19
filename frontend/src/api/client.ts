@@ -559,8 +559,8 @@ const runV3Schema = z
  * nothing and has no receipt, and a refusal exists only where something really
  * refuses. The panel renders exactly that and invents no placeholder.
  *
- * Usage and duration are not here because no receipt holds them. The panel says
- * so rather than leaving a reader to assume the fields are coming.
+ * Usage is not here because no receipt holds it. Duration sits beside the
+ * attempt as started_at / ended_at, not on the receipt.
  */
 const nodeProvenanceSchema = z
   .object({

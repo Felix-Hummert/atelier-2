@@ -853,7 +853,7 @@
         : `Run ${snapshot.confirmed.run.run_id}`;
 </script>
 
-<section aria-labelledby="run-title">
+<section aria-labelledby={v3Run !== null ? "v3-run-title" : "run-title"}>
   <Breadcrumb
     steps={[{ label: "Studio", path: "/atelier" }, { label: THE_ONE_PROJECT, path: "/atelier/project" }]}
     current={trailHere}

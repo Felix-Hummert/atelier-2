@@ -444,20 +444,24 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
 
   await page.goto(`/atelier/runs/${reference}`);
 
-  await expect(page.getByRole("heading", { level: 1, name: "Run v3/seen-in-the-browser" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Two agents in a line" })).toBeVisible();
+  await expect(page.getByLabel("Run identity")).toHaveText("v3/seen-in-the-browser");
   const graph = page.getByRole("region", { name: "Workflow" });
   await expect(graph.getByRole("button", { name: "implement — Done" })).toBeVisible();
   await expect(graph.getByRole("button", { name: "review — Done" })).toBeVisible();
   await expect(page.getByLabel("Where this run stands")).toContainText("Done");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Snapshot");
-  await expect(page.getByText(terminal as unknown as string)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Terminal hash" })).toHaveAttribute(
+    "title",
+    terminal as unknown as string
+  );
   await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
 
   await page.screenshot({ path: "test-results/v3-run-desktop.png", fullPage: true });
   await page.screenshot({ path: "test-results/v3-graph-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("heading", { level: 1, name: "Run v3/seen-in-the-browser" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Two agents in a line" })).toBeVisible();
   expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/v3-run-mobile.png", fullPage: true });
   await page.screenshot({ path: "test-results/v3-graph-390x844.png", fullPage: true });
@@ -519,7 +523,7 @@ test("starts a published V3 workflow by picking a named agent", async ({ page })
   await page.screenshot({ path: "test-results/named-agent-picker-desktop.png", fullPage: true });
 
   await page.getByRole("button", { name: "Start" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: /^Run / })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Started with a named agent" })).toBeVisible();
   await expect(page.getByLabel("Where this run stands")).toContainText("Done", {
     timeout: 20_000
   });
@@ -527,7 +531,7 @@ test("starts a published V3 workflow by picking a named agent", async ({ page })
   await assertNoSeriousAccessibilityFindings(page);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("heading", { level: 1, name: /^Run / })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Started with a named agent" })).toBeVisible();
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/named-agent-run-390x844.png", fullPage: true });
 });
@@ -575,7 +579,7 @@ test("publishes a V3 workflow, binds its role, and watches the line it started",
 
   await page.getByRole("button", { name: "Start" }).click();
 
-  await expect(page.getByRole("heading", { level: 1, name: /^Run / })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Seen from the picker" })).toBeVisible();
   const graph = page.getByRole("region", { name: "Workflow" });
   await expect(graph.getByRole("button", { name: /implement/ })).toBeVisible();
   await expect(graph.getByRole("button", { name: /review/ })).toBeVisible();
@@ -657,7 +661,7 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
   // this deterministic without making it a lie.
   await page.goto(`/atelier/runs/${reference}`);
 
-  const arriving = page.getByRole("list", { name: "Events as they arrive" });
+  const arriving = page.getByRole("list", { name: "What finished" });
   await expect(arriving.getByRole("listitem")).toHaveCount(2, { timeout: 20_000 });
   await expect(arriving).toContainText("implement");
   await expect(arriving).toContainText("review");
@@ -847,17 +851,18 @@ test("a node whose answer its own contract refuses never reports success", async
   await expect(page.getByRole("link", { name: "v3/the-silent-one" })).toBeVisible();
 
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByRole("heading", { level: 1, name: "Run v3/the-silent-one" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "the chain the operator watched" })).toBeVisible();
+  await expect(page.getByLabel("Run identity")).toHaveText("v3/the-silent-one");
   await expect(page.getByLabel("Where this run stands")).toContainText("Failed");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Done");
 
   await page.getByRole("button", { name: /implement/ }).click();
-  // Nothing was written, so there is nothing to show as an answer -- and the
+  // Nothing was written, so there is nothing to show as an output -- and the
   // panel says so honestly rather than dressing the silence as a value.
-  await expect(page.getByLabel("Asked")).toContainText(
+  await expect(page.getByRole("region", { name: "Prompt" })).toContainText(
     "Write three German sentences about code review."
   );
-  await expect(page.getByLabel("Answered")).toContainText("Nothing written yet.");
+  await expect(page.getByRole("region", { name: "Output" })).toContainText("Nothing written yet.");
   await page.screenshot({ path: "test-results/v3-node-refusal.png", fullPage: true });
 });
 
@@ -942,16 +947,16 @@ test("clicking a finished node shows its whole log", async ({ page }) => {
   }).toPass({ timeout: 15_000 });
 
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByRole("heading", { level: 1, name: "Run v3/the-read-one" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "the chain the operator read" })).toBeVisible();
+  await expect(page.getByLabel("Run identity")).toHaveText("v3/the-read-one");
 
   await page.getByRole("button", { name: /implement/ }).click();
-  await expect(page.getByLabel("Asked")).toContainText(
+  await expect(page.getByRole("region", { name: "Prompt" })).toContainText(
     "Write three German sentences about code review."
   );
-  await expect(page.getByLabel("Answered")).toContainText("V3 provider bytes");
-  await expect(page.getByLabel("Events as they arrive")).toContainText(
-    "V3 provider bytes"
-  );
+  await expect(page.getByRole("region", { name: "Output" })).toContainText("V3 provider bytes");
+  await expect(page.getByLabel("What finished")).toContainText("implement");
+  await expect(page.getByLabel("What finished")).not.toContainText("V3 provider bytes");
   await expect(page.getByText(/not recorded yet/)).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v3-node-detail.png", fullPage: true });
@@ -1106,7 +1111,7 @@ test("a declared order is a material field on start, and the typed value travels
     await route.continue();
   });
   await page.getByRole("button", { name: "Start" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: /^Run / })).toBeVisible({
+  await expect(page.getByRole("heading", { level: 1, name: "Cook to order" })).toBeVisible({
     timeout: 20_000
   });
   expect(started.orders).toEqual([{ name: "portions", value: '{"portions": 7}' }]);
@@ -1421,7 +1426,8 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
   }).toPass({ timeout: 15_000 });
 
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByRole("heading", { level: 1, name: `Run ${runId}` })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "answer-card-194" })).toBeVisible();
+  await expect(page.getByLabel("Run identity")).toHaveText(runId);
   await expect(page.getByRole("heading", { name: "Answer needed" })).toBeVisible();
   await expect(page.getByText("Approve this, or name the blocking defect.")).toBeVisible();
   const card = page.getByRole("region", { name: "Answer needed" });

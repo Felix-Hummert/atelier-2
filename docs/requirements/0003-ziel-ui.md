@@ -266,7 +266,7 @@ Quelle:     DESK — #336 body @ 92d5e087, Kriterium 3
 Begründung: Prompt, Output und Log haben ihr Ruling an #333. Diese Regel ist der Owner-Satz; der Pseudo-Locale-Smoke unter REQ-UIQ-04 prüft nur die Display-Strings, die heute schon einen Owner haben.
 Journeys:
 Beweis:     UNGEBUNDEN
-Offen:      - Prompt/Output/Log-Vokabeln (Eigentümer: #333, Ziel: Ruling)
+Offen:      - Log-Fläche (Eigentümer: #104). Prompt und Output spricht die Run-Seite seit #333; das Review-Ritual dieser Regel bleibt ungebunden.
 
 ### REQ-UIQ-04: Anzeige-Strings einer Fläche kommen aus ihrem Owner, und das Layout verträgt die längere Form.
 Status:     DRAFT

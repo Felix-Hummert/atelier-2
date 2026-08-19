@@ -25,6 +25,7 @@
     depends_on: readonly string[];
   }[];
   export let rail: readonly { node_id: string; state: NodeState }[] = [];
+  export let nodeReasons: ReadonlyMap<string, string> = new Map();
   export let currentNodeId: string | null = null;
   export let selectedNodeId: string | null = null;
   export let onSelect: ((nodeId: string) => void) | null = null;
@@ -125,6 +126,7 @@
           {#each layer as preview (preview.id)}
             {@const state = stateById.get(preview.id)}
             {@const label = nodeLabel(preview.id, state)}
+            {@const reason = nodeReasons.get(preview.id)}
             {#if onSelect !== null}
               <button
                 type="button"
@@ -152,6 +154,9 @@
                 {#if showExcerpt && preview.instruction_start !== null}
                   <p class="node-instruction">{preview.instruction_start}</p>
                 {/if}
+                {#if reason !== undefined}
+                  <p class="node-reason" role="alert">{reason}</p>
+                {/if}
               </button>
             {:else}
               <article
@@ -176,6 +181,9 @@
                 {/if}
                 {#if showExcerpt && preview.instruction_start !== null}
                   <p class="node-instruction">{preview.instruction_start}</p>
+                {/if}
+                {#if reason !== undefined}
+                  <p class="node-reason" role="alert">{reason}</p>
                 {/if}
               </article>
             {/if}
@@ -291,6 +299,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .node-reason {
+    margin: 0.25rem 0 0;
+    color: var(--warning);
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
   }
 
   .muted {

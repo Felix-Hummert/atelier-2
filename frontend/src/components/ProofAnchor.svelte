@@ -1,7 +1,11 @@
 <script lang="ts">
+  import { shortHash } from "../lib/proofAnchor";
+
   export let label: string;
   export let seals: string;
   export let value: string;
+  /** Named short hash on the surface. The picker keeps the hash hidden until asked. */
+  export let compact = false;
 
   let open = false;
   let copied = false;
@@ -24,15 +28,16 @@
   }}
 >
   <button
-    class="info-button"
+    class={compact ? "proof-compact" : "info-button"}
     type="button"
     aria-label={label}
+    title={compact ? value : undefined}
     aria-expanded={open}
     onclick={() => {
       open = !open;
       copied = false;
     }}
-  >ⓘ</button>
+  >{compact ? shortHash(value) : "ⓘ"}</button>
   {#if open}
     <span class="info-popover" role="status">
       <p class="proof-seals">Seals {seals}.</p>
@@ -41,3 +46,4 @@
     </span>
   {/if}
 </span>
+

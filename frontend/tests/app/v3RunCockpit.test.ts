@@ -92,13 +92,16 @@ describe("a version 3 run in the cockpit", () => {
     });
 
     expect(
-      (await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" })).isConnected
+      (await screen.findByRole("heading", { level: 1, name: "Two agents in a line" })).isConnected
     ).toBe(true);
     const graph = await screen.findByRole("region", { name: "Workflow" });
     expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true);
     expect(within(graph).getByRole("button", { name: "review — Working" }).isConnected).toBe(true);
     expect(screen.getByText(/not yet/i).isConnected).toBe(true);
-    expect(screen.getByText(configurationHash).isConnected).toBe(true);
+    expect(screen.queryByText(configurationHash)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Run configuration" }).getAttribute("title")
+    ).toBe(configurationHash);
     // A loaded run is not a failed one: the page must not offer to fetch it again
     // beneath the answer it already has.
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
@@ -111,7 +114,7 @@ describe("a version 3 run in the cockpit", () => {
     render(App, {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
-    await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
     feed.handlers?.opened();
     feed.handlers?.event(
       JSON.stringify(await completedEvent("implement", "the draft", 1))
@@ -126,10 +129,10 @@ describe("a version 3 run in the cockpit", () => {
       ).toContain("Following live")
     );
     const arriving = await screen.findByRole("list", {
-      name: "Events as they arrive"
+      name: "What finished"
     });
-    await waitFor(() => expect(arriving.textContent).toContain("the draft"));
-    expect(arriving.textContent).toContain("implement");
+    await waitFor(() => expect(arriving.textContent).toContain("implement"));
+    expect(arriving.textContent).not.toContain("the draft");
   });
 
   it("proves(a-v3-stream-closes-only-when-every-event-has-arrived): keeps the stream open until the applied events match the run cursor", async () => {
@@ -150,11 +153,11 @@ describe("a version 3 run in the cockpit", () => {
     render(App, {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
-    await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await completedEvent("implement", "the draft", 1)));
 
-    const arriving = await screen.findByRole("list", { name: "Events as they arrive" });
+    const arriving = await screen.findByRole("list", { name: "What finished" });
     await waitFor(() => expect(arriving.textContent).toContain("implement"));
     expect(within(arriving).getAllByRole("listitem")).toHaveLength(1);
     expect(screen.getByLabelText("Where this run stands").textContent).toContain("Following live");
@@ -179,7 +182,10 @@ describe("a version 3 run in the cockpit", () => {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect((await screen.findByText(terminalHash)).isConnected).toBe(true);
+    expect(
+      (await screen.findByRole("button", { name: "Terminal hash" })).getAttribute("title")
+    ).toBe(terminalHash);
+    expect(screen.queryByText(terminalHash)).toBeNull();
     expect(screen.getByLabelText("Where this run stands").textContent).toContain("Done");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
@@ -192,7 +198,7 @@ describe("a version 3 run in the cockpit", () => {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
     await screen.findByRole("region", { name: "Workflow" });
     expect(cockpitApi.getWorkflowRevision).toHaveBeenCalledWith(digest);
     expect(feed.open).toHaveBeenCalledTimes(1);
@@ -359,7 +365,9 @@ describe("a version 3 run that stops for a person", () => {
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await waitAnsweredEvent(1)));
 
-    expect((await screen.findByText(terminalHash)).isConnected).toBe(true);
+    expect(
+      (await screen.findByRole("button", { name: "Terminal hash" })).getAttribute("title")
+    ).toBe(terminalHash);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "approve — Done" }).isConnected).toBe(true)
     );
@@ -399,7 +407,9 @@ describe("a version 3 run that stops for a person", () => {
       node_id: "approve",
       answer_base64: btoa('"approved, with the second paragraph rewritten"')
     });
-    expect(await screen.findByText(terminalHash)).toBeTruthy();
+    expect(
+      (await screen.findByRole("button", { name: "Terminal hash" })).getAttribute("title")
+    ).toBe(terminalHash);
   });
 
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): names a refused answer on the card", async () => {
@@ -530,13 +540,15 @@ describe("a failed node on the run page", () => {
     render(App, {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
-    await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await failedEvent("implement", reason, 1)));
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("implement");
     expect(alert.textContent).toContain(reason);
+    expect(screen.getByRole("button", { name: "implement — Failed" }).textContent).toContain(
+      reason
+    );
     expect(screen.queryByText("Asked")).toBeNull();
   });
 });
@@ -597,7 +609,7 @@ describe("the click into a node", () => {
     await screen.findByText(/builder · anthropic · sonnet/);
   });
 
-  it("proves(a-click-into-a-node-shows-what-it-was-asked-and-wrote): says usage and duration are not recorded instead of leaving the question open", async () => {
+  it("proves(a-click-into-a-node-shows-what-it-was-asked-and-wrote): says usage is not recorded instead of leaving the question open", async () => {
     render(App, {
       props: {
         cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => nodeDetail() as never) }),
@@ -608,6 +620,29 @@ describe("the click into a node", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
 
+    await screen.findByText(/not recorded yet/);
+  });
+
+  it("proves(a-node-carries-how-long-it-ran): shows the recorded duration on a node that ran", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), {
+          getNodeDetail: vi.fn(async () =>
+            nodeDetail({
+              started_at: "2026-08-18T15:00:00Z",
+              ended_at: "2026-08-18T15:05:00Z"
+            }) as never
+          )
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("implement");
+
+    await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
+
+    await screen.findByText("Duration");
+    await screen.findByText("5 min");
     await screen.findByText(/not recorded yet/);
   });
 
@@ -678,5 +713,76 @@ describe("the click into a node", () => {
 
     await screen.findByText("This node could not be read");
     expect(screen.queryByRole("alert")?.textContent ?? "").not.toContain("Stopped here");
+  });
+
+  it("proves(a-run-page-speaks-prompt-and-output): labels the job Prompt and the value Output", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => nodeDetail() as never) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("implement");
+
+    await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
+
+    await screen.findByRole("heading", { name: "Prompt" });
+    await screen.findByRole("heading", { name: "Output" });
+    expect(screen.queryByText("Asked")).toBeNull();
+    expect(screen.queryByText("Answered")).toBeNull();
+  });
+});
+
+describe("the run page speaking the target words", () => {
+  it("proves(a-run-page-hash-is-a-named-proof-anchor): a hash appears shortened with a copy affordance and the full value in the title", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(globalThis.navigator, { clipboard: { writeText } });
+    render(App, {
+      props: { cockpitApi: api(v3Run()), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+
+    expect(screen.queryByText(configurationHash)).toBeNull();
+    const trigger = screen.getByRole("button", { name: "Run configuration" });
+    expect(trigger.getAttribute("title")).toBe(configurationHash);
+    expect((trigger.textContent ?? "").length).toBeGreaterThan(0);
+    expect((trigger.textContent ?? "").length).toBeLessThan(configurationHash.length);
+    expect(trigger.textContent).toContain(configurationHash.slice(0, 8));
+
+    await fireEvent.click(trigger);
+    await fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledWith(configurationHash);
+  });
+
+  it("proves(a-run-page-does-not-repeat-node-outputs-as-a-timeline): names the finished node without pasting its output or saying As it happened", async () => {
+    const feed = new FakeRunEventFeed();
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { openRunEvents: feed.open }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    feed.handlers?.opened();
+    feed.handlers?.event(JSON.stringify(await completedEvent("implement", "schreiben", 1)));
+
+    const arriving = await screen.findByRole("list", { name: "What finished" });
+    await waitFor(() => expect(arriving.textContent).toContain("implement"));
+    expect(arriving.textContent).toContain("Done");
+    expect(arriving.textContent).not.toContain("schreiben");
+    expect(arriving.textContent).not.toMatch(/Doneschreiben/);
+    expect(screen.queryByText("As it happened")).toBeNull();
+  });
+
+  it("proves(a-run-page-leads-with-the-workflow-name): the name is the title and the run id is the identity detail", async () => {
+    render(App, {
+      props: { cockpitApi: api(v3Run()), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    expect(
+      (await screen.findByRole("heading", { level: 1, name: "Two agents in a line" })).isConnected
+    ).toBe(true);
+    expect(screen.getByLabelText("Run identity").textContent).toBe("v3/two-agents");
+    expect(screen.queryByRole("heading", { level: 1, name: "Run v3/two-agents" })).toBeNull();
   });
 });

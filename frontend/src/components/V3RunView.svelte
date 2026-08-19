@@ -20,8 +20,11 @@
     type WaitMutation
   } from "../lib/mutationJournal";
   import type { StreamProjection } from "../lib/runProjection";
+  import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { runPageCopy } from "../lib/runPageCopy";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
+  import ProofAnchor from "./ProofAnchor.svelte";
   import StateMark from "./StateMark.svelte";
   import When from "./When.svelte";
   import V3AnswerCard from "./V3AnswerCard.svelte";
@@ -33,26 +36,23 @@
   export let projection: StreamProjection | null = null;
   export let onRunRead: (run: RunV3) => void = () => {};
 
-  const PREVIEW_CHARACTERS = 120;
-
   /**
-   * What arrived while the operator was watching, newest last.
+   * Completions and failures that arrived while the operator was watching.
    *
-   * Only the two kinds that say a node is done with its turn: a completion and a
-   * failure. The rest of the stream is real and is kept by the projection; what
-   * belongs on this line is the answer to "is it moving", not the whole record.
-   * The full output is the panel's (#238) -- here it is a preview, because a
-   * page that pasted a whole agent answer into the timeline would bury the very
-   * movement it exists to show.
+   * The list names which node finished. It does not paste the output the node
+   * already holds — that duplicate was "As it happened" and glued "Done" onto
+   * the preview (#333). The reason a node failed lives on the node itself.
    */
   $: arrived = (projection?.events ?? []).filter(
     (event) => event.event === "AGENT_COMPLETED" || event.event === "AGENT_FAILED"
   );
-  $: failedReasons = arrived.flatMap((event) => {
-    if (event.event !== "AGENT_FAILED") return [];
-    const reason = storedFailureReason(event);
-    return reason === null ? [] : [{ nodeId: event.node_id, reason }];
-  });
+  $: failedReasons = new Map(
+    arrived.flatMap((event) => {
+      if (event.event !== "AGENT_FAILED") return [];
+      const reason = storedFailureReason(event);
+      return reason === null ? [] : [[event.node_id, reason] as const];
+    })
+  );
 
   function storedFailureReason(event: RunEvent): string | null {
     if (event.event !== "AGENT_FAILED") return null;
@@ -60,17 +60,6 @@
       return null;
     }
     return event.reason;
-  }
-
-  function preview(event: (typeof arrived)[number]): string | null {
-    const reason = storedFailureReason(event);
-    if (reason !== null) return reason;
-    const output = projection?.agent_outputs_by_cursor.get(event.cursor);
-    if (output === undefined || output.kind === "empty") return null;
-    const text = output.kind === "utf8" ? output.value : `${output.byte_count} bytes`;
-    return text.length > PREVIEW_CHARACTERS
-      ? `${text.slice(0, PREVIEW_CHARACTERS)}…`
-      : text;
   }
 
   let openNodeId: string | null = null;
@@ -137,8 +126,14 @@
 
   type GraphRequest =
     | { state: "loading" }
-    | { state: "ready"; previews: Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["node_previews"] }
+    | {
+        state: "ready";
+        name: string;
+        previews: Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["node_previews"];
+      }
     | { state: "failed"; message: string };
+
+  $: workflowName = graphRequest.state === "ready" ? graphRequest.name : null;
 
   let graphRequest: GraphRequest = { state: "loading" };
 
@@ -361,7 +356,11 @@
       if (revision.graph.workflow_format_version !== 3) {
         throw new Error("The bound revision is not a V3 graph.");
       }
-      graphRequest = { state: "ready", previews: revision.graph.node_previews };
+      graphRequest = {
+        state: "ready",
+        name: revision.graph.name,
+        previews: revision.graph.node_previews
+      };
     } catch (error) {
       graphRequest = {
         state: "failed",
@@ -375,7 +374,10 @@
   <header class="run-header">
     <div>
       <p class="eyebrow">Durable run</p>
-      <h1 id="v3-run-title">Run {run.run_id}</h1>
+      <h1 id="v3-run-title">{workflowName ?? `Run ${run.run_id}`}</h1>
+      {#if workflowName !== null}
+        <p class="run-identity" aria-label="Run identity">{run.run_id}</p>
+      {/if}
     </div>
     <p class="standing" aria-label="Where this run stands">
       <StateMark
@@ -422,13 +424,6 @@
     />
   {/if}
 
-  {#each failedReasons as stopped (stopped.nodeId)}
-    <p class="refusal" role="alert">
-      <strong>Stopped here — {stopped.nodeId}:</strong>
-      {stopped.reason}
-    </p>
-  {/each}
-
   {#if graphRequest.state === "loading"}
     <p class="muted" role="status">Looking…</p>
   {:else if graphRequest.state === "failed"}
@@ -445,6 +440,12 @@
             <StateMark state={entry.state} />
             <span class="node-id">{entry.node_id}</span>
           </button>
+          {#if failedReasons.get(entry.node_id) !== undefined}
+            <p class="refusal" role="alert">
+              <strong>Stopped here — {entry.node_id}:</strong>
+              {failedReasons.get(entry.node_id)}
+            </p>
+          {/if}
         </li>
       {/each}
     </ol>
@@ -452,6 +453,7 @@
     <WorkflowGraphDrawing
       previews={graphRequest.previews}
       {rail}
+      nodeReasons={failedReasons}
       currentNodeId={run.current_node_id}
       selectedNodeId={openNodeId}
       onSelect={(nodeId) => { void openNode(nodeId); }}
@@ -468,52 +470,62 @@
     {/if}
   {/if}
 
-  <section class="stream">
-    <p class="eyebrow">As it happened</p>
-    {#if arrived.length === 0}
-      <p class="muted">No node has finished its turn yet.</p>
-    {:else}
-      <ol class="events" aria-label="Events as they arrive">
-        {#each arrived as event (event.cursor)}
-          <li class="event">
-            <StateMark
-              state={event.event === "AGENT_COMPLETED" ? "succeeded" : "failed"}
-            />
-            <span class="node-id">{event.node_id}</span>
-            {#if preview(event) !== null}
-              <code class="preview">{preview(event)}</code>
-            {/if}
-          </li>
-        {/each}
-      </ol>
-    {/if}
-  </section>
+  {#if arrived.length > 0}
+    <ol class="events" aria-label={wrapDisplayCopy(runPageCopy.finished)}>
+      {#each arrived as event (event.cursor)}
+        <li class="event">
+          <StateMark
+            state={event.event === "AGENT_COMPLETED" ? "succeeded" : "failed"}
+          />
+          <span class="node-id">{event.node_id}</span>
+        </li>
+      {/each}
+    </ol>
+  {/if}
 
   <dl class="facts">
-    <dt>Terminal hash</dt>
+    <dt>{wrapDisplayCopy(runPageCopy.terminalHash)}</dt>
     <dd>
       {#if run.terminal_hash === null}
-        <span class="muted">not yet</span>
+        <span class="muted">{wrapDisplayCopy(runPageCopy.terminalPending)}</span>
       {:else}
-        <code>{run.terminal_hash}</code>
+        <ProofAnchor
+          label={wrapDisplayCopy(runPageCopy.terminalHash)}
+          seals={runPageCopy.sealsTerminal}
+          value={run.terminal_hash}
+          compact={true}
+        />
       {/if}
     </dd>
-    <dt>Run configuration</dt>
-    <dd><code>{run.run_configuration_revision_hash}</code></dd>
-    <dt>Workflow revision</dt>
-    <dd><code>{run.workflow_revision_hash}</code></dd>
+    <dt>{wrapDisplayCopy(runPageCopy.runConfiguration)}</dt>
+    <dd>
+      <ProofAnchor
+        label={wrapDisplayCopy(runPageCopy.runConfiguration)}
+        seals={runPageCopy.sealsConfiguration}
+        value={run.run_configuration_revision_hash}
+        compact={true}
+      />
+    </dd>
+    <dt>{wrapDisplayCopy(runPageCopy.workflowRevision)}</dt>
+    <dd>
+      <ProofAnchor
+        label={wrapDisplayCopy(runPageCopy.workflowRevision)}
+        seals={runPageCopy.sealsWorkflow}
+        value={run.workflow_revision_hash}
+        compact={true}
+      />
+    </dd>
   </dl>
 </section>
 
 <style>
   .v3-run { display: grid; gap: 1rem; }
   .run-header { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: baseline; justify-content: space-between; }
+  .run-identity { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.9rem; }
   .standing { display: flex; align-items: center; gap: 0.75rem; margin: 0; }
   .following { color: var(--muted); }
-  .stream { display: grid; gap: 0.4rem; margin-top: 0.5rem; }
   .events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
   .event { display: flex; align-items: baseline; gap: 0.6rem; }
-  .preview { opacity: 0.8; overflow-wrap: anywhere; }
   .refusal { margin: 0; padding: 0.6rem 0.75rem; border-radius: 0.4rem; border-left: 4px solid var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--warning); font-weight: 500; }
   .rail { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
   .rail-entry { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.6rem; border-radius: 0.4rem; }

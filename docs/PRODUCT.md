@@ -573,7 +573,11 @@ edges. A wait has a prompt, not an instruction, so that field is empty there.
 An entry node answers an empty edge list. The authored node stays in the
 document bytes. A V3 run page draws that excerpt as topological layers and
 paints each node's state from the rail the server already walked — shape and
-colour together, no zoom, no drag. The live event line stays open until the
+colour together, no zoom, no drag. The page leads with the published workflow
+name and keeps the run id as identity. A click into a node speaks Prompt and
+Output, never Asked or Answered; a hash sits behind a named, shortened, copyable
+proof affordance. The live event line names which node finished and does not
+paste the output the node already holds. The live event line stays open until the
 events it has applied match the latest cursor the run itself names, so a run
 that has already ended still shows every node that finished. Details on the
 saved-workflow picker reuses the same drawing without run state. A chosen V3 revision that declares
