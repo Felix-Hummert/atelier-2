@@ -102,6 +102,23 @@ unaltered and said to be already current.
   start a billed provider, and the cheap contracts (non-root, pin, mounts,
   loopback, no secrets in the recipe) are checked as files.
 
+## Measure concurrent fake-executor load
+
+This is a measurement of the current SQLite instance, not a capacity promise
+and not a billed-provider run. CI keeps two concurrent runs so the suite stays
+cheap. A larger local sweep reuses the same harness on one process:
+
+```bash
+ATELIER2_LOAD_CONCURRENCY=96 uv run --locked pytest --dist loadgroup -n 0 tests/integration/test_sqlite_load_measurement.py -s
+```
+
+`-n 0` keeps the instance on one worker. The report names the start door, the
+event-write door, and one SSE reader per run, then the first observed pressure.
+Raise `ATELIER2_LOAD_CONCURRENCY` until a named refusal appears; the 503 knee
+was not reached at 96 on 2026-08-19 and stays leftover. Writer-lock, process
+spawn, watchdog cgroup, and memory are named only when the harness observes
+them.
+
 ## Verification
 
 Container recipes:
@@ -113,3 +130,7 @@ That job reads the recipes. It does not build or run the image.
 Store migration:
 
 `uv run --locked pytest --dist loadgroup -n auto tests/integration/test_store_migration.py`
+
+Fake-executor load (CI n=2):
+
+`uv run --locked pytest --dist loadgroup -n auto tests/integration/test_sqlite_load_measurement.py`
