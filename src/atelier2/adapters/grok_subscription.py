@@ -31,7 +31,10 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from atelier2.adapters.bounded_processes import bounded_process_answer
+from atelier2.adapters.bounded_processes import (
+    bounded_process_answer,
+    bounded_process_streams,
+)
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -87,8 +90,11 @@ _MAXIMUM_TURNS_FLAG = "--max-turns"
 # covers that cycle; it is not an unbounded subscription loop.
 _HEADLESS_MAXIMUM_TURNS = "16"
 _TOOLS_FLAG = "--tools="
+_TOOLS_OPTION = "--tools"
 _PERMISSION_MODE_FLAG = "--permission-mode"
 _DONT_ASK = "dontAsk"
+_ALLOW_FLAG = "--allow"
+_DENY_FLAG = "--deny"
 # Measured against grok 1.0.4 `--help`: each of these names an ambient surface
 # a single headless turn must not reach. They are containment, not preference.
 _NO_MEMORY_FLAG = "--no-memory"
@@ -542,6 +548,42 @@ def _open_job_directory(
                 pass
 
 
+def _headless_arguments(
+    executable: Path,
+    model: str,
+    job_file: Path,
+    declared_output_schema_bytes: bytes | None,
+) -> tuple[str, ...]:
+    """The exact argument vector one tool-free invocation is launched with.
+
+    Measured on grok 1.0.4 (build d846eb93d9): `-p` is the short alias for
+    `--single <PROMPT>`, a flag that requires an inline value, not the bare
+    print flag this executor once assumed -- the CLI refuses the launch with
+    "a value is required for '--single <PROMPT>' but none was supplied"
+    before any billing occurs. `--prompt-file` is left as the only
+    single-turn carrier.
+    """
+
+    return (
+        str(executable),
+        _OUTPUT_FORMAT_FLAG,
+        _JSON_OUTPUT_FORMAT,
+        *_json_schema_flag(declared_output_schema_bytes),
+        _MODEL_FLAG,
+        model,
+        _PROMPT_FILE_FLAG,
+        str(job_file),
+        _TOOLS_FLAG,
+        _PERMISSION_MODE_FLAG,
+        _DONT_ASK,
+        _NO_MEMORY_FLAG,
+        _NO_SUBAGENTS_FLAG,
+        _NO_WEB_SEARCH_FLAG,
+        _MAXIMUM_TURNS_FLAG,
+        _HEADLESS_MAXIMUM_TURNS,
+    )
+
+
 @dataclass(frozen=True)
 class GrokSubscriptionExecutor:
     settings: GrokSubscriptionSettings
@@ -555,43 +597,37 @@ class GrokSubscriptionExecutor:
         default_factory=threading.Event, init=False, compare=False, repr=False
     )
 
+    def _invocation_arguments(
+        self,
+        model: str,
+        job_file: Path,
+        declared_output_schema_bytes: bytes | None,
+    ) -> tuple[str, ...]:
+        return _headless_arguments(
+            self.settings.executable,
+            model,
+            job_file,
+            declared_output_schema_bytes,
+        )
+
+    _unsupported_auth_message = (
+        "the Grok subscription executor serves subscription profiles only"
+    )
+
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
         if binding.auth_profile.auth_mode is not AuthMode.SUBSCRIPTION:
-            raise GrokSubscriptionAuthModeUnsupported(
-                "the Grok subscription executor serves subscription profiles only"
-            )
+            raise GrokSubscriptionAuthModeUnsupported(self._unsupported_auth_message)
         settings = self.settings
         state_directory, job_file = _open_job_directory(settings, request.job_bytes)
         registered = False
         try:
             attest_grok_containment(settings, state_directory)
-            schema_flag = _json_schema_flag(request.declared_output_schema_bytes)
             command = AgentProcessCommand(
-                (
-                    # Measured on grok 1.0.4 (build d846eb93d9): `-p` is the
-                    # short alias for `--single <PROMPT>`, a flag that
-                    # requires an inline value, not the bare print flag this
-                    # executor once assumed -- the CLI refuses the launch with
-                    # "a value is required for '--single <PROMPT>' but none
-                    # was supplied" before any billing occurs. `--prompt-file`
-                    # is left as the only single-turn carrier.
-                    str(settings.executable),
-                    _OUTPUT_FORMAT_FLAG,
-                    _JSON_OUTPUT_FORMAT,
-                    *schema_flag,
-                    _MODEL_FLAG,
+                self._invocation_arguments(
                     binding.configuration.model,
-                    _PROMPT_FILE_FLAG,
-                    str(job_file),
-                    _TOOLS_FLAG,
-                    _PERMISSION_MODE_FLAG,
-                    _DONT_ASK,
-                    _NO_MEMORY_FLAG,
-                    _NO_SUBAGENTS_FLAG,
-                    _NO_WEB_SEARCH_FLAG,
-                    _MAXIMUM_TURNS_FLAG,
-                    _HEADLESS_MAXIMUM_TURNS,
+                    job_file,
+                    request.declared_output_schema_bytes,
                 ),
                 _child_environment(settings, state_directory),
                 b"",
@@ -701,3 +737,295 @@ class GrokSubscriptionExecutorFactory:
 
     def open(self) -> GrokSubscriptionExecutor:
         return GrokSubscriptionExecutor(self.settings)
+
+
+GROK_WORKSPACE_TOOLS_EXECUTOR_KEY = AgentExecutorKey(
+    ProviderId("xai"), AgentExecutorRevision("grok-subscription-tools/v1")
+)
+# A second operation of the same CLI, not a later revision of the first. Its
+# argument vector differs from the tool-free one in the tool grant, and that
+# decision is what an operational identity stands for, so every durable
+# attempt record keeps saying which of the two ran.
+GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
+    "headless-workspace-tools-json/v1"
+)
+
+# Headless user-guide names `run_terminal_cmd`; Getting Started names
+# `run_terminal_command`. Measured on grok 1.0.4: both parse, because the CLI
+# does not check tool IDs at parse time. This executor is a headless
+# operation, so it offers the Headless-documented ID. That the model then
+# actually calls this ID is the billed secret-file probe after landing, not a
+# parse proof.
+WORKSPACE_TOOLS = (
+    "read_file",
+    "list_dir",
+    "grep",
+    "search_replace",
+    "run_terminal_cmd",
+)
+_WORKSPACE_TOOL_LIST = ",".join(WORKSPACE_TOOLS)
+# Permission classes, not tool IDs. `--allow` is repeatable; `--allowedTools`
+# is the same flag. `--always-approve` and `--permission-mode
+# bypassPermissions` exist and parse; both would run every tool. `dontAsk`
+# plus these five classes is the grant: only those rules plus built-in
+# read-only, no silent all-tools.
+WORKSPACE_ALLOW_RULES = ("Read", "Edit", "Write", "Grep", "Bash")
+# Docs: MCP meta-tools stay visible unless denied. `--deny MCPTool` parses.
+# Combined with private HOME and the inert compat config, that is the MCP
+# containment; the executor does not claim OS isolation.
+_MCP_TOOL_DENY_RULE = "MCPTool"
+
+# What the CLI says when it could not read an argument, measured on grok
+# 1.0.4 against a flag no release can know. A Clap refusal without an
+# isolated HOME can exit 0, so return code 0 is not a parse proof. The probe
+# runs in the same private HOME/GROK_HOME a job would get. The marker is
+# `unexpected argument`, not Claude's `unknown option`.
+_ARGUMENT_REFUSAL_MARKER = "unexpected argument"
+_UNKNOWN_FLAG_CONTROL = "--atelier2-no-grok-knows-this"
+# The probe never reaches a model, so this names none: it keeps the vector's
+# shape exact while saying plainly that no billed call stands behind it.
+_INVOCATION_PROBE_MODEL = "atelier2-invocation-probe"
+_INVOCATION_PROBE_OUTPUT_BYTES = 16_384
+_INVOCATION_PROBE_PREFIX = "atelier2-grok-invocation-"
+
+
+def _workspace_tool_arguments(
+    executable: Path,
+    model: str,
+    job_file: Path,
+    declared_output_schema_bytes: bytes | None,
+) -> tuple[str, ...]:
+    """The exact argument vector one workspace-tool invocation is launched with."""
+
+    allow: list[str] = []
+    for rule in WORKSPACE_ALLOW_RULES:
+        allow.extend((_ALLOW_FLAG, rule))
+    return (
+        str(executable),
+        _OUTPUT_FORMAT_FLAG,
+        _JSON_OUTPUT_FORMAT,
+        *_json_schema_flag(declared_output_schema_bytes),
+        _MODEL_FLAG,
+        model,
+        _PROMPT_FILE_FLAG,
+        str(job_file),
+        _TOOLS_OPTION,
+        _WORKSPACE_TOOL_LIST,
+        *allow,
+        _DENY_FLAG,
+        _MCP_TOOL_DENY_RULE,
+        _PERMISSION_MODE_FLAG,
+        _DONT_ASK,
+        _NO_MEMORY_FLAG,
+        _NO_SUBAGENTS_FLAG,
+        _NO_WEB_SEARCH_FLAG,
+        _MAXIMUM_TURNS_FLAG,
+        _HEADLESS_MAXIMUM_TURNS,
+    )
+
+
+def _jobless_invocation_answer(
+    settings: GrokSubscriptionSettings,
+    arguments: tuple[str, ...],
+    state_directory: Path,
+    timeout_seconds: float,
+) -> str:
+    """Start this exact invocation with no credentials, and read back how it refused.
+
+    Both streams are read, because what has to be told apart here is only said
+    on the diagnostic one. The call is handed the deployment's search path and
+    a private HOME/GROK_HOME -- the launch environment a job would get --
+    because a Clap refusal without that isolation can exit 0. Auth is not
+    copied: a prompt file with credentials would be a billed call.
+    """
+
+    try:
+        process = subprocess.Popen(
+            arguments,
+            cwd=state_directory,
+            env=dict(_child_environment(settings, state_directory)),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise GrokExecutableUnsupported(
+            f"the Grok executable could not start this executor's invocation: {error}"
+        ) from error
+    try:
+        return_code, answer, diagnostics = bounded_process_streams(
+            process, timeout_seconds, _INVOCATION_PROBE_OUTPUT_BYTES
+        )
+    except OSError as error:
+        raise GrokExecutableUnsupported(
+            f"the Grok executable could not start this executor's invocation: {error}"
+        ) from error
+    if return_code == 0:
+        raise GrokExecutableUnsupported(
+            "the Grok executable answered a jobless invocation successfully: "
+            "this probe rests on a call with no credentials ending in a "
+            "refusal, so a release that runs one instead has to be measured "
+            "again before this executor may be composed against it"
+        )
+    return (answer + diagnostics).decode("utf-8", "replace")
+
+
+def attest_grok_workspace_tool_invocation(
+    settings: GrokSubscriptionSettings,
+    timeout_seconds: float = _VERSION_PROBE_TIMEOUT_SECONDS,
+) -> None:
+    """Refuse an executable that cannot start this executor's exact invocation.
+
+    A version answer is not startability. So this launches the argument vector
+    the workspace-tool executor really prepares -- every flag, a private HOME
+    -- and hands it no credentials: a CLI that read the whole vector reaches
+    its own unsigned-in refusal, and a CLI that did not stops at the argument
+    it could not read. Neither reaches a model, so the attestation is free
+    and runs at every composition rather than at the first run that binds a
+    node.
+
+    The negative observation only means something if this executable can still
+    make the positive one, so the control runs beside it: the same vector with
+    one flag no release can know must be refused as an unexpected argument.
+    Without that control, "said nothing about an unexpected argument" would
+    also be what a release that stopped saying it looks like.
+    """
+
+    state_directory = Path(
+        tempfile.mkdtemp(prefix=_INVOCATION_PROBE_PREFIX, dir=settings.workspace)
+    )
+    try:
+        os.chmod(state_directory, _JOB_DIRECTORY_MODE)
+        _write_private_file(
+            state_directory / _CONFIG_FILE_NAME,
+            _configuration_bytes(),
+            _CONFIG_FILE_MODE,
+        )
+        job_file = state_directory / _JOB_FILE_NAME
+        _write_private_file(job_file, b"", _JOB_FILE_MODE)
+        arguments = _workspace_tool_arguments(
+            settings.executable, _INVOCATION_PROBE_MODEL, job_file, None
+        )
+        started = _jobless_invocation_answer(
+            settings, arguments, state_directory, timeout_seconds
+        )
+        if _ARGUMENT_REFUSAL_MARKER in started:
+            raise GrokExecutableUnsupported(
+                "the Grok executable refused an argument of this executor's "
+                f"invocation: {started.strip()}. Serving workspace-tool agents "
+                "needs every flag of that vector to exist and parse, because "
+                "each one is a containment decision this executor states"
+            )
+        control = _jobless_invocation_answer(
+            settings,
+            (*arguments, _UNKNOWN_FLAG_CONTROL),
+            state_directory,
+            timeout_seconds,
+        )
+        if _ARGUMENT_REFUSAL_MARKER not in control:
+            raise GrokExecutableUnsupported(
+                "the Grok executable did not refuse a flag no release can "
+                f"know, answering instead: {control.strip()}. The probe above "
+                "reads a missing flag out of exactly that refusal, so an "
+                "executable that never states one cannot be attested by it"
+            )
+    finally:
+        try:
+            shutil.rmtree(state_directory)
+        except FileNotFoundError:
+            pass
+
+
+@dataclass(frozen=True)
+class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
+    """One headless `grok` call that may use tools where it stands.
+
+    This is the tool-free executor's sibling and deliberately not its successor.
+    The two differ in the tool grant, and a node keeps the tool-free one unless
+    its durable binding asks for `HEADLESS_WITH_TOOLS`; the capability the
+    factory below declares is what makes that ask the only way to reach this
+    class.
+
+    WHAT IT GRANTS. Grok splits the two switches Claude combines: `--tools`
+    names the built-in IDs the model may see, and `--allow` names the five
+    permission classes it may run without asking, under `--permission-mode
+    dontAsk`. `--deny MCPTool` keeps MCP meta-tools from remaining visible.
+    Both halves are measured, not chosen: parse does not check tool IDs, so
+    this executor does not pretend it validates them.
+
+    WHAT IT KEEPS. Every other flag and the whole private HOME of the
+    tool-free call, unchanged: `--prompt-file`, `--output-format json`, the
+    inert compatibility configuration, no memory, no subagents, no web
+    search, a bounded turn count. The decoder still takes `text` and refuses
+    an empty or missing one; it does not hop the output schema.
+
+    WHAT IT DOES NOT CLAIM. No operating-system isolation. The process runs as
+    the serving user, and the named tools reach every path that user reaches
+    -- including the credential directory this invocation hands it. The
+    attempt's workspace is where the process is *started*, not a boundary it
+    is held inside. `--always-approve`, `--yolo` and `bypassPermissions` exist
+    and are not used. `--sandbox` exists and is not claimed. A tool this
+    vector did not name cannot be used; where a named tool may reach is the
+    CLI's own business and no promise of this module's.
+
+    WHAT IS NOT MEASURED, said here rather than discovered later. The
+    tool-free executor rests on a measured envelope against a real
+    subscription answer. This one has no billed tool call yet on any release:
+    what is measured is that the vector starts and parses whole in a private
+    HOME. That a real answer then uses exactly these tools -- in particular
+    the Headless-documented shell ID -- is the half a billed secret-file
+    probe has to establish, under the operator's gate, after landing. Until
+    it is run, this executor is composed only where an operator armed it by
+    name.
+    """
+
+    _unsupported_auth_message = (
+        "the Grok workspace-tool executor serves subscription profiles only"
+    )
+
+    def _invocation_arguments(
+        self,
+        model: str,
+        job_file: Path,
+        declared_output_schema_bytes: bytes | None,
+    ) -> tuple[str, ...]:
+        return _workspace_tool_arguments(
+            self.settings.executable,
+            model,
+            job_file,
+            declared_output_schema_bytes,
+        )
+
+
+@dataclass(frozen=True)
+class GrokWorkspaceToolExecutorFactory:
+    """The host-composed factory for one Grok workspace-tool executor."""
+
+    settings: GrokSubscriptionSettings
+
+    @property
+    def key(self) -> AgentExecutorKey:
+        return GROK_WORKSPACE_TOOLS_EXECUTOR_KEY
+
+    @property
+    def operational_identity(self) -> AgentExecutorOperationalIdentity:
+        return GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY
+
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        """Only headless-with-tools, and the omissions are the guard.
+
+        Plain `HEADLESS` is missing on purpose. A configuration asking for it is
+        asking for a call that can touch nothing, and answering that ask with
+        this invocation would hand a node tools its binding never requested. The
+        tool-free executor serves it, and a binding that names this executor's
+        revision while asking for `HEADLESS` is refused by the starter rather
+        than quietly widened. Interactive is missing for the same reason it is
+        missing from the tool-free executor: there is no terminal here.
+        """
+
+        return frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS})
+
+    def open(self) -> GrokWorkspaceToolExecutor:
+        return GrokWorkspaceToolExecutor(self.settings)
