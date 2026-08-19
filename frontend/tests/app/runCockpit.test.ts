@@ -15,6 +15,7 @@ import {
   agentCompleted,
   agentCompletedRun,
   answeredRun,
+  completedRun,
   publicReference,
   revisionHash as digest,
   startedRun,
@@ -201,6 +202,31 @@ describe("read-only run cockpit", () => {
     expect((await screen.findByText("Run not found")).isConnected).toBe(true);
     expect(screen.getByText("No durable run has this reference.").isConnected).toBe(true);
     expect(screen.queryByRole("heading", { name: "Run run" })).toBeNull();
+  });
+
+  it("proves(a-run-page-hash-is-a-named-proof-anchor): a V1 summary hash leads with its name and copies on click", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(globalThis.navigator, { clipboard: { writeText } });
+    render(App, {
+      props: {
+        cockpitApi: api({ getRun: vi.fn(async () => completedRun()) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    await screen.findByRole("heading", { name: "Run run" });
+    expect(screen.queryByText(digest)).toBeNull();
+    const workflow = screen.getByRole("button", { name: "Workflow revision" });
+    expect(workflow.textContent).not.toContain(digest);
+    workflow.focus();
+    expect(document.activeElement).toBe(workflow);
+    await fireEvent.click(workflow);
+    expect(writeText).toHaveBeenCalledWith(digest);
+    await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
+
+    const terminal = screen.getByRole("button", { name: "Terminal hash" });
+    await fireEvent.click(terminal);
+    expect(writeText).toHaveBeenLastCalledWith(digest);
   });
 
   it("does not open event history for a run whose current node disagrees with its revision", async () => {
