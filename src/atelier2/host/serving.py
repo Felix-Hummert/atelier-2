@@ -37,6 +37,7 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.grok_subscription import (
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
+    GrokWorkspaceToolExecutorFactory,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
@@ -186,6 +187,15 @@ class HostSettings:
     side effect of naming an executable.
     """
     grok_subscription: GrokSubscriptionSettings | None = None
+    grok_workspace_tools: bool = False
+    """Whether the Grok deployment also serves its tool-bearing executor.
+
+    A separate answer from the deployment itself, because it is a separate
+    grant: the tool-free executor is what a Grok deployment is, and the
+    tool-bearing one lets a node's own process read, write and run commands as
+    the serving user. An operator says yes to that once, here, and never as a
+    side effect of naming an executable.
+    """
     codex_subscription: CodexSubscriptionSettings | None = None
 
     @property
@@ -258,6 +268,11 @@ class HostSettings:
                 "serving the Claude workspace-tool executor needs the Claude "
                 "deployment it is a second executor of"
             )
+        if self.grok_workspace_tools and self.grok_subscription is None:
+            raise ValueError(
+                "serving the Grok workspace-tool executor needs the Grok "
+                "deployment it is a second executor of"
+            )
         if self.agent_scratch_root is not None and not billed:
             raise ValueError(
                 "a scratch root without a provider executor serves nothing"
@@ -308,6 +323,11 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
             ()
             if grok_subscription is None
             else (GrokSubscriptionExecutorFactory(grok_subscription),)
+        ),
+        *(
+            (GrokWorkspaceToolExecutorFactory(grok_subscription),)
+            if grok_subscription is not None and settings.grok_workspace_tools
+            else ()
         ),
         *(
             ()

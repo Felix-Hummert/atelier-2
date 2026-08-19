@@ -34,6 +34,7 @@ from atelier2.adapters.dbos.schema import StoreMigrationRefused
 from atelier2.adapters.grok_subscription import (
     GrokExecutableUnsupported,
     GrokSubscriptionSettings,
+    attest_grok_workspace_tool_invocation,
     verify_grok_capability,
 )
 from atelier2.adapters.project_verification import declared_project
@@ -222,6 +223,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             claude_subscription=_claude_subscription_settings(parser, parsed),
             claude_workspace_tools=parsed.claude_workspace_tools,
             grok_subscription=_grok_subscription_settings(parser, parsed),
+            grok_workspace_tools=parsed.grok_workspace_tools,
             codex_subscription=_codex_subscription_settings(parser, parsed),
         )
     except ValueError as refusal:
@@ -450,6 +452,12 @@ def _grok_subscription_settings(
         parsed.grok_credential_directory,
     )
     if all(value is None for value in declared):
+        if parsed.grok_workspace_tools:
+            parser.error(
+                "--grok-workspace-tools arms a second executor of the Grok "
+                "deployment, so it needs --grok-executable, --grok-workspace "
+                "and --grok-credential-directory beside it"
+            )
         return None
     if any(value is None for value in declared):
         parser.error(
@@ -470,6 +478,12 @@ def _grok_subscription_settings(
     )
     try:
         verify_grok_capability(settings.executable)
+        if parsed.grok_workspace_tools:
+            # Startability, not a version answer: the tool-bearing invocation
+            # is the one whose flags decide what a node's process may touch, so
+            # the deployment starts that exact vector once, here, rather than
+            # discovering at the first bound node that it never spawns.
+            attest_grok_workspace_tool_invocation(settings)
     except GrokExecutableUnsupported as error:
         parser.error(str(error))
     return settings
@@ -558,6 +572,16 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--grok-executable", type=Path)
     serve_parser.add_argument("--grok-workspace", type=Path)
     serve_parser.add_argument("--grok-credential-directory", type=Path)
+    serve_parser.add_argument(
+        "--grok-workspace-tools",
+        action="store_true",
+        help=(
+            "also serve the Grok executor whose invocation may read, write "
+            "and run commands where the attempt stands. It runs as this user "
+            "and is no sandbox; only a node whose binding requests the "
+            "headless_with_tools capability reaches it"
+        ),
+    )
     serve_parser.add_argument("--codex-executable", type=Path)
     serve_parser.add_argument("--codex-credential-directory", type=Path)
     serve_parser.add_argument(

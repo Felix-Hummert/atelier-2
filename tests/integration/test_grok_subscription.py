@@ -3,32 +3,47 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
 import time
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import pytest
+import sqlalchemy as sa
+from dbos import DBOSClient
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import agent_receipts_v2, run_agent_bindings, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.grok_subscription import (
     CONFORMANT_GROK_VERSIONS,
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_SUBSCRIPTION_FRAME_BYTES,
     GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
+    GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
+    GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY,
+    WORKSPACE_ALLOW_RULES,
+    WORKSPACE_TOOLS,
     GrokContainmentUnattested,
     GrokExecutableUnsupported,
     GrokSubscriptionAuthModeUnsupported,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
+    GrokWorkspaceToolExecutorFactory,
+    attest_grok_workspace_tool_invocation,
     verify_grok_capability,
 )
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -38,16 +53,21 @@ from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
+    AgentExecutorOperationalIdentity,
+    AgentExecutorRevision,
     AgentRole,
     AuthMode,
     AuthProfileRevision,
     ProviderId,
     ResolvedAgentBinding,
 )
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
+from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.host import _grok_subscription_settings
 from atelier2.host.serving import HostSettings, compose_application
+from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -60,6 +80,7 @@ from atelier2.ports.agent_executions import (
 )
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorCapabilityUnavailable,
+    DurablePublishedRunResult,
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
@@ -67,6 +88,7 @@ from tests.scenarios.agents import (
     agent_attempt_execution,
     agent_scratch_root,
     leased_directory_identity,
+    runtime_workspace_owner,
 )
 
 MEASURED_GROK_VERSION = "1.0.4"
@@ -141,6 +163,14 @@ def _write_executable(path: Path, source: str) -> Path:
     path.write_text(f"#!{sys.executable}\n" + source)
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
     return path
+
+
+def grok_named_deployment(
+    root: Path, name: str, source: str
+) -> GrokSubscriptionSettings:
+    directory = root / name
+    directory.mkdir()
+    return grok_subscription_deployment(directory, source)
 
 
 def grok_subscription_deployment(
@@ -679,6 +709,7 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
             grok_executable=candidate.executable,
             grok_workspace=candidate.workspace,
             grok_credential_directory=candidate.credential_directory,
+            grok_workspace_tools=False,
         ),
     )
     assert resolved == candidate
@@ -907,3 +938,475 @@ def test_the_credential_channel_dies_while_the_leased_workspace_stands(
         assert not channel.exists()
         assert (workspace / "provider-left-this").read_text() == "kept"
     executor.close()
+
+
+WORKSPACE_ARTEFACT_NAME = "artefact"
+WORKSPACE_ARTEFACT_LINE = "from the lease"
+
+TOOL_USING_GROK = f"""
+import json, os, sys, tomllib
+from pathlib import Path
+if "--version" in sys.argv:
+    print("grok 1.0.4 (d846eb93d9) [stable]")
+    raise SystemExit(0)
+if "inspect" in sys.argv:
+    home = Path(os.environ["GROK_HOME"])
+    compatibility = tomllib.loads((home / "config.toml").read_text())["compat"]
+    cells = [
+        {{
+            "vendor": vendor,
+            "surface": surface,
+            "enabled": compatibility[vendor].get(surface) is not False,
+            "source": "config",
+        }}
+        for vendor, surfaces in (
+            ("cursor", ("skills", "rules", "agents", "mcps", "hooks", "sessions")),
+            ("claude", ("skills", "rules", "agents", "mcps", "hooks", "sessions")),
+            ("codex", ("sessions",)),
+        )
+        for surface in surfaces
+    ]
+    json.dump(
+        {{
+            "plugins": [], "hooks": [], "mcpServers": [], "skills": [],
+            "marketplaces": [], "lspServers": [], "projectInstructions": [],
+            "configSources": {{"layers": [{{"role": "user", "path": str(home / "config.toml")}}]}},
+            "permissions": {{"sources": []}},
+            "agents": [{{"name": "general-purpose", "source": {{"type": "builtin"}}}}],
+            "externalCompat": {{"remoteSettingsLoaded": False, "cells": cells}},
+        }},
+        sys.stdout,
+    )
+    raise SystemExit(0)
+written = os.path.join(os.getcwd(), {WORKSPACE_ARTEFACT_NAME!r})
+with open(written, "w", encoding="utf-8") as artefact:
+    artefact.write({WORKSPACE_ARTEFACT_LINE!r})
+with open(written, encoding="utf-8") as artefact:
+    read_back = artefact.read()
+json.dump({{"text": json.dumps({{"wrote": written, "read_back": read_back}})}}, sys.stdout)
+"""
+
+
+def grok_subscription_runtime(
+    root: Path,
+    settings: GrokSubscriptionSettings,
+    *,
+    workspace_tools: bool = False,
+) -> DbosRuntime:
+    """The production runtime, serving the Grok executors this scenario arms."""
+
+    return DbosRuntime(
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "grok-subscription-test",
+            agent_scratch_root=agent_scratch_root(root),
+        ),
+        LoopbackEffectAdapterFactory(
+            root / "effects.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("grok-subscription-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (
+            GrokSubscriptionExecutorFactory(settings),
+            *((GrokWorkspaceToolExecutorFactory(settings),) if workspace_tools else ()),
+        ),
+    )
+
+
+def grok_subscription_start(
+    runtime: DbosRuntime,
+    run_name: str,
+    requested_capability: AgentExecutionCapability,
+    executor_revision: AgentExecutorRevision,
+) -> tuple[DurablePublishedRunResult, WorkflowRevision]:
+    catalog = DbosAgentConfigurationCatalog(
+        runtime.engine, runtime.agent_executor_registry
+    )
+    auth = AuthProfileRevision(
+        "grok-tools", 1, ProviderId("xai"), AuthMode.SUBSCRIPTION
+    )
+    catalog.publish_auth_profile_revision(auth)
+    configuration = AgentConfigurationRevision(
+        "grok-4",
+        auth.revision_hash,
+        executor_revision,
+        requested_capability,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    catalog.publish_agent_configuration_revision(configuration)
+    workflow = WorkflowRevision(HOST_DOCUMENT)
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    started = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV2(
+            RunId(run_name),
+            workflow.revision_hash,
+            AgentBindingSet(
+                (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+            ),
+        )
+    )
+    return started, workflow
+
+
+def grok_subscription_attempt(
+    runtime: DbosRuntime,
+    run_name: str,
+    requested_capability: AgentExecutionCapability,
+    executor_revision: AgentExecutorRevision,
+    operational_identity: AgentExecutorOperationalIdentity,
+) -> AgentAttemptExecution:
+    run_id = RunId(run_name)
+    started, workflow = grok_subscription_start(
+        runtime, run_name, requested_capability, executor_revision
+    )
+    assert isinstance(started, DurableRunCreated)
+    assert isinstance(started.run, RunV2)
+    return agent_attempt_execution(
+        AgentExecutionRequestV2(
+            NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),
+            run_id,
+            workflow.revision_hash,
+            "build",
+            started.run.agent_bindings[0],
+            operational_identity,
+            b"build",
+        )
+    )
+
+
+def argument_after(arguments: Sequence[str], flag: str) -> str:
+    return arguments[arguments.index(flag) + 1]
+
+
+def workspace_tool_flags(settings: GrokSubscriptionSettings) -> tuple[str, ...]:
+    """Every flag the real workspace-tool invocation carries, read off that invocation."""
+
+    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    try:
+        command = executor.prepare_process(subscription_request())
+        seen: list[str] = []
+        for argument in command.arguments:
+            if argument.startswith("--") and argument not in seen:
+                seen.append(argument)
+        return tuple(seen)
+    finally:
+        executor.close()
+
+
+def parsing_grok(known: Iterable[str], *, refuses_unknown: bool = True) -> str:
+    """A fake CLI that reads exactly these flags, then refuses a call with no credentials.
+
+    That is the measured order of the real one: an argument it cannot read ends
+    the call before anything else, and a call whose arguments it read whole is
+    still refused when no credentials arrive.
+    """
+
+    return (
+        "import sys\n"
+        f"known = {sorted(set(known))!r}\n"
+        f"refuses_unknown = {refuses_unknown!r}\n"
+        "if '--version' in sys.argv:\n"
+        "    print('grok 1.0.4 (d846eb93d9) [stable]')\n"
+        "    raise SystemExit(0)\n"
+        "for argument in sys.argv[1:]:\n"
+        "    if refuses_unknown and argument.startswith('--') "
+        "and argument not in known:\n"
+        '        sys.stderr.write("error: unexpected argument \'" + argument + "\' found\\n")\n'
+        "        raise SystemExit(2)\n"
+        "sys.stderr.write('Error: Not signed in.\\n')\n"
+        "raise SystemExit(1)\n"
+    )
+
+
+def test_the_workspace_tool_factory_offers_its_own_identity_and_only_its_capability(
+    tmp_path: Path,
+) -> None:
+    """A second operation of one provider, not a later revision of the first."""
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    factory = GrokWorkspaceToolExecutorFactory(settings)
+    tool_free = GrokSubscriptionExecutorFactory(settings)
+
+    assert factory.key == GROK_WORKSPACE_TOOLS_EXECUTOR_KEY
+    assert factory.key.provider_id == tool_free.key.provider_id
+    assert factory.key.executor_revision != tool_free.key.executor_revision
+    assert factory.operational_identity != tool_free.operational_identity
+    assert factory.declared_capabilities == frozenset(
+        {AgentExecutionCapability.HEADLESS_WITH_TOOLS}
+    )
+    assert factory.open().close() is None
+
+
+def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_flag(
+    tmp_path: Path,
+) -> None:
+    """One decision separates the two invocations, and it is the tool grant.
+
+    The tool-free call's `--tools=` is gone. In its place: `--tools` names the
+    built-in IDs and `--allow` names the five permission classes, because Grok
+    splits the two switches Claude combines. Every other flag that call carries
+    is still carried, and the environment is the same shape: what changed is
+    what the process may touch, not who it is.
+    """
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    tool_free = GrokSubscriptionExecutorFactory(settings).open()
+    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    request = subscription_request(model="grok-4", job=b"draw the owl")
+
+    command = executor.prepare_process(request)
+    tool_free_command = tool_free.prepare_process(request)
+
+    assert "--tools=" in tool_free_command.arguments
+    assert "--tools=" not in command.arguments
+    assert argument_after(command.arguments, "--tools") == ",".join(WORKSPACE_TOOLS)
+    allows = [
+        command.arguments[index + 1]
+        for index, argument in enumerate(command.arguments)
+        if argument == "--allow"
+    ]
+    assert allows == list(WORKSPACE_ALLOW_RULES)
+    assert argument_after(command.arguments, "--deny") == "MCPTool"
+    assert "--always-approve" not in command.arguments
+    assert "bypassPermissions" not in command.arguments
+    kept = tuple(
+        flag
+        for flag in tool_free_command.arguments
+        if flag.startswith("--") and flag != "--tools="
+    )
+    assert all(flag in command.arguments for flag in kept)
+    assert argument_after(command.arguments, "--max-turns") == argument_after(
+        tool_free_command.arguments, "--max-turns"
+    )
+    tool_home = dict(command.environment)
+    free_home = dict(tool_free_command.environment)
+    assert tuple(name for name, _value in command.environment) == tuple(
+        name for name, _value in tool_free_command.environment
+    )
+    assert tool_home["PATH"] == free_home["PATH"] == settings.search_path
+    assert tool_home["HOME"] == tool_home["GROK_HOME"]
+    assert free_home["HOME"] == free_home["GROK_HOME"]
+    assert Path(tool_home["HOME"]).parent == settings.workspace
+    assert Path(free_home["HOME"]).parent == settings.workspace
+    assert tool_home["HOME"] != free_home["HOME"]
+    assert all(argument for argument in command.arguments)
+
+    workspace = leased_workspace(tmp_path)
+    result = executor.decode_process_completion(
+        leased(command, workspace), launched(command, workspace)
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    observed = json.loads(result.output_bytes)
+    assert observed["arguments"][1:] == list(command.arguments[1:])
+    assert observed["working_directory"] == str(workspace)
+    assert observed["job"] == "draw the owl"
+    executor.release_credential_channel(command)
+    tool_free.release_credential_channel(tool_free_command)
+    tool_free.close()
+    executor.close()
+
+
+def test_a_non_subscription_profile_reaches_no_tool_bearing_process(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+
+    with pytest.raises(GrokSubscriptionAuthModeUnsupported, match="workspace-tool"):
+        executor.prepare_process(subscription_request(auth_mode=AuthMode.API_KEY))
+
+
+@pytest.mark.parametrize(
+    ("executor_revision", "requested_capability"),
+    [
+        pytest.param(
+            GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
+            AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+            id="the tool-free executor is asked for tools",
+        ),
+        pytest.param(
+            GROK_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision,
+            AgentExecutionCapability.HEADLESS,
+            id="the tool executor is asked for a tool-free call",
+        ),
+    ],
+)
+def test_a_binding_asking_a_grok_executor_for_a_capability_it_never_declared_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_revision: AgentExecutorRevision,
+    requested_capability: AgentExecutionCapability,
+) -> None:
+    """Neither executor answers the other's ask, and the refusal is the starter's."""
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    runtime = grok_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime.initialize_storage()
+
+    def unexpected_enqueue(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("an undeclared capability reached the durable queue")
+
+    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
+    try:
+        refused, _workflow = grok_subscription_start(
+            runtime,
+            "grok/undeclared-capability",
+            requested_capability=requested_capability,
+            executor_revision=executor_revision,
+        )
+        with runtime.engine.connect() as connection:
+            written = tuple(
+                connection.scalar(sa.select(sa.func.count()).select_from(table))
+                for table in (runs, run_agent_bindings)
+            )
+    finally:
+        runtime.close()
+
+    assert isinstance(refused, DurableAgentExecutorCapabilityUnavailable)
+    assert written == (0, 0)
+
+
+def test_a_node_requesting_grok_tools_starts_through_the_production_starter(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    runtime = grok_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime.initialize_storage()
+    try:
+        started, _workflow = grok_subscription_start(
+            runtime,
+            "grok/tool-capability",
+            requested_capability=AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+            executor_revision=GROK_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision,
+        )
+        with runtime.engine.connect() as connection:
+            started_runs = connection.scalar(
+                sa.select(sa.func.count()).select_from(runs)
+            )
+    finally:
+        runtime.close()
+
+    assert isinstance(started, DurableRunCreated)
+    assert started_runs == 1
+
+
+def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wrote(
+    tmp_path: Path,
+) -> None:
+    """The vertical the capability exists for, through the production path."""
+
+    settings = grok_subscription_deployment(tmp_path, TOOL_USING_GROK)
+    runtime = grok_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime.initialize_storage()
+    try:
+        execution = grok_subscription_attempt(
+            runtime,
+            "grok/workspace-tools",
+            requested_capability=AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+            executor_revision=GROK_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision,
+            operational_identity=GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY,
+        )
+        workspaces = runtime_workspace_owner(runtime)
+        leased_directory = workspaces.scratch_root / execution.attempt_id.value
+        outcome = execute_agent_attempt(
+            execution,
+            GrokWorkspaceToolExecutorFactory(settings).open(),
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+            workspaces,
+        )
+        with runtime.engine.connect() as connection:
+            receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()
+    finally:
+        runtime.close()
+
+    assert isinstance(outcome, AgentAttemptSucceeded)
+    assert len(receipts) == 1
+    assert receipts[0]["executor_revision"] == (
+        GROK_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision.value
+    )
+    assert receipts[0]["executor_operational_identity"] == (
+        GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY.value
+    )
+    answered = json.loads(receipts[0]["output_bytes"])
+    assert answered["wrote"] == str(leased_directory / WORKSPACE_ARTEFACT_NAME)
+    assert answered["read_back"] == WORKSPACE_ARTEFACT_LINE
+    assert not leased_directory.exists()
+
+
+def test_an_executable_that_starts_this_exact_grok_invocation_is_attested(
+    tmp_path: Path,
+) -> None:
+    reference = grok_named_deployment(tmp_path, "reference", INTROSPECTING_GROK)
+    settings = grok_named_deployment(
+        tmp_path, "deployment", parsing_grok(workspace_tool_flags(reference))
+    )
+
+    assert attest_grok_workspace_tool_invocation(settings) is None
+
+
+def test_an_executable_missing_any_flag_of_this_grok_invocation_is_refused_by_that_flag(
+    tmp_path: Path,
+) -> None:
+    """Every flag of the vector is a containment decision, so every one is probed."""
+
+    reference = grok_named_deployment(tmp_path, "reference", INTROSPECTING_GROK)
+    flags = workspace_tool_flags(reference)
+
+    assert flags
+    for missing in flags:
+        settings = grok_named_deployment(
+            tmp_path,
+            f"without{flags.index(missing)}",
+            parsing_grok(flag for flag in flags if flag != missing),
+        )
+
+        with pytest.raises(GrokExecutableUnsupported, match=re.escape(missing)):
+            attest_grok_workspace_tool_invocation(settings)
+
+
+def test_an_executable_that_never_names_an_unexpected_argument_cannot_be_attested(
+    tmp_path: Path,
+) -> None:
+    """Without the control, "said nothing" and "has nothing to say" look alike."""
+
+    reference = grok_named_deployment(tmp_path, "reference", INTROSPECTING_GROK)
+    settings = grok_named_deployment(
+        tmp_path,
+        "deployment",
+        parsing_grok(workspace_tool_flags(reference), refuses_unknown=False),
+    )
+
+    with pytest.raises(GrokExecutableUnsupported, match="no release can know"):
+        attest_grok_workspace_tool_invocation(settings)
+
+
+def test_an_executable_that_answers_a_jobless_grok_invocation_successfully_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The probe rests on that call being refused, so a success is unmeasured ground."""
+
+    settings = grok_subscription_deployment(tmp_path, "raise SystemExit(0)\n")
+
+    with pytest.raises(GrokExecutableUnsupported, match="jobless"):
+        attest_grok_workspace_tool_invocation(settings)
+
+
+def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The gap this attestation exists for: a version answer is not startability."""
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    assert verify_grok_capability(settings.executable) in CONFORMANT_GROK_VERSIONS
+    settings.executable.write_text(
+        "#!/atelier2/no/such/interpreter\n", encoding="utf-8"
+    )
+    settings.executable.chmod(0o755)
+
+    with pytest.raises(GrokExecutableUnsupported, match="could not start"):
+        attest_grok_workspace_tool_invocation(settings)

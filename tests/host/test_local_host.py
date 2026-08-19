@@ -34,6 +34,11 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.grok_subscription import (
+    GROK_SUBSCRIPTION_EXECUTOR_KEY,
+    GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
+    GrokSubscriptionSettings,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
 from atelier2.adapters.yaml_workflows import parse_workflow_document
@@ -52,6 +57,10 @@ from atelier2.host.serving import (
     api_limits,
     compose_application,
     event_poll_backoff,
+)
+from tests.integration.test_grok_subscription import (
+    INTROSPECTING_GROK,
+    grok_subscription_deployment,
 )
 from tests.scenarios.agents import (
     agent_scratch_root,
@@ -291,6 +300,8 @@ def served_settings(
     tmp_path: Path,
     claude_subscription: ClaudeSubscriptionSettings | None = None,
     claude_workspace_tools: bool = False,
+    grok_subscription: GrokSubscriptionSettings | None = None,
+    grok_workspace_tools: bool = False,
     host: str = DEFAULT_HOST,
     scratch_root: Path | None = None,
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS,
@@ -300,6 +311,7 @@ def served_settings(
     if not frontend.is_dir():
         (frontend / "assets").mkdir(parents=True)
         (frontend / "index.html").write_text("index")
+    billed = claude_subscription is not None or grok_subscription is not None
     return HostSettings(
         database_path=tmp_path / "durable.sqlite",
         effect_store_path=tmp_path / "effects.sqlite",
@@ -312,11 +324,13 @@ def served_settings(
         host=host,
         agent_scratch_root=(
             scratch_root
-            if scratch_root is not None or claude_subscription is None
+            if scratch_root is not None or not billed
             else agent_scratch_root(tmp_path)
         ),
         claude_subscription=claude_subscription,
         claude_workspace_tools=claude_workspace_tools,
+        grok_subscription=grok_subscription,
+        grok_workspace_tools=grok_workspace_tools,
         limits=api_limits(**tuning),
         sqlite_lock_timeout_seconds=sqlite_lock_timeout_seconds,
     )
@@ -390,6 +404,49 @@ def test_arming_the_workspace_tools_without_a_claude_deployment_is_refused(
 ) -> None:
     with pytest.raises(ValueError, match="second executor"):
         served_settings(tmp_path, claude_workspace_tools=True)
+
+
+def test_the_grok_workspace_tool_executor_is_served_only_where_it_was_armed(
+    tmp_path: Path,
+) -> None:
+    """Naming a Grok executable grants a tool-free call and nothing more."""
+
+    deployment = tmp_path / "grok-deployment"
+    deployment.mkdir()
+    settings = served_settings(
+        tmp_path,
+        grok_subscription=grok_subscription_deployment(deployment, INTROSPECTING_GROK),
+        grok_workspace_tools=True,
+    )
+
+    _app, runtime = compose_application(settings)
+
+    try:
+        assert runtime.agent_executor_registry.keys == frozenset(
+            {GROK_SUBSCRIPTION_EXECUTOR_KEY, GROK_WORKSPACE_TOOLS_EXECUTOR_KEY}
+        )
+        assert runtime.agent_executor_registry.declared_capabilities(
+            GROK_WORKSPACE_TOOLS_EXECUTOR_KEY
+        ) == frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS})
+    finally:
+        runtime.close()
+
+
+def test_arming_the_grok_workspace_tools_without_a_grok_deployment_is_refused(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="second executor"):
+        served_settings(tmp_path, grok_workspace_tools=True)
+
+
+def test_arming_grok_workspace_tools_on_the_command_line_without_a_deployment_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as refusal:
+        main(serve_arguments(tmp_path, "--grok-workspace-tools"))
+
+    assert refusal.value.code == 2
+    assert "--grok-workspace-tools" in capsys.readouterr().err
 
 
 def serve_arguments(tmp_path: Path, *extra: str) -> list[str]:
