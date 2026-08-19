@@ -198,6 +198,7 @@ def subscription_request(
     model: str = "claude-opus-4-6",
     auth_mode: AuthMode = AuthMode.SUBSCRIPTION,
     job: bytes = b"Reply with the single word pong",
+    maximum_assistant_turns: int | None = None,
 ) -> AgentExecutionRequestV2:
     auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), auth_mode)
     configuration = AgentConfigurationRevision(
@@ -217,6 +218,7 @@ def subscription_request(
         ResolvedAgentBinding(AgentRole("builder"), configuration, auth),
         CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
         job,
+        maximum_assistant_turns=maximum_assistant_turns,
     )
 
 
@@ -1689,6 +1691,34 @@ def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_f
     assert observed["working_directory"] == str(workspace)
     assert observed["job"] == "draw the owl"
     assert "HOME" not in observed["environment"]
+
+
+@pytest.mark.proves("a-pinned-budget-turn-bound-is-the-tool-attempt-ceiling")
+def test_a_workspace_tool_call_takes_the_pinned_turn_bound(
+    tmp_path: Path,
+) -> None:
+    """The budget names the ceiling; without one the existing default stays.
+
+    Removing the request field from the tool vector makes the pinned case
+    agree with the default. The tool-free call is the other reader: it keeps
+    its single-turn heartbeat even when the same request carries a bound.
+    """
+
+    settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    executor = ClaudeWorkspaceToolExecutorFactory(settings).open()
+    tool_free = ClaudeSubscriptionExecutorFactory(settings).open()
+
+    default_command = executor.prepare_process(subscription_request())
+    pinned_command = executor.prepare_process(
+        subscription_request(maximum_assistant_turns=8)
+    )
+    heartbeat = tool_free.prepare_process(
+        subscription_request(maximum_assistant_turns=8)
+    )
+
+    assert argument_after(default_command.arguments, "--max-turns") == "16"
+    assert argument_after(pinned_command.arguments, "--max-turns") == "8"
+    assert argument_after(heartbeat.arguments, "--max-turns") == "1"
 
 
 def test_a_non_subscription_profile_reaches_no_tool_bearing_process(

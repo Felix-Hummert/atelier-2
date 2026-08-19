@@ -1640,6 +1640,11 @@ DECIDED_EXECUTABLE: dict[str, bytes] = {
     "one pinned tool grant": ONE_AGENT_DOCUMENT
     + b"    tools: [{ref: verify, revision: %s}]\n" % (b"c" * 64),
     "an empty authored tools list": ONE_AGENT_DOCUMENT + b"    tools: []\n",
+    # `budget` joined it when the start began binding the pin: the published
+    # revision is resolved like a schema or a tool grant, and the attempt reads
+    # the turn bound those bytes named.
+    "one pinned budget": ONE_AGENT_DOCUMENT
+    + b"    budget: {ref: build_budget, revision: %s}\n" % (b"c" * 64),
 }
 
 
@@ -1659,8 +1664,6 @@ def test_a_form_a_runtime_now_binds_is_admitted_rather_than_refused(
 
 
 NOT_YET_EXECUTABLE: dict[str, bytes] = {
-    "a form nothing binds": ONE_AGENT_DOCUMENT
-    + b"    budget: {ref: build_budget, revision: budget-1}\n",
     # An empty authored form is a statement, not an absence: the author wrote it,
     # and a start that ignored it would ignore what they wrote. `inputs: []` is
     # the exception that proves the rule -- the start binds inputs now, so an

@@ -661,10 +661,11 @@ WORKSPACE_TOOLS = ("Bash", "Edit", "Glob", "Grep", "Read", "Write")
 _WORKSPACE_TOOL_LIST = ",".join(WORKSPACE_TOOLS)
 _TOOLS_FLAG = "--tools"
 _ALLOWED_TOOLS_FLAG = "--allowedTools"
-# Stopgap until issue #26 owns a provider-neutral budget, beside the tool-free
-# call's single turn. A tool-using answer spends one turn per tool result, so a
-# call bounded at one turn could never finish an edit; this ceiling is small
-# enough that no unbounded subscription loop can start behind it.
+# Default when the node pins no budget, or the pinned budget names no turn
+# bound. A pinned `maximum_assistant_turns` replaces this at launch. A
+# tool-using answer spends one turn per tool result, so a call bounded at
+# one turn could never finish an edit; sixteen is small enough that no
+# unbounded subscription loop starts behind a node that never chose a budget.
 _WORKSPACE_TOOLS_MAXIMUM_TURNS = "16"
 
 # What the CLI says when it could not read an argument, measured on 2.1.233
@@ -683,7 +684,11 @@ _INVOCATION_PROBE_MODEL = "atelier2-invocation-probe"
 _INVOCATION_PROBE_OUTPUT_BYTES = 16_384
 
 
-def _workspace_tool_arguments(executable: Path, model: str) -> tuple[str, ...]:
+def _workspace_tool_arguments(
+    executable: Path,
+    model: str,
+    maximum_assistant_turns: int | None = None,
+) -> tuple[str, ...]:
     """The exact argument vector one workspace-tool invocation is launched with."""
 
     return (
@@ -706,7 +711,11 @@ def _workspace_tool_arguments(executable: Path, model: str) -> tuple[str, ...]:
         _NO_CHROME_FLAG,
         _NO_SESSION_PERSISTENCE_FLAG,
         _MAXIMUM_TURNS_FLAG,
-        _WORKSPACE_TOOLS_MAXIMUM_TURNS,
+        (
+            str(maximum_assistant_turns)
+            if maximum_assistant_turns is not None
+            else _WORKSPACE_TOOLS_MAXIMUM_TURNS
+        ),
     )
 
 
@@ -863,7 +872,11 @@ class ClaudeWorkspaceToolExecutor:
             )
         settings = self.settings
         return AgentProcessCommand(
-            _workspace_tool_arguments(settings.executable, binding.configuration.model),
+            _workspace_tool_arguments(
+                settings.executable,
+                binding.configuration.model,
+                request.maximum_assistant_turns,
+            ),
             _credential_environment(settings),
             # The job travels through standard input so no prompt ever appears
             # in the process table of a host the operator shares.

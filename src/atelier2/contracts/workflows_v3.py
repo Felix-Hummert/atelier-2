@@ -1318,7 +1318,6 @@ V3_UNBOUND_AUTHORED_FORMS = (
     "profile",
     "skills",
     "policy",
-    "budget",
     "retry",
     "cancellation",
     "required_context",
@@ -1327,9 +1326,9 @@ V3_UNBOUND_AUTHORED_FORMS = (
 """Every authored form of an interpreted V3 node that nothing binds at run start.
 
 Naming the forms rather than the kinds is the point. "Only Agent nodes" would
-still admit a document declaring skills, a policy or a budget, and the run would
-start having silently ignored what its author wrote. A document is executable
-only when nothing in it is waiting for an owner.
+still admit a document declaring skills or a policy, and the run would start
+having silently ignored what its author wrote. A document is executable only
+when nothing in it is waiting for an owner.
 
 The list is read against whichever forms a node actually declares, so it holds
 for the Wait kind too without naming it twice: a Wait node carries `join`,
@@ -1341,7 +1340,9 @@ source by `V3_BOUND_INPUT_SOURCES` rather than as a whole form, because only an
 order the graph declares has an owner at the start today. `tools` left it the
 same way: an attempt now redeems the grant a node pins, one grant at a time, and
 `MAXIMUM_REDEEMED_TOOL_GRANTS` is where that "one" is refused rather than
-silently narrowed.
+silently narrowed. `budget` left it when the start began binding the pin: the
+published revision is resolved like a schema or a tool grant, and the attempt
+reads the turn bound those bytes named.
 """
 
 MAXIMUM_REDEEMED_TOOL_GRANTS = 1
@@ -1402,8 +1403,8 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     The executable shape is a line of Agent and Wait nodes: each entered by at
     most one dependency and followed by at most one dependent, ending in a single
     sink, declaring nothing else optional. It is checked as a form rather than as
-    a list of kinds, because a kind check would admit a document whose skills,
-    policy or budget the run start then ignores in silence.
+    a list of kinds, because a kind check would admit a document whose skills or
+    policy the run start then ignores in silence.
 
     A branch is still refused on purpose. `depends_on` is bound only where it
     names one edge; where a node has several dependents, choosing between them is
