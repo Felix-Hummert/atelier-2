@@ -731,7 +731,10 @@ wait for #355; this door does not invent them.
 A node can now say which tool it needs and have it redeemed. A `tools` entry is
 a published tool grant the document pins by hash, exactly as an output pins its
 schema, so what a node may do is byte-pinned like every other material it names;
-the one capability a runtime here redeems is `run-project-verification`. When
+the one capability a runtime here redeems is `run-project-verification`. A
+client publishes those bytes through `POST /tool-grant-revisions`, the same
+form as a schema: exact JSON in, the catalog's own write, hash out, refused by
+the grant owner's own name before anything is stored. When
 such a node runs, the command the project's own manifest declares under
 `[tool.atelier2.verification]` is run in that attempt's own leased directory --
 the project decides what verifies it, never the agent and never the atelier --

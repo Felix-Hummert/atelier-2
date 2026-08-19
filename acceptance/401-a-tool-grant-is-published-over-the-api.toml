@@ -1,0 +1,17 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/401"
+
+# THE TOOL-GRANT PUBLICATION DOOR LETS A PINNED GRANT EXIST ENTIRELY OVER HTTP.
+#
+# A V3 node pins a `tools` entry to a published `tool` revision. openapi.json
+# had no grant path; the operator workaround was to stop the unit, call
+# DbosCatalogStore.publish_revision in-process, and start it again. This
+# sentence binds that hole: POST /tool-grant-revisions is the same form as
+# POST /schema-revisions (bytes in, hash out, idempotent), and a start whose
+# tools[].revision is that hash gets past the reference that used to refuse as
+# unpublished. It does not invent a second publication write; it calls the
+# store owner that already existed. Redemption itself is already built.
+
+[[sentence]]
+id = "a-tool-grant-published-over-the-api-is-the-hash-a-node-pins"
+text = "A tool grant published through POST /tool-grant-revisions is stored under its exact-bytes hash as kind tool, and a V3 workflow published through POST /workflow-revisions whose tools[].revision is that hash starts past the reference that pinned it."

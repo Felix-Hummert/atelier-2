@@ -76,6 +76,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/agent-configuration-revisions",
     API_PREFIX + "/schema-revisions",
     API_PREFIX + "/budget-revisions",
+    API_PREFIX + "/tool-grant-revisions",
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/by-name/{name}",
     API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
@@ -128,6 +129,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/budget-revisions",
         "publish_budget_revision_route",
     ),
+    (
+        "POST",
+        API_PREFIX + "/tool-grant-revisions",
+        "publish_tool_grant_revision_route",
+    ),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
     (
@@ -173,6 +179,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/agent-configuration-revisions", "get"): {"200"},
     (API_PREFIX + "/artifacts", "post"): {"200", "201"},
     (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
+    (API_PREFIX + "/tool-grant-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
@@ -348,6 +355,10 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
             "application/json": {"schema": {"type": "string", "format": "binary"}}
         },
     }
+    grant_publication_body = schema["paths"][API_PREFIX + "/tool-grant-revisions"][
+        "post"
+    ]["requestBody"]
+    assert grant_publication_body == schema_publication_body
 
     for path in (
         API_PREFIX + "/auth-profile-revisions",
