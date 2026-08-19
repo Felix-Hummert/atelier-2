@@ -103,7 +103,8 @@ class LocalProjectVerificationRunner:
         except OSError as error:
             raise ProjectVerificationUnavailable(
                 f"the verification {_manifest_at(pin)} declares did not answer "
-                f"within its declared {declared.timeout_seconds} seconds: {error}"
+                f"within its declared {declared.timeout_seconds} seconds: {error}",
+                timeout_seconds=declared.timeout_seconds,
             ) from error
         return ProjectVerificationOutcome(
             declared.command, exit_code, Sha256Hash.of(standard_output)

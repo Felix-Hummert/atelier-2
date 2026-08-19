@@ -330,6 +330,11 @@ class _FailingAttemptStore:
     ) -> AgentAttemptSucceeded:
         raise AssertionError((execution, result, redemption))
 
+    def complete_project_verification_failure(
+        self, execution: AgentAttemptExecution, verdict: str
+    ) -> AgentAttemptFailed:
+        raise AssertionError((execution, verdict))
+
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttemptCancellationResult:

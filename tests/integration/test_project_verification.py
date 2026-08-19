@@ -12,7 +12,7 @@ pin that no longer resolves each cost no run.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -23,14 +23,24 @@ from atelier2.adapters.project_verification import (
     LocalProjectVerificationRunner,
 )
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
-from atelier2.contracts.agent_attempts import AgentAttempt, AgentAttemptId
+from atelier2.contracts.agent_attempts import (
+    AgentAttempt,
+    AgentAttemptFailureCode,
+    AgentAttemptId,
+    AgentAttemptState,
+)
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant, ToolGrantCapability
-from atelier2.ports.agent_attempts import AgentAttemptClaimResult, AgentAttemptSucceeded
+from atelier2.ports.agent_attempts import (
+    AgentAttemptClaimedByThisCall,
+    AgentAttemptClaimResult,
+    AgentAttemptFailed,
+    AgentAttemptSucceeded,
+)
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
     AgentProcessCommand,
@@ -222,8 +232,12 @@ def test_a_verification_past_its_declared_deadline_is_refused_rather_than_awaite
     lease_directory.mkdir()
     lease = leased_directory_identity(AgentAttemptId("a2" * 32), lease_directory)
 
-    with pytest.raises(ProjectVerificationUnavailable, match="did not answer"):
+    with pytest.raises(
+        ProjectVerificationUnavailable, match="did not answer"
+    ) as raised:
         runner_for(root).run(pin, lease)
+
+    assert raised.value.timeout_seconds == 0.2
 
 
 @dataclass
@@ -349,6 +363,176 @@ def test_an_undeclared_verification_refuses_before_the_attempt_is_claimed(
 
     assert verifications.asked == 1
     assert attempt.cost == (["prepare"], 0, 0)
+
+
+@dataclass
+class _TimeoutVerifications:
+    """A runner that starts, then exceeds the deadline the project declared."""
+
+    timeout_seconds: float
+    ran: int = 0
+
+    def preflight(self, pin: ProjectSourcePin) -> None:
+        del pin
+
+    def run(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> ProjectVerificationOutcome:
+        del pin, lease
+        self.ran += 1
+        raise ProjectVerificationUnavailable(
+            f"the verification did not answer within its declared "
+            f"{self.timeout_seconds} seconds",
+            timeout_seconds=self.timeout_seconds,
+        )
+
+
+@dataclass
+class _ClaimingStore:
+    """A store that wins the claim, then records how the attempt was ended."""
+
+    calls: list[str] = field(default_factory=list)
+    attempt: AgentAttempt | None = None
+    verdict: str | None = None
+
+    def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
+        self.calls.append("prepare")
+        self.attempt = prepared_agent_attempt(execution)
+        return self.attempt
+
+    def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimResult:
+        del execution
+        self.calls.append("claim")
+        assert self.attempt is not None
+        self.attempt = replace(
+            self.attempt,
+            state=AgentAttemptState.LAUNCH_ARMED,
+            state_version=self.attempt.state_version + 1,
+        )
+        return AgentAttemptClaimedByThisCall(self.attempt)
+
+    def complete_success(self, *arguments: object) -> AgentAttemptSucceeded:
+        self.calls.append("complete_success")
+        raise AssertionError(
+            "a timed-out verification must not invent a redemption", arguments
+        )
+
+    def complete_project_verification_failure(
+        self, execution: AgentAttemptExecution, verdict: str
+    ) -> AgentAttemptFailed:
+        del execution
+        self.calls.append("fail")
+        self.verdict = verdict
+        assert self.attempt is not None
+        self.attempt = replace(
+            self.attempt,
+            state=AgentAttemptState.FAILED,
+            state_version=self.attempt.state_version + 1,
+            failure_code=AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
+        )
+        return AgentAttemptFailed(self.attempt)
+
+
+@dataclass
+class _SucceedingExecutor:
+    """A provider that answers; the verification after it is the subject."""
+
+    def prepare_process(self, request: object) -> AgentProcessCommand:
+        del request
+        return AgentProcessCommand(("/bin/true",), standard_output_frame_bytes=1024)
+
+    def decode_process_completion(
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult:
+        del invocation, completion
+        return AgentExecutionResult(b'"ok"')
+
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        del command
+
+    def close(self) -> None:
+        return None
+
+
+@dataclass
+class _RecordingSupervisor:
+    """A supervisor that records whether finalize ran after the claim."""
+
+    finalized: int = 0
+
+    def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
+        return prepared_agent_attempt(execution)
+
+    def launch_and_wait(
+        self, execution: AgentAttemptExecution, invocation: AgentProcessInvocation
+    ) -> AgentProcessCompletion:
+        del execution, invocation
+        return AgentProcessCompletion(0, b'"ok"', b"")
+
+    def finalize(self, execution: AgentAttemptExecution) -> None:
+        del execution
+        self.finalized += 1
+
+
+@dataclass
+class _LeasingWorkspaces:
+    """A workspace owner that records acquire and release after the claim."""
+
+    directory: Path
+    acquired: int = 0
+    released: int = 0
+
+    def preflight(self) -> None:
+        return None
+
+    def acquire(self, attempt_id: AgentAttemptId) -> AgentAttemptWorkspaceLease:
+        self.acquired += 1
+        return leased_directory_identity(attempt_id, self.directory)
+
+    def release(self, attempt_id: AgentAttemptId) -> None:
+        del attempt_id
+        self.released += 1
+
+
+@pytest.mark.proves(
+    "a-verification-timeout-after-claim-fails-the-attempt-durably-named"
+)
+def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
+    tmp_path: Path,
+) -> None:
+    """A deadline after the claim is a named failure, not an armed leftover."""
+
+    root = tmp_path / "project"
+    pin = git_project(root, declaring_verification(["/bin/true"]))
+    timeout_seconds = 0.2
+    verifications = _TimeoutVerifications(timeout_seconds)
+    store = _ClaimingStore()
+    supervisor = _RecordingSupervisor()
+    workspaces = _LeasingWorkspaces(tmp_path / "lease")
+
+    outcome = execute_agent_attempt(
+        agent_attempt_execution(agent_execution_request_v2()),
+        _SucceedingExecutor(),  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        supervisor,  # type: ignore[arg-type]
+        workspaces,  # type: ignore[arg-type]
+        PinnedProjectSource(LocalGitProjectSource(root), verifications, pin, THE_GRANT),
+    )
+
+    assert isinstance(outcome, AgentAttemptFailed)
+    assert outcome.attempt.state is AgentAttemptState.FAILED
+    assert (
+        outcome.attempt.failure_code
+        is AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED
+    )
+    assert store.attempt is not None
+    assert store.attempt.state is not AgentAttemptState.LAUNCH_ARMED
+    assert store.calls == ["prepare", "claim", "fail"]
+    assert store.verdict == f"timeout {timeout_seconds} seconds"
+    assert verifications.ran == 1
+    assert workspaces.acquired == 1
+    assert workspaces.released == 1
+    assert supervisor.finalized == 1
 
 
 @pytest.mark.proves("a-pin-no-source-can-answer-for-refuses-before-the-claim")
