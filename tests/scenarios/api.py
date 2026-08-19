@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, Never
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 from sqlalchemy.engine import Engine
@@ -401,6 +402,54 @@ def published_workflow_grammar(openapi_document: Any) -> Draft202012Validator:
     )
 
 
+def durable_asgi_app(
+    runtime: DbosRuntime,
+    limits: ApiLimits | None = None,
+    poll_backoff: EventPollBackoff | None = None,
+) -> FastAPI:
+    """The ASGI app in front of one real durable runtime.
+
+    `durable_api_client` wraps this for a single caller. A concurrent harness
+    needs the app itself so one event loop can drive many requests.
+    """
+
+    queries = durable_queries(runtime.engine)
+    return create_app(
+        source_commit="commit",
+        source_tree="tree",
+        ports=ApiPorts(
+            workflow_revision_publisher=DbosWorkflowRevisionPublisher(runtime.engine),
+            published_run_starter=DbosDurableRunStarter(
+                runtime.engine, runtime.settings, runtime.agent_executor_registry
+            ),
+            wait_answerer=DbosWaitAnswerer(
+                runtime.engine, runtime.settings.application_version
+            ),
+            reconcile_commander=DbosEffectReconcileCommander(
+                runtime.engine, runtime.settings
+            ),
+            workflow_revision_queries=queries,
+            run_queries=queries,
+            run_event_queries=queries,
+            workflow_document_parser=parse_workflow_document,
+            agent_configuration_catalog=DbosAgentConfigurationCatalog(
+                runtime.engine, runtime.agent_executor_registry
+            ),
+            agent_attempt_canceller=DbosAgentAttemptStore(
+                runtime.engine, runtime.settings.application_version
+            ),
+            catalog_resolver=DbosCatalogStore(runtime.engine),
+            catalog_admissions=DbosCatalogStore(runtime.engine),
+            published_revision_registry=DbosCatalogStore(runtime.engine),
+            artifact_publisher=DbosArtifactStore(runtime.engine),
+        ),
+        limits=api_limits() if limits is None else limits,
+        event_poll_backoff=event_poll_backoff()
+        if poll_backoff is None
+        else poll_backoff,
+    )
+
+
 def durable_api_client(
     runtime: DbosRuntime, limits: ApiLimits | None = None
 ) -> TestClient:
@@ -411,43 +460,7 @@ def durable_api_client(
     claims an HTTP answer asks for it here.
     """
 
-    queries = durable_queries(runtime.engine)
-    return TestClient(
-        create_app(
-            source_commit="commit",
-            source_tree="tree",
-            ports=ApiPorts(
-                workflow_revision_publisher=DbosWorkflowRevisionPublisher(
-                    runtime.engine
-                ),
-                published_run_starter=DbosDurableRunStarter(
-                    runtime.engine, runtime.settings, runtime.agent_executor_registry
-                ),
-                wait_answerer=DbosWaitAnswerer(
-                    runtime.engine, runtime.settings.application_version
-                ),
-                reconcile_commander=DbosEffectReconcileCommander(
-                    runtime.engine, runtime.settings
-                ),
-                workflow_revision_queries=queries,
-                run_queries=queries,
-                run_event_queries=queries,
-                workflow_document_parser=parse_workflow_document,
-                agent_configuration_catalog=DbosAgentConfigurationCatalog(
-                    runtime.engine, runtime.agent_executor_registry
-                ),
-                agent_attempt_canceller=DbosAgentAttemptStore(
-                    runtime.engine, runtime.settings.application_version
-                ),
-                catalog_resolver=DbosCatalogStore(runtime.engine),
-                catalog_admissions=DbosCatalogStore(runtime.engine),
-                published_revision_registry=DbosCatalogStore(runtime.engine),
-                artifact_publisher=DbosArtifactStore(runtime.engine),
-            ),
-            limits=api_limits() if limits is None else limits,
-            event_poll_backoff=event_poll_backoff(),
-        )
-    )
+    return TestClient(durable_asgi_app(runtime, limits))
 
 
 def stream_projection_limit() -> WorkflowPublicationLimits:
