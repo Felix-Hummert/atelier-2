@@ -1091,10 +1091,15 @@ textarea {
   padding: 0 0.55rem;
   border-radius: 0.4rem;
   border-color: var(--line);
-  font-family: var(--mono);
   font-size: 0.8rem;
-  font-weight: 500;
+  font-weight: 600;
   background: var(--chip);
+}
+
+.proof-copied {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 .info-popover {
