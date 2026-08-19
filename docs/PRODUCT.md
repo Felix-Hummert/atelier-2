@@ -625,7 +625,10 @@ one command instead of four ceremonies. `atelier2 run` publishes one workflow
 document and one agent file per bound role, starts the run they describe,
 follows its event history to the end, and writes the agent output that run
 produced to standard output, with the run, its revision, its terminal hash and
-one hash per output on standard error. Every publication is idempotent and the
+one hash per output on standard error. The agent file may name
+`requested_capability`; omitting it publishes the wire default `headless`, so a
+tool node is startable from this command rather than only from a raw HTTP
+client. Every publication is idempotent and the
 run identity is derived from the published hashes unless the operator names one,
 so the same command run twice reports the first run instead of paying for a
 second. That identity compare pins authored `--input` orders the same way it
@@ -668,8 +671,9 @@ for the schema the document pinned are each refused by name; a typed 422 from
 the service is handed on in the service's own words. An output contract that
 could decide an exit code still does not exist.
 
-That API now also has a third door: `atelier2 mcp` speaks MCP on standard
-input and standard output against the same public HTTP API. A client launches
+That API now also has a third door: `atelier2 mcp` speaks MCP as one
+JSON-RPC object per line on standard input and standard output against the
+same public HTTP API. A client launches
 it as a child. There is no listener, no port and no token. The four tools
 are `list_workflows` (catalog name, lineage and head), `start_run` (the
 revision a name holds, the same resolution `run --name` asks), `run_status`

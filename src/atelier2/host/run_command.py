@@ -193,14 +193,16 @@ class AgentBindingDocument(BaseModel):
     auth_profile: PublishAuthProfileRevisionRequestResource
     model: str
     executor_revision: str
+    requested_capability: str | None = None
 
     def publication(
         self, auth_profile_revision_hash: str
     ) -> PublishAgentConfigurationRevisionRequestResource:
-        return PublishAgentConfigurationRevisionRequestResource(
-            model=self.model,
-            auth_profile_revision_hash=auth_profile_revision_hash,
-            executor_revision=self.executor_revision,
+        return PublishAgentConfigurationRevisionRequestResource.model_validate(
+            {
+                **self.model_dump(exclude_unset=True, exclude={"auth_profile"}),
+                "auth_profile_revision_hash": auth_profile_revision_hash,
+            }
         )
 
 
