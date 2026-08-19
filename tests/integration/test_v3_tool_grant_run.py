@@ -395,6 +395,7 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
         AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED.value
     )
     assert event_kinds == (RunEventKind.AGENT_FAILED.value,)
+    assert payload is not None
     assert bytes(payload) == (
         AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED.value.encode("ascii")
     )
