@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import signal
@@ -17,6 +18,7 @@ from fastapi.testclient import TestClient
 from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY,
+    ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
@@ -45,12 +47,22 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
+from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    AgentBinding,
+    AgentBindingSet,
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
+    AgentRole,
+    AuthMode,
+    AuthProfileRevision,
+    ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.host import main
+from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.host import _claude_subscription_settings, main
 from atelier2.host.address import DEFAULT_HOST
 from atelier2.host.serving import (
     HostSettings,
@@ -58,7 +70,18 @@ from atelier2.host.serving import (
     compose_application,
     event_poll_backoff,
 )
+from atelier2.ports.agent_configurations import (
+    AgentConfigurationRevisionCreated,
+    AuthProfileRevisionCreated,
+)
+from atelier2.ports.agent_executions import AgentExecutorRegistry
+from atelier2.ports.durable_runs import (
+    DurableAgentExecutorBindingUnavailable,
+    StartPublishedRunRequestV2,
+)
+from tests.integration.test_codex_subscription import codex_subscription_deployment
 from tests.integration.test_grok_subscription import (
+    HOST_DOCUMENT,
     INTROSPECTING_GROK,
     grok_subscription_deployment,
 )
@@ -300,6 +323,7 @@ def served_settings(
     tmp_path: Path,
     claude_subscription: ClaudeSubscriptionSettings | None = None,
     claude_workspace_tools: bool = False,
+    claude_start_refusal: str | None = None,
     grok_subscription: GrokSubscriptionSettings | None = None,
     grok_workspace_tools: bool = False,
     host: str = DEFAULT_HOST,
@@ -329,6 +353,7 @@ def served_settings(
         ),
         claude_subscription=claude_subscription,
         claude_workspace_tools=claude_workspace_tools,
+        claude_start_refusal=claude_start_refusal,
         grok_subscription=grok_subscription,
         grok_workspace_tools=grok_workspace_tools,
         limits=api_limits(**tuning),
@@ -658,10 +683,10 @@ def test_a_claude_deployment_off_loopback_refuses_to_serve(
     assert "loopback" in capsys.readouterr().err
 
 
-def test_a_claude_deployment_on_an_unconformant_executable_refuses_to_serve(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+def test_an_unconformant_claude_executable_does_not_kill_serve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An unmeasured CLI stops the server, not the first billed run."""
+    """The pin stays; the house stays. Binding that executor is the later refusal."""
 
     deployment = tmp_path / "claude-deployment"
     deployment.mkdir()
@@ -669,12 +694,156 @@ def test_a_claude_deployment_on_an_unconformant_executable_refuses_to_serve(
         deployment, INERT_CLAUDE, version="2.1.222"
     )
     monkeypatch.setenv("PATH", settings.search_path)
+    captured: dict[str, HostSettings] = {}
 
-    with pytest.raises(SystemExit) as refusal:
-        main(claude_serve_arguments(tmp_path, settings))
+    def fake_serve(host_settings: HostSettings) -> None:
+        captured["settings"] = host_settings
 
-    assert refusal.value.code == 2
-    assert "not 2.1.222" in capsys.readouterr().err
+    monkeypatch.setattr("atelier2.host.serve", fake_serve)
+
+    assert main(claude_serve_arguments(tmp_path, settings)) == 0
+    served = captured["settings"]
+    assert served.claude_subscription is not None
+    assert served.claude_start_refusal is not None
+    assert "not 2.1.222" in served.claude_start_refusal
+
+
+def test_an_unattested_codex_profile_does_not_kill_serve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dirty Codex credentials used to crash-loop systemd. The house stays up."""
+
+    deployment = tmp_path / "codex-deployment"
+    deployment.mkdir()
+    settings = codex_subscription_deployment(deployment)
+    monkeypatch.setenv("PATH", settings.search_path)
+    captured: dict[str, HostSettings] = {}
+
+    def fake_serve(host_settings: HostSettings) -> None:
+        captured["settings"] = host_settings
+
+    monkeypatch.setattr("atelier2.host.serve", fake_serve)
+
+    assert (
+        main(
+            serve_arguments(
+                tmp_path,
+                "--agent-scratch-root",
+                str(agent_scratch_root(tmp_path)),
+                "--codex-executable",
+                str(settings.executable),
+                "--codex-credential-directory",
+                str(settings.credential_directory),
+            )
+        )
+        == 0
+    )
+    served = captured["settings"]
+    assert served.codex_subscription is not None
+    assert served.codex_start_refusal is not None
+
+
+@pytest.mark.proves("an-unstartable-executor-does-not-kill-serve")
+def test_an_unstartable_claude_executor_leaves_the_house_serving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Serve answers health; binding the refused executor is today's named problem."""
+
+    claude_root = tmp_path / "claude-deployment"
+    claude_root.mkdir()
+    claude = claude_subscription_deployment(
+        claude_root, INERT_CLAUDE, version="2.1.222"
+    )
+    grok_root = tmp_path / "grok-deployment"
+    grok_root.mkdir()
+    grok = grok_subscription_deployment(grok_root, INTROSPECTING_GROK)
+    monkeypatch.setenv("PATH", claude.search_path)
+    declared = _claude_subscription_settings(
+        argparse.ArgumentParser(),
+        argparse.Namespace(
+            claude_executable=claude.executable,
+            claude_credential_directory=claude.credential_directory,
+            claude_workspace_tools=False,
+        ),
+    )
+    assert declared.settings is not None
+    assert declared.start_refusal is not None
+    assert "not 2.1.222" in declared.start_refusal
+
+    settings = served_settings(
+        tmp_path,
+        claude_subscription=declared.settings,
+        claude_start_refusal=declared.start_refusal,
+        grok_subscription=grok,
+    )
+    app, runtime = compose_application(settings)
+    try:
+        with TestClient(app) as client:
+            health = client.get(API_PREFIX + "/health")
+            assert health.status_code == 200
+            assert health.json()["status"] == "serving"
+        assert runtime.agent_executor_registry.keys == frozenset(
+            {GROK_SUBSCRIPTION_EXECUTOR_KEY}
+        )
+        seed = AgentExecutorRegistry(
+            (ClaudeSubscriptionExecutorFactory(declared.settings),)
+        )
+        catalog = DbosAgentConfigurationCatalog(runtime.engine, seed)
+        auth = AuthProfileRevision(
+            "claude-unstartable", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+        )
+        assert isinstance(
+            catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        )
+        configuration = AgentConfigurationRevision(
+            "claude-opus-4-1",
+            auth.revision_hash,
+            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(configuration),
+            AgentConfigurationRevisionCreated,
+        )
+        grok_catalog = DbosAgentConfigurationCatalog(
+            runtime.engine, runtime.agent_executor_registry
+        )
+        grok_auth = AuthProfileRevision(
+            "grok-healthy", 1, ProviderId("xai"), AuthMode.SUBSCRIPTION
+        )
+        assert isinstance(
+            grok_catalog.publish_auth_profile_revision(grok_auth),
+            AuthProfileRevisionCreated,
+        )
+        grok_configuration = AgentConfigurationRevision(
+            "grok-4",
+            grok_auth.revision_hash,
+            GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        assert isinstance(
+            grok_catalog.publish_agent_configuration_revision(grok_configuration),
+            AgentConfigurationRevisionCreated,
+        )
+        workflow = WorkflowRevision(HOST_DOCUMENT)
+        DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+        starter = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        )
+        refused = starter.start_published(
+            StartPublishedRunRequestV2(
+                RunId("claude/unstartable"),
+                workflow.revision_hash,
+                AgentBindingSet(
+                    (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
+                ),
+            )
+        )
+        assert isinstance(refused, DurableAgentExecutorBindingUnavailable)
+    finally:
+        runtime.close()
 
 
 def test_a_claude_deployment_without_bubblewrap_refuses_to_serve(

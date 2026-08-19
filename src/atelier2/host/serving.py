@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -57,6 +58,7 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.pages import PageLimit
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 from atelier2.host.logging import configure_process_logging
+from atelier2.ports.agent_executions import AgentExecutorFactoryV2
 
 # The edge must admit exactly the largest result the durable agent contract
 # accepts, and nothing larger: a tighter bound refuses work the store would
@@ -186,6 +188,8 @@ class HostSettings:
     the serving user. An operator says yes to that once, here, and never as a
     side effect of naming an executable.
     """
+    claude_start_refusal: str | None = None
+    claude_workspace_tools_start_refusal: str | None = None
     grok_subscription: GrokSubscriptionSettings | None = None
     grok_workspace_tools: bool = False
     """Whether the Grok deployment also serves its tool-bearing executor.
@@ -196,7 +200,10 @@ class HostSettings:
     the serving user. An operator says yes to that once, here, and never as a
     side effect of naming an executable.
     """
+    grok_start_refusal: str | None = None
+    grok_workspace_tools_start_refusal: str | None = None
     codex_subscription: CodexSubscriptionSettings | None = None
+    codex_start_refusal: str | None = None
 
     @property
     def billed_providers(self) -> tuple[str, ...]:
@@ -284,6 +291,23 @@ class HostSettings:
                 "unauthenticated on this API, so the billed boundary stays on this "
                 "machine until an authenticated boundary exists"
             )
+        _require_start_refusal(
+            "Claude", self.claude_subscription, self.claude_start_refusal
+        )
+        _require_start_refusal(
+            "Claude workspace-tool",
+            self.claude_subscription if self.claude_workspace_tools else None,
+            self.claude_workspace_tools_start_refusal,
+        )
+        _require_start_refusal("Grok", self.grok_subscription, self.grok_start_refusal)
+        _require_start_refusal(
+            "Grok workspace-tool",
+            self.grok_subscription if self.grok_workspace_tools else None,
+            self.grok_workspace_tools_start_refusal,
+        )
+        _require_start_refusal(
+            "Codex", self.codex_subscription, self.codex_start_refusal
+        )
         # Asked last, once every path this record resolves is settled. Its
         # refusals belong to the durable runtime and are raised here so they
         # travel the same way as the ones above -- the command line catches this
@@ -304,37 +328,79 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
-def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
+def _require_start_refusal(
+    name: str, declared: object | None, refusal: str | None
+) -> None:
+    if refusal is None:
+        return
+    if declared is None:
+        raise ValueError(f"a {name} start refusal names a declared {name} deployment")
+    if not refusal.strip():
+        raise ValueError(f"a {name} start refusal must be nonempty")
+
+
+def _subscription_executor_factories(
+    settings: HostSettings,
+) -> tuple[AgentExecutorFactoryV2, ...]:
     claude_subscription = settings.claude_subscription
     grok_subscription = settings.grok_subscription
     codex_subscription = settings.codex_subscription
-    subscription_executors = (
+    return (
         *(
             ()
-            if claude_subscription is None
+            if claude_subscription is None or settings.claude_start_refusal is not None
             else (ClaudeSubscriptionExecutorFactory(claude_subscription),)
         ),
         *(
             (ClaudeWorkspaceToolExecutorFactory(claude_subscription),)
-            if claude_subscription is not None and settings.claude_workspace_tools
+            if (
+                claude_subscription is not None
+                and settings.claude_workspace_tools
+                and settings.claude_start_refusal is None
+                and settings.claude_workspace_tools_start_refusal is None
+            )
             else ()
         ),
         *(
             ()
-            if grok_subscription is None
+            if grok_subscription is None or settings.grok_start_refusal is not None
             else (GrokSubscriptionExecutorFactory(grok_subscription),)
         ),
         *(
             (GrokWorkspaceToolExecutorFactory(grok_subscription),)
-            if grok_subscription is not None and settings.grok_workspace_tools
+            if (
+                grok_subscription is not None
+                and settings.grok_workspace_tools
+                and settings.grok_start_refusal is None
+                and settings.grok_workspace_tools_start_refusal is None
+            )
             else ()
         ),
         *(
             ()
-            if codex_subscription is None
+            if codex_subscription is None or settings.codex_start_refusal is not None
             else (CodexSubscriptionExecutorFactory(codex_subscription),)
         ),
     )
+
+
+def _log_unstartable_executors(settings: HostSettings) -> None:
+    logger = logging.getLogger("atelier2")
+    seen: set[str] = set()
+    for refusal in (
+        settings.claude_start_refusal,
+        settings.claude_workspace_tools_start_refusal,
+        settings.grok_start_refusal,
+        settings.grok_workspace_tools_start_refusal,
+        settings.codex_start_refusal,
+    ):
+        if refusal is not None and refusal not in seen:
+            seen.add(refusal)
+            logger.warning(refusal)
+
+
+def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
+    subscription_executors = _subscription_executor_factories(settings)
     runtime = DbosRuntime(
         settings.runtime_settings(),
         LoopbackEffectAdapterFactory(
@@ -397,6 +463,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
 
 def serve(settings: HostSettings) -> None:
     configure_process_logging()
+    _log_unstartable_executors(settings)
     app, runtime = compose_application(settings)
     try:
         uvicorn.Server(

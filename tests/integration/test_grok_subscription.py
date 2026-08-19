@@ -843,7 +843,7 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
     candidate = grok_subscription_deployment(deployment, INTROSPECTING_GROK)
     monkeypatch.setenv("PATH", candidate.search_path)
     parser = argparse.ArgumentParser()
-    resolved = _grok_subscription_settings(
+    declared = _grok_subscription_settings(
         parser,
         argparse.Namespace(
             grok_executable=candidate.executable,
@@ -852,7 +852,8 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
             grok_workspace_tools=False,
         ),
     )
-    assert resolved == candidate
+    assert declared.settings == candidate
+    assert declared.start_refusal is None
 
     frontend = tmp_path / "frontend"
     (frontend / "assets").mkdir(parents=True)
@@ -867,7 +868,7 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
         "source_tree": "proof",
         "frontend_dist": frontend,
         "agent_scratch_root": agent_scratch_root(tmp_path),
-        "grok_subscription": resolved,
+        "grok_subscription": declared.settings,
     }
     with pytest.raises(ValueError, match="loopback"):
         HostSettings(**common, host="0.0.0.0")
