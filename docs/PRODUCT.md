@@ -769,10 +769,15 @@ form as a schema: exact JSON in, the catalog's own write, hash out, refused by
 the grant owner's own name before anything is stored. When
 such a node runs, the command the project's own manifest declares under
 `[tool.atelier2.verification]` is run in that attempt's own leased directory --
-the project decides what verifies it, never the agent and never the atelier --
-and the run leaves durable proof of exactly which command ran, how it ended and
-the hash of what it wrote, beside the agent receipt whose provider bytes stay
-its own. The manifest that is read is the one the pinned commit carries, and the
+the project decides what verifies it, never the agent and never the atelier.
+A command that exits zero leaves durable proof of exactly which command ran,
+how it ended and the hash of what it wrote, beside the agent receipt whose
+provider bytes stay its own. A command that exits nonzero ends the attempt
+`FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
+`failed` `node-receipt/v3`, and writes no agent receipt, no `AGENT_COMPLETED`,
+and no `tool_redemptions` row. A verification that times out after the claim
+is not this sentence. The manifest that is read is the one the pinned commit
+carries, and the
 directory it runs in is that same lease after the provider has worked there, so
 what a project declared stays the pin's and where it was run is the mutated
 lease rather than a rematerialized pin tree or a living checkout. Refusals are

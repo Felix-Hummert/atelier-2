@@ -253,10 +253,9 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head names the workflow-revision path parameter
-    `workflow_revision_hash` and answers a declared order with the author's
-    `schema: {ref, revision}` hull. Refreshing the artefact alongside a refactor
-    is what this test still refuses.
+    it. This head admits `PROJECT_VERIFICATION_FAILED` on the V3 `AGENT_FAILED`
+    event. Refreshing the artefact alongside a refactor is what this test still
+    refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
