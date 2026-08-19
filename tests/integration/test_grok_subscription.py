@@ -195,6 +195,7 @@ def subscription_request(
     auth_mode: AuthMode = AuthMode.SUBSCRIPTION,
     job: bytes = b"Reply with the single word pong",
     declared_output_schema: bytes | None = None,
+    maximum_assistant_turns: int | None = None,
 ) -> AgentExecutionRequestV2:
     auth = AuthProfileRevision("grok-primary", 1, ProviderId("xai"), auth_mode)
     configuration = AgentConfigurationRevision(
@@ -215,6 +216,7 @@ def subscription_request(
         GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
         job,
         declared_output_schema,
+        maximum_assistant_turns=maximum_assistant_turns,
     )
 
 
@@ -1344,6 +1346,39 @@ def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_f
     assert observed["job"] == "draw the owl"
     executor.release_credential_channel(command)
     tool_free.release_credential_channel(tool_free_command)
+    tool_free.close()
+    executor.close()
+
+
+@pytest.mark.proves("a-pinned-budget-turn-bound-is-the-tool-attempt-ceiling")
+def test_a_workspace_tool_call_takes_the_pinned_turn_bound(
+    tmp_path: Path,
+) -> None:
+    """The budget names the ceiling; without one the existing default stays.
+
+    The tool-free call is the other reader: it keeps sixteen even when the
+    same request carries a bound. Removing the request field from the tool
+    vector makes the pinned case agree with the default.
+    """
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    tool_free = GrokSubscriptionExecutorFactory(settings).open()
+
+    default_command = executor.prepare_process(subscription_request())
+    pinned_command = executor.prepare_process(
+        subscription_request(maximum_assistant_turns=8)
+    )
+    headless = tool_free.prepare_process(
+        subscription_request(maximum_assistant_turns=8)
+    )
+
+    assert argument_after(default_command.arguments, "--max-turns") == "16"
+    assert argument_after(pinned_command.arguments, "--max-turns") == "8"
+    assert argument_after(headless.arguments, "--max-turns") == "16"
+    executor.release_credential_channel(default_command)
+    executor.release_credential_channel(pinned_command)
+    tool_free.release_credential_channel(headless)
     tool_free.close()
     executor.close()
 

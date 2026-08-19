@@ -87,7 +87,9 @@ _MAXIMUM_TURNS_FLAG = "--max-turns"
 # Headless one-answer class, not a heartbeat. A Diff-Review-sized order
 # (~14 KB, #295) dies at one turn (`max turns reached`) because the CLI
 # spends turns on read/tool work before the one JSON answer. Sixteen
-# covers that cycle; it is not an unbounded subscription loop.
+# covers that cycle; it is not an unbounded subscription loop. The
+# workspace-tool vector uses this same default when the node pins no
+# `maximum_assistant_turns`.
 _HEADLESS_MAXIMUM_TURNS = "16"
 _TOOLS_FLAG = "--tools="
 _TOOLS_OPTION = "--tools"
@@ -645,7 +647,9 @@ class GrokSubscriptionExecutor:
         model: str,
         job_file: Path,
         declared_output_schema_bytes: bytes | None,
+        maximum_assistant_turns: int | None = None,
     ) -> tuple[str, ...]:
+        del maximum_assistant_turns
         return _headless_arguments(
             self.settings.executable,
             model,
@@ -671,6 +675,7 @@ class GrokSubscriptionExecutor:
                     binding.configuration.model,
                     job_file,
                     request.declared_output_schema_bytes,
+                    request.maximum_assistant_turns,
                 ),
                 _child_environment(settings, state_directory),
                 b"",
@@ -851,6 +856,7 @@ def _workspace_tool_arguments(
     model: str,
     job_file: Path,
     declared_output_schema_bytes: bytes | None,
+    maximum_assistant_turns: int | None = None,
 ) -> tuple[str, ...]:
     """The exact argument vector one workspace-tool invocation is launched with."""
 
@@ -877,7 +883,11 @@ def _workspace_tool_arguments(
         _NO_SUBAGENTS_FLAG,
         _NO_WEB_SEARCH_FLAG,
         _MAXIMUM_TURNS_FLAG,
-        _HEADLESS_MAXIMUM_TURNS,
+        (
+            str(maximum_assistant_turns)
+            if maximum_assistant_turns is not None
+            else _HEADLESS_MAXIMUM_TURNS
+        ),
     )
 
 
@@ -1046,12 +1056,14 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
         model: str,
         job_file: Path,
         declared_output_schema_bytes: bytes | None,
+        maximum_assistant_turns: int | None = None,
     ) -> tuple[str, ...]:
         return _workspace_tool_arguments(
             self.settings.executable,
             model,
             job_file,
             declared_output_schema_bytes,
+            maximum_assistant_turns,
         )
 
 

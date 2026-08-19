@@ -349,6 +349,7 @@ class AgentExecutionRequestV2:
     job_bytes: bytes
     declared_output_schema_bytes: bytes | None = None
     round_ordinal: int = FIRST_ROUND_ORDINAL
+    maximum_assistant_turns: int | None = None
     request_hash: AgentExecutionRequestHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -364,6 +365,13 @@ class AgentExecutionRequestV2:
                 raise TypeError("declared output schema bytes must be bytes")
             if not self.declared_output_schema_bytes:
                 raise ValueError("declared output schema bytes must be nonempty")
+        if self.maximum_assistant_turns is not None:
+            if type(self.maximum_assistant_turns) is not int:
+                raise TypeError("maximum assistant turns must be an integer")
+            if not 1 <= self.maximum_assistant_turns <= MAXIMUM_SIGNED_INT64:
+                raise ValueError(
+                    "maximum assistant turns must be a positive signed int64"
+                )
         expected_execution = NodeExecutionId.for_node(
             self.run_id, self.workflow_revision_hash, self.node_id, self.round_ordinal
         )

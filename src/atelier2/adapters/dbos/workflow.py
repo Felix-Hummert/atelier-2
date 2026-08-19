@@ -87,6 +87,10 @@ from atelier2.contracts.agents import (
     AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
 )
+from atelier2.contracts.budgets_v3 import (
+    BudgetRevisionRefused,
+    read_budget_revision_document,
+)
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
     LogicalEffectKey,
@@ -224,6 +228,7 @@ def _node_binding(
                 declared_output_schema_document=_declared_output_schema_document(
                     session, node
                 ),
+                maximum_assistant_turns=_pinned_maximum_assistant_turns(session, node),
                 project_source=_pinned_source(node, project),
             )
         )
@@ -307,6 +312,33 @@ def _pinned_tool_grant(
     if isinstance(grant, ToolGrantRefused):
         raise RunBindingConflict(f"the pinned tool revision is no grant: {grant}")
     return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
+
+
+def _pinned_maximum_assistant_turns(
+    session: Any, node: AnyWorkflowDocumentNode
+) -> int | None:
+    """The turn bound this node pinned, read from the revision the document pins.
+
+    Same door as the tool grant: the run already resolved these bytes as a budget
+    before any process existed, so a registry that cannot answer for them now,
+    or answers with bytes that are no budget, contradicts a run that started.
+    A budget that names no turn bound is still a budget; the executor then keeps
+    the default it already declares.
+    """
+    if not isinstance(node, AgentNodeV3) or node.budget is None:
+        return None
+    document = session.scalar(
+        sa.select(published_revisions.c.document).where(
+            published_revisions.c.kind == RevisionKind.BUDGET_POLICY.value,
+            published_revisions.c.revision_hash == node.budget.revision,
+        )
+    )
+    if document is None:
+        raise RunBindingConflict("the pinned budget revision left the registry")
+    verdict = read_budget_revision_document(bytes(document))
+    if isinstance(verdict, BudgetRevisionRefused):
+        raise RunBindingConflict(f"the pinned budget revision is no budget: {verdict}")
+    return verdict.content.maximum_assistant_turns
 
 
 def _declared_output_schema_document(

@@ -9,9 +9,10 @@ story = "https://github.com/FlexOr2/atelier-2/issues/26"
 # field no charge meter measures, a `run_budget` nobody decided, a deadline of
 # zero — resolved, and an author reading "budget" on a node was told nothing.
 #
-# These two sentences bind the content half of that decision. They do not claim
-# enforcement: no attempt is bounded by these values yet. ADR 0008 delivery
-# boundary 2 owns that, and waits on the #15 cutover, the V3 binding owners, #16's
+# These two sentences bind the content half of that decision. The third binds
+# the first enforcement cut: the hard turn bound reaches both workspace-tool
+# executors. ADR 0008 delivery boundary 2 still owns the rest — deadline clock,
+# reported token thresholds, executor-attested refusal — and waits on #16's
 # durable failure vocabulary and an amended #63.
 #
 # Nor do they separate the two node kinds that may carry a budget. A budget bound
@@ -21,7 +22,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/26"
 # this slice does not yet honour that — its composition semantics, and the
 # `UNAVAILABLE` answer that should stand in until they exist, are Slice 3. The gap
 # is named here and on #26 rather than gated, because refusing or marking such a
-# reference is a design the desk owns, not a consequence of these two sentences.
+# reference is a design the desk owns, not a consequence of these sentences.
 
 [[sentence]]
 id = "a-published-budget-bounds-an-attempt-or-is-refused-by-name"
@@ -30,3 +31,7 @@ text = "A `budget-revision/v1` document is published only when every field it ca
 [[sentence]]
 id = "a-changed-budget-bound-is-a-different-budget-revision"
 text = "The content identity of a budget revision is exactly its four bounds: changing one, withdrawing an optional one, or writing a bound where none was, each mints a different `budget-revision/v1` hash, while the same bounds serialised differently keep it — and an absent optional is never read as zero."
+
+[[sentence]]
+id = "a-pinned-budget-turn-bound-is-the-tool-attempt-ceiling"
+text = "When an agent node pins a published `budget-revision/v1` that names `maximum_assistant_turns`, both workspace-tool executors launch that attempt with `--max-turns` set to that bound; when the node pins no budget, or the budget names no turn bound, the launch keeps the executor's existing default."

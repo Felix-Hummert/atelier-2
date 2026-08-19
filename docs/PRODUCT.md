@@ -771,13 +771,16 @@ int64, prose -- at the publication door and again at the reference that pins
 them, so no run starts under a budget nobody could read. A budget revision is
 identified twice, on purpose: the registry and the node pin the exact bytes,
 while the four bounds have their own `budget-revision/v1` content identity, which
-catalog lineage, display name and revision position never enter. What this does
-not claim is enforcement. No attempt is stopped by these values yet: the deadline
-does not run a clock, the turn limit reaches no executor, the thresholds judge no
-usage report, and the executor-side declaration of which dimensions a revision
-requires and what ceiling it attests is not built. That is ADR 0008's second
-delivery boundary, and it waits on the V3 attempt cutover, the durable failure
-vocabulary and an amended receipt.
+catalog lineage, display name and revision position never enter. The hard turn
+bound now reaches both workspace-tool executors: a node that pins a budget
+naming `maximum_assistant_turns` launches with that value as `--max-turns`; a
+node that pins no budget, or a budget that names no turn bound, keeps the
+executor's existing default. What this still does not claim: the deadline does
+not run a clock, the reported token thresholds judge no usage report, a
+tool-free attempt does not read the bound, and the executor-side declaration of
+which dimensions a revision requires and what ceiling it attests is not built.
+That remaining enforcement is ADR 0008's second delivery boundary, and it waits
+on the durable failure vocabulary and an amended receipt.
 
 Whoever recomputes a finished run's terminal hash now also proves under which
 binding it ran. The agent receipt already folded provider, auth mode, auth
