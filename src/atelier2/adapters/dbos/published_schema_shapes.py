@@ -308,4 +308,49 @@ CREATE TABLE agent_configuration_revisions (
 
 
 """,
+    (22, "agent_attempts"): """
+CREATE TABLE agent_attempts (
+	attempt_id TEXT NOT NULL, 
+	node_execution_id TEXT NOT NULL, 
+	request_hash TEXT NOT NULL, 
+	executor_operational_identity TEXT NOT NULL, 
+	run_id TEXT NOT NULL, 
+	workflow_revision_hash TEXT NOT NULL, 
+	node_id TEXT NOT NULL, 
+	attempt_ordinal INTEGER NOT NULL, 
+	state TEXT NOT NULL, 
+	state_version INTEGER NOT NULL, 
+	process_phase TEXT NOT NULL, 
+	process_owner_id TEXT, 
+	watchdog_generation_id TEXT, 
+	cancellation_command_id TEXT, 
+	cancellation_expected_state_version INTEGER, 
+	replacement TEXT, 
+	redrive_state TEXT, 
+	cancellation_disposition TEXT, 
+	cancellation_workflow_id TEXT, 
+	failure_code TEXT, 
+	receipt_hash TEXT, 
+	PRIMARY KEY (attempt_id), 
+	UNIQUE (node_execution_id, attempt_ordinal), 
+	FOREIGN KEY(run_id, workflow_revision_hash) REFERENCES runs (run_id, revision_hash), 
+	CHECK (length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(executor_operational_identity) BETWEEN 1 AND 1024), 
+	CHECK (length(run_id) > 0), 
+	CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(node_id) BETWEEN 1 AND 1024), 
+	CHECK (attempt_ordinal IN (1, 2)), 
+	CHECK (process_phase IN ('NONE', 'WATCHDOG_READY', 'LAUNCH_AUTHORIZED', 'PROCESS_OBSERVED', 'CLEANUP_ATTESTED')), 
+	CHECK ((process_phase = 'NONE' AND process_owner_id IS NULL AND watchdog_generation_id IS NULL) OR (process_phase = 'CLEANUP_ATTESTED' AND cancellation_disposition = 'NEVER_LAUNCHED' AND process_owner_id IS NULL AND watchdog_generation_id IS NULL) OR (process_phase <> 'NONE' AND length(process_owner_id) BETWEEN 1 AND 1024 AND length(watchdog_generation_id) BETWEEN 1 AND 1024)), 
+	CHECK ((cancellation_command_id IS NULL AND cancellation_expected_state_version IS NULL AND replacement IS NULL AND redrive_state IS NULL AND cancellation_disposition IS NULL AND cancellation_workflow_id IS NULL) OR (length(cancellation_command_id) BETWEEN 1 AND 1024 AND cancellation_expected_state_version >= 0 AND replacement IN ('NONE', 'ONE') AND redrive_state IN ('PENDING', 'OWNER_NOT_LOCAL', 'CLEANUP_ATTESTED') AND length(cancellation_workflow_id) > 0 AND ((redrive_state = 'CLEANUP_ATTESTED' AND cancellation_disposition IN ('NEVER_LAUNCHED', 'EXITED_BEFORE_SIGNAL', 'REAPED_AFTER_TERM', 'REAPED_AFTER_KILL', 'OWNER_LOST_AFTER_PARENT_DEATH')) OR (redrive_state <> 'CLEANUP_ATTESTED' AND cancellation_disposition IS NULL)))), 
+	CHECK ((state = 'PREPARED' AND state_version = 0 AND process_phase = 'NONE' AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'PREPARED' AND state_version = 1 AND process_phase = 'WATCHDOG_READY' AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'LAUNCH_ARMED' AND state_version = 1 AND process_phase IN ('NONE', 'LAUNCH_AUTHORIZED') AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'LAUNCH_ARMED' AND state_version >= 2 AND process_phase IN ('LAUNCH_AUTHORIZED', 'PROCESS_OBSERVED') AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'CANCEL_REQUESTED' AND state_version >= 1 AND cancellation_command_id IS NOT NULL AND cancellation_disposition IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state IN ('CANCELLED', 'INTERRUPTED') AND state_version >= 2 AND process_phase = 'CLEANUP_ATTESTED' AND cancellation_command_id IS NOT NULL AND cancellation_disposition IS NOT NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'SUCCEEDED' AND state_version >= 2 AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NOT NULL) OR (state = 'FAILED' AND state_version >= 2 AND cancellation_command_id IS NULL AND failure_code IN ('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED') AND receipt_hash IS NULL)), 
+	UNIQUE (cancellation_workflow_id), 
+	UNIQUE (receipt_hash), 
+	FOREIGN KEY(receipt_hash) REFERENCES agent_receipts_v2 (receipt_hash) ON DELETE RESTRICT
+)
+
+
+""",
 }
