@@ -28,7 +28,7 @@ export function exactLocal(iso: string): string {
 }
 
 function spanWords(elapsed: number): string {
-  if (elapsed < MINUTE) return "a moment";
+  if (elapsed < MINUTE) return `${Math.floor(elapsed / 1000)} s`;
   if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)} min`;
   if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)} h`;
   return `${Math.floor(elapsed / DAY)} d`;

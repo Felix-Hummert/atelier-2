@@ -48,7 +48,11 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.compose_node_job import node_job
 from atelier2.application.project_node_rail import NodeRailAttempt, project_node_rail
-from atelier2.contracts.agent_attempts import AgentAttemptId, AgentAttemptState
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptId,
+    AgentAttemptState,
+    ProcessExitSignature,
+)
 from atelier2.contracts.agents import (
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -58,7 +62,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.run_bindings import RunV3
-from atelier2.contracts.run_projections import PublicAgentAttemptState
+from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -290,6 +294,28 @@ def test_get_run_answers_a_completed_v3_sink_without_a_current_attempt(
     assert found.projection.current_agent_attempt is None
 
 
+def test_get_run_answers_a_failed_v3_node_with_its_current_attempt(
+    runtime: DbosRuntime,
+) -> None:
+    _workflow, execution = started_v3_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.prepare(execution)
+    store.claim(execution)
+    store.complete_known_failure(execution, ProcessExitSignature(1, b"failed"))
+
+    found = durable_queries(runtime.engine).get_run(RUN)
+    assert isinstance(found, RunFound)
+    rail = project_node_rail(found.projection, ())
+
+    assert found.projection.run.state is RunState.FAILED
+    assert found.projection.current_agent_attempt is not None
+    assert (
+        found.projection.current_agent_attempt.state is PublicAgentAttemptState.FAILED
+    )
+    assert rail[0].state is NodeState.FAILED
+    assert rail[0].attempt == NodeRailAttempt(1, PublicAgentAttemptState.FAILED)
+
+
 def test_projecting_attempts_on_a_completed_v3_sink_reds_the_completed_get(
     runtime: DbosRuntime, tmp_path: Path
 ) -> None:
@@ -298,12 +324,7 @@ def test_projecting_attempts_on_a_completed_v3_sink_reds_the_completed_get(
     store.prepare(execution)
     store.claim(execution)
     store.complete_success(execution, AgentExecutionResult(PROVIDER_OUTPUT))
-    needle = (
-        "if records_for_execution and run.state not in {\n"
-        "                    RunState.COMPLETED,\n"
-        "                    RunState.FAILED,\n"
-        "                }:"
-    )
+    needle = "if records_for_execution and run.state is not RunState.COMPLETED:"
     restored = "if records_for_execution:"
     source = Path(queries_module.__file__).read_text(encoding="utf-8")
     assert needle in source

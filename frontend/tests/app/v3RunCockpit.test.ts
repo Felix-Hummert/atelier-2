@@ -522,6 +522,56 @@ async function completedEvent(nodeId: string, output: string, sequence: number) 
 }
 
 describe("a failed node on the run page", () => {
+  it("proves(a-failed-run-page-does-not-pose-as-working): a dead run is Failed, not Working, and empty facts do not say yet", async () => {
+    const getNodeDetail = vi.fn(async () =>
+      ({
+        run_id: "v3/two-agents",
+        public_run_reference: publicReference,
+        node_id: "implement",
+        state: "failed",
+        job_base64: btoa("Write three German sentences about code review."),
+        job_hash: "e".repeat(64),
+        answer: null,
+        provenance: null,
+        refusal: "output-schema-refused: instance-not-json: Expecting value",
+        started_at: "2026-08-18T15:00:00Z",
+        ended_at: "2026-08-18T15:00:12Z"
+      }) as never
+    );
+    render(App, {
+      props: {
+        cockpitApi: api(
+          v3Run({
+            state: "FAILED",
+            current_node_id: "implement",
+            terminal_hash: terminalHash,
+            ended_at: "2026-08-18T15:00:12Z",
+            node_rail: [
+              { node_id: "implement", state: "failed", attempt: { ordinal: 1, state: "FAILED" } },
+              { node_id: "review", state: "queued", attempt: null }
+            ]
+          }),
+          { getNodeDetail }
+        ),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+
+    expect(screen.getByRole("button", { name: "implement — Failed" }).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: /Working/ })).toBeNull();
+    expect(screen.queryByText("Working")).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "implement — Failed" }));
+
+    await screen.findByText("Nothing written.");
+    await screen.findByText("No receipt.");
+    await screen.findByText("not recorded");
+    await screen.findByText("12 s");
+    expect(screen.queryByText(/yet/)).toBeNull();
+    expect(screen.queryByText("a moment")).toBeNull();
+  });
+
   it("proves(a-failed-node-shows-the-stored-reason-on-the-run-page): shows the stored reason at the failed node without a click", async () => {
     const feed = new FakeRunEventFeed();
     const reason = "output-schema-refused: instance-not-json: Expecting value";
@@ -620,7 +670,8 @@ describe("the click into a node", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
 
-    await screen.findByText(/not recorded yet/);
+    await screen.findByText(/not recorded$/);
+    expect(screen.queryByText(/not recorded yet/)).toBeNull();
   });
 
   it("proves(a-node-carries-how-long-it-ran): shows the recorded duration on a node that ran", async () => {
@@ -643,7 +694,8 @@ describe("the click into a node", () => {
 
     await screen.findByText("Duration");
     await screen.findByText("5 min");
-    await screen.findByText(/not recorded yet/);
+    await screen.findByText(/not recorded$/);
+    expect(screen.queryByText(/not recorded yet/)).toBeNull();
   });
 
   it("proves(a-stopped-node-says-so-and-a-waiting-one-does-not): shows the refusal that stops the run, in the words of the owner that refused", async () => {

@@ -1,7 +1,13 @@
 <script lang="ts">
   import type { NodeDetail } from "../api/client";
   import { wrapDisplayCopy } from "../lib/displayCopy";
-  import { runPageCopy } from "../lib/runPageCopy";
+  import {
+    emptyOutputCopy,
+    emptyPromptCopy,
+    emptyWhoCopy,
+    runPageCopy,
+    usageMissingCopy
+  } from "../lib/runPageCopy";
   import InfoHint from "./InfoHint.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
   import StateMark from "./StateMark.svelte";
@@ -74,7 +80,7 @@
   <section aria-labelledby="node-panel-prompt">
     <h3 id="node-panel-prompt">{wrapDisplayCopy(runPageCopy.prompt)}</h3>
     {#if detail.job_base64 === null}
-      <p class="muted">{wrapDisplayCopy(runPageCopy.promptEmpty)}</p>
+      <p class="muted">{wrapDisplayCopy(emptyPromptCopy(detail.state))}</p>
     {:else}
       <pre class="exact">{decoded(detail.job_base64)}</pre>
       {#if detail.job_hash !== null}
@@ -93,7 +99,7 @@
   <section aria-labelledby="node-panel-output">
     <h3 id="node-panel-output">{wrapDisplayCopy(runPageCopy.output)}</h3>
     {#if detail.answer === null}
-      <p class="muted">{wrapDisplayCopy(runPageCopy.outputEmpty)}</p>
+      <p class="muted">{wrapDisplayCopy(emptyOutputCopy(detail.state))}</p>
     {:else}
       <pre class="exact">{decoded(detail.answer.value_base64)}</pre>
       <p class="hash">
@@ -110,7 +116,7 @@
   <section aria-labelledby="node-panel-who">
     <h3 id="node-panel-who">{wrapDisplayCopy(runPageCopy.who)}</h3>
     {#if detail.provenance === null}
-      <p class="muted">{wrapDisplayCopy(runPageCopy.whoEmpty)}</p>
+      <p class="muted">{wrapDisplayCopy(emptyWhoCopy(detail.state))}</p>
     {:else}
       <p class="who">
         {detail.provenance.role} · {detail.provenance.provider_id} ·
@@ -137,7 +143,7 @@
         label="Why usage is missing"
         exact="No receipt records usage, so this panel cannot say what the attempt cost. Time is recorded beside the attempt, not on the receipt."
       />
-      <span class="muted">{wrapDisplayCopy(runPageCopy.usageMissing)}</span>
+      <span class="muted">{wrapDisplayCopy(usageMissingCopy(detail.state))}</span>
     </p>
   </section>
 </aside>

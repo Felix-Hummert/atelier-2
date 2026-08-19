@@ -201,6 +201,8 @@ class _RailDerivation:
             return NodeState.QUEUED
         if run.state is RunState.COMPLETED:
             return NodeState.SUCCEEDED
+        if run.state is RunState.FAILED:
+            return NodeState.FAILED
         if run.state is RunState.WAITING_INPUT:
             return NodeState.NEEDS_YOU
         if run.state is RunState.WAITING_RECONCILIATION:
