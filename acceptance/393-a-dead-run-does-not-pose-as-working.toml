@@ -1,0 +1,15 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/393"
+
+# A FAILED run's list projection posed the current node as working with no
+# attempt, while the event stream of the same run named it failed with the
+# attempt that ended it. One owner: the rail. The list snapshot carries the
+# terminal truth so a dead run is not read as still working.
+
+[[sentence]]
+id = "a-failed-run-list-and-events-name-the-same-node"
+text = "For one FAILED run, the list projection and the event stream answer the same node rail: the node that ended is failed, and the attempt that ended it is named, not null."
+
+[[sentence]]
+id = "a-failed-run-page-does-not-pose-as-working"
+text = "The run page of a FAILED run does not mark any node as Working. Empty prompt, output, receipt and usage on that finished node do not say yet, and a recorded duration is a span of time rather than a moment."

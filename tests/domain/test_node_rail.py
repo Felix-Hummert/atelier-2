@@ -408,6 +408,35 @@ def test_a_completed_run_reads_every_node_as_succeeded() -> None:
     assert state_names(rail) == ["succeeded"] * 4
 
 
+def test_a_failed_run_snapshot_without_events_reads_the_current_node_as_failed() -> (
+    None
+):
+    rail = project_node_rail(v3_failed_projection(), ())
+
+    assert tuple((entry.node_id, entry.state, entry.attempt) for entry in rail) == (
+        ("implement", NodeState.FAILED, None),
+        ("review", NodeState.QUEUED, None),
+    )
+
+
+def test_a_failed_snapshot_and_its_failure_event_name_the_same_rail() -> None:
+    projection = v3_failed_projection(
+        (agent_attempt(1, PublicAgentAttemptState.FAILED, "implement"),)
+    )
+    event = v3_agent_event(RunEventKind.AGENT_FAILED)
+
+    listed = project_node_rail(projection, ())
+    streamed = project_node_rail(projection, (event,))
+
+    # last_event is provenance the wire does not carry; the doors name state
+    # and attempt.
+    assert [(entry.node_id, entry.state, entry.attempt) for entry in listed] == [
+        (entry.node_id, entry.state, entry.attempt) for entry in streamed
+    ]
+    assert listed[0].state is NodeState.FAILED
+    assert listed[0].attempt == NodeRailAttempt(1, PublicAgentAttemptState.FAILED)
+
+
 def test_a_run_whose_current_node_is_absent_from_its_revision_is_refused() -> None:
     projection = v1_projection(RunState.STARTED, "invented", 0)
 
@@ -493,6 +522,28 @@ def v3_projection(
             0,
             last_event_sequence,
             RunConfigurationRevisionHash("c" * 64),
+        ),
+        v3_graph(),
+        None,
+        attempts,
+    )
+
+
+def v3_failed_projection(
+    attempts: tuple[AgentAttemptProjection, ...] = (),
+) -> RunProjection:
+    return RunProjection(
+        RunV3(
+            RUN_ID,
+            REVISION_HASH,
+            AgentBindingSet(()).binding_set_hash,
+            (),
+            RunState.FAILED,
+            "implement",
+            1,
+            1,
+            RunConfigurationRevisionHash("c" * 64),
+            Sha256Hash.of(b"terminal"),
         ),
         v3_graph(),
         None,

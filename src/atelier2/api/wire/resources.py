@@ -831,12 +831,13 @@ class RunResourceV3(ApiModel):
     would have to call it something it is not.
 
     Two fields the V2 shape carries are absent on purpose rather than empty. A V3
-    run surfaces no `agent_attempts`: the run projection fetches attempts only for
-    a V2 agent node, so there is nothing to show, and a field that always answered
-    the same would read as "no attempt ran". The rail's own `attempt` stays null
-    for the same reason -- null already means "nothing to tell" in this vocabulary,
-    not "no attempt exists". Surfacing V3 attempts is its own head with its own
-    query change; it is a named gap here, not a claim.
+    run surfaces no `agent_attempts` array: that field is the V2 listing of every
+    attempt on the current node, and repeating it next to the rail would be a
+    second owner of the same fact. The rail's `attempt` is the one the reader is
+    told -- including on a failed terminal node, where the snapshot keeps the
+    failed attempt so a list read names the same ending the event stream names.
+    Surfacing a V3 `agent_attempts` array is still its own head; it is a named
+    gap here, not a claim.
 
     A V3 run does reach WAITING_INPUT, and `current_node_id` with the rail is
     what says so: the rail marks that node as the one owing a person a move. What
