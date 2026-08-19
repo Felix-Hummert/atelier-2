@@ -847,3 +847,15 @@ runtime without mutation, with no runtime migration or downgrade. An offline
 `schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder still names to the current
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.
+
+On 2026-08-19 at `ed6376b` this landing measured how many concurrent
+fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,
+production query-admission bounds, a V3 one-agent document, and
+`RecordingAgentExecutorFactoryV2` — not Claude, Grok, or Codex. It carried 96
+concurrent runs without a named HTTP or stream refusal. The first observed
+pressure was event-write latency: 0.42s at the CI n=2, 12.3s at n=96. The start
+door crossed the instance's 1s query-admission wait from n=16 (1.22s) and still
+answered 201. The 30s SQLite writer-lock timeout, process-spawn, watchdog
+cgroup, and memory failures were not observed. That is a measurement, not a
+capacity promise and not a Postgres or #312 decision. The 503 knee is leftover;
+[OPERATIONS.md](OPERATIONS.md) names the operator command that raises n.
