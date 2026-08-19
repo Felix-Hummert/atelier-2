@@ -59,6 +59,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_records_v3 import (
     NodeReceiptReason,
     read_stored_node_receipt_reason,
@@ -174,7 +175,8 @@ def granted_runtime(
             tmp_path / "atelier.sqlite",
             "v3-tool-grant-test",
             agent_scratch_root=scratch_root,
-            project_root=project_root,
+            project_id=ProjectId("granted"),
+            bootstrap_project_root=project_root,
         ),
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",

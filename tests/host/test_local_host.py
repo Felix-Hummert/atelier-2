@@ -61,6 +61,7 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.host import _claude_subscription_settings, main
 from atelier2.host.address import DEFAULT_HOST
@@ -329,6 +330,8 @@ def served_settings(
     host: str = DEFAULT_HOST,
     scratch_root: Path | None = None,
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS,
+    project_id: ProjectId | None = None,
+    project_root: Path | None = None,
     **tuning: int,
 ) -> HostSettings:
     frontend = tmp_path / "frontend"
@@ -358,6 +361,8 @@ def served_settings(
         grok_workspace_tools=grok_workspace_tools,
         limits=api_limits(**tuning),
         sqlite_lock_timeout_seconds=sqlite_lock_timeout_seconds,
+        project_id=project_id,
+        project_root=project_root,
     )
 
 
@@ -603,7 +608,11 @@ def test_a_project_that_cannot_be_pinned_or_declares_nothing_refuses_to_serve(
     build(root)
 
     with pytest.raises(SystemExit) as refusal:
-        main(serve_arguments(tmp_path, "--project-root", str(root)))
+        main(
+            serve_arguments(
+                tmp_path, "--project-id", "studio", "--project-root", str(root)
+            )
+        )
 
     assert refusal.value.code == 2
     assert refusal_words in capsys.readouterr().err
