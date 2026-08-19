@@ -76,6 +76,7 @@ def bind_node(
     tool_grant: DeclaredToolGrant | None = None,
     project_source: ProjectSourcePin | None = None,
     declared_output_schema_document: str | None = None,
+    maximum_assistant_turns: int | None = None,
 ) -> NodeBinding:
     """What this node binds: its form, and the material that form carries.
 
@@ -112,6 +113,7 @@ def bind_node(
             project_source,
             declared_output_schema_document,
             run.current_round_ordinal,
+            maximum_assistant_turns,
         )
     if isinstance(node, ActionNode):
         return ActionNodeBinding()
@@ -171,6 +173,7 @@ def agent_execution_request_v2(
             binding.job.encode("utf-8"),
             _published_schema_bytes(binding),
             binding.round_ordinal,
+            binding.maximum_assistant_turns,
         )
     except (TypeError, ValueError) as error:
         raise RunBindingConflict(

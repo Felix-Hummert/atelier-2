@@ -59,6 +59,12 @@ class AgentNodeBindingV2:
     stand in the next round, and the recovered node would silently bind an
     execution it never was.
     """
+    maximum_assistant_turns: int | None = None
+    """The hard turn bound the pinned budget named, or nothing where none was.
+
+    Recovery replays this binding, not the catalog, so the bound has to live
+    here for a workspace-tool launch to see the same ceiling the pin named.
+    """
 
     def __post_init__(self) -> None:
         if self.tool_grant is not None and self.project_source is None:

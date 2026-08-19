@@ -15,6 +15,7 @@ is the public one. What happens after it is `test_v3_self_driving_run`.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -52,8 +53,9 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.budgets_v3 import BudgetField
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.revisions_v3 import RevisionKind
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunBindingConflict, RunV3
 from atelier2.contracts.run_configuration_v3 import (
     ReferenceSite,
@@ -99,6 +101,16 @@ nodes:
     mode: headless
     instruction: Do the one thing this chain is for.
 """ + declared_output()
+
+TURN_BOUNDED_BUDGET = json.dumps(
+    {
+        BudgetField.ATTEMPT_DEADLINE_SECONDS.value: 900,
+        BudgetField.MAXIMUM_ASSISTANT_TURNS.value: 8,
+    }
+).encode()
+DEADLINE_ONLY_BUDGET = json.dumps(
+    {BudgetField.ATTEMPT_DEADLINE_SECONDS.value: 900}
+).encode()
 
 EXECUTABLE_V2_DOCUMENT = b"""format_version: 2
 start: implement
@@ -168,6 +180,32 @@ def publish(
             AgentBinding(AgentRole(role), configuration.revision_hash) for role in roles
         )
     )
+
+
+def publish_budgeted(
+    runtime: DbosRuntime, budget_document: bytes
+) -> tuple[WorkflowRevision, AgentBindingSet]:
+    """Publish a budget revision and a one-agent document that pins it."""
+    budget = PublishedRevision(RevisionKind.BUDGET_POLICY, budget_document)
+    published = DbosCatalogStore(runtime.engine).publish_revision(budget)
+    assert isinstance(
+        published, (PublishedRevisionCreated, PublishedRevisionExisting)
+    ), published
+    document = (
+        b"""format_version: 3
+name: One agent
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+    budget: {ref: build-budget, revision: %s}
+"""
+        % budget.revision_hash.value.encode("ascii")
+        + declared_output()
+    )
+    return publish(runtime, document)
 
 
 @pytest.mark.proves("a-v3-agent-document-starts-and-binds-its-node")
@@ -274,6 +312,41 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
         "utf-8"
     )
     assert "project_commit" not in binding
+    assert "maximum_assistant_turns" not in binding
+
+
+@pytest.mark.parametrize(
+    ("budget_document", "expected_turns"),
+    (
+        (TURN_BOUNDED_BUDGET, 8),
+        (DEADLINE_ONLY_BUDGET, None),
+    ),
+    ids=["pinned turn bound", "budget without a turn bound"],
+)
+@pytest.mark.proves("a-pinned-budget-turn-bound-is-the-tool-attempt-ceiling")
+def test_the_binding_carries_the_turn_bound_the_published_budget_named(
+    runtime: DbosRuntime,
+    budget_document: bytes,
+    expected_turns: int | None,
+) -> None:
+    """The 8 is the published revision's, not a number the test injected."""
+    workflow, bindings = publish_budgeted(runtime, budget_document)
+    started = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    assert isinstance(started, DurableRunCreated)
+
+    binding = cast(
+        EncodedAgentBindingV2,
+        _node_binding(
+            runtime.datasource, RUN, workflow.revision_hash, "implement", None
+        ),
+    )
+
+    if expected_turns is None:
+        assert "maximum_assistant_turns" not in binding
+    else:
+        assert binding.get("maximum_assistant_turns") == expected_turns
 
 
 @pytest.mark.proves("an-attempt-works-in-the-tree-its-own-binding-pinned")

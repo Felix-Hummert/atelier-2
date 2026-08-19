@@ -110,6 +110,7 @@ def bound(
     orders: tuple[RunInput, ...] = (),
     tool_grant: DeclaredToolGrant | None = None,
     project_source: ProjectSourcePin | None = None,
+    maximum_assistant_turns: int | None = None,
 ) -> NodeBinding:
     """The binding the durable step would record, in the order the step reads it."""
     require_the_run_stands_on(run, run.revision_hash, node_id)
@@ -120,6 +121,7 @@ def bound(
         orders=orders,
         tool_grant=tool_grant,
         project_source=project_source,
+        maximum_assistant_turns=maximum_assistant_turns,
     )
 
 
@@ -244,6 +246,9 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
         AgentNodeBindingV2(
             resolved_agent_binding(), "build it", round_ordinal=A_LATER_ROUND
         ),
+        AgentNodeBindingV2(
+            resolved_agent_binding(), "build it", maximum_assistant_turns=8
+        ),
         ActionNodeBinding(),
         WaitNodeBinding(),
         SubworkflowNodeBinding((2, 3)),
@@ -253,6 +258,7 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
         "agent-v2",
         "agent-v2 pinned",
         "agent-v2 in a later round",
+        "agent-v2 with a turn bound",
         "action",
         "wait",
         "subworkflow",
@@ -371,6 +377,10 @@ def test_the_one_legacy_row_still_means_headless_under_the_first_format() -> Non
             written(output_schema_document={"type": "string"}),
             "output schema document carries a value of the wrong type",
         ),
+        (
+            written(maximum_assistant_turns="8"),
+            "maximum_assistant_turns carries a value of the wrong type",
+        ),
         (written(role=ABSENT), "a key its form declares"),
     ),
     ids=[
@@ -390,6 +400,7 @@ def test_the_one_legacy_row_still_means_headless_under_the_first_format() -> Non
         "auth hash mismatch",
         "unknown key",
         "schema document of the wrong type",
+        "turn bound of the wrong type",
         "missing role",
     ],
 )
@@ -423,6 +434,38 @@ def test_a_capability_the_running_executor_does_not_attest_reaches_no_provider()
             AgentExecutorOperationalIdentity("executor/headless-only"),
             frozenset({AgentExecutionCapability.HEADLESS}),
         )
+
+
+@pytest.mark.proves("a-pinned-budget-turn-bound-is-the-tool-attempt-ceiling")
+def test_a_binding_that_pinned_a_turn_bound_puts_it_on_the_request() -> None:
+    binding = bound(v2_run(V3_DOCUMENT), V3_DOCUMENT, maximum_assistant_turns=8)
+    unbound = bound(v2_run(V3_DOCUMENT), V3_DOCUMENT)
+    assert isinstance(binding, AgentNodeBindingV2)
+    assert isinstance(unbound, AgentNodeBindingV2)
+
+    request = agent_execution_request_v2(
+        binding,
+        RUN_ID,
+        WorkflowRevision(V3_DOCUMENT).revision_hash,
+        NODE_ID,
+        AgentExecutorOperationalIdentity("executor/headless"),
+        frozenset({AgentExecutionCapability.HEADLESS}),
+    )
+    default_request = agent_execution_request_v2(
+        unbound,
+        RUN_ID,
+        WorkflowRevision(V3_DOCUMENT).revision_hash,
+        NODE_ID,
+        AgentExecutorOperationalIdentity("executor/headless"),
+        frozenset({AgentExecutionCapability.HEADLESS}),
+    )
+
+    assert binding.maximum_assistant_turns == 8
+    assert request.maximum_assistant_turns == 8
+    assert unbound.maximum_assistant_turns is None
+    assert default_request.maximum_assistant_turns is None
+    assert decode_node_binding(encode_node_binding(binding)) == binding
+    assert "maximum_assistant_turns" not in encode_node_binding(unbound)
 
 
 def test_a_v1_binding_composes_the_request_its_exact_output_contract_names() -> None:

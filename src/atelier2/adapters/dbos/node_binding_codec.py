@@ -75,6 +75,7 @@ class EncodedAgentBindingV2(TypedDict):
     revision_format_version: NotRequired[int]
     requested_capability: NotRequired[str]
     output_schema_document: NotRequired[str]
+    maximum_assistant_turns: NotRequired[int]
 
 
 class EncodedActionBinding(TypedDict):
@@ -127,6 +128,7 @@ _AGENT_V2_OPTIONAL_KEYS = frozenset(
         "revision_format_version",
         "requested_capability",
         "output_schema_document",
+        "maximum_assistant_turns",
     ]
 )
 
@@ -197,6 +199,8 @@ def _encode_agent_v2(binding: AgentNodeBindingV2) -> EncodedAgentBindingV2:
         encoded["tool_capability"] = binding.tool_grant.capability.value
     if binding.declared_output_schema_document is not None:
         encoded["output_schema_document"] = binding.declared_output_schema_document
+    if binding.maximum_assistant_turns is not None:
+        encoded["maximum_assistant_turns"] = binding.maximum_assistant_turns
     if binding.project_source is not None:
         encoded["project_commit"] = binding.project_source.commit
         encoded["project_tree"] = binding.project_source.tree
@@ -222,6 +226,7 @@ def _decode_agent_v2(encoded: Mapping[str, object]) -> AgentNodeBindingV2:
         _declared_source_pin(encoded),
         _declared_output_schema_document(encoded),
         _whole_number(encoded, "round_ordinal"),
+        _declared_maximum_assistant_turns(encoded),
     )
 
 
@@ -326,6 +331,18 @@ def _declared_output_schema_document(encoded: Mapping[str, object]) -> str | Non
             "a durable output schema document carries a value of the wrong type"
         )
     return document
+
+
+def _declared_maximum_assistant_turns(encoded: Mapping[str, object]) -> int | None:
+    """The pinned turn bound a durable binding carries, or nothing where none was."""
+    if "maximum_assistant_turns" not in encoded:
+        return None
+    value = encoded["maximum_assistant_turns"]
+    if type(value) is not int:
+        raise RunBindingConflict(
+            "a durable maximum_assistant_turns carries a value of the wrong type"
+        )
+    return value
 
 
 def _declared_source_pin(encoded: Mapping[str, object]) -> ProjectSourcePin | None:
