@@ -23,7 +23,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/25"
 # say a schema refused what no schema saw, or that a process died that exited
 # cleanly, so the door waits for a store hop of its own. The V1 merge node and the
 # `binding_constraint` the operator ruled on 19.08. are a further, thinner cut on
-# existing machinery. Neither is claimed here.
+# existing machinery. The constraint sentences below claim that cut.
 #
 # Six sentences of #25 therefore have no proof of any kind here and are named
 # rather than quietly dropped:
@@ -148,3 +148,19 @@ text = "When a node declared the refusal form and the executor answers with that
 [[sentence]]
 id = "success-and-schema-refusal-stay-the-same-when-refusal-is-undeclared"
 text = "A node that did not declare a refusal still treats refusal-shaped bytes as a schema miss when its success schema refuses them, and a node that declared a refusal still accepts bytes its success schema admits."
+
+[[sentence]]
+id = "a-node-may-declare-it-must-not-share-another-nodes-binding"
+text = "An agent node may declare binding_constraint.distinct_from naming another agent node of a different role, and the parsed document reads that declaration back exactly as authored; a node that declares none is unchecked."
+
+[[sentence]]
+id = "a-distinct-from-the-document-cannot-honour-is-refused-by-name"
+text = "A distinct_from that names no declared node, this node, a node without an agent binding, or a node that shares this role is refused by name before the document is stored, published or started."
+
+[[sentence]]
+id = "the-same-occupation-is-refused-before-any-process"
+text = "A start whose distinct_from pair resolves to the same agent configuration revision is refused by name before any run row or process exists, and the refusal names both nodes."
+
+[[sentence]]
+id = "different-occupations-start-and-an-undeclared-constraint-is-silent"
+text = "A start whose distinct_from pair resolves to different agent configuration revisions creates the run; a document that declares no constraint starts even when two nodes share one occupation."

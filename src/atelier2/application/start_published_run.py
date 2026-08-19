@@ -18,6 +18,7 @@ from atelier2.ports.durable_runs import (
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
+    DurableBindingConstraintRefused,
     DurableInvalidAgentBindings,
     DurablePublishedRunStarter,
     DurableRunCreated,
@@ -81,6 +82,14 @@ class AgentExecutorBindingUnavailable:
 
 
 @dataclass(frozen=True)
+class BindingConstraintRefused:
+    """The two nodes named by a `distinct_from` resolved to the same occupation."""
+
+    node: str
+    distinct_from: str
+
+
+@dataclass(frozen=True)
 class RunInputRefused:
     """One order this start cannot honour, named by the input it is about."""
 
@@ -98,6 +107,7 @@ type StartPublishedRunResult = (
     | InvalidAgentBindings
     | AgentConfigurationRevisionMissing
     | AgentExecutorBindingUnavailable
+    | BindingConstraintRefused
     | RunInputRefused
     | WriteUnavailable
     | DurableStateCorrupt
@@ -162,6 +172,8 @@ def start_published_run(
             return AgentExecutorBindingUnavailable()
         case DurableAgentExecutorCapabilityUnavailable():
             return AgentExecutorBindingUnavailable()
+        case DurableBindingConstraintRefused(node, distinct_from):
+            return BindingConstraintRefused(node, distinct_from)
         case DurableV3StartInputRefused(name, refusal, detail):
             return RunInputRefused(name, refusal, detail)
         case DurableWriteUnavailable():
