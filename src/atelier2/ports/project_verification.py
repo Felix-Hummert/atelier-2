@@ -35,7 +35,16 @@ class ProjectVerificationUndeclared(Exception):
 
 
 class ProjectVerificationUnavailable(Exception):
-    """The declared verification could not be run at all, so nothing is claimed."""
+    """The declared verification could not be run to an exit, so nothing is redeemed.
+
+    `timeout_seconds` is the deadline the project declared when the command was
+    started and then did not answer; it is absent when the command could not be
+    started at all.
+    """
+
+    def __init__(self, message: str, *, timeout_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.timeout_seconds = timeout_seconds
 
 
 @dataclass(frozen=True)

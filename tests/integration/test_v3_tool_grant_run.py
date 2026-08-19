@@ -85,10 +85,12 @@ from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/redeems-its-grant")
 FAILED_RUN = RunId("v3/red-verify-fails")
+TIMEOUT_RUN = RunId("v3/verify-timeout")
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
 VERIFICATION_OUTPUT = b"all green"
 VERIFICATION_EXIT_CODE = 0
 FAILED_VERIFICATION_EXIT_CODE = 1
+DECLARED_VERIFICATION_TIMEOUT_SECONDS = 0.2
 
 COMMITTED_MARKER_NAME = "marker.txt"
 COMMITTED_MARKER = "the tree this run was pinned to\n"
@@ -117,23 +119,34 @@ nodes:
 
 
 def project_declaring_its_verification(
-    root: Path, record: Path, exit_code: int = VERIFICATION_EXIT_CODE
+    root: Path,
+    record: Path,
+    exit_code: int = VERIFICATION_EXIT_CODE,
+    *,
+    verification_command: list[str] | None = None,
+    timeout_seconds: float = 30,
 ) -> Path:
     """A project whose manifest states the one command that verifies it.
 
     The command records where it was started and reads a file only its own commit
     carries, so after the lease is gone both facts are still measurable: which
     directory the verification ran in, and that the pinned tree stood in it.
+    A caller that passes `verification_command` owns the argv instead -- a
+    timeout scenario has no output to record.
     """
-    script = (
-        f"pwd > {record}; cat {COMMITTED_MARKER_NAME} >> {record}; "
-        f"printf '{VERIFICATION_OUTPUT.decode('ascii')}'; "
-        f"exit {exit_code}"
-    )
+    command = verification_command or [
+        "/bin/sh",
+        "-c",
+        (
+            f"pwd > {record}; cat {COMMITTED_MARKER_NAME} >> {record}; "
+            f"printf '{VERIFICATION_OUTPUT.decode('ascii')}'; "
+            f"exit {exit_code}"
+        ),
+    ]
     git_project(
         root,
         {
-            **declaring_verification(["/bin/sh", "-c", script]),
+            **declaring_verification(command, timeout_seconds),
             COMMITTED_MARKER_NAME: COMMITTED_MARKER,
         },
     )
@@ -141,12 +154,20 @@ def project_declaring_its_verification(
 
 
 def granted_runtime(
-    tmp_path: Path, exit_code: int
+    tmp_path: Path,
+    exit_code: int,
+    *,
+    verification_command: list[str] | None = None,
+    timeout_seconds: float = 30,
 ) -> Iterator[tuple[DbosRuntime, Path, Path]]:
     """A runtime that can run an agent and redeem a grant against one project."""
     cwd_record = tmp_path / "verification-cwd.txt"
     project_root = project_declaring_its_verification(
-        tmp_path / "project", cwd_record, exit_code
+        tmp_path / "project",
+        cwd_record,
+        exit_code,
+        verification_command=verification_command,
+        timeout_seconds=timeout_seconds,
     )
     scratch_root = agent_scratch_root(tmp_path)
     started = DbosRuntime(
@@ -186,6 +207,18 @@ def failing_verification_runtime(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, Path, Path]]:
     yield from granted_runtime(tmp_path, FAILED_VERIFICATION_EXIT_CODE)
+
+
+@pytest.fixture
+def timeout_verification_runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    yield from granted_runtime(
+        tmp_path,
+        VERIFICATION_EXIT_CODE,
+        verification_command=["/bin/sh", "-c", "sleep 30"],
+        timeout_seconds=DECLARED_VERIFICATION_TIMEOUT_SECONDS,
+    )
 
 
 def publish_granted_node(
@@ -406,6 +439,107 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
     )
     assert words.startswith(NodeReceiptReason.PROJECT_VERIFICATION_FAILED.value)
     assert f"exit {FAILED_VERIFICATION_EXIT_CODE}" in words
+    assert schema_revision is None
+    assert value_hash is None
+    assert receipt_count == 0
+    assert redemption_count == 0
+
+
+@pytest.mark.proves(
+    "a-verification-timeout-after-claim-fails-the-attempt-durably-named"
+)
+def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
+    timeout_verification_runtime: tuple[DbosRuntime, Path, Path],
+) -> None:
+    """A granted check past its declared deadline is a named failure, not armed.
+
+    The provider's bytes were a success the schema admits. The project's own
+    command then exceeded `timeout_seconds`. That ending must not leave the
+    attempt `LAUNCH_ARMED` (replay would be `AgentAttemptPossiblyRan`), and it
+    must not invent an exit code for a command that never answered. What
+    remains is the named failure, with the timeout in the receipt reason.
+    """
+    started_runtime, _scratch_root, _cwd_record = timeout_verification_runtime
+    workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
+
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    ).start_published(
+        StartPublishedRunRequestV2(TIMEOUT_RUN, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+
+    started_runtime.launch()
+    deadline = time.monotonic() + 20
+    observed = ""
+    while time.monotonic() < deadline:
+        with started_runtime.engine.connect() as connection:
+            observed = str(
+                connection.scalar(
+                    sa.select(runs.c.state).where(runs.c.run_id == TIMEOUT_RUN.value)
+                )
+            )
+        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
+            break
+        time.sleep(0.025)
+    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+
+    with started_runtime.engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(
+                    agent_attempts.c.run_id == TIMEOUT_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        event_kinds = tuple(
+            connection.scalars(
+                sa.select(run_events.c.event_kind).where(
+                    run_events.c.run_id == TIMEOUT_RUN.value
+                )
+            )
+        )
+        payload = connection.scalar(
+            sa.select(run_events.c.payload).where(
+                run_events.c.run_id == TIMEOUT_RUN.value,
+                run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+            )
+        )
+        stored_reason = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id == attempt["node_execution_id"]
+            )
+        )
+        receipt_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(agent_receipts_v2)
+            .where(agent_receipts_v2.c.run_id == TIMEOUT_RUN.value)
+        )
+        redemption_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(tool_redemptions)
+            .where(tool_redemptions.c.run_id == TIMEOUT_RUN.value)
+        )
+
+    assert attempt["state"] == AgentAttemptState.FAILED.value
+    assert attempt["state"] != AgentAttemptState.LAUNCH_ARMED.value
+    assert attempt["failure_code"] == (
+        AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED.value
+    )
+    assert event_kinds == (RunEventKind.AGENT_FAILED.value,)
+    assert payload is not None
+    assert bytes(payload) == (
+        AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED.value.encode("ascii")
+    )
+    words, schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(stored_reason)
+    )
+    assert words.startswith(NodeReceiptReason.PROJECT_VERIFICATION_FAILED.value)
+    assert f"timeout {DECLARED_VERIFICATION_TIMEOUT_SECONDS} seconds" in words
     assert schema_revision is None
     assert value_hash is None
     assert receipt_count == 0

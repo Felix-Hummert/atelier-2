@@ -23,7 +23,10 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
     AgentProcessRunner,
 )
-from atelier2.ports.project_verification import PinnedProjectSource
+from atelier2.ports.project_verification import (
+    PinnedProjectSource,
+    ProjectVerificationUnavailable,
+)
 
 _LOG = logging.getLogger("atelier2")
 
@@ -55,7 +58,10 @@ def execute_agent_attempt(
     A node that pinned a tool grant has it redeemed here, in that same lease
     after the provider produced the work the verification is about. What the
     project declares is read at the pin and attested before the claim too, so a
-    project that declares no verification refuses before anything runs.
+    project that declares no verification refuses before anything runs. A
+    verification that does not answer within its declared deadline after the
+    claim ends the attempt `FAILED` under `PROJECT_VERIFICATION_FAILED` rather
+    than leaving it `LAUNCH_ARMED`.
     """
 
     store.prepare(execution)
@@ -103,9 +109,16 @@ def execute_agent_attempt(
                 ProcessExitSignature(completion.return_code, completion.standard_error),
             )
         else:
-            outcome = store.complete_success(
-                execution, result, _redeemed(execution, lease, project)
-            )
+            try:
+                redemption = _redeemed(execution, lease, project)
+            except ProjectVerificationUnavailable as error:
+                # The claim already won; letting this escape leaves the attempt
+                # LAUNCH_ARMED, and a replay would report AgentAttemptPossiblyRan.
+                outcome = store.complete_project_verification_failure(
+                    execution, _verification_unavailable_verdict(error)
+                )
+            else:
+                outcome = store.complete_success(execution, result, redemption)
             if isinstance(outcome, AgentAttemptFailed):
                 failure = outcome.attempt.failure_code
                 match failure:
@@ -125,7 +138,7 @@ def execute_agent_attempt(
                             "the failure is durably named."
                         )
                     case _:
-                        raise ValueError("complete_success returned an unnamed failure")
+                        raise ValueError("attempt ended under an unnamed failure")
                 _LOG.warning(
                     "Agent attempt %s on node %s of run %s %s",
                     execution.attempt_id.value,
@@ -144,6 +157,14 @@ def execute_agent_attempt(
     finally:
         executor.release_credential_channel(command)
     return outcome
+
+
+def _verification_unavailable_verdict(error: ProjectVerificationUnavailable) -> str:
+    """How the granted check failed to complete, without inventing an exit code."""
+
+    if error.timeout_seconds is None:
+        return str(error)
+    return f"timeout {error.timeout_seconds} seconds"
 
 
 def _redeemed(
