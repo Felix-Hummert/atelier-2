@@ -156,8 +156,35 @@ failure, cancellation, retry refusal, or process error without touching
 another invocation. Before launch, `grok inspect`
 must report that exact home/configuration as its only configuration source,
 all external-compatibility imports disabled, and no ambient trust surface.
-The isolated read, edit, and test tools an agent needs to change its own
-workspace are not part of this contract.
+
+An agent node may also use tools itself through a second Grok executor of the
+same deployment rather than a widening of the first. It is armed separately
+by `--grok-workspace-tools`, because it is a separate grant: naming a Grok
+executable still serves only the tool-free call. Grok splits the two
+switches Claude combines: `--tools` names the built-in IDs the model may see
+(`read_file`, `list_dir`, `grep`, `search_replace`, `run_terminal_cmd` — the
+Headless-documented shell ID; parse does not check names), and `--allow`
+names the five permission classes it may run without asking (`Read`, `Edit`,
+`Write`, `Grep`, `Bash`) under `--permission-mode dontAsk`. `--deny MCPTool`
+keeps MCP meta-tools from remaining visible. Every other containment switch
+and the private `HOME` of the tool-free call stay. It attests exactly one
+capability, `headless_with_tools`, and no other; a node reaches it only where
+its own durable binding asked for that capability, and a binding that asks
+the tool-free executor for tools, or this one for a tool-free call, is
+refused before the run exists. Because a version answer is not startability,
+and because a Clap refusal without an isolated home can exit 0, the
+deployment starts this exact argument vector once at composition with no
+credentials and a dummy `--prompt-file` in a private `HOME`, and reads that
+the CLI did not refuse an argument, with an unknown flag beside it as the
+control; the marker is `unexpected argument`. Neither call reaches a model.
+The executor claims no operating-system isolation, does not use
+`--always-approve` or `bypassPermissions`, and does not pretend parse-time
+ID validation: the process runs as the serving user and its tools reach what
+that user reaches. Unlike the tool-free call, it has no billed tool-using
+answer yet on any release — that a real answer uses exactly these tools, in
+particular the Headless-documented shell ID, is the half one billed
+secret-file probe still has to establish under the operator's gate, which is
+why nothing composes this executor unless an operator armed it by name.
 
 Codex sits behind the same boundary, declared the same way and composed
 alongside Claude rather than instead of it. Its CLI has no prompt-file flag, so
