@@ -128,6 +128,8 @@ SCHEMA_DOCUMENT = b'{"type": "object"}'
 SCHEMA_REVISION = PublishedRevision(RevisionKind.SCHEMA, SCHEMA_DOCUMENT)
 BUDGET_DOCUMENT = b'{"attempt_deadline_seconds": 900}'
 BUDGET_REVISION = PublishedRevision(RevisionKind.BUDGET_POLICY, BUDGET_DOCUMENT)
+TOOL_GRANT_DOCUMENT = b'{"capability": "run-project-verification"}'
+TOOL_GRANT_REVISION = PublishedRevision(RevisionKind.TOOL, TOOL_GRANT_DOCUMENT)
 GRAPH = parse_executable_workflow_document(DOCUMENT)
 REVISION_PROJECTION = WorkflowRevisionProjection(REVISION, GRAPH)
 RUN = Run(RunId("run"), REVISION.revision_hash, RunState.STARTED, "final", 0, 0)
@@ -239,6 +241,20 @@ SUCCESS_CASES = (
         "publish-budget",
         "budget-registry",
         PublishedRevisionExisting(BUDGET_REVISION),
+        200,
+    ),
+    (
+        "publish-tool-grant-created",
+        "publish-tool-grant",
+        "tool-grant-registry",
+        PublishedRevisionCreated(TOOL_GRANT_REVISION),
+        201,
+    ),
+    (
+        "publish-tool-grant-existing",
+        "publish-tool-grant",
+        "tool-grant-registry",
+        PublishedRevisionExisting(TOOL_GRANT_REVISION),
         200,
     ),
     (
@@ -396,6 +412,38 @@ PROBLEM_CASES = (
         "publish-schema-corrupt",
         "publish-schema",
         "schema-registry",
+        DurableStateCorrupt(),
+        500,
+        "durable-state-corrupt",
+    ),
+    (
+        "publish-tool-grant-invalid",
+        "publish-tool-grant",
+        "invalid-tool-grant",
+        None,
+        422,
+        "tool-missing-capability",
+    ),
+    (
+        "publish-tool-grant-collision",
+        "publish-tool-grant",
+        "tool-grant-registry",
+        PublishedRevisionCollision(),
+        409,
+        "tool-grant-revision-collision",
+    ),
+    (
+        "publish-tool-grant-unavailable",
+        "publish-tool-grant",
+        "tool-grant-registry",
+        DurableWriteUnavailable(),
+        503,
+        "temporarily-unavailable",
+    ),
+    (
+        "publish-tool-grant-corrupt",
+        "publish-tool-grant",
+        "tool-grant-registry",
         DurableStateCorrupt(),
         500,
         "durable-state-corrupt",
@@ -730,9 +778,17 @@ class MatrixRegistry:
 
     def publish_revision(self, revision: PublishedRevision) -> PublishRevisionResult:
         del revision
-        if self.case.source in {"invalid-schema", "invalid-budget"}:
+        if self.case.source in {
+            "invalid-schema",
+            "invalid-budget",
+            "invalid-tool-grant",
+        }:
             raise AssertionError("an invalid document reached the registry")
-        assert self.case.source in {"schema-registry", "budget-registry"}
+        assert self.case.source in {
+            "schema-registry",
+            "budget-registry",
+            "tool-grant-registry",
+        }
         return cast(PublishRevisionResult, self.case.result)
 
     def resolve(self, kind: object, revision_hash: object) -> object:
@@ -902,6 +958,13 @@ def _request(client: TestClient, case: RouteResultCase):
             content=document,
             headers={"content-type": "application/json"},
         )
+    if case.operation == "publish-tool-grant":
+        document = b"{}" if case.source == "invalid-tool-grant" else TOOL_GRANT_DOCUMENT
+        return client.post(
+            "/atelier/api/v1/tool-grant-revisions",
+            content=document,
+            headers={"content-type": "application/json"},
+        )
     if case.operation == "revision-list":
         return client.get("/atelier/api/v1/workflow-revisions")
     if case.operation == "revision-get":
@@ -970,6 +1033,8 @@ def _success_body(operation: str) -> object:
         return {"schema_revision_hash": SCHEMA_REVISION.revision_hash.value}
     if operation == "publish-budget":
         return {"budget_revision_hash": BUDGET_REVISION.revision_hash.value}
+    if operation == "publish-tool-grant":
+        return {"tool_grant_revision_hash": TOOL_GRANT_REVISION.revision_hash.value}
     if operation in {"publish", "revision-get"}:
         return revision_body
     if operation == "revision-list":

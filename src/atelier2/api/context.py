@@ -21,6 +21,9 @@ from atelier2.application.publish_agent_configurations import (
 from atelier2.application.publish_artifact import PublishArtifactUseCaseResult
 from atelier2.application.publish_budget_revision import PublishBudgetRevisionResult
 from atelier2.application.publish_schema_revision import PublishSchemaRevisionResult
+from atelier2.application.publish_tool_grant_revision import (
+    PublishToolGrantRevisionResult,
+)
 from atelier2.application.publish_workflow_revision import (
     PublishWorkflowRevisionResult,
     WorkflowPublicationLimits,
@@ -139,6 +142,7 @@ class ApiUseCases:
     publish_artifact: Callable[[bytes], PublishArtifactUseCaseResult]
     publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
     publish_budget_revision: Callable[[bytes], PublishBudgetRevisionResult]
+    publish_tool_grant_revision: Callable[[bytes], PublishToolGrantRevisionResult]
     publish_auth_profile_revision: Callable[
         [str, int, str, str], PublishAuthProfileRevisionResult
     ]
