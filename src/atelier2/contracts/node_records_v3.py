@@ -76,6 +76,7 @@ class NodeReceiptReason(StrEnum):
     OUTPUT_SCHEMA_REFUSED = "output-schema-refused"
     PROCESS_EXITED_UNSUCCESSFULLY = "process-exited-unsuccessfully"
     AGENT_REFUSED = "agent-refused"
+    PROJECT_VERIFICATION_FAILED = "project-verification-failed"
 
 
 def node_receipt_reason(token: NodeReceiptReason, verdict: str | None = None) -> str:
