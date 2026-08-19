@@ -1,0 +1,11 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/394"
+
+# First slice of live watch. The operator's words: live is seeing what a node
+# is doing while it runs; today every click lands on a result that is already
+# there. This sentence uses the existing SSE door. It does not stream the
+# process log (#104), invent a progress bar, or add interactive mode.
+
+[[sentence]]
+id = "a-started-run-shows-the-working-node-live"
+text = "An operator who opens a STARTED run sees the working node as live work, not as a finished card: new events from the existing stream appear as they arrive, the stream's empty, connecting, and failed states are each named as themselves, and the page says the process log stays in the lease rather than inventing a progress bar."

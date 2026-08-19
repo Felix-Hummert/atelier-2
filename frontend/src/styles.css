@@ -861,6 +861,22 @@ textarea {
   border-left-color: var(--working);
 }
 
+.live-work {
+  animation: live-work 1.6s ease-in-out infinite;
+}
+
+@keyframes live-work {
+  50% {
+    box-shadow: 0 0 0 0.35rem color-mix(in srgb, var(--working) 28%, transparent);
+  }
+}
+
+.honest-absence {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .node-needs_you {
   border-left-color: var(--danger);
 }

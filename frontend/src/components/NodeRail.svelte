@@ -129,6 +129,8 @@
       <li>
         <article
           class="node-card node-{projection.state}"
+          class:live-work={projection.state === "working"}
+          data-live={projection.state === "working" ? "true" : undefined}
           aria-label={`${projection.node.node_id} — ${stateLabels[projection.state]}`}
         >
           <header class="node-header">

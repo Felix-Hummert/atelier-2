@@ -32,6 +32,29 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("read-only run cockpit", () => {
+  it("proves(a-started-run-shows-the-working-node-live): a STARTED V1 run keeps the working card live and the event ticker open", async () => {
+    const feed = new FakeRunEventFeed();
+    render(App, {
+      props: {
+        cockpitApi: api({ openRunEvents: feed.open, getRun: vi.fn(async () => startedRun()) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    const working = await screen.findByRole("article", { name: "agent — Working" });
+    expect(working.classList.contains("live-work")).toBe(true);
+    expect(working.getAttribute("data-live")).toBe("true");
+    expect(screen.getByText("Process log stays in the lease.").isConnected).toBe(true);
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(document.querySelector("details.event-log")?.hasAttribute("open")).toBe(true);
+    expect(screen.getByText("No durable events yet.").isConnected).toBe(true);
+
+    feed.handlers?.opened();
+    feed.handlers?.event(JSON.stringify(agentCompleted(1)));
+    await waitFor(() => expect(screen.getAllByText("AGENT COMPLETED").length).toBeGreaterThan(0));
+    expect(screen.getByText("Process log stays in the lease.").isConnected).toBe(true);
+  });
+
   it("loads one authoritative run plus bound graph before opening the durable event history", async () => {
     const feed = new FakeRunEventFeed();
     const cockpitApi = api({ openRunEvents: feed.open, getRun: vi.fn(async () => waitingInputRun()) });

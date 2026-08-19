@@ -242,6 +242,116 @@ describe("a version 3 run in the cockpit", () => {
   });
 });
 
+describe("a started run shows the working node live", () => {
+  it("proves(a-started-run-shows-the-working-node-live): the working node is live work, the stream's three truths stay distinct, and the page names the log that is not on this door", async () => {
+    const feed = new FakeRunEventFeed();
+    const cockpitApi = api(v3Run(), { openRunEvents: feed.open });
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    const graph = await screen.findByRole("region", { name: "Workflow" });
+    const working = within(graph).getByRole("button", { name: "review — Working" });
+    expect(working.getAttribute("data-live")).toBe("true");
+    expect(working.classList.contains("live-work")).toBe(true);
+    expect(within(graph).getByRole("button", { name: "implement — Done" }).getAttribute("data-live")).toBeNull();
+
+    const standing = screen.getByLabelText("Where this run stands");
+    expect(standing.textContent).toContain("Connecting");
+    const now = screen.getByRole("region", { name: "Now" });
+    expect(now.textContent).toContain("review");
+    expect(now.textContent).toContain("Process log stays in the lease.");
+    expect(now.textContent).not.toContain("No events yet.");
+    expect(screen.queryByRole("progressbar")).toBeNull();
+
+    feed.handlers?.opened();
+    await waitFor(() => expect(standing.textContent).toContain("Following live"));
+    expect(now.textContent).toContain("No events yet.");
+
+    feed.handlers?.event(JSON.stringify(await completedEvent("implement", "the draft", 1)));
+
+    await waitFor(() => expect(now.textContent).toContain("AGENT COMPLETED"));
+    expect(now.textContent).toContain("implement");
+    expect(now.textContent).not.toContain("the draft");
+    expect(now.textContent).toContain("Process log stays in the lease.");
+    const finished = await screen.findByRole("list", { name: "What finished" });
+    expect(finished.textContent).toContain("implement");
+    expect(finished.textContent).not.toContain("the draft");
+    expect(working.getAttribute("data-live")).toBe("true");
+  });
+
+  it("proves(a-started-run-shows-the-working-node-live): a failed stream is Stopped with the server's problem, not Following live", async () => {
+    const feed = new FakeRunEventFeed();
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { openRunEvents: feed.open }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    feed.handlers?.opened();
+    feed.handlers?.event(
+      JSON.stringify({
+        event: "STREAM_FAILED",
+        problem: {
+          type: "urn:atelier2:problem:v1:durable-state-corrupt",
+          title: "Durable state is corrupt",
+          status: 500,
+          detail: "Stop mutation and inspect the durable store."
+        }
+      })
+    );
+
+    const notice = await screen.findByRole("alert");
+    expect(notice.textContent).toContain("Durable state is corrupt");
+    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Stopped");
+    expect(screen.getByLabelText("Where this run stands").textContent).not.toContain("Following live");
+    expect(screen.getByText("Process log stays in the lease.").isConnected).toBe(true);
+  });
+
+  it("proves(a-started-run-shows-the-working-node-live): a corrupt event is named as itself", async () => {
+    const feed = new FakeRunEventFeed();
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { openRunEvents: feed.open }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    feed.handlers?.opened();
+    feed.handlers?.event("not-json");
+
+    expect((await screen.findByText("Event invalid")).isConnected).toBe(true);
+    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Stopped");
+    expect(screen.getByLabelText("Where this run stands").textContent).not.toContain("Following live");
+  });
+
+  it("does not keep the live card on a finished run", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(
+          v3Run({
+            state: "COMPLETED",
+            terminal_hash: terminalHash,
+            current_node_id: "review",
+            node_rail: [
+              { node_id: "implement", state: "succeeded", attempt: null },
+              { node_id: "review", state: "succeeded", attempt: null }
+            ]
+          })
+        ),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    expect(screen.queryByRole("region", { name: "Now" })).toBeNull();
+    expect(screen.queryByText("Process log stays in the lease.")).toBeNull();
+    expect(document.querySelector("[data-live='true']")).toBeNull();
+  });
+});
+
 describe("a version 3 run that stops for a person", () => {
   const answer = '"approved, with the second paragraph rewritten"';
 
@@ -715,9 +825,7 @@ describe("the click into a node", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    await screen.findByText("review");
-
-    await fireEvent.click(screen.getByRole("button", { name: /review/ }));
+    await fireEvent.click(await screen.findByRole("button", { name: /review/ }));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Stopped here");
@@ -741,9 +849,7 @@ describe("the click into a node", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    await screen.findByText("review");
-
-    await fireEvent.click(screen.getByRole("button", { name: /review/ }));
+    await fireEvent.click(await screen.findByRole("button", { name: /review/ }));
 
     await screen.findByText(/Waiting for the work before it/);
     expect(screen.queryByRole("alert")).toBeNull();
@@ -765,6 +871,36 @@ describe("the click into a node", () => {
 
     await screen.findByText("This node could not be read");
     expect(screen.queryByRole("alert")?.textContent ?? "").not.toContain("Stopped here");
+  });
+
+  it("proves(a-started-run-shows-the-working-node-live): a click into the working node is live work and names the log that is not here", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(
+          v3Run(),
+          {
+            getNodeDetail: vi.fn(async () =>
+              nodeDetail({
+                node_id: "review",
+                state: "working",
+                answer: null,
+                provenance: null
+              }) as never
+            )
+          }
+        ),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("button", { name: "review — Working" });
+    await fireEvent.click(screen.getByRole("button", { name: "review — Working" }));
+
+    await screen.findByText("Nothing written yet.");
+    expect(document.querySelector(".node-panel.live-work")).not.toBeNull();
+    expect(screen.getByRole("region", { name: "Now" }).textContent).toContain(
+      "Process log stays in the lease."
+    );
+    expect(screen.queryByRole("progressbar")).toBeNull();
   });
 
   it("proves(a-run-page-speaks-prompt-and-output): labels the job Prompt and the value Output", async () => {

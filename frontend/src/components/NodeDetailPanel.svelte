@@ -52,7 +52,11 @@
   }
 </script>
 
-<aside class="node-panel" aria-labelledby="node-panel-title">
+<aside
+  class="node-panel"
+  class:live-work={detail.state === "working" && situation !== "refused"}
+  aria-labelledby="node-panel-title"
+>
   <header>
     <div>
       <p class="eyebrow">Node</p>

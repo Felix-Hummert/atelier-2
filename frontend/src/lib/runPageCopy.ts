@@ -3,7 +3,8 @@ import type { NodeState } from "./runProjection";
 /**
  * Words the V3 run page speaks. One owner, the #333 ruling: Prompt / Output / Log.
  *
- * Log is not here because the wire does not carry it (#104). Usage is not a
+ * Log is not on the event stream (#104). A STARTED run says that in
+ * `processLogInLease` rather than inventing a progress bar. Usage is not a
  * recorded receipt field, so its empty words live here rather than being
  * invented at the call site. "Yet" is only for a node that may still write;
  * a finished node is not waiting for those facts.
@@ -23,6 +24,15 @@ export const runPageCopy = {
   outputEmptyEnded: "Nothing written.",
   whoEmpty: "No receipt yet.",
   whoEmptyEnded: "No receipt.",
+  now: "Now",
+  noEventsYet: "No events yet.",
+  processLogInLease: "Process log stays in the lease.",
+  connecting: "Connecting…",
+  reconnecting: "Reconnecting",
+  followingLive: "Following live",
+  streamEnded: "Ended",
+  streamDisconnected: "Disconnected",
+  streamStopped: "Stopped",
   finished: "What finished",
   terminalHash: "Terminal hash",
   runConfiguration: "Run configuration",

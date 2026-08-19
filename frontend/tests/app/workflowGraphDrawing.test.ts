@@ -58,6 +58,10 @@ describe("the V3 graph drawing", () => {
     expect(review.querySelector(".state-working")).not.toBeNull();
     expect(review.querySelector(".state-shape")?.textContent).toContain("▲");
     expect(review.classList.contains("current")).toBe(true);
+    expect(review.classList.contains("live-work")).toBe(true);
+    expect(review.getAttribute("data-live")).toBe("true");
+    expect(implement.classList.contains("live-work")).toBe(false);
+    expect(implement.getAttribute("data-live")).toBeNull();
   });
 
   it("still draws a single node that names no edge", () => {
