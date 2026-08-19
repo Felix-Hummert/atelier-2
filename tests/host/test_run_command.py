@@ -792,6 +792,7 @@ def agent_failed_v3() -> str:
         event_hash=EVENT_HASH,
         event="AGENT_FAILED",
         failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+        reason=None,
         attempt_id=ATTEMPT_ID,
         attempt_ordinal=1,
     ).model_dump_json()

@@ -309,6 +309,7 @@ def _run_event_resource_v3(
                 ],
                 failure_code,
             ),
+            reason=projection.node_receipt_reason,
             attempt_id=event.agent_attempt_id,
             attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
             **common,

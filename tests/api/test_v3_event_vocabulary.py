@@ -8,6 +8,7 @@ as utf-8 `output` without format or rail, and sent a V3 failure down the V1
 from __future__ import annotations
 
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -77,11 +78,26 @@ def test_format_3_agent_failed_is_a_v3_failure_not_the_v1_cannot_carry_path() ->
     assert dumped["workflow_format_version"] == 3
     assert dumped["event"] == "AGENT_FAILED"
     assert dumped["failure_code"] == "PROCESS_EXITED_UNSUCCESSFULLY"
+    assert dumped["reason"] is None
     assert dumped["attempt_id"] == ATTEMPT_ID
     assert dumped["node_rail"] == [
         entry.model_dump(mode="json") for entry in SERVED_RAIL
     ]
     assert type(resource).__name__ == "AgentFailedEventResourceV3"
+
+
+@pytest.mark.proves("an-agent-failed-event-carries-the-stored-receipt-reason")
+def test_a_v3_failure_carries_the_stored_receipt_reason_when_one_was_written() -> None:
+    words = "output-schema-refused: instance-not-json: Expecting value"
+    projection = replace(
+        v3_projection(RunEventKind.AGENT_FAILED, b"OUTPUT_SCHEMA_REFUSED"),
+        node_receipt_reason=words,
+    )
+
+    dumped = run_event_resource(projection, SERVED_RAIL).model_dump(mode="json")
+
+    assert dumped["failure_code"] == "OUTPUT_SCHEMA_REFUSED"
+    assert dumped["reason"] == words
 
 
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
