@@ -41,7 +41,7 @@ older published predecessors stay refused by name. Older, future,
 malformed, or nonempty unowned stores are rejected without mutation. There is no
 runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 25 with
 product-schema fingerprint
-`4f671f393dae22c487ab76a026dfd4c6bad72e231f4a9e1ee5acb9e8f8d2849b`.
+`91d8889ce6239855c894b89ab658188d9b13927dedb1cc905dacdc151a485842`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed

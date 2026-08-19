@@ -14,8 +14,9 @@ from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.contracts.hashing import Sha256Hash, frame
 
 MAXIMUM_PROJECT_ID_CHARACTERS = 1_024
-# POSIX PATH_MAX, including the terminating NUL the kernel counts.
-MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS = 4_096
+# Linux PATH_MAX is 4096 including the terminating NUL; a 4096-character
+# path is not openable. The published CHECK must match what open will admit.
+MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS = 4_095
 
 PROJECT_UNKNOWN = "project-unknown"
 PROJECT_ROOT_MISSING = "project-root-missing"
