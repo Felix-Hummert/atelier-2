@@ -987,6 +987,43 @@ class DbosAgentAttemptStore:
                 ),
             )
 
+    def complete_project_verification_failure(
+        self, execution: AgentAttemptExecution, verdict: str
+    ) -> AgentAttemptFailed:
+        """End the armed attempt whose granted verification never produced an exit.
+
+        The project's command was started after this live call had already claimed;
+        it then did not answer, so there is no exit code to keep and no
+        `tool_redemptions` row. The attempt ends on the same
+        `PROJECT_VERIFICATION_FAILED` seam a nonzero exit uses, with `verdict`
+        naming why -- the declared timeout, not an invented code.
+        """
+        if not verdict:
+            raise ValueError(
+                "a project-verification failure names why the command did not complete"
+            )
+        request = execution.request
+        with canonical_write_transaction(self._engine) as connection:
+            run, _graph = _validate_request(connection, request)
+            durable = _load_attempt(connection, execution.attempt_id)
+            _require_attempt_binding(durable, execution)
+            if (
+                durable.state is not AgentAttemptState.LAUNCH_ARMED
+                or run.state is not RunState.STARTED
+                or run.current_node_id != request.node_id
+            ):
+                raise RunTransitionConflict("only the armed current attempt can fail")
+            return _fail_current_attempt(
+                connection,
+                execution,
+                durable,
+                AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
+                node_receipt_reason(
+                    NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
+                    verdict,
+                ),
+            )
+
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttemptCancellationResult:

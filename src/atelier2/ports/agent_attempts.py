@@ -163,6 +163,17 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         """
         ...
 
+    def complete_project_verification_failure(
+        self, execution: AgentAttemptExecution, verdict: str
+    ) -> AgentAttemptFailed:
+        """End an armed attempt whose granted verification never produced an exit.
+
+        `verdict` names why -- the declared timeout, not an invented exit code.
+        The attempt ends on the same `PROJECT_VERIFICATION_FAILED` seam a
+        nonzero exit uses, without a `tool_redemptions` row.
+        """
+        ...
+
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttemptCancellationResult: ...
