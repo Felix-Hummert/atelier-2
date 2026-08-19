@@ -208,7 +208,14 @@ cannot start contains nothing and discovering that at the first run costs a
 run. The same startup proves the composed profile resolves the credential
 directory it was given, loads no user configuration, and configures no MCP
 server, so the operator's own Codex trust — including the per-project trust its
-configuration records — is never inherited by a served agent.
+configuration records — is never inherited by a served agent. For Claude,
+Grok, and Codex alike, pin and attest still run. A failure names
+`start_refusal` and omits the factory; serve stays up. A run that binds the
+refused executor is the same binding-unavailable refusal as a missing one,
+before any process starts. Two leftovers: the picker has no startability field
+yet, so an unstartable executor is simply absent rather than badged; and a
+nonterminal run already bound to that executor still raises
+`DbosRuntimeBindingConflict` at compose if the factory is omitted.
 
 The raw frame a provider writes has its own bound, distinct from the durable
 output bound, because the durable answer travels inside a JSON envelope. The
@@ -245,8 +252,7 @@ because a later CLI can change a control the containment depends on, and
 admitting it costs a rerun of that one-call matrix and a decision about this
 executor's operational identity. The same startup attests that this host
 carries no administrator-managed policy: policy is outside every switch above by
-design and can still start a child beside the credential directory, so a host
-carrying one is refused rather than served. Reading the
+design and can still start a child beside the credential directory. Reading the
 declared executable's version is itself the first execution of an external
 binary, so it is run with no environment at all, in an empty private directory,
 under a byte bound on both streams and a deadline that kills the whole probe
