@@ -1,6 +1,9 @@
 <script lang="ts">
   import type { NodeDetail } from "../api/client";
+  import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { runPageCopy } from "../lib/runPageCopy";
   import InfoHint from "./InfoHint.svelte";
+  import ProofAnchor from "./ProofAnchor.svelte";
   import StateMark from "./StateMark.svelte";
   import When from "./When.svelte";
 
@@ -68,56 +71,73 @@
     </p>
   {/if}
 
-  <section aria-labelledby="node-panel-asked">
-    <h3 id="node-panel-asked">Asked</h3>
+  <section aria-labelledby="node-panel-prompt">
+    <h3 id="node-panel-prompt">{wrapDisplayCopy(runPageCopy.prompt)}</h3>
     {#if detail.job_base64 === null}
-      <p class="muted">Not composed yet.</p>
+      <p class="muted">{wrapDisplayCopy(runPageCopy.promptEmpty)}</p>
     {:else}
       <pre class="exact">{decoded(detail.job_base64)}</pre>
+      {#if detail.job_hash !== null}
+        <p class="hash">
+          <ProofAnchor
+            label={wrapDisplayCopy(runPageCopy.promptHash)}
+            seals={runPageCopy.sealsPrompt}
+            value={detail.job_hash}
+            compact={true}
+          />
+        </p>
+      {/if}
+    {/if}
+  </section>
+
+  <section aria-labelledby="node-panel-output">
+    <h3 id="node-panel-output">{wrapDisplayCopy(runPageCopy.output)}</h3>
+    {#if detail.answer === null}
+      <p class="muted">{wrapDisplayCopy(runPageCopy.outputEmpty)}</p>
+    {:else}
+      <pre class="exact">{decoded(detail.answer.value_base64)}</pre>
       <p class="hash">
-        <code>{detail.job_hash}</code>
-        <InfoHint
-          label="What this hash is"
-          exact="The hash of exactly these job bytes. It is not the receipt's request hash, which frames the execution identity, the revision, the binding and the operational identity around them."
+        <ProofAnchor
+          label={wrapDisplayCopy(runPageCopy.outputHash)}
+          seals={runPageCopy.sealsOutput}
+          value={detail.answer.value_hash}
+          compact={true}
         />
       </p>
     {/if}
   </section>
 
-  <section aria-labelledby="node-panel-answered">
-    <h3 id="node-panel-answered">Answered</h3>
-    {#if detail.answer === null}
-      <p class="muted">Nothing written yet.</p>
-    {:else}
-      <pre class="exact">{decoded(detail.answer.value_base64)}</pre>
-      <p class="hash"><code>{detail.answer.value_hash}</code></p>
-    {/if}
-  </section>
-
   <section aria-labelledby="node-panel-who">
-    <h3 id="node-panel-who">Who</h3>
+    <h3 id="node-panel-who">{wrapDisplayCopy(runPageCopy.who)}</h3>
     {#if detail.provenance === null}
-      <p class="muted">No receipt yet.</p>
+      <p class="muted">{wrapDisplayCopy(runPageCopy.whoEmpty)}</p>
     {:else}
       <p class="who">
         {detail.provenance.role} · {detail.provenance.provider_id} ·
         {detail.provenance.model} · {detail.provenance.executor_revision}
       </p>
-      <p class="hash"><code>{detail.provenance.receipt_hash}</code></p>
+      <p class="hash">
+        <ProofAnchor
+          label={wrapDisplayCopy(runPageCopy.receiptHash)}
+          seals={runPageCopy.sealsReceipt}
+          value={detail.provenance.receipt_hash}
+          compact={true}
+        />
+      </p>
     {/if}
     {#if detail.started_at}
       <p class="when-ran">
-        Duration
+        {wrapDisplayCopy(runPageCopy.duration)}
         <When startedAt={detail.started_at} endedAt={detail.ended_at ?? null} kind="duration" />
       </p>
     {/if}
     <p class="not-recorded">
-      Usage
+      {wrapDisplayCopy(runPageCopy.usage)}
       <InfoHint
         label="Why usage is missing"
         exact="No receipt records usage, so this panel cannot say what the attempt cost. Time is recorded beside the attempt, not on the receipt."
       />
-      <span class="muted">not recorded yet</span>
+      <span class="muted">{wrapDisplayCopy(runPageCopy.usageMissing)}</span>
     </p>
   </section>
 </aside>

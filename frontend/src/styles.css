@@ -1030,9 +1030,11 @@ textarea {
   color: var(--accent);
 }
 
-.info-hint {
+.info-hint,
+.proof-anchor {
   position: relative;
   display: inline-flex;
+  align-items: center;
 }
 
 .info-button {
@@ -1040,6 +1042,18 @@ textarea {
   min-width: 44px;
   padding: 0;
   border-radius: 50%;
+}
+
+.proof-compact {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 0.55rem;
+  border-radius: 0.4rem;
+  border-color: var(--line);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: var(--chip);
 }
 
 .info-popover {

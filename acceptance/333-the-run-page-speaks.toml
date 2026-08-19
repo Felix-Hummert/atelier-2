@@ -1,0 +1,23 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/333"
+
+# The run page speaks the target vocabulary and treats hashes as proof, not
+# reading matter. The wire already carries Prompt bytes, Output bytes, times
+# (#355) and a failed receipt reason (#384). This head does not invent Log,
+# usage, a resolved model, or a run-configuration read door.
+
+[[sentence]]
+id = "a-run-page-hash-is-a-named-proof-anchor"
+text = "A hash on the run page appears shortened, named, and copyable, with the full value in the affordance title, instead of as a 64-character line of reading matter."
+
+[[sentence]]
+id = "a-run-page-speaks-prompt-and-output"
+text = "A click into a node labels what it was handed as Prompt and what it wrote as Output. Asked and Answered do not appear."
+
+[[sentence]]
+id = "a-run-page-does-not-repeat-node-outputs-as-a-timeline"
+text = "The run page does not paste a node's output into a second As-it-happened line. A finished node is named once, with its state, and the output lives in the node."
+
+[[sentence]]
+id = "a-run-page-leads-with-the-workflow-name"
+text = "Once the published graph is known, the run page leads with that workflow's name. The run id stays visible as the identity detail, not the title."
