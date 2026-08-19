@@ -37,6 +37,7 @@ from atelier2.adapters.dbos.schema import (
     V21_SCHEMA_HANDOFF,
     V22_SCHEMA_HANDOFF,
     V23_SCHEMA_HANDOFF,
+    V24_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -51,6 +52,7 @@ from atelier2.adapters.dbos.schema import (
     catalog_lineages,
     context_packages_v3,
     event_instants,
+    host_project_root_revisions,
     initialize_schema,
     node_execution_requests_v3,
     node_receipts_v3,
@@ -495,7 +497,12 @@ def _create_populated_v13_store(database_path: Path) -> None:
     binding_set_hash = "77" * 32
     agent_receipt_hash = "dd" * 32
     with engine.connect() as connection:
-        for table in (artifacts.name, run_inputs_v3.name, tool_redemptions.name):
+        for table in (
+            artifacts.name,
+            run_inputs_v3.name,
+            tool_redemptions.name,
+            host_project_root_revisions.name,
+        ):
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
             connection.execute(sa.text(f"DROP TABLE {table}"))
@@ -781,6 +788,12 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
             == 0
         )
         assert connection.scalar(sa.select(sa.func.count()).select_from(artifacts)) == 0
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(host_project_root_revisions)
+            )
+            == 0
+        )
         archived = (
             connection.execute(
                 sa.select(run_events).where(run_events.c.run_id == ARCHIVED_RUN_ID)
@@ -857,6 +870,12 @@ def _revert_agent_refused_attempts(connection: sqlite3.Connection) -> None:
     )
 
 
+def _drop_host_project_root_channel(connection: sqlite3.Connection) -> None:
+    connection.execute("DROP TRIGGER host_project_root_revisions_no_update")
+    connection.execute("DROP TRIGGER host_project_root_revisions_no_delete")
+    connection.execute(f"DROP TABLE {host_project_root_revisions.name}")
+
+
 def _create_exact_v21_store(database_path: Path) -> None:
     """A current store with instants and AGENT_REFUSED removed: the published V21 shape."""
 
@@ -865,6 +884,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _revert_agent_refused_attempts(connection)
+        _drop_host_project_root_channel(connection)
         for trigger in (
             "run_instants_start_no_update",
             "run_instants_end_once",
@@ -894,6 +914,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _revert_agent_refused_attempts(connection)
+        _drop_host_project_root_channel(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V22_SCHEMA_HANDOFF.version,),
@@ -910,12 +931,29 @@ def _create_exact_v23_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _revert_project_verification_failed_attempts(connection)
+        _drop_host_project_root_channel(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V23_SCHEMA_HANDOFF.version,),
         )
         connection.commit()
         _require_product_shape(connection, V23_SCHEMA_HANDOFF.version)
+
+
+def _create_exact_v24_store(database_path: Path) -> None:
+    """A current store without the host configuration channel: V24."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _drop_host_project_root_channel(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V24_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V24_SCHEMA_HANDOFF.version)
 
 
 def test_an_exact_v21_store_migrates_to_v22(
@@ -994,6 +1032,38 @@ def test_an_exact_v23_store_migrates_to_v24(
         assert (
             connection.scalar(sa.select(atelier_schema_versions.c.version))
             == SCHEMA_VERSION
+        )
+    engine.dispose()
+
+
+def test_an_exact_v24_store_migrates_to_v25(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v24_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 24"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "24" in shown.out and "25" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(host_project_root_revisions)
+            )
+            == 0
         )
     engine.dispose()
 

@@ -39,6 +39,12 @@ from atelier2.adapters.grok_subscription import (
     verify_grok_capability,
 )
 from atelier2.adapters.project_verification import declared_project
+from atelier2.contracts.host_configuration import (
+    HostConfigurationUnreadable,
+    ProjectId,
+    ProjectRootMissing,
+    ProjectUnknown,
+)
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
 from atelier2.host.mcp_command import execute_mcp
 from atelier2.host.migrate_command import describe_migration, execute_migrate
@@ -238,6 +244,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             host=parsed.host,
             port=parsed.port,
             agent_scratch_root=_attested_agent_scratch_root(parser, parsed),
+            project_id=_declared_project_id(parser, parsed),
             project_root=_declared_project_root(parser, parsed),
             claude_subscription=claude.settings,
             claude_workspace_tools=parsed.claude_workspace_tools,
@@ -256,6 +263,12 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
         serve(settings)
     except KeyboardInterrupt:
         return 0
+    except (
+        ProjectUnknown,
+        ProjectRootMissing,
+        HostConfigurationUnreadable,
+    ) as refusal:
+        parser.error(str(refusal))
     return 0
 
 
@@ -395,14 +408,32 @@ def _attested_agent_scratch_root(
     return root
 
 
+def _declared_project_id(
+    parser: argparse.ArgumentParser, parsed: argparse.Namespace
+) -> ProjectId | None:
+    """The project this process serves; the root is read from the channel."""
+
+    raw: str | None = parsed.project_id
+    if raw is None:
+        if parsed.project_root is not None:
+            parser.error(
+                "--project-root writes the host configuration channel, so it "
+                "needs --project-id"
+            )
+        return None
+    try:
+        return ProjectId(raw)
+    except ProjectUnknown as refusal:
+        parser.error(str(refusal))
+
+
 def _declared_project_root(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
 ) -> Path | None:
-    """Refuse a project that cannot be pinned or declares no verification.
+    """Refuse a bootstrap root that cannot be pinned or declares no verification.
 
-    Every attempt works in the tree one commit of this project names, and a node
-    redeeming `run-project-verification` runs what that tree's own manifest
-    states. So a root that is no repository of its own, and a root whose manifest
+    `--project-root` writes the channel. The runtime then reads the mapping
+    back. A root that is no repository of its own, and a root whose manifest
     states nothing, are both refused here -- where the operator who named it is
     still reading -- rather than at the first run that binds a node.
     """
@@ -584,6 +615,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--host", default=DEFAULT_HOST)
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve_parser.add_argument("--agent-scratch-root", type=Path)
+    serve_parser.add_argument("--project-id")
     serve_parser.add_argument("--project-root", type=Path)
     serve_parser.add_argument("--claude-executable", type=Path)
     serve_parser.add_argument("--claude-credential-directory", type=Path)

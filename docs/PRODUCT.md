@@ -842,7 +842,19 @@ version carries no binding rather than an invented one. What is still not proven
 is the request hash's own preimage: the job bytes it is taken over have no
 durable home, so a verifier copies that hash rather than recomputing it.
 
-The canonical store is schema V20. A fresh store is created as exact V20 and
+The host keeps one live-versioned configuration channel. It is durable,
+append-only-versioned in the `auth_profile_revisions` form, and readable at
+runtime. The first entry is `project id → root path`. CLI flags remain
+bootstrap of where the channel lives -- `--database` is the store, and
+`--project-id` with `--project-root` may write the first mapping -- they are
+not a second copy of the map. After serve start the runtime reads the
+project-root mapping from the channel. A bad project id is refused
+`project-unknown`, a project with no configured root is
+`project-root-missing`, and an unreadable channel is
+`host-configuration-unreadable`. There is no HTTP door for this channel yet,
+and no second project.
+
+The canonical store is schema V25. A fresh store is created as exact V25 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
@@ -850,8 +862,9 @@ access bindings, and the immutable declared context packages, node-execution req
 preimages and run configuration snapshots those receipts name, and the immutable
 orders a run was started with, the immutable proof of every redeemed tool
 grant, the receipt hash an agent completion binds, immutable content-addressed
-artifacts an order may name instead of carrying their bytes, and the round a
-declared loop was turning when each run, event and agent receipt was written. The catalog adapter founds a lineage
+artifacts an order may name instead of carrying their bytes, the round a
+declared loop was turning when each run, event and agent receipt was written, and
+the host configuration channel's project-root revisions. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing

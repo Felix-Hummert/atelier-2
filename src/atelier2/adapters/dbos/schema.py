@@ -20,6 +20,10 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_PROJECT_ID_CHARACTERS,
+    MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+)
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
@@ -42,10 +46,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits PROJECT_VERIFICATION_FAILED. Predecessor is
-# today's published version (AGENT_REFUSED landed as 23). Change only this
-# constant to restack.
-_HOP_PREDECESSOR_VERSION = 23
+# Movable hop: this head admits the host configuration channel. Predecessor is
+# today's published version (PROJECT_VERIFICATION_FAILED landed as 24). Change
+# only this constant to restack.
+_HOP_PREDECESSOR_VERSION = 24
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -62,6 +66,7 @@ _VERSION_TWENTY = 20
 _VERSION_TWENTY_ONE = 21
 _VERSION_TWENTY_TWO = 22
 _VERSION_TWENTY_THREE = 23
+_VERSION_TWENTY_FOUR = 24
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -95,8 +100,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # Predecessor rows stay NULL — no invented time. V23 admits AGENT_REFUSED as a
 # third attempt failure code. V24 admits PROJECT_VERIFICATION_FAILED as a
 # fourth, so a granted verification that exits nonzero ends under its own name.
-# The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one constant to
-# restack.
+# V25 gives the host its live-versioned configuration channel, first entry
+# project id → root path, as append-only revisions. The hop number is movable:
+# `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -116,6 +122,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     22: "72aa8f76942197b704f07c156adbb1e46c3b069ce16a53c6d95a067827966387",
     23: "6d8a3af85ecc40781c6eea454e33ae625de1cf6d8726ca5c502cdcc33eb2c124",
     24: "ba573ba80dbdbb5d9b2a93bc6958b7544838915be3e0f5fc816cacc718dfe9c8",
+    25: "91d8889ce6239855c894b89ab658188d9b13927dedb1cc905dacdc151a485842",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -176,6 +183,10 @@ V22_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V23_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_THREE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_THREE],
+)
+V24_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY_FOUR,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_FOUR],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1389,6 +1400,31 @@ node_receipt_access_v3 = sa.Table(
         "AND access_receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
+host_project_root_revisions = sa.Table(
+    "host_project_root_revisions",
+    metadata,
+    sa.Column("revision_hash", sa.Text, primary_key=True),
+    sa.Column("project_id", sa.Text, nullable=False),
+    sa.Column("revision_number", sa.Integer, nullable=False),
+    sa.Column("root_path", sa.Text, nullable=False),
+    sa.UniqueConstraint("project_id", "revision_number"),
+    sa.UniqueConstraint(
+        "revision_hash",
+        "project_id",
+        "revision_number",
+        "root_path",
+    ),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
+    sa.CheckConstraint(
+        f"length(root_path) BETWEEN 1 AND {MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS}"
+    ),
+)
 
 PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
 
@@ -1931,6 +1967,18 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'event instants are immutable');
         END
     """,
+    "host_project_root_revisions_no_update": """
+        CREATE TRIGGER host_project_root_revisions_no_update
+        BEFORE UPDATE ON host_project_root_revisions BEGIN
+          SELECT RAISE(ABORT, 'host project-root revisions are immutable');
+        END
+    """,
+    "host_project_root_revisions_no_delete": """
+        CREATE TRIGGER host_project_root_revisions_no_delete
+        BEFORE DELETE ON host_project_root_revisions BEGIN
+          SELECT RAISE(ABORT, 'host project-root revisions are immutable');
+        END
+    """,
 }
 
 
@@ -2091,19 +2139,27 @@ def _table_fingerprint(
 
 def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
-    if version in {SCHEMA_VERSION, _VERSION_TWENTY_THREE, _VERSION_TWENTY_TWO}:
+    host_channel = {host_project_root_revisions.name}
+    if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version in {_VERSION_TWENTY_FOUR, _VERSION_TWENTY_THREE, _VERSION_TWENTY_TWO}:
+        return PRODUCT_TABLE_NAMES - host_channel
     if version in {_VERSION_TWENTY_ONE, _VERSION_TWENTY, _VERSION_NINETEEN}:
-        return PRODUCT_TABLE_NAMES - later
+        return PRODUCT_TABLE_NAMES - later - host_channel
     if version in {
         _VERSION_EIGHTEEN,
         _VERSION_SEVENTEEN,
         _VERSION_SIXTEEN,
         _VERSION_FIFTEEN,
     }:
-        return PRODUCT_TABLE_NAMES - {artifacts.name} - later
+        return PRODUCT_TABLE_NAMES - {artifacts.name} - later - host_channel
     if version == _VERSION_FOURTEEN:
-        return PRODUCT_TABLE_NAMES - {artifacts.name, tool_redemptions.name} - later
+        return (
+            PRODUCT_TABLE_NAMES
+            - {artifacts.name, tool_redemptions.name}
+            - later
+            - host_channel
+        )
     if version == _VERSION_THIRTEEN:
         return (
             PRODUCT_TABLE_NAMES
@@ -2113,6 +2169,7 @@ def _table_names_for_version(version: int) -> frozenset[str]:
                 tool_redemptions.name,
             }
             - later
+            - host_channel
         )
     raise UnsupportedSchemaVersion(version)
 
@@ -2733,9 +2790,9 @@ def _apply_v23_to_v24(connection: sqlite3.Connection) -> None:
         _PREDECESSOR_ATTEMPTS_BEFORE_PROJECT_VERIFICATION_FAILED,
         _AGENT_ATTEMPTS_TRIGGERS,
         _VERSION_TWENTY_THREE,
-        SCHEMA_VERSION,
+        _VERSION_TWENTY_FOUR,
     )
-    _raise_declared_version(connection, _VERSION_TWENTY_THREE, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_TWENTY_THREE, _VERSION_TWENTY_FOUR)
 
 
 @dataclass(frozen=True)
@@ -2783,7 +2840,22 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_TWENTY, _VERSION_TWENTY_ONE, _apply_v20_to_v21),
     _SchemaMigrationStep(_VERSION_TWENTY_ONE, _VERSION_TWENTY_TWO, _apply_v21_to_v22),
     _SchemaMigrationStep(_VERSION_TWENTY_TWO, _VERSION_TWENTY_THREE, _apply_v22_to_v23),
-    _SchemaMigrationStep(_VERSION_TWENTY_THREE, SCHEMA_VERSION, _apply_v23_to_v24),
+    _SchemaMigrationStep(
+        _VERSION_TWENTY_THREE, _VERSION_TWENTY_FOUR, _apply_v23_to_v24
+    ),
+    _SchemaMigrationStep(
+        _VERSION_TWENTY_FOUR,
+        SCHEMA_VERSION,
+        _added_table_step(
+            host_project_root_revisions,
+            (
+                "host_project_root_revisions_no_update",
+                "host_project_root_revisions_no_delete",
+            ),
+            _VERSION_TWENTY_FOUR,
+            SCHEMA_VERSION,
+        ),
+    ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
