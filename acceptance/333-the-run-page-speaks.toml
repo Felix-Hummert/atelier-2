@@ -21,3 +21,7 @@ text = "The run page does not paste a node's output into a second As-it-happened
 [[sentence]]
 id = "a-run-page-leads-with-the-workflow-name"
 text = "Once the published graph is known, the run page leads with that workflow's name. The run id stays visible as the identity detail, not the title."
+
+[[sentence]]
+id = "a-run-page-labels-the-declared-model"
+text = "A click into a node labels the receipt's model as the declared configuration model and says a provider-resolved model is not recorded."

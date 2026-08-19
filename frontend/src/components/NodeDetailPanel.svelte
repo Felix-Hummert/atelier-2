@@ -5,8 +5,8 @@
     emptyOutputCopy,
     emptyPromptCopy,
     emptyWhoCopy,
-    runPageCopy,
-    usageMissingCopy
+    notRecordedCopy,
+    runPageCopy
   } from "../lib/runPageCopy";
   import InfoHint from "./InfoHint.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
@@ -124,8 +124,22 @@
     {:else}
       <p class="who">
         {detail.provenance.role} · {detail.provenance.provider_id} ·
-        {detail.provenance.model} · {detail.provenance.executor_revision}
+        {detail.provenance.executor_revision}
       </p>
+      <p class="who-fact">
+        {wrapDisplayCopy(runPageCopy.declaredModel)}
+        <span>{detail.provenance.model}</span>
+      </p>
+    {/if}
+    <p class="who-fact">
+      {wrapDisplayCopy(runPageCopy.resolvedModel)}
+      <InfoHint
+        label={runPageCopy.resolvedModelMissingWhy}
+        exact={runPageCopy.resolvedModelMissingExact}
+      />
+      <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
+    </p>
+    {#if detail.provenance !== null}
       <p class="hash">
         <ProofAnchor
           label={wrapDisplayCopy(runPageCopy.receiptHash)}
@@ -141,13 +155,13 @@
         <When startedAt={detail.started_at} endedAt={detail.ended_at ?? null} kind="duration" />
       </p>
     {/if}
-    <p class="not-recorded">
+    <p class="who-fact">
       {wrapDisplayCopy(runPageCopy.usage)}
       <InfoHint
-        label="Why usage is missing"
-        exact="No receipt records usage, so this panel cannot say what the attempt cost. Time is recorded beside the attempt, not on the receipt."
+        label={runPageCopy.usageMissingWhy}
+        exact={runPageCopy.usageMissingExact}
       />
-      <span class="muted">{wrapDisplayCopy(usageMissingCopy(detail.state))}</span>
+      <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
     </p>
   </section>
 </aside>
@@ -164,6 +178,6 @@
   .exact { margin: 0; padding: 0.6rem; border-radius: 0.4rem; background: color-mix(in srgb, currentColor 7%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; }
   .hash { margin: 0.3rem 0 0; display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; overflow-wrap: anywhere; font-size: 0.85rem; opacity: 0.8; }
   .who { margin: 0; }
-  .not-recorded { margin: 0.5rem 0 0; display: flex; align-items: center; gap: 0.3rem; font-size: 0.9rem; }
+  .who-fact { margin: 0.5rem 0 0; display: flex; align-items: center; gap: 0.3rem; font-size: 0.9rem; }
   .muted { opacity: 0.7; }
 </style>

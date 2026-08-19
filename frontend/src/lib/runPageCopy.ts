@@ -4,10 +4,11 @@ import type { NodeState } from "./runProjection";
  * Words the V3 run page speaks. One owner, the #333 ruling: Prompt / Output / Log.
  *
  * Log is not on the event stream (#104). A STARTED run says that in
- * `processLogInLease` rather than inventing a progress bar. Usage is not a
- * recorded receipt field, so its empty words live here rather than being
- * invented at the call site. "Yet" is only for a node that may still write;
- * a finished node is not waiting for those facts.
+ * `processLogInLease` rather than inventing a progress bar. Usage and a
+ * provider-resolved model are not recorded receipt fields, so their empty
+ * words live here rather than being invented at the call site. The model on
+ * the receipt is the configuration's declared model. "Yet" is only for a
+ * node that may still write; a finished node is not waiting for those facts.
  */
 
 export const runPageCopy = {
@@ -16,8 +17,16 @@ export const runPageCopy = {
   who: "Who",
   duration: "Duration",
   usage: "Usage",
-  usageMissing: "not recorded yet",
-  usageMissingEnded: "not recorded",
+  declaredModel: "Declared model",
+  resolvedModel: "Resolved model",
+  notRecorded: "not recorded yet",
+  notRecordedEnded: "not recorded",
+  usageMissingWhy: "Why usage is missing",
+  usageMissingExact:
+    "No receipt records usage, so this panel cannot say what the attempt cost. Time is recorded beside the attempt, not on the receipt.",
+  resolvedModelMissingWhy: "Why resolved model is missing",
+  resolvedModelMissingExact:
+    "No receipt records a provider-resolved model, so this panel cannot say which model the provider actually ran.",
   promptEmpty: "Not composed yet.",
   promptEmptyEnded: "Not composed.",
   outputEmpty: "Nothing written yet.",
@@ -73,6 +82,6 @@ export function emptyWhoCopy(state: NodeState): string {
   return nodeHasEnded(state) ? runPageCopy.whoEmptyEnded : runPageCopy.whoEmpty;
 }
 
-export function usageMissingCopy(state: NodeState): string {
-  return nodeHasEnded(state) ? runPageCopy.usageMissingEnded : runPageCopy.usageMissing;
+export function notRecordedCopy(state: NodeState): string {
+  return nodeHasEnded(state) ? runPageCopy.notRecordedEnded : runPageCopy.notRecorded;
 }

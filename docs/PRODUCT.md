@@ -648,10 +648,12 @@ document bytes. A V3 run page draws that excerpt as topological layers and
 paints each node's state from the rail the server already walked — shape and
 colour together, no zoom, no drag. The page leads with the published workflow
 name and keeps the run id as identity. A click into a node speaks Prompt and
-Output, never Asked or Answered; a hash leads with its human name and is copied
-by a click on that named control — the hex is the proof behind the name, not the
-reading title. The live event line names which node finished and does not
-paste the output the node already holds. A STARTED run paints the working node
+Output, never Asked or Answered. The Who panel labels the receipt's model as
+the declared configuration model and says a provider-resolved model is not
+recorded — the same honest absence as usage. A hash leads with its human
+name and is copied by a click on that named control — the hex is the proof
+behind the name, not the reading title. The live event line names which node
+finished and does not paste the output the node already holds. A STARTED run paints the working node
 as live work, not as a finished card, and shows new events from the existing
 SSE door as they arrive. Empty, connecting, and failed stream states are each
 named as themselves. The process log is not on that door — it stays in the
