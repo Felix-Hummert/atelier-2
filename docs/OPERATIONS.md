@@ -1,14 +1,16 @@
 # Operations
 
 Audience: the human operator deciding how this installation is started,
-stopped, redeployed, or how an older store is raised to the current schema.
+stopped, redeployed, how an executor toolchain is pinned, or how an older
+store is raised to the current schema.
 
 This file owns that runbook. It does not own product intent, requirement
 sentences, or trust-boundary decisions. [PRODUCT.md](PRODUCT.md) says what
 exists; [ADR 0009](decisions/0009-runner-trust.md) owns network hardening and
 reachability; [ADR 0001](decisions/0001-durable-runtime.md) owns the schema
 versions and fingerprints. This file only says how the packaged process is
-started and how a predecessor store is raised offline.
+started, how a predecessor store is raised offline, and how a deployment pins
+an executor toolchain.
 
 No operations owner existed. [docs/README.md](README.md) now names this file
 for that question. [Journeys](journeys/) illustrate requirements and bind
@@ -64,6 +66,39 @@ The script creates the state root and its `store` and `scratch` directories
 at mode `0700`, builds the image for the current operator uid/gid, and starts
 the compose service. Rerun it after a landing to redeploy. It does not start
 autonomy and it does not arm anything.
+
+## Pin an executor toolchain
+
+The atelier owns the executor copies it serves. The operator's daily CLI
+(`~/.local/bin/claude`, `~/.local/bin/grok`, `~/.local/bin/codex`) may update
+freely and is not the pin. Point `--claude-executable`, `--grok-executable`,
+or `--codex-executable` at an atelier toolchain, not at those host binaries.
+
+Install one already-conformant release into
+`${XDG_DATA_HOME:-$HOME/.local/share}/atelier2-toolchains`:
+
+```bash
+uv run --locked python scripts/install_executor_toolchain.py --provider claude --version 2.1.233
+uv run --locked python scripts/install_executor_toolchain.py --provider codex
+uv run --locked python scripts/install_executor_toolchain.py --provider grok --from /path/to/the-conformant-grok
+```
+
+The script prints the absolute executable path. It imports
+`CONFORMANT_CLAUDE_VERSIONS`, `CONFORMANT_GROK_VERSIONS`, and
+`CONFORMANT_CODEX_VERSIONS` from the subscription adapters and does not keep a
+second list. Claude's set has more than one member, so the fenced command
+includes `--version` with one of them. After the tree lands, the script asks
+the binary `--version` and refuses an answer that is not that selected member.
+
+Claude and Codex are fetched with `npm install` into an isolated prefix
+(`node_modules/.bin/claude` or `codex`). Grok is a standalone binary, not an
+npm package: pass `--from` to a conformant executable and the script copies it
+to `grok-<version>/grok`. `--from` copies an already-held executable into that
+layout instead of fetching.
+
+This script does not rewrite `atelier2-live.service`, does not download during
+`serve`, and does not resolve the executable path from admission. Those remain
+later slices of the toolchain item.
 
 ## Raise an older store
 
@@ -130,6 +165,10 @@ That job reads the recipes. It does not build or run the image.
 Store migration:
 
 `uv run --locked pytest --dist loadgroup -n auto tests/integration/test_store_migration.py`
+
+Pinned toolchain:
+
+`uv run --locked pytest --dist loadgroup -n auto tests/tooling/test_install_executor_toolchain.py`
 
 Fake-executor load (CI n=2):
 
