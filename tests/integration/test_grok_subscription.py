@@ -206,30 +206,41 @@ def leased(command: AgentProcessCommand, workspace: Path) -> AgentProcessInvocat
     )
 
 
-def measured_headless_json_envelope(*, text: str, thought: str) -> bytes:
-    """One grok 1.0.4 `--output-format json` completion, local scenario values."""
+def measured_headless_json_envelope(
+    *,
+    text: str,
+    thought: str,
+    structured_output: object | None = None,
+) -> bytes:
+    """One grok 1.0.4 `--output-format json` completion, local scenario values.
 
-    return json.dumps(
-        {
-            "text": text,
-            "thought": thought,
-            "stopReason": "end_turn",
-            "sessionId": "00000000-0000-4000-8000-000000000001",
-            "requestId": "00000000-0000-4000-8000-000000000002",
-            "usage": {
-                "input_tokens": 1,
-                "cache_read_input_tokens": 0,
-                "cache_creation_input_tokens": 0,
-                "output_tokens": 1,
-                "reasoning_tokens": 0,
-                "total_tokens": 2,
-            },
-            "num_turns": 1,
-            "total_cost_usd": 0.0,
-            "total_cost_usd_ticks": 0,
-            "modelUsage": {},
-        }
-    ).encode()
+    `structured_output` is scenario data for the `structuredOutput` field the
+    CLI adds when `--json-schema` is set. It is not a second contract: the
+    decoder still reads `text`.
+    """
+
+    envelope: dict[str, object] = {
+        "text": text,
+        "thought": thought,
+        "stopReason": "end_turn",
+        "sessionId": "00000000-0000-4000-8000-000000000001",
+        "requestId": "00000000-0000-4000-8000-000000000002",
+        "usage": {
+            "input_tokens": 1,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 1,
+            "reasoning_tokens": 0,
+            "total_tokens": 2,
+        },
+        "num_turns": 1,
+        "total_cost_usd": 0.0,
+        "total_cost_usd_ticks": 0,
+        "modelUsage": {},
+    }
+    if structured_output is not None:
+        envelope["structuredOutput"] = structured_output
+    return json.dumps(envelope).encode()
 
 
 def launched(command: AgentProcessCommand, workspace: Path) -> AgentProcessCompletion:
@@ -377,6 +388,39 @@ def test_the_final_answer_reaches_the_output_seam_not_the_turn_narration(
     assert result == AgentExecutionResult(answer.encode())
 
 
+def test_a_schema_bearing_envelope_yields_text_not_the_parsed_twin(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        AgentProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
+    )
+    narration = "Ich prüfe zuerst die Dateien und die Werkzeuge."
+    answer = '"pass-token"'
+
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text=answer,
+                thought=narration,
+                structured_output="pass-token",
+            ),
+            b"",
+        ),
+    )
+
+    assert result == AgentExecutionResult(answer.encode())
+    assert result != AgentExecutionResult(b"pass-token")
+    assert result != AgentExecutionResult(narration.encode())
+
+
 def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
@@ -428,6 +472,21 @@ def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None
             AgentProcessCompletion(
                 0,
                 measured_headless_json_envelope(text="", thought=narration),
+                b"",
+            ),
+        )
+        == refusal
+    )
+    assert (
+        executor.decode_process_completion(
+            invocation,
+            AgentProcessCompletion(
+                0,
+                measured_headless_json_envelope(
+                    text="",
+                    thought=narration,
+                    structured_output="pass-token",
+                ),
                 b"",
             ),
         )
