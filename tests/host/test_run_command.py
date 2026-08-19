@@ -17,6 +17,7 @@ from threading import Thread
 from typing import Any, Literal, Self
 
 import pytest
+from pydantic import ValidationError
 
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import problem_resource
@@ -29,6 +30,7 @@ from atelier2.api.wire.events import (
     AgentFailedEventResourceV3,
     WaitingInputEventResourceV2,
 )
+from atelier2.api.wire.requests import PublishAgentConfigurationRevisionRequestResource
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
     AgentNodeResourceV2,
@@ -110,6 +112,16 @@ BINDING_DOCUMENT = json.dumps(
         "executor_revision": "claude-subscription-v1",
     }
 ).encode()
+WIRE_CAPABILITY_DEFAULT = PublishAgentConfigurationRevisionRequestResource.model_fields[
+    "requested_capability"
+].default
+
+
+def binding_document(**fields: object) -> bytes:
+    payload = json.loads(BINDING_DOCUMENT)
+    payload.update(fields)
+    return json.dumps(payload).encode()
+
 
 RUNS_URL_PATH = API_PREFIX + RUN_PATH
 RUN_URL_PATH = f"{RUNS_URL_PATH}/{PUBLIC_RUN_REFERENCE}"
@@ -217,7 +229,11 @@ def published_auth_profile() -> Answer:
     )
 
 
-def published_agent_configuration() -> Answer:
+def published_agent_configuration(
+    requested_capability: Literal["headless", "headless_with_tools", "interactive"] = (
+        WIRE_CAPABILITY_DEFAULT
+    ),
+) -> Answer:
     return Answer(
         AgentConfigurationRevisionResource(
             model="claude-opus-4",
@@ -225,7 +241,7 @@ def published_agent_configuration() -> Answer:
             executor_revision="claude-subscription-v1",
             provider_id="claude",
             auth_mode="subscription",
-            requested_capability="headless",
+            requested_capability=requested_capability,
             agent_configuration_revision_hash=AGENT_CONFIGURATION_HASH,
         )
         .model_dump_json()
@@ -922,6 +938,72 @@ def test_a_binding_file_that_describes_no_agent_is_refused_before_anything_runs(
     printed = capsysbinary.readouterr()
     assert (exit_code, started) == (1, [])
     assert b"writer" in printed.err
+
+
+def published_configuration_body(service: ScriptedService) -> dict[str, object]:
+    return json.loads(service.sent("POST", API_PREFIX + AGENT_CONFIGURATION_PATH)[0])
+
+
+def wire_capability_refusal(value: object) -> str:
+    with pytest.raises(ValidationError) as raised:
+        PublishAgentConfigurationRevisionRequestResource.model_validate(
+            {
+                "model": "claude-opus-4",
+                "auth_profile_revision_hash": AUTH_PROFILE_HASH,
+                "executor_revision": "claude-subscription-v1",
+                "requested_capability": value,
+            }
+        )
+    return str(raised.value.errors()[0]["msg"])
+
+
+def test_a_binding_file_that_names_the_tool_capability_publishes_that_configuration(
+    tmp_path: Path, order: list[str]
+) -> None:
+    """The binding file speaks the wire field; the answered resource carries it."""
+
+    named = "headless_with_tools"
+    (tmp_path / "writer.json").write_bytes(binding_document(requested_capability=named))
+    with ScriptedService(
+        serving_answers(
+            agent_configuration=published_agent_configuration(
+                requested_capability=named
+            )
+        )
+    ) as service:
+        exit_code = run_command(order, service)
+        published = published_configuration_body(service)
+
+    assert exit_code == 0
+    assert published["requested_capability"] == named
+
+
+def test_a_binding_file_that_omits_capability_publishes_the_wire_default(
+    order: list[str],
+) -> None:
+    with ScriptedService(serving_answers()) as service:
+        exit_code = run_command(order, service)
+        published = published_configuration_body(service)
+
+    assert exit_code == 0
+    assert published["requested_capability"] == WIRE_CAPABILITY_DEFAULT
+    assert "requested_capability" not in json.loads(BINDING_DOCUMENT)
+
+
+def test_an_unknown_requested_capability_is_refused_in_the_wires_own_words(
+    tmp_path: Path, order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    unknown = "telepathic"
+    (tmp_path / "writer.json").write_bytes(
+        binding_document(requested_capability=unknown)
+    )
+    with ScriptedService(serving_answers()) as service:
+        exit_code = run_command(order, service)
+        started = service.sent("POST", RUNS_URL_PATH)
+
+    reported = capsysbinary.readouterr().err.decode()
+    assert (exit_code, started) == (1, [])
+    assert wire_capability_refusal(unknown) in reported
 
 
 def test_no_service_at_the_named_address_is_named_instead_of_traced(
