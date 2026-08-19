@@ -42,7 +42,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-SCHEMA_VERSION = 22
+# Movable hop: this head admits AGENT_REFUSED. Predecessor is today's
+# published version (#355 landed as 22). Change only this constant to restack.
+_HOP_PREDECESSOR_VERSION = 22
+SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
 _VERSION_ELEVEN = 11
@@ -56,6 +59,7 @@ _VERSION_EIGHTEEN = 18
 _VERSION_NINETEEN = 19
 _VERSION_TWENTY = 20
 _VERSION_TWENTY_ONE = 21
+_VERSION_TWENTY_TWO = 22
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -86,7 +90,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # headless_with_tools as a requested capability, so a configuration may durably
 # ask for an executor whose invocation carries the provider's own tools. V22
 # records when a run, attempt, or event was written, as RFC 3339 UTC.
-# Predecessor rows stay NULL — no invented time.
+# Predecessor rows stay NULL — no invented time. V23 admits AGENT_REFUSED as a
+# third attempt failure code. The hop number is movable:
+# `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -104,6 +110,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     20: "09752981999444ee4129cfe29b7322b79d2ff378f91d1af5050342eff78b8637",
     21: "6c4705f2960d1669a596ae8f3c857dd0ac15c4c94b71b4bb5998d1bac672cefe",
     22: "72aa8f76942197b704f07c156adbb1e46c3b069ce16a53c6d95a067827966387",
+    23: "6d8a3af85ecc40781c6eea454e33ae625de1cf6d8726ca5c502cdcc33eb2c124",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -156,6 +163,10 @@ V20_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V21_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_ONE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_ONE],
+)
+V22_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY_TWO,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_TWO],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -861,7 +872,8 @@ agent_attempts = sa.Table(
         "(state = 'FAILED' AND state_version >= 2 "
         "AND cancellation_command_id IS NULL "
         "AND failure_code IN "
-        "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED') "
+        "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED', "
+        "'AGENT_REFUSED') "
         "AND receipt_hash IS NULL)"
     ),
 )
@@ -1633,7 +1645,8 @@ _PRODUCT_TRIGGERS = {
              AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
              AND NEW.state = 'FAILED'
              AND NEW.failure_code IN
-               ('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED')
+               ('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED',
+                'AGENT_REFUSED')
              AND NEW.receipt_hash IS NULL
              AND NEW.cancellation_command_id IS NULL)
             OR
@@ -2069,7 +2082,7 @@ def _table_fingerprint(
 
 def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, _VERSION_TWENTY_TWO}:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_TWENTY_ONE, _VERSION_TWENTY, _VERSION_NINETEEN}:
         return PRODUCT_TABLE_NAMES - later
@@ -2367,6 +2380,7 @@ def _rebuild_product_table(
     source_version: int,
     target_version: int,
     filled_columns: Mapping[str, str] = {},
+    trigger_source: Mapping[str, str] | None = None,
 ) -> None:
     """Republish one table in its target shape and carry every stored row over.
 
@@ -2380,7 +2394,13 @@ def _rebuild_product_table(
     predecessor does not have. A column that needs one and has none is refused
     here by name -- the store would otherwise answer with an integrity error
     about a column the operator never heard of.
+
+    `trigger_source` is the trigger text to install after the rebuild. Earlier
+    hops that rebuild this table must reinstall the trigger of *their* target,
+    not today's, or an intermediate fingerprint breaks.
     """
+
+    trigger_sql = _PRODUCT_TRIGGERS if trigger_source is None else trigger_source
 
     # The fingerprint this store was checked against says nothing about objects
     # outside the product schema, so any object holding the parking name is
@@ -2430,7 +2450,7 @@ def _rebuild_product_table(
             str(CreateIndex(index).compile(dialect=sqlite_dialect.dialect()))
         )
     for trigger in triggers:
-        connection.execute(_PRODUCT_TRIGGERS[trigger])
+        connection.execute(trigger_sql[trigger])
 
 
 _RUN_EVENTS_TRIGGERS = ("run_events_no_update", "run_events_no_delete")
@@ -2469,6 +2489,16 @@ _NODE_EXECUTION_REQUESTS_TRIGGERS = (
     "node_execution_requests_v3_no_delete",
 )
 _PREDECESSOR_AGENT_ATTEMPTS = "agent_attempts_before_the_refusal_code"
+_V17_AGENT_ATTEMPT_TRIGGERS = {
+    "agent_attempts_state_transition": _PRODUCT_TRIGGERS[
+        "agent_attempts_state_transition"
+    ].replace(
+        "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED',\n"
+        "                'AGENT_REFUSED')",
+        "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED')",
+    ),
+    "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
+}
 
 
 def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
@@ -2485,6 +2515,7 @@ def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
         _AGENT_ATTEMPTS_TRIGGERS,
         _VERSION_SIXTEEN,
         _VERSION_SEVENTEEN,
+        trigger_source=_V17_AGENT_ATTEMPT_TRIGGERS,
     )
     _raise_declared_version(connection, _VERSION_SIXTEEN, _VERSION_SEVENTEEN)
 
@@ -2638,7 +2669,29 @@ def _apply_v21_to_v22(connection: sqlite3.Connection) -> None:
         )
     for trigger in _INSTANT_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger])
-    _raise_declared_version(connection, _VERSION_TWENTY_ONE, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_TWENTY_ONE, _VERSION_TWENTY_TWO)
+
+
+_PREDECESSOR_ATTEMPTS_BEFORE_AGENT_REFUSED = "agent_attempts_before_agent_refused"
+
+
+def _apply_v22_to_v23(connection: sqlite3.Connection) -> None:
+    """Admit AGENT_REFUSED as a failure code, and keep every stored row.
+
+    Every stored FAILED attempt already carries PROCESS_EXITED_UNSUCCESSFULLY
+    or OUTPUT_SCHEMA_REFUSED, which the widened constraint still admits, so
+    nothing is reinterpreted.
+    """
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        _PREDECESSOR_ATTEMPTS_BEFORE_AGENT_REFUSED,
+        _AGENT_ATTEMPTS_TRIGGERS,
+        _VERSION_TWENTY_TWO,
+        SCHEMA_VERSION,
+    )
+    _raise_declared_version(connection, _VERSION_TWENTY_TWO, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2684,7 +2737,8 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     ),
     _SchemaMigrationStep(_VERSION_NINETEEN, _VERSION_TWENTY, _apply_v19_to_v20),
     _SchemaMigrationStep(_VERSION_TWENTY, _VERSION_TWENTY_ONE, _apply_v20_to_v21),
-    _SchemaMigrationStep(_VERSION_TWENTY_ONE, SCHEMA_VERSION, _apply_v21_to_v22),
+    _SchemaMigrationStep(_VERSION_TWENTY_ONE, _VERSION_TWENTY_TWO, _apply_v21_to_v22),
+    _SchemaMigrationStep(_VERSION_TWENTY_TWO, SCHEMA_VERSION, _apply_v22_to_v23),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
