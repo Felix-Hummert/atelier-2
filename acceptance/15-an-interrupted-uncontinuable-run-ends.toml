@@ -20,4 +20,4 @@ text = "A serve start ends every leftover STARTED run whose current attempt is a
 
 [[sentence]]
 id = "a-serve-start-ends-a-run-that-died-between-nodes"
-text = "A STARTED run that advanced past a succeeded predecessor onto a node with no attempt, whose durable node workflow is missing or belongs to an application version that will not be recovered, ends as FAILED; the failed node-receipt/v3 on the current node names atelier2-driver-lost, no new event is written, and a silent successor whose node workflow is still pending under the running application version is left standing."
+text = "A STARTED run that advanced past a succeeded predecessor onto a node with no attempt, whose durable node workflow is missing or belongs to an application version that will not be recovered, ends as FAILED; no new event is written, a current node that has no durable request stays honestly receipt-less, a current node that has one keeps a failed node-receipt/v3 naming atelier2-driver-lost, and a silent successor whose node workflow is still pending under the running application version is left standing."

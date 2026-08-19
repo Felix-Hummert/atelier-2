@@ -24,8 +24,10 @@ class UncontinuableRunStore(Protocol):
 
         Returns False when another writer ended it first. Does not write a
         new event: the AGENT_FAILED or AGENT_INTERRUPTED that made the
-        attempt family uncontinuable is already there, and the gap family's
-        named reason is the failed node-receipt/v3 under
-        atelier2-driver-lost. This only lifts the snapshot to match.
+        attempt family uncontinuable is already there. A gap leftover whose
+        current node still has a durable request keeps a failed
+        node-receipt/v3 under atelier2-driver-lost; a current node that
+        never received one stays honestly receipt-less. This only lifts
+        the snapshot to match.
         """
         ...
