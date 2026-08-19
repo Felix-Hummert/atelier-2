@@ -22,13 +22,11 @@ every V3 output passes, under a schema this product owns. A value that carries
 no verdict therefore dies as a refused output, in the words of the seam that
 has always judged outputs, rather than needing an ending of its own.
 
-**Why the set is this small.** Two tokens are what this build can honour: the
+**Why the set is this small.** Two tokens are what a verdict can honour: the
 work is done, or it needs another round. The third truth an agent owes -- its
-own named refusal, "the order is unclear because X" -- is not here, because
-nothing downstream can carry it yet: a run ends `FAILED` only under an attempt
-failure code, and that column's closed value list is a store contract. Naming
-the token here while the machine could not honour it would put a word in an
-author's hands that the engine would silently drop.
+own named refusal, "the order is unclear because X" -- lives in
+`agent_refusals`, under `AGENT_REFUSED`, not here. A verdict steers a loop; a
+refusal ends the attempt.
 """
 
 from __future__ import annotations

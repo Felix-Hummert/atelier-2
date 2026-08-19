@@ -168,10 +168,22 @@ class NodeInput(_ClosedV3Model):
         return self
 
 
+class OutputRefusalDeclaration(_ClosedV3Model):
+    """This output may be the product's named agent refusal instead of success.
+
+    The second truth, never a verdict. `reason: required` is the declaration
+    that the answer must carry a reason sentence; the contract itself is
+    `AGENT_REFUSAL_SCHEMA`.
+    """
+
+    reason: Literal["required"]
+
+
 class NodeOutput(_ClosedV3Model):
     name: NonemptyString
     schema_reference: VersionedReference = Field(alias="schema")
     confirmed_by: Literal["operator"] | None = None
+    refusal: OutputRefusalDeclaration | None = None
 
 
 class GraphInput(_ClosedV3Model):
@@ -1136,6 +1148,7 @@ _VOCABULARY_FIELDS = frozenset(
         ActionNodeV3,
         NodeInput,
         NodeOutput,
+        OutputRefusalDeclaration,
         GraphInput,
         GraphOutput,
         IterateBlock,

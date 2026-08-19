@@ -135,6 +135,8 @@ so the exit code reports the run's disposition and nothing more.
 MCP_DESCRIPTION = """\
 Speak MCP on standard input and standard output against a served Atelier API.
 
+Messages are newline-delimited JSON-RPC: one object per line, no header.
+
 This command starts no listener and invents no credential. It is a child
 process a client launches, and it talks to the public HTTP API of --service
 exactly as the browser and `run` already do. The API has no caller

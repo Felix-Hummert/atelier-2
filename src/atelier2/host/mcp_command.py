@@ -11,8 +11,8 @@ service address rather than inventing a credential.
 The official MCP SDK is a multi-transport server (SSE, HTTP sessions,
 resources, prompts). This slice is stdio JSON-RPC for four tools. A
 dependency would add a second HTTP stack beside FastAPI without removing a
-hard problem this door has. Protocol tokens live with the tools; framing
-lives here.
+hard problem this door has. Protocol tokens live with the tools; the
+newline-delimited JSON-RPC line protocol lives here.
 
 A billed executor composed on the service is the item's stop condition for
 any future non-loopback exposure. This process cannot listen, so that
@@ -84,8 +84,6 @@ _run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
 _catalog_name_resolution = TypeAdapter(CatalogNameResolutionResource)
 _described_page = TypeAdapter(VersionedWorkflowRevisionPageResource)
 
-HEADER_TERMINATOR = b"\r\n\r\n"
-MAXIMUM_HEADER_BYTES = 8_192
 MAXIMUM_MESSAGE_BYTES = 1_048_576
 JSONRPC_PARSE_ERROR = -32700
 JSONRPC_INVALID_REQUEST = -32600
@@ -121,7 +119,7 @@ def execute_mcp(service_url: str, stdin: IO[bytes], stdout: IO[bytes]) -> int:
 
 
 def serve_mcp(service_url: str, stdin: IO[bytes], stdout: IO[bytes]) -> None:
-    """Read framed JSON-RPC from stdin until it closes. Write each reply."""
+    """Read newline-delimited JSON-RPC from stdin until it closes. Write each reply."""
 
     while True:
         try:
@@ -160,52 +158,23 @@ def dispatch_message(service_url: str, raw: object) -> dict[str, Any] | None:
 
 
 def read_message(stream: IO[bytes]) -> object | None:
-    """One Content-Length framed JSON-RPC message, or None at end of input."""
+    """One newline-delimited JSON-RPC message, or None at end of input."""
 
-    headers = bytearray()
-    while not headers.endswith(HEADER_TERMINATOR):
-        chunk = stream.read(1)
-        if not chunk:
-            if not headers:
-                return None
-            raise UnreadableServiceAnswer("the stream ended mid-header")
-        headers.extend(chunk)
-        if len(headers) > MAXIMUM_HEADER_BYTES:
-            raise UnreadableServiceAnswer(
-                "the MCP header is larger than this server reads"
-            )
-    declared = _content_length(bytes(headers))
-    body = stream.read(declared)
-    if len(body) != declared:
-        raise UnreadableServiceAnswer("the MCP body ended before Content-Length")
+    line = stream.readline(MAXIMUM_MESSAGE_BYTES + 1)
+    if not line:
+        return None
+    if len(line) > MAXIMUM_MESSAGE_BYTES and not line.endswith(b"\n"):
+        raise UnreadableServiceAnswer("the MCP line is larger than this server reads")
     try:
-        return json.loads(body)
+        return json.loads(line)
     except json.JSONDecodeError as error:
-        raise UnreadableServiceAnswer(f"the MCP body is not JSON: {error}") from error
+        raise UnreadableServiceAnswer(f"the MCP line is not JSON: {error}") from error
 
 
 def write_message(stream: IO[bytes], message: Mapping[str, Any]) -> None:
     body = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode()
-    stream.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+    stream.write(body + b"\n")
     stream.flush()
-
-
-def _content_length(headers: bytes) -> int:
-    for line in headers.split(b"\r\n"):
-        name, separator, value = line.partition(b":")
-        if separator and name.lower() == b"content-length":
-            try:
-                length = int(value.strip())
-            except ValueError as error:
-                raise UnreadableServiceAnswer(
-                    "Content-Length is not an integer"
-                ) from error
-            if not 0 < length <= MAXIMUM_MESSAGE_BYTES:
-                raise UnreadableServiceAnswer(
-                    "Content-Length is outside what this server reads"
-                )
-            return length
-    raise UnreadableServiceAnswer("the MCP header names no Content-Length")
 
 
 def _jsonrpc_request(raw: object) -> _JsonRpcRequest | dict[str, Any]:

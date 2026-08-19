@@ -79,6 +79,11 @@ class AgentAttemptFailureCode(StrEnum):
     # process code would write a durable statement about an exit that never
     # happened; the schema owner's words travel in the node receipt's reason.
     OUTPUT_SCHEMA_REFUSED = "OUTPUT_SCHEMA_REFUSED"
+    # The process ended fine and the bytes are a declared refusal form, not a
+    # success and not a schema miss. Folding this into either existing code
+    # would write that a schema refused what no schema saw, or that a process
+    # died that exited cleanly.
+    AGENT_REFUSED = "AGENT_REFUSED"
 
 
 MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES = 2_048

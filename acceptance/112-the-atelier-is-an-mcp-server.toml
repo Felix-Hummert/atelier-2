@@ -36,8 +36,12 @@ requirement = "REQ-KATALOG-02"
 text = "A stdio MCP client lists the catalog as name, lineage and head, starts the revision that name holds through the same resolution run --name asks, and reads that run's status as terminal, against a fake executor, with no second persistence and no invented credential."
 
 [[sentence]]
+id = "stdio-mcp-is-newline-delimited-jsonrpc"
+text = "The stdio MCP door speaks newline-delimited JSON-RPC: one compact JSON object per line, no Content-Length header. One request line produces one reply line; a notification line produces no reply bytes; a line that is not JSON answers -32700."
+
+[[sentence]]
 id = "a-jsonrpc-notification-gets-no-reply"
-text = "A JSON-RPC notification — a framed message with no id, including notifications/cancelled — produces no reply bytes, and an unknown request keeps the id it arrived with."
+text = "A JSON-RPC notification — a message with no id, including notifications/cancelled — produces no reply bytes, and an unknown request keeps the id it arrived with."
 
 [[sentence]]
 id = "a-non-loopback-mcp-service-is-refused-without-inventing-auth"
