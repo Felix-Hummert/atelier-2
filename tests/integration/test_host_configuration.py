@@ -147,7 +147,7 @@ def test_a_project_root_revision_can_no_longer_be_rewritten(
 
 def test_the_runtime_reads_the_mapping_from_the_channel(tmp_path: Path) -> None:
     root = tmp_path / "project"
-    git_project(root, declaring_verification(["/bin/true"]))
+    pin = git_project(root, declaring_verification(["/bin/true"]))
     database = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database)
     initialize_schema(engine)
@@ -166,6 +166,8 @@ def test_the_runtime_reads_the_mapping_from_the_channel(tmp_path: Path) -> None:
     )
     try:
         assert project_root_for(runtime.engine, ProjectId("studio")) == root.resolve()
+        assert runtime.declared_project is not None
+        assert runtime.declared_project.source.head() == pin
     finally:
         runtime.close()
 
@@ -173,7 +175,7 @@ def test_the_runtime_reads_the_mapping_from_the_channel(tmp_path: Path) -> None:
 def test_the_runtime_refuses_a_project_whose_root_is_not_in_the_channel(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ProjectRootMissing, match=PROJECT_ROOT_MISSING):
+    with pytest.raises(ProjectUnknown, match=PROJECT_UNKNOWN):
         exact_output_runtime(
             DbosRuntimeSettings(
                 tmp_path / "atelier.sqlite",
@@ -192,7 +194,7 @@ def test_bootstrap_flags_write_the_channel_and_the_runtime_reads_it(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "project"
-    git_project(root, declaring_verification(["/bin/true"]))
+    pin = git_project(root, declaring_verification(["/bin/true"]))
     settings = served_settings(
         tmp_path, project_id=ProjectId("studio"), project_root=root
     )
@@ -200,8 +202,35 @@ def test_bootstrap_flags_write_the_channel_and_the_runtime_reads_it(
     _app, runtime = compose_application(settings)
     try:
         assert project_root_for(runtime.engine, ProjectId("studio")) == root.resolve()
+        assert runtime.declared_project is not None
+        assert runtime.declared_project.source.head() == pin
     finally:
         runtime.close()
+
+
+def test_compose_reads_the_pinned_project_from_the_channel_without_a_second_flag(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    pin = git_project(root, declaring_verification(["/bin/true"]))
+    engine = create_canonical_engine(tmp_path / "durable.sqlite")
+    initialize_schema(engine)
+    append_project_root(engine, ProjectId("studio"), root)
+    engine.dispose()
+
+    _app, runtime = compose_application(
+        served_settings(tmp_path, project_id=ProjectId("studio"))
+    )
+    try:
+        assert runtime.declared_project is not None
+        assert runtime.declared_project.source.head() == pin
+    finally:
+        runtime.close()
+
+
+def test_compose_refuses_an_unknown_project_by_name(tmp_path: Path) -> None:
+    with pytest.raises(ProjectUnknown, match=PROJECT_UNKNOWN):
+        compose_application(served_settings(tmp_path, project_id=ProjectId("studio")))
 
 
 def test_a_project_root_flag_without_a_project_id_refuses_to_serve(
