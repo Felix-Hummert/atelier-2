@@ -208,7 +208,11 @@ cannot start contains nothing and discovering that at the first run costs a
 run. The same startup proves the composed profile resolves the credential
 directory it was given, loads no user configuration, and configures no MCP
 server, so the operator's own Codex trust — including the per-project trust its
-configuration records — is never inherited by a served agent.
+configuration records — is never inherited by a served agent. A pin or attest
+that fails names that executor unstartable and leaves the house serving:
+health, the cockpit, and every other provider stay up. A run that binds the
+refused executor is the same binding-unavailable refusal as a missing one, and
+it happens before any process starts.
 
 The raw frame a provider writes has its own bound, distinct from the durable
 output bound, because the durable answer travels inside a JSON envelope. The

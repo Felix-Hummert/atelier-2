@@ -7,6 +7,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from atelier2.adapters.agent_workspaces import (
@@ -154,6 +155,20 @@ service is the tool's own answer, field pointers included.
 BINDING_SEPARATOR = "="
 
 
+@dataclass(frozen=True)
+class _DeclaredSubscription[SettingsT]:
+    """A fully declared provider deployment, startable or named-unstartable.
+
+    Incomplete flags still refuse the command. A pin or attest failure keeps
+    the declaration so the house can serve, and names why this executor cannot
+    be bound.
+    """
+
+    settings: SettingsT | None
+    start_refusal: str | None = None
+    workspace_tools_start_refusal: str | None = None
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = _argument_parser()
     parsed = parser.parse_args(arguments)
@@ -200,6 +215,9 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
                 multiplier=parsed.event_poll_delay_multiplier,
             )
         )
+        claude = _claude_subscription_settings(parser, parsed)
+        grok = _grok_subscription_settings(parser, parsed)
+        codex = _codex_subscription_settings(parser, parsed)
         settings = HostSettings(
             limits=limits,
             event_poll_backoff=backoff,
@@ -221,11 +239,16 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             port=parsed.port,
             agent_scratch_root=_attested_agent_scratch_root(parser, parsed),
             project_root=_declared_project_root(parser, parsed),
-            claude_subscription=_claude_subscription_settings(parser, parsed),
+            claude_subscription=claude.settings,
             claude_workspace_tools=parsed.claude_workspace_tools,
-            grok_subscription=_grok_subscription_settings(parser, parsed),
+            claude_start_refusal=claude.start_refusal,
+            claude_workspace_tools_start_refusal=claude.workspace_tools_start_refusal,
+            grok_subscription=grok.settings,
             grok_workspace_tools=parsed.grok_workspace_tools,
-            codex_subscription=_codex_subscription_settings(parser, parsed),
+            grok_start_refusal=grok.start_refusal,
+            grok_workspace_tools_start_refusal=grok.workspace_tools_start_refusal,
+            codex_subscription=codex.settings,
+            codex_start_refusal=codex.start_refusal,
         )
     except ValueError as refusal:
         parser.error(str(refusal))
@@ -397,8 +420,8 @@ def _declared_project_root(
 
 def _claude_subscription_settings(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
-) -> ClaudeSubscriptionSettings | None:
-    """Compose the Claude subscription executor only when fully declared."""
+) -> _DeclaredSubscription[ClaudeSubscriptionSettings]:
+    """Compose the Claude subscription declaration only when fully named."""
 
     declared = (parsed.claude_executable, parsed.claude_credential_directory)
     if all(value is None for value in declared):
@@ -408,7 +431,7 @@ def _claude_subscription_settings(
                 "deployment, so it needs --claude-executable and "
                 "--claude-credential-directory beside it"
             )
-        return None
+        return _DeclaredSubscription(None)
     if any(value is None for value in declared):
         parser.error(
             "serving Claude subscription agents requires --claude-executable "
@@ -423,29 +446,30 @@ def _claude_subscription_settings(
     settings = ClaudeSubscriptionSettings(
         parsed.claude_executable, parsed.claude_credential_directory, search_path
     )
-    # The containment this executor claims belongs to a measured release on a
-    # host no administrator policy can act on, so the deployment asks the named
-    # executable which one it is and attests that policy's absence before the
-    # server exists at all -- never at invocation time, where a refusal costs a
-    # run.
+    # Pin and attest stay. A failure names this executor unstartable; serve
+    # continues. Binding it is refused before any process.
     try:
         attest_no_managed_policy(settings.credential_directory, MANAGED_POLICY_ROOTS)
         verify_claude_capability(settings.executable)
-        if parsed.claude_workspace_tools:
-            # Startability, not a version answer: the tool-bearing invocation is
-            # the one whose flags decide what a node's process may touch, so the
-            # deployment starts that exact vector once, here, rather than
-            # discovering at the first bound node that it never spawns.
-            attest_workspace_tool_invocation(settings)
     except (ClaudeExecutableUnsupported, ClaudeManagedPolicyPresent) as error:
-        parser.error(str(error))
-    return settings
+        return _DeclaredSubscription(settings, start_refusal=str(error))
+    tools_refusal = None
+    if parsed.claude_workspace_tools:
+        # Startability, not a version answer: the tool-bearing invocation is
+        # the one whose flags decide what a node's process may touch, so the
+        # deployment starts that exact vector once, here, rather than
+        # discovering at the first bound node that it never spawns.
+        try:
+            attest_workspace_tool_invocation(settings)
+        except ClaudeExecutableUnsupported as error:
+            tools_refusal = str(error)
+    return _DeclaredSubscription(settings, workspace_tools_start_refusal=tools_refusal)
 
 
 def _grok_subscription_settings(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
-) -> GrokSubscriptionSettings | None:
-    """Compose the Grok subscription executor only when fully declared."""
+) -> _DeclaredSubscription[GrokSubscriptionSettings]:
+    """Compose the Grok subscription declaration only when fully named."""
 
     declared = (
         parsed.grok_executable,
@@ -459,7 +483,7 @@ def _grok_subscription_settings(
                 "deployment, so it needs --grok-executable, --grok-workspace "
                 "and --grok-credential-directory beside it"
             )
-        return None
+        return _DeclaredSubscription(None)
     if any(value is None for value in declared):
         parser.error(
             "serving Grok subscription agents requires --grok-executable, "
@@ -479,25 +503,29 @@ def _grok_subscription_settings(
     )
     try:
         verify_grok_capability(settings.executable)
-        if parsed.grok_workspace_tools:
-            # Startability, not a version answer: the tool-bearing invocation
-            # is the one whose flags decide what a node's process may touch, so
-            # the deployment starts that exact vector once, here, rather than
-            # discovering at the first bound node that it never spawns.
-            attest_grok_workspace_tool_invocation(settings)
     except GrokExecutableUnsupported as error:
-        parser.error(str(error))
-    return settings
+        return _DeclaredSubscription(settings, start_refusal=str(error))
+    tools_refusal = None
+    if parsed.grok_workspace_tools:
+        # Startability, not a version answer: the tool-bearing invocation
+        # is the one whose flags decide what a node's process may touch, so
+        # the deployment starts that exact vector once, here, rather than
+        # discovering at the first bound node that it never spawns.
+        try:
+            attest_grok_workspace_tool_invocation(settings)
+        except GrokExecutableUnsupported as error:
+            tools_refusal = str(error)
+    return _DeclaredSubscription(settings, workspace_tools_start_refusal=tools_refusal)
 
 
 def _codex_subscription_settings(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace
-) -> CodexSubscriptionSettings | None:
-    """Compose the Codex subscription executor only when fully declared."""
+) -> _DeclaredSubscription[CodexSubscriptionSettings]:
+    """Compose the Codex subscription declaration only when fully named."""
 
     declared = (parsed.codex_executable, parsed.codex_credential_directory)
     if all(value is None for value in declared):
-        return None
+        return _DeclaredSubscription(None)
     if any(value is None for value in declared):
         parser.error(
             "serving Codex subscription agents requires --codex-executable "
@@ -518,15 +546,14 @@ def _codex_subscription_settings(
         )
     except ValueError as refusal:
         parser.error(str(refusal))
-    # A sandbox the host cannot actually start, and a profile that would load
-    # the operator's own Codex trust, are both refused before the server exists
-    # rather than at invocation time, where a refusal costs a run.
+    # Pin and attest stay. A failure names this executor unstartable; serve
+    # continues. Binding it is refused before any process.
     try:
         verify_codex_capability(settings.executable, settings.search_path)
         attest_codex_containment(settings)
     except (CodexExecutableUnsupported, CodexContainmentUnattested) as error:
-        parser.error(str(error))
-    return settings
+        return _DeclaredSubscription(settings, start_refusal=str(error))
+    return _DeclaredSubscription(settings)
 
 
 def _argument_parser() -> argparse.ArgumentParser:
