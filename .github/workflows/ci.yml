@@ -83,8 +83,29 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
 
+      - name: Install the browser's OS dependencies
+        run: |
+          set -euo pipefail
+          install_deps_ok=false
+          for attempt in 1 2 3; do
+            if timeout 90 npx playwright install-deps chromium; then
+              install_deps_ok=true
+              break
+            fi
+            echo "playwright install-deps attempt ${attempt} failed or timed out after 90s" >&2
+          done
+          if [ "${install_deps_ok}" != true ]; then
+            echo "::error::playwright install-deps did not succeed after 3 attempts (90s each) — failing the step instead of hanging until the job timeout" >&2
+            exit 1
+          fi
+
       - name: Install the browser
-        run: npx playwright install --with-deps chromium
+        run: |
+          set -euo pipefail
+          if ! timeout 240 npx playwright install chromium; then
+            echo "::error::playwright install chromium did not succeed within 240s — failing the step instead of hanging until the job timeout" >&2
+            exit 1
+          fi
 
       - name: Test the production cockpit in Chromium
         run: |
