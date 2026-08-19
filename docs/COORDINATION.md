@@ -58,13 +58,14 @@ one shared account approving itself is theater).
 - The branch ruleset is machine-enforced: five required checks, strict
   up-to-date (after any merge, the next PR needs `update-branch` + fresh CI),
   merge commits only. A body edit needs a fresh event (close/reopen) — reruns
-  replay the old event payload. Rerun whole runs, never `--failed`: the run
-  reports are artifacts named per `run_attempt`, so a partial rerun raises the
-  attempt while the jobs that already passed keep their old names, and the gate
-  then refuses with `the run report … is absent from reports`. That reads like a
-  real acceptance failure and is not one — it is the rerun, not the head.
-  (Measured on #276 while healing an unrelated `codeload` outage; the same trap
-  explained #273.)
+  replay the old event payload. Acceptance reports and the acceptance-trace
+  artifact are named without `run_attempt` and overwrite on upload, so a
+  job-rerun completes the set instead of splitting it (#396). Live
+  confirmation of a mixed-attempt rerun remains open on that item. The
+  previous trap — names per attempt, so `--failed` starved the gate with
+  `the run report … is absent from reports` — was measured on #276 while
+  healing an unrelated `codeload` outage, explained #273, and repeated on
+  #384/#388/#395.
 
 ### A stacked head has four states, and only the last one releases its child
 
