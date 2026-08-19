@@ -846,15 +846,18 @@ durable home, so a verifier copies that hash rather than recomputing it.
 
 The host keeps one live-versioned configuration channel. It is durable,
 append-only-versioned in the `auth_profile_revisions` form, and readable at
-runtime. The first entry is `project id → root path`. CLI flags remain
-bootstrap of where the channel lives -- `--database` is the store, and
-`--project-id` with `--project-root` may write the first mapping -- they are
-not a second copy of the map. After serve start the runtime reads the
-project-root mapping from the channel. A bad project id is refused
-`project-unknown`, a project with no configured root is
-`project-root-missing`, and an unreadable channel is
-`host-configuration-unreadable`. There is no HTTP door for this channel yet,
-and no second project.
+runtime. The first entry is `project id → root path`. Today's store is the
+first project: that configuration entry, and the reads that treat it as a
+project. CLI flags remain bootstrap of where the channel lives --
+`--database` is the store, and `--project-id` with `--project-root` may write
+the first mapping -- they are not a second copy of the map. After the mapping
+exists, compose and the run path that needs a project root read it from the
+channel for that project id, not from a second `--project-root` flag. A bad
+project id is refused `project-unknown`. An operation that names a project
+with no configured root is also `project-unknown`; the channel itself still
+names a missing row `project-root-missing`. An unreadable channel is
+`host-configuration-unreadable`. There is no HTTP project resource, no second
+project, and no store-per-project process.
 
 The canonical store is schema V25. A fresh store is created as exact V25 and
 carries published revisions of the closed kind set, lineage membership bound

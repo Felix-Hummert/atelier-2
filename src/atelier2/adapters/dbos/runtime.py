@@ -54,7 +54,12 @@ from atelier2.contracts.effects import (
     EffectAdapterBinding,
     EffectDestination,
 )
-from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.host_configuration import (
+    PROJECT_UNKNOWN,
+    ProjectId,
+    ProjectRootMissing,
+    ProjectUnknown,
+)
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.agent_executions import (
     AgentExecutor,
@@ -66,6 +71,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorV2,
 )
 from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
+from atelier2.ports.project_verification import DeclaredProject
 
 EXECUTOR_ID = "atelier2-local"
 SQLITE_LOCK_TIMEOUT_SECONDS = 30.0
@@ -236,9 +242,29 @@ class _BoundRuntime:
     effect_adapter: EffectAdapter
     agent_process_supervisor: AgentProcessSupervisor
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None
+    declared_project: DeclaredProject | None
     leases: int = 0
     launched: bool = False
     storage_ready: bool = False
+
+
+def _declared_project_for(
+    engine: Engine, project_id: ProjectId | None
+) -> DeclaredProject | None:
+    """The project this process serves, read from the host channel.
+
+    A missing mapping is `project-unknown`: naming a project with no configured
+    root is the ADR 0011 service refusal, not the channel's own row miss.
+    """
+
+    if project_id is None:
+        return None
+    try:
+        return declared_project(project_root_for(engine, project_id))
+    except ProjectRootMissing as missing:
+        raise ProjectUnknown(
+            f"{PROJECT_UNKNOWN}: project {project_id.value!r} has no configured root"
+        ) from missing
 
 
 def _open_binding(
@@ -292,11 +318,7 @@ def _open_binding(
             append_project_root(
                 engine, settings.project_id, settings.bootstrap_project_root
             )
-        declared_project_source = (
-            None
-            if settings.project_id is None
-            else declared_project(project_root_for(engine, settings.project_id))
-        )
+        declared_project_source = _declared_project_for(engine, settings.project_id)
         with engine.connect() as connection:
             durable_agent_bindings = {
                 AgentExecutorBinding(
@@ -471,6 +493,7 @@ def _open_binding(
         adapter,
         agent_process_supervisor,
         agent_workspace_owner,
+        declared_project_source,
     )
 
 
@@ -710,6 +733,10 @@ class DbosRuntime:
     @property
     def agent_workspace_owner(self) -> LocalAgentAttemptWorkspaceOwner | None:
         return self._held().agent_workspace_owner
+
+    @property
+    def declared_project(self) -> DeclaredProject | None:
+        return self._held().declared_project
 
     @property
     def effect_adapter_binding(self) -> EffectAdapterBinding:
