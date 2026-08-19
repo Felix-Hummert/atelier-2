@@ -99,9 +99,10 @@ describe("a version 3 run in the cockpit", () => {
     expect(within(graph).getByRole("button", { name: "review — Working" }).isConnected).toBe(true);
     expect(screen.getByText(/not yet/i).isConnected).toBe(true);
     expect(screen.queryByText(configurationHash)).toBeNull();
+    expect(screen.getByRole("button", { name: "Run configuration" }).isConnected).toBe(true);
     expect(
       screen.getByRole("button", { name: "Run configuration" }).getAttribute("title")
-    ).toBe(configurationHash);
+    ).toBeNull();
     // A loaded run is not a failed one: the page must not offer to fetch it again
     // beneath the answer it already has.
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
@@ -182,9 +183,8 @@ describe("a version 3 run in the cockpit", () => {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect(
-      (await screen.findByRole("button", { name: "Terminal hash" })).getAttribute("title")
-    ).toBe(terminalHash);
+    expect((await screen.findByRole("button", { name: "Terminal hash" })).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Terminal hash" }).getAttribute("title")).toBeNull();
     expect(screen.queryByText(terminalHash)).toBeNull();
     expect(screen.getByLabelText("Where this run stands").textContent).toContain("Done");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
@@ -475,9 +475,8 @@ describe("a version 3 run that stops for a person", () => {
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await waitAnsweredEvent(1)));
 
-    expect(
-      (await screen.findByRole("button", { name: "Terminal hash" })).getAttribute("title")
-    ).toBe(terminalHash);
+    expect((await screen.findByRole("button", { name: "Terminal hash" })).isConnected).toBe(true);
+    expect(screen.queryByText(terminalHash)).toBeNull();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "approve — Done" }).isConnected).toBe(true)
     );
@@ -517,9 +516,8 @@ describe("a version 3 run that stops for a person", () => {
       node_id: "approve",
       answer_base64: btoa('"approved, with the second paragraph rewritten"')
     });
-    expect(
-      (await screen.findByRole("button", { name: "Terminal hash" })).getAttribute("title")
-    ).toBe(terminalHash);
+    expect((await screen.findByRole("button", { name: "Terminal hash" })).isConnected).toBe(true);
+    expect(screen.queryByText(terminalHash)).toBeNull();
   });
 
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): names a refused answer on the card", async () => {
@@ -767,6 +765,11 @@ describe("the click into a node", () => {
     await screen.findByText(asked);
     await screen.findByText(wrote);
     await screen.findByText(/builder · anthropic · sonnet/);
+    expect(screen.getByRole("button", { name: "Prompt hash" }).textContent).toBe("Prompt hash");
+    expect(screen.getByRole("button", { name: "Output hash" }).textContent).toBe("Output hash");
+    expect(screen.getByRole("button", { name: "Receipt hash" }).textContent).toBe("Receipt hash");
+    expect(screen.queryByText("e".repeat(64))).toBeNull();
+    expect(screen.queryByText("f".repeat(64))).toBeNull();
   });
 
   it("proves(a-click-into-a-node-shows-what-it-was-asked-and-wrote): says usage is not recorded instead of leaving the question open", async () => {
@@ -922,7 +925,7 @@ describe("the click into a node", () => {
 });
 
 describe("the run page speaking the target words", () => {
-  it("proves(a-run-page-hash-is-a-named-proof-anchor): a hash appears shortened with a copy affordance and the full value in the title", async () => {
+  it("proves(a-run-page-hash-is-a-named-proof-anchor): a hash leads with its name and a click copies it", async () => {
     const writeText = vi.fn(async () => undefined);
     Object.assign(globalThis.navigator, { clipboard: { writeText } });
     render(App, {
@@ -932,14 +935,16 @@ describe("the run page speaking the target words", () => {
 
     expect(screen.queryByText(configurationHash)).toBeNull();
     const trigger = screen.getByRole("button", { name: "Run configuration" });
-    expect(trigger.getAttribute("title")).toBe(configurationHash);
-    expect((trigger.textContent ?? "").length).toBeGreaterThan(0);
-    expect((trigger.textContent ?? "").length).toBeLessThan(configurationHash.length);
-    expect(trigger.textContent).toContain(configurationHash.slice(0, 8));
+    expect(trigger.getAttribute("title")).toBeNull();
+    expect(trigger.textContent).not.toContain(configurationHash);
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
 
     await fireEvent.click(trigger);
-    await fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith(configurationHash);
+    expect(screen.getByText(configurationHash).isConnected).toBe(true);
+    await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
   });
 
   it("proves(a-run-page-does-not-repeat-node-outputs-as-a-timeline): names the finished node without pasting its output or saying As it happened", async () => {

@@ -18,6 +18,7 @@
   import HumanActionCard from "../components/HumanActionCard.svelte";
   import NodeRail from "../components/NodeRail.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
+  import ProofAnchor from "../components/ProofAnchor.svelte";
   import ReconciliationActionCard from "../components/ReconciliationActionCard.svelte";
   import {
     MutationJournal,
@@ -870,9 +871,27 @@
 
     <dl class="run-summary">
       <div><dt>State</dt><dd tabindex="-1" bind:this={runStateElement} data-testid="run-state">{snapshot.confirmed.run.state.replaceAll("_", " ").toLowerCase()}</dd></div>
-      <div><dt>Workflow</dt><dd><code>{snapshot.confirmed.run.workflow_revision_hash}</code></dd></div>
+      <div>
+        <dt>{wrapDisplayCopy(runPageCopy.workflowRevision)}</dt>
+        <dd>
+          <ProofAnchor
+            label={wrapDisplayCopy(runPageCopy.workflowRevision)}
+            seals={runPageCopy.sealsWorkflow}
+            value={snapshot.confirmed.run.workflow_revision_hash}
+          />
+        </dd>
+      </div>
       {#if snapshot.confirmed.run.terminal_hash !== null}
-        <div><dt>Terminal hash</dt><dd><code>{snapshot.confirmed.run.terminal_hash}</code></dd></div>
+        <div>
+          <dt>{wrapDisplayCopy(runPageCopy.terminalHash)}</dt>
+          <dd>
+            <ProofAnchor
+              label={wrapDisplayCopy(runPageCopy.terminalHash)}
+              seals={runPageCopy.sealsTerminal}
+              value={snapshot.confirmed.run.terminal_hash}
+            />
+          </dd>
+        </div>
       {/if}
     </dl>
 
@@ -922,7 +941,11 @@
           {#each projection?.events ?? [] as event (event.cursor)}
             <li>
               <span><strong>{event.event.replaceAll("_", " ")}</strong><small>#{event.sequence} · {event.node_id}</small></span>
-              <code>{event.event_hash}</code>
+              <ProofAnchor
+                label={`${event.event.replaceAll("_", " ")} #${event.sequence}`}
+                seals={runPageCopy.sealsEvent}
+                value={event.event_hash}
+              />
               <pre>{exactEvent(event)}</pre>
             </li>
           {/each}

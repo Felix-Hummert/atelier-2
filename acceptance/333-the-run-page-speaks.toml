@@ -8,7 +8,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/333"
 
 [[sentence]]
 id = "a-run-page-hash-is-a-named-proof-anchor"
-text = "A hash on the run page appears shortened, named, and copyable, with the full value in the affordance title, instead of as a 64-character line of reading matter."
+text = "A hash on the run page leads with its human name, not a 64-character hex string. A click on that named control copies the hash; the keyboard reaches the same control."
 
 [[sentence]]
 id = "a-run-page-speaks-prompt-and-output"

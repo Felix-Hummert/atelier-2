@@ -538,7 +538,6 @@
           label={wrapDisplayCopy(runPageCopy.terminalHash)}
           seals={runPageCopy.sealsTerminal}
           value={run.terminal_hash}
-          compact={true}
         />
       {/if}
     </dd>
@@ -548,7 +547,6 @@
         label={wrapDisplayCopy(runPageCopy.runConfiguration)}
         seals={runPageCopy.sealsConfiguration}
         value={run.run_configuration_revision_hash}
-        compact={true}
       />
     </dd>
     <dt>{wrapDisplayCopy(runPageCopy.workflowRevision)}</dt>
@@ -557,7 +555,6 @@
         label={wrapDisplayCopy(runPageCopy.workflowRevision)}
         seals={runPageCopy.sealsWorkflow}
         value={run.workflow_revision_hash}
-        compact={true}
       />
     </dd>
   </dl>
