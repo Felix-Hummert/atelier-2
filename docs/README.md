@@ -27,8 +27,10 @@ Agent policy lives in [`AGENTS.md`](../AGENTS.md) at the repository root, not he
 An auditor should be able to walk **vision → requirement sentence → acceptance
 sentence → passing test** in both directions. Today the last hop is
 machine-checked ([ADR 0012](decisions/0012-acceptance-trace-format.md)). The
-first hops are hand-maintained views. A requirement sentence that names no
-acceptance identifier says `UNGEBUNDEN` instead of pretending.
+requirement document's provenance shape — header watermark and per-rule
+`Quelle` — is machine-checked from the tree; live-thread freshness is not. A
+requirement sentence that names no acceptance identifier says `UNGEBUNDEN`
+instead of pretending.
 
 ```mermaid
 flowchart LR
