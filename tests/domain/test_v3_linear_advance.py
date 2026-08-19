@@ -13,6 +13,7 @@ from atelier2.contracts.workflows import (
     RunCompletes,
     RunContinues,
     completion_after_node,
+    producing_round,
 )
 from atelier2.contracts.workflows_v3 import (
     BranchingAdvanceUnsupported,
@@ -175,6 +176,37 @@ _LOOPED_WAIT = (
 """
 )
 
+_LOOP_HEAD_READS_PREVIOUS_REVIEW = (
+    b"""format_version: 3
+name: Build, then review, the builder reading the last review
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing.
+    inputs:
+      - name: last_review
+        from: {node: review, output: verdict}
+"""
+    + _DECLARED_OUTPUT
+    + b"""  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: Judge the first thing.
+    depends_on: [implement]
+"""
+    + _VERDICT_OUTPUT
+    + b"""loops:
+  - id: until_reviewed
+    body: [implement, review]
+    maximum_rounds: 3
+    repeat_while: {node: review, verdict: revise}
+"""
+)
+
+
 _READ_OUT_OF_A_LOOP = (
     _LINE
     + b"""  - id: ship
@@ -336,6 +368,19 @@ def test_a_line_a_loop_repeats_is_executable() -> None:
     assert isinstance(graph, WorkflowGraphV3)
     assert graph.declared_rounds_of("implement") == range(1, 4)
     assert graph.declared_rounds_of("review") == range(1, 4)
+
+
+@pytest.mark.proves("a-later-round-reads-the-previous-rounds-output")
+def test_a_loop_head_may_read_the_loop_tails_previous_round() -> None:
+    """The cycle ADR 0002 refuses is a control edge. This is not one."""
+    graph = parse_executable_workflow_document(_LOOP_HEAD_READS_PREVIOUS_REVIEW)
+
+    assert isinstance(graph, WorkflowGraphV3)
+    last_review = graph.node("implement").inputs[0]
+    assert last_review.name == "last_review"
+    assert producing_round(graph, "implement", "review", FIRST_ROUND_ORDINAL) is None
+    assert producing_round(graph, "implement", "review", 2) == 1
+    assert producing_round(graph, "review", "implement", 2) == 2
 
 
 @pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")

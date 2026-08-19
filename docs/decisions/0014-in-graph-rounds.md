@@ -4,7 +4,8 @@
   round and the bound-reaching end are implemented; the result-driven end this
   record left undecided is decided by
   [ADR 0015](0015-verdict-steered-continuation.md), which leaves everything below
-  standing and adds the earlier exit
+  standing and adds the earlier exit. Amended 2026-08-19: an in-loop `from` the
+  edges cannot order reads the immediately previous round ([#402](https://github.com/FlexOr2/atelier-2/issues/402)).
 - Supersedes: the structural finding of
   [ADR 0013](0013-bounded-iteration.md) — "A loop inside one graph is therefore
   identity-impossible" — and, with it, ADR 0013's decision that a round is a child
@@ -141,6 +142,20 @@ question under an identity the answer path does not carry, and a value read *out
 of* a loop names no round — the reader would have to say which round wrote it, and
 choosing is the verdict-driven continuation this record does not decide. Both are
 refused by name at the executable door rather than started and abandoned.
+
+### A data edge inside a loop that the edges cannot order reads the previous round
+
+`from: {node, output}` stays one payload in the producing output's schema. When
+the source is in the same loop as the reader and not in the reader's `depends_on`
+closure, the edge is not a cycle: `depends_on` stays acyclic, unconditionally.
+The value is the one that source wrote in the immediately previous round. Round
+one has no previous round, so that input is honestly absent — not a refusal, not
+a guessed seed. A sequence of every earlier round would make the input schema
+disagree with the output schema; that form is not this one.
+
+Issue #402 is the owning item for this edge. ADR 0015's verdict still steers
+the back edge; this rule is what lets the next build *read* the verdict that
+steered it.
 
 ## What happens to ADR 0013
 

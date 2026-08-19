@@ -35,8 +35,9 @@ story = "https://github.com/FlexOr2/atelier-2/issues/25"
 #       terminal receipt naming the node, the bound and the last round's
 #       disposition. The durable token is #16's to mint.
 #   7.  Round K+1 reads round K's result, and every round is its own unrolled
-#       stage of the durable truth. Needs #63 and the V3 Join/Ready/Scheduler
-#       owner ADR 0008 names.
+#       stage of the durable truth. The input-edge half is #402
+#       (`a-later-round-reads-the-previous-rounds-output`). The join/scheduler
+#       half stays with the V3 Join/Ready/Scheduler owner ADR 0008 names.
 #
 # Two forms now say "repeat, at most N times" -- ADR 0013's child-run `iterate`
 # and ADR 0014's in-graph loop. ADR 0014 names that seam and leaves it open for

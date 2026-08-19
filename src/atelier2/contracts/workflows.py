@@ -385,6 +385,35 @@ def completion_after_node(
     return RunContinues(graph.successor(node_id).id)
 
 
+def producing_round(
+    graph: AnyWorkflowDocument,
+    reader_id: str,
+    source_node: str,
+    current_round_ordinal: int,
+) -> int | None:
+    """Which round wrote the value this reader is asking that source for.
+
+    A source the edges already order ran in this turn of the loop, or once if
+    no loop repeats it. A source the same loop repeats that no `depends_on` edge
+    can name — the review the next build must read — wrote in the immediately
+    previous round. Round one has no previous round, so that input is absent
+    rather than refused: honestly empty, not a missing write.
+    """
+    from atelier2.contracts.workflows_v3 import (
+        WorkflowGraphV3,
+        is_previous_round_data_edge,
+    )
+
+    require_exact_round_ordinal(current_round_ordinal)
+    if not isinstance(graph, WorkflowGraphV3):
+        return FIRST_ROUND_ORDINAL
+    if is_previous_round_data_edge(graph, reader_id, source_node):
+        if current_round_ordinal == FIRST_ROUND_ORDINAL:
+            return None
+        return current_round_ordinal - 1
+    return round_of(graph, source_node, current_round_ordinal)
+
+
 def round_of(
     graph: AnyWorkflowDocument, node_id: str, current_round_ordinal: int
 ) -> int:

@@ -310,9 +310,11 @@ the next edge rather than a failure. What no verdict can say yet is the agent's
 own named refusal — "the order is unclear because X" — because a run ends failed
 only under an attempt failure code whose value list is a store contract, and a
 refusal written under either existing code would name a schema or a dead process
-that was never involved. A loop body may hold only agent nodes, and a value read
-out of a loop is still refused by name because no rule here says which round wrote
-it. Unsafe YAML is
+that was never involved. A loop body may hold only agent nodes. A `from` edge
+whose source sits in the same loop and is not ordered by `depends_on` reads that
+source's immediately previous round — one payload, the producing output's schema
+— and is honestly empty in round one. A value read *out of* a loop is still
+refused by name because no rule here says which round wrote it. Unsafe YAML is
 refused by name too, before any vocabulary is read: an
 anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
 a document that is not UTF-8 without a byte order mark, and one nested past the
