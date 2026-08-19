@@ -689,10 +689,9 @@ class NodeAnswerResource(ApiModel):
 class NodeProvenanceResource(ApiModel):
     """Which agent produced a node's answer, as its receipt recorded it.
 
-    Usage and duration are absent because no receipt holds them: this answer can
-    prove what ran and what came out, and cannot say what it cost or how long it
-    took. Naming that here is cheaper than a reader assuming the fields are
-    coming.
+    Usage is absent because no receipt holds it: this answer can prove what ran
+    and what came out, and cannot say what it cost. How long it took is recorded
+    beside the attempt, not on this receipt.
     """
 
     role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
@@ -741,6 +740,8 @@ class NodeDetailResource(ApiModel):
     answer: NodeAnswerResource | None
     provenance: NodeProvenanceResource | None
     refusal: str | None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 class RunResourceV2(ApiModel):
@@ -846,6 +847,8 @@ class RunResourceV3(ApiModel):
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
     latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
+    started_at: str | None = None
+    ended_at: str | None = None
 
     @model_validator(mode="after")
     def validate_state_shape(self) -> RunResourceV3:

@@ -31,17 +31,24 @@ from atelier2.adapters.dbos.schema import (
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V13_SCHEMA_HANDOFF,
+    V21_SCHEMA_HANDOFF,
+    V22_SCHEMA_HANDOFF,
     MigrationRequired,
+    _AGENT_ATTEMPTS_TRIGGERS,
+    _V17_AGENT_ATTEMPT_TRIGGERS,
+    _rebuild_product_table,
     _require_product_shape,
     agent_attempts,
     agent_configuration_revisions,
     agent_receipts_v2,
     artifacts,
     atelier_schema_versions,
+    attempt_instants,
     auth_profile_revisions,
     catalog_lineage_members,
     catalog_lineages,
     context_packages_v3,
+    event_instants,
     initialize_schema,
     node_execution_requests_v3,
     node_receipts_v3,
@@ -50,6 +57,7 @@ from atelier2.adapters.dbos.schema import (
     run_configuration_revisions,
     run_events,
     run_inputs_v3,
+    run_instants,
     runs,
     tool_redemptions,
     workflow_revisions,
@@ -489,6 +497,19 @@ def _create_populated_v13_store(database_path: Path) -> None:
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_delete"))
             connection.execute(sa.text(f"DROP TABLE {table}"))
+        for trigger in (
+            "run_instants_start_no_update",
+            "run_instants_end_once",
+            "run_instants_no_delete",
+            "attempt_instants_start_no_update",
+            "attempt_instants_end_once",
+            "attempt_instants_no_delete",
+            "event_instants_no_update",
+            "event_instants_no_delete",
+        ):
+            connection.execute(sa.text(f"DROP TRIGGER {trigger}"))
+        for table in (run_instants.name, attempt_instants.name, event_instants.name):
+            connection.execute(sa.text(f"DROP TABLE {table}"))
         _restore_predecessor_run_events(connection)
         _restore_predecessor_agent_receipts(connection)
         _restore_predecessor_agent_attempts(connection)
@@ -800,6 +821,119 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
                     AgentExecutionCapability.HEADLESS_WITH_TOOLS.value
                 ),
             )
+        )
+    engine.dispose()
+
+
+def _revert_agent_refused_attempts(connection: sqlite3.Connection) -> None:
+    """Restore the two-code CHECK the AGENT_REFUSED hop left behind."""
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        "agent_attempts_after_agent_refused",
+        _AGENT_ATTEMPTS_TRIGGERS,
+        SCHEMA_VERSION,
+        V22_SCHEMA_HANDOFF.version,
+        trigger_source=_V17_AGENT_ATTEMPT_TRIGGERS,
+    )
+
+
+def _create_exact_v21_store(database_path: Path) -> None:
+    """A current store with instants and AGENT_REFUSED removed: the published V21 shape."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_agent_refused_attempts(connection)
+        for trigger in (
+            "run_instants_start_no_update",
+            "run_instants_end_once",
+            "run_instants_no_delete",
+            "attempt_instants_start_no_update",
+            "attempt_instants_end_once",
+            "attempt_instants_no_delete",
+            "event_instants_no_update",
+            "event_instants_no_delete",
+        ):
+            connection.execute(f"DROP TRIGGER {trigger}")
+        for table in (run_instants.name, attempt_instants.name, event_instants.name):
+            connection.execute(f"DROP TABLE {table}")
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V21_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V21_SCHEMA_HANDOFF.version)
+
+
+def _create_exact_v22_store(database_path: Path) -> None:
+    """A current store with AGENT_REFUSED removed: the published V22 shape."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_agent_refused_attempts(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V22_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V22_SCHEMA_HANDOFF.version)
+
+
+def test_an_exact_v21_store_migrates_to_v22(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v21_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 21"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "21" in shown.out and "22" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+        for table in (run_instants, attempt_instants, event_instants):
+            assert connection.scalar(sa.select(sa.func.count()).select_from(table)) == 0
+    engine.dispose()
+
+
+def test_an_exact_v22_store_migrates_to_v23(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v22_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 22"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "22" in shown.out and "23" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
         )
     engine.dispose()
 

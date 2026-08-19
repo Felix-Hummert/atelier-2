@@ -285,7 +285,30 @@ CREATE TABLE agent_receipts_v2 (
 
 
 """,
-    (21, "agent_attempts"): """
+    (21, "agent_configuration_revisions"): """
+CREATE TABLE agent_configuration_revisions (
+	revision_hash TEXT NOT NULL, 
+	model TEXT NOT NULL, 
+	auth_profile_revision_hash TEXT NOT NULL, 
+	executor_revision TEXT NOT NULL, 
+	revision_format_version INTEGER NOT NULL, 
+	requested_capability TEXT NOT NULL, 
+	PRIMARY KEY (revision_hash), 
+	UNIQUE (revision_hash, auth_profile_revision_hash, model, executor_revision), 
+	UNIQUE (revision_hash, auth_profile_revision_hash, model, executor_revision, revision_format_version, requested_capability), 
+	CHECK (length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(model) BETWEEN 1 AND 1024), 
+	CHECK (length(auth_profile_revision_hash) = 64 AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(executor_revision) BETWEEN 1 AND 1024), 
+	CHECK (revision_format_version IN (1, 2)), 
+	CHECK (requested_capability IN ('headless', 'headless_with_tools', 'interactive')), 
+	CHECK (revision_format_version = 2 OR requested_capability = 'headless'), 
+	FOREIGN KEY(auth_profile_revision_hash) REFERENCES auth_profile_revisions (revision_hash)
+)
+
+
+""",
+    (22, "agent_attempts"): """
 CREATE TABLE agent_attempts (
 	attempt_id TEXT NOT NULL, 
 	node_execution_id TEXT NOT NULL, 
@@ -326,29 +349,6 @@ CREATE TABLE agent_attempts (
 	UNIQUE (cancellation_workflow_id), 
 	UNIQUE (receipt_hash), 
 	FOREIGN KEY(receipt_hash) REFERENCES agent_receipts_v2 (receipt_hash) ON DELETE RESTRICT
-)
-
-
-""",
-    (21, "agent_configuration_revisions"): """
-CREATE TABLE agent_configuration_revisions (
-	revision_hash TEXT NOT NULL, 
-	model TEXT NOT NULL, 
-	auth_profile_revision_hash TEXT NOT NULL, 
-	executor_revision TEXT NOT NULL, 
-	revision_format_version INTEGER NOT NULL, 
-	requested_capability TEXT NOT NULL, 
-	PRIMARY KEY (revision_hash), 
-	UNIQUE (revision_hash, auth_profile_revision_hash, model, executor_revision), 
-	UNIQUE (revision_hash, auth_profile_revision_hash, model, executor_revision, revision_format_version, requested_capability), 
-	CHECK (length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'), 
-	CHECK (length(model) BETWEEN 1 AND 1024), 
-	CHECK (length(auth_profile_revision_hash) = 64 AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'), 
-	CHECK (length(executor_revision) BETWEEN 1 AND 1024), 
-	CHECK (revision_format_version IN (1, 2)), 
-	CHECK (requested_capability IN ('headless', 'headless_with_tools', 'interactive')), 
-	CHECK (revision_format_version = 2 OR requested_capability = 'headless'), 
-	FOREIGN KEY(auth_profile_revision_hash) REFERENCES auth_profile_revisions (revision_hash)
 )
 
 

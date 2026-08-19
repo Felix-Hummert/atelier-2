@@ -24,16 +24,27 @@ from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
+def _rfc3339_utc(column: str) -> str:
+    """RFC 3339 UTC at second precision."""
+
+    return f"(length({column}) = 20 AND {column} LIKE '____-__-__T__:__:__Z')"
+
+
+def _rfc3339_utc_or_null(column: str) -> str:
+    """A recording instant is absent, or RFC 3339 UTC at second precision."""
+
+    return f"({column} IS NULL OR {_rfc3339_utc(column)})"
+
+
 @dataclass(frozen=True)
 class ProductSchemaHandoff:
     version: int
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits AGENT_REFUSED. The predecessor is today's
-# published version on main. When the ladder assigns a different number
-# (#355 takes 22), change only this constant; SCHEMA_VERSION follows.
-_HOP_PREDECESSOR_VERSION = 21
+# Movable hop: this head admits AGENT_REFUSED. Predecessor is today's
+# published version (#355 landed as 22). Change only this constant to restack.
+_HOP_PREDECESSOR_VERSION = 22
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -48,6 +59,7 @@ _VERSION_EIGHTEEN = 18
 _VERSION_NINETEEN = 19
 _VERSION_TWENTY = 20
 _VERSION_TWENTY_ONE = 21
+_VERSION_TWENTY_TWO = 22
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -77,8 +89,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # sentence that stopped being true when a node could run twice. V21 admits
 # headless_with_tools as a requested capability, so a configuration may durably
 # ask for an executor whose invocation carries the provider's own tools. V22
-# admits AGENT_REFUSED as a third attempt failure code, so a named agent
-# refusal ends under its own name. The hop number is movable:
+# records when a run, attempt, or event was written, as RFC 3339 UTC.
+# Predecessor rows stay NULL — no invented time. V23 admits AGENT_REFUSED as a
+# third attempt failure code. The hop number is movable:
 # `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
@@ -96,7 +109,8 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     19: "a861d9087da05c112f88ae8ec573f57338b5ef1d04f36553922c505127b34298",
     20: "09752981999444ee4129cfe29b7322b79d2ff378f91d1af5050342eff78b8637",
     21: "6c4705f2960d1669a596ae8f3c857dd0ac15c4c94b71b4bb5998d1bac672cefe",
-    22: "d0698800581f31320e196728a82d94204ac0cdcdd565374997256b7107379b2f",
+    22: "72aa8f76942197b704f07c156adbb1e46c3b069ce16a53c6d95a067827966387",
+    23: "6d8a3af85ecc40781c6eea454e33ae625de1cf6d8726ca5c502cdcc33eb2c124",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -149,6 +163,10 @@ V20_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V21_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_ONE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_ONE],
+)
+V22_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY_TWO,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_TWO],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -979,6 +997,37 @@ sa.Index(
     run_events.c.event_kind,
     unique=True,
     sqlite_where=run_events.c.agent_attempt_id.is_not(None),
+)
+run_instants = sa.Table(
+    "run_instants",
+    metadata,
+    sa.Column("run_id", sa.Text, primary_key=True),
+    sa.Column("started_at", sa.Text, nullable=False),
+    sa.Column("ended_at", sa.Text, nullable=True),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(_rfc3339_utc("started_at")),
+    sa.CheckConstraint(_rfc3339_utc_or_null("ended_at")),
+)
+attempt_instants = sa.Table(
+    "attempt_instants",
+    metadata,
+    sa.Column("attempt_id", sa.Text, primary_key=True),
+    sa.Column("started_at", sa.Text, nullable=False),
+    sa.Column("ended_at", sa.Text, nullable=True),
+    sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(_rfc3339_utc("started_at")),
+    sa.CheckConstraint(_rfc3339_utc_or_null("ended_at")),
+)
+event_instants = sa.Table(
+    "event_instants",
+    metadata,
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("event_sequence", sa.Integer, nullable=False),
+    sa.Column("recorded_at", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("run_id", "event_sequence"),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint("event_sequence > 0"),
+    sa.CheckConstraint(_rfc3339_utc("recorded_at")),
 )
 wait_answers = sa.Table(
     "wait_answers",
@@ -1823,6 +1872,56 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'v3 node receipt access is immutable');
         END
     """,
+    "run_instants_start_no_update": """
+        CREATE TRIGGER run_instants_start_no_update
+        BEFORE UPDATE OF run_id, started_at ON run_instants BEGIN
+          SELECT RAISE(ABORT, 'run start instant is immutable');
+        END
+    """,
+    "run_instants_end_once": """
+        CREATE TRIGGER run_instants_end_once
+        BEFORE UPDATE OF ended_at ON run_instants
+        WHEN OLD.ended_at IS NOT NULL OR NEW.ended_at IS NULL BEGIN
+          SELECT RAISE(ABORT, 'run end instant is written once');
+        END
+    """,
+    "run_instants_no_delete": """
+        CREATE TRIGGER run_instants_no_delete
+        BEFORE DELETE ON run_instants BEGIN
+          SELECT RAISE(ABORT, 'run instants are immutable');
+        END
+    """,
+    "attempt_instants_start_no_update": """
+        CREATE TRIGGER attempt_instants_start_no_update
+        BEFORE UPDATE OF attempt_id, started_at ON attempt_instants BEGIN
+          SELECT RAISE(ABORT, 'attempt start instant is immutable');
+        END
+    """,
+    "attempt_instants_end_once": """
+        CREATE TRIGGER attempt_instants_end_once
+        BEFORE UPDATE OF ended_at ON attempt_instants
+        WHEN OLD.ended_at IS NOT NULL OR NEW.ended_at IS NULL BEGIN
+          SELECT RAISE(ABORT, 'attempt end instant is written once');
+        END
+    """,
+    "attempt_instants_no_delete": """
+        CREATE TRIGGER attempt_instants_no_delete
+        BEFORE DELETE ON attempt_instants BEGIN
+          SELECT RAISE(ABORT, 'attempt instants are immutable');
+        END
+    """,
+    "event_instants_no_update": """
+        CREATE TRIGGER event_instants_no_update
+        BEFORE UPDATE ON event_instants BEGIN
+          SELECT RAISE(ABORT, 'event instants are immutable');
+        END
+    """,
+    "event_instants_no_delete": """
+        CREATE TRIGGER event_instants_no_delete
+        BEFORE DELETE ON event_instants BEGIN
+          SELECT RAISE(ABORT, 'event instants are immutable');
+        END
+    """,
 }
 
 
@@ -1982,28 +2081,30 @@ def _table_fingerprint(
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
-    if version in {
-        SCHEMA_VERSION,
-        _VERSION_TWENTY_ONE,
-        _VERSION_TWENTY,
-        _VERSION_NINETEEN,
-    }:
+    later = {run_instants.name, attempt_instants.name, event_instants.name}
+    if version in {SCHEMA_VERSION, _VERSION_TWENTY_TWO}:
         return PRODUCT_TABLE_NAMES
+    if version in {_VERSION_TWENTY_ONE, _VERSION_TWENTY, _VERSION_NINETEEN}:
+        return PRODUCT_TABLE_NAMES - later
     if version in {
         _VERSION_EIGHTEEN,
         _VERSION_SEVENTEEN,
         _VERSION_SIXTEEN,
         _VERSION_FIFTEEN,
     }:
-        return PRODUCT_TABLE_NAMES - {artifacts.name}
+        return PRODUCT_TABLE_NAMES - {artifacts.name} - later
     if version == _VERSION_FOURTEEN:
-        return PRODUCT_TABLE_NAMES - {artifacts.name, tool_redemptions.name}
+        return PRODUCT_TABLE_NAMES - {artifacts.name, tool_redemptions.name} - later
     if version == _VERSION_THIRTEEN:
-        return PRODUCT_TABLE_NAMES - {
-            artifacts.name,
-            run_inputs_v3.name,
-            tool_redemptions.name,
-        }
+        return (
+            PRODUCT_TABLE_NAMES
+            - {
+                artifacts.name,
+                run_inputs_v3.name,
+                tool_redemptions.name,
+            }
+            - later
+        )
     raise UnsupportedSchemaVersion(version)
 
 
@@ -2532,10 +2633,49 @@ def _apply_v20_to_v21(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_TWENTY, _VERSION_TWENTY_ONE)
 
 
-_PREDECESSOR_ATTEMPTS_BEFORE_AGENT_REFUSED = "agent_attempts_before_agent_refused"
+_INSTANT_TABLES = (run_instants, attempt_instants, event_instants)
+_INSTANT_TRIGGERS = (
+    "run_instants_start_no_update",
+    "run_instants_end_once",
+    "run_instants_no_delete",
+    "attempt_instants_start_no_update",
+    "attempt_instants_end_once",
+    "attempt_instants_no_delete",
+    "event_instants_no_update",
+    "event_instants_no_delete",
+)
 
 
 def _apply_v21_to_v22(connection: sqlite3.Connection) -> None:
+    """Give runs, attempts, and events a home for the instant they were written.
+
+    Three additive tables, no reinterpretation of a predecessor row: a run that
+    already existed has no instant, which is what "this store never recorded
+    when" means, and never an invented clock.
+    """
+
+    for table in _INSTANT_TABLES:
+        existing = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table.name,),
+        ).fetchone()
+        if existing is not None:
+            raise StoreMigrationRefused(
+                f"schema version {_VERSION_TWENTY_ONE} already has {table.name}; "
+                "this command will not alter it"
+            )
+        connection.execute(
+            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger in _INSTANT_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+    _raise_declared_version(connection, _VERSION_TWENTY_ONE, _VERSION_TWENTY_TWO)
+
+
+_PREDECESSOR_ATTEMPTS_BEFORE_AGENT_REFUSED = "agent_attempts_before_agent_refused"
+
+
+def _apply_v22_to_v23(connection: sqlite3.Connection) -> None:
     """Admit AGENT_REFUSED as a failure code, and keep every stored row.
 
     Every stored FAILED attempt already carries PROCESS_EXITED_UNSUCCESSFULLY
@@ -2548,10 +2688,10 @@ def _apply_v21_to_v22(connection: sqlite3.Connection) -> None:
         agent_attempts,
         _PREDECESSOR_ATTEMPTS_BEFORE_AGENT_REFUSED,
         _AGENT_ATTEMPTS_TRIGGERS,
-        _VERSION_TWENTY_ONE,
+        _VERSION_TWENTY_TWO,
         SCHEMA_VERSION,
     )
-    _raise_declared_version(connection, _VERSION_TWENTY_ONE, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_TWENTY_TWO, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2597,7 +2737,8 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     ),
     _SchemaMigrationStep(_VERSION_NINETEEN, _VERSION_TWENTY, _apply_v19_to_v20),
     _SchemaMigrationStep(_VERSION_TWENTY, _VERSION_TWENTY_ONE, _apply_v20_to_v21),
-    _SchemaMigrationStep(_VERSION_TWENTY_ONE, SCHEMA_VERSION, _apply_v21_to_v22),
+    _SchemaMigrationStep(_VERSION_TWENTY_ONE, _VERSION_TWENTY_TWO, _apply_v21_to_v22),
+    _SchemaMigrationStep(_VERSION_TWENTY_TWO, SCHEMA_VERSION, _apply_v22_to_v23),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
