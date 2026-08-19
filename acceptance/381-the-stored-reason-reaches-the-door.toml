@@ -1,0 +1,12 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/381"
+
+# The stored failure reason reaches the surface the operator already looks at.
+
+[[sentence]]
+id = "an-agent-failed-event-carries-the-stored-receipt-reason"
+text = "When a V3 attempt ends as AGENT_FAILED and a node-receipt/v3 named why, the AGENT_FAILED event on the wire carries those same stored words; a failure nobody recorded carries none."
+
+[[sentence]]
+id = "a-failed-node-shows-the-stored-reason-on-the-run-page"
+text = "The run page shows the stored receipt-reason words at the failed node without a click into the panel; a node that did not fail shows none."

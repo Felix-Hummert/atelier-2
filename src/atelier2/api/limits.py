@@ -158,6 +158,8 @@ class ApiLimits:
         self.require_field(event.node_id)
         if event.event_kind is RunEventKind.AGENT_FAILED:
             self.require_field(event.payload.decode("ascii"))
+            if projection.node_receipt_reason is not None:
+                self.require_field(projection.node_receipt_reason)
         self.require_encoded_payload(event.payload)
         if (
             event.event_kind is RunEventKind.AGENT_COMPLETED

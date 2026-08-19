@@ -19,6 +19,7 @@ class PersistedRunEvent:
     event: RunEvent
     receipt: EffectReceipt | None
     workflow_format_version: WorkflowFormatVersion = WorkflowFormatVersion.V1
+    node_receipt_reason: str | None = None
 
     def __post_init__(self) -> None:
         value = self.workflow_format_version

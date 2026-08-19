@@ -1516,11 +1516,20 @@ class DbosQueries:
             code.value.encode("ascii") for code in AgentAttemptFailureCode
         }:
             raise RunTransitionConflict("agent failure event payload is not canonical")
+        node_receipt_reason = (
+            _node_receipt_refusal(
+                connection, event.run_id, event.revision_hash, event.node_id
+            )
+            if event.event_kind is RunEventKind.AGENT_FAILED
+            else None
+        )
         if event.event_kind not in {
             RunEventKind.ACTION_RECONCILIATION_RESOLVED,
             RunEventKind.ACTION_COMPLETED,
         }:
-            return PersistedRunEvent(event, None, workflow_format_version)
+            return PersistedRunEvent(
+                event, None, workflow_format_version, node_receipt_reason
+            )
         logical_key = event.receipt_logical_key
         if logical_key is None:
             raise RunTransitionConflict("receipt event has no logical key")

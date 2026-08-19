@@ -223,8 +223,16 @@ class AgentCompletedEventResourceV3(RunEventBaseResourceV3):
 
 
 class AgentFailedEventResourceV3(RunEventBaseResourceV3):
+    """A V3 agent attempt ended, with the stored receipt words when they exist.
+
+    `failure_code` is the attempt's closed name. `reason` is the same
+    `node-receipt/v3` sentence the store already kept — not a second
+    vocabulary, and none when no receipt was written.
+    """
+
     event: Literal["AGENT_FAILED"]
     failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY", "OUTPUT_SCHEMA_REFUSED"]
+    reason: str | None
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
 
