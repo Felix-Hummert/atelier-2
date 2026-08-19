@@ -1,0 +1,14 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/402"
+
+# Durable per-round artifacts already exist. The missing piece is the input
+# edge: a loop head cannot `depends_on` the tail (that is the cycle ADR 0002
+# refuses), so `from: {node, output}` was `data_edge_outside_closure` and round
+# n built blind. This sentence is that edge. It is one payload in the producing
+# output's schema, from the immediately previous round; round one is honestly
+# empty. A sequence of every earlier round is a later form, not this one.
+# A value read *out of* a loop stays refused.
+
+[[sentence]]
+id = "a-later-round-reads-the-previous-rounds-output"
+text = "A later round of a looped node whose author declared that it reads a loop-mate no depends_on edge orders is handed the exact bytes that mate produced in the immediately previous round, announced in the one job an agent receives; the first round of that node is handed none."

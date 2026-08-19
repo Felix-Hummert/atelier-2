@@ -141,6 +141,46 @@ would run to the bound and be seen doing it.
 """
 
 
+ROUND_CONTEXT_LOOP_DOCUMENT = (
+    b"""format_version: 3
+name: Build and review, the builder reading what the last review said
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+    inputs:
+      - name: last_review
+        from: {node: review, output: verdict}
+"""
+    + declared_output()
+    + b"""  - id: review
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Check what the node before you did, and say whether it is done.
+    depends_on: [implement]
+    inputs:
+      - name: candidate
+        from: {node: implement, output: result}
+"""
+    + declared_output(VERDICT_ANSWER_SCHEMA, "verdict")
+    + f"""loops:
+  - id: until_reviewed
+    body: [implement, review]
+    maximum_rounds: {VERDICT_LOOP_MAXIMUM_ROUNDS}
+    repeat_while: {{node: review, verdict: {Verdict.REVISE.value}}}
+""".encode()
+)
+"""The verdict-steered loop with the missing input edge: the builder reads the
+review that closed the previous round.
+
+Round one has no previous review, so that input is absent. Round two's builder
+is handed the first review's bytes. Same payload shape as any other `from`.
+"""
+
+
 def verdict_answer(verdict: Verdict) -> bytes:
     """What an agent writes when the answer it owes is a verdict.
 

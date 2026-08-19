@@ -92,7 +92,7 @@ from atelier2.contracts.workflows import (
     RunContinues,
     WaitNode,
     completion_after_node,
-    round_of,
+    producing_round,
 )
 from atelier2.contracts.workflows_v3 import (
     ANY_WAIT_NODE_KINDS,
@@ -210,12 +210,15 @@ def load_node_outputs(
     A node that reads nothing gets nothing: no query runs, and the composition
     is the authored instruction alone.
 
-    Which round wrote the value is read from the graph, never guessed: a
-    producer the same loop repeats wrote it in the round now turning, and a
-    producer no loop repeats wrote it once. That is why the query names the
-    producing execution rather than the producing node -- a node id alone would
-    match every round at once, and a store that has several answers to one
-    question is a store that cannot answer it.
+    Which round wrote the value is read from the graph, never guessed.
+    `producing_round` answers: a predecessor the edges order wrote in the round
+    now turning, a loop-mate the edges cannot name wrote in the previous round,
+    and a producer no loop repeats wrote once. Round one of a previous-round
+    edge delivers nothing — the source has not written yet, and that absence is
+    not a missing write. The query names the producing execution rather than the
+    producing node -- a node id alone would match every round at once, and a
+    store that has several answers to one question is a store that cannot
+    answer it.
     """
     read = tuple(
         entry.source
@@ -228,7 +231,9 @@ def load_node_outputs(
         raise RunTransitionConflict("a V3 agent node belongs to a V3 document")
     delivered: list[DeliveredOutput] = []
     for source in sorted(read, key=lambda named: (named.node, named.output)):
-        written_in = round_of(graph, source.node, round_ordinal)
+        written_in = producing_round(graph, node.id, source.node, round_ordinal)
+        if written_in is None:
+            continue
         record = session.execute(
             sa.select(run_events.c.payload, run_events.c.payload_hash).where(
                 run_events.c.run_id == run_id.value,
