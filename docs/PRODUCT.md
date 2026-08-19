@@ -771,9 +771,11 @@ how it ended and the hash of what it wrote, beside the agent receipt whose
 provider bytes stay its own. A command that exits nonzero ends the attempt
 `FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
 `failed` `node-receipt/v3`, and writes no agent receipt, no `AGENT_COMPLETED`,
-and no `tool_redemptions` row. A verification that times out after the claim
-is not this sentence. The manifest that is read is the one the pinned commit
-carries, and the
+and no `tool_redemptions` row. A granted verification that exceeds its
+declared `timeout_seconds` after the claim ends the same way: the attempt is
+`FAILED` under `PROJECT_VERIFICATION_FAILED`, the `failed` `node-receipt/v3`
+reason names the timeout, and the attempt is not left `LAUNCH_ARMED`. The
+manifest that is read is the one the pinned commit carries, and the
 directory it runs in is that same lease after the provider has worked there, so
 what a project declared stays the pin's and where it was run is the mutated
 lease rather than a rematerialized pin tree or a living checkout. Refusals are

@@ -85,9 +85,11 @@ class AgentAttemptFailureCode(StrEnum):
     # died that exited cleanly.
     AGENT_REFUSED = "AGENT_REFUSED"
     # The process ended fine and the bytes are a success the schema admits;
-    # the project's own granted check then exited nonzero. Folding this into
-    # the process code would write that the provider died; folding it into a
-    # schema or agent refusal would write that a form refused what no form saw.
+    # the project's own granted check then exited nonzero, or did not answer
+    # within its declared deadline. Folding this into the process code would
+    # write that the provider died; folding it into a schema or agent refusal
+    # would write that a form refused what no form saw. A timeout has no exit
+    # code, so it must not invent one.
     PROJECT_VERIFICATION_FAILED = "PROJECT_VERIFICATION_FAILED"
 
 
