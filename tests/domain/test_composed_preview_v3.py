@@ -113,7 +113,10 @@ DETERMINISTIC = published(
 CHILD_DETERMINISTIC = published(
     RevisionKind.DETERMINISTIC_OPERATION, "merge every review opinion"
 )
-ADAPTER = published(RevisionKind.ADAPTER_OPERATION, "comment on the requirement")
+ADAPTER = published(
+    RevisionKind.ADAPTER_OPERATION,
+    json.dumps({"operation": "open-pr"}),
+)
 
 REGISTRY_CONTENTS = (
     SCHEMA_CANDIDATE,

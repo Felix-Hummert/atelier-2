@@ -15,6 +15,7 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
 )
 from atelier2.api.wire.resources import InvalidFieldResource, ProblemResource
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationRefusal
 from atelier2.contracts.artifacts import ArtifactRefusal
 from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
 from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
@@ -151,6 +152,38 @@ def _tool_grant_document_problems() -> dict[str, ProblemDefinition]:
 
 TOOL_GRANT_DOCUMENT_PROBLEM_CODES = tuple(
     tool_grant_document_problem_code(refusal) for refusal in ToolGrantRefusal
+)
+
+
+def adapter_operation_document_problem_code(
+    refusal: AdapterOperationRefusal,
+) -> str:
+    """The problem code one adapter-operation refusal becomes on the wire.
+
+    The contract names each fault in the underscored resolution vocabulary.
+    The publication door speaks the hyphenated problem vocabulary the rest of
+    this API already uses, so the author reads the same shape as a schema or
+    tool-grant refusal. The contract token itself still stands in the detail.
+    """
+
+    return f"adapter-operation-{refusal.value.replace('_', '-')}"
+
+
+def _adapter_operation_document_problems() -> dict[str, ProblemDefinition]:
+    return {
+        adapter_operation_document_problem_code(refusal): ProblemDefinition(
+            422,
+            "Invalid adapter operation document",
+            "The document is not an adapter operation this runtime performs "
+            f"({refusal.value}).",
+        )
+        for refusal in AdapterOperationRefusal
+    }
+
+
+ADAPTER_OPERATION_DOCUMENT_PROBLEM_CODES = tuple(
+    adapter_operation_document_problem_code(refusal)
+    for refusal in AdapterOperationRefusal
 )
 
 
@@ -300,6 +333,12 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         409,
         "Tool grant revision collision",
         "Stop and inspect durable tool grant revision integrity.",
+    ),
+    **_adapter_operation_document_problems(),
+    "adapter-operation-revision-collision": ProblemDefinition(
+        409,
+        "Adapter operation revision collision",
+        "Stop and inspect durable adapter operation revision integrity.",
     ),
     "unsupported-media-type": ProblemDefinition(
         415,

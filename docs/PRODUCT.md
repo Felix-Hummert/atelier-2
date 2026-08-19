@@ -407,19 +407,30 @@ A valid V3 document is publishable long before all of it is executable: it
 becomes an immutable revision under the same exact-bytes hash identity as V1 and V2,
 and the revision projection names its format and says what still has no owner, while an
 invalid one is refused at publication carrying that named node and field. One shape of
-it runs: a single line of Agent and Wait nodes, each entered by at most one dependency
-and followed by at most one dependent, declaring no optional form the runtime does not
-bind. A document outside that shape is refused at the start naming what it is waiting
-for — a node kind nothing interprets, a branch nothing chooses between, an authored form
-nothing binds — rather than naming its version, and writes no run. V1 and V2
-documents keep their exact meaning under their own models, and their wire bytes are
-unchanged.
+it runs: a single line of Agent, Wait and linear Action nodes, each entered by at most
+one dependency and followed by at most one dependent, declaring no optional form the
+runtime does not bind. A document outside that shape is refused at the start naming
+what it is waiting for — a node kind nothing interprets, a branch nothing chooses
+between, an authored form nothing binds — rather than naming its version, and writes
+no run. V1 and V2 documents keep their exact meaning under their own models, and their
+wire bytes are unchanged.
 [ADR 0006](decisions/0006-node-vocabulary.md) owns this vocabulary and the staging
 rule behind it.
 
 Inside that shape the runtime drives the line its author wrote. Each Agent node runs
 its attempt through the same durable path a V2 node uses, and the heir its author
-declared starts when its predecessor completes. A Wait node holds the run in
+declared starts when its predecessor completes. A linear Action node pins a published
+adapter-operation revision; the one operation this runtime performs is `open-pr`.
+`POST /adapter-operation-revisions` is the publication door (bytes in, hash out,
+idempotent), and a start whose `operation.revision` is that hash gets past the
+reference that used to refuse as unpublished. The Action's request bytes are the
+predecessor Agent's output. Tests inject a fake GitHub `EffectAdapterFactory` that
+records a branch and pull-request number, writes the request hash into the pull
+request body, and answers a replay by readback rather than creating a twin. The
+served host still composes the loopback adapter; live GitHub, githubkit and a
+credential reference are not composed on serve. The token never enters the lease,
+a receipt, an event or an API projection, and the lease listing has no `.git`.
+ADR 0010 stays PROPOSED. A Wait node holds the run in
 `WAITING_INPUT` as a durable state rather than as work in progress: nothing is queued
 behind it, a restart finds it still waiting, and it moves only when a person answers.
 The V3 run page shows that wait as an answer card, with the authored question

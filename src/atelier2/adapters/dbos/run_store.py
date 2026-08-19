@@ -87,7 +87,6 @@ from atelier2.contracts.tool_grants_v3 import (
     ToolRedemptionReceipt,
 )
 from atelier2.contracts.workflows import (
-    ActionNode,
     RunCompletes,
     RunContinues,
     WaitNode,
@@ -95,6 +94,7 @@ from atelier2.contracts.workflows import (
     producing_round,
 )
 from atelier2.contracts.workflows_v3 import (
+    ANY_ACTION_NODE_KINDS,
     ANY_WAIT_NODE_KINDS,
     AgentNodeV3,
     AnyWaitNode,
@@ -619,18 +619,29 @@ def commit_action_completed(
     receipt = receipt_from_record(receipt_record)
     run_id = intent.binding.run_id
     graph = load_graph(session, revision_hash)
-    actions = [node for node in graph.nodes if isinstance(node, ActionNode)]
+    actions = [node for node in graph.nodes if isinstance(node, ANY_ACTION_NODE_KINDS)]
     if len(actions) != 1:
         raise RunTransitionConflict("confirmed intent graph has no single Action")
     action = actions[0]
     execution_id = NodeExecutionId.for_node(run_id, revision_hash, action.id)
     if (
-        not isinstance(action, ActionNode)
+        not isinstance(action, ANY_ACTION_NODE_KINDS)
         or logical_key != logical_effect_key_for(execution_id)
         or intent.binding.workflow_revision_hash != revision_hash
         or receipt.intent != intent
     ):
         raise RunTransitionConflict("logical effect key does not own current Action")
+    match completion_after_node(graph, action.id):
+        case RunContinues(successor):
+            target_state = RunState.STARTED
+            target_node_id = successor
+            terminal = False
+        case RunCompletes():
+            target_state = RunState.COMPLETED
+            target_node_id = action.id
+            terminal = True
+        case _ as unreachable:
+            assert_never(unreachable)
     return _commit_event(
         session,
         run_id,
@@ -639,10 +650,11 @@ def commit_action_completed(
         RunEventKind.ACTION_COMPLETED,
         receipt.result.payload,
         RunState.STARTED,
-        RunState.STARTED,
-        successor_of(graph, action.id),
+        target_state,
+        target_node_id,
         logical_key,
         receipt.result.payload_hash,
+        terminal=terminal,
     )
 
 

@@ -9,6 +9,7 @@ from fastapi.openapi.models import OpenAPI
 from fastapi.openapi.utils import get_openapi
 
 from atelier2.api.problems import (
+    ADAPTER_OPERATION_DOCUMENT_PROBLEM_CODES,
     ARTIFACT_PROBLEM_CODES,
     BUDGET_DOCUMENT_PROBLEM_CODES,
     PROBLEM_DEFINITIONS,
@@ -177,6 +178,14 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/tool-grant-revisions", "post"): (
         *TOOL_GRANT_DOCUMENT_PROBLEM_CODES,
         "tool-grant-revision-collision",
+        "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (API_PREFIX + "/adapter-operation-revisions", "post"): (
+        *ADAPTER_OPERATION_DOCUMENT_PROBLEM_CODES,
+        "adapter-operation-revision-collision",
         "unsupported-media-type",
         "temporarily-unavailable",
         "durable-state-corrupt",
@@ -428,6 +437,14 @@ def _install_publication_request_body(schema: dict[str, Any]) -> None:
         },
     }
     schema["paths"][API_PREFIX + "/tool-grant-revisions"]["post"]["requestBody"] = {
+        "required": True,
+        "content": {
+            "application/json": {"schema": {"type": "string", "format": "binary"}}
+        },
+    }
+    schema["paths"][API_PREFIX + "/adapter-operation-revisions"]["post"][
+        "requestBody"
+    ] = {
         "required": True,
         "content": {
             "application/json": {"schema": {"type": "string", "format": "binary"}}

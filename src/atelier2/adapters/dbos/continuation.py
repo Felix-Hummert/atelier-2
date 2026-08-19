@@ -15,18 +15,18 @@ def checkpoint_confirmed_action(
     datasource: SQLAlchemyDatasource,
     logical_key: LogicalEffectKey,
     revision_hash: WorkflowRevisionHash,
-) -> tuple[str, str]:
-    def checkpoint() -> tuple[str, str]:
+) -> tuple[str, str, str]:
+    def checkpoint() -> tuple[str, str, str]:
         snapshot = commit_action_completed(
             datasource.sql_session(), logical_key, revision_hash
         )
-        return snapshot.run_id.value, snapshot.current_node_id
+        return snapshot.run_id.value, snapshot.current_node_id, snapshot.state.value
 
     result = datasource.run_tx_step(
         {"name": ACTION_CHECKPOINT_STEP_NAME},
         checkpoint,
     )
-    return str(result[0]), str(result[1])
+    return str(result[0]), str(result[1]), str(result[2])
 
 
 def schedule_confirmed_action_continuation(

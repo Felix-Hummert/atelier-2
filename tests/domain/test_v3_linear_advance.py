@@ -58,6 +58,15 @@ _LINE = (
     + _DECLARED_OUTPUT
 )
 
+_ACTION_LINE = (
+    _ONE_NODE
+    + f"""  - id: publish
+    type: action
+    operation: {{ref: open-pr, revision: "{_ANY_JSON_REVISION}"}}
+    depends_on: [implement]
+""".encode()
+)
+
 _FAN_OUT = (
     _LINE
     + b"""  - id: document
@@ -248,6 +257,18 @@ def test_a_line_of_agent_nodes_is_executable() -> None:
 
     assert isinstance(graph, WorkflowGraphV3)
     assert graph.sink_node_ids == ("review",)
+
+
+@pytest.mark.proves(
+    "an-open-pr-adapter-operation-is-published-and-pinned-by-a-v3-action"
+)
+def test_a_line_of_agent_then_action_is_executable() -> None:
+    graph = parse_executable_workflow_document(_ACTION_LINE)
+
+    assert isinstance(graph, WorkflowGraphV3)
+    assert graph.sink_node_ids == ("publish",)
+    assert completion_after_node(graph, "implement") == RunContinues("publish")
+    assert completion_after_node(graph, "publish") == RunCompletes()
 
 
 @pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
