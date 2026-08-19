@@ -344,9 +344,17 @@ def test_overlong_decoded_reference_and_cursor_keep_their_existing_codes() -> No
             "last-event-id": "event1.cnVu.123",
         },
     )
+    attention_cursor = client.get(
+        "/atelier/api/v1/events",
+        headers={
+            "accept": "text/event-stream",
+            "last-event-id": "event1.cnVu.123",
+        },
+    )
 
     assert_problem(reference, 400, "invalid-public-run-reference")
     assert_problem(cursor, 400, "invalid-event-cursor")
+    assert_problem(attention_cursor, 400, "invalid-event-cursor")
 
 
 def test_public_reference_is_bounded_before_base64_decode(

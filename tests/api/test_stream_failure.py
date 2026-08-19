@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Never
 
 import pytest
 from fastapi.sse import ServerSentEvent
@@ -52,6 +52,7 @@ from tests.scenarios.api import (
     event_stream_client,
     stream_page_reader,
     stream_run_projection,
+    unused_attention_event_page,
 )
 
 READY_NONTERMINAL_HEAD = StreamReady(1, False, 0)
@@ -90,6 +91,17 @@ class OnePageQueries:
         if self.page_calls > 1:
             raise AssertionError("a terminal failure frame did not end the stream")
         return self.page
+
+    def read_attention_event_page(
+        self,
+        after_run_id: RunId | None,
+        after_sequence: int | None,
+        limit: int,
+        excluded_identities: tuple[tuple[RunId, int], ...] = (),
+    ) -> Never:
+        return unused_attention_event_page(
+            after_run_id, after_sequence, limit, excluded_identities
+        )
 
 
 def persisted_event(

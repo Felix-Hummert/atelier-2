@@ -75,6 +75,7 @@ WORKFLOW_DOCUMENT_GRAMMAR_SCOPE = (
     "the document is published."
 )
 EVENT_PATH = API_PREFIX + "/runs/{public_ref}/events"
+ATTENTION_EVENT_PATH = API_PREFIX + "/events"
 CANCELLATION_PATH = (
     API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations"
 )
@@ -350,6 +351,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "event-cursor-ahead",
         "not-acceptable",
         "run-not-found",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (ATTENTION_EVENT_PATH, "get"): (
+        "invalid-event-cursor",
+        "not-acceptable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -782,7 +790,12 @@ def _replace_parameter_schema(
 
 
 def _install_sse_contract(schema: dict[str, Any]) -> None:
-    operation = schema["paths"][EVENT_PATH]["get"]
+    for path in (EVENT_PATH, ATTENTION_EVENT_PATH):
+        _install_sse_path(schema, path)
+
+
+def _install_sse_path(schema: dict[str, Any], path: str) -> None:
+    operation = schema["paths"][path]["get"]
     operation.setdefault("parameters", []).append(
         {
             "name": "Last-Event-ID",

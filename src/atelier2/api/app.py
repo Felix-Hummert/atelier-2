@@ -47,6 +47,7 @@ from atelier2.application.read_agent_configurations import (
     list_agent_configuration_revisions,
     list_auth_profile_revisions,
 )
+from atelier2.application.read_attention_events import read_attention_events
 from atelier2.application.read_run_events import read_run_events
 from atelier2.application.read_runs import (
     get_node_detail,
@@ -133,6 +134,17 @@ def bound_use_cases(
             after_sequence,
             page_size,
             ports.run_event_queries,
+        ),
+        read_attention_events=(
+            lambda after_run_id, after_sequence, page_size, excluded_identities=(): (
+                read_attention_events(
+                    after_run_id,
+                    after_sequence,
+                    page_size,
+                    ports.run_event_queries,
+                    excluded_identities,
+                )
+            )
         ),
         publish_workflow_revision=lambda document: publish_workflow_revision(
             document,

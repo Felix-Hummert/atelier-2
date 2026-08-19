@@ -18,6 +18,7 @@ from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import (
     API_PREFIX,
+    ATTENTION_EVENT_PATH,
     CANCELLATION_PATH,
     EVENT_NAMES,
     EVENT_PATH,
@@ -91,6 +92,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/runs/{public_ref}/reconciliations",
     CANCELLATION_PATH,
     EVENT_PATH,
+    ATTENTION_EVENT_PATH,
 }
 
 EXPECTED_ROUTE_SEQUENCE = (
@@ -175,6 +177,7 @@ EXPECTED_ROUTE_SEQUENCE = (
         "reconcile_run_route",
     ),
     ("GET", EVENT_PATH, "event_stream_route"),
+    ("GET", ATTENTION_EVENT_PATH, "attention_event_stream_route"),
 )
 
 EXPECTED_SUCCESS_STATUSES = {
@@ -198,6 +201,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/runs/{public_ref}/reconciliations", "post"): {"200", "202"},
     (CANCELLATION_PATH, "post"): {"200", "202"},
     (EVENT_PATH, "get"): {"200"},
+    (ATTENTION_EVENT_PATH, "get"): {"200"},
 }
 
 
@@ -253,10 +257,9 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head admits V3 Action events (`ACTION_COMPLETED` and the
-    reconciliation twins) beside the V24 `PROJECT_VERIFICATION_FAILED` member.
-    Refreshing the artefact alongside a refactor is what this test still
-    refuses.
+    it. This head admits `GET /events` beside the V3 Action events and the V24
+    `PROJECT_VERIFICATION_FAILED` member. Refreshing the artefact alongside a
+    refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
@@ -281,11 +284,7 @@ def test_openapi_31_validates_and_describes_exact_r2_surface() -> None:
 def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> None:
     schema = served_app().openapi()
 
-    content = schema["paths"][EVENT_PATH]["get"]["responses"]["200"]["content"]
-    assert set(content) == {"text/event-stream"}
-    assert content["text/event-stream"]["schema"] == {"type": "string"}
-    extension = content["text/event-stream"]["x-atelier2-sse-v1"]
-    assert extension == {
+    envelope = {
         "durable_event": {
             "id": {"$ref": "#/components/schemas/EventCursor"},
             "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
@@ -294,6 +293,11 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
             "data": {"$ref": "#/components/schemas/StreamFailureResource"}
         },
     }
+    for path in (EVENT_PATH, ATTENTION_EVENT_PATH):
+        content = schema["paths"][path]["get"]["responses"]["200"]["content"]
+        assert set(content) == {"text/event-stream"}
+        assert content["text/event-stream"]["schema"] == {"type": "string"}
+        assert content["text/event-stream"]["x-atelier2-sse-v1"] == envelope
     failure_frame = schema["components"]["schemas"]["StreamFailureResource"]
     assert failure_frame["properties"]["event"]["const"] == "STREAM_FAILED"
     assert failure_frame["properties"]["problem"] == {
@@ -316,6 +320,13 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     }
     assert parameters[("public_ref", "path")]["schema"] == {
         "$ref": "#/components/schemas/PublicRunReference"
+    }
+    attention_parameters = {
+        (parameter["name"], parameter["in"]): parameter
+        for parameter in schema["paths"][ATTENTION_EVENT_PATH]["get"]["parameters"]
+    }
+    assert attention_parameters[("Last-Event-ID", "header")]["schema"] == {
+        "$ref": "#/components/schemas/EventCursor"
     }
 
 

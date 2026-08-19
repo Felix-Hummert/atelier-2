@@ -564,7 +564,19 @@ read the agent receipts a run has written;
 an `invalid-request` names the field and reason the validator already knew;
 answer a waiting node; cancel the current V2 Agent attempt with an optional
 single replacement; submit an accountable reconciliation; and follow the
-closed durable event history as a resumable server-sent event stream. A served V2
+closed durable event history as a resumable server-sent event stream. A
+subscriber who does not already know a run holds `GET /events`; opening that
+stream is the subscription. The feed is closed to `WAITING_INPUT` and
+`AGENT_FAILED`, in the same envelope and `VersionedRunEventResource` the
+per-run stream emits. `Last-Event-ID` resumes by same-instant identity
+exclusion: from that event1's instant T,
+`recorded_at > T OR (recorded_at == T AND (run_id, seq) not among identities
+already emitted at T)`. Last-Event-ID seeds the set with that cursor only; a
+live holder adds each identity it emits and resets the set when the second
+advances. Second-precision instants make two waits in one second the normal
+case, so lexicographic `(recorded_at, run_id, seq) > cursor` is not the resume
+rule. Pre-V22 events whose instant is NULL
+stay off the feed rather than inventing a time. A served V2
 run also names the state of every node of the revision it is bound to, so a reader
 is told where each node stands instead of computing it: one pure function in the
 core derives that rail from the run snapshot, that revision, and the events since,

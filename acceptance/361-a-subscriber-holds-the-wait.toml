@@ -1,0 +1,19 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/361"
+
+# First thin slice of the delivery door. The events already exist; this head
+# delivers two of them to a subscriber who does not already know a run.
+# Opening GET /events is the subscription. No webhook, no MCP notify, no
+# reaction workflow, no durable subscription table.
+#
+# WHAT THIS HEAD DOES NOT CLAIM:
+#
+#   - NO WEBHOOK AND NO MCP NOTIFY. Those doors wait on their own slices.
+#   - NO REACTION WORKFLOW. A received event does not start the next run.
+#   - NO COCKPIT CLIENT. The browser still follows one run at a time.
+#   - NO SCHEMA HOP. Pre-V22 events whose instant is NULL stay off this feed
+#     rather than inventing a time; that absence is named, not filled.
+
+[[sentence]]
+id = "a-client-holding-events-receives-a-wait"
+text = "A client holding GET /atelier/api/v1/events receives WAITING_INPUT when a V3 wait-node run writes it, and reconnecting with that event's Last-Event-ID does not duplicate it."

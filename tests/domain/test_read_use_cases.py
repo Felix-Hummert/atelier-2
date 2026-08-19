@@ -126,6 +126,9 @@ class ScriptedQueries:
     def read_run_event_page(self, *arguments: Any, **keywords: Any) -> Any:
         raise AssertionError("a read under test reached the event page port")
 
+    def read_attention_event_page(self, *arguments: Any, **keywords: Any) -> Any:
+        raise AssertionError("a read under test reached the attention feed")
+
     def get_reconciliation_retry_target(self, *arguments: Any, **keywords: Any) -> Any:
         raise AssertionError("a read under test reached the retry target port")
 
