@@ -18,6 +18,7 @@ where this map and an owner disagree, the owner is right.
 | Why was it built this way? | Decisions | Records indexed by [decisions/README.md](decisions/README.md). |
 | What exists today? | Product | [PRODUCT.md](PRODUCT.md). Implementation status. |
 | How is this installation started? | Operations | [OPERATIONS.md](OPERATIONS.md). The operator runbook for the packaged serve. |
+| How is an executor toolchain pinned? | Operations | [OPERATIONS.md](OPERATIONS.md). An atelier-owned copy; not the operator's daily `~/.local/bin` CLI. |
 
 Agent policy lives in [`AGENTS.md`](../AGENTS.md) at the repository root, not here.
 
