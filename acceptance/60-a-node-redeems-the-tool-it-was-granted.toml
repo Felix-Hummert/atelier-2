@@ -74,3 +74,7 @@ text = "The verification a redeeming node runs is read from the manifest the pin
 [[sentence]]
 id = "a-pin-no-source-can-answer-for-refuses-before-the-claim"
 text = "An attempt whose pinned commit its project source can no longer answer for is refused in that source's own words before the attempt is claimed and before any workspace is leased; and a durable binding carrying half a pin, a pin naming no objects, or a tool grant with no pin at all is refused as the binding conflict it is."
+
+[[sentence]]
+id = "a-nonzero-project-verification-fails-the-attempt-durably-named"
+text = "granted verify that exits nonzero ends the attempt `FAILED` under `PROJECT_VERIFICATION_FAILED`; `AGENT_FAILED` carries that code; `failed` `node-receipt/v3` opens with `project-verification-failed`; no agent receipt; no `AGENT_COMPLETED`; run does not complete. How the command ended lives in the receipt reason, not a `tool_redemptions` row on this path."
