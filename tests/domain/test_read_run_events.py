@@ -49,6 +49,10 @@ class ScriptedEvents:
     def prepare_run_event_stream(self, run_id: Any, after_sequence: int) -> Any:
         raise AssertionError("a page read under test prepared a stream")
 
+    def read_attention_event_page(self, *arguments: Any, **keywords: Any) -> Any:
+        del arguments, keywords
+        raise AssertionError("a page read under test reached the attention feed")
+
 
 def read(answer: Any, page_size: int = 2) -> tuple[ReadRunEventsResult, ScriptedEvents]:
     queries = ScriptedEvents(answer)

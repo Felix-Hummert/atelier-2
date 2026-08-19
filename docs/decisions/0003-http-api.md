@@ -18,7 +18,13 @@ secret-free auth-profile and agent-configuration revisions, exact safe-YAML
 workflow bytes, and exact JSON Schema bytes, starts runs from published
 revisions, projects revision and run pages, accepts Wait answers,
 current-attempt cancellation commands, and reconciliation commands, and streams
-the eleven implemented durable event kinds. It does not accept credentials or own a parallel run, command, or event
+the eleven implemented durable event kinds. A subscriber who does not already
+know a run holds `GET /events`: opening that stream is the subscription. The
+feed emits only `WAITING_INPUT` and `AGENT_FAILED`, in the same SSE envelope
+and `VersionedRunEventResource` bytes as the per-run stream. `Last-Event-ID`
+is the last emitted `event1` cursor; resume continues at
+`(recorded_at, run_id, seq)` strictly after that cursor. Events whose V22
+instant is NULL stay off this feed; the feed does not invent a time. It does not accept credentials or own a parallel run, command, or event
 state machine. Cancellation returns `202` while cleanup is pending and `200` for
 an exact terminal retry. Stale, terminal, non-current, conflicting-command, and
 forbidden-replacement requests are distinct closed problems.

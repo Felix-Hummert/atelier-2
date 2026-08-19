@@ -30,6 +30,7 @@ from tests.scenarios.api import (
     api_ports,
     event_poll_backoff,
     stream_run_projection,
+    unused_attention_event_page,
 )
 
 
@@ -56,6 +57,14 @@ class FakeEventQueries:
         del run_id, after_sequence, limit, projection_limit
         self.page_calls += 1
         raise AssertionError("pre-header rejection started event paging")
+
+    def read_attention_event_page(
+        self,
+        after_run_id: RunId | None,
+        after_sequence: int | None,
+        limit: int,
+    ) -> object:
+        return unused_attention_event_page(after_run_id, after_sequence, limit)
 
 
 def app_for(queries: FakeEventQueries):

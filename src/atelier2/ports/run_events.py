@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from atelier2.contracts.run_events import RunEventPage
+from atelier2.contracts.run_events import PersistedRunEvent, RunEventPage
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_queries import (
     RunQueryMissing,
@@ -49,6 +49,25 @@ type ReadRunEventPageResult = (
 )
 
 
+@dataclass(frozen=True)
+class AttentionEventPage:
+    events: tuple[PersistedRunEvent, ...]
+
+
+@dataclass(frozen=True)
+class AttentionCursorUnknown:
+    """Last-Event-ID is not a WAITING_INPUT or AGENT_FAILED event with a V22 instant."""
+
+
+type ReadAttentionEventPageResult = (
+    AttentionEventPage
+    | AttentionCursorUnknown
+    | ReadUnavailable
+    | ProjectionTooLarge
+    | QueryDurableStateCorrupt
+)
+
+
 class RunEventQueries(Protocol):
     def prepare_run_event_stream(
         self, run_id: RunId, after_sequence: int
@@ -60,3 +79,10 @@ class RunEventQueries(Protocol):
         after_sequence: int,
         limit: int,
     ) -> ReadRunEventPageResult: ...
+
+    def read_attention_event_page(
+        self,
+        after_run_id: RunId | None,
+        after_sequence: int | None,
+        limit: int,
+    ) -> ReadAttentionEventPageResult: ...

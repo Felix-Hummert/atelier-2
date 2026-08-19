@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Never
 
 import pytest
 from fastapi.sse import ServerSentEvent
@@ -29,7 +30,12 @@ from atelier2.ports.run_events import (
     PrepareRunEventStreamResult,
 )
 from tests.api.test_agent_attempts import v2_run_projection
-from tests.scenarios.api import api_limits, event_poll_backoff, stream_page_reader
+from tests.scenarios.api import (
+    api_limits,
+    event_poll_backoff,
+    stream_page_reader,
+    unused_attention_event_page,
+)
 
 
 class OnePageOfEvents:
@@ -53,6 +59,14 @@ class OnePageOfEvents:
     ) -> RunEventPage:
         del run_id, after_sequence, limit, projection_limit
         return RunEventPage(self._events, True)
+
+    def read_attention_event_page(
+        self,
+        after_run_id: RunId | None,
+        after_sequence: int | None,
+        limit: int,
+    ) -> Never:
+        return unused_attention_event_page(after_run_id, after_sequence, limit)
 
 
 def agent_completed(projection: RunProjection) -> PersistedRunEvent:

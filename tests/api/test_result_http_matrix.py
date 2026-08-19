@@ -116,7 +116,12 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionFound,
     WorkflowRevisionMissing,
 )
-from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
+from tests.scenarios.api import (
+    api_limits,
+    api_ports,
+    event_poll_backoff,
+    unused_attention_event_page,
+)
 
 DOCUMENT = b"""format_version: 1
 start: final
@@ -912,6 +917,14 @@ class MatrixQueries:
     ) -> ReadRunEventPageResult:
         del run_id, after_sequence, limit, projection_limit
         raise AssertionError("terminal matrix stream unexpectedly paged events")
+
+    def read_attention_event_page(
+        self,
+        after_run_id: RunId | None,
+        after_sequence: int | None,
+        limit: int,
+    ) -> object:
+        return unused_attention_event_page(after_run_id, after_sequence, limit)
 
 
 def _ports(case: RouteResultCase) -> ApiPorts:

@@ -13,6 +13,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.attention_events import load_attention_event_page
 from atelier2.adapters.dbos.effect_store import (
     command_snapshot_from_record,
     intent_snapshot_from_record,
@@ -113,6 +114,7 @@ from atelier2.ports.run_events import (
     CursorAhead,
     EventHistoryCorrupt,
     PrepareRunEventStreamResult,
+    ReadAttentionEventPageResult,
     ReadRunEventPageResult,
     StreamReady,
 )
@@ -1499,6 +1501,40 @@ class DbosQueries:
                 return RunEventPage(
                     events,
                     terminal_sequences == (head,),
+                )
+        except ProjectionLimitExceeded:
+            return ProjectionTooLarge()
+        except (OperationalError, PoolTimeoutError):
+            return ReadUnavailable()
+        except (
+            RevisionHashCollision,
+            RunTransitionConflict,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            DatabaseError,
+        ):
+            return QueryDurableStateCorrupt()
+
+    def read_attention_event_page(
+        self,
+        after_run_id: RunId | None,
+        after_sequence: int | None,
+        limit: int,
+    ) -> ReadAttentionEventPageResult:
+        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+            raise ValueError(
+                f"event page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+            )
+        try:
+            with self._connection() as connection:
+                return load_attention_event_page(
+                    connection,
+                    after_run_id,
+                    after_sequence,
+                    limit,
+                    self._projection_limit,
+                    self._event_projection,
                 )
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()

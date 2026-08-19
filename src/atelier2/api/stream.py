@@ -17,11 +17,18 @@ from atelier2.application.project_node_rail import (
     NodeRailUnprojectable,
     project_node_rail,
 )
+from atelier2.application.read_attention_events import (
+    AttentionCursorUnknown,
+    AttentionEventPageOversized,
+    AttentionEventsRead,
+    ReadAttentionEventsResult,
+)
 from atelier2.application.read_run_events import (
     ReadRunEventsResult,
     RunEventPageOversized,
     RunEventsRead,
 )
+from atelier2.application.read_runs import GetRunResult, RunNotFound, RunRead
 from atelier2.application.refusals import (
     DurableStateCorrupt,
     ProjectionTooLarge,
@@ -67,6 +74,13 @@ class PreparedEventStream:
     spares every reader that rebuild: one durable read per stream, onto which the
     events streamed afterwards are folded.
     """
+
+
+@dataclass(frozen=True)
+class PreparedAttentionStream:
+    after_run_id: RunId | None
+    after_sequence: int | None
+    """Exclusive resume point: continue (recorded_at, run_id, seq) after this event1 cursor."""
 
 
 @dataclass(frozen=True)
@@ -250,6 +264,119 @@ async def stream_server_events(
             after_sequence = resource.sequence
         if page.terminal_seen:
             return
+        if not page.events:
+            await sleep(next_poll_delay)
+            next_poll_delay = min(
+                poll_backoff.maximum_delay_seconds,
+                next_poll_delay * poll_backoff.multiplier,
+            )
+
+
+async def stream_attention_events(
+    prepared: PreparedAttentionStream,
+    read_page: Callable[[RunId | None, int | None, int], ReadAttentionEventsResult],
+    get_run: Callable[[RunId], GetRunResult],
+    runner: BoundedQueryRunner,
+    *,
+    page_size: PageLimit,
+    limits: ApiLimits,
+    poll_backoff: EventPollBackoff,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> AsyncIterator[ServerSentEvent]:
+    """Forward WAITING_INPUT and AGENT_FAILED across runs until the client leaves.
+
+    The feed does not end: a terminal run is one event, not the end of the
+    subscription. Backpressure and transient unavailability end regularly so
+    the client's own reconnect is the answer to both.
+    """
+    after_run_id = prepared.after_run_id
+    after_sequence = prepared.after_sequence
+    next_poll_delay = poll_backoff.initial_delay_seconds
+    while True:
+        try:
+            result = await runner.run(
+                lambda current_run_id=after_run_id, current_sequence=after_sequence: (
+                    read_page(current_run_id, current_sequence, page_size.value)
+                )
+            )
+        except QueryAdmissionTimeout:
+            return
+        match result:
+            case AttentionEventsRead() as page:
+                pass
+            case AttentionCursorUnknown() | DurableStateCorrupt():
+                yield _stream_failure("durable-state-corrupt")
+                return
+            case ReadUnavailable():
+                return
+            case ProjectionTooLarge():
+                yield _stream_failure(
+                    "temporarily-unavailable", PROJECTION_LIMIT_DETAIL
+                )
+                return
+            case AttentionEventPageOversized():
+                yield _stream_failure("internal-error")
+                return
+            case _ as unreachable:
+                assert_never(unreachable)
+        try:
+            for persisted in page.events:
+                limits.require_event_projection(persisted)
+        except ApiLimitExceeded:
+            yield _stream_failure("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            return
+        except ValueError:
+            yield _stream_failure("durable-state-corrupt")
+            return
+        if page.events:
+            next_poll_delay = poll_backoff.initial_delay_seconds
+        for persisted in page.events:
+            try:
+                run_result = await runner.run(
+                    lambda current_run_id=persisted.event.run_id: get_run(
+                        current_run_id
+                    )
+                )
+            except QueryAdmissionTimeout:
+                return
+            match run_result:
+                case RunRead(projection):
+                    pass
+                case RunNotFound() | DurableStateCorrupt():
+                    yield _stream_failure("durable-state-corrupt")
+                    return
+                case ReadUnavailable():
+                    return
+                case ProjectionTooLarge():
+                    yield _stream_failure(
+                        "temporarily-unavailable", PROJECTION_LIMIT_DETAIL
+                    )
+                    return
+                case _ as unreachable:
+                    assert_never(unreachable)
+            try:
+                limits.require_run_projection(projection)
+                resource = run_event_resource(
+                    persisted,
+                    node_rail_resources(project_node_rail(projection, (persisted,))),
+                )
+            except ApiLimitExceeded:
+                yield _stream_failure(
+                    "temporarily-unavailable", PROJECTION_LIMIT_DETAIL
+                )
+                return
+            except (ValueError, NodeRailUnprojectable):
+                yield _stream_failure("durable-state-corrupt")
+                return
+            except AssertionError:
+                yield _stream_failure("internal-error")
+                return
+            yield ServerSentEvent(
+                id=resource.cursor,
+                data=resource,
+            )
+            after_run_id = persisted.event.run_id
+            after_sequence = persisted.event.event_sequence
         if not page.events:
             await sleep(next_poll_delay)
             next_poll_delay = min(

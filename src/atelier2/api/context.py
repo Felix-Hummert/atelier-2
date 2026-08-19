@@ -35,6 +35,7 @@ from atelier2.application.read_agent_configurations import (
     ListAgentConfigurationRevisionsResult,
     ListAuthProfileRevisionsResult,
 )
+from atelier2.application.read_attention_events import ReadAttentionEventsResult
 from atelier2.application.read_run_events import ReadRunEventsResult
 from atelier2.application.read_runs import (
     GetNodeDetailUseCaseResult,
@@ -141,6 +142,9 @@ class ApiUseCases:
     list_runs: Callable[[RunId | None, int, RunState | None], ListRunsResult]
     prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
     read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
+    read_attention_events: Callable[
+        [RunId | None, int | None, int], ReadAttentionEventsResult
+    ]
     publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
     publish_artifact: Callable[[bytes], PublishArtifactUseCaseResult]
     publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
