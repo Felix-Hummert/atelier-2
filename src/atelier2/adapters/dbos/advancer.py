@@ -24,7 +24,13 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
-from atelier2.contracts.workflows_v3 import WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import (
+    ANY_ACTION_NODE_KINDS,
+    ActionNodeV3,
+    AgentNodeV3,
+    AnyWorkflowDocument,
+    WorkflowGraphV3,
+)
 
 
 class EffectIntentIdentityConflict(RuntimeError):
@@ -47,16 +53,11 @@ def graph_action_intent(
     if (
         run.revision_hash != revision_hash
         or run.state is not RunState.STARTED
-        or not isinstance(action, ActionNode)
+        or not isinstance(action, ANY_ACTION_NODE_KINDS)
     ):
         raise RunEffectConflict("effect requires the current STARTED Action")
-    if isinstance(graph, WorkflowGraphV3):
-        # Unreachable today: the executable door refuses a V3 document carrying an
-        # Action node, so no V3 run owns one. Named rather than assumed, so the
-        # day an Action kind is interpreted this says what is missing.
-        raise RunEffectConflict("a V3 Action node has no effect path yet")
-    predecessor = graph.predecessor(action.id)
-    if not isinstance(predecessor, (AgentNode, AgentNodeV2)):
+    predecessor = _action_predecessor(graph, action)
+    if not isinstance(predecessor, (AgentNode, AgentNodeV2, AgentNodeV3)):
         raise RunEffectConflict("Action predecessor is not an Agent")
     record = session.execute(
         sa.select(run_events.c.payload, run_events.c.payload_hash).where(
@@ -136,3 +137,16 @@ def prepare_graph_action(
         EffectIntentState.PREPARED,
         EffectIntentStateVersion(0),
     )
+
+
+def _action_predecessor(
+    graph: AnyWorkflowDocument, action: ActionNode | ActionNodeV3
+) -> object:
+    if isinstance(graph, WorkflowGraphV3):
+        if not isinstance(action, ActionNodeV3) or len(action.depends_on) != 1:
+            raise RunEffectConflict("Action predecessor is not an Agent")
+        predecessor = graph.node(action.depends_on[0])
+        if not isinstance(predecessor, AgentNodeV3):
+            raise RunEffectConflict("Action predecessor is not an Agent")
+        return predecessor
+    return graph.predecessor(action.id)

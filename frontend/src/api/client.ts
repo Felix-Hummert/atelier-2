@@ -532,10 +532,13 @@ const runV2Schema = z
  * by id and carries no `current_node` object and no `agent_attempts`. It carries
  * no `waiting` block either, although it does reach WAITING_INPUT: what a V3
  * Wait node asks and which schema judges the answer belong to the document, and
- * the rail is what marks the node owing a person a move. Widening `runSchema`
- * would push a "this format has no such thing" guard onto every reader of those
- * fields; keeping it separate leaves the V2 cockpit exactly as it was and lets
- * the V3 view render what actually exists.
+ * the rail is what marks the node owing a person a move. A linear Action can
+ * also leave the run `WAITING_RECONCILIATION`; that state is named here, and
+ * the question itself still lives on the document and the event stream, not
+ * on a `waiting` block. Widening `runSchema` would push a "this format has no
+ * such thing" guard onto every reader of those fields; keeping it separate
+ * leaves the V2 cockpit exactly as it was and lets the V3 view render what
+ * actually exists.
  */
 const runV3Schema = z
   .object({
@@ -547,7 +550,7 @@ const runV3Schema = z
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
     state_version: nonnegativeSafeInteger,
-    state: z.enum(["STARTED", "WAITING_INPUT", "COMPLETED", "FAILED"]),
+    state: z.enum(["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED", "FAILED"]),
     current_node_id: z.string().min(1),
     node_rail: z.array(nodeRailEntrySchema).min(1),
     terminal_hash: sha256.nullable(),
@@ -768,8 +771,10 @@ const runEventV2Schema = z
  * events through the same attempt store as a version-2 one and its pauses
  * through the same wait path, so the attempt and the rail travel the same way.
  * Its answer is base64 rather than the V2 shape's decimal text, because a V3
- * wait admits whatever its declared schema admits. What is absent is absent on
- * purpose: no format-3 run persists an Action or Subworkflow event today.
+ * wait admits whatever its declared schema admits. A linear Action persists
+ * the same durable-effect kinds V2 already names, so those receipts travel
+ * here with the rail. Subworkflow events stay absent: no format-3 run
+ * persists that kind today.
  */
 const v3EventBase = {
   workflow_format_version: z.literal(3),
@@ -784,6 +789,9 @@ const runEventV3Schema = z
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("ACTION_RECONCILIATION_REQUIRED"), request_base64: standardBase64, request_hash: sha256 }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("ACTION_RECONCILIATION_RESOLVED"), receipt: receiptSchema }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("ACTION_COMPLETED"), receipt: receiptSchema }).strict(),
     z.object({ ...v3EventBase, event: z.literal("WAITING_INPUT") }).strict(),
     z.object({ ...v3EventBase, event: z.literal("WAIT_ANSWERED"), answer_base64: standardBase64, answer_hash: sha256 }).strict()
   ])
@@ -837,6 +845,13 @@ export const problemDefinitions = {
   "invalid-workflow-document": { status: 422, title: "Invalid workflow document" },
   "artifact-empty": { status: 422, title: "Artifact refused" },
   "artifact-too-large": { status: 422, title: "Artifact refused" },
+  "adapter-operation-document-too-large": { status: 422, title: "Invalid adapter operation document" },
+  "adapter-operation-document-not-utf8": { status: 422, title: "Invalid adapter operation document" },
+  "adapter-operation-not-an-operation-object": { status: 422, title: "Invalid adapter operation document" },
+  "adapter-operation-unknown-field": { status: 422, title: "Invalid adapter operation document" },
+  "adapter-operation-missing-operation": { status: 422, title: "Invalid adapter operation document" },
+  "adapter-operation-unknown-operation": { status: 422, title: "Invalid adapter operation document" },
+  "adapter-operation-revision-collision": { status: 409, title: "Adapter operation revision collision" },
   "schema-document-too-large": { status: 422, title: "Invalid schema document" },
   "schema-document-not-utf8": { status: 422, title: "Invalid schema document" },
   "schema-document-carries-byte-order-mark": { status: 422, title: "Invalid schema document" },
@@ -924,6 +939,13 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant("invalid-workflow-document", problemDefinitions["invalid-workflow-document"]),
   problemVariant("artifact-empty", problemDefinitions["artifact-empty"]),
   problemVariant("artifact-too-large", problemDefinitions["artifact-too-large"]),
+  problemVariant("adapter-operation-document-too-large", problemDefinitions["adapter-operation-document-too-large"]),
+  problemVariant("adapter-operation-document-not-utf8", problemDefinitions["adapter-operation-document-not-utf8"]),
+  problemVariant("adapter-operation-not-an-operation-object", problemDefinitions["adapter-operation-not-an-operation-object"]),
+  problemVariant("adapter-operation-unknown-field", problemDefinitions["adapter-operation-unknown-field"]),
+  problemVariant("adapter-operation-missing-operation", problemDefinitions["adapter-operation-missing-operation"]),
+  problemVariant("adapter-operation-unknown-operation", problemDefinitions["adapter-operation-unknown-operation"]),
+  problemVariant("adapter-operation-revision-collision", problemDefinitions["adapter-operation-revision-collision"]),
   problemVariant("schema-document-too-large", problemDefinitions["schema-document-too-large"]),
   problemVariant("schema-document-not-utf8", problemDefinitions["schema-document-not-utf8"]),
   problemVariant("schema-document-carries-byte-order-mark", problemDefinitions["schema-document-carries-byte-order-mark"]),

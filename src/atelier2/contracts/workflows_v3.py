@@ -24,6 +24,7 @@ from atelier2.contracts.workflow_refusals import (
     WorkflowRefusalReason,
 )
 from atelier2.contracts.workflows import (
+    ActionNode,
     AnyWorkflowGraph,
     AnyWorkflowNode,
     NonemptyString,
@@ -502,6 +503,15 @@ A store guard asks "is this the kind that may stand in WAITING_INPUT", and the
 answer is one question with two spellings. Kept together so a guard that admits
 one format cannot silently refuse the other, which is how a durable run ends up
 in a state its own reader calls impossible.
+"""
+
+type AnyActionNode = ActionNode | ActionNodeV3
+ANY_ACTION_NODE_KINDS = (ActionNode, ActionNodeV3)
+"""The node classes that perform an external effect, across every executable format.
+
+A store guard asks "is this the kind that may stand in WAITING_RECONCILIATION",
+and the answer is one question with two spellings. Kept together so a V3 Action
+cannot be refused as the wrong kind while a V1 Action is admitted.
 """
 
 
@@ -1387,24 +1397,26 @@ started and quietly given nothing.
 """
 
 
-V3_INTERPRETED_NODE_KINDS = (AgentNodeV3, WaitNodeV3)
+V3_INTERPRETED_NODE_KINDS = (AgentNodeV3, WaitNodeV3, ActionNodeV3)
 """The node classes a run of this build actually reaches and executes.
 
 An Agent node runs its attempt through the durable attempt path; a Wait node
-holds the run for a person and is carried on by their answer. The remaining
-three name work no runtime performs, so a document declaring one is refused by
-the kind it wrote rather than started and abandoned when the run arrives there.
+holds the run for a person and is carried on by their answer; a linear Action
+node performs the published adapter operation its `operation` pin names. The
+remaining two name work no runtime performs, so a document declaring one is
+refused by the kind it wrote rather than started and abandoned when the run
+arrives there.
 """
 
 
 def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     """What this document declares that no runtime binds yet, or None if nothing.
 
-    The executable shape is a line of Agent and Wait nodes: each entered by at
-    most one dependency and followed by at most one dependent, ending in a single
-    sink, declaring nothing else optional. It is checked as a form rather than as
-    a list of kinds, because a kind check would admit a document whose skills or
-    policy the run start then ignores in silence.
+    The executable shape is a line of Agent, Wait and linear Action nodes: each
+    entered by at most one dependency and followed by at most one dependent,
+    ending in a single sink, declaring nothing else optional. It is checked as a
+    form rather than as a list of kinds, because a kind check would admit a
+    document whose skills or policy the run start then ignores in silence.
 
     A branch is still refused on purpose. `depends_on` is bound only where it
     names one edge; where a node has several dependents, choosing between them is
@@ -1448,6 +1460,9 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     unbound_prompt = _unbound_wait_forms(graph)
     if unbound_prompt is not None:
         return unbound_prompt
+    unbound_action = _unbound_action_forms(graph)
+    if unbound_action is not None:
+        return unbound_action
     unrepeatable = _unrepeatable_loop_forms(graph)
     if unrepeatable is not None:
         return unrepeatable
@@ -1512,6 +1527,35 @@ def _unbound_wait_forms(graph: WorkflowGraphV3) -> str | None:
                 f"inputs on wait node {node.id!r} that nothing composes into the "
                 "question a person is asked"
             )
+    return None
+
+
+def _unbound_action_forms(graph: WorkflowGraphV3) -> str | None:
+    """What an authored Action node declares that this effect path does not bind.
+
+    The request bytes are the predecessor Agent's output, the same path V1
+    Action already uses. Authored `inputs` and `outputs` would be ignored, so
+    they are refused by the form they wrote. An Action with no Agent predecessor
+    has nothing to land.
+    """
+    for node in graph.nodes:
+        if not isinstance(node, ActionNodeV3):
+            continue
+        if "inputs" in node.model_fields_set:
+            return (
+                f"inputs on action node {node.id!r} that nothing composes; "
+                "the request is the predecessor Agent output"
+            )
+        if "outputs" in node.model_fields_set:
+            return (
+                f"outputs on action node {node.id!r} that nothing hands on; "
+                "the effect receipt is the Action's result"
+            )
+        if len(node.depends_on) != 1:
+            return f"action node {node.id!r} has no single Agent predecessor"
+        predecessor = graph.node(node.depends_on[0])
+        if not isinstance(predecessor, AgentNodeV3):
+            return f"action node {node.id!r} predecessor is not an Agent"
     return None
 
 

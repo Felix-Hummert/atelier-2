@@ -14,6 +14,9 @@ from atelier2.application.admit_catalog_member import (
 from atelier2.application.answer_wait import AnswerWaitResult
 from atelier2.application.cancel_agent_attempt import CancelAgentAttemptResult
 from atelier2.application.prepare_run_events import PrepareRunEventsResult
+from atelier2.application.publish_adapter_operation_revision import (
+    PublishAdapterOperationRevisionResult,
+)
 from atelier2.application.publish_agent_configurations import (
     PublishAgentConfigurationRevisionResult,
     PublishAuthProfileRevisionResult,
@@ -143,6 +146,9 @@ class ApiUseCases:
     publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
     publish_budget_revision: Callable[[bytes], PublishBudgetRevisionResult]
     publish_tool_grant_revision: Callable[[bytes], PublishToolGrantRevisionResult]
+    publish_adapter_operation_revision: Callable[
+        [bytes], PublishAdapterOperationRevisionResult
+    ]
     publish_auth_profile_revision: Callable[
         [str, int, str, str], PublishAuthProfileRevisionResult
     ]

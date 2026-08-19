@@ -72,6 +72,7 @@ class ReferenceRefusalReason(StrEnum):
     UNUSABLE_SCHEMA_DOCUMENT = "unusable_schema_document"
     UNREDEEMABLE_TOOL_GRANT = "unredeemable_tool_grant"
     UNUSABLE_BUDGET_DOCUMENT = "unusable_budget_document"
+    UNUSABLE_ADAPTER_OPERATION = "unusable_adapter_operation"
 
 
 @dataclass(frozen=True, slots=True)

@@ -44,6 +44,7 @@ from atelier2.contracts.workflows import (
 )
 from atelier2.contracts.workflows_v3 import (
     ANY_WAIT_NODE_KINDS,
+    ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocumentNode,
 )
@@ -115,7 +116,7 @@ def bind_node(
             run.current_round_ordinal,
             maximum_assistant_turns,
         )
-    if isinstance(node, ActionNode):
+    if isinstance(node, (ActionNode, ActionNodeV3)):
         return ActionNodeBinding()
     if isinstance(node, ANY_WAIT_NODE_KINDS):
         return WaitNodeBinding()

@@ -28,6 +28,9 @@ from atelier2.application.admit_catalog_member import (
 from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
 from atelier2.application.prepare_run_events import prepare_run_events
+from atelier2.application.publish_adapter_operation_revision import (
+    publish_adapter_operation_revision,
+)
 from atelier2.application.publish_agent_configurations import (
     publish_agent_configuration_revision,
     publish_auth_profile_revision,
@@ -148,6 +151,11 @@ def bound_use_cases(
         ),
         publish_tool_grant_revision=lambda document: publish_tool_grant_revision(
             document, ports.published_revision_registry
+        ),
+        publish_adapter_operation_revision=lambda document: (
+            publish_adapter_operation_revision(
+                document, ports.published_revision_registry
+            )
         ),
         publish_auth_profile_revision=(
             lambda profile_id, revision_number, provider_id, auth_mode: (

@@ -92,6 +92,17 @@ class ToolGrantRevisionResource(ApiModel):
     tool_grant_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
 
+class AdapterOperationRevisionResource(ApiModel):
+    """The hash of one published adapter-operation revision, and nothing else.
+
+    Publication is bytes in, hash out, exactly as a schema's is. The document is
+    not echoed: the caller already holds the exact bytes they posted, and the
+    hash is what an Action node pins.
+    """
+
+    adapter_operation_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+
+
 class AuthProfileRevisionResource(ApiModel):
     profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
@@ -868,7 +879,9 @@ class RunResourceV3(ApiModel):
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
-    state: Literal["STARTED", "WAITING_INPUT", "COMPLETED", "FAILED"]
+    state: Literal[
+        "STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED", "FAILED"
+    ]
     current_node_id: str = Field(min_length=1)
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)

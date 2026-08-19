@@ -832,13 +832,16 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
         assert set(component["required"]) == expected_fields
         assert component["additionalProperties"] is False
     v3 = schema["components"]["schemas"]["RunEventResourceV3"]
-    assert len(v3["oneOf"]) == 5
+    assert len(v3["oneOf"]) == 8
     assert set(v3["discriminator"]["mapping"]) == {
         "AGENT_COMPLETED",
         "AGENT_FAILED",
         "AGENT_CANCEL_REQUESTED",
         "AGENT_CANCELLED",
         "AGENT_INTERRUPTED",
+        "ACTION_RECONCILIATION_REQUIRED",
+        "ACTION_RECONCILIATION_RESOLVED",
+        "ACTION_COMPLETED",
     }
     for event, reference in v3["discriminator"]["mapping"].items():
         component = schema["components"]["schemas"][reference.rsplit("/", 1)[-1]]

@@ -16,6 +16,10 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from typing import assert_never
 
+from atelier2.contracts.adapter_operations_v3 import (
+    AdapterOperationRefused,
+    read_adapter_operation_document,
+)
 from atelier2.contracts.budgets_v3 import (
     BudgetRevisionRefused,
     read_budget_revision_document,
@@ -117,11 +121,12 @@ def _unreadable_document(
     """Whether a revision resolved to bytes that are not the thing it was read as.
 
     Most kinds resolve on identity alone, because nothing here knows what their
-    bytes must say. Three kinds this product must read to do its job at all are
+    bytes must say. Four kinds this product must read to do its job at all are
     the exception, and the reference that pins them is where the reading belongs:
     a `schema`, which a value is read against, a `tool` grant, whose capability
-    decides what an attempt is going to redeem, and a `budget_policy`, whose
-    bounds decide how far an attempt may run. Each is refused here rather than at
+    decides what an attempt is going to redeem, a `budget_policy`, whose bounds
+    decide how far an attempt may run, and an `adapter_operation`, whose name
+    decides which effect an Action performs. Each is refused here rather than at
     the attempt, because a run that started under it has already told its author
     it would be honoured -- and for a budget that promise is the whole point: an
     unreadable one would leave an attempt unbounded while its author reads a
@@ -154,6 +159,16 @@ def _unreadable_document(
                 ReferenceRefusalReason.UNUSABLE_BUDGET_DOCUMENT,
                 declared,
                 f"the published revision bounds no attempt this runtime runs ({budget})",
+            )
+        return None
+    if declared.kind is RevisionKind.ADAPTER_OPERATION:
+        operation = read_adapter_operation_document(revision.document)
+        if isinstance(operation, AdapterOperationRefused):
+            return _refusal(
+                ReferenceRefusalReason.UNUSABLE_ADAPTER_OPERATION,
+                declared,
+                "the published revision is not an adapter operation this "
+                f"runtime performs ({operation})",
             )
         return None
     return None

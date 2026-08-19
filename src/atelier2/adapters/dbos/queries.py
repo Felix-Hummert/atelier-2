@@ -276,15 +276,16 @@ def _run_ending_event_predicate(
     question rather than name one spelling. A V1 or V2 line ends on the
     subworkflow completion of its final node, so the kind alone identifies it.
 
-    A V3 line ends on its **agent** sink -- #194 H1b lifted the terminal
+    A V3 line ends on the node it stands on -- #194 H1b lifted the terminal
     condition off the subworkflow node onto the run -- and there neither half
     identifies it alone. The kind cannot, because every agent node completes or
-    fails with the same pair. The node cannot either, and that is the less
-    obvious half: an attempt event is written at the node the run is standing
-    on and advances the run's head without moving it, so a healthy running
-    history would have its last event sitting on the current node and be read
-    as an ending. What ends a V3 run is the **completion or failure** of the
-    node it stands on, so both halves are asked.
+    fails with the same pair, and a linear Action completes with its own kind.
+    The node cannot either, and that is the less obvious half: an attempt event
+    is written at the node the run is standing on and advances the run's head
+    without moving it, so a healthy running history would have its last event
+    sitting on the current node and be read as an ending. What ends a V3 run is
+    the **completion or failure** of the node it stands on, so both halves are
+    asked.
 
     Asking the run row rather than parsing its document keeps this cheap: it is a
     pre-flight before stream headers and a check beside a page read, never a
@@ -295,6 +296,7 @@ def _run_ending_event_predicate(
         ending = {
             RunEventKind.AGENT_COMPLETED.value,
             RunEventKind.AGENT_FAILED.value,
+            RunEventKind.ACTION_COMPLETED.value,
         }
         return lambda endpoint: endpoint[0] in ending and endpoint[1] == current_node_id
     terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value

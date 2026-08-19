@@ -76,6 +76,16 @@ nodes:
     mode: headless
     instruction: build it
 """ + declared_output()
+V3_ACTION_DOCUMENT = (
+    V3_DOCUMENT
+    + b"""  - id: act
+    type: action
+    operation: {ref: open-pr, revision: """
+    + (b"a1" * 32)
+    + b"""}
+    depends_on: [build]
+"""
+)
 
 
 def v1_run(node_id: str = NODE_ID, state: RunState = RunState.STARTED) -> Run:
@@ -140,6 +150,12 @@ def bound(
         (v2_run(node_id="act"), V2_DOCUMENT, "act", ActionNodeBinding()),
         (v2_run(node_id="pause"), V2_DOCUMENT, "pause", WaitNodeBinding()),
         (v2_run(node_id="done"), V2_DOCUMENT, "done", SubworkflowNodeBinding((2, 3))),
+        (
+            v2_run(V3_ACTION_DOCUMENT, node_id="act"),
+            V3_ACTION_DOCUMENT,
+            "act",
+            ActionNodeBinding(),
+        ),
     ),
     ids=[
         "V1 agent",
@@ -149,6 +165,7 @@ def bound(
         "V2 action",
         "V2 wait",
         "V2 subworkflow",
+        "V3 action",
     ],
 )
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
