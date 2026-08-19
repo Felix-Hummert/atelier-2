@@ -15,7 +15,9 @@ story = "https://github.com/FlexOr2/atelier-2/issues/322"
 #
 # A value on the wire is now named for what it identifies, not for where it
 # stands, which is the language the run resources, the receipts, all three SSE
-# families, the start and the agent surfaces already spoke. This is a breaking
+# families, the start and the agent surfaces already spoke. The path that reads
+# one workflow revision is `{workflow_revision_hash}`, and a declared order
+# answers the author's own `schema: {ref, revision}` hull. This is a breaking
 # pre-release migration with no external consumer, recorded in ADR 0003; the
 # cockpit, the command, the MCP door and the frozen document moved with it.
 #
@@ -25,13 +27,17 @@ story = "https://github.com/FlexOr2/atelier-2/issues/322"
 #     `after_revision_hash`, and `next_after` as `after`. The value travels
 #     unchanged and only the `next_` prefix moves; the three lists share that one
 #     word, so unifying it is its own owner's question.
-#   - THE FLATTENED REFERENCE HULL. A declared order answers `schema_ref` and
-#     `schema_revision` where the document writes `schema: {ref, revision}`. A
-#     consumer re-authoring a document has to rebuild that hull.
 #   - THE CANCELLATION'S EXPECTED VERSION. `CancelAgentAttemptRequestResource`
 #     demands `expected_attempt_state_version`, and no answer publishes an
 #     attempt's state version at all. That round-trip is not writable from any
 #     reading today, which is a missing value rather than a drifting name.
+#   - NO READ SURFACE FOR A PUBLISHED SCHEMA REVISION. A declared order names a
+#     schema the consumer cannot fetch back. That is a missing route.
+#   - THE `expected_` PREFIX on reconcile and cancel. Compare-and-set meaning,
+#     not a drifting name; the value passes through.
+#   - `document_base64` VERSUS RAW YAML BYTES. An encoding transform, declared
+#     in the field's own name.
+#   - `agent_roles` → `role`. Values out of a list, not field names.
 
 [[sentence]]
 id = "a-consumer-writes-every-request-out-of-the-answers-it-read"
@@ -39,4 +45,4 @@ text = "A consumer publishes what its document pins, publishes and names the doc
 
 [[sentence]]
 id = "no-served-body-names-a-revision-or-a-format-without-saying-which"
-text = "No body the API publishes carries a property named `revision_hash` or `format_version`: each says which revision and which format it means, so a consumer reading the description alone knows what to write back. Only the published grammar of the authored workflow document keeps the bare words, because inside a document each means exactly one thing."
+text = "No body the API publishes carries a property named `revision_hash` or `format_version`, and no path parameter is named `revision_hash`: each says which revision and which format it means, so a consumer reading the description alone knows what to write back. Only the published grammar of the authored workflow document keeps the bare words, because inside a document each means exactly one thing."

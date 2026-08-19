@@ -29,8 +29,11 @@ identifies, not for where it stands: a workflow's revision hash is
 every body that carries them, a published schema or budget revision names its
 own kind, and an artifact travels as `artifact_hash` from the publication that
 minted it into the order that names it. No published body carries a bare
-`revision_hash` or `format_version`; only the grammar of the authored workflow
-document does, because inside a document each means one thing. Moving the
+`revision_hash` or `format_version`, and no path parameter is named
+`revision_hash`; only the grammar of the authored workflow document keeps the
+bare words, because inside a document each means one thing. A declared order
+answers the author's own `schema: {ref, revision}` hull rather than flattening
+it under other names. Moving the
 revision and catalog resources onto that language was a second explicit breaking
 pre-release migration, taken for the same reason as the SSE envelope below and
 under the same condition: no external consumer exists, and the cockpit, the

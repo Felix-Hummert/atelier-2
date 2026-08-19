@@ -677,8 +677,10 @@ describe("the picker groups revisions that share a published name", () => {
         orders: [
           {
             name: "portions",
-            schema_ref: "portions-schema",
-            schema_revision: "e".repeat(64)
+            schema: {
+              ref: "portions-schema",
+              revision: "e".repeat(64)
+            }
           }
         ]
       }
