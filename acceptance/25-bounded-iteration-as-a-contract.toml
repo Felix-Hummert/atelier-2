@@ -23,7 +23,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/25"
 # say a schema refused what no schema saw, or that a process died that exited
 # cleanly, so the door waits for a store hop of its own. The V1 merge node and the
 # `binding_constraint` the operator ruled on 19.08. are a further, thinner cut on
-# existing machinery. Neither is claimed here.
+# existing machinery. The constraint sentences below claim that cut.
 #
 # Six sentences of #25 therefore have no proof of any kind here and are named
 # rather than quietly dropped:
@@ -136,3 +136,19 @@ text = "The continuation a verdict steers is decided from the value that round d
 [[sentence]]
 id = "the-verdict-vocabulary-and-its-published-contract-are-one-owner"
 text = "The verdict vocabulary and the published contract an answer carrying a verdict is judged by are one owner: every verdict this product owns is admitted by that contract, and bytes it does not admit never reach an edge."
+
+[[sentence]]
+id = "a-node-may-declare-it-must-not-share-another-nodes-binding"
+text = "An agent node may declare binding_constraint.distinct_from naming another agent node of a different role, and the parsed document reads that declaration back exactly as authored; a node that declares none is unchecked."
+
+[[sentence]]
+id = "a-distinct-from-the-document-cannot-honour-is-refused-by-name"
+text = "A distinct_from that names no declared node, this node, a node without an agent binding, or a node that shares this role is refused by name before the document is stored, published or started."
+
+[[sentence]]
+id = "the-same-occupation-is-refused-before-any-process"
+text = "A start whose distinct_from pair resolves to the same agent configuration revision is refused by name before any run row or process exists, and the refusal names both nodes."
+
+[[sentence]]
+id = "different-occupations-start-and-an-undeclared-constraint-is-silent"
+text = "A start whose distinct_from pair resolves to different agent configuration revisions creates the run; a document that declares no constraint starts even when two nodes share one occupation."
