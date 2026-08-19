@@ -23,7 +23,7 @@ export function groupSavedWorkflows(
   for (const revision of revisions) {
     const key =
       revision.name === null
-        ? `unnamed:${revision.revision_hash}`
+        ? `unnamed:${revision.workflow_revision_hash}`
         : `named:${revision.name}`;
     const existing = grouped.get(key);
     if (existing === undefined) {
@@ -66,14 +66,14 @@ export function selectedRevisionOf(
     throw new Error("a saved-workflow row must carry at least one revision");
   }
   if (selectedHash === undefined) return fallback;
-  return row.revisions.find((item) => item.revision_hash === selectedHash) ?? fallback;
+  return row.revisions.find((item) => item.workflow_revision_hash === selectedHash) ?? fallback;
 }
 
 export function revisionChoiceLabel(
   revision: WorkflowRevisionSummary,
   newestHash: string
 ): string {
-  return revision.revision_hash === newestHash ? "Latest" : "Earlier";
+  return revision.workflow_revision_hash === newestHash ? "Latest" : "Earlier";
 }
 
 function withHeadFirst(
@@ -81,7 +81,7 @@ function withHeadFirst(
   newestHash: string | undefined
 ): WorkflowRevisionSummary[] {
   if (newestHash === undefined) return [...revisions];
-  const head = revisions.find((item) => item.revision_hash === newestHash);
+  const head = revisions.find((item) => item.workflow_revision_hash === newestHash);
   if (head === undefined) return [...revisions];
-  return [head, ...revisions.filter((item) => item.revision_hash !== newestHash)];
+  return [head, ...revisions.filter((item) => item.workflow_revision_hash !== newestHash)];
 }

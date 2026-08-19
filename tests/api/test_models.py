@@ -182,7 +182,7 @@ def test_v3_node_preview_carries_the_authored_depends_on() -> None:
 
 def test_v3_graph_accepts_depends_on_that_names_a_sibling_preview() -> None:
     resource = WorkflowGraphResourceV3(
-        format_version=3,
+        workflow_format_version=3,
         executable=True,
         not_executable_reason=None,
         node_count=2,
@@ -201,7 +201,7 @@ def test_v3_graph_accepts_depends_on_that_names_a_sibling_preview() -> None:
 
 def test_v3_graph_accepts_an_entry_preview_with_no_edges() -> None:
     resource = WorkflowGraphResourceV3(
-        format_version=3,
+        workflow_format_version=3,
         executable=True,
         not_executable_reason=None,
         node_count=1,
@@ -218,7 +218,7 @@ def test_v3_graph_accepts_an_entry_preview_with_no_edges() -> None:
 def test_v3_graph_refuses_a_depends_on_that_names_no_preview() -> None:
     with pytest.raises(ValidationError, match="depends_on"):
         WorkflowGraphResourceV3(
-            format_version=3,
+            workflow_format_version=3,
             executable=True,
             not_executable_reason=None,
             node_count=1,

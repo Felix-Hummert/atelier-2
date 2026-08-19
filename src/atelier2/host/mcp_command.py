@@ -351,7 +351,7 @@ def run_status(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]
 
 def answer_wait(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     reference = _required_text(arguments, "public_run_reference")
-    revision_hash = _required_text(arguments, "revision_hash")
+    workflow_revision_hash = _required_text(arguments, "workflow_revision_hash")
     node_id = _required_text(arguments, "node_id")
     answer_base64 = _required_text(arguments, "answer_base64")
     answered = _decoded(
@@ -360,7 +360,7 @@ def answer_wait(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any
             f"{_api_url(service_url)}{RUN_PATH}/{quote(reference, safe='')}/answers",
             json.dumps(
                 {
-                    "revision_hash": revision_hash,
+                    "workflow_revision_hash": workflow_revision_hash,
                     "node_id": node_id,
                     "answer_base64": answer_base64,
                 }

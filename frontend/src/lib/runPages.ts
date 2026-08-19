@@ -61,7 +61,7 @@ export async function readEveryRevision(
       const page = await listRevisions(after);
       return { items: page.items, next: page.next_after_revision_hash };
     },
-    (revision) => revision.revision_hash
+    (revision) => revision.workflow_revision_hash
   );
   return read.complete
     ? { complete: true, revisions: read.items }

@@ -85,13 +85,15 @@ def _publish(client: TestClient, document: bytes) -> str:
         headers={"content-type": "application/yaml"},
     )
     assert response.status_code in (200, 201), response.text
-    return str(response.json()["revision_hash"])
+    return str(response.json()["workflow_revision_hash"])
 
 
 def _listed(client: TestClient) -> dict[str, dict[str, object]]:
     response = client.get(API_PREFIX + "/workflow-revisions?view=described")
     assert response.status_code == 200, response.text
-    return {str(item["revision_hash"]): item for item in response.json()["items"]}
+    return {
+        str(item["workflow_revision_hash"]): item for item in response.json()["items"]
+    }
 
 
 def test_the_default_listing_still_answers_the_shape_it_always_answered(
@@ -111,7 +113,7 @@ def test_the_default_listing_still_answers_the_shape_it_always_answered(
 
     assert default.status_code == 200
     assert default.json() == {
-        "items": [{"revision_hash": revision_hash}],
+        "items": [{"workflow_revision_hash": revision_hash}],
         "next_after_revision_hash": None,
     }
 
@@ -138,7 +140,7 @@ def test_a_published_revision_is_listed_with_the_name_its_author_wrote(
     listed = _listed(client)[revision_hash]
 
     assert listed["name"] == DESCRIBED_NAME
-    assert listed["format_version"] == 3
+    assert listed["workflow_format_version"] == 3
     assert listed["executable"] is False
 
 
@@ -153,7 +155,7 @@ def test_a_format_that_declares_no_name_is_listed_as_unnamed(
 
     assert listed["name"] is None
     assert listed["description"] is None
-    assert listed["format_version"] == 1
+    assert listed["workflow_format_version"] == 1
     assert listed["executable"] is True
 
 

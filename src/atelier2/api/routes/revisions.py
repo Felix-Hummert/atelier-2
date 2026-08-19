@@ -142,7 +142,8 @@ async def publish_schema_revision_route(
         case _ as unreachable:
             assert_never(unreachable)
     return resource_response(
-        SchemaRevisionResource(revision_hash=revision.revision_hash.value), status
+        SchemaRevisionResource(schema_revision_hash=revision.revision_hash.value),
+        status,
     )
 
 
@@ -177,7 +178,8 @@ async def publish_budget_revision_route(
         case _ as unreachable:
             assert_never(unreachable)
     return resource_response(
-        BudgetRevisionResource(revision_hash=revision.revision_hash.value), status
+        BudgetRevisionResource(budget_revision_hash=revision.revision_hash.value),
+        status,
     )
 
 
@@ -257,7 +259,7 @@ async def _summary_page(
         case WorkflowRevisionsListed(revision_hashes, next_after):
             return WorkflowRevisionPageResource(
                 items=tuple(
-                    WorkflowRevisionSummaryResource(revision_hash=value.value)
+                    WorkflowRevisionSummaryResource(workflow_revision_hash=value.value)
                     for value in revision_hashes
                 ),
                 next_after_revision_hash=(
@@ -327,7 +329,7 @@ async def found_catalog_lineage_route(
         context.control_runner,
         lambda: context.use_cases.found_catalog_lineage(
             RevisionKind.WORKFLOW,
-            PublishedRevisionHash(request.revision_hash),
+            PublishedRevisionHash(request.workflow_revision_hash),
             display_name,
             actor,
             activated_at,
@@ -362,7 +364,7 @@ async def admit_catalog_member_route(
         lambda: context.use_cases.admit_catalog_member(
             RevisionKind.WORKFLOW,
             identity,
-            PublishedRevisionHash(request.revision_hash),
+            PublishedRevisionHash(request.workflow_revision_hash),
             actor,
             activated_at,
         ),
@@ -378,14 +380,14 @@ def _admission_resource(result: object) -> CatalogAdmissionResource:
             return CatalogAdmissionResource(
                 display_name=display_name.value,
                 lineage_id=lineage.lineage_id.value,
-                revision_hash=revision.revision_hash.value,
+                workflow_revision_hash=revision.revision_hash.value,
                 revision_number=1,
             )
         case CatalogMemberAdmitted(lineage, revision, revision_number, display_name):
             return CatalogAdmissionResource(
                 display_name=display_name.value,
                 lineage_id=lineage.lineage_id.value,
-                revision_hash=revision.revision_hash.value,
+                workflow_revision_hash=revision.revision_hash.value,
                 revision_number=revision_number,
             )
         case CatalogAdmissionExisting(lineage, revision, revision_number, display_name):
@@ -394,7 +396,7 @@ def _admission_resource(result: object) -> CatalogAdmissionResource:
             return CatalogAdmissionResource(
                 display_name=display_name.value,
                 lineage_id=lineage.lineage_id.value,
-                revision_hash=revision.revision_hash.value,
+                workflow_revision_hash=revision.revision_hash.value,
                 revision_number=revision_number,
             )
         case CatalogRevisionUnpublished():
@@ -459,7 +461,7 @@ async def get_revision_by_name(
             return CatalogNameResolutionResource(
                 display_name=display_name.value,
                 lineage_id=lineage_id.value,
-                revision_hash=revision.revision_hash.value,
+                workflow_revision_hash=revision.revision_hash.value,
                 revision_number=revision_number,
             )
         case CatalogNameLineageRetired():

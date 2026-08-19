@@ -136,8 +136,8 @@ def _authored_order(order: AnyStartRunOrderResource) -> AuthoredOrder:
     match order:
         case InlineOrderResource(name=name, value=value):
             return AuthoredOrder(name, InlineOrderValue(value.encode()))
-        case ArtifactOrderResource(name=name, artifact=artifact):
-            return AuthoredOrder(name, ArtifactOrderValue(ArtifactHash(artifact)))
+        case ArtifactOrderResource(name=name, artifact_hash=artifact_hash):
+            return AuthoredOrder(name, ArtifactOrderValue(ArtifactHash(artifact_hash)))
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -414,7 +414,7 @@ async def answer_run_route(
 ) -> JSONResponse:
     run_id = decode_public_reference(public_ref, context.limits)
     require_field(body.node_id, context.limits)
-    revision_hash = parse_revision_hash(body.revision_hash)
+    revision_hash = parse_revision_hash(body.workflow_revision_hash)
     answer_bytes = decode_base64(body.answer_base64, context.limits)
     result = await run_control_query(
         context.control_runner,

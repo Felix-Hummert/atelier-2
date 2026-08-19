@@ -45,10 +45,10 @@ describe("native durable event transport", () => {
     const other = "b".repeat(64);
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
-        revision_hash: other,
+        workflow_revision_hash: other,
         document_base64: "",
         graph: {
-          format_version: 1,
+          workflow_format_version: 1,
           start_node_id: "final",
           nodes: [
             {

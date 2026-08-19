@@ -510,7 +510,9 @@ is told where each node stands instead of computing it: one pure function in the
 core derives that rail from the run snapshot, that revision, and the events since,
 with the snapshot authoritative only until an event overtakes it, and success
 carries exactly one name on the wire. Existing
-V1 JSON and OpenAPI component bytes remain frozen while exact V2 unions expose
+V1 JSON and OpenAPI component bytes stay pinned so nothing widens them by
+accident — they moved once, deliberately, when every body learned to name a
+value the way the next request writes it — while exact V2 unions expose
 the run's safe binding matrix and byte-safe Agent output, and the event stream
 answers a format-3 agent or wait event as its own family rather than dressing it
 as V1 — a format-3 pause naming no answer type, because that format's Wait node
@@ -524,7 +526,13 @@ guessed path is refused with the exact location of the OpenAPI document, and the
 workflow publication body there carries the shape of the document itself —
 derived from the models the publication reads it against, so no second
 description can drift. That shape decides the form; the rules only a whole
-document answers keep their named refusals at publication.
+document answers keep their named refusals at publication. It also answers in
+the words the next request is written with: a workflow's revision hash and its
+format version are spelled the same on every body that carries them, a published
+schema or budget revision names its own kind, and material published as an
+artifact is ordered under the address the publication answered. A machine
+consumer assembles each request out of fields the answers before it named,
+without a translation table of its own.
 [ADR 0003](decisions/0003-http-api.md) owns the API and resume
 contract.
 

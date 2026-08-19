@@ -434,7 +434,7 @@ function terminalNodeState(event: RunEvent): NodeState | null {
 
 function eventMatchesGraph(event: RunEvent, graph: ExecutableWorkflowGraph): boolean {
   const eventFormat = "workflow_format_version" in event ? 2 : 1;
-  if (eventFormat !== graph.format_version) return false;
+  if (eventFormat !== graph.workflow_format_version) return false;
   const node = graph.nodes.find((candidate) => candidate.node_id === event.node_id);
   if (node === undefined) return false;
   if (node.type === "agent") {

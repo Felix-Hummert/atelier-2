@@ -102,7 +102,7 @@ def client(runtime: DbosRuntime) -> TestClient:
 
 def founding(revision: PublishedRevision, name: str | None = None) -> dict[str, str]:
     request = {
-        "revision_hash": revision.revision_hash.value,
+        "workflow_revision_hash": revision.revision_hash.value,
         "actor": "operator",
         "activated_at": "2026-08-17T00:00:00Z",
     }
@@ -120,7 +120,7 @@ def published_over_http(api: TestClient, document: bytes = DOCUMENT) -> str:
         headers={"content-type": "application/yaml"},
     )
     assert response.status_code == 201, response.text
-    return str(response.json()["revision_hash"])
+    return str(response.json()["workflow_revision_hash"])
 
 
 def catalog_snapshot(runtime: DbosRuntime) -> dict[str, tuple[tuple[object, ...], ...]]:
@@ -148,7 +148,7 @@ def test_a_workflow_published_over_the_api_is_named_over_the_api(
     api = client(runtime)
     revision_hash = published_over_http(api)
     request = {
-        "revision_hash": revision_hash,
+        "workflow_revision_hash": revision_hash,
         "actor": "operator",
         "activated_at": "2026-08-17T00:00:00Z",
     }
@@ -158,7 +158,7 @@ def test_a_workflow_published_over_the_api_is_named_over_the_api(
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["display_name"] == NAME
-    assert body["revision_hash"] == revision_hash
+    assert body["workflow_revision_hash"] == revision_hash
     assert body["revision_number"] == 1
 
     repeated = api.post(LINEAGES, json=request)
@@ -175,7 +175,7 @@ def test_a_published_revision_is_named_over_the_api(runtime: DbosRuntime) -> Non
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["display_name"] == NAME
-    assert body["revision_hash"] == revision.revision_hash.value
+    assert body["workflow_revision_hash"] == revision.revision_hash.value
     assert body["revision_number"] == 1
     assert (
         body["lineage_id"]
@@ -194,7 +194,7 @@ def test_the_name_the_api_founded_answers_the_read_door(runtime: DbosRuntime) ->
     answered = api.get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
 
     assert answered.status_code == 200, answered.text
-    assert answered.json()["revision_hash"] == revision.revision_hash.value
+    assert answered.json()["workflow_revision_hash"] == revision.revision_hash.value
 
 
 @pytest.mark.proves("a-later-revision-joins-the-lineage-that-already-holds-its-name")
@@ -206,7 +206,7 @@ def test_a_later_http_published_revision_joins_the_named_lineage(
     founded = api.post(
         LINEAGES,
         json={
-            "revision_hash": first_hash,
+            "workflow_revision_hash": first_hash,
             "actor": "operator",
             "activated_at": "2026-08-17T00:00:00Z",
         },
@@ -217,7 +217,7 @@ def test_a_later_http_published_revision_joins_the_named_lineage(
     response = api.post(
         f"{LINEAGES}/{founded.json()['lineage_id']}/members",
         json={
-            "revision_hash": second_hash,
+            "workflow_revision_hash": second_hash,
             "actor": "operator",
             "activated_at": "2026-08-17T00:01:00Z",
         },
@@ -227,7 +227,7 @@ def test_a_later_http_published_revision_joins_the_named_lineage(
     body = response.json()
     assert body["revision_number"] == 2
     assert body["display_name"] == SECOND_NAME
-    assert body["revision_hash"] == second_hash
+    assert body["workflow_revision_hash"] == second_hash
 
 
 @pytest.mark.proves("a-later-revision-joins-the-lineage-that-already-holds-its-name")
@@ -256,7 +256,7 @@ def test_a_later_revision_appends_its_authored_name_and_both_names_survive_resta
         response = api.post(
             f"{LINEAGES}/{lineage_id}/members",
             json={
-                "revision_hash": second.revision_hash.value,
+                "workflow_revision_hash": second.revision_hash.value,
                 "actor": "operator",
                 "activated_at": "2026-08-17T00:01:00Z",
             },
@@ -266,7 +266,7 @@ def test_a_later_revision_appends_its_authored_name_and_both_names_survive_resta
         body = response.json()
         assert body["revision_number"] == 2
         assert body["display_name"] == SECOND_NAME
-        assert body["revision_hash"] == second.revision_hash.value
+        assert body["workflow_revision_hash"] == second.revision_hash.value
     finally:
         runtime.close()
 
@@ -289,7 +289,7 @@ def test_a_later_revision_appends_its_authored_name_and_both_names_survive_resta
             assert answered.json() == {
                 "display_name": SECOND_NAME,
                 "lineage_id": lineage_id,
-                "revision_hash": second.revision_hash.value,
+                "workflow_revision_hash": second.revision_hash.value,
                 "revision_number": 2,
             }
         assert (
@@ -395,7 +395,7 @@ def test_an_impossible_admission_time_changes_no_catalog_row(
     response = api.post(
         f"{LINEAGES}/{lineage_id}/members",
         json={
-            "revision_hash": second.revision_hash.value,
+            "workflow_revision_hash": second.revision_hash.value,
             "actor": "operator",
             "activated_at": "2026-13-17T00:01:00Z",
         },
@@ -459,7 +459,7 @@ def test_admission_into_a_lineage_that_does_not_exist_is_refused_by_name(
     response = client(runtime).post(
         f"{LINEAGES}/{'a' * 64}/members",
         json={
-            "revision_hash": revision.revision_hash.value,
+            "workflow_revision_hash": revision.revision_hash.value,
             "actor": "operator",
             "activated_at": "2026-08-17T00:01:00Z",
         },
@@ -487,7 +487,7 @@ def test_admission_into_a_retired_lineage_is_refused_by_name(
     response = api.post(
         f"{LINEAGES}/{lineage_id}/members",
         json={
-            "revision_hash": second.revision_hash.value,
+            "workflow_revision_hash": second.revision_hash.value,
             "actor": "operator",
             "activated_at": "2026-08-17T00:03:00Z",
         },

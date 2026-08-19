@@ -23,10 +23,22 @@ state machine. Cancellation returns `202` while cleanup is pending and `200` for
 an exact terminal retry. Stale, terminal, non-current, conflicting-command, and
 forbidden-replacement requests are distinct closed problems.
 
+A value that crosses from an answer into the next request is named for what it
+identifies, not for where it stands: a workflow's revision hash is
+`workflow_revision_hash` and its format version `workflow_format_version` on
+every body that carries them, a published schema or budget revision names its
+own kind, and an artifact travels as `artifact_hash` from the publication that
+minted it into the order that names it. No published body carries a bare
+`revision_hash` or `format_version`; only the grammar of the authored workflow
+document does, because inside a document each means one thing. Moving the
+revision and catalog resources onto that language was a second explicit breaking
+pre-release migration, taken for the same reason as the SSE envelope below and
+under the same condition: no external consumer exists, and the cockpit, the
+command, the MCP door and the frozen document migrate together.
+
 V1, V2, and V3 SSE event resources coexist as exact closed unions. V1 and V2
-workflow, start, and run resources remain their own closed families. Workflow
-and run resources carry `format_version` or `workflow_format_version`; start
-uses the closed shape itself to select the version. A V2 run projection includes
+workflow, start, and run resources remain their own closed families.
+Start uses the closed shape itself to select the version. A V2 run projection includes
 its immutable, public binding matrix. A V2 or V3 `AGENT_COMPLETED` event carries
 canonical Base64 plus the exact output hash so arbitrary bytes never pass
 through UTF-8 decoding. The preexisting V1 raw JSON and named OpenAPI

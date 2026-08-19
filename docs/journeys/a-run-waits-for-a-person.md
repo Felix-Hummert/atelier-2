@@ -5,7 +5,8 @@ The durable proof is run `desk/beleg-menschen-tor`
 A V3 wait node `freigabe` held that run in `WAITING_INPUT`. The operator's
 answer carried it to `COMPLETED` (terminal hash `60d94900…`). No billed model
 call. The first answer had extra fields; the published refusal named them
-(`body/revision_hash`, `body/answer_base64`).
+(`body/revision_hash`, `body/answer_base64`) — that first field is
+`body/workflow_revision_hash` since #322 gave the value one name on every body.
 
 What the cockpit shows of that state, on `main`:
 

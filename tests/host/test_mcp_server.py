@@ -240,7 +240,7 @@ def catalog_resolution() -> CatalogNameResolutionResource:
     return CatalogNameResolutionResource(
         display_name=WORKFLOW_NAME,
         lineage_id=LINEAGE_ID,
-        revision_hash=REVISION_HASH,
+        workflow_revision_hash=REVISION_HASH,
         revision_number=1,
     )
 
@@ -249,8 +249,8 @@ def described_page() -> VersionedWorkflowRevisionPageResource:
     return VersionedWorkflowRevisionPageResource(
         items=(
             WorkflowRevisionSummaryResourceV2(
-                revision_hash=REVISION_HASH,
-                format_version=3,
+                workflow_revision_hash=REVISION_HASH,
+                workflow_format_version=3,
                 executable=True,
                 not_executable_reason=None,
                 name=WORKFLOW_NAME,
@@ -420,7 +420,7 @@ def test_an_unanswerable_wait_is_the_same_problem_on_both_paths(
     service, client = session
     body = json.dumps(
         {
-            "revision_hash": REVISION_HASH,
+            "workflow_revision_hash": REVISION_HASH,
             "node_id": "waiting",
             "answer_base64": "Ng==",
         }
@@ -430,7 +430,7 @@ def test_an_unanswerable_wait_is_the_same_problem_on_both_paths(
         McpToolName.ANSWER_WAIT.value,
         {
             "public_run_reference": PUBLIC_RUN_REFERENCE,
-            "revision_hash": REVISION_HASH,
+            "workflow_revision_hash": REVISION_HASH,
             "node_id": "waiting",
             "answer_base64": "Ng==",
         },

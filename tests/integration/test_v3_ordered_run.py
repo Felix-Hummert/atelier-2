@@ -1136,7 +1136,7 @@ def test_the_public_start_route_orders_material_by_its_published_address(
                     ),
                 }
             ],
-            "orders": [{"name": ORDER_NAME, "artifact": address}],
+            "orders": [{"name": ORDER_NAME, "artifact_hash": address}],
         },
     )
 

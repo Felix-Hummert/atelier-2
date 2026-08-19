@@ -14,7 +14,7 @@ async function publishSchema(page: Page, document: string): Promise<string> {
     data: document
   });
   expect([200, 201]).toContain(published.status());
-  return (await published.json()).revision_hash as string;
+  return (await published.json()).schema_revision_hash as string;
 }
 
 const anyJsonSchema = (page: Page): Promise<string> => publishSchema(page, "true");
@@ -391,7 +391,7 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
     data: workflowYaml
   });
   expect(published.status()).toBe(201);
-  const revisionHash = (await published.json()).revision_hash as string;
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
 
   const auth = await page.request.post(`${api}/auth-profile-revisions`, {
     data: { profile_id: "v3-local", revision_number: 1, provider_id: "e2e-v3", auth_mode: "subscription" }
@@ -618,7 +618,7 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
     data: workflowYaml
   });
   expect(published.status()).toBe(201);
-  const revisionHash = (await published.json()).revision_hash as string;
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
 
   const auth = await page.request.post(`${api}/auth-profile-revisions`, {
     data: { profile_id: "v3-live", revision_number: 1, provider_id: "e2e-v3", auth_mode: "subscription" }
@@ -694,7 +694,7 @@ test("draws a running V3 chain as a graph while a node is still working", async 
     data: workflowYaml
   });
   expect(published.status()).toBe(201);
-  const revisionHash = (await published.json()).revision_hash as string;
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
 
   const auth = await page.request.post(`${api}/auth-profile-revisions`, {
     data: { profile_id: "v3-drawn", revision_number: 1, provider_id: "e2e-v3-slow", auth_mode: "subscription" }
@@ -792,7 +792,7 @@ test("a node whose answer its own contract refuses never reports success", async
     data: workflowYaml
   });
   expect(published.status()).toBe(201);
-  const revisionHash = (await published.json()).revision_hash as string;
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
 
   const auth = await page.request.post(`${api}/auth-profile-revisions`, {
     data: {
@@ -897,7 +897,7 @@ test("clicking a finished node shows its whole log", async ({ page }) => {
     data: workflowYaml
   });
   expect(published.status()).toBe(201);
-  const revisionHash = (await published.json()).revision_hash as string;
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
 
   const auth = await page.request.post(`${api}/auth-profile-revisions`, {
     data: {
@@ -1020,7 +1020,7 @@ test("a declared order is a material field on start, and the typed value travels
     data: '{"type":"object","properties":{"portions":{"type":"integer","minimum":1}},"required":["portions"],"additionalProperties":false}'
   });
   expect([200, 201]).toContain(schema.status());
-  const schemaHash = (await schema.json()).revision_hash as string;
+  const schemaHash = (await schema.json()).schema_revision_hash as string;
 
   const auth = await page.request.post(`${api}/auth-profile-revisions`, {
     data: {
@@ -1157,17 +1157,17 @@ test("two revisions of one lineage are one picker row; the older choice changes 
     data: olderYaml
   });
   expect(olderPublished.status()).toBe(201);
-  const olderHash = (await olderPublished.json()).revision_hash as string;
+  const olderHash = (await olderPublished.json()).workflow_revision_hash as string;
   const newestPublished = await page.request.post(`${api}/workflow-revisions`, {
     headers: { "content-type": "application/yaml" },
     data: newestYaml
   });
   expect(newestPublished.status()).toBe(201);
-  const newestHash = (await newestPublished.json()).revision_hash as string;
+  const newestHash = (await newestPublished.json()).workflow_revision_hash as string;
 
   const founded = await page.request.post(`${api}/workflow-lineages`, {
     data: {
-      revision_hash: olderHash,
+      workflow_revision_hash: olderHash,
       actor: "e2e",
       activated_at: "2026-08-17T00:00:00Z"
     }
@@ -1176,7 +1176,7 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   const lineageId = (await founded.json()).lineage_id as string;
   const admitted = await page.request.post(`${api}/workflow-lineages/${lineageId}/members`, {
     data: {
-      revision_hash: newestHash,
+      workflow_revision_hash: newestHash,
       actor: "e2e",
       activated_at: "2026-08-17T00:00:01Z"
     }
@@ -1184,7 +1184,7 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   expect(admitted.status()).toBe(201);
   const head = await page.request.get(`${api}/workflow-revisions/by-name/${lineageName}`);
   expect(head.status()).toBe(200);
-  expect((await head.json()).revision_hash).toBe(newestHash);
+  expect((await head.json()).workflow_revision_hash).toBe(newestHash);
 
   await page.goto("/atelier/new");
   await page.getByRole("radio", { name: "Saved workflow" }).check();
@@ -1241,7 +1241,7 @@ test("the studio inbox names a run that is waiting for a person", async ({ page 
     ].join("\n")
   });
   expect(published.status()).toBe(201);
-  const revisionHash = (await published.json()).revision_hash as string;
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -1314,7 +1314,7 @@ test("publishing a V3 workflow from the cockpit names it so by-name answers", as
   const named = await head.json();
   expect(named.display_name).toBe(lineageName);
   expect(named.lineage_id).toMatch(/^[0-9a-f]{64}$/);
-  expect(named.revision_hash).toMatch(/^[0-9a-f]{64}$/);
+  expect(named.workflow_revision_hash).toMatch(/^[0-9a-f]{64}$/);
 
   await page.goto("/atelier/new");
   await page.getByRole("radio", { name: "Saved workflow" }).check();
@@ -1400,7 +1400,7 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
     ].join("\n")
   });
   expect(published.status()).toBe(201);
-  const revisionHash = (await published.json()).revision_hash as string;
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
 
   const started = await page.request.post(`${api}/runs`, {
     data: {

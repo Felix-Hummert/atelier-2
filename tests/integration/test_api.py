@@ -490,7 +490,7 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
         f"/atelier/api/v1/runs/{encode_public_run_reference(answer_run_id)}/answers"
     )
     answer_body = {
-        "revision_hash": revision.revision_hash.value,
+        "workflow_revision_hash": revision.revision_hash.value,
         "node_id": "wait",
         "answer_base64": encode_canonical_base64(b"17"),
     }
@@ -866,7 +866,7 @@ def test_a_published_v3_revision_still_reaches_no_run(
         "/atelier/api/v1/runs",
         json={
             "run_id": "v3-not-executable",
-            "workflow_revision_hash": published.json()["revision_hash"],
+            "workflow_revision_hash": published.json()["workflow_revision_hash"],
         },
     )
 
@@ -928,7 +928,7 @@ def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
 
     assert published.status_code == 201
     assert retry.status_code == 200
-    revision_hash = published.json()["revision_hash"]
+    revision_hash = published.json()["workflow_revision_hash"]
     assert published.json() == retry.json()
     assert published.json()["document_base64"] == encode_canonical_base64(DOCUMENT)
     assert [node["node_id"] for node in published.json()["graph"]["nodes"]] == [
@@ -941,7 +941,7 @@ def test_http_publishes_lists_starts_and_reads_exact_durable_resources(
         == published.json()
     )
     assert client.get("/atelier/api/v1/workflow-revisions").json() == {
-        "items": [{"revision_hash": revision_hash}],
+        "items": [{"workflow_revision_hash": revision_hash}],
         "next_after_revision_hash": None,
     }
 
@@ -986,7 +986,10 @@ def test_http_workflow_revision_pages_follow_every_exclusive_cursor(
             headers={"content-type": "application/yaml"},
         )
         assert response.status_code == 201
-        assert response.json()["revision_hash"] == hashlib.sha256(document).hexdigest()
+        assert (
+            response.json()["workflow_revision_hash"]
+            == hashlib.sha256(document).hexdigest()
+        )
 
     found: list[str] = []
     after: str | None = None
@@ -997,10 +1000,10 @@ def test_http_workflow_revision_pages_follow_every_exclusive_cursor(
         response = client.get("/atelier/api/v1/workflow-revisions", params=parameters)
         assert response.status_code == 200
         page = response.json()
-        assert page["items"] == [{"revision_hash": expected_hash}]
+        assert page["items"] == [{"workflow_revision_hash": expected_hash}]
         expected_next = expected_hash if index < len(expected) - 1 else None
         assert page["next_after_revision_hash"] == expected_next
-        found.append(page["items"][0]["revision_hash"])
+        found.append(page["items"][0]["workflow_revision_hash"])
         after = page["next_after_revision_hash"]
 
     assert tuple(found) == expected
@@ -1017,7 +1020,7 @@ def test_http_workflow_revision_pages_follow_every_exclusive_cursor(
     assert boundary_page.status_code == 200
     assert boundary_page.json() == {
         "items": [
-            {"revision_hash": revision_hash}
+            {"workflow_revision_hash": revision_hash}
             for revision_hash in expected
             if revision_hash > missing_boundary
         ],
@@ -1035,7 +1038,7 @@ def test_http_run_pages_follow_exact_utf8_order_and_every_exclusive_cursor(
         headers={"content-type": "application/yaml"},
     )
     assert publication.status_code == 201
-    revision_hash = publication.json()["revision_hash"]
+    revision_hash = publication.json()["workflow_revision_hash"]
     run_ids = ("slash/run", "nul\0run", "Grüße-東京", "alpha", "zeta")
     expected = ("Grüße-東京", "alpha", "nul\0run", "slash/run", "zeta")
     assert expected == tuple(sorted(run_ids, key=lambda value: value.encode("utf-8")))
@@ -1096,7 +1099,7 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
     client = _client(runtime)
     path = f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/answers"
     body = {
-        "revision_hash": revision.revision_hash.value,
+        "workflow_revision_hash": revision.revision_hash.value,
         "node_id": "wait",
         "answer_base64": encode_canonical_base64(b"17"),
     }

@@ -827,7 +827,7 @@ nodes:
             headers={"content-type": "application/yaml"},
         )
         assert workflow.status_code == 201
-        revision_hash = workflow.json()["revision_hash"]
+        revision_hash = workflow.json()["workflow_revision_hash"]
         request = {
             "workflow_format_version": 2,
             "run_id": "api/v2",
@@ -1122,7 +1122,7 @@ nodes:
 """,
         headers={"content-type": "application/yaml"},
     ).json()
-    revision_hash = workflow["revision_hash"]
+    revision_hash = workflow["workflow_revision_hash"]
 
     def start(run_id: str, role: str, configuration_hash: str) -> Response:
         return client.post(
@@ -1225,7 +1225,7 @@ nodes:
   - {id: build, type: agent, role: builder, job: build, next: done}
 """,
         headers={"content-type": "application/yaml"},
-    ).json()["revision_hash"]
+    ).json()["workflow_revision_hash"]
     seeded.close()
 
     production_empty = _runtime(empty_root, ())
