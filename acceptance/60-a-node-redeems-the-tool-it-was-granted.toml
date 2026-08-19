@@ -29,8 +29,10 @@ story = "https://github.com/FlexOr2/atelier-2/issues/60"
 # commit when a node's durable binding is composed, and that commit's tree -- the
 # material, never the repository -- is unpacked into the attempt's leased
 # directory before any provider starts. The manifest that declares the
-# verification is read at the same commit, so declaration and execution are one
-# tree rather than a living checkout and a blank directory. What is still NOT
+# verification is read at that same commit; the command then runs in the lease
+# after the provider has worked there, so declaration stays the pin's and
+# execution is the mutated lease rather than a living checkout and a blank
+# directory. What is still NOT
 # claimed: nothing in the lease can commit, fetch or push, because no history
 # travels with the tree; nothing writes back; and a second project does not exist
 # (#133 owns the project entity, `--project-root` stays one host setting).
@@ -67,7 +69,7 @@ text = "The project source is resolved to one commit when a node's durable bindi
 
 [[sentence]]
 id = "what-a-project-declares-and-where-it-runs-are-one-commit"
-text = "The verification a redeeming node runs is read from the manifest the pinned commit carries and runs in the tree unpacked from that same commit, so an edit standing only in the operator's checkout decides nothing about a run already bound."
+text = "The verification a redeeming node runs is read from the manifest the pinned commit carries and runs in the lease after the provider has worked there, so a file the pin never carried is visible to the command, a lease-side overwrite of that manifest does not change the command, and an edit standing only in the operator's checkout decides nothing about a run already bound."
 
 [[sentence]]
 id = "a-pin-no-source-can-answer-for-refuses-before-the-claim"

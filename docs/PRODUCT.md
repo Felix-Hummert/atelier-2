@@ -748,9 +748,10 @@ the project decides what verifies it, never the agent and never the atelier --
 and the run leaves durable proof of exactly which command ran, how it ended and
 the hash of what it wrote, beside the agent receipt whose provider bytes stay
 its own. The manifest that is read is the one the pinned commit carries, and the
-directory it runs in holds the tree unpacked from that same commit, so what a
-project declared and where it was run are one tree rather than a living checkout
-and a blank directory. Refusals are named rather than worked around: a grant
+directory it runs in is that same lease after the provider has worked there, so
+what a project declared stays the pin's and where it was run is the mutated
+lease rather than a rematerialized pin tree or a living checkout. Refusals are
+named rather than worked around: a grant
 naming a capability nothing here performs, or bytes that are no grant at all,
 refuses the run at the reference that pinned it; a node pinning more grants than
 one attempt redeems is refused by that count; a project stating no verification
