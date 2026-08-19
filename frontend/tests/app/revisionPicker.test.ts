@@ -724,8 +724,9 @@ describe("the picker groups revisions that share a published name", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Workflow revision" }));
     expect(details?.textContent).toContain(namedHash);
     expect(screen.getByText("Seals the published document.")).toBeTruthy();
-    await fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith(namedHash);
+    await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
   });
 
   it("proves(a-published-document-can-be-edited-into-a-new-revision): shows the exact YAML and publishes it through the existing door", async () => {

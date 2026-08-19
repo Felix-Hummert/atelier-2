@@ -444,6 +444,9 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
     terminal = body.terminal_hash as string;
   }).toPass({ timeout: 15_000 });
   expect(terminal).not.toBeNull();
+  if (terminal === null) {
+    throw new Error("expected the completed run to name a terminal hash");
+  }
 
   await page.goto(`/atelier/runs/${reference}`);
 
@@ -454,10 +457,11 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   await expect(graph.getByRole("button", { name: "review — Done" })).toBeVisible();
   await expect(page.getByLabel("Where this run stands")).toContainText("Done");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Snapshot");
-  await expect(page.getByRole("button", { name: "Terminal hash" })).toHaveAttribute(
-    "title",
-    terminal as unknown as string
-  );
+  const terminalProof = page.getByRole("button", { name: "Terminal hash" });
+  await expect(terminalProof).toBeVisible();
+  await expect(page.getByText(terminal)).toHaveCount(0);
+  await terminalProof.click();
+  await expect(page.getByText(terminal)).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
 
   await page.screenshot({ path: "test-results/v3-run-desktop.png", fullPage: true });
