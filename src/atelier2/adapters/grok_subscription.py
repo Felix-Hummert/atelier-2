@@ -60,8 +60,10 @@ GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
 )
 
 # Same portable ceiling as the process port. Measured on grok 1.0.4
-# `--output-format json`: the durable answer is `text`; `thought` is the
-# turn narration and is not the answer. Metadata size is not a tighter
+# `--output-format json` (re-measured 19.08.2026, build d846eb93d9): the
+# durable answer is `text`; `thought` is the turn narration and is not the
+# answer. `--json-schema` adds `structuredOutput` as the parsed form of
+# `text`, not a later assistant message. Metadata size is not a tighter
 # allowance. A durable-legal answer still fits: JSON escaping expands one
 # source byte to at most six frame bytes (6 * 49,152 = 294,912), leaving
 # the remainder for metadata.
@@ -298,7 +300,10 @@ def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, 
     ignores it is still refused by the seam. The CLI accepts
     `{"type":"string"}` and refuses a boolean schema (`true`) with
     "must be a JSON object describing a JSON Schema"; this seam does not
-    rewrite that form.
+    rewrite that form. Re-measured 19.08.2026 on build d846eb93d9: the
+    completion then carries `structuredOutput` as the parsed `text`. The
+    decoder still takes `text`, because a string schema needs those JSON
+    bytes; the parsed value is the unquoted body.
     """
     if declared_output_schema_bytes is None:
         return ()
@@ -619,10 +624,13 @@ class GrokSubscriptionExecutor:
             return _UNUSABLE_PROVIDER_ANSWER
         if not isinstance(envelope, dict):
             return _UNUSABLE_PROVIDER_ANSWER
-        # Measured on grok 1.0.4 `--output-format json`: `text` is the final
-        # answer message; `thought` is the turn narration. An empty or missing
-        # `text` is a named refusal — passing `thought` or the raw frame would
-        # hand the schema seam the story of the run.
+        # Measured on grok 1.0.4 `--output-format json` (re-measured
+        # 19.08.2026, build d846eb93d9): `text` is the final answer message;
+        # `thought` is the turn narration. `--json-schema` adds
+        # `structuredOutput` as the parsed form of `text`, not a second
+        # assistant message. An empty or missing `text` is a named refusal —
+        # passing `thought`, the parsed value, or the raw frame would hand
+        # the schema seam the story of the run or an unquoted string body.
         text = envelope.get(_TEXT_FIELD)
         if not isinstance(text, str) or text == "":
             return _UNUSABLE_PROVIDER_ANSWER
