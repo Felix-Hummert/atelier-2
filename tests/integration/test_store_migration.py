@@ -30,11 +30,13 @@ from atelier2.adapters.dbos.schema import (
     _AGENT_ATTEMPTS_TRIGGERS,
     _PRODUCT_TRIGGERS,
     _V17_AGENT_ATTEMPT_TRIGGERS,
+    _V23_AGENT_ATTEMPT_TRIGGERS,
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V13_SCHEMA_HANDOFF,
     V21_SCHEMA_HANDOFF,
     V22_SCHEMA_HANDOFF,
+    V23_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -825,6 +827,22 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
     engine.dispose()
 
 
+def _revert_project_verification_failed_attempts(
+    connection: sqlite3.Connection,
+) -> None:
+    """Restore the three-code CHECK the PROJECT_VERIFICATION_FAILED hop left."""
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        "agent_attempts_after_project_verification_failed",
+        _AGENT_ATTEMPTS_TRIGGERS,
+        SCHEMA_VERSION,
+        V23_SCHEMA_HANDOFF.version,
+        trigger_source=_V23_AGENT_ATTEMPT_TRIGGERS,
+    )
+
+
 def _revert_agent_refused_attempts(connection: sqlite3.Connection) -> None:
     """Restore the two-code CHECK the AGENT_REFUSED hop left behind."""
 
@@ -884,6 +902,22 @@ def _create_exact_v22_store(database_path: Path) -> None:
         _require_product_shape(connection, V22_SCHEMA_HANDOFF.version)
 
 
+def _create_exact_v23_store(database_path: Path) -> None:
+    """A current store with PROJECT_VERIFICATION_FAILED removed: V23."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_project_verification_failed_attempts(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V23_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V23_SCHEMA_HANDOFF.version)
+
+
 def test_an_exact_v21_store_migrates_to_v22(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -926,6 +960,32 @@ def test_an_exact_v22_store_migrates_to_v23(
 
     shown = capsys.readouterr()
     assert "22" in shown.out and "23" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+    engine.dispose()
+
+
+def test_an_exact_v23_store_migrates_to_v24(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v23_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 23"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "23" in shown.out and "24" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)

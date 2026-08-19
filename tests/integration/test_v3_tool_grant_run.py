@@ -29,8 +29,11 @@ from sqlalchemy.exc import IntegrityError
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
+    agent_attempts,
     agent_receipts_v2,
+    node_receipts_v3,
     published_revisions,
+    run_events,
     runs,
     tool_redemptions,
 )
@@ -40,6 +43,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptState
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -53,7 +57,12 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.node_records_v3 import (
+    NodeReceiptReason,
+    read_stored_node_receipt_reason,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
@@ -74,10 +83,11 @@ from tests.scenarios.projects import declaring_verification, git_project
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/redeems-its-grant")
+FAILED_RUN = RunId("v3/red-verify-fails")
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
 VERIFICATION_OUTPUT = b"all green"
-VERIFICATION_EXIT_CODE = 3
-"""Deliberately not zero: the evidence is the outcome, not a verdict this head reads."""
+VERIFICATION_EXIT_CODE = 0
+FAILED_VERIFICATION_EXIT_CODE = 1
 
 COMMITTED_MARKER_NAME = "marker.txt"
 COMMITTED_MARKER = "the tree this run was pinned to\n"
@@ -105,7 +115,9 @@ nodes:
     )
 
 
-def project_declaring_its_verification(root: Path, record: Path) -> Path:
+def project_declaring_its_verification(
+    root: Path, record: Path, exit_code: int = VERIFICATION_EXIT_CODE
+) -> Path:
     """A project whose manifest states the one command that verifies it.
 
     The command records where it was started and reads a file only its own commit
@@ -115,7 +127,7 @@ def project_declaring_its_verification(root: Path, record: Path) -> Path:
     script = (
         f"pwd > {record}; cat {COMMITTED_MARKER_NAME} >> {record}; "
         f"printf '{VERIFICATION_OUTPUT.decode('ascii')}'; "
-        f"exit {VERIFICATION_EXIT_CODE}"
+        f"exit {exit_code}"
     )
     git_project(
         root,
@@ -127,11 +139,14 @@ def project_declaring_its_verification(root: Path, record: Path) -> Path:
     return root
 
 
-@pytest.fixture
-def runtime(tmp_path: Path) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+def granted_runtime(
+    tmp_path: Path, exit_code: int
+) -> Iterator[tuple[DbosRuntime, Path, Path]]:
     """A runtime that can run an agent and redeem a grant against one project."""
     cwd_record = tmp_path / "verification-cwd.txt"
-    project_root = project_declaring_its_verification(tmp_path / "project", cwd_record)
+    project_root = project_declaring_its_verification(
+        tmp_path / "project", cwd_record, exit_code
+    )
     scratch_root = agent_scratch_root(tmp_path)
     started = DbosRuntime(
         DbosRuntimeSettings(
@@ -157,6 +172,18 @@ def runtime(tmp_path: Path) -> Iterator[tuple[DbosRuntime, Path, Path]]:
         yield started, scratch_root, cwd_record
     finally:
         started.close()
+
+
+@pytest.fixture
+def runtime(tmp_path: Path) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    yield from granted_runtime(tmp_path, VERIFICATION_EXIT_CODE)
+
+
+@pytest.fixture
+def failing_verification_runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    yield from granted_runtime(tmp_path, FAILED_VERIFICATION_EXIT_CODE)
 
 
 def publish_granted_node(
@@ -283,6 +310,103 @@ def test_a_granted_node_runs_the_projects_verification_and_leaves_the_proof(
             started_runtime.engine.begin() as connection,
         ):
             connection.execute(rewrite)
+
+
+@pytest.mark.proves("a-nonzero-project-verification-fails-the-attempt-durably-named")
+def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
+    failing_verification_runtime: tuple[DbosRuntime, Path, Path],
+) -> None:
+    """A granted check that exits 1 is a named failure, not a completed run.
+
+    The provider's bytes were a success the schema admits. The project's own
+    command then exited 1. That ending must not write the success rows a
+    zero-exit grant writes: no agent receipt, no `AGENT_COMPLETED`, no
+    `tool_redemptions` row (its foreign key is an agent receipt a failed
+    attempt does not have). What remains is the named failure.
+    """
+    started_runtime, _scratch_root, _cwd_record = failing_verification_runtime
+    workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
+
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    ).start_published(
+        StartPublishedRunRequestV2(FAILED_RUN, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+
+    started_runtime.launch()
+    deadline = time.monotonic() + 20
+    observed = ""
+    while time.monotonic() < deadline:
+        with started_runtime.engine.connect() as connection:
+            observed = str(
+                connection.scalar(
+                    sa.select(runs.c.state).where(runs.c.run_id == FAILED_RUN.value)
+                )
+            )
+        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
+            break
+        time.sleep(0.025)
+    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+
+    with started_runtime.engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(
+                    agent_attempts.c.run_id == FAILED_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        event_kinds = tuple(
+            connection.scalars(
+                sa.select(run_events.c.event_kind).where(
+                    run_events.c.run_id == FAILED_RUN.value
+                )
+            )
+        )
+        payload = connection.scalar(
+            sa.select(run_events.c.payload).where(
+                run_events.c.run_id == FAILED_RUN.value,
+                run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+            )
+        )
+        stored_reason = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id == attempt["node_execution_id"]
+            )
+        )
+        receipt_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(agent_receipts_v2)
+            .where(agent_receipts_v2.c.run_id == FAILED_RUN.value)
+        )
+        redemption_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(tool_redemptions)
+            .where(tool_redemptions.c.run_id == FAILED_RUN.value)
+        )
+
+    assert attempt["state"] == AgentAttemptState.FAILED.value
+    assert attempt["failure_code"] == (
+        AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED.value
+    )
+    assert event_kinds == (RunEventKind.AGENT_FAILED.value,)
+    assert bytes(payload) == (
+        AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED.value.encode("ascii")
+    )
+    words, schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(stored_reason)
+    )
+    assert words.startswith(NodeReceiptReason.PROJECT_VERIFICATION_FAILED.value)
+    assert f"exit {FAILED_VERIFICATION_EXIT_CODE}" in words
+    assert schema_revision is None
+    assert value_hash is None
+    assert receipt_count == 0
+    assert redemption_count == 0
 
 
 @pytest.mark.proves("a-tool-grant-this-runtime-cannot-redeem-is-refused-by-name")
