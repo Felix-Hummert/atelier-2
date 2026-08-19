@@ -463,6 +463,25 @@ describe("a version 3 run that stops for a person", () => {
 });
 
 
+async function failedEvent(nodeId: string, reason: string, sequence: number) {
+  return {
+    workflow_format_version: 3,
+    cursor: `event1.cnVu.${sequence}`,
+    sequence,
+    public_run_reference: publicReference,
+    workflow_revision_hash: digest,
+    node_id: nodeId,
+    node_execution_id: "b".repeat(64),
+    event_hash: "c".repeat(64),
+    node_rail: [{ node_id: nodeId, state: "failed" as const, attempt: null }],
+    event: "AGENT_FAILED",
+    failure_code: "OUTPUT_SCHEMA_REFUSED",
+    reason,
+    attempt_id: "e".repeat(64),
+    attempt_ordinal: 1
+  };
+}
+
 async function completedEvent(nodeId: string, output: string, sequence: number) {
   const encoded = btoa(output);
   // Named apart from the imported revision digest on purpose: one shadowed the
@@ -491,6 +510,36 @@ async function completedEvent(nodeId: string, output: string, sequence: number) 
     attempt_ordinal: 1
   };
 }
+
+describe("a failed node on the run page", () => {
+  it("proves(a-failed-node-shows-the-stored-reason-on-the-run-page): shows the stored reason at the failed node without a click", async () => {
+    const feed = new FakeRunEventFeed();
+    const reason = "output-schema-refused: instance-not-json: Expecting value";
+    const cockpitApi = api(
+      v3Run({
+        state: "FAILED",
+        current_node_id: "implement",
+        node_rail: [
+          { node_id: "implement", state: "failed", attempt: null },
+          { node_id: "review", state: "queued", attempt: null }
+        ]
+      }),
+      { openRunEvents: feed.open }
+    );
+
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
+    feed.handlers?.opened();
+    feed.handlers?.event(JSON.stringify(await failedEvent("implement", reason, 1)));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("implement");
+    expect(alert.textContent).toContain(reason);
+    expect(screen.queryByText("Asked")).toBeNull();
+  });
+});
 
 describe("the click into a node", () => {
   // Both values stand well over the 120 characters at which the timeline cuts

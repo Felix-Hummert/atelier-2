@@ -6,6 +6,7 @@
     isRunV3,
     type CockpitApi,
     type NodeDetail,
+    type RunEvent,
     type RunV3,
     type WorkflowRevisionDetail
   } from "../api/client";
@@ -47,9 +48,24 @@
   $: arrived = (projection?.events ?? []).filter(
     (event) => event.event === "AGENT_COMPLETED" || event.event === "AGENT_FAILED"
   );
+  $: failedReasons = arrived.flatMap((event) => {
+    if (event.event !== "AGENT_FAILED") return [];
+    const reason = storedFailureReason(event);
+    return reason === null ? [] : [{ nodeId: event.node_id, reason }];
+  });
 
-  function preview(cursor: string): string | null {
-    const output = projection?.agent_outputs_by_cursor.get(cursor);
+  function storedFailureReason(event: RunEvent): string | null {
+    if (event.event !== "AGENT_FAILED") return null;
+    if (!("reason" in event) || event.reason === null || event.reason === "") {
+      return null;
+    }
+    return event.reason;
+  }
+
+  function preview(event: (typeof arrived)[number]): string | null {
+    const reason = storedFailureReason(event);
+    if (reason !== null) return reason;
+    const output = projection?.agent_outputs_by_cursor.get(event.cursor);
     if (output === undefined || output.kind === "empty") return null;
     const text = output.kind === "utf8" ? output.value : `${output.byte_count} bytes`;
     return text.length > PREVIEW_CHARACTERS
@@ -406,6 +422,13 @@
     />
   {/if}
 
+  {#each failedReasons as stopped (stopped.nodeId)}
+    <p class="refusal" role="alert">
+      <strong>Stopped here — {stopped.nodeId}:</strong>
+      {stopped.reason}
+    </p>
+  {/each}
+
   {#if graphRequest.state === "loading"}
     <p class="muted" role="status">Looking…</p>
   {:else if graphRequest.state === "failed"}
@@ -457,8 +480,8 @@
               state={event.event === "AGENT_COMPLETED" ? "succeeded" : "failed"}
             />
             <span class="node-id">{event.node_id}</span>
-            {#if preview(event.cursor) !== null}
-              <code class="preview">{preview(event.cursor)}</code>
+            {#if preview(event) !== null}
+              <code class="preview">{preview(event)}</code>
             {/if}
           </li>
         {/each}
@@ -491,6 +514,7 @@
   .events { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
   .event { display: flex; align-items: baseline; gap: 0.6rem; }
   .preview { opacity: 0.8; overflow-wrap: anywhere; }
+  .refusal { margin: 0; padding: 0.6rem 0.75rem; border-radius: 0.4rem; border-left: 4px solid var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--warning); font-weight: 500; }
   .rail { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
   .rail-entry { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.6rem; border-radius: 0.4rem; }
   .rail-entry.current { background: color-mix(in srgb, currentColor 8%, transparent); }

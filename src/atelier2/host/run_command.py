@@ -193,14 +193,16 @@ class AgentBindingDocument(BaseModel):
     auth_profile: PublishAuthProfileRevisionRequestResource
     model: str
     executor_revision: str
+    requested_capability: str | None = None
 
     def publication(
         self, auth_profile_revision_hash: str
     ) -> PublishAgentConfigurationRevisionRequestResource:
-        return PublishAgentConfigurationRevisionRequestResource(
-            model=self.model,
-            auth_profile_revision_hash=auth_profile_revision_hash,
-            executor_revision=self.executor_revision,
+        return PublishAgentConfigurationRevisionRequestResource.model_validate(
+            {
+                **self.model_dump(exclude_unset=True, exclude={"auth_profile"}),
+                "auth_profile_revision_hash": auth_profile_revision_hash,
+            }
         )
 
 
@@ -736,17 +738,19 @@ def _why_the_run_stops(
 ) -> RunNeedsAnotherActor:
     """The failure an operator is handed, with the reason read where it lives.
 
-    The event stream carries the failure code and deliberately nothing more: it
-    is a surface anybody may subscribe to, so a provider's own words stay off
-    it. They belong to the node's durable receipt, which the service answers on
-    the same node resource the console panel reads -- so this asks there rather
-    than growing a second vocabulary for one fact.
-
-    An attempt whose reason nothing recorded is reported as exactly that. A run
-    from before the receipt writer, or a node whose failure nobody judged, must
-    not read like a run whose reason was empty prose.
+    A V3 failure carries the stored `node-receipt/v3` words on the event
+    itself — the same sentence, not a second vocabulary. A V2 event, or a V3
+    event whose receipt nobody wrote, still asks the node resource the console
+    panel reads. An attempt whose reason nothing recorded is reported as
+    exactly that.
     """
 
+    if isinstance(event, AgentFailedEventResourceV3) and event.reason is not None:
+        named = f"failed with {event.failure_code}: {event.reason}"
+        return RunNeedsAnotherActor(
+            f"agent attempt {event.attempt_id} of node {event.node_id} {named}; "
+            "this run has ended; a new run continues the work"
+        )
     node = quote(event.node_id, safe="")
     detail = _decoded(
         _node_detail_resource,

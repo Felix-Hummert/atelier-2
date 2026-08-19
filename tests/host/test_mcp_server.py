@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from threading import Thread
 from typing import Any, Self
 from urllib.error import HTTPError
@@ -32,6 +33,7 @@ from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
 from atelier2.host.mcp_command import (
     JSONRPC_METHOD_NOT_FOUND,
+    JSONRPC_PARSE_ERROR,
     dispatch_message,
     read_message,
     serve_mcp,
@@ -513,7 +515,7 @@ def test_start_run_posts_the_same_start_body_the_http_door_already_owns(
 
 
 @pytest.mark.proves("a-jsonrpc-notification-gets-no-reply")
-def test_a_notification_produces_no_reply_frame() -> None:
+def test_a_notification_produces_no_reply() -> None:
     assert (
         dispatch_message(
             "http://127.0.0.1:1",
@@ -570,3 +572,72 @@ def test_a_non_loopback_service_is_refused_instead_of_inventing_auth(
     assert printed.out == ""
     assert "loopback" in printed.err
     assert "authentication" in printed.err
+
+
+def json_line(message: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode() + b"\n"
+    )
+
+
+def serve_lines(*lines: bytes) -> bytes:
+    stdout = BytesIO()
+    serve_mcp("http://127.0.0.1:1", BytesIO(b"".join(lines)), stdout)
+    return stdout.getvalue()
+
+
+def reply_lines(output: bytes) -> list[dict[str, Any]]:
+    assert b"Content-Length" not in output
+    assert output.endswith(b"\n")
+    replies = [json.loads(line) for line in output.split(b"\n") if line]
+    assert all(isinstance(reply, dict) for reply in replies)
+    return replies
+
+
+@pytest.mark.proves("stdio-mcp-is-newline-delimited-jsonrpc")
+def test_one_request_line_answers_one_json_line() -> None:
+    output = serve_lines(
+        json_line(
+            {
+                "jsonrpc": JSONRPC_VERSION,
+                "id": 1,
+                "method": METHOD_INITIALIZE,
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "atelier2-test", "version": "0"},
+                },
+            }
+        )
+    )
+
+    replies = reply_lines(output)
+    assert len(replies) == 1
+    assert replies[0]["id"] == 1
+    assert replies[0]["result"]["protocolVersion"] == MCP_PROTOCOL_VERSION
+
+
+@pytest.mark.proves("stdio-mcp-is-newline-delimited-jsonrpc")
+@pytest.mark.proves("a-jsonrpc-notification-gets-no-reply")
+def test_a_notification_line_produces_no_reply_bytes() -> None:
+    output = serve_lines(
+        json_line(
+            {
+                "jsonrpc": JSONRPC_VERSION,
+                "method": "notifications/cancelled",
+                "params": {"requestId": 1},
+            }
+        )
+    )
+
+    assert output == b""
+
+
+@pytest.mark.proves("stdio-mcp-is-newline-delimited-jsonrpc")
+def test_a_line_that_is_not_json_answers_parse_error() -> None:
+    output = serve_lines(b"{not-json\n")
+
+    replies = reply_lines(output)
+    assert len(replies) == 1
+    assert replies[0]["id"] is None
+    assert replies[0]["error"]["code"] == JSONRPC_PARSE_ERROR

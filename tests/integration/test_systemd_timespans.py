@@ -8,12 +8,33 @@ from typing import Any
 
 import pytest
 
-from atelier2.adapters import systemd_timespans
+from atelier2.adapters import bounded_processes, systemd_timespans
 from atelier2.adapters.systemd_timespans import (
     DirectSystemdHostFailure,
     DirectSystemdUnitConflict,
     normalize_direct_systemd_timespan,
 )
+
+
+def _process_is_gone(process_id: int) -> bool:
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def _wait_until(predicate: object, message: str, timeout: float = 1) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if callable(predicate) and predicate():
+            return
+        time.sleep(0.01)
+    pytest.fail(message)
+
+
+def _wait_until_gone(process_id: int, message: str) -> None:
+    _wait_until(lambda: _process_is_gone(process_id), message)
 
 
 def _normalize(executable: Path, value: str, expected: int | None = None) -> int:
@@ -91,14 +112,17 @@ def test_overflow_preempts_deadline_and_removes_the_process_group(
 ) -> None:
     executable = tmp_path / "analyzer"
     pid_file = tmp_path / "pids"
+    finished = tmp_path / "finished"
     executable.write_text(
         f"#!{sys.executable}\n"
         "import os,signal,subprocess,sys,time\n"
+        "from pathlib import Path\n"
         "child=subprocess.Popen((sys.executable,'-c','import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(4)'))\n"
         "open(sys.argv[-1],'w').write(f'{os.getpid()} {child.pid}')\n"
         f"if {deadline > 1e10}:\n"
         " while not os.path.exists(sys.argv[-1]+'.release'):time.sleep(.01)\n"
         f"os.write({descriptor},b'x'*4096);time.sleep(4)\n"
+        f"Path({str(finished)!r}).touch()\n"
     )
     executable.chmod(0o700)
     if deadline > 1e10:
@@ -106,13 +130,11 @@ def test_overflow_preempts_deadline_and_removes_the_process_group(
 
         def start(arguments: tuple[str, ...], **options: Any) -> Any:
             process = real_popen(arguments, **options)
-            while not pid_file.exists():
-                time.sleep(0.01)
+            _wait_until(pid_file.exists, "analyzer never published its process group")
             return process
 
         monkeypatch.setattr(systemd_timespans.subprocess, "Popen", start)
 
-    started = time.monotonic()
     with pytest.raises(DirectSystemdHostFailure):
         normalize_direct_systemd_timespan(
             executable,
@@ -121,17 +143,12 @@ def test_overflow_preempts_deadline_and_removes_the_process_group(
             maximum_output_bytes=64,
         )
 
-    assert time.monotonic() - started < 1
+    assert not finished.exists()
+    _wait_until(pid_file.exists, "overflow scenario never launched")
     for process_id in map(int, pid_file.read_text().split()):
-        cleanup_deadline = time.monotonic() + 1
-        while time.monotonic() < cleanup_deadline:
-            try:
-                os.kill(process_id, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.01)
-        else:
-            pytest.fail(f"process {process_id} remained after group cleanup")
+        _wait_until_gone(
+            process_id, f"process {process_id} remained after group cleanup"
+        )
 
 
 @pytest.mark.parametrize("deadline", [float("nan"), float("inf")])
@@ -169,50 +186,59 @@ def test_real_systemd_analyzer_owns_c_locale_grammar() -> None:
 @pytest.mark.parametrize("reap_times_out", [False, True])
 def test_refused_group_signal_cannot_abandon_the_caller_deadline(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     reap_times_out: bool,
 ) -> None:
     executable = tmp_path / "analyzer"
     pid_file = tmp_path / "pids"
+    finished = tmp_path / "finished"
     executable.write_text(
         f"#!{sys.executable}\n"
         "import os,subprocess,sys,time\n"
+        "from pathlib import Path\n"
         "child=subprocess.Popen((sys.executable,'-c','import time;time.sleep(4)'),stdout=sys.stdout,stderr=sys.stderr)\n"
         "open(sys.argv[-1],'w').write(f'{os.getpid()} {child.pid}')\n"
         "os.write(1,b'x'*4096);time.sleep(4)\n"
+        f"Path({str(finished)!r}).touch()\n"
     )
     executable.chmod(0o700)
-    driver = f"""
-import os,subprocess,time
-from pathlib import Path
-from atelier2.adapters import bounded_processes
-from atelier2.adapters import systemd_timespans as owner
-bounded_processes.os.killpg = lambda *_: (_ for _ in ()).throw(PermissionError())
-if {reap_times_out!r}:
-    real_wait = bounded_processes.subprocess.Popen.wait
-    def timeout_after_reap(process, timeout=None):
-        real_wait(process, timeout=timeout)
-        raise subprocess.TimeoutExpired(process.args, timeout)
-    bounded_processes.subprocess.Popen.wait = timeout_after_reap
-started = time.monotonic()
-try:
-    owner.normalize_direct_systemd_timespan(Path({str(executable)!r}), {str(pid_file)!r}, command_timeout_seconds=.25, maximum_output_bytes=64)
-except owner.DirectSystemdHostFailure:
-    assert time.monotonic() - started < .25
-else:
-    raise AssertionError('group signal refusal was accepted')
-analyzer, descendant = map(int, Path({str(pid_file)!r}).read_text().split())
-try:
-    os.kill(analyzer, 0)
-except ProcessLookupError:
-    pass
-else:
-    os.kill(analyzer, 9)
-    raise AssertionError('owned analyzer was not reaped')
-# The typed group-signal failure means descendants are not guaranteed; the proof owns cleanup.
-try:
-    os.kill(descendant, 9)
-except ProcessLookupError:
-    pass
-"""
 
-    subprocess.run((sys.executable, "-c", driver), check=True, timeout=1)
+    def refuse_group_signal(*_arguments: object) -> None:
+        raise PermissionError()
+
+    monkeypatch.setattr(bounded_processes.os, "killpg", refuse_group_signal)
+    if reap_times_out:
+        real_wait = bounded_processes.subprocess.Popen.wait
+
+        def timeout_after_reap(
+            process: subprocess.Popen[bytes], timeout: float | None = None
+        ) -> int:
+            real_wait(process, timeout=timeout)
+            raise subprocess.TimeoutExpired(
+                process.args, 0 if timeout is None else timeout
+            )
+
+        monkeypatch.setattr(
+            bounded_processes.subprocess.Popen, "wait", timeout_after_reap
+        )
+
+    try:
+        with pytest.raises(DirectSystemdHostFailure):
+            normalize_direct_systemd_timespan(
+                executable,
+                str(pid_file),
+                command_timeout_seconds=0.25,
+                maximum_output_bytes=64,
+            )
+        _wait_until(pid_file.exists, "group-signal scenario never launched")
+        analyzer, _descendant = map(int, pid_file.read_text().split())
+        _wait_until_gone(analyzer, "owned analyzer was not reaped")
+        assert not finished.exists()
+    finally:
+        # The typed group-signal failure means descendants are not guaranteed.
+        if pid_file.exists():
+            for process_id in map(int, pid_file.read_text().split()):
+                try:
+                    os.kill(process_id, 9)
+                except ProcessLookupError:
+                    pass

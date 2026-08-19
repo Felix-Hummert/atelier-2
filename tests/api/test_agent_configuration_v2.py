@@ -842,7 +842,8 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
     }
     for event, reference in v3["discriminator"]["mapping"].items():
         component = schema["components"]["schemas"][reference.rsplit("/", 1)[-1]]
-        expected_fields = common | payloads[event]
+        extra = {"reason"} if event == "AGENT_FAILED" else set()
+        expected_fields = common | payloads[event] | extra
         assert set(component["properties"]) == expected_fields
         assert set(component["required"]) == expected_fields
         assert component["additionalProperties"] is False
