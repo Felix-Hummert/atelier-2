@@ -2840,7 +2840,9 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_TWENTY, _VERSION_TWENTY_ONE, _apply_v20_to_v21),
     _SchemaMigrationStep(_VERSION_TWENTY_ONE, _VERSION_TWENTY_TWO, _apply_v21_to_v22),
     _SchemaMigrationStep(_VERSION_TWENTY_TWO, _VERSION_TWENTY_THREE, _apply_v22_to_v23),
-    _SchemaMigrationStep(_VERSION_TWENTY_THREE, _VERSION_TWENTY_FOUR, _apply_v23_to_v24),
+    _SchemaMigrationStep(
+        _VERSION_TWENTY_THREE, _VERSION_TWENTY_FOUR, _apply_v23_to_v24
+    ),
     _SchemaMigrationStep(
         _VERSION_TWENTY_FOUR,
         SCHEMA_VERSION,

@@ -46,9 +46,7 @@ def latest_project_root_revision(
             record = (
                 connection.execute(
                     sa.select(host_project_root_revisions)
-                    .where(
-                        host_project_root_revisions.c.project_id == project_id.value
-                    )
+                    .where(host_project_root_revisions.c.project_id == project_id.value)
                     .order_by(host_project_root_revisions.c.revision_number.desc())
                     .limit(1)
                 )
