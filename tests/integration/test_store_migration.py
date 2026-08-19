@@ -27,15 +27,15 @@ from sqlalchemy.schema import CreateIndex
 from atelier2.adapters.dbos.run_transitions import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
+    _AGENT_ATTEMPTS_TRIGGERS,
     _PRODUCT_TRIGGERS,
+    _V17_AGENT_ATTEMPT_TRIGGERS,
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V13_SCHEMA_HANDOFF,
     V21_SCHEMA_HANDOFF,
     V22_SCHEMA_HANDOFF,
     MigrationRequired,
-    _AGENT_ATTEMPTS_TRIGGERS,
-    _V17_AGENT_ATTEMPT_TRIGGERS,
     _rebuild_product_table,
     _require_product_shape,
     agent_attempts,
