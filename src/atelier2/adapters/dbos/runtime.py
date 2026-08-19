@@ -18,6 +18,10 @@ from atelier2.adapters.agent_processes import (
 )
 from atelier2.adapters.agent_workspaces import LocalAgentAttemptWorkspaceOwner
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.host_configuration import (
+    append_project_root,
+    project_root_for,
+)
 from atelier2.adapters.dbos.names import QUEUE_NAME
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
@@ -50,6 +54,7 @@ from atelier2.contracts.effects import (
     EffectAdapterBinding,
     EffectDestination,
 )
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.agent_executions import (
     AgentExecutor,
@@ -94,7 +99,7 @@ class DbosRuntimeBinding:
     agent_process_control_root: Path
     agent_process_cgroup_root: Path
     agent_scratch_root: Path | None
-    project_root: Path | None
+    project_id: ProjectId | None
     agent_termination_grace_seconds: float
 
 
@@ -105,7 +110,8 @@ class DbosRuntimeSettings:
     agent_process_control_root: Path | None = None
     agent_process_cgroup_root: Path | None = None
     agent_scratch_root: Path | None = None
-    project_root: Path | None = None
+    project_id: ProjectId | None = None
+    bootstrap_project_root: Path | None = None
     agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS
 
@@ -116,6 +122,13 @@ class DbosRuntimeSettings:
             raise ValueError("agent termination grace must be positive")
         if self.sqlite_lock_timeout_seconds <= 0:
             raise ValueError("the SQLite lock timeout must be positive")
+        if self.bootstrap_project_root is not None and self.project_id is None:
+            raise ValueError(
+                "a bootstrap project root writes the host configuration "
+                "channel, so it needs a project id"
+            )
+        if self.project_id is not None and not isinstance(self.project_id, ProjectId):
+            raise TypeError("project id must use its typed contract")
 
     def process_control_root(self) -> Path:
         root = self.agent_process_control_root
@@ -146,7 +159,7 @@ class DbosRuntimeSettings:
             None
             if self.agent_scratch_root is None
             else self.agent_scratch_root.resolve(),
-            None if self.project_root is None else self.project_root.resolve(),
+            self.project_id,
             self.agent_termination_grace_seconds,
         )
 
@@ -270,6 +283,20 @@ def _open_binding(
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None = None
     try:
         initialize_schema(engine)
+        if settings.bootstrap_project_root is not None:
+            if settings.project_id is None:
+                raise ValueError(
+                    "a bootstrap project root writes the host configuration "
+                    "channel, so it needs a project id"
+                )
+            append_project_root(
+                engine, settings.project_id, settings.bootstrap_project_root
+            )
+        declared_project_source = (
+            None
+            if settings.project_id is None
+            else declared_project(project_root_for(engine, settings.project_id))
+        )
         with engine.connect() as connection:
             durable_agent_bindings = {
                 AgentExecutorBinding(
@@ -396,9 +423,7 @@ def _open_binding(
             attempt_store,
             agent_process_supervisor,
             agent_workspace_owner,
-            None
-            if settings.project_root is None
-            else declared_project(settings.project_root.resolve()),
+            declared_project_source,
             adapter,
             effect_binding,
         )

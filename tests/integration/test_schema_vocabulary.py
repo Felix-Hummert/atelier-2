@@ -42,6 +42,10 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import RunEventKind, WaitAnswerState
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_PROJECT_ID_CHARACTERS,
+    MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+)
 from atelier2.contracts.node_records_v3 import (
     MAXIMUM_KIND_TOKEN_CHARACTERS,
     PersistedReceiptDisposition,
@@ -445,6 +449,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "agent_receipts_v2.workflow_revision_hash",
         "artifacts.artifact_hash",
         "auth_profile_revisions.revision_hash",
+        "host_project_root_revisions.revision_hash",
         "context_packages_v3.package_hash",
         "node_execution_requests_v3.context_package_hash",
         "node_execution_requests_v3.node_execution_id",
@@ -512,6 +517,8 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "artifacts.content": MAXIMUM_ARTIFACT_BYTES,
     "auth_profile_revisions.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "auth_profile_revisions.provider_id": PROVIDER_ID_BOUND,
+    "host_project_root_revisions.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "host_project_root_revisions.root_path": MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     "run_agent_bindings.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "tool_redemptions.node_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "run_events.cancellation_command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,

@@ -55,6 +55,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.pages import PageLimit
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 from atelier2.host.logging import configure_process_logging
@@ -177,6 +178,7 @@ class HostSettings:
     agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
     agent_scratch_root: Path | None = None
+    project_id: ProjectId | None = None
     project_root: Path | None = None
     claude_subscription: ClaudeSubscriptionSettings | None = None
     claude_workspace_tools: bool = False
@@ -231,7 +233,8 @@ class HostSettings:
             self.database_path,
             self.application_version,
             agent_scratch_root=self.agent_scratch_root,
-            project_root=self.project_root,
+            project_id=self.project_id,
+            bootstrap_project_root=self.project_root,
             agent_termination_grace_seconds=self.agent_termination_grace_seconds,
             sqlite_lock_timeout_seconds=self.sqlite_lock_timeout_seconds,
         )
@@ -245,6 +248,13 @@ class HostSettings:
         object.__setattr__(self, "frontend_dist", frontend_dist)
         if database_path == effect_store_path:
             raise ValueError("durable database and effect store must be distinct")
+        if self.project_root is not None and self.project_id is None:
+            raise ValueError(
+                "--project-root writes the host configuration channel, so it "
+                "needs --project-id"
+            )
+        if self.project_id is not None and not isinstance(self.project_id, ProjectId):
+            raise TypeError("project id must use its typed contract")
         for name in (
             "effect_adapter_revision",
             "effect_destination",
