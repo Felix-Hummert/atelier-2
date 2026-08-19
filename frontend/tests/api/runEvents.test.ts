@@ -5,6 +5,7 @@ import {
   decodeAndApplyDurableEvent,
   streamProjection
 } from "../../src/lib/runProjection";
+import { waitingInput } from "../support/workflowV1";
 
 describe("native durable event transport", () => {
   it("opens the exact same-origin event route and forwards known and unknown message frames", async () => {
@@ -35,6 +36,29 @@ describe("native durable event transport", () => {
     expect(handlers.event).toHaveBeenCalledTimes(2);
     expect(projection.events).toHaveLength(1);
     expect(projection.protocol_problem).toEqual({ type: "decoder" });
+    expect(handlers.disconnected).toHaveBeenCalledTimes(1);
+    subscription.close();
+    expect(source.closed).toBe(true);
+  });
+
+  it("opens the attention route on the same EventSource factory, with no cursor in the URL", () => {
+    const source = new FakeEventSource();
+    const factory = vi.fn(() => source);
+    const handlers: RunEventHandlers = {
+      opened: vi.fn(),
+      event: vi.fn(),
+      disconnected: vi.fn()
+    };
+    const api = createCockpitApi(fetch, factory);
+
+    const subscription = api.openAttentionEvents(handlers);
+    source.dispatch("open", new Event("open"));
+    source.dispatch("message", message(waitingInput(1)));
+    source.dispatch("error", new Event("error"));
+
+    expect(factory).toHaveBeenCalledWith("/atelier/api/v1/events");
+    expect(handlers.opened).toHaveBeenCalledTimes(1);
+    expect(handlers.event).toHaveBeenCalledTimes(1);
     expect(handlers.disconnected).toHaveBeenCalledTimes(1);
     subscription.close();
     expect(source.closed).toBe(true);

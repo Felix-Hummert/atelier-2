@@ -4,10 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import type { CockpitApi, RunV1 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
-import { cockpitApiStub, PAGE_CURSORS } from "../support/cockpitApi";
+import { cockpitApiStub, FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import {
   completedRun,
+  eventCursor,
+  publicReference,
+  revisionHash,
   startedRun,
+  waitingInput,
   waitingInputRun,
   waitingReconciliationRun
 } from "../support/workflowV1";
@@ -39,6 +43,56 @@ function openStudio(runs: RunV1[] = [], overrides: Partial<CockpitApi> = {}) {
       mutationJournal: new MutationJournal(sessionStorage)
     }
   });
+}
+
+function openStudioHolding(runs: RunV1[] = [], overrides: Partial<CockpitApi> = {}) {
+  const feed = new FakeRunEventFeed();
+  const view = openStudio(runs, { openAttentionEvents: feed.openAttention, ...overrides });
+  return { feed, ...view };
+}
+
+function failedRun(changes: Partial<RunV1> = {}): RunV1 {
+  return startedRun({
+    state: "FAILED",
+    terminal_hash: revisionHash,
+    ...changes
+  });
+}
+
+function agentFailedEvent() {
+  return {
+    workflow_format_version: 2 as const,
+    cursor: eventCursor(1),
+    sequence: 1,
+    public_run_reference: publicReference,
+    workflow_revision_hash: revisionHash,
+    node_id: "agent",
+    node_execution_id: revisionHash,
+    event_hash: revisionHash,
+    node_rail: [
+      {
+        node_id: "agent",
+        state: "failed" as const,
+        attempt: { ordinal: 1 as const, state: "FAILED" as const }
+      }
+    ],
+    event: "AGENT_FAILED" as const,
+    failure_code: "PROCESS_EXITED_UNSUCCESSFULLY" as const,
+    attempt_id: revisionHash,
+    attempt_ordinal: 1 as const
+  };
+}
+
+function streamFailedFrame() {
+  return {
+    event: "STREAM_FAILED",
+    problem: {
+      type: "urn:atelier2:problem:v1:durable-state-corrupt",
+      title: "Durable state is corrupt",
+      status: 500,
+      detail: "Stop mutation and inspect the durable store."
+    }
+  };
 }
 
 describe("the studio is the level the workshop opens on", () => {
@@ -154,11 +208,15 @@ describe("the inbox names what waits for a human", () => {
 
 describe("an empty studio teaches the one next action", () => {
   it("proves(an-empty-area-names-the-one-next-action): names starting a run as the one action possible today, and offers it once", async () => {
-    openStudio([]);
+    const { feed } = openStudioHolding([]);
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
 
     const empty = await screen.findByRole("heading", { name: "Nothing is running" });
 
     expect(empty.isConnected).toBe(true);
+    expect(screen.getByText("Live").isConnected).toBe(true);
+    expect(screen.queryByText("Connecting")).toBeNull();
     expect(screen.getAllByRole("link", { name: "Start a run" })).toHaveLength(1);
 
     await fireEvent.click(screen.getByRole("link", { name: "Start a run" }));
@@ -176,6 +234,77 @@ describe("an empty studio teaches the one next action", () => {
     openStudio([], { listRuns: vi.fn().mockRejectedValue(new Error("offline")) });
 
     expect((await screen.findByText(/offline/)).isConnected).toBe(true);
+  });
+});
+
+describe("the studio holds GET /events", () => {
+  it("holds the attention stream when the studio opens", async () => {
+    const { feed } = openStudioHolding([]);
+
+    await screen.findByRole("heading", { name: "Studio" });
+
+    expect(feed.openAttention).toHaveBeenCalledWith(expect.any(Object));
+  });
+
+  it("names connecting as itself, not as an empty workshop", async () => {
+    openStudioHolding([]);
+
+    expect((await screen.findByText("Connecting")).isConnected).toBe(true);
+    await waitFor(() => expect(screen.queryByText("Looking…")).toBeNull());
+    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+  });
+
+  it("applies a WAITING_INPUT from the stream without already listing the run", async () => {
+    const waiting = waitingInputRun({ public_run_reference: "run1.YQ" });
+    const getRun = vi.fn(async () => waiting);
+    const { feed } = openStudioHolding([], { getRun });
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
+    await screen.findByRole("heading", { name: "Nothing is running" });
+
+    feed.handlers?.event(
+      JSON.stringify(
+        waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" })
+      )
+    );
+
+    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
+    expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
+    expect(getRun).toHaveBeenCalledWith("run1.YQ");
+    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+    expect(within(await screen.findByRole("article", { name: "This workshop" })).getByText("1 waiting for you").isConnected).toBe(true);
+  });
+
+  it("applies an AGENT_FAILED from the stream without already listing the run", async () => {
+    const getRun = vi.fn(async () => failedRun());
+    const { feed } = openStudioHolding([], { getRun });
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
+    await screen.findByRole("heading", { name: "Nothing is running" });
+
+    feed.handlers?.event(JSON.stringify(agentFailedEvent()));
+
+    const card = await screen.findByRole("article", { name: "This workshop" });
+    expect(within(card).getByText("1 landed").isConnected).toBe(true);
+    expect(getRun).toHaveBeenCalledWith(publicReference);
+    expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+  });
+
+  it("names a failed attention stream as itself, not as an empty workshop", async () => {
+    const { feed } = openStudioHolding([]);
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
+    await screen.findByRole("heading", { name: "Nothing is running" });
+
+    feed.handlers?.event(JSON.stringify(streamFailedFrame()));
+
+    expect((await screen.findByText("Stopped")).isConnected).toBe(true);
+    expect(screen.getByText("Durable state is corrupt").isConnected).toBe(true);
+    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+    expect(screen.queryByText("Connecting")).toBeNull();
+    expect(screen.queryByText("Live")).toBeNull();
+    expect(feed.close).toHaveBeenCalled();
   });
 });
 

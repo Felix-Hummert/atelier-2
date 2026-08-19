@@ -1,4 +1,4 @@
-import type { ConnectionState, StreamProjection } from "./runProjection";
+import type { ConnectionState, ProtocolProblem } from "./runProjection";
 
 export const connectionLabels = {
   connecting: "Connecting",
@@ -8,15 +8,20 @@ export const connectionLabels = {
   failed: "Stopped"
 } as const satisfies Record<ConnectionState, string>;
 
-export function streamStopped(value: StreamProjection): boolean {
+export interface StreamStatusView {
+  connection: ConnectionState;
+  protocol_problem: ProtocolProblem | null;
+}
+
+export function streamStopped(value: StreamStatusView): boolean {
   return value.protocol_problem !== null || value.connection === "failed";
 }
 
-export function connectionLabel(value: StreamProjection): string {
+export function connectionLabel(value: StreamStatusView): string {
   return value.protocol_problem === null ? connectionLabels[value.connection] : "Stopped";
 }
 
-export function protocolTitle(value: StreamProjection): string | null {
+export function protocolTitle(value: { protocol_problem: ProtocolProblem | null }): string | null {
   if (value.protocol_problem === null) return null;
   return {
     decoder: "Event invalid",
@@ -26,7 +31,7 @@ export function protocolTitle(value: StreamProjection): string | null {
   }[value.protocol_problem.type];
 }
 
-export function protocolDetail(value: StreamProjection): string | null {
+export function protocolDetail(value: { protocol_problem: ProtocolProblem | null }): string | null {
   const problem = value.protocol_problem;
   if (problem === null) return null;
   if (problem.type === "sequence_gap") {
