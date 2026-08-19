@@ -600,11 +600,15 @@ class _DbosProcessOwner:
 
         After driverless-attempt convergence: that path stops armed attempts
         whose driver died and leaves them INTERRUPTED. This path is the
-        leftover half — the attempt is already FAILED or INTERRUPTED, the run
-        still says STARTED, and nothing will move it.
+        leftover half — the attempt is already FAILED or INTERRUPTED, or the
+        run advanced onto a node that never prepared and whose durable
+        workflow will not recover, the run still says STARTED, and nothing
+        will move it.
         """
 
-        converge_uncontinuable_runs(DbosUncontinuableRunStore(bound.engine))
+        converge_uncontinuable_runs(
+            DbosUncontinuableRunStore(bound.engine, bound.settings.application_version)
+        )
 
     def initialize_storage(self, bound: _BoundRuntime) -> None:
         with self._lock:

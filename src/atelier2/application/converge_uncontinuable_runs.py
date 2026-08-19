@@ -3,9 +3,11 @@
 #302 stops attempts whose driver is gone and leaves them INTERRUPTED.
 #339 lifts a leftover FAILED attempt onto the run. This is the remaining
 half of that inventory: the attempt is already INTERRUPTED under
-`atelier2-driver-lost`, the run still says STARTED, and nothing will ever
-move it. A serve start walks those rows and lifts the existing ending onto
-the run — the same reason, one level up. A V1 row stays out.
+`atelier2-driver-lost`, or the run advanced onto a node that never
+prepared and whose durable workflow will not recover, the run still says
+STARTED, and nothing will ever move it. A serve start walks those rows
+and lifts the existing ending onto the run — the same reason, one level
+up. A V1 row stays out.
 """
 
 from __future__ import annotations

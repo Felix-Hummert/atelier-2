@@ -432,8 +432,13 @@ replacement still in flight, ends the same way: the run becomes `FAILED` and
 that existing interruption event is the named reason — no new event, no
 attempt rewrite. A V1 run cannot take that lift, because the frozen V1 wire
 refuses `FAILED`. A run that advanced past a succeeded predecessor onto a
-node that never prepared an attempt is left standing rather than given an
-invented ending.
+node that never prepared an attempt is leftover only when the durable node
+workflow that would start that attempt is missing or belongs to an
+application version the running executor will not recover: the failed
+`node-receipt/v3` on the current node names `atelier2-driver-lost`, and the
+run becomes `FAILED` without a new event. A silent successor whose node
+workflow is still pending under the running application version is left
+standing.
 
 The other way an attempt ends badly now says as much. A provider process that
 leaves no usable answer ends `FAILED` under `PROCESS_EXITED_UNSUCCESSFULLY` on

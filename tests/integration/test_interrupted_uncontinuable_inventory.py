@@ -2,9 +2,10 @@
 
 The five leftover STARTED rows after #339 are this class and its neighbours:
 an attempt already INTERRUPTED under atelier2-driver-lost, a silent successor
-that never prepared the current node, and the two shapes the #339 guardians
-already protect. This file prepares those rows and asks serve start to end
-only what it can name.
+whose durable node workflow is gone, and the two shapes the #339 guardians
+already protect. A silent successor whose node workflow is still pending
+under the running application version is named, not invented. This file
+prepares those rows and asks serve start to end only what it can name.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
+    node_receipts_v3,
     run_events,
     runs,
     workflow_revisions,
@@ -31,6 +33,7 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
+from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.converge_uncontinuable_runs import (
@@ -70,6 +73,10 @@ from atelier2.contracts.executions import (
     RunEventKind,
 )
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.node_records_v3 import (
+    PersistedReceiptDisposition,
+    read_stored_node_receipt_reason,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import (
@@ -435,6 +442,72 @@ def _last_command(runtime: DbosRuntime, run_id: RunId) -> str | None:
     return None if value is None else str(value)
 
 
+def _record_node_workflow(
+    runtime: DbosRuntime,
+    workflow_id: str,
+    *,
+    status: str,
+    application_version: str,
+) -> None:
+    """Leave one node-workflow row in the state a recovered executor would find.
+
+    The durable runtime owns this table; a test that wants a workflow in a
+    version or status only a crash or a deploy produces cannot reach that
+    state by running one.
+    """
+
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO workflow_status "
+                "(workflow_uuid, status, created_at, updated_at, priority, "
+                "application_version) "
+                "VALUES (:workflow_id, :status, 0, 0, 0, :application_version)"
+            ),
+            {
+                "workflow_id": workflow_id,
+                "status": status,
+                "application_version": application_version,
+            },
+        )
+
+
+def _current_receipt(runtime: DbosRuntime, run_id: RunId) -> tuple[str, str] | None:
+    with runtime.engine.connect() as connection:
+        record = (
+            connection.execute(
+                sa.select(
+                    runs.c.revision_hash,
+                    runs.c.current_node_id,
+                    runs.c.current_round_ordinal,
+                ).where(runs.c.run_id == run_id.value)
+            )
+            .mappings()
+            .one()
+        )
+        stored = (
+            connection.execute(
+                sa.select(
+                    node_receipts_v3.c.disposition, node_receipts_v3.c.reason
+                ).where(
+                    node_receipts_v3.c.node_execution_id
+                    == NodeExecutionId.for_node(
+                        run_id,
+                        WorkflowRevisionHash(str(record["revision_hash"])),
+                        str(record["current_node_id"]),
+                        int(record["current_round_ordinal"]),
+                    ).value
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    if stored is None:
+        return None
+    reason, _schema, _value = read_stored_node_receipt_reason(str(stored["reason"]))
+    return str(stored["disposition"]), reason
+
+
 @pytest.mark.proves("an-interrupted-uncontinuable-run-ends-under-driver-loss")
 def test_an_interrupted_leftover_ends_as_failed_under_driver_loss(
     runtime: DbosRuntime,
@@ -443,7 +516,9 @@ def test_an_interrupted_leftover_ends_as_failed_under_driver_loss(
     leftover_interrupted(runtime, run_id)
     before_events = _event_kinds(runtime, run_id)
 
-    ended = converge_uncontinuable_runs(DbosUncontinuableRunStore(runtime.engine))
+    ended = converge_uncontinuable_runs(
+        DbosUncontinuableRunStore(runtime.engine, runtime.settings.application_version)
+    )
 
     assert ended == (run_id,)
     assert _run_state(runtime, run_id) == RunState.FAILED.value
@@ -492,7 +567,9 @@ def test_converge_does_not_end_an_interrupted_run_that_can_still_continue(
         )
         connection.commit()
 
-    store = DbosUncontinuableRunStore(runtime.engine)
+    store = DbosUncontinuableRunStore(
+        runtime.engine, runtime.settings.application_version
+    )
     assert store.uncontinuable_runs() == ()
     assert converge_uncontinuable_runs(store) == ()
     assert _run_state(runtime, run_id) == RunState.STARTED.value
@@ -517,27 +594,104 @@ def test_converge_does_not_end_an_interrupted_run_waiting_for_input(
         assert waiting.rowcount == 1
         connection.commit()
 
-    store = DbosUncontinuableRunStore(runtime.engine)
+    store = DbosUncontinuableRunStore(
+        runtime.engine, runtime.settings.application_version
+    )
     assert store.uncontinuable_runs() == ()
     assert converge_uncontinuable_runs(store) == ()
     assert _run_state(runtime, run_id) == RunState.WAITING_INPUT.value
 
 
 def test_converge_does_not_end_a_silent_successor(runtime: DbosRuntime) -> None:
-    """A succeeded predecessor and no attempt on the current node is not named.
+    """A succeeded predecessor and no attempt on the current node is not named
+    while the node workflow that would start that attempt is still owed a step.
 
-    The live row `live/die-kette-sieht` stands on review after implement
-    completed. Inventing FAILED would lie about that completion.
+    The window between Advance and `start_node` looks identical in the store.
+    Inventing FAILED there would eat a living run. The live row
+    `live/die-kette-sieht` is the other side of this pair: its workflow is
+    gone, and that case is named below.
     """
 
     run_id = RunId("inventory/silent")
-    silent_successor(runtime, run_id)
+    execution = silent_successor(runtime, run_id)
+    _record_node_workflow(
+        runtime,
+        node_workflow_id_for(execution.request.node_execution_id),
+        status="PENDING",
+        application_version=runtime.settings.application_version,
+    )
 
-    store = DbosUncontinuableRunStore(runtime.engine)
+    store = DbosUncontinuableRunStore(
+        runtime.engine, runtime.settings.application_version
+    )
     assert store.uncontinuable_runs() == ()
     assert converge_uncontinuable_runs(store) == ()
     assert _run_state(runtime, run_id) == RunState.STARTED.value
     assert _attempt_state(runtime, run_id) == AgentAttemptState.SUCCEEDED.value
+    assert _current_receipt(runtime, run_id) is None
+
+
+@pytest.mark.proves("a-serve-start-ends-a-run-that-died-between-nodes")
+def test_converge_ends_a_silent_successor_whose_durable_workflow_is_gone(
+    runtime: DbosRuntime,
+) -> None:
+    """The gap family: successor never prepared, and nothing will start it.
+
+    After a deploy, DBOS recovers only the running application version.
+    A missing node workflow, or one from a dead version, is that fact.
+    """
+
+    run_id = RunId("inventory/gap-missing")
+    silent_successor(runtime, run_id)
+    before_events = _event_kinds(runtime, run_id)
+
+    ended = converge_uncontinuable_runs(
+        DbosUncontinuableRunStore(runtime.engine, runtime.settings.application_version)
+    )
+
+    assert ended == (run_id,)
+    assert _run_state(runtime, run_id) == RunState.FAILED.value
+    assert _terminal_hash(runtime, run_id) is not None
+    assert _attempt_state(runtime, run_id) == AgentAttemptState.SUCCEEDED.value
+    assert _event_kinds(runtime, run_id) == before_events
+    assert _current_receipt(runtime, run_id) == (
+        PersistedReceiptDisposition.FAILED.value,
+        STOP_AFTER_DRIVER_LOSS,
+    )
+
+
+@pytest.mark.proves("a-serve-start-ends-a-run-that-died-between-nodes")
+def test_converge_ends_a_silent_successor_whose_durable_workflow_is_the_dead_version(
+    runtime: DbosRuntime,
+) -> None:
+    """PENDING under a version that will never recover is still leftover inventory.
+
+    Dropping the application_version match lists a living successor as dead,
+    and the mirror test above dies.
+    """
+
+    run_id = RunId("inventory/gap-dead-version")
+    execution = silent_successor(runtime, run_id)
+    _record_node_workflow(
+        runtime,
+        node_workflow_id_for(execution.request.node_execution_id),
+        status="PENDING",
+        application_version="dead-application-version",
+    )
+    before_events = _event_kinds(runtime, run_id)
+
+    ended = converge_uncontinuable_runs(
+        DbosUncontinuableRunStore(runtime.engine, runtime.settings.application_version)
+    )
+
+    assert ended == (run_id,)
+    assert _run_state(runtime, run_id) == RunState.FAILED.value
+    assert _terminal_hash(runtime, run_id) is not None
+    assert _event_kinds(runtime, run_id) == before_events
+    assert _current_receipt(runtime, run_id) == (
+        PersistedReceiptDisposition.FAILED.value,
+        STOP_AFTER_DRIVER_LOSS,
+    )
 
 
 def test_converge_does_not_end_a_v1_run(runtime: DbosRuntime) -> None:
@@ -549,7 +703,9 @@ def test_converge_does_not_end_a_v1_run(runtime: DbosRuntime) -> None:
     run_id = RunId("inventory/v1")
     seed_v1_interrupted(runtime, run_id)
 
-    store = DbosUncontinuableRunStore(runtime.engine)
+    store = DbosUncontinuableRunStore(
+        runtime.engine, runtime.settings.application_version
+    )
     assert store.uncontinuable_runs() == ()
     assert converge_uncontinuable_runs(store) == ()
     assert _run_state(runtime, run_id) == RunState.STARTED.value
@@ -563,6 +719,7 @@ def test_a_serve_start_ends_the_recoverable_class_cases_and_leaves_the_protected
     failed = RunId("inventory/failed")
     waiting = RunId("inventory/waiting")
     silent = RunId("inventory/silent")
+    gap = RunId("inventory/gap")
     v1 = RunId("inventory/v1")
     leftover_interrupted(runtime, interrupted)
     leftover_failed(runtime, failed)
@@ -574,7 +731,14 @@ def test_a_serve_start_ends_the_recoverable_class_cases_and_leaves_the_protected
             .values(state=RunState.WAITING_INPUT.value)
         )
         connection.commit()
-    silent_successor(runtime, silent)
+    living = silent_successor(runtime, silent)
+    _record_node_workflow(
+        runtime,
+        node_workflow_id_for(living.request.node_execution_id),
+        status="PENDING",
+        application_version=runtime.settings.application_version,
+    )
+    silent_successor(runtime, gap)
     seed_v1_interrupted(runtime, v1)
 
     runtime.launch()
@@ -585,4 +749,9 @@ def test_a_serve_start_ends_the_recoverable_class_cases_and_leaves_the_protected
     assert _attempt_state(runtime, interrupted) == AgentAttemptState.INTERRUPTED.value
     assert _run_state(runtime, waiting) == RunState.WAITING_INPUT.value
     assert _run_state(runtime, silent) == RunState.STARTED.value
+    assert _run_state(runtime, gap) == RunState.FAILED.value
+    assert _current_receipt(runtime, gap) == (
+        PersistedReceiptDisposition.FAILED.value,
+        STOP_AFTER_DRIVER_LOSS,
+    )
     assert _run_state(runtime, v1) == RunState.STARTED.value

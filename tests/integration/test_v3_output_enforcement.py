@@ -992,7 +992,9 @@ def test_a_serve_start_ends_a_started_run_whose_current_node_already_failed(
 
     assert durable_answer(runtime)[2] == RunState.STARTED.value
 
-    ended = converge_uncontinuable_runs(DbosUncontinuableRunStore(runtime.engine))
+    ended = converge_uncontinuable_runs(
+        DbosUncontinuableRunStore(runtime.engine, runtime.settings.application_version)
+    )
 
     assert ended == (RUN,)
     assert durable_answer(runtime)[2] == RunState.FAILED.value
@@ -1039,7 +1041,9 @@ def test_converge_uncontinuable_runs_does_not_end_a_run_that_can_still_continue(
     )
 
     execution = leftover_started_run_whose_current_node_failed(runtime)
-    store = DbosUncontinuableRunStore(runtime.engine)
+    store = DbosUncontinuableRunStore(
+        runtime.engine, runtime.settings.application_version
+    )
     replacement = AgentAttemptId.for_execution(
         execution.request.node_execution_id,
         execution.request.request_hash,
@@ -1093,7 +1097,9 @@ def test_converge_uncontinuable_runs_does_not_end_a_run_waiting_for_input(
         assert waiting.rowcount == 1
         connection.commit()
 
-    store = DbosUncontinuableRunStore(runtime.engine)
+    store = DbosUncontinuableRunStore(
+        runtime.engine, runtime.settings.application_version
+    )
     assert store.uncontinuable_runs() == ()
     assert converge_uncontinuable_runs(store) == ()
     assert durable_answer(runtime)[2] == RunState.WAITING_INPUT.value
