@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from collections.abc import Iterator
@@ -15,14 +16,17 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
+from pydantic import TypeAdapter
 
 from atelier2.api.openapi import API_PREFIX, WORKFLOW_DOCUMENT_COMPONENT
 from atelier2.api.problems import problem_resource
 from atelier2.api.wire.requests import (
+    AnyStartRunOrderResource,
     InlineOrderResource,
     StartRunAgentBindingResourceV2,
 )
 from atelier2.api.wire.resources import (
+    ArtifactResource,
     CatalogNameResolutionResource,
     NodeRailResource,
     RunResourceV3,
@@ -52,12 +56,14 @@ from atelier2.host.mcp_tools import (
 )
 from atelier2.host.run_command import (
     AgentRoleBinding,
+    SuppliedArtifactOrder,
     SuppliedOrder,
     start_request_body,
 )
 from tests.api.test_openapi import served_app
 
 JSON_MEDIA_TYPE = "application/json"
+OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 PROBLEM_MEDIA_TYPE = "application/problem+json"
 
 REVISION_HASH = "c" * 64
@@ -65,12 +71,14 @@ LINEAGE_ID = "d" * 64
 BINDING_SET_HASH = "3" * 64
 CONFIGURATION_HASH = "4" * 64
 AGENT_CONFIGURATION_HASH = "b" * 64
+ARTIFACT_HASH = "a" * 64
 PUBLIC_RUN_REFERENCE = "run1.dGVzdA"
 WORKFLOW_NAME = "review-bounded-diff"
 
 RUNS_PATH = API_PREFIX + "/runs"
 RUN_PATH = f"{RUNS_PATH}/{PUBLIC_RUN_REFERENCE}"
 ANSWERS_PATH = f"{RUN_PATH}/answers"
+ARTIFACTS_PATH = API_PREFIX + "/artifacts"
 DESCRIBED_PATH = API_PREFIX + "/workflow-revisions?view=described"
 BY_NAME_PATH = API_PREFIX + f"/workflow-revisions/by-name/{WORKFLOW_NAME}"
 MISSING_NAME_PATH = API_PREFIX + "/workflow-revisions/by-name/no-such-workflow"
@@ -88,6 +96,7 @@ class Call:
     method: str
     path: str
     body: bytes
+    content_type: str = ""
 
 
 @dataclass
@@ -110,7 +119,14 @@ class ScriptedService:
 
             def _answer(self, method: str) -> None:
                 length = int(self.headers.get("content-length", "0"))
-                service.calls.append(Call(method, self.path, self.rfile.read(length)))
+                service.calls.append(
+                    Call(
+                        method,
+                        self.path,
+                        self.rfile.read(length),
+                        self.headers.get("content-type", ""),
+                    )
+                )
                 scripted = service.answers.get((method, self.path))
                 answer = (
                     unrouted_answer()
@@ -263,6 +279,10 @@ def described_page() -> VersionedWorkflowRevisionPageResource:
     )
 
 
+def published_artifact() -> ArtifactResource:
+    return ArtifactResource(artifact_hash=ARTIFACT_HASH)
+
+
 def started_run() -> RunResourceV3:
     return RunResourceV3(
         workflow_format_version=3,
@@ -299,6 +319,12 @@ def catalog_and_run_answers() -> dict[tuple[str, str], list[Answer]]:
             )
         ],
         ("GET", RUN_PATH): [Answer(started_run().model_dump_json().encode())],
+        ("POST", ARTIFACTS_PATH): [
+            Answer(
+                published_artifact().model_dump_json().encode(),
+                status=HTTPStatus.CREATED,
+            )
+        ],
         ("POST", ANSWERS_PATH): [problem_answer("invalid-request")],
         (
             "GET",
@@ -308,13 +334,16 @@ def catalog_and_run_answers() -> dict[tuple[str, str], list[Answer]]:
 
 
 def http_json(
-    method: str, url: str, body: bytes | None = None
+    method: str,
+    url: str,
+    body: bytes | None = None,
+    content_type: str = JSON_MEDIA_TYPE,
 ) -> tuple[int, dict[str, Any]]:
     request = Request(
         url,
         data=body,
         method=method,
-        headers={"accept": JSON_MEDIA_TYPE, "content-type": JSON_MEDIA_TYPE},
+        headers={"accept": JSON_MEDIA_TYPE, "content-type": content_type},
     )
     try:
         with urlopen(request, timeout=5) as response:
@@ -328,7 +357,7 @@ def http_json(
     return status, body
 
 
-def test_tools_list_names_the_four_doors_from_the_one_owner(
+def test_tools_list_names_the_doors_from_the_one_owner(
     session: tuple[ScriptedService, StdioMcpSession],
 ) -> None:
     _service, client = session
@@ -368,10 +397,16 @@ def test_start_run_schema_references_the_published_grammar_instead_of_copying_it
     )
     orders = start["inputSchema"]["properties"]["orders"]
     bindings = start["inputSchema"]["properties"]["agent_bindings"]
+    union_schema = TypeAdapter(AnyStartRunOrderResource).json_schema()
+    union_defs = union_schema["$defs"]
+    union_items = {key: value for key, value in union_schema.items() if key != "$defs"}
 
     assert WORKFLOW_DOCUMENT_COMPONENT in start["description"]
     assert WORKFLOW_DOCUMENT_COMPONENT in orders["description"]
-    assert orders["items"] == InlineOrderResource.model_json_schema()
+    assert orders["items"] == union_items
+    assert start["inputSchema"]["$defs"] == union_defs
+    assert "ArtifactOrderResource" in union_defs
+    assert orders["items"] != InlineOrderResource.model_json_schema()
     assert bindings["items"] == StartRunAgentBindingResourceV2.model_json_schema()
 
 
@@ -491,14 +526,29 @@ def test_list_workflows_answers_the_same_catalog_resolution_http_would(
             (AgentRoleBinding("builder", AGENT_CONFIGURATION_HASH),),
             (SuppliedOrder("order", b'{"portions": 2}'),),
         ),
+        (
+            {
+                "name": WORKFLOW_NAME,
+                "run_id": "named-run",
+                "agent_bindings": [
+                    {
+                        "role": "builder",
+                        "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
+                    }
+                ],
+                "orders": [{"name": "order", "artifact_hash": ARTIFACT_HASH}],
+            },
+            (AgentRoleBinding("builder", AGENT_CONFIGURATION_HASH),),
+            (SuppliedArtifactOrder("order", ARTIFACT_HASH),),
+        ),
     ),
-    ids=("v1-bare", "v2-bindings", "v3-orders"),
+    ids=("v1-bare", "v2-bindings", "v3-orders", "v3-artifact-order"),
 )
 def test_start_run_posts_the_same_start_body_the_http_door_already_owns(
     session: tuple[ScriptedService, StdioMcpSession],
     arguments: dict[str, Any],
     bindings: tuple[AgentRoleBinding, ...],
-    orders: tuple[SuppliedOrder, ...],
+    orders: tuple[SuppliedOrder | SuppliedArtifactOrder, ...],
 ) -> None:
     service, client = session
     payload, is_error = client.call_tool(McpToolName.START_RUN.value, arguments)
@@ -512,6 +562,101 @@ def test_start_run_posts_the_same_start_body_the_http_door_already_owns(
     assert not is_error
     assert payload == http_body
     assert posted == owned
+    if any(isinstance(order, SuppliedArtifactOrder) for order in orders):
+        assert posted["orders"] == [{"name": "order", "artifact_hash": ARTIFACT_HASH}]
+
+
+@pytest.mark.proves("mcp-and-http-never-diverge")
+def test_publish_artifact_posts_octet_stream_and_answers_the_artifact_resource(
+    session: tuple[ScriptedService, StdioMcpSession],
+) -> None:
+    service, client = session
+    content = b'{"diff":"exact-bytes"}'
+    payload, is_error = client.call_tool(
+        McpToolName.PUBLISH_ARTIFACT.value,
+        {"content_base64": base64.standard_b64encode(content).decode("ascii")},
+    )
+    posted = next(call for call in service.calls if call.path == ARTIFACTS_PATH)
+
+    assert not is_error
+    assert posted.content_type == OCTET_STREAM_MEDIA_TYPE
+    assert posted.body == content
+    assert payload == published_artifact().model_dump(mode="json")
+
+
+@pytest.mark.proves("mcp-and-http-never-diverge")
+def test_publish_artifact_treats_an_already_stored_body_as_success() -> None:
+    resource = published_artifact().model_dump_json().encode()
+    with ScriptedService(
+        {
+            ("POST", ARTIFACTS_PATH): [
+                Answer(resource, status=HTTPStatus.CREATED),
+                Answer(resource, status=HTTPStatus.OK),
+            ]
+        }
+    ) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            content = {"content_base64": base64.standard_b64encode(b"same").decode()}
+            created, created_failed = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value, content
+            )
+            existing, existing_failed = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value, content
+            )
+        finally:
+            client.close()
+
+    expected = published_artifact().model_dump(mode="json")
+    assert not created_failed
+    assert not existing_failed
+    assert created == existing == expected
+
+
+@pytest.mark.proves("mcp-and-http-never-diverge")
+@pytest.mark.parametrize(
+    ("code", "content"),
+    (("artifact-empty", b""), ("artifact-too-large", b"x")),
+    ids=("empty", "too-large"),
+)
+def test_a_refused_artifact_is_the_same_problem_on_both_paths(
+    code: str, content: bytes
+) -> None:
+    with ScriptedService({("POST", ARTIFACTS_PATH): [problem_answer(code)]}) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            http_status, http_body = http_json(
+                "POST",
+                service.url + ARTIFACTS_PATH,
+                content,
+                content_type=OCTET_STREAM_MEDIA_TYPE,
+            )
+            payload, is_error = client.call_tool(
+                McpToolName.PUBLISH_ARTIFACT.value,
+                {"content_base64": base64.standard_b64encode(content).decode("ascii")},
+            )
+        finally:
+            client.close()
+
+    assert is_error
+    assert http_status == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert payload == http_body
+    assert payload["type"].endswith(code)
+
+
+def test_invalid_artifact_base64_is_a_local_transport_refusal(
+    session: tuple[ScriptedService, StdioMcpSession],
+) -> None:
+    service, client = session
+    payload, is_error = client.call_tool(
+        McpToolName.PUBLISH_ARTIFACT.value,
+        {"content_base64": "not-standard-base64!"},
+    )
+
+    assert is_error
+    assert "error" in payload
+    assert "base64" in str(payload["error"]).lower()
+    assert not any(call.path == ARTIFACTS_PATH for call in service.calls)
 
 
 @pytest.mark.proves("a-jsonrpc-notification-gets-no-reply")

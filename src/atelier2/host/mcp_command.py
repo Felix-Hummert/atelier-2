@@ -1,4 +1,4 @@
-"""stdio MCP server: four tools, each a client of the public HTTP API.
+"""stdio MCP server: five tools, each a client of the public HTTP API.
 
 This module is a third door onto the same product, not a second way into it.
 Every effect travels through the published HTTP API of a service someone is
@@ -9,7 +9,7 @@ has the same trust as the browser on loopback, and it refuses any other
 service address rather than inventing a credential.
 
 The official MCP SDK is a multi-transport server (SSE, HTTP sessions,
-resources, prompts). This slice is stdio JSON-RPC for four tools. A
+resources, prompts). This slice is stdio JSON-RPC for five tools. A
 dependency would add a second HTTP stack beside FastAPI without removing a
 hard problem this door has. Protocol tokens live with the tools; the
 newline-delimited JSON-RPC line protocol lives here.
@@ -21,11 +21,13 @@ exposure is not this slice.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import IO, Any
+from typing import IO, Any, assert_never
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
@@ -34,12 +36,15 @@ from pydantic import TypeAdapter, ValidationError
 
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.wire.requests import (
+    AnyStartRunOrderResource,
+    ArtifactOrderResource,
     InlineOrderResource,
     RevisionListingView,
     StartRunAgentBindingResourceV2,
 )
 from atelier2.api.wire.resources import (
     AnyRunResource,
+    ArtifactResource,
     CatalogNameResolutionResource,
     ProblemResource,
     VersionedWorkflowRevisionPageResource,
@@ -73,7 +78,9 @@ from atelier2.host.run_command import (
     NameOrder,
     ServiceRefused,
     ServiceUnreachable,
+    SuppliedArtifactOrder,
     SuppliedOrder,
+    SuppliedStartOrder,
     UnreadableServiceAnswer,
     UnusableRunOrder,
     resolve_published_name,
@@ -83,7 +90,11 @@ from atelier2.host.run_command import (
 _run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
 _catalog_name_resolution = TypeAdapter(CatalogNameResolutionResource)
 _described_page = TypeAdapter(VersionedWorkflowRevisionPageResource)
+_artifact_resource = TypeAdapter(ArtifactResource)
+_start_run_order = TypeAdapter(AnyStartRunOrderResource)
 
+ARTIFACT_PATH = "/artifacts"
+OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 MAXIMUM_MESSAGE_BYTES = 1_048_576
 JSONRPC_PARSE_ERROR = -32700
 JSONRPC_INVALID_REQUEST = -32600
@@ -244,6 +255,7 @@ def _tool_handlers() -> dict[McpToolName, ToolHandler]:
         McpToolName.START_RUN: start_run,
         McpToolName.RUN_STATUS: run_status,
         McpToolName.ANSWER_WAIT: answer_wait,
+        McpToolName.PUBLISH_ARTIFACT: publish_artifact,
     }
 
 
@@ -298,9 +310,7 @@ def start_run(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
                     )
                     for binding in bindings
                 ),
-                tuple(
-                    SuppliedOrder(order.name, order.value.encode()) for order in orders
-                ),
+                orders,
             ),
         ),
         "a run",
@@ -340,6 +350,16 @@ def answer_wait(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any
     return answered.model_dump(mode="json")
 
 
+def publish_artifact(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    content = _artifact_bytes(arguments.get("content_base64"))
+    published = _decoded(
+        _artifact_resource,
+        _post_octet_stream(_api_url(service_url) + ARTIFACT_PATH, content),
+        "an artifact",
+    )
+    return published.model_dump(mode="json")
+
+
 def _resolve_listed_name(api: str, name: str) -> CatalogNameResolutionResource | None:
     """Resolve one listed title. An unadmitted name is not a catalog member."""
 
@@ -369,16 +389,41 @@ def _bindings(raw: object) -> tuple[StartRunAgentBindingResourceV2, ...]:
         ) from error
 
 
-def _orders(raw: object) -> tuple[InlineOrderResource, ...]:
+def _orders(raw: object) -> tuple[SuppliedStartOrder, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list):
         raise UnusableRunOrder("orders must be an array")
     try:
-        return tuple(InlineOrderResource.model_validate(item) for item in raw)
+        return tuple(
+            _supplied_start_order(_start_run_order.validate_python(item))
+            for item in raw
+        )
     except ValidationError as error:
         raise UnusableRunOrder(
-            f"orders is not the start request's inline-order shape: {error}"
+            f"orders is not the start request's order shape: {error}"
+        ) from error
+
+
+def _supplied_start_order(order: AnyStartRunOrderResource) -> SuppliedStartOrder:
+    match order:
+        case InlineOrderResource(name=name, value=value):
+            return SuppliedOrder(name, value.encode())
+        case ArtifactOrderResource(name=name, artifact_hash=artifact_hash):
+            return SuppliedArtifactOrder(name, artifact_hash)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _artifact_bytes(raw: object) -> bytes:
+    # MCP JSON cannot carry octet-stream; the HTTP door still takes the bytes.
+    if not isinstance(raw, str):
+        raise UnusableRunOrder("content_base64 must be a string")
+    try:
+        return base64.b64decode(raw, validate=True)
+    except binascii.Error as error:
+        raise UnusableRunOrder(
+            f"content_base64 is not standard Base64 of the exact bytes: {error}"
         ) from error
 
 
@@ -421,6 +466,20 @@ def _post(url: str, payload: bytes) -> bytes:
             data=payload,
             method="POST",
             headers={"content-type": JSON_MEDIA_TYPE, "accept": JSON_MEDIA_TYPE},
+        )
+    )
+
+
+def _post_octet_stream(url: str, payload: bytes) -> bytes:
+    return _read(
+        Request(
+            url,
+            data=payload,
+            method="POST",
+            headers={
+                "content-type": OCTET_STREAM_MEDIA_TYPE,
+                "accept": JSON_MEDIA_TYPE,
+            },
         )
     )
 

@@ -52,6 +52,8 @@ from atelier2.api.wire.events import (
 )
 from atelier2.api.wire.requests import (
     AdmitCatalogMemberRequestResource,
+    AnyStartRunOrderResource,
+    ArtifactOrderResource,
     FoundCatalogLineageRequestResource,
     InlineOrderResource,
     PublishAgentConfigurationRevisionRequestResource,
@@ -240,6 +242,17 @@ class SuppliedOrder:
 
     name: str
     value: bytes
+
+
+@dataclass(frozen=True)
+class SuppliedArtifactOrder:
+    """One order the caller named by a published artifact's address."""
+
+    name: str
+    artifact_hash: str
+
+
+type SuppliedStartOrder = SuppliedOrder | SuppliedArtifactOrder
 
 
 @dataclass(frozen=True)
@@ -620,7 +633,7 @@ def start_request_body(
     run_id: str,
     revision_hash: str,
     bindings: tuple[AgentRoleBinding, ...],
-    orders: tuple[SuppliedOrder, ...] = (),
+    orders: tuple[SuppliedStartOrder, ...] = (),
 ) -> bytes:
     """The POST /runs body. One owner for `run` and the MCP start tool."""
     if orders:
@@ -637,10 +650,7 @@ def start_request_body(
                 )
                 for binding in bindings
             ),
-            orders=tuple(
-                InlineOrderResource(name=order.name, value=order.value.decode("utf-8"))
-                for order in orders
-            ),
+            orders=tuple(_wire_start_order(order) for order in orders),
         )
     elif bindings:
         requested = StartRunRequestResourceV2(
@@ -662,6 +672,12 @@ def start_request_body(
             run_id=run_id, workflow_revision_hash=revision_hash
         )
     return requested.model_dump_json().encode()
+
+
+def _wire_start_order(order: SuppliedStartOrder) -> AnyStartRunOrderResource:
+    if isinstance(order, SuppliedArtifactOrder):
+        return ArtifactOrderResource(name=order.name, artifact_hash=order.artifact_hash)
+    return InlineOrderResource(name=order.name, value=order.value.decode("utf-8"))
 
 
 def _read_history(api: str, public_run_reference: str) -> RunHistory:
