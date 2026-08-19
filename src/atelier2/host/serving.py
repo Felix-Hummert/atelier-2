@@ -40,6 +40,7 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
     GrokWorkspaceToolExecutorFactory,
 )
+from atelier2.adapters.host_configuration import HostConfigurationChannel
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
@@ -55,6 +56,11 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.host_configuration import (
+    ProjectId,
+    ProjectRootFound,
+    ProjectUnknown,
+)
 from atelier2.contracts.pages import PageLimit
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 from atelier2.host.logging import configure_process_logging
@@ -178,6 +184,7 @@ class HostSettings:
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
     agent_scratch_root: Path | None = None
     project_root: Path | None = None
+    host_configuration_path: Path | None = None
     claude_subscription: ClaudeSubscriptionSettings | None = None
     claude_workspace_tools: bool = False
     """Whether the Claude deployment also serves its tool-bearing executor.
@@ -236,6 +243,16 @@ class HostSettings:
             sqlite_lock_timeout_seconds=self.sqlite_lock_timeout_seconds,
         )
 
+    def project_root_for(
+        self, project_id: ProjectId
+    ) -> ProjectRootFound | ProjectUnknown:
+        """Read the configured root for this project id from the host channel."""
+
+        channel = opened_host_configuration(self)
+        if channel is None:
+            return ProjectUnknown(project_id)
+        return channel.project_root(project_id)
+
     def __post_init__(self) -> None:
         database_path = self.database_path.resolve()
         effect_store_path = self.effect_store_path.resolve()
@@ -243,6 +260,10 @@ class HostSettings:
         object.__setattr__(self, "database_path", database_path)
         object.__setattr__(self, "effect_store_path", effect_store_path)
         object.__setattr__(self, "frontend_dist", frontend_dist)
+        if self.host_configuration_path is not None:
+            configuration_path = self.host_configuration_path.resolve()
+            object.__setattr__(self, "host_configuration_path", configuration_path)
+            HostConfigurationChannel(configuration_path).require_readable()
         if database_path == effect_store_path:
             raise ValueError("durable database and effect store must be distinct")
         for name in (
@@ -399,7 +420,21 @@ def _log_unstartable_executors(settings: HostSettings) -> None:
             logger.warning(refusal)
 
 
+def opened_host_configuration(
+    settings: HostSettings,
+) -> HostConfigurationChannel | None:
+    """Open the declared host-configuration channel, or none if undeclared."""
+
+    path = settings.host_configuration_path
+    if path is None:
+        return None
+    channel = HostConfigurationChannel(path)
+    channel.require_readable()
+    return channel
+
+
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
+    opened_host_configuration(settings)
     subscription_executors = _subscription_executor_factories(settings)
     runtime = DbosRuntime(
         settings.runtime_settings(),

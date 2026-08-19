@@ -239,6 +239,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             port=parsed.port,
             agent_scratch_root=_attested_agent_scratch_root(parser, parsed),
             project_root=_declared_project_root(parser, parsed),
+            host_configuration_path=parsed.host_configuration,
             claude_subscription=claude.settings,
             claude_workspace_tools=parsed.claude_workspace_tools,
             claude_start_refusal=claude.start_refusal,
@@ -568,6 +569,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--source-commit", required=True)
     serve_parser.add_argument("--source-tree", required=True)
     serve_parser.add_argument("--frontend-dist", type=Path, required=True)
+    serve_parser.add_argument("--host-configuration", type=Path)
     # The instance's own answers. Everything above this line says which store,
     # which port, which executable; these say how this instance behaves once
     # those are settled, and they are the values a second machine honestly wants

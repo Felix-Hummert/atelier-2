@@ -830,7 +830,16 @@ version carries no binding rather than an invented one. What is still not proven
 is the request hash's own preimage: the job bytes it is taken over have no
 durable home, so a verifier copies that hash rather than recomputing it.
 
-The canonical store is schema V20. A fresh store is created as exact V20 and
+The host keeps one live-versioned configuration channel outside the canonical
+store. CLI flags name where that channel lives; they are not a second owner of
+its entries. The first entry is `project id → root path`: exact bytes in, a
+content hash out, append-only revisions, latest number wins. Compose reads the
+mapping from the channel. An id with no configured root is refused
+`project-unknown`. Invalid mapping bytes, a declared but unreadable channel,
+and a conflicting revision are refused by name. There is no HTTP door, no
+first-project composition of today's store, and no second project.
+
+The canonical store is schema V24. A fresh store is created as exact V24 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
