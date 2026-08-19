@@ -302,7 +302,11 @@ def _run_event_resource_v3(
         return AgentFailedEventResourceV3(
             event=event.event_kind.value,
             failure_code=cast(
-                Literal["PROCESS_EXITED_UNSUCCESSFULLY", "OUTPUT_SCHEMA_REFUSED"],
+                Literal[
+                    "PROCESS_EXITED_UNSUCCESSFULLY",
+                    "OUTPUT_SCHEMA_REFUSED",
+                    "AGENT_REFUSED",
+                ],
                 failure_code,
             ),
             reason=projection.node_receipt_reason,
