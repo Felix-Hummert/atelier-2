@@ -776,14 +776,17 @@ int64, prose -- at the publication door and again at the reference that pins
 them, so no run starts under a budget nobody could read. A budget revision is
 identified twice, on purpose: the registry and the node pin the exact bytes,
 while the four bounds have their own `budget-revision/v1` content identity, which
-catalog lineage, display name and revision position never enter. The hard turn
-bound now reaches both workspace-tool executors: a node that pins a budget
-naming `maximum_assistant_turns` launches with that value as `--max-turns`; a
-node that pins no budget, or a budget that names no turn bound, keeps the
-executor's existing default. What this still does not claim: the deadline does
-not run a clock, the reported token thresholds judge no usage report, a
-tool-free attempt does not read the bound, and the executor-side declaration of
-which dimensions a revision requires and what ceiling it attests is not built.
+catalog lineage, display name and revision position never enter. A document that
+writes `budget:` is executable: the start resolves that pin the same way it
+resolves a schema or a tool grant, and the attempt reads the bound from those
+published bytes. The hard turn bound now reaches both workspace-tool executors:
+a node that pins a budget naming `maximum_assistant_turns` launches with that
+value as `--max-turns`; a node that pins no budget, or a budget that names no
+turn bound, keeps the executor's existing default. What this still does not
+claim: the deadline does not run a clock, the reported token thresholds judge no
+usage report, a tool-free attempt does not read the bound, and the executor-side
+declaration of which dimensions a revision requires and what ceiling it attests
+is not built.
 That remaining enforcement is ADR 0008's second delivery boundary, and it waits
 on the durable failure vocabulary and an amended receipt.
 
