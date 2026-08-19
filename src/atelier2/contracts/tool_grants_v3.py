@@ -16,7 +16,8 @@ The redemption receipt is the other half: what the attempt that redeemed the
 grant actually ran, how it ended, and what it said. It is a record of its own
 rather than a field of the agent receipt, because the two answer different
 questions -- the agent receipt says what the provider produced, and an exit code
-sitting beside those bytes would read as the provider's.
+sitting beside those bytes would read as the provider's. A failed attempt has
+no agent receipt, so the row sits beside the node receipt that path writes.
 """
 
 from __future__ import annotations

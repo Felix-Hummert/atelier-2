@@ -77,7 +77,11 @@ text = "An attempt whose pinned commit its project source can no longer answer f
 
 [[sentence]]
 id = "a-nonzero-project-verification-fails-the-attempt-durably-named"
-text = "granted verify that exits nonzero ends the attempt `FAILED` under `PROJECT_VERIFICATION_FAILED`; `AGENT_FAILED` carries that code; `failed` `node-receipt/v3` opens with `project-verification-failed`; no agent receipt; no `AGENT_COMPLETED`; run does not complete. How the command ended lives in the receipt reason, not a `tool_redemptions` row on this path."
+text = "granted verify that exits nonzero ends the attempt `FAILED` under `PROJECT_VERIFICATION_FAILED`; `AGENT_FAILED` carries that code; `failed` `node-receipt/v3` opens with `project-verification-failed`; no agent receipt; no `AGENT_COMPLETED`; run does not complete."
+
+[[sentence]]
+id = "a-failed-granted-verification-keeps-its-redemption"
+text = "A granted run-project-verification that exits nonzero keeps the durable `tool_redemptions` proof of the command that ran, how it ended, and the hash of what it wrote, beside the `failed` `node-receipt/v3` that attempt actually has, not beside an agent receipt it does not."
 
 [[sentence]]
 id = "a-verification-timeout-after-claim-fails-the-attempt-durably-named"

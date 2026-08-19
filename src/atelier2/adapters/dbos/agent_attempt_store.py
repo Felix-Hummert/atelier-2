@@ -468,12 +468,14 @@ def _keep_tool_redemption(
     execution: AgentAttemptExecution,
     redemption: ToolRedemptionReceipt | None,
 ) -> None:
-    """Keep what this attempt's grant redeemed, inside the write that succeeds it.
+    """Keep what this attempt's grant redeemed, inside the write that ends it.
 
     A retry of the same durable attempt runs the verification again, and the row
     that is already there decides: identical evidence is the same redemption
     written twice, and different evidence is two answers about one node
-    execution, which is a contradiction rather than a second receipt.
+    execution, which is a contradiction rather than a second receipt. The row
+    sits beside the node receipt, including a failed one: an agent receipt is
+    not required.
     """
     if redemption is None:
         return
@@ -791,7 +793,7 @@ class DbosAgentAttemptStore:
         the driver ends named instead of dying on an exception nobody stored.
         A granted verification that exits nonzero is the same named seam under
         `PROJECT_VERIFICATION_FAILED`, with how the command ended in the reason
-        and without a `tool_redemptions` row.
+        and the `tool_redemptions` proof beside the failed node receipt.
 
         A V3 success additionally keeps what the run now knows durably: the
         produced value as `node-artifact/v3` and the `succeeded`
@@ -843,7 +845,7 @@ class DbosAgentAttemptStore:
                         Sha256Hash.of(result.output_bytes),
                     )
             if redemption is not None and redemption.exit_code != 0:
-                return _fail_current_attempt(
+                failed = _fail_current_attempt(
                     connection,
                     execution,
                     durable,
@@ -853,6 +855,8 @@ class DbosAgentAttemptStore:
                         f"exit {redemption.exit_code}",
                     ),
                 )
+                _keep_tool_redemption(connection, execution, redemption)
+                return failed
             receipt = AgentReceiptV2.for_execution(
                 request, run.binding_set_hash, result
             )
@@ -875,7 +879,6 @@ class DbosAgentAttemptStore:
                 raise AgentReceiptConflict(
                     "durable V2 agent receipt differs from exact result"
                 )
-            _keep_tool_redemption(connection, execution, redemption)
             if isinstance(node, AgentNodeV3):
                 declared = node.outputs[0]
                 keep_node_receipt(
@@ -892,6 +895,7 @@ class DbosAgentAttemptStore:
                         result.output_bytes,
                     ),
                 )
+            _keep_tool_redemption(connection, execution, redemption)
             updated = connection.execute(
                 agent_attempts.update()
                 .where(

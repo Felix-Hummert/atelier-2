@@ -38,6 +38,7 @@ from atelier2.adapters.dbos.schema import (
     V22_SCHEMA_HANDOFF,
     V23_SCHEMA_HANDOFF,
     V24_SCHEMA_HANDOFF,
+    V25_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -840,6 +841,21 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
     engine.dispose()
 
 
+def _revert_tool_redemptions_to_agent_receipt_fk(
+    connection: sqlite3.Connection,
+) -> None:
+    """Restore the agent-receipt key the node-receipt hop left behind."""
+
+    _rebuild_product_table(
+        connection,
+        tool_redemptions,
+        "tool_redemptions_after_node_receipt_fk",
+        ("tool_redemptions_no_update", "tool_redemptions_no_delete"),
+        SCHEMA_VERSION,
+        V25_SCHEMA_HANDOFF.version,
+    )
+
+
 def _revert_project_verification_failed_attempts(
     connection: sqlite3.Connection,
 ) -> None:
@@ -883,6 +899,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _revert_tool_redemptions_to_agent_receipt_fk(connection)
         _revert_agent_refused_attempts(connection)
         _drop_host_project_root_channel(connection)
         for trigger in (
@@ -913,6 +930,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _revert_tool_redemptions_to_agent_receipt_fk(connection)
         _revert_agent_refused_attempts(connection)
         _drop_host_project_root_channel(connection)
         connection.execute(
@@ -930,6 +948,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _revert_tool_redemptions_to_agent_receipt_fk(connection)
         _revert_project_verification_failed_attempts(connection)
         _drop_host_project_root_channel(connection)
         connection.execute(
@@ -947,6 +966,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _revert_tool_redemptions_to_agent_receipt_fk(connection)
         _drop_host_project_root_channel(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -1064,6 +1084,48 @@ def test_an_exact_v24_store_migrates_to_v25(
                 sa.select(sa.func.count()).select_from(host_project_root_revisions)
             )
             == 0
+        )
+    engine.dispose()
+
+
+def _create_exact_v25_store(database_path: Path) -> None:
+    """A current store with tool_redemptions still keyed to agent receipts: V25."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_tool_redemptions_to_agent_receipt_fk(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V25_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V25_SCHEMA_HANDOFF.version)
+
+
+def test_an_exact_v25_store_migrates_to_v26(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v25_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 25"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "25" in shown.out and "26" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
         )
     engine.dispose()
 

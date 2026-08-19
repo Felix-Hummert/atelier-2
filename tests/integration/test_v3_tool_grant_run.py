@@ -12,7 +12,8 @@ finished, the command the project's own manifest declares ran in that attempt's
 own directory -- filled with the tree the run's own binding pinned, so the
 manifest that declared the command and the ground it ran on are one commit -- and
 the row that proves it carries the command, the exit code and the hash of what it
-wrote, beside an agent receipt whose provider bytes are untouched by any of it.
+wrote. A zero-exit grant sits beside the agent receipt whose provider bytes stay
+untouched; a nonzero-exit grant sits beside the failed node receipt instead.
 """
 
 from __future__ import annotations
@@ -62,6 +63,7 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_records_v3 import (
     NodeReceiptReason,
+    PersistedReceiptDisposition,
     read_stored_node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
@@ -355,9 +357,9 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
 
     The provider's bytes were a success the schema admits. The project's own
     command then exited 1. That ending must not write the success rows a
-    zero-exit grant writes: no agent receipt, no `AGENT_COMPLETED`, no
-    `tool_redemptions` row (its foreign key is an agent receipt a failed
-    attempt does not have). What remains is the named failure.
+    zero-exit grant writes: no agent receipt, no `AGENT_COMPLETED`. What
+    remains is the named failure. The redemption that actually ran is the
+    next sentence.
     """
     started_runtime, _scratch_root, _cwd_record = failing_verification_runtime
     workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
@@ -419,11 +421,6 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
             .select_from(agent_receipts_v2)
             .where(agent_receipts_v2.c.run_id == FAILED_RUN.value)
         )
-        redemption_count = connection.scalar(
-            sa.select(sa.func.count())
-            .select_from(tool_redemptions)
-            .where(tool_redemptions.c.run_id == FAILED_RUN.value)
-        )
 
     assert attempt["state"] == AgentAttemptState.FAILED.value
     assert attempt["failure_code"] == (
@@ -442,7 +439,91 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
     assert schema_revision is None
     assert value_hash is None
     assert receipt_count == 0
-    assert redemption_count == 0
+
+
+@pytest.mark.proves("a-failed-granted-verification-keeps-its-redemption")
+def test_a_nonzero_project_verification_keeps_its_redemption_beside_the_failed_receipt(
+    failing_verification_runtime: tuple[DbosRuntime, Path, Path],
+) -> None:
+    """A red grant still leaves proof of the command that ran.
+
+    The attempt has no agent receipt, so a `tool_redemptions` row that
+    required one would be a lie or a refused write. The FAILED path has a
+    `failed` `node-receipt/v3`. The redemption sits beside that receipt.
+    """
+    started_runtime, _scratch_root, _cwd_record = failing_verification_runtime
+    workflow, bindings, grant_revision = publish_granted_node(started_runtime)
+
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    ).start_published(
+        StartPublishedRunRequestV2(FAILED_RUN, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+
+    started_runtime.launch()
+    deadline = time.monotonic() + 20
+    observed = ""
+    while time.monotonic() < deadline:
+        with started_runtime.engine.connect() as connection:
+            observed = str(
+                connection.scalar(
+                    sa.select(runs.c.state).where(runs.c.run_id == FAILED_RUN.value)
+                )
+            )
+        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
+            break
+        time.sleep(0.025)
+    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+
+    with started_runtime.engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(
+                    agent_attempts.c.run_id == FAILED_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        redemption = (
+            connection.execute(
+                sa.select(tool_redemptions).where(
+                    tool_redemptions.c.run_id == FAILED_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        failed_receipt = connection.scalar(
+            sa.select(node_receipts_v3.c.node_execution_id).where(
+                node_receipts_v3.c.node_execution_id == attempt["node_execution_id"],
+                node_receipts_v3.c.disposition
+                == PersistedReceiptDisposition.FAILED.value,
+            )
+        )
+        agent_receipts = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(agent_receipts_v2)
+            .where(agent_receipts_v2.c.run_id == FAILED_RUN.value)
+        )
+
+    assert attempt["state"] == AgentAttemptState.FAILED.value
+    assert failed_receipt == attempt["node_execution_id"]
+    assert agent_receipts == 0
+    assert str(redemption["node_execution_id"]) == str(attempt["node_execution_id"])
+    assert str(redemption["capability"]) == (
+        ToolGrantCapability.RUN_PROJECT_VERIFICATION.value
+    )
+    assert str(redemption["tool_revision_hash"]) == grant_revision
+    assert json.loads(str(redemption["command"]))[:2] == ["/bin/sh", "-c"]
+    assert int(redemption["exit_code"]) == FAILED_VERIFICATION_EXIT_CODE
+    assert (
+        str(redemption["standard_output_hash"])
+        == Sha256Hash.of(VERIFICATION_OUTPUT).value
+    )
 
 
 @pytest.mark.proves(

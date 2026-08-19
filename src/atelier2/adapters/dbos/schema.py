@@ -46,10 +46,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits the host configuration channel. Predecessor is
-# today's published version (PROJECT_VERIFICATION_FAILED landed as 24). Change
-# only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 24
+# Movable hop: this head retargets tool_redemptions to the node receipt a
+# failed attempt has. Predecessor is today's published version (host
+# configuration channel landed as 25). Change only this constant to restack.
+_HOP_PREDECESSOR_VERSION = 25
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -67,6 +67,7 @@ _VERSION_TWENTY_ONE = 21
 _VERSION_TWENTY_TWO = 22
 _VERSION_TWENTY_THREE = 23
 _VERSION_TWENTY_FOUR = 24
+_VERSION_TWENTY_FIVE = 25
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -101,7 +102,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # third attempt failure code. V24 admits PROJECT_VERIFICATION_FAILED as a
 # fourth, so a granted verification that exits nonzero ends under its own name.
 # V25 gives the host its live-versioned configuration channel, first entry
-# project id → root path, as append-only revisions. The hop number is movable:
+# project id → root path, as append-only revisions. V26 retargets
+# `tool_redemptions.node_execution_id` from the agent receipt a failed
+# attempt does not have to the node receipt it does, so a redeemed grant
+# that exits nonzero can keep its proof. The hop number is movable:
 # `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
@@ -123,6 +127,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     23: "6d8a3af85ecc40781c6eea454e33ae625de1cf6d8726ca5c502cdcc33eb2c124",
     24: "ba573ba80dbdbb5d9b2a93bc6958b7544838915be3e0f5fc816cacc718dfe9c8",
     25: "91d8889ce6239855c894b89ab658188d9b13927dedb1cc905dacdc151a485842",
+    26: "fe7bd6418da17f05ff8a1b09e341042d98fec8a5c54237a7ebf1311be472c2ae",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -187,6 +192,10 @@ V23_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V24_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_FOUR,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_FOUR],
+)
+V25_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY_FIVE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_FIVE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -722,10 +731,12 @@ agent_receipts_v2 = sa.Table(
 tool_redemptions = sa.Table(
     "tool_redemptions",
     metadata,
+    # A failed attempt has a node receipt and no agent receipt. The grant's
+    # proof sits beside the receipt that path actually writes.
     sa.Column(
         "node_execution_id",
         sa.Text,
-        sa.ForeignKey("agent_receipts_v2.node_execution_id"),
+        sa.ForeignKey("node_receipts_v3.node_execution_id"),
         primary_key=True,
     ),
     sa.Column("run_id", sa.Text, nullable=False),
@@ -2140,7 +2151,7 @@ def _table_fingerprint(
 def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, _VERSION_TWENTY_FIVE}:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_TWENTY_FOUR, _VERSION_TWENTY_THREE, _VERSION_TWENTY_TWO}:
         return PRODUCT_TABLE_NAMES - host_channel
@@ -2795,6 +2806,57 @@ def _apply_v23_to_v24(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_TWENTY_THREE, _VERSION_TWENTY_FOUR)
 
 
+_TOOL_REDEMPTIONS_TRIGGERS = (
+    "tool_redemptions_no_update",
+    "tool_redemptions_no_delete",
+)
+_PREDECESSOR_TOOL_REDEMPTIONS_BEFORE_NODE_RECEIPT = (
+    "tool_redemptions_before_node_receipt_fk"
+)
+
+
+def _apply_v14_to_v15(connection: sqlite3.Connection) -> None:
+    """Give redeemed tool grants a durable home in the published V15 shape.
+
+    The current declaration points at a node receipt. V15 created the table
+    pointing at an agent receipt; this step still materialises that published
+    shape.
+    """
+
+    existing = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (tool_redemptions.name,),
+    ).fetchone()
+    if existing is not None:
+        raise StoreMigrationRefused(
+            f"schema version {_VERSION_FOURTEEN} already has "
+            f"{tool_redemptions.name}; this command will not alter it"
+        )
+    connection.execute(_table_shape_at(_VERSION_FIFTEEN, tool_redemptions))
+    for trigger in _TOOL_REDEMPTIONS_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+    _raise_declared_version(connection, _VERSION_FOURTEEN, _VERSION_FIFTEEN)
+
+
+def _apply_v25_to_v26(connection: sqlite3.Connection) -> None:
+    """Retarget tool_redemptions to the node receipt a failed attempt has.
+
+    Predecessor rows were written only beside a succeeded agent receipt, and
+    every such V3 success also wrote a node receipt, so every stored row still
+    satisfies the new key. Nothing is reinterpreted.
+    """
+
+    _rebuild_product_table(
+        connection,
+        tool_redemptions,
+        _PREDECESSOR_TOOL_REDEMPTIONS_BEFORE_NODE_RECEIPT,
+        _TOOL_REDEMPTIONS_TRIGGERS,
+        _VERSION_TWENTY_FIVE,
+        SCHEMA_VERSION,
+    )
+    _raise_declared_version(connection, _VERSION_TWENTY_FIVE, SCHEMA_VERSION)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -2813,16 +2875,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
             _VERSION_FOURTEEN,
         ),
     ),
-    _SchemaMigrationStep(
-        _VERSION_FOURTEEN,
-        _VERSION_FIFTEEN,
-        _added_table_step(
-            tool_redemptions,
-            ("tool_redemptions_no_update", "tool_redemptions_no_delete"),
-            _VERSION_FOURTEEN,
-            _VERSION_FIFTEEN,
-        ),
-    ),
+    _SchemaMigrationStep(_VERSION_FOURTEEN, _VERSION_FIFTEEN, _apply_v14_to_v15),
     _SchemaMigrationStep(_VERSION_FIFTEEN, _VERSION_SIXTEEN, _apply_v15_to_v16),
     _SchemaMigrationStep(_VERSION_SIXTEEN, _VERSION_SEVENTEEN, _apply_v16_to_v17),
     _SchemaMigrationStep(_VERSION_SEVENTEEN, _VERSION_EIGHTEEN, _apply_v17_to_v18),
@@ -2845,7 +2898,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     ),
     _SchemaMigrationStep(
         _VERSION_TWENTY_FOUR,
-        SCHEMA_VERSION,
+        _VERSION_TWENTY_FIVE,
         _added_table_step(
             host_project_root_revisions,
             (
@@ -2853,9 +2906,10 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
                 "host_project_root_revisions_no_delete",
             ),
             _VERSION_TWENTY_FOUR,
-            SCHEMA_VERSION,
+            _VERSION_TWENTY_FIVE,
         ),
     ),
+    _SchemaMigrationStep(_VERSION_TWENTY_FIVE, SCHEMA_VERSION, _apply_v25_to_v26),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

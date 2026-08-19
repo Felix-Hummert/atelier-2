@@ -781,11 +781,13 @@ A command that exits zero leaves durable proof of exactly which command ran,
 how it ended and the hash of what it wrote, beside the agent receipt whose
 provider bytes stay its own. A command that exits nonzero ends the attempt
 `FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
-`failed` `node-receipt/v3`, and writes no agent receipt, no `AGENT_COMPLETED`,
-and no `tool_redemptions` row. A granted verification that exceeds its
-declared `timeout_seconds` after the claim ends the same way: the attempt is
-`FAILED` under `PROJECT_VERIFICATION_FAILED`, the `failed` `node-receipt/v3`
-reason names the timeout, and the attempt is not left `LAUNCH_ARMED`. The
+`failed` `node-receipt/v3`, writes no agent receipt and no `AGENT_COMPLETED`,
+and keeps the `tool_redemptions` proof beside that failed node receipt. A
+granted verification that exceeds its declared `timeout_seconds` after the
+claim has no exit to keep: the attempt is `FAILED` under
+`PROJECT_VERIFICATION_FAILED`, the `failed` `node-receipt/v3` reason names
+the timeout, no `tool_redemptions` row is written, and the attempt is not
+left `LAUNCH_ARMED`. The
 manifest that is read is the one the pinned commit carries, and the
 directory it runs in is that same lease after the provider has worked there, so
 what a project declared stays the pin's and where it was run is the mutated
@@ -859,7 +861,7 @@ names a missing row `project-root-missing`. An unreadable channel is
 `host-configuration-unreadable`. There is no HTTP project resource, no second
 project, and no store-per-project process.
 
-The canonical store is schema V25. A fresh store is created as exact V25 and
+The canonical store is schema V26. A fresh store is created as exact V26 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
