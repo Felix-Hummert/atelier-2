@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Any, cast
+from typing import Any, Never, cast
 
 from httpx import ASGITransport, AsyncClient
 
@@ -39,10 +39,24 @@ from tests.scenarios.api import (
     event_poll_backoff,
     stream_page_reader,
     stream_run_projection,
+    unused_attention_event_page,
 )
 
 RUN_ID = RunId("bounded-stream")
 REVISION_HASH = WorkflowRevisionHash("0" * 64)
+
+
+class _UnusedAttentionQueries:
+    def read_attention_event_page(
+        self,
+        after_run_id: RunId | None,
+        after_sequence: int | None,
+        limit: int,
+        excluded_identities: tuple[tuple[RunId, int], ...] = (),
+    ) -> Never:
+        return unused_attention_event_page(
+            after_run_id, after_sequence, limit, excluded_identities
+        )
 
 
 def persisted_event(
@@ -130,7 +144,7 @@ def test_cancelled_query_keeps_global_slot_until_real_thread_finishes() -> None:
 
 
 def test_empty_stream_uses_capped_adaptive_backoff_with_injected_sleep() -> None:
-    class EmptyQueries:
+    class EmptyQueries(_UnusedAttentionQueries):
         def __init__(self) -> None:
             self.calls = 0
 
@@ -190,7 +204,7 @@ def test_empty_stream_uses_capped_adaptive_backoff_with_injected_sleep() -> None
 
 
 def test_poll_backoff_resets_to_initial_delay_immediately_after_progress() -> None:
-    class ProgressQueries:
+    class ProgressQueries(_UnusedAttentionQueries):
         def __init__(self) -> None:
             self.calls = 0
 
@@ -256,7 +270,7 @@ def test_poll_backoff_resets_to_initial_delay_immediately_after_progress() -> No
 
 
 def test_saturated_event_poll_does_not_starve_an_app_control_route() -> None:
-    class AppQueries:
+    class AppQueries(_UnusedAttentionQueries):
         def __init__(self) -> None:
             self.poll_started = threading.Event()
             self.release_poll = threading.Event()
@@ -338,7 +352,7 @@ def test_saturated_event_poll_does_not_starve_an_app_control_route() -> None:
 def test_saturated_control_admission_returns_503_without_starting_another_query() -> (
     None
 ):
-    class BlockingQueries:
+    class BlockingQueries(_UnusedAttentionQueries):
         def __init__(self) -> None:
             self.first_started = threading.Event()
             self.release_first = threading.Event()
@@ -386,7 +400,7 @@ def test_saturated_control_admission_returns_503_without_starting_another_query(
 def test_event_poll_admission_timeout_mid_stream_closes_without_starting_query() -> (
     None
 ):
-    class UnreachedQueries:
+    class UnreachedQueries(_UnusedAttentionQueries):
         def __init__(self) -> None:
             self.calls = 0
 
@@ -482,7 +496,7 @@ def test_cancellation_while_waiting_for_slot_starts_no_query() -> None:
 def test_stream_does_not_read_the_next_bounded_page_before_yielding_the_current_one() -> (
     None
 ):
-    class PagedQueries:
+    class PagedQueries(_UnusedAttentionQueries):
         def __init__(self) -> None:
             self.calls: list[int] = []
 
@@ -553,7 +567,7 @@ def test_stream_does_not_read_the_next_bounded_page_before_yielding_the_current_
 
 
 def test_cancelled_stream_starts_no_next_query_and_blocked_query_closes_once() -> None:
-    class BlockingQueries:
+    class BlockingQueries(_UnusedAttentionQueries):
         def __init__(self) -> None:
             self.started = threading.Event()
             self.release = threading.Event()

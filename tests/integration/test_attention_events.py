@@ -1,0 +1,153 @@
+"""Same-instant identity exclusion on the attention page.
+
+`recorded_at` is second-precision RFC 3339. Two WAITING_INPUT rows in one
+second is the normal case. Resume is not lexicographic
+`(recorded_at, run_id, seq) > cursor`: it continues from instant T with every
+identity already emitted at T excluded.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+from sqlalchemy.engine import Connection, Engine
+
+from atelier2.adapters.dbos.instants import record_event_instant
+from atelier2.adapters.dbos.runtime import create_canonical_engine
+from atelier2.adapters.dbos.schema import (
+    initialize_schema,
+    run_events,
+    runs,
+    workflow_revisions,
+)
+from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
+from atelier2.contracts.when import RecordedAt
+from atelier2.ports.run_events import AttentionEventPage
+from tests.scenarios.api import durable_queries
+
+INSTANT = RecordedAt("2026-08-19T12:00:00Z")
+LATER_SORTING_RUN = RunId("z-wait")
+EARLIER_SORTING_RUN = RunId("a-wait")
+WAIT_DOCUMENT = b"""format_version: 1
+start: pause
+nodes:
+  - {id: pause, type: wait, prompt: Approve, output: approval, next: null}
+"""
+
+
+@pytest.fixture
+def engine(tmp_path: Path) -> Iterator[Engine]:
+    configured = create_canonical_engine(tmp_path / "atelier.sqlite")
+    initialize_schema(configured)
+    try:
+        yield configured
+    finally:
+        configured.dispose()
+
+
+def _waiting_input(run_id: RunId, revision: WorkflowRevision) -> RunEvent:
+    node_id = "pause"
+    return RunEvent(
+        run_id,
+        revision.revision_hash,
+        1,
+        node_id,
+        NodeExecutionId.for_node(run_id, revision.revision_hash, node_id),
+        RunEventKind.WAITING_INPUT,
+        b"",
+    )
+
+
+def _insert_run(
+    connection: Connection, run_id: RunId, revision: WorkflowRevision
+) -> None:
+    event = _waiting_input(run_id, revision)
+    connection.execute(
+        runs.insert().values(
+            run_id=run_id.value,
+            bootstrap_workflow_id=f"workflow-{run_id.value}",
+            revision_hash=revision.revision_hash.value,
+            workflow_format_version=1,
+            agent_binding_set_hash=None,
+            current_node_id="pause",
+            current_round_ordinal=FIRST_ROUND_ORDINAL,
+            state=RunState.WAITING_INPUT.value,
+            state_version=1,
+            last_event_sequence=1,
+            terminal_hash=None,
+        )
+    )
+    connection.execute(
+        run_events.insert().values(
+            run_id=event.run_id.value,
+            revision_hash=event.revision_hash.value,
+            event_sequence=event.event_sequence,
+            node_id=event.node_id,
+            node_execution_id=event.node_execution_id.value,
+            round_ordinal=event.round_ordinal,
+            event_kind=event.event_kind.value,
+            payload=event.payload,
+            payload_hash=event.payload_hash.value,
+            receipt_logical_key=None,
+            receipt_result_hash=None,
+            event_hash=event.event_hash.value,
+            agent_attempt_id=None,
+            attempt_ordinal=None,
+            cancellation_command_id=None,
+            replacement=None,
+        )
+    )
+    record_event_instant(connection, run_id.value, event.event_sequence, at=INSTANT)
+
+
+def _run_ids(page: AttentionEventPage) -> tuple[RunId, ...]:
+    return tuple(item.event.event.run_id for item in page.events)
+
+
+def test_page_after_a_later_sorting_same_instant_wait_still_returns_the_earlier_id(
+    engine: Engine,
+) -> None:
+    """The later-written run id sorts first; the first emitted cursor must not drop it.
+
+    Write `z-wait` at T, page it, then write `a-wait` at the same T. Lexicographic
+    `(recorded_at, run_id, seq) > (T, z-wait, 1)` never sees `a-wait`. Same-instant
+    identity exclusion does: T's remaining identities, then later instants.
+    """
+    revision = WorkflowRevision(WAIT_DOCUMENT)
+    queries = durable_queries(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=revision.revision_hash.value,
+                document=revision.document,
+            )
+        )
+        _insert_run(connection, LATER_SORTING_RUN, revision)
+
+    first = queries.read_attention_event_page(None, None, 10, ())
+    assert isinstance(first, AttentionEventPage)
+    assert _run_ids(first) == (LATER_SORTING_RUN,)
+    assert first.events[0].recorded_at == INSTANT
+
+    with engine.begin() as connection:
+        _insert_run(connection, EARLIER_SORTING_RUN, revision)
+    assert EARLIER_SORTING_RUN.value < LATER_SORTING_RUN.value
+
+    after_first_cursor = queries.read_attention_event_page(LATER_SORTING_RUN, 1, 10, ())
+    assert isinstance(after_first_cursor, AttentionEventPage)
+    assert _run_ids(after_first_cursor) == (EARLIER_SORTING_RUN,)
+    assert after_first_cursor.events[0].recorded_at == INSTANT
+
+    after_both_at_t = queries.read_attention_event_page(
+        EARLIER_SORTING_RUN, 1, 10, ((LATER_SORTING_RUN, 1),)
+    )
+    assert isinstance(after_both_at_t, AttentionEventPage)
+    assert _run_ids(after_both_at_t) == ()

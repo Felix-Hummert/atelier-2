@@ -230,6 +230,16 @@ class UnusedPort:
         raise AssertionError(f"the route under test reached the {name} port")
 
 
+def unused_attention_event_page(
+    after_run_id: object,
+    after_sequence: object,
+    limit: object,
+    excluded_identities: object = (),
+) -> Never:
+    del after_run_id, after_sequence, limit, excluded_identities
+    raise AssertionError("attention feed was not under test")
+
+
 STREAM_DOCUMENT = b"""format_version: 1
 start: agent
 nodes:

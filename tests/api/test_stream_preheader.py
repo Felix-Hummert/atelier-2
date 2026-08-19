@@ -12,9 +12,11 @@ import pytest
 import uvicorn
 
 from atelier2.api.app import create_app
+from atelier2.api.openapi import ATTENTION_EVENT_PATH
 from atelier2.api.references import encode_event_cursor, encode_public_run_reference
 from atelier2.contracts.runs import RunId
 from atelier2.ports.run_events import (
+    AttentionCursorUnknown,
     CursorAhead,
     EventHistoryCorrupt,
     PrepareRunEventStreamResult,
@@ -30,14 +32,22 @@ from tests.scenarios.api import (
     api_ports,
     event_poll_backoff,
     stream_run_projection,
+    unused_attention_event_page,
 )
 
 
 class FakeEventQueries:
-    def __init__(self, prepared: PrepareRunEventStreamResult) -> None:
+    def __init__(
+        self,
+        prepared: PrepareRunEventStreamResult,
+        *,
+        attention_page: object | None = None,
+    ) -> None:
         self.prepared = prepared
         self.prepare_calls = 0
         self.page_calls = 0
+        self.attention_page = attention_page
+        self.attention_page_calls = 0
 
     def prepare_run_event_stream(
         self, run_id: RunId, after_sequence: int
@@ -56,6 +66,23 @@ class FakeEventQueries:
         del run_id, after_sequence, limit, projection_limit
         self.page_calls += 1
         raise AssertionError("pre-header rejection started event paging")
+
+    def read_attention_event_page(
+        self,
+        after_run_id: RunId | None,
+        after_sequence: int | None,
+        limit: int,
+        excluded_identities: tuple[tuple[RunId, int], ...] = (),
+    ) -> object:
+        self.attention_page_calls += 1
+        if self.attention_page is not None:
+            del after_run_id, after_sequence, limit, excluded_identities
+            if self.attention_page_calls > 1:
+                raise AssertionError("pre-header rejection started attention paging")
+            return self.attention_page
+        return unused_attention_event_page(
+            after_run_id, after_sequence, limit, excluded_identities
+        )
 
 
 def app_for(queries: FakeEventQueries):
@@ -224,6 +251,84 @@ def test_multiple_last_event_id_headers_are_rejected_before_prepare() -> None:
     assert content_type == "application/problem+json"
     assert json.loads(body)["type"].endswith(":invalid-event-cursor")
     assert queries.prepare_calls == 0
+    assert queries.page_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("headers", "attention_page", "status", "code", "page_calls"),
+    [
+        (
+            {"accept": "application/json"},
+            None,
+            406,
+            "not-acceptable",
+            0,
+        ),
+        (
+            {"accept": "text/event-stream;q=0.000"},
+            None,
+            406,
+            "not-acceptable",
+            0,
+        ),
+        (
+            {"last-event-id": "not-a-cursor"},
+            None,
+            400,
+            "invalid-event-cursor",
+            0,
+        ),
+        (
+            {"last-event-id": encode_event_cursor(RunId("run"), 1)},
+            AttentionCursorUnknown(),
+            400,
+            "invalid-event-cursor",
+            1,
+        ),
+    ],
+)
+def test_attention_stream_errors_are_decided_before_event_paging(
+    headers: dict[str, str],
+    attention_page: object | None,
+    status: int,
+    code: str,
+    page_calls: int,
+) -> None:
+    queries = FakeEventQueries(StreamReady(0, True, 0), attention_page=attention_page)
+
+    with live_server(queries) as port:
+        response_status, content_type, body = raw_get(
+            port,
+            ATTENTION_EVENT_PATH,
+            tuple(headers.items()),
+        )
+
+    assert response_status == status
+    assert content_type == "application/problem+json"
+    assert json.loads(body)["type"].endswith(":" + code)
+    assert queries.attention_page_calls == page_calls
+    assert queries.page_calls == 0
+
+
+def test_attention_stream_rejects_multiple_last_event_id_headers_before_paging() -> (
+    None
+):
+    queries = FakeEventQueries(StreamReady(0, True, 0))
+
+    with live_server(queries) as port:
+        status, content_type, body = raw_get(
+            port,
+            ATTENTION_EVENT_PATH,
+            (
+                ("Last-Event-ID", encode_event_cursor(RunId("run"), 1)),
+                ("Last-Event-ID", encode_event_cursor(RunId("other"), 2)),
+            ),
+        )
+
+    assert status == 400
+    assert content_type == "application/problem+json"
+    assert json.loads(body)["type"].endswith(":invalid-event-cursor")
+    assert queries.attention_page_calls == 0
     assert queries.page_calls == 0
 
 
