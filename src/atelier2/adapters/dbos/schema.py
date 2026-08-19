@@ -42,9 +42,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits AGENT_REFUSED. Predecessor is today's
-# published version (#355 landed as 22). Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 22
+# Movable hop: this head admits PROJECT_VERIFICATION_FAILED. Predecessor is
+# today's published version (AGENT_REFUSED landed as 23). Change only this
+# constant to restack.
+_HOP_PREDECESSOR_VERSION = 23
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -60,6 +61,7 @@ _VERSION_NINETEEN = 19
 _VERSION_TWENTY = 20
 _VERSION_TWENTY_ONE = 21
 _VERSION_TWENTY_TWO = 22
+_VERSION_TWENTY_THREE = 23
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -91,8 +93,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # ask for an executor whose invocation carries the provider's own tools. V22
 # records when a run, attempt, or event was written, as RFC 3339 UTC.
 # Predecessor rows stay NULL — no invented time. V23 admits AGENT_REFUSED as a
-# third attempt failure code. The hop number is movable:
-# `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
+# third attempt failure code. V24 admits PROJECT_VERIFICATION_FAILED as a
+# fourth, so a granted verification that exits nonzero ends under its own name.
+# The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one constant to
+# restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -111,6 +115,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     21: "6c4705f2960d1669a596ae8f3c857dd0ac15c4c94b71b4bb5998d1bac672cefe",
     22: "72aa8f76942197b704f07c156adbb1e46c3b069ce16a53c6d95a067827966387",
     23: "6d8a3af85ecc40781c6eea454e33ae625de1cf6d8726ca5c502cdcc33eb2c124",
+    24: "ba573ba80dbdbb5d9b2a93bc6958b7544838915be3e0f5fc816cacc718dfe9c8",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -167,6 +172,10 @@ V21_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V22_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_TWO,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_TWO],
+)
+V23_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY_THREE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_THREE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -873,7 +882,7 @@ agent_attempts = sa.Table(
         "AND cancellation_command_id IS NULL "
         "AND failure_code IN "
         "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED', "
-        "'AGENT_REFUSED') "
+        "'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED') "
         "AND receipt_hash IS NULL)"
     ),
 )
@@ -1646,7 +1655,7 @@ _PRODUCT_TRIGGERS = {
              AND NEW.state = 'FAILED'
              AND NEW.failure_code IN
                ('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED',
-                'AGENT_REFUSED')
+                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')
              AND NEW.receipt_hash IS NULL
              AND NEW.cancellation_command_id IS NULL)
             OR
@@ -2082,7 +2091,7 @@ def _table_fingerprint(
 
 def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
-    if version in {SCHEMA_VERSION, _VERSION_TWENTY_TWO}:
+    if version in {SCHEMA_VERSION, _VERSION_TWENTY_THREE, _VERSION_TWENTY_TWO}:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_TWENTY_ONE, _VERSION_TWENTY, _VERSION_NINETEEN}:
         return PRODUCT_TABLE_NAMES - later
@@ -2489,14 +2498,25 @@ _NODE_EXECUTION_REQUESTS_TRIGGERS = (
     "node_execution_requests_v3_no_delete",
 )
 _PREDECESSOR_AGENT_ATTEMPTS = "agent_attempts_before_the_refusal_code"
+_FOUR_FAILURE_CODES = (
+    "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED',\n"
+    "                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')"
+)
+_THREE_FAILURE_CODES = (
+    "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED',\n"
+    "                'AGENT_REFUSED')"
+)
+_TWO_FAILURE_CODES = "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED')"
 _V17_AGENT_ATTEMPT_TRIGGERS = {
     "agent_attempts_state_transition": _PRODUCT_TRIGGERS[
         "agent_attempts_state_transition"
-    ].replace(
-        "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED',\n"
-        "                'AGENT_REFUSED')",
-        "('PROCESS_EXITED_UNSUCCESSFULLY', 'OUTPUT_SCHEMA_REFUSED')",
-    ),
+    ].replace(_FOUR_FAILURE_CODES, _TWO_FAILURE_CODES),
+    "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
+}
+_V23_AGENT_ATTEMPT_TRIGGERS = {
+    "agent_attempts_state_transition": _PRODUCT_TRIGGERS[
+        "agent_attempts_state_transition"
+    ].replace(_FOUR_FAILURE_CODES, _THREE_FAILURE_CODES),
     "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
 }
 
@@ -2689,9 +2709,33 @@ def _apply_v22_to_v23(connection: sqlite3.Connection) -> None:
         _PREDECESSOR_ATTEMPTS_BEFORE_AGENT_REFUSED,
         _AGENT_ATTEMPTS_TRIGGERS,
         _VERSION_TWENTY_TWO,
+        _VERSION_TWENTY_THREE,
+        trigger_source=_V23_AGENT_ATTEMPT_TRIGGERS,
+    )
+    _raise_declared_version(connection, _VERSION_TWENTY_TWO, _VERSION_TWENTY_THREE)
+
+
+_PREDECESSOR_ATTEMPTS_BEFORE_PROJECT_VERIFICATION_FAILED = (
+    "agent_attempts_before_project_verification_failed"
+)
+
+
+def _apply_v23_to_v24(connection: sqlite3.Connection) -> None:
+    """Admit PROJECT_VERIFICATION_FAILED as a failure code, and keep every row.
+
+    Stored FAILED rows already carry one of the three old codes, which the
+    widened constraint still admits, so nothing is reinterpreted.
+    """
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        _PREDECESSOR_ATTEMPTS_BEFORE_PROJECT_VERIFICATION_FAILED,
+        _AGENT_ATTEMPTS_TRIGGERS,
+        _VERSION_TWENTY_THREE,
         SCHEMA_VERSION,
     )
-    _raise_declared_version(connection, _VERSION_TWENTY_TWO, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_TWENTY_THREE, SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -2738,7 +2782,8 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_NINETEEN, _VERSION_TWENTY, _apply_v19_to_v20),
     _SchemaMigrationStep(_VERSION_TWENTY, _VERSION_TWENTY_ONE, _apply_v20_to_v21),
     _SchemaMigrationStep(_VERSION_TWENTY_ONE, _VERSION_TWENTY_TWO, _apply_v21_to_v22),
-    _SchemaMigrationStep(_VERSION_TWENTY_TWO, SCHEMA_VERSION, _apply_v22_to_v23),
+    _SchemaMigrationStep(_VERSION_TWENTY_TWO, _VERSION_TWENTY_THREE, _apply_v22_to_v23),
+    _SchemaMigrationStep(_VERSION_TWENTY_THREE, SCHEMA_VERSION, _apply_v23_to_v24),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

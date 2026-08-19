@@ -100,6 +100,20 @@ def test_a_v3_failure_carries_the_stored_receipt_reason_when_one_was_written() -
     assert dumped["reason"] == words
 
 
+@pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
+def test_a_v3_failure_admits_project_verification_failed() -> None:
+    words = "project-verification-failed: exit 1"
+    projection = replace(
+        v3_projection(RunEventKind.AGENT_FAILED, b"PROJECT_VERIFICATION_FAILED"),
+        node_receipt_reason=words,
+    )
+
+    dumped = run_event_resource(projection, SERVED_RAIL).model_dump(mode="json")
+
+    assert dumped["failure_code"] == "PROJECT_VERIFICATION_FAILED"
+    assert dumped["reason"] == words
+
+
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
 def test_format_3_waiting_input_says_a_person_is_owed_a_move_and_names_no_type() -> (
     None
