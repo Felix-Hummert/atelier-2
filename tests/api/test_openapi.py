@@ -253,8 +253,9 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head admits `PROJECT_VERIFICATION_FAILED` on the V3 `AGENT_FAILED`
-    event. Refreshing the artefact alongside a refactor is what this test still
+    it. This head admits V3 Action events (`ACTION_COMPLETED` and the
+    reconciliation twins) beside the V24 `PROJECT_VERIFICATION_FAILED` member.
+    Refreshing the artefact alongside a refactor is what this test still
     refuses.
     """
 

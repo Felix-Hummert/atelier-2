@@ -13,10 +13,13 @@ from atelier2.api.references import (
 from atelier2.api.wire.events import (
     ActionCompletedEventResource,
     ActionCompletedEventResourceV2,
+    ActionCompletedEventResourceV3,
     ActionReconciliationRequiredEventResource,
     ActionReconciliationRequiredEventResourceV2,
+    ActionReconciliationRequiredEventResourceV3,
     ActionReconciliationResolvedEventResource,
     ActionReconciliationResolvedEventResourceV2,
+    ActionReconciliationResolvedEventResourceV3,
     AgentCancelledEventResourceV2,
     AgentCancelledEventResourceV3,
     AgentCancelRequestedEventResourceV2,
@@ -360,6 +363,29 @@ def _run_event_resource_v3(
             )
         return AgentInterruptedEventResourceV3(
             event="AGENT_INTERRUPTED", **terminal_common, **common
+        )
+    if event.event_kind is RunEventKind.ACTION_RECONCILIATION_REQUIRED:
+        return ActionReconciliationRequiredEventResourceV3(
+            event=event.event_kind.value,
+            request_base64=encode_canonical_base64(event.payload),
+            request_hash=event.payload_hash.value,
+            **common,
+        )
+    if event.event_kind is RunEventKind.ACTION_RECONCILIATION_RESOLVED:
+        if projection.receipt is None:
+            raise ValueError("resolved V3 event has no receipt")
+        return ActionReconciliationResolvedEventResourceV3(
+            event=event.event_kind.value,
+            receipt=receipt_resource(projection.receipt),
+            **common,
+        )
+    if event.event_kind is RunEventKind.ACTION_COMPLETED:
+        if projection.receipt is None:
+            raise ValueError("completed V3 Action event has no receipt")
+        return ActionCompletedEventResourceV3(
+            event=event.event_kind.value,
+            receipt=receipt_resource(projection.receipt),
+            **common,
         )
     if event.event_kind is RunEventKind.WAITING_INPUT:
         return WaitingInputEventResourceV3(event=event.event_kind.value, **common)

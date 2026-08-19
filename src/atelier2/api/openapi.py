@@ -29,10 +29,13 @@ from atelier2.api.stream import STREAM_FAILURE_CODES
 from atelier2.api.wire.events import (
     ActionCompletedEventResource,
     ActionCompletedEventResourceV2,
+    ActionCompletedEventResourceV3,
     ActionReconciliationRequiredEventResource,
     ActionReconciliationRequiredEventResourceV2,
+    ActionReconciliationRequiredEventResourceV3,
     ActionReconciliationResolvedEventResource,
     ActionReconciliationResolvedEventResourceV2,
+    ActionReconciliationResolvedEventResourceV3,
     AgentCancelledEventResourceV2,
     AgentCancelledEventResourceV3,
     AgentCancelRequestedEventResourceV2,
@@ -104,6 +107,9 @@ EVENT_MODELS_V3 = (
     AgentCancelRequestedEventResourceV3,
     AgentCancelledEventResourceV3,
     AgentInterruptedEventResourceV3,
+    ActionReconciliationRequiredEventResourceV3,
+    ActionReconciliationResolvedEventResourceV3,
+    ActionCompletedEventResourceV3,
 )
 EVENT_NAMES = tuple(
     kind.value for kind in RunEventKind if kind not in KINDS_NO_V1_RUN_CARRIES
@@ -115,6 +121,9 @@ EVENT_NAMES_V3 = (
     RunEventKind.AGENT_CANCEL_REQUESTED.value,
     RunEventKind.AGENT_CANCELLED.value,
     RunEventKind.AGENT_INTERRUPTED.value,
+    RunEventKind.ACTION_RECONCILIATION_REQUIRED.value,
+    RunEventKind.ACTION_RECONCILIATION_RESOLVED.value,
+    RunEventKind.ACTION_COMPLETED.value,
 )
 
 OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {

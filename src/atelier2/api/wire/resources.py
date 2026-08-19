@@ -879,7 +879,9 @@ class RunResourceV3(ApiModel):
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
-    state: Literal["STARTED", "WAITING_INPUT", "COMPLETED", "FAILED"]
+    state: Literal[
+        "STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED", "FAILED"
+    ]
     current_node_id: str = Field(min_length=1)
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)

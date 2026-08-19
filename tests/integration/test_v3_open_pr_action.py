@@ -275,6 +275,17 @@ def test_a_v3_agent_then_action_opens_one_pull_request_through_the_github_adapte
     run = api.get(f"{API_PREFIX}/runs/{public_ref}")
     assert run.status_code == 200, run.text
     assert CANARY_TOKEN not in run.text
+    stream = api.get(f"{API_PREFIX}/runs/{public_ref}/events")
+    assert stream.status_code == 200, stream.text
+    assert CANARY_TOKEN not in stream.text
+    streamed = [
+        json.loads(line.removeprefix("data: "))
+        for line in stream.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert streamed[-1]["event"] == "ACTION_COMPLETED"
+    assert streamed[-1]["workflow_format_version"] == 3
+    assert "receipt" in streamed[-1]
     receipt = api.get(f"{API_PREFIX}/runs/{public_ref}/receipt")
     assert receipt.status_code == 200, receipt.text
     assert CANARY_TOKEN not in receipt.text

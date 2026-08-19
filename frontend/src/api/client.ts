@@ -532,10 +532,13 @@ const runV2Schema = z
  * by id and carries no `current_node` object and no `agent_attempts`. It carries
  * no `waiting` block either, although it does reach WAITING_INPUT: what a V3
  * Wait node asks and which schema judges the answer belong to the document, and
- * the rail is what marks the node owing a person a move. Widening `runSchema`
- * would push a "this format has no such thing" guard onto every reader of those
- * fields; keeping it separate leaves the V2 cockpit exactly as it was and lets
- * the V3 view render what actually exists.
+ * the rail is what marks the node owing a person a move. A linear Action can
+ * also leave the run `WAITING_RECONCILIATION`; that state is named here, and
+ * the question itself still lives on the document and the event stream, not
+ * on a `waiting` block. Widening `runSchema` would push a "this format has no
+ * such thing" guard onto every reader of those fields; keeping it separate
+ * leaves the V2 cockpit exactly as it was and lets the V3 view render what
+ * actually exists.
  */
 const runV3Schema = z
   .object({
@@ -547,7 +550,7 @@ const runV3Schema = z
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
     state_version: nonnegativeSafeInteger,
-    state: z.enum(["STARTED", "WAITING_INPUT", "COMPLETED", "FAILED"]),
+    state: z.enum(["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED", "FAILED"]),
     current_node_id: z.string().min(1),
     node_rail: z.array(nodeRailEntrySchema).min(1),
     terminal_hash: sha256.nullable(),
@@ -768,8 +771,10 @@ const runEventV2Schema = z
  * events through the same attempt store as a version-2 one and its pauses
  * through the same wait path, so the attempt and the rail travel the same way.
  * Its answer is base64 rather than the V2 shape's decimal text, because a V3
- * wait admits whatever its declared schema admits. What is absent is absent on
- * purpose: no format-3 run persists an Action or Subworkflow event today.
+ * wait admits whatever its declared schema admits. A linear Action persists
+ * the same durable-effect kinds V2 already names, so those receipts travel
+ * here with the rail. Subworkflow events stay absent: no format-3 run
+ * persists that kind today.
  */
 const v3EventBase = {
   workflow_format_version: z.literal(3),
@@ -784,6 +789,9 @@ const runEventV3Schema = z
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("ACTION_RECONCILIATION_REQUIRED"), request_base64: standardBase64, request_hash: sha256 }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("ACTION_RECONCILIATION_RESOLVED"), receipt: receiptSchema }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("ACTION_COMPLETED"), receipt: receiptSchema }).strict(),
     z.object({ ...v3EventBase, event: z.literal("WAITING_INPUT") }).strict(),
     z.object({ ...v3EventBase, event: z.literal("WAIT_ANSWERED"), answer_base64: standardBase64, answer_hash: sha256 }).strict()
   ])
