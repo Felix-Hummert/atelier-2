@@ -1426,7 +1426,8 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
   }).toPass({ timeout: 15_000 });
 
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByRole("heading", { level: 1, name: `Run ${runId}` })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "answer-card-194" })).toBeVisible();
+  await expect(page.getByLabel("Run identity")).toHaveText(runId);
   await expect(page.getByRole("heading", { name: "Answer needed" })).toBeVisible();
   await expect(page.getByText("Approve this, or name the blocking defect.")).toBeVisible();
   const card = page.getByRole("region", { name: "Answer needed" });
