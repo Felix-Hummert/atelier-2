@@ -6,9 +6,9 @@ what that check is has one owner -- the project manifest. This port is how the
 attempt reaches it.
 
 Which manifest is asked is settled by the pin: the declaration is read out of the
-tree one commit names, and the command runs in the tree unpacked from that same
-commit, so what a project declares and where it is run can no longer be two
-different trees.
+tree one commit names. The command then runs in the lease after the provider has
+worked there, so what a project declares and where it is run can be two different
+trees -- the pin's command, the lease as it stands.
 
 Where it runs is the attempt's decision, which is why `run` takes the lease: the
 same split `AgentProcessCommand` already draws between a provider that owns its
@@ -70,8 +70,9 @@ class PinnedProjectSource:
     """One attempt's project: the declared project, and the commit this attempt got.
 
     The pin is chosen once, when the node's durable binding is composed, so the
-    tree the attempt unpacks, the manifest that declares its verification and the
-    directory that verification runs in are all one commit. The grant a node
+    tree the attempt unpacks and the manifest that declares its verification are
+    one commit. The directory that verification runs in is that same lease after
+    the provider has worked there, not a rematerialized pin tree. The grant a node
     pinned travels here rather than beside it because a grant without a project
     source is a promise nothing can keep -- there would be no manifest to read it
     from and no tree to run it in. Where a node pinned none, the grant is absent

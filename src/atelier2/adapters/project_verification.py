@@ -3,9 +3,10 @@
 The atelier does not decide what verifies a project, and neither does the agent
 whose node redeemed the grant. The project says it, in the manifest that travels
 with its source -- and the manifest that is read is the one the pinned commit
-carries, never the one the operator's checkout happens to hold now. Declaration
-and execution are therefore the same tree: what a project said at that commit is
-run in what that commit contains. A manifest that says nothing refuses the
+carries, never the one the operator's checkout happens to hold now, and never
+the one sitting in the lease after the provider has written. What that commit
+declared is the command; where it runs is the lease as it stands after the
+provider. A manifest that says nothing refuses the
 redemption by name rather than letting the atelier choose a command on the
 project's behalf.
 

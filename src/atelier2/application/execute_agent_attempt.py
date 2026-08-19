@@ -52,7 +52,7 @@ def execute_agent_attempt(
     now -- and a pin the source can no longer answer for refuses beside the
     scratch root, before any claim.
 
-    A node that pinned a tool grant has it redeemed here, in that same tree,
+    A node that pinned a tool grant has it redeemed here, in that same lease
     after the provider produced the work the verification is about. What the
     project declares is read at the pin and attested before the claim too, so a
     project that declares no verification refuses before anything runs.

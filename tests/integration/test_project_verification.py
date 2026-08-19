@@ -138,6 +138,61 @@ def test_the_declaration_read_is_the_pinned_commits_and_not_the_checkouts(
     runner_for(root).preflight(pin)
 
 
+@pytest.mark.proves("what-a-project-declares-and-where-it-runs-are-one-commit")
+def test_a_file_written_on_the_lease_after_materialize_is_visible_to_the_command(
+    tmp_path: Path,
+) -> None:
+    """A file the pin never carried is what the command sees, once it is on the lease."""
+
+    root = tmp_path / "project"
+    pin = git_project(
+        root, declaring_verification(["/bin/cat", "written-after-materialize.txt"])
+    )
+    lease_directory = tmp_path / "lease"
+    lease_directory.mkdir()
+    lease = leased_directory_identity(AgentAttemptId("a3" * 32), lease_directory)
+    LocalGitProjectSource(root).materialize(pin, lease)
+    write_into_checkout(
+        lease_directory, {"written-after-materialize.txt": "from the lease\n"}
+    )
+
+    outcome = runner_for(root).run(pin, lease)
+
+    assert outcome == ProjectVerificationOutcome(
+        ("/bin/cat", "written-after-materialize.txt"),
+        0,
+        Sha256Hash.of(b"from the lease\n"),
+    )
+
+
+@pytest.mark.proves("what-a-project-declares-and-where-it-runs-are-one-commit")
+def test_overwriting_the_lease_manifest_does_not_change_the_command_that_runs(
+    tmp_path: Path,
+) -> None:
+    """The pin owns the command; a lease-side overwrite of the manifest is not heard."""
+
+    root = tmp_path / "project"
+    pin = git_project(
+        root, declaring_verification(["/bin/sh", "-c", "printf from-the-pin"])
+    )
+    lease_directory = tmp_path / "lease"
+    lease_directory.mkdir()
+    lease = leased_directory_identity(AgentAttemptId("a4" * 32), lease_directory)
+    LocalGitProjectSource(root).materialize(pin, lease)
+    write_into_checkout(
+        lease_directory,
+        declaring_verification(["/bin/sh", "-c", "printf from-the-lease"]),
+    )
+
+    outcome = runner_for(root).run(pin, lease)
+
+    assert outcome == ProjectVerificationOutcome(
+        ("/bin/sh", "-c", "printf from-the-pin"),
+        0,
+        Sha256Hash.of(b"from-the-pin"),
+    )
+
+
 def test_the_declared_command_runs_in_the_lease_and_answers_with_its_own_outcome(
     tmp_path: Path,
 ) -> None:
