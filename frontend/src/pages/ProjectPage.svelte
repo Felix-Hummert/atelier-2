@@ -1,21 +1,24 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { isRunV3, type CockpitApi, type RunPage } from "../api/client";
+  import { isRunV3, type AnyRun, type CockpitApi, type RunPage } from "../api/client";
   import Breadcrumb from "../components/Breadcrumb.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
-  import When from "../components/When.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
   import { runPath } from "../lib/route";
+  import { newestActivityFirst, workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
   import { humanMove, runsStanding, standingMarks, standingOrder, standingWords } from "../lib/runState";
+  import { ageLabel, exactLocal } from "../lib/when";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
 
   let runs: RetainedResource<RunPage> = { confirmed: null, request: { state: "idle" } };
+  let workflowNames: ReadonlyMap<string, string> = new Map();
   let failureMessage: string | null = null;
+  const now = new Date();
 
   onMount(load);
 
@@ -24,6 +27,9 @@
     failureMessage = null;
     try {
       const reading = await readEveryRun((after) => cockpitApi.listRuns(after));
+      workflowNames = await workflowNamesOf(reading.runs, (hash) =>
+        cockpitApi.getWorkflowRevision(hash)
+      );
       runs = confirmResource(runs, { items: reading.runs, next_after: null });
       if (!reading.complete) {
         failureMessage = `Some of this project could not be read, so what is below is incomplete: ${reading.unreadable}.`;
@@ -34,7 +40,35 @@
     }
   }
 
-  $: items = runs.confirmed?.items ?? [];
+  function listedWorkflowName(
+    run: AnyRun,
+    names: ReadonlyMap<string, string>
+  ): string | null {
+    if (!isRunV3(run)) return null;
+    return names.get(run.workflow_revision_hash) ?? null;
+  }
+
+  function listedWhen(
+    run: AnyRun
+  ): { datetime: string; exact: string; age: string } | null {
+    if (!isRunV3(run) || run.started_at == null) return null;
+    const ended = run.ended_at ?? null;
+    return {
+      datetime: run.started_at,
+      exact:
+        ended === null
+          ? exactLocal(run.started_at)
+          : `${exactLocal(run.started_at)} → ${exactLocal(ended)}`,
+      age: ageLabel(
+        run.started_at,
+        now,
+        ended === null ? "for" : "ago",
+        ended === null ? undefined : ended
+      )
+    };
+  }
+
+  $: items = newestActivityFirst(runs.confirmed?.items ?? []);
   $: groups = standingOrder
     .map((standing) => ({ standing, runs: runsStanding(items, standing) }))
     .filter((group) => group.runs.length > 0);
@@ -67,24 +101,32 @@
   {#if runs.confirmed !== null}
     {#if groups.length === 0}
       <p class="muted">No runs here yet.</p>
+    {:else}
+      <p id="run-sort" class="muted">Newest first.</p>
     {/if}
     {#each groups as group (group.standing)}
-      <section class="run-group" aria-labelledby={`group-${group.standing}`}>
+      <section class="run-group" aria-labelledby={`group-${group.standing}`} aria-describedby="run-sort">
         <h2 class="section-title" id={`group-${group.standing}`}>{standingWords[group.standing]}</h2>
         <ul class="card-list">
           {#each group.runs as run (run.public_run_reference)}
+            {@const workflowName = listedWorkflowName(run, workflowNames)}
+            {@const when = listedWhen(run)}
             <li>
               <a class="run-card" href={runPath(run.public_run_reference)} onclick={(event) => { event.preventDefault(); navigate(runPath(run.public_run_reference)); }}>
-                <strong>{run.run_id}</strong>
+                <div class="run-card-main">
+                  <strong>{run.run_id}</strong>
+                  <span class="run-card-assignment">
+                    {workflowName === null ? THE_ONE_PROJECT : `${THE_ONE_PROJECT} · ${workflowName}`}
+                  </span>
+                </div>
                 {#if group.standing === "waiting"}
                   <span class="state-label state-waiting"><span aria-hidden="true">{standingMarks.waiting}</span>{humanMove(run.state)}</span>
                 {/if}
-                {#if isRunV3(run)}
-                  <When
-                    startedAt={run.started_at ?? null}
-                    endedAt={run.ended_at ?? null}
-                    kind={run.ended_at == null ? "for" : "ago"}
-                  />
+                {#if when !== null}
+                  <span class="run-card-when">
+                    <time datetime={when.datetime}>{when.exact}</time>
+                    <span>{when.age}</span>
+                  </span>
                 {/if}
               </a>
             </li>
