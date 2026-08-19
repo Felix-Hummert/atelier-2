@@ -235,6 +235,7 @@ class AgentFailedEventResourceV3(RunEventBaseResourceV3):
         "PROCESS_EXITED_UNSUCCESSFULLY",
         "OUTPUT_SCHEMA_REFUSED",
         "AGENT_REFUSED",
+        "PROJECT_VERIFICATION_FAILED",
     ]
     reason: str | None
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)

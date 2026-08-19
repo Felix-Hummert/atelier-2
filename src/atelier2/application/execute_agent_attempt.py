@@ -107,14 +107,33 @@ def execute_agent_attempt(
                 execution, result, _redeemed(execution, lease, project)
             )
             if isinstance(outcome, AgentAttemptFailed):
+                failure = outcome.attempt.failure_code
+                match failure:
+                    case AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED:
+                        event = "agent_attempt_output_refused"
+                        detail = (
+                            "produced an output its own schema refuses; "
+                            "the refusal is durably named."
+                        )
+                    case AgentAttemptFailureCode.AGENT_REFUSED:
+                        event = "agent_attempt_refused"
+                        detail = "declared a refusal; the refusal is durably named."
+                    case AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED:
+                        event = "agent_attempt_project_verification_failed"
+                        detail = (
+                            "project verification ended unsuccessfully; "
+                            "the failure is durably named."
+                        )
+                    case _:
+                        raise ValueError("complete_success returned an unnamed failure")
                 _LOG.warning(
-                    "Agent attempt %s on node %s of run %s produced an output "
-                    "its own schema refuses; the refusal is durably named.",
+                    "Agent attempt %s on node %s of run %s %s",
                     execution.attempt_id.value,
                     execution.request.node_id,
                     execution.request.run_id.value,
+                    detail,
                     extra={
-                        "event": "agent_attempt_output_refused",
+                        "event": event,
                         "run_id": execution.request.run_id.value,
                         "node_id": execution.request.node_id,
                         "attempt_id": execution.attempt_id.value,
