@@ -205,6 +205,10 @@ that sits on an `AGREED` sentence. An `AGREED` sentence that is honestly
 document-level `## Open questions`, journey files, or `Distilled-From`
 freshness — those remain named successors.
 
+The documentation-order gate, below, reads the provenance the tree can check
+without calling GitHub. A missing acceptance identifier is still the
+acceptance gate's refusal.
+
 ### Provenance
 
 The distillation rule is what makes a document checkable: **a requirement
@@ -254,9 +258,28 @@ revision read, so a reader can open the thread and see at a glance what arrived
 after it. A document is refreshed by rewriting it against its source, never by
 editing it into a second opinion.
 
-Until a generator and a freshness check exist, what this directory offers is
-honest provenance, not currency. That is the second reason the source outranks
-the document.
+The documentation-order gate refuses a missing or empty `Distilled-From`; it
+cannot see comments that arrived after the watermark. Until a generator and a
+freshness check exist, what this directory offers is honest provenance, not
+currency. That is the second reason the source outranks the document.
+
+### Documentation-order gate
+
+`scripts/check_documentation_order.py` runs in the quality job, the same way
+`scripts/check_architecture.py` does, over the numbered files in this
+directory. It consults no issue tracker. Referenced acceptance identifiers
+stay with `scripts/check_acceptance.py`.
+
+<!-- documentation-order-gate-bound:start -->
+```text
+proves: every numbered requirement document carries the header fields, and Distilled-From is not empty
+proves: every requirement rule's Quelle opens with OPERATOR or DESK and a source pointer
+does not prove: that Distilled-From is current against its live thread - no GitHub call
+does not prove: that the cited object still says what the document quotes - review judges that
+does not measure: document-level Open questions, journey files, or index completeness
+does not generate: a requirement document from new thread objects - that is half B
+```
+<!-- documentation-order-gate-bound:end -->
 
 ### Precedence
 
