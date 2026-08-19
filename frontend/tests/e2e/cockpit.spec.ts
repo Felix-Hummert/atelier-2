@@ -981,7 +981,11 @@ test("clicking a finished node shows its whole log", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Output" })).toContainText("V3 provider bytes");
   await expect(page.getByLabel("What finished")).toContainText("implement");
   await expect(page.getByLabel("What finished")).not.toContainText("V3 provider bytes");
-  await expect(page.getByText("not recorded")).toBeVisible();
+  const who = page.getByRole("region", { name: "Who" });
+  await expect(who.getByText("Declared model")).toBeVisible();
+  await expect(who.getByText("v3-model")).toBeVisible();
+  await expect(who.getByText("Resolved model")).toBeVisible();
+  await expect(who.getByText("not recorded", { exact: true })).toHaveCount(2);
   await expect(page.getByText(/not recorded yet/)).toHaveCount(0);
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v3-node-detail.png", fullPage: true });

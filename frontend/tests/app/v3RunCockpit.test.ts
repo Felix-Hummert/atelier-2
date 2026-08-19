@@ -674,7 +674,11 @@ describe("a failed node on the run page", () => {
 
     await screen.findByText("Nothing written.");
     await screen.findByText("No receipt.");
-    await screen.findByText("not recorded");
+    const who = await screen.findByRole("region", { name: "Who" });
+    expect(within(who).getByText("Usage").closest("p")?.textContent).toMatch(/not recorded$/);
+    expect(within(who).getByText("Resolved model").closest("p")?.textContent).toMatch(
+      /not recorded$/
+    );
     await screen.findByText("12 s");
     expect(screen.queryByText(/yet/)).toBeNull();
     expect(screen.queryByText("a moment")).toBeNull();
@@ -764,7 +768,9 @@ describe("the click into a node", () => {
     // The whole answer, not a preview: an operator asked to see the log.
     await screen.findByText(asked);
     await screen.findByText(wrote);
-    await screen.findByText(/builder · anthropic · sonnet/);
+    const who = await screen.findByRole("region", { name: "Who" });
+    expect(who.textContent).toMatch(/builder · anthropic/);
+    expect(within(who).getByText("sonnet").isConnected).toBe(true);
     expect(screen.getByRole("button", { name: "Prompt hash" }).textContent).toBe("Prompt hash");
     expect(screen.getByRole("button", { name: "Output hash" }).textContent).toBe("Output hash");
     expect(screen.getByRole("button", { name: "Receipt hash" }).textContent).toBe("Receipt hash");
@@ -783,7 +789,8 @@ describe("the click into a node", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
 
-    await screen.findByText(/not recorded$/);
+    const who = await screen.findByRole("region", { name: "Who" });
+    expect(within(who).getByText("Usage").closest("p")?.textContent).toMatch(/not recorded$/);
     expect(screen.queryByText(/not recorded yet/)).toBeNull();
   });
 
@@ -807,7 +814,8 @@ describe("the click into a node", () => {
 
     await screen.findByText("Duration");
     await screen.findByText("5 min");
-    await screen.findByText(/not recorded$/);
+    const who = await screen.findByRole("region", { name: "Who" });
+    expect(within(who).getByText("Usage").closest("p")?.textContent).toMatch(/not recorded$/);
     expect(screen.queryByText(/not recorded yet/)).toBeNull();
   });
 
@@ -921,6 +929,56 @@ describe("the click into a node", () => {
     await screen.findByRole("heading", { name: "Output" });
     expect(screen.queryByText("Asked")).toBeNull();
     expect(screen.queryByText("Answered")).toBeNull();
+  });
+
+  it("proves(a-run-page-labels-the-declared-model): labels the receipt model as the declared configuration model and says a resolved model is not recorded", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => nodeDetail() as never) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("implement");
+
+    await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
+
+    const who = await screen.findByRole("region", { name: "Who" });
+    expect(within(who).getByText("Declared model").isConnected).toBe(true);
+    expect(within(who).getByText("sonnet").isConnected).toBe(true);
+    const resolved = within(who).getByText("Resolved model").closest("p");
+    expect(resolved?.textContent).toMatch(/not recorded$/);
+    expect(resolved?.textContent).not.toContain("sonnet");
+    await fireEvent.click(within(who).getByRole("button", { name: "Why resolved model is missing" }));
+    expect(
+      within(who).getByText(/No receipt records a provider-resolved model/).isConnected
+    ).toBe(true);
+  });
+
+  it("proves(a-run-page-labels-the-declared-model): a working node without a receipt does not invent a declared model and still names the unrecorded resolved one", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), {
+          getNodeDetail: vi.fn(async () =>
+            nodeDetail({
+              node_id: "review",
+              state: "working",
+              answer: null,
+              provenance: null
+            }) as never
+          )
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await fireEvent.click(await screen.findByRole("button", { name: "review — Working" }));
+
+    const who = await screen.findByRole("region", { name: "Who" });
+    expect(within(who).getByText("No receipt yet.").isConnected).toBe(true);
+    expect(within(who).queryByText("Declared model")).toBeNull();
+    expect(within(who).queryByText("sonnet")).toBeNull();
+    expect(within(who).getByText("Resolved model").closest("p")?.textContent).toMatch(
+      /not recorded yet$/
+    );
   });
 });
 
