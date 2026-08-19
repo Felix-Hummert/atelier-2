@@ -8,7 +8,28 @@ from atelier2.adapters.dbos.names import ACTION_CHECKPOINT_STEP_NAME
 from atelier2.adapters.dbos.run_store import commit_action_completed
 from atelier2.adapters.dbos.workflow_ids import action_continuation_workflow_id_for
 from atelier2.contracts.effects import LogicalEffectKey
-from atelier2.contracts.runs import WorkflowRevisionHash
+from atelier2.contracts.runs import RunState, WorkflowRevisionHash
+
+
+def decode_action_checkpoint(recorded: object) -> tuple[str, str, str]:
+    """Read a recorded action-checkpoint/0 output by arity.
+
+    DBOS replays this step by ordinal, so a V1 2-tuple stays a 2-tuple after
+    the live step started returning three values. V1/V2 Action cannot be a
+    sink: two values are `(run_id, successor)` and mean STARTED. Three values
+    are `(run_id, head, state)`. Any other form is refused rather than indexed.
+    """
+    if not isinstance(recorded, tuple):
+        raise TypeError("a recorded action checkpoint is not a tuple")
+    match recorded:
+        case (run_id, successor):
+            return str(run_id), str(successor), RunState.STARTED.value
+        case (run_id, head, state):
+            return str(run_id), str(head), str(state)
+        case _:
+            raise ValueError(
+                "a recorded action checkpoint has no arity this adapter writes"
+            )
 
 
 def checkpoint_confirmed_action(
@@ -22,11 +43,12 @@ def checkpoint_confirmed_action(
         )
         return snapshot.run_id.value, snapshot.current_node_id, snapshot.state.value
 
-    result = datasource.run_tx_step(
-        {"name": ACTION_CHECKPOINT_STEP_NAME},
-        checkpoint,
+    return decode_action_checkpoint(
+        datasource.run_tx_step(
+            {"name": ACTION_CHECKPOINT_STEP_NAME},
+            checkpoint,
+        )
     )
-    return str(result[0]), str(result[1]), str(result[2])
 
 
 def schedule_confirmed_action_continuation(
