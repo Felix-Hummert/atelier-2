@@ -119,7 +119,7 @@ def test_put_writes_an_occupancy_revision_and_get_reads_it(tmp_path) -> None:
         "project_id": PROJECT,
         "lineage_id": LINEAGE,
         "revision_number": 1,
-        "revision_hash": revision.revision_hash.value,
+        "occupancy_revision_hash": revision.revision_hash.value,
         "bindings": [
             {
                 "role": "chef",
@@ -145,7 +145,7 @@ def test_the_same_occupancy_put_is_ok(tmp_path) -> None:
     response = client.put(_path(), json=_body())
 
     assert response.status_code == 200
-    assert response.json()["revision_hash"] == revision.revision_hash.value
+    assert response.json()["occupancy_revision_hash"] == revision.revision_hash.value
 
 
 def test_a_missing_occupancy_is_named(tmp_path) -> None:

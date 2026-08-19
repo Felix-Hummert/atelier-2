@@ -16,7 +16,7 @@ def occupancy_revision_resource(
         project_id=revision.project_id.value,
         lineage_id=revision.lineage_id.value,
         revision_number=revision.revision_number,
-        revision_hash=revision.revision_hash.value,
+        occupancy_revision_hash=revision.revision_hash.value,
         bindings=tuple(
             OccupancyBindingResource(
                 role=binding.role.value,

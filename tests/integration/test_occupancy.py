@@ -96,7 +96,7 @@ def test_put_then_get_round_trips_occupancy_for_a_configured_project(
     assert written.status_code == 201
     assert read.status_code == 200
     assert written.json() == read.json()
-    assert written.json()["revision_hash"] == expected.revision_hash.value
+    assert written.json()["occupancy_revision_hash"] == expected.revision_hash.value
     assert written.json()["bindings"] == [
         {
             "role": "chef",

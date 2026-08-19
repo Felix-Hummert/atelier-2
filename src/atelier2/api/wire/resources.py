@@ -160,7 +160,7 @@ class OccupancyRevisionResource(ApiModel):
     project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
     lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    occupancy_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     bindings: tuple[OccupancyBindingResource, ...] = Field(
         max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
     )
