@@ -79,10 +79,10 @@ intentionally replays unacknowledged events, and reconnecting to a new process
 reads the same history from the durable store. A terminal stream ends only
 after its durable tail has been delivered.
 
-JSON resources and commands are closed typed models. Two publications take
-raw exact bytes rather than a typed model: workflow publication is
-`application/yaml`, and schema publication is `application/json` — JSON Schema
-is JSON, and the hash is of those exact bytes. Taking bytes does not mean saying
+JSON resources and commands are closed typed models. Publications of exact
+bytes rather than a typed model are workflow (`application/yaml`) and the
+JSON documents whose hash is of those exact bytes: schema, budget, and
+tool-grant (`application/json`). Taking bytes does not mean saying
 nothing about them: the workflow publication body carries the shape of the
 document, derived from the same models the publication reads it against rather
 than written a second time. The shape decides the form; whether a named edge

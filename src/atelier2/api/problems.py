@@ -18,6 +18,7 @@ from atelier2.api.wire.resources import InvalidFieldResource, ProblemResource
 from atelier2.contracts.artifacts import ArtifactRefusal
 from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
 from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
+from atelier2.contracts.tool_grants_v3 import ToolGrantRefusal
 
 PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."
 """How the API words a stored projection that does not fit its configured bound.
@@ -122,6 +123,34 @@ def _budget_document_problems() -> dict[str, ProblemDefinition]:
 
 BUDGET_DOCUMENT_PROBLEM_CODES = tuple(
     budget_document_problem_code(refusal) for refusal in BudgetRevisionRefusal
+)
+
+
+def tool_grant_document_problem_code(refusal: ToolGrantRefusal) -> str:
+    """The problem code one grant-document refusal becomes on the wire.
+
+    The contract names each fault in the underscored resolution vocabulary.
+    The publication door speaks the hyphenated problem vocabulary the rest of
+    this API already uses, so the author reads the same shape as a schema or
+    budget refusal. The contract token itself still stands in the detail.
+    """
+
+    return f"tool-{refusal.value.replace('_', '-')}"
+
+
+def _tool_grant_document_problems() -> dict[str, ProblemDefinition]:
+    return {
+        tool_grant_document_problem_code(refusal): ProblemDefinition(
+            422,
+            "Invalid tool grant document",
+            f"The document is not a tool grant this runtime redeems ({refusal.value}).",
+        )
+        for refusal in ToolGrantRefusal
+    }
+
+
+TOOL_GRANT_DOCUMENT_PROBLEM_CODES = tuple(
+    tool_grant_document_problem_code(refusal) for refusal in ToolGrantRefusal
 )
 
 
@@ -265,6 +294,12 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         409,
         "Budget revision collision",
         "Stop and inspect durable budget revision integrity.",
+    ),
+    **_tool_grant_document_problems(),
+    "tool-grant-revision-collision": ProblemDefinition(
+        409,
+        "Tool grant revision collision",
+        "Stop and inspect durable tool grant revision integrity.",
     ),
     "unsupported-media-type": ProblemDefinition(
         415,

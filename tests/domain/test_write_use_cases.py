@@ -56,6 +56,13 @@ from atelier2.application.publish_schema_revision import (
     SchemaPublicationInvalid,
     publish_schema_revision,
 )
+from atelier2.application.publish_tool_grant_revision import (
+    ToolGrantPublicationCollision,
+    ToolGrantPublicationCreated,
+    ToolGrantPublicationExisting,
+    ToolGrantPublicationInvalid,
+    publish_tool_grant_revision,
+)
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
@@ -83,6 +90,7 @@ from atelier2.contracts.orders import InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
+from atelier2.contracts.tool_grants_v3 import ToolGrantRefusal
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted as DurableCancellationAccepted,
 )
@@ -301,6 +309,8 @@ SCHEMA_DOCUMENT = b'{"type": "object"}'
 SCHEMA_REVISION = PublishedRevision(RevisionKind.SCHEMA, SCHEMA_DOCUMENT)
 BUDGET_DOCUMENT = b'{"attempt_deadline_seconds": 900}'
 BUDGET_REVISION = PublishedRevision(RevisionKind.BUDGET_POLICY, BUDGET_DOCUMENT)
+TOOL_GRANT_DOCUMENT = b'{"capability": "run-project-verification"}'
+TOOL_GRANT_REVISION = PublishedRevision(RevisionKind.TOOL, TOOL_GRANT_DOCUMENT)
 
 
 class ScriptedRegistry:
@@ -389,6 +399,44 @@ def test_a_budget_bounding_nothing_is_refused_before_the_store_is_asked() -> Non
 
     assert isinstance(result, BudgetPublicationInvalid)
     assert result.verdict.reason is BudgetRevisionRefusal.MISSING_ATTEMPT_DEADLINE
+    assert registry.published == []
+
+
+@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        (
+            PublishedRevisionCreated(TOOL_GRANT_REVISION),
+            ToolGrantPublicationCreated(TOOL_GRANT_REVISION),
+        ),
+        (
+            PublishedRevisionExisting(TOOL_GRANT_REVISION),
+            ToolGrantPublicationExisting(TOOL_GRANT_REVISION),
+        ),
+        (PublishedRevisionCollision(), ToolGrantPublicationCollision()),
+        *WRITE_REFUSALS,
+    ],
+    ids=lambda value: type(value).__name__,
+)
+def test_every_port_answer_of_a_tool_grant_publication_becomes_this_layers_own_outcome(
+    port_answer: Any, expected: Any
+) -> None:
+    registry = ScriptedRegistry(port_answer)
+
+    assert publish_tool_grant_revision(TOOL_GRANT_DOCUMENT, registry) == expected
+    assert registry.published == [TOOL_GRANT_REVISION]
+
+
+def test_a_grant_this_runtime_cannot_redeem_is_refused_before_the_store_is_asked() -> (
+    None
+):
+    registry = ScriptedRegistry(PublishedRevisionCreated(TOOL_GRANT_REVISION))
+
+    result = publish_tool_grant_revision(b"{}", registry)
+
+    assert isinstance(result, ToolGrantPublicationInvalid)
+    assert result.verdict.reason is ToolGrantRefusal.MISSING_CAPABILITY
     assert registry.published == []
 
 
