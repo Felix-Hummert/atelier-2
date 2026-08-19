@@ -15,8 +15,10 @@ const publicReference = "run1.cnVuLW9yZGVy";
 
 const portionsOrder = {
   name: "portions",
-  schema_ref: "portions-schema",
-  schema_revision: "schema-portions"
+  schema: {
+    ref: "portions-schema",
+    revision: "schema-portions"
+  }
 };
 
 function summary(hash: string, name: string) {

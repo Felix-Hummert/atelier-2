@@ -7,6 +7,7 @@ import {
   agentConfigurationRevisionPageSchema,
   authProfileRevisionPageSchema,
   workflowDeclaredOrderSchema,
+  workflowDeclaredSchemaSchema,
   workflowNodePreviewSchema,
   workflowRevisionDetailSchema,
   catalogNameResolutionSchema,
@@ -120,8 +121,10 @@ describe("the served vocabulary", () => {
         orders: [
           {
             name: "portions",
-            schema_ref: "portions-schema",
-            schema_revision: "schema-portions"
+            schema: {
+              ref: "portions-schema",
+              revision: "schema-portions"
+            }
           }
         ],
         node_previews: [
@@ -149,6 +152,12 @@ describe("the served vocabulary", () => {
     expect(Object.keys(workflowDeclaredOrderSchema.shape).sort()).toEqual(
       Object.keys(
         servedDocument.components.schemas.WorkflowDeclaredOrderResourceV3?.properties ?? {}
+      ).sort()
+    );
+    expect(Object.keys(workflowDeclaredSchemaSchema.shape).sort()).toEqual(
+      Object.keys(
+        servedDocument.components.schemas.WorkflowDeclaredSchemaResourceV3?.properties ??
+          {}
       ).sort()
     );
     expect(workflowRevisionDetailSchema.parse(sample)).toEqual(sample);

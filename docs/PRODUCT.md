@@ -560,11 +560,13 @@ derived from the models the publication reads it against, so no second
 description can drift. That shape decides the form; the rules only a whole
 document answers keep their named refusals at publication. It also answers in
 the words the next request is written with: a workflow's revision hash and its
-format version are spelled the same on every body that carries them, a published
-schema or budget revision names its own kind, and material published as an
-artifact is ordered under the address the publication answered. A machine
-consumer assembles each request out of fields the answers before it named,
-without a translation table of its own.
+format version are spelled the same on every body that carries them, the path
+that reads one revision is `{workflow_revision_hash}`, a declared order answers
+the author's own `schema: {ref, revision}` hull, a published schema or budget
+revision names its own kind, and material published as an artifact is ordered
+under the address the publication answered. A machine consumer assembles each
+request out of fields the answers before it named, without a translation table
+of its own.
 [ADR 0003](decisions/0003-http-api.md) owns the API and resume
 contract.
 

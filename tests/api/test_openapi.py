@@ -78,7 +78,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/budget-revisions",
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/by-name/{name}",
-    API_PREFIX + "/workflow-revisions/{revision_hash}",
+    API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
     API_PREFIX + "/workflow-lineages",
     API_PREFIX + "/workflow-lineages/{lineage_id}/members",
     API_PREFIX + "/runs",
@@ -145,7 +145,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/workflow-revisions/by-name/{name}",
         "get_revision_by_name",
     ),
-    ("GET", API_PREFIX + "/workflow-revisions/{revision_hash}", "get_revision"),
+    (
+        "GET",
+        API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
+        "get_revision",
+    ),
     ("POST", API_PREFIX + "/runs", "start_run_route"),
     ("GET", API_PREFIX + "/runs", "list_runs"),
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
@@ -171,7 +175,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
-    (API_PREFIX + "/workflow-revisions/{revision_hash}", "get"): {"200"},
+    (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
     (API_PREFIX + "/runs", "post"): {"200", "201"},
     (API_PREFIX + "/runs", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
@@ -235,15 +239,10 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head widens one closed vocabulary: `headless_with_tools` joins the
-    requested capability a configuration may publish and the mode an agent node
-    may declare, so a caller can bind a node to an executor whose invocation
-    carries tools. Refreshing the artefact alongside a refactor is what this test
-    still refuses.
-    it. This head adds the verdict a declared loop may repeat on, with the closed
-    vocabulary it is written in, so a publisher reads the early way out of a loop
-    from the door as well as the bounded way back.
-    Refreshing the artefact alongside a refactor is what this test still refuses.
+    it. This head names the workflow-revision path parameter
+    `workflow_revision_hash` and answers a declared order with the author's
+    `schema: {ref, revision}` hull. Refreshing the artefact alongside a refactor
+    is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()

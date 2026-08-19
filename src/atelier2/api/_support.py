@@ -39,7 +39,9 @@ from atelier2.contracts.runs import RunId
 
 
 def resource_response(resource: BaseModel, status: HTTPStatus) -> JSONResponse:
-    return JSONResponse(resource.model_dump(mode="json"), status_code=status)
+    return JSONResponse(
+        resource.model_dump(mode="json", by_alias=True), status_code=status
+    )
 
 
 async def load_run_resource(

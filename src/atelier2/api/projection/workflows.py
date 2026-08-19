@@ -23,6 +23,7 @@ from atelier2.api.wire.resources import (
     VersionedWorkflowRevisionPageResource,
     WaitNodeResource,
     WorkflowDeclaredOrderResourceV3,
+    WorkflowDeclaredSchemaResourceV3,
     WorkflowGraphResource,
     WorkflowGraphResourceV2,
     WorkflowGraphResourceV3,
@@ -159,8 +160,10 @@ def graph_resource(
             orders=tuple(
                 WorkflowDeclaredOrderResourceV3(
                     name=entry.name,
-                    schema_ref=entry.schema_reference.ref,
-                    schema_revision=entry.schema_reference.revision,
+                    schema=WorkflowDeclaredSchemaResourceV3(
+                        ref=entry.schema_reference.ref,
+                        revision=entry.schema_reference.revision,
+                    ),
                 )
                 for entry in graph.graph_inputs
             ),

@@ -39,7 +39,9 @@ from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptStat
 
 
 class ApiModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, strict=True, serialize_by_alias=True
+    )
 
 
 class HealthResource(ApiModel):
@@ -264,17 +266,29 @@ class WorkflowNodePreviewResourceV3(ApiModel):
         return self
 
 
+class WorkflowDeclaredSchemaResourceV3(ApiModel):
+    """The author's own schema hull, as the document writes it.
+
+    Inside `schema:` there is only one `ref` and one `revision` they can mean.
+    Flattening them to `schema_ref` / `schema_revision` forced a consumer that
+    re-authors a document to rebuild the hull under different names.
+    """
+
+    ref: str = Field(min_length=1)
+    revision: str = Field(min_length=1)
+
+
 class WorkflowDeclaredOrderResourceV3(ApiModel):
     """One order this document demands at start: its name and the schema it pinned.
 
-    The schema columns are the author's own `ref` and `revision`, not the schema
+    `schema` is the author's own hull — `ref` and `revision` — not the schema
     document. A caller that wants those bytes already holds the published
     revision the reference names.
     """
 
     name: str = Field(min_length=1)
-    schema_ref: str = Field(min_length=1)
-    schema_revision: str = Field(min_length=1)
+    # Python cannot call this field `schema`: BaseModel already owns that name.
+    schema_reference: WorkflowDeclaredSchemaResourceV3 = Field(alias="schema")
 
 
 # A docstring here is published as this component's description, so the reason

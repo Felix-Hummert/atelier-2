@@ -148,6 +148,34 @@ def test_no_served_body_names_a_revision_or_a_format_without_saying_which() -> N
     assert offenders == {}
 
 
+@pytest.mark.proves("no-served-body-names-a-revision-or-a-format-without-saying-which")
+def test_no_path_parameter_is_named_revision_hash() -> None:
+    """A template placeholder is a wire field. Bare `revision_hash` is gone there too."""
+
+    offenders = [
+        (path, method, parameter.get("in"))
+        for path, methods in served_app().openapi()["paths"].items()
+        for method, operation in methods.items()
+        if isinstance(operation, dict)
+        for parameter in operation.get("parameters", ())
+        if parameter.get("name") == "revision_hash"
+    ]
+
+    assert offenders == []
+
+
+@pytest.mark.proves("a-consumer-writes-every-request-out-of-the-answers-it-read")
+def test_a_declared_order_answers_the_schema_hull_the_document_writes() -> None:
+    """The projection repeats `schema: {ref, revision}`, so re-authoring copies it."""
+
+    components = served_components()
+    order = components["WorkflowDeclaredOrderResourceV3"]
+    assert set(order.get("required", ())) == {"name", "schema"}
+    hull = components["WorkflowDeclaredSchemaResourceV3"]
+    assert set(hull.get("required", ())) == {"ref", "revision"}
+    assert set(property_names(hull)) == {"ref", "revision"}
+
+
 @pytest.mark.parametrize("round_trip", ROUND_TRIPS, ids=repr)
 @pytest.mark.proves("a-consumer-writes-every-request-out-of-the-answers-it-read")
 def test_each_request_is_writable_out_of_the_answers_that_precede_it(

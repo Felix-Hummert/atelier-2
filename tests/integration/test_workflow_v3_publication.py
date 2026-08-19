@@ -254,19 +254,24 @@ nodes:
           graph_input: portions
 """
     client = _client(runtime)
-    revision_hash = _publish(client, document).json()["workflow_revision_hash"]
+    published = _publish(client, document).json()
+    revision_hash = published["workflow_revision_hash"]
 
     graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
         "graph"
     ]
-
-    assert graph["orders"] == [
+    expected_orders = [
         {
             "name": "portions",
-            "schema_ref": "portions-schema",
-            "schema_revision": "schema-portions",
+            "schema": {
+                "ref": "portions-schema",
+                "revision": "schema-portions",
+            },
         }
     ]
+
+    assert published["graph"]["orders"] == expected_orders
+    assert graph["orders"] == expected_orders
     assert document.decode() not in str(graph)
 
 
