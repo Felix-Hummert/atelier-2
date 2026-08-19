@@ -35,6 +35,9 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_PROJECT_ID_CHARACTERS,
+)
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 
 
@@ -146,6 +149,21 @@ class AuthProfileRevisionPageResource(ApiModel):
 
     items: tuple[AuthProfileRevisionResource, ...]
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
+
+
+class OccupancyBindingResource(ApiModel):
+    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class OccupancyRevisionResource(ApiModel):
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    bindings: tuple[OccupancyBindingResource, ...] = Field(
+        max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
+    )
 
 
 class AgentReceiptResource(ApiModel):

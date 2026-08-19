@@ -79,6 +79,7 @@ ATTENTION_EVENT_PATH = API_PREFIX + "/events"
 CANCELLATION_PATH = (
     API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations"
 )
+OCCUPANCY_PATH = API_PREFIX + "/projects/{project_id}/occupancy/{lineage_id}"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -249,6 +250,25 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): (
         "invalid-revision-hash",
         "workflow-revision-not-found",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (OCCUPANCY_PATH, "put"): (
+        "project-unknown",
+        "invalid-revision-hash",
+        "invalid-request",
+        "unsupported-media-type",
+        "occupancy-revision-conflict",
+        "occupancy-revision-collision",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (OCCUPANCY_PATH, "get"): (
+        "project-unknown",
+        "invalid-revision-hash",
+        "occupancy-missing",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",

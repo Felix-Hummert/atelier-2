@@ -669,7 +669,8 @@ bindings on `/new` offer published agent-configuration
 revisions by provider, model, and readable auth mode; the raw publication form
 stays as a collapsed expert fallback. Last choice per role is remembered in
 this browser only — that is not the project-configuration owner for a
-recommended occupancy. The list is empty until a configuration is published,
+recommended occupancy. The recommendation now has a backend owner on the
+wire; the picker does not read it yet. The list is empty until a configuration is published,
 and says so. It opens in the Studio rather than in that list: one screen across the
 whole workshop naming every run that waits for a human — the durable states
 `WAITING_INPUT` and `WAITING_RECONCILIATION`, each asked of the list by
@@ -860,7 +861,9 @@ durable home, so a verifier copies that hash rather than recomputing it.
 
 The host keeps one live-versioned configuration channel. It is durable,
 append-only-versioned in the `auth_profile_revisions` form, and readable at
-runtime. The first entry is `project id → root path`. Today's store is the
+runtime. The first entry is `project id → root path`. The second is recommended
+occupancy per workflow lineage, versioned beside that mapping and readable
+over HTTP. Today's store is the
 first project: that configuration entry, and the reads that treat it as a
 project. CLI flags remain bootstrap of where the channel lives --
 `--database` is the store, and `--project-id` with `--project-root` may write
@@ -873,7 +876,7 @@ names a missing row `project-root-missing`. An unreadable channel is
 `host-configuration-unreadable`. There is no HTTP project resource, no second
 project, and no store-per-project process.
 
-The canonical store is schema V25. A fresh store is created as exact V25 and
+The canonical store is schema V26. A fresh store is created as exact V26 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and
@@ -883,7 +886,8 @@ orders a run was started with, the immutable proof of every redeemed tool
 grant, the receipt hash an agent completion binds, immutable content-addressed
 artifacts an order may name instead of carrying their bytes, the round a
 declared loop was turning when each run, event and agent receipt was written, and
-the host configuration channel's project-root revisions. The catalog adapter founds a lineage
+the host configuration channel's project-root revisions and occupancy
+revisions. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing

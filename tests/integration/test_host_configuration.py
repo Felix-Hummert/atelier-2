@@ -10,22 +10,32 @@ from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.dbos.host_configuration import (
     append_project_root,
+    latest_occupancy_revision,
     latest_project_root_revision,
     project_root_for,
+    publish_occupancy_revision,
     publish_project_root_revision,
 )
 from atelier2.adapters.dbos.runtime import DbosRuntimeSettings, create_canonical_engine
 from atelier2.adapters.dbos.schema import (
+    host_occupancy_bindings,
+    host_occupancy_revisions,
     host_project_root_revisions,
     initialize_schema,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
+from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import (
     HOST_CONFIGURATION_UNREADABLE,
+    OCCUPANCY_REVISION_CONFLICT,
     PROJECT_ROOT_MISSING,
     PROJECT_UNKNOWN,
     HostConfigurationUnreadable,
+    OccupancyBinding,
+    OccupancyRevision,
+    OccupancyRevisionConflict,
     ProjectId,
     ProjectRootMissing,
     ProjectRootRevision,
@@ -244,3 +254,165 @@ def test_a_project_root_flag_without_a_project_id_refuses_to_serve(
 
     assert refusal.value.code == 2
     assert "--project-id" in capsys.readouterr().err
+
+
+def _occupancy(
+    *,
+    project: str = "studio",
+    lineage: str = "ab" * 32,
+    revision_number: int = 1,
+    bindings: tuple[OccupancyBinding, ...] | None = None,
+) -> OccupancyRevision:
+    if bindings is None:
+        bindings = (
+            OccupancyBinding(
+                AgentRole("chef"), AgentConfigurationRevisionHash("cd" * 32)
+            ),
+        )
+    return OccupancyRevision(
+        ProjectId(project),
+        CatalogLineageId(lineage),
+        revision_number,
+        bindings,
+    )
+
+
+def test_a_written_occupancy_revision_is_read_back(tmp_path: Path) -> None:
+    engine = opened_channel(tmp_path)
+    revision = _occupancy()
+
+    try:
+        stored = publish_occupancy_revision(engine, revision)
+
+        assert stored == revision
+        assert (
+            latest_occupancy_revision(engine, revision.project_id, revision.lineage_id)
+            == revision
+        )
+    finally:
+        engine.dispose()
+
+
+def test_the_latest_occupancy_revision_is_what_a_read_returns(tmp_path: Path) -> None:
+    engine = opened_channel(tmp_path)
+    first = _occupancy()
+    later = _occupancy(
+        revision_number=2,
+        bindings=(
+            OccupancyBinding(
+                AgentRole("chef"), AgentConfigurationRevisionHash("ee" * 32)
+            ),
+        ),
+    )
+
+    try:
+        publish_occupancy_revision(engine, first)
+        publish_occupancy_revision(engine, later)
+
+        assert (
+            latest_occupancy_revision(engine, first.project_id, first.lineage_id)
+            == later
+        )
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(host_occupancy_revisions)
+                )
+                == 2
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(host_occupancy_bindings)
+                )
+                == 2
+            )
+    finally:
+        engine.dispose()
+
+
+def test_the_same_occupancy_bytes_at_the_same_key_are_idempotent(
+    tmp_path: Path,
+) -> None:
+    engine = opened_channel(tmp_path)
+    revision = _occupancy()
+
+    try:
+        first = publish_occupancy_revision(engine, revision)
+        second = publish_occupancy_revision(engine, revision)
+
+        assert first == second == revision
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(host_occupancy_revisions)
+                )
+                == 1
+            )
+    finally:
+        engine.dispose()
+
+
+def test_a_different_occupancy_at_the_same_key_conflicts(tmp_path: Path) -> None:
+    engine = opened_channel(tmp_path)
+    first = _occupancy()
+    other = _occupancy(
+        bindings=(
+            OccupancyBinding(
+                AgentRole("chef"), AgentConfigurationRevisionHash("ee" * 32)
+            ),
+        ),
+    )
+
+    try:
+        publish_occupancy_revision(engine, first)
+        with pytest.raises(
+            OccupancyRevisionConflict, match=OCCUPANCY_REVISION_CONFLICT
+        ):
+            publish_occupancy_revision(engine, other)
+    finally:
+        engine.dispose()
+
+
+def test_a_missing_occupancy_is_none(tmp_path: Path) -> None:
+    engine = opened_channel(tmp_path)
+
+    try:
+        assert (
+            latest_occupancy_revision(
+                engine, ProjectId("studio"), CatalogLineageId("ab" * 32)
+            )
+            is None
+        )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    [
+        pytest.param(
+            host_occupancy_revisions.update().values(project_id="tampered"),
+            id="header-update",
+        ),
+        pytest.param(host_occupancy_revisions.delete(), id="header-delete"),
+        pytest.param(
+            host_occupancy_bindings.update().values(role="tampered"),
+            id="binding-update",
+        ),
+        pytest.param(host_occupancy_bindings.delete(), id="binding-delete"),
+    ],
+)
+def test_an_occupancy_revision_can_no_longer_be_rewritten(
+    tmp_path: Path, rewrite: sa.Executable
+) -> None:
+    engine = opened_channel(tmp_path)
+    publish_occupancy_revision(engine, _occupancy())
+
+    try:
+        with (
+            pytest.raises(IntegrityError, match="host occupancy"),
+            engine.begin() as connection,
+        ):
+            connection.execute(rewrite)
+    finally:
+        engine.dispose()

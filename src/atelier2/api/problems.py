@@ -363,6 +363,26 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Catalog revision is owned",
         "That revision already belongs to another lineage.",
     ),
+    "project-unknown": ProblemDefinition(
+        404,
+        "Project unknown",
+        "Use a project id this installation has configured.",
+    ),
+    "occupancy-missing": ProblemDefinition(
+        404,
+        "Occupancy not found",
+        "Publish an occupancy revision for this project and lineage before reading it.",
+    ),
+    "occupancy-revision-conflict": ProblemDefinition(
+        409,
+        "Occupancy revision conflict",
+        "Use a new revision_number or retry the exact original occupancy revision.",
+    ),
+    "occupancy-revision-collision": ProblemDefinition(
+        409,
+        "Occupancy revision collision",
+        "Stop mutation and inspect durable occupancy revision integrity.",
+    ),
     "catalog-lineage-missing": ProblemDefinition(
         404,
         "Catalog lineage not found",

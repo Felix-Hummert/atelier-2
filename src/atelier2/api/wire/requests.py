@@ -13,7 +13,11 @@ from atelier2.api.references import (
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
 )
-from atelier2.api.wire.resources import ApiModel, ReconciliationDeterminationResource
+from atelier2.api.wire.resources import (
+    ApiModel,
+    OccupancyBindingResource,
+    ReconciliationDeterminationResource,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -90,6 +94,13 @@ class PublishAgentConfigurationRevisionRequestResource(ApiModel):
 class StartRunRequestResource(ApiModel):
     run_id: str = Field(min_length=1)
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+
+
+class PutOccupancyRevisionRequestResource(ApiModel):
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    bindings: tuple[OccupancyBindingResource, ...] = Field(
+        max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
+    )
 
 
 class StartRunAgentBindingResourceV2(ApiModel):

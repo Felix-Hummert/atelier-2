@@ -22,6 +22,7 @@ from atelier2.api.openapi import (
     CANCELLATION_PATH,
     EVENT_NAMES,
     EVENT_PATH,
+    OCCUPANCY_PATH,
 )
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
@@ -84,6 +85,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
     API_PREFIX + "/workflow-lineages",
     API_PREFIX + "/workflow-lineages/{lineage_id}/members",
+    OCCUPANCY_PATH,
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
     NODE_DETAIL_PATH,
@@ -164,6 +166,8 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
         "get_revision",
     ),
+    ("PUT", OCCUPANCY_PATH, "put_occupancy_revision_route"),
+    ("GET", OCCUPANCY_PATH, "get_occupancy_revision_route"),
     ("POST", API_PREFIX + "/runs", "start_run_route"),
     ("GET", API_PREFIX + "/runs", "list_runs"),
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
@@ -193,6 +197,8 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
+    (OCCUPANCY_PATH, "put"): {"200", "201"},
+    (OCCUPANCY_PATH, "get"): {"200"},
     (API_PREFIX + "/runs", "post"): {"200", "201"},
     (API_PREFIX + "/runs", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
