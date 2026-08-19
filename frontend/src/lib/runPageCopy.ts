@@ -46,7 +46,8 @@ export const runPageCopy = {
   sealsReceipt: "the receipt that named who ran this node",
   sealsWorkflow: "the published document this run ran against",
   sealsConfiguration: "the bindings and inputs this run started under",
-  sealsTerminal: "the finished run so an export can verify it"
+  sealsTerminal: "the finished run so an export can verify it",
+  sealsEvent: "this durable event"
 } as const;
 
 const ENDED_NODE_STATES: ReadonlySet<NodeState> = new Set([
