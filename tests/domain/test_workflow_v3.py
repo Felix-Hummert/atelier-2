@@ -14,6 +14,7 @@ from atelier2.adapters.yaml_workflows import (
     parse_workflow_document,
 )
 from atelier2.contracts.runs import WorkflowRevision
+from atelier2.contracts.verdicts import VERDICT_ANSWER_SCHEMA, Verdict
 from atelier2.contracts.workflow_refusals import WorkflowRefusal, WorkflowRefusalReason
 from atelier2.contracts.workflows_v3 import (
     AGENT_OUTPUT_SHAPE_UNAVAILABLE,
@@ -31,6 +32,7 @@ from atelier2.contracts.workflows_v3 import (
     SubworkflowNodeV3,
     WaitNodeV3,
     WorkflowGraphV3,
+    verdict_condition_of,
 )
 
 DOCUMENT_NAME = "Self-build review chain"
@@ -193,10 +195,38 @@ def loops_line(
     bound: str = "maximum_rounds: 2",
     loop_id: str = "review_cycle",
     second: str = "",
+    repeat_while: str = "",
 ) -> str:
     """One or two loop declarations as a flow sequence, differing only in data."""
-    declared = [part for part in (f"id: {loop_id}", f"body: {body}", bound) if part]
+    declared = [
+        part
+        for part in (
+            f"id: {loop_id}",
+            f"body: {body}",
+            bound,
+            f"repeat_while: {repeat_while}" if repeat_while else "",
+        )
+        if part
+    ]
     return "loops: [{" + ", ".join(declared) + "}" + second + "]"
+
+
+APPROVAL_UNDER_THE_VERDICT_CONTRACT = b"revision: " + (
+    VERDICT_ANSWER_SCHEMA.revision_hash.value.encode("ascii")
+)
+
+
+def answering_under_the_verdict_contract(document: bytes = DOCUMENT) -> bytes:
+    """The same document, with the round's last node answering as a verdict.
+
+    The revision is taken from the contract itself rather than written down
+    here: what a document must pin to have its verdict read is one product
+    decision, and a test spelling its own copy would keep passing after that
+    decision moved.
+    """
+    anchor = b"revision: schema-approval"
+    assert document.count(anchor) == 1
+    return document.replace(anchor, APPROVAL_UNDER_THE_VERDICT_CONTRACT)
 
 
 @pytest.mark.proves("a-loop-over-a-stretch-of-the-graph-is-declarable")
@@ -302,6 +332,90 @@ def test_a_loop_the_declared_edges_cannot_turn_is_refused(
 
     assert refusal.reason is reason
     assert (refusal.node, refusal.field) == (node, "loops")
+
+
+@pytest.mark.proves("a-loop-may-declare-the-verdict-that-sends-it-round-again")
+def test_a_declared_verdict_reads_back_with_the_node_whose_answer_says_it() -> None:
+    parsed = graph(
+        answering_under_the_verdict_contract(
+            with_document_line(
+                loops_line(repeat_while="{node: approve, verdict: revise}")
+            )
+        )
+    )
+
+    condition = parsed.loops[0].repeat_while
+    assert condition is not None
+    assert (condition.node, condition.verdict) == ("approve", Verdict.REVISE)
+    assert verdict_condition_of(parsed, "approve") is condition
+    assert verdict_condition_of(parsed, "code_review") is None
+
+
+@pytest.mark.proves("a-loop-may-declare-the-verdict-that-sends-it-round-again")
+def test_a_loop_that_declares_no_verdict_steers_nothing() -> None:
+    parsed = graph(with_document_line(loops_line()))
+
+    assert parsed.loops[0].repeat_while is None
+    assert verdict_condition_of(parsed, "approve") is None
+
+
+@pytest.mark.proves("a-verdict-the-loop-could-not-read-is-refused-by-name")
+@pytest.mark.parametrize(
+    ("document", "reason", "node", "field"),
+    (
+        (
+            with_document_line(
+                loops_line(repeat_while="{node: code_review, verdict: revise}")
+            ),
+            WorkflowRefusalReason.LOOP_VERDICT_NODE_NOT_THE_ROUND_END,
+            "code_review",
+            "loops",
+        ),
+        (
+            with_document_line(
+                loops_line(repeat_while="{node: implement, verdict: revise}")
+            ),
+            WorkflowRefusalReason.LOOP_VERDICT_NODE_NOT_THE_ROUND_END,
+            "implement",
+            "loops",
+        ),
+        (
+            with_document_line(
+                loops_line(repeat_while="{node: approve, verdict: revise}")
+            ),
+            WorkflowRefusalReason.LOOP_VERDICT_UNREADABLE,
+            "approve",
+            "loops",
+        ),
+        (
+            answering_under_the_verdict_contract(
+                with_document_line(
+                    loops_line(repeat_while="{node: approve, verdict: refused}")
+                )
+            ),
+            WorkflowRefusalReason.INVALID_VALUE,
+            None,
+            "verdict",
+        ),
+    ),
+    ids=(
+        "a node that does not close the round",
+        "a node the loop does not even repeat",
+        "an answer that pins another contract than the verdict's",
+        "a word outside the closed vocabulary",
+    ),
+)
+def test_a_verdict_condition_the_engine_could_not_honour_is_refused(
+    document: bytes,
+    reason: WorkflowRefusalReason,
+    node: str | None,
+    field: str,
+) -> None:
+    """Each case would leave a started run with a continuation nobody can decide."""
+    refusal = refusal_of(document)
+
+    assert refusal.reason is reason
+    assert (refusal.node, refusal.field) == (node, field)
 
 
 @pytest.mark.proves("a-loop-the-graph-cannot-turn-is-refused-by-name")
@@ -1073,6 +1187,96 @@ def test_iteration_is_refused_on_every_node_kind_that_runs_no_child(
 
     assert refusal.reason is WorkflowRefusalReason.REFUSED_FIELD
     assert (refusal.node, refusal.field) == (node_id, "iterate")
+
+
+CONSTRAINT = "binding_constraint: {distinct_from: implement}"
+
+
+@pytest.mark.proves("a-node-may-declare-it-must-not-share-another-nodes-binding")
+def test_a_declared_distinct_from_reads_back_as_authored() -> None:
+    parsed = graph(with_node_line("code_review", CONSTRAINT))
+
+    constrained = parsed.node("code_review")
+    assert isinstance(constrained, AgentNodeV3)
+    assert constrained.binding_constraint is not None
+    assert constrained.binding_constraint.distinct_from == "implement"
+    unbound = parsed.node("implement")
+    assert isinstance(unbound, AgentNodeV3)
+    assert unbound.binding_constraint is None
+
+
+@pytest.mark.proves("a-node-may-declare-it-must-not-share-another-nodes-binding")
+def test_an_undeclared_binding_constraint_is_absent() -> None:
+    review = graph().node("code_review")
+    assert isinstance(review, AgentNodeV3)
+    assert review.binding_constraint is None
+
+
+@pytest.mark.proves("a-distinct-from-the-document-cannot-honour-is-refused-by-name")
+@pytest.mark.parametrize(
+    ("line", "reason", "detail"),
+    (
+        (
+            "binding_constraint: {distinct_from: ghost}",
+            WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE,
+            "ghost",
+        ),
+        (
+            "binding_constraint: {distinct_from: code_review}",
+            WorkflowRefusalReason.INVALID_VALUE,
+            "this node",
+        ),
+        (
+            "binding_constraint: {distinct_from: approve}",
+            WorkflowRefusalReason.INVALID_VALUE,
+            "no agent binding",
+        ),
+    ),
+    ids=("unknown", "self", "wait node"),
+)
+def test_a_distinct_from_the_document_cannot_honour_is_refused(
+    line: str, reason: WorkflowRefusalReason, detail: str
+) -> None:
+    refusal = refusal_of(with_node_line("code_review", line))
+
+    assert refusal.reason is reason
+    assert (refusal.node, refusal.field) == ("code_review", "binding_constraint")
+    assert detail in refusal.detail
+
+
+@pytest.mark.proves("a-distinct-from-the-document-cannot-honour-is-refused-by-name")
+def test_distinct_from_a_node_that_shares_this_role_is_refused() -> None:
+    document = DOCUMENT.replace(b"    role: reviewer\n", b"    role: builder\n", 1)
+    refusal = refusal_of(with_node_line("code_review", CONSTRAINT, document))
+
+    assert refusal.reason is WorkflowRefusalReason.INVALID_VALUE
+    assert (refusal.node, refusal.field) == ("code_review", "binding_constraint")
+    assert "shares role" in refusal.detail
+
+
+@pytest.mark.proves("a-distinct-from-the-document-cannot-honour-is-refused-by-name")
+def test_binding_constraint_is_refused_on_a_node_without_a_binding() -> None:
+    refusal = refusal_of(with_node_line("approve", CONSTRAINT))
+
+    assert refusal.reason is WorkflowRefusalReason.REFUSED_FIELD
+    assert (refusal.node, refusal.field) == ("approve", "binding_constraint")
+
+
+@pytest.mark.proves("a-distinct-from-the-document-cannot-honour-is-refused-by-name")
+def test_the_document_gate_is_what_refuses_an_unknown_distinct_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "atelier2.contracts.workflows_v3._refuse_broken_binding_constraints",
+        lambda _graph: None,
+    )
+    parsed = graph(
+        with_node_line("code_review", "binding_constraint: {distinct_from: ghost}")
+    )
+    constrained = parsed.node("code_review")
+    assert isinstance(constrained, AgentNodeV3)
+    assert constrained.binding_constraint is not None
+    assert constrained.binding_constraint.distinct_from == "ghost"
 
 
 @pytest.mark.parametrize(

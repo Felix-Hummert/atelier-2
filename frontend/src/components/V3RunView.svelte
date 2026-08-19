@@ -22,6 +22,7 @@
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
   import StateMark from "./StateMark.svelte";
+  import When from "./When.svelte";
   import V3AnswerCard from "./V3AnswerCard.svelte";
   import WorkflowGraphDrawing from "./WorkflowGraphDrawing.svelte";
 
@@ -375,6 +376,11 @@
           Following live
         {/if}
       </span>
+      <When
+        startedAt={run.started_at ?? null}
+        endedAt={run.ended_at ?? null}
+        kind={run.ended_at == null ? "for" : "ago"}
+      />
     </p>
   </header>
 

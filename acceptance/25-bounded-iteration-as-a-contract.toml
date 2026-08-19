@@ -11,13 +11,19 @@ story = "https://github.com/FlexOr2/atelier-2/issues/25"
 # The fourth head is the engine, under ADR 0014 and the operator rulings of
 # 19.08.: a document declares a loop over a stretch of *its own* graph, and the
 # engine turns its rounds with an identity each round owns. The five sentences it
-# proves are the last five below. What that head deliberately does not build is
-# named rather than implied: reaching the declared bound is the ONLY way out of a
-# loop this build has. A result that ends a loop early -- a review verdict
-# steering the next edge -- is #25's second engine head, and so is the agent's own
-# named refusal. The V1 merge node and the `binding_constraint` the operator ruled
-# on 19.08. are a third, thinner cut on existing machinery. None of the three is
-# claimed here.
+# proves are the five before the verdict block below.
+#
+# The fifth head is ADR 0015: the answer a round produced steers the loop's back
+# edge. Its five sentences are the last five below, and what it deliberately does
+# not build is named rather than implied. The **agent's own named refusal** is
+# still unbuilt, and now for a measured reason rather than for lack of a turn: a
+# run ends failed only under an attempt failure code whose value list is a closed
+# store contract, mirrored in the published schema shapes, the migration ladder,
+# the wire and the frontend. Writing a refusal under either existing code would
+# say a schema refused what no schema saw, or that a process died that exited
+# cleanly, so the door waits for a store hop of its own. The V1 merge node and the
+# `binding_constraint` the operator ruled on 19.08. are a further, thinner cut on
+# existing machinery. The constraint sentences below claim that cut.
 #
 # Six sentences of #25 therefore have no proof of any kind here and are named
 # rather than quietly dropped:
@@ -110,3 +116,39 @@ text = "A started run whose document declares a loop runs the loop's body again 
 [[sentence]]
 id = "every-round-of-a-loop-is-its-own-durable-execution"
 text = "Every round of every looped node is its own node execution: its own deterministic identity, its own durable request, receipt, produced value and durable workflow, and its own event in the chain the terminal hash recomputes over — while the first round of a node keeps byte-for-byte the identity it had before any loop existed."
+
+[[sentence]]
+id = "a-loop-may-declare-the-verdict-that-sends-it-round-again"
+text = "A declared loop may name the node whose verdict decides its continuation and the verdict that sends it round again, and the parsed document reads both back exactly as authored; a loop that declares none steers nothing and repeats until its bound."
+
+[[sentence]]
+id = "a-verdict-the-loop-could-not-read-is-refused-by-name"
+text = "A loop's verdict condition is refused by name before anything is stored when it reads a node other than the one whose completion closes the round, when that node's one declared output does not pin the published verdict contract, or when the verdict it names is outside the closed vocabulary."
+
+[[sentence]]
+id = "a-declared-verdict-ends-a-loop-before-its-bound"
+text = "A started run whose loop declares a verdict ends that loop in the round whose own answer says so — every earlier round having run in full and every later one leaving no receipt, value or attempt behind — while a verdict that keeps asking for another round still ends at the declared bound."
+
+[[sentence]]
+id = "the-continuation-a-verdict-steers-is-read-from-what-the-round-kept"
+text = "The continuation a verdict steers is decided from the value that round durably kept, so a driver recovering after the round succeeded reaches the same edge; a loop a verdict steers is never continued without one."
+
+[[sentence]]
+id = "the-verdict-vocabulary-and-its-published-contract-are-one-owner"
+text = "The verdict vocabulary and the published contract an answer carrying a verdict is judged by are one owner: every verdict this product owns is admitted by that contract, and bytes it does not admit never reach an edge."
+
+[[sentence]]
+id = "a-node-may-declare-it-must-not-share-another-nodes-binding"
+text = "An agent node may declare binding_constraint.distinct_from naming another agent node of a different role, and the parsed document reads that declaration back exactly as authored; a node that declares none is unchecked."
+
+[[sentence]]
+id = "a-distinct-from-the-document-cannot-honour-is-refused-by-name"
+text = "A distinct_from that names no declared node, this node, a node without an agent binding, or a node that shares this role is refused by name before the document is stored, published or started."
+
+[[sentence]]
+id = "the-same-occupation-is-refused-before-any-process"
+text = "A start whose distinct_from pair resolves to the same agent configuration revision is refused by name before any run row or process exists, and the refusal names both nodes."
+
+[[sentence]]
+id = "different-occupations-start-and-an-undeclared-constraint-is-silent"
+text = "A start whose distinct_from pair resolves to different agent configuration revisions creates the run; a document that declares no constraint starts even when two nodes share one occupation."

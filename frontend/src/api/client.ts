@@ -545,7 +545,9 @@ const runV3Schema = z
     current_node_id: z.string().min(1),
     node_rail: z.array(nodeRailEntrySchema).min(1),
     terminal_hash: sha256.nullable(),
-    latest_event_cursor: eventCursor.nullable()
+    latest_event_cursor: eventCursor.nullable(),
+    started_at: z.string().nullable().optional(),
+    ended_at: z.string().nullable().optional()
   })
   .strict();
 
@@ -589,7 +591,9 @@ export const nodeDetailSchema = z
     job_hash: sha256.nullable(),
     answer: nodeAnswerSchema.nullable(),
     provenance: nodeProvenanceSchema.nullable(),
-    refusal: z.string().nullable()
+    refusal: z.string().nullable(),
+    started_at: z.string().nullable().optional(),
+    ended_at: z.string().nullable().optional()
   })
   .strict();
 
@@ -809,6 +813,7 @@ export const problemDefinitions = {
   "agent-configuration-revision-collision": { status: 409, title: "Agent configuration revision collision" },
   "agent-configuration-revision-not-found": { status: 404, title: "Agent configuration revision not found" },
   "invalid-agent-bindings": { status: 422, title: "Invalid agent bindings" },
+  "binding-constraint-refused": { status: 422, title: "Binding constraint refused" },
   "invalid-agent-attempt-id": { status: 400, title: "Invalid agent attempt id" },
   "agent-attempt-not-found": { status: 404, title: "Agent attempt not found" },
   "agent-attempt-not-current": { status: 409, title: "Agent attempt is not current" },
@@ -888,6 +893,7 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant("agent-configuration-revision-collision", problemDefinitions["agent-configuration-revision-collision"]),
   problemVariant("agent-configuration-revision-not-found", problemDefinitions["agent-configuration-revision-not-found"]),
   problemVariant("invalid-agent-bindings", problemDefinitions["invalid-agent-bindings"]),
+  problemVariant("binding-constraint-refused", problemDefinitions["binding-constraint-refused"]),
   problemVariant("invalid-agent-attempt-id", problemDefinitions["invalid-agent-attempt-id"]),
   problemVariant("agent-attempt-not-found", problemDefinitions["agent-attempt-not-found"]),
   problemVariant("agent-attempt-not-current", problemDefinitions["agent-attempt-not-current"]),

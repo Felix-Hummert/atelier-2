@@ -18,6 +18,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId
+from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 
 
@@ -111,6 +112,8 @@ class RunProjection:
     graph: AnyWorkflowDocument
     reconciliation: WaitingReconciliationProjection | None
     agent_attempts: tuple[AgentAttemptProjection, ...] = ()
+    started_at: RecordedAt | None = None
+    ended_at: RecordedAt | None = None
 
     @property
     def current_agent_attempt(self) -> AgentAttemptProjection | None:
@@ -140,10 +143,9 @@ class NodeAnswer:
 class NodeProvenance:
     """Which agent, under which configuration, produced a node's answer.
 
-    Every field is read from the receipt the attempt wrote. What is deliberately
-    absent is what the receipt does not hold: this product records no usage and
-    no duration for an attempt, so a node detail can prove what ran and what came
-    out, and cannot say what it cost or how long it took.
+    Every field is read from the receipt the attempt wrote. Usage is still
+    absent: no receipt holds cost. Duration is recorded beside the attempt, not
+    on this receipt.
     """
 
     role: str
@@ -182,3 +184,5 @@ class NodeDetail:
     answer: NodeAnswer | None
     provenance: NodeProvenance | None
     refusal: str | None
+    started_at: RecordedAt | None = None
+    ended_at: RecordedAt | None = None

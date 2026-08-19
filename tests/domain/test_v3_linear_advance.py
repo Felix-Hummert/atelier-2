@@ -8,6 +8,7 @@ from atelier2.adapters.yaml_workflows import (
     parse_workflow_document,
 )
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
+from atelier2.contracts.verdicts import VERDICT_ANSWER_SCHEMA, Verdict
 from atelier2.contracts.workflows import (
     RunCompletes,
     RunContinues,
@@ -15,6 +16,7 @@ from atelier2.contracts.workflows import (
 )
 from atelier2.contracts.workflows_v3 import (
     BranchingAdvanceUnsupported,
+    LoopVerdictNotRead,
     WorkflowGraphV3,
 )
 
@@ -107,6 +109,36 @@ _LOOPED_LINE = (
   - id: until_reviewed
     body: [implement, review]
     maximum_rounds: 3
+"""
+)
+
+_VERDICT_OUTPUT = f"""    outputs:
+      - name: verdict
+        schema:
+          ref: node-verdict
+          revision: "{VERDICT_ANSWER_SCHEMA.revision_hash.value}"
+""".encode()
+"""The output a node must declare to have its answer read as a verdict.
+
+Taken from the contract rather than written out, because what a document has to
+pin is the product's decision; a copy here would survive that decision moving.
+"""
+
+_VERDICT_STEERED_LOOP = (
+    _ONE_NODE
+    + b"""  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: Judge the first thing.
+    depends_on: [implement]
+"""
+    + _VERDICT_OUTPUT
+    + b"""loops:
+  - id: until_reviewed
+    body: [implement, review]
+    maximum_rounds: 3
+    repeat_while: {node: review, verdict: revise}
 """
 )
 
@@ -237,11 +269,53 @@ def test_inside_a_round_the_advance_is_the_line_it_always_was() -> None:
 
 
 @pytest.mark.proves("a-declared-loop-runs-its-rounds-and-ends-at-its-bound")
-def test_the_declared_bound_is_the_only_way_out_of_a_loop_this_build_has() -> None:
-    """No result ends it early: the round count is what the run answers to."""
+def test_a_loop_that_declares_no_verdict_ends_at_its_bound_and_nowhere_else() -> None:
+    """Nothing this round produced is asked: the round count is the whole rule."""
     graph = _graph(_LOOPED_LINE)
 
     assert completion_after_node(graph, "review", 3) == RunCompletes()
+
+
+@pytest.mark.proves("a-declared-verdict-ends-a-loop-before-its-bound")
+def test_the_declared_verdict_sends_the_loop_round_again() -> None:
+    graph = _graph(_VERDICT_STEERED_LOOP)
+
+    assert completion_after_node(graph, "review", 1, Verdict.REVISE) == RunContinues(
+        "implement", 2
+    )
+
+
+@pytest.mark.proves("a-declared-verdict-ends-a-loop-before-its-bound")
+def test_any_other_verdict_leaves_the_loop_with_rounds_to_spare() -> None:
+    """The early exit is the point: two rounds are left, and none of them runs."""
+    graph = _graph(_VERDICT_STEERED_LOOP)
+
+    assert completion_after_node(graph, "review", 1, Verdict.ACCEPTED) == RunCompletes()
+
+
+@pytest.mark.proves("a-declared-verdict-ends-a-loop-before-its-bound")
+def test_the_declared_bound_still_ends_a_loop_whose_verdict_keeps_asking() -> None:
+    """A verdict is the earlier exit, never a way past the bound."""
+    graph = _graph(_VERDICT_STEERED_LOOP)
+
+    assert completion_after_node(graph, "review", 3, Verdict.REVISE) == RunCompletes()
+
+
+@pytest.mark.proves(
+    "the-continuation-a-verdict-steers-is-read-from-what-the-round-kept"
+)
+def test_a_loop_a_verdict_steers_is_never_continued_without_one() -> None:
+    """Only the node whose answer decides is asked for one, and it is asked."""
+    graph = _graph(_VERDICT_STEERED_LOOP)
+
+    assert completion_after_node(graph, "implement", 2) == RunContinues("review", 2)
+    with pytest.raises(LoopVerdictNotRead) as refused:
+        completion_after_node(graph, "review", 1)
+
+    assert (refused.value.loop_id, refused.value.node_id) == (
+        "until_reviewed",
+        "review",
+    )
 
 
 @pytest.mark.proves("a-declared-loop-runs-its-rounds-and-ends-at-its-bound")

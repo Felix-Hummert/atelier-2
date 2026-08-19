@@ -98,6 +98,7 @@ from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
     AuthoredAgentBinding,
     AuthoredOrder,
+    BindingConstraintRefused,
     InvalidAgentBindings,
     RevisionMissing,
     RunCreated,
@@ -191,6 +192,14 @@ async def start_run_route(
             )
         case InvalidAgentBindings():
             raise ApiProblem("invalid-agent-bindings")
+        case BindingConstraintRefused(node, distinct_from):
+            raise ApiProblem(
+                "binding-constraint-refused",
+                detail=(
+                    f"node {node!r} declares distinct_from {distinct_from!r} "
+                    "and both resolved to the same binding"
+                ),
+            )
         case AgentConfigurationRevisionMissing():
             raise ApiProblem("agent-configuration-revision-not-found")
         case StartAgentExecutorBindingUnavailable():

@@ -231,6 +231,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "unsupported-media-type",
         "workflow-revision-not-found",
         "invalid-agent-bindings",
+        "binding-constraint-refused",
         "agent-configuration-revision-not-found",
         "agent-executor-binding-unavailable",
         "run-identity-conflict",

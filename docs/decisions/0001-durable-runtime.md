@@ -30,8 +30,8 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V21 only in a truly empty canonical store and reopens
-only an exact V21 product schema. Every schema from V9 up to the one just below
+The runtime creates schema V22 only in a truly empty canonical store and reopens
+only an exact V22 product schema. Every schema from V9 up to the one just below
 current remains a published predecessor object -- `schema.py` names each as its
 own `V*_SCHEMA_HANDOFF` constant -- and none of them are opened or migrated by
 runtime. An exact store on any source version `schema.py`'s
@@ -39,9 +39,9 @@ runtime. An exact store on any source version `schema.py`'s
 through the offline `atelier2 migrate` command, one published step at a time;
 older published predecessors stay refused by name. Older, future,
 malformed, or nonempty unowned stores are rejected without mutation. There is no
-runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 21 with
+runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 22 with
 product-schema fingerprint
-`6c4705f2960d1669a596ae8f3c857dd0ac15c4c94b71b4bb5998d1bac672cefe`.
+`72aa8f76942197b704f07c156adbb1e46c3b069ce16a53c6d95a067827966387`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed

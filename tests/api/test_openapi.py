@@ -240,6 +240,10 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     may declare, so a caller can bind a node to an executor whose invocation
     carries tools. Refreshing the artefact alongside a refactor is what this test
     still refuses.
+    it. This head adds the verdict a declared loop may repeat on, with the closed
+    vocabulary it is written in, so a publisher reads the early way out of a loop
+    from the door as well as the bounded way back.
+    Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()

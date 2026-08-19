@@ -71,6 +71,14 @@ class DurableAgentExecutorCapabilityUnavailable:
     pass
 
 
+@dataclass(frozen=True)
+class DurableBindingConstraintRefused:
+    """The two nodes named by a `distinct_from` resolved to the same occupation."""
+
+    node: str
+    distinct_from: str
+
+
 type DurablePublishedRunResult = (
     DurableRunCreated
     | DurableRunExisting
@@ -81,6 +89,7 @@ type DurablePublishedRunResult = (
     | DurableAgentConfigurationRevisionMissing
     | DurableAgentExecutorBindingUnavailable
     | DurableAgentExecutorCapabilityUnavailable
+    | DurableBindingConstraintRefused
     | DurableWriteUnavailable
     | DurableStateCorrupt
     | DurableV3StartInputRefused

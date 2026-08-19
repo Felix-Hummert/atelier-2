@@ -26,6 +26,7 @@ from atelier2.adapters.dbos.schema import (
     agent_receipts,
     effect_intents,
     effect_receipts,
+    node_artifacts_v3,
     published_revisions,
     run_events,
     run_inputs_v3,
@@ -258,6 +259,27 @@ def load_node_outputs(
         )
         delivered.append(DeliveredOutput(source.node, source.output, payload))
     return tuple(delivered)
+
+
+def load_kept_value(session: Any, node_execution_id: NodeExecutionId) -> bytes:
+    """The exact value one finished node execution kept, as its artifact holds it.
+
+    A driver that recovers after a round has already succeeded has to reach the
+    same continuation that success reached, and a continuation a verdict steers
+    is only recomputable from the answer that round gave. The artifact is where
+    that answer durably lives, so it is read back rather than re-derived from
+    anything that could have moved since.
+    """
+    value = session.scalar(
+        sa.select(node_artifacts_v3.c.value).where(
+            node_artifacts_v3.c.node_execution_id == node_execution_id.value
+        )
+    )
+    if value is None:
+        raise RunTransitionConflict(
+            "a succeeded node execution kept no value its loop can read"
+        )
+    return bytes(value)
 
 
 def refuse_an_output_its_schema_does_not_admit(

@@ -1,0 +1,19 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/350"
+
+# Measurement (claim 5330095980): durable events, runs, and attempts were not
+# stamped. Deriving start from the first event would name a typical
+# AGENT_COMPLETED as the start. This head records UTC at the owners and shows
+# age on the three surfaces. Predecessor rows stay NULL. Usage/cost stays #333.
+
+[[sentence]]
+id = "a-run-carries-when-it-started-and-ended"
+text = "A started run answers when it started. A finished run also answers when it ended. The store keeps those instants in UTC; a surface that asks how long shows age, and the exact local stamp sits behind the info affordance."
+
+[[sentence]]
+id = "a-node-carries-how-long-it-ran"
+text = "Opening a node that has run answers when that execution started, when it ended, and how long it took. A node that has not started yet has no invented time. Usage and cost stay unrecorded."
+
+[[sentence]]
+id = "the-run-list-carries-when"
+text = "The project run list shows when each run started, or how long ago it ended, so the project card can later say when the last landing was."
