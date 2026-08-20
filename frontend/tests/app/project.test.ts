@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -62,9 +62,12 @@ function listedV3Run(changes: Partial<RunV3> = {}): RunV3 {
   };
 }
 
-function listedV3Revision(name = "Two agents in a line"): WorkflowRevisionDetail {
+function listedV3Revision(
+  name = "Two agents in a line",
+  hash = revisionHash
+): WorkflowRevisionDetail {
   return {
-    workflow_revision_hash: revisionHash,
+    workflow_revision_hash: hash,
     document_base64: "YQ==",
     graph: {
       workflow_format_version: 3,
@@ -138,16 +141,22 @@ describe("the project answers what is happening here", () => {
     expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`);
   });
 
-  it("keeps confirmed runs visible when a refresh fails, and says what failed", async () => {
-    const listRuns = vi.fn().mockResolvedValue({ items: [startedRun()], next_after: null });
+  it("keeps confirmed runs visible when a refresh fails, without exposing transport text", async () => {
+    const listRuns = vi
+      .fn()
+      .mockResolvedValue({ items: [startedRun()], next_after: null });
     openProject([], { listRuns });
     await screen.findByRole("region", { name: "Running" });
 
-    listRuns.mockRejectedValueOnce(new Error("offline"));
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    listRuns.mockRejectedValueOnce(new Error("private transport detail"));
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh project runs" }));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("offline");
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Project runs unavailable"
+    );
+    expect(screen.queryByText(/private transport detail|Failed to fetch/)).toBeNull();
     expect(screen.getByRole("region", { name: "Running" }).isConnected).toBe(true);
+    expect(screen.getAllByRole("button", { name: "Retry project runs" })).toHaveLength(1);
   });
 
   it("says it is still looking instead of showing a project with nothing in it", async () => {
@@ -155,6 +164,98 @@ describe("the project answers what is happening here", () => {
 
     expect((await screen.findByText("Looking…")).isConnected).toBe(true);
     expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
+  });
+
+  it("repeats the same unavailable Project read until success", async () => {
+    const listRuns = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("first private detail"))
+      .mockRejectedValueOnce(new Error("second private detail"))
+      .mockResolvedValueOnce({ items: [startedRun()], next_after: null });
+    openProject([], { listRuns });
+
+    await screen.findByText("Project runs unavailable");
+    const retry = screen.getByRole("button", { name: "Retry project runs" });
+    await fireEvent.click(retry);
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/private detail/)).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Retry project runs" })).toHaveLength(1);
+
+    await fireEvent.click(retry);
+
+    expect((await screen.findByRole("region", { name: "Running" })).isConnected).toBe(true);
+    expect(listRuns).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("button", { name: "Refresh project runs" }).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/project");
+  });
+
+  it("does not confirm a partial page as the new Project truth", async () => {
+    const initial = startedRun({ run_id: "confirmed" });
+    const partial = startedRun({
+      public_run_reference: "run1.cGFydGlhbA",
+      run_id: "partial"
+    });
+    const listRuns = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [initial], next_after: null })
+      .mockResolvedValueOnce({ items: [partial], next_after: "more" })
+      .mockRejectedValueOnce(new Error("private later-page detail"))
+      .mockResolvedValueOnce({ items: [partial], next_after: null });
+    openProject([], { listRuns });
+    await screen.findByText("confirmed");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh project runs" }));
+
+    await screen.findByText("Project runs incomplete");
+    expect(screen.getByText("confirmed").isConnected).toBe(true);
+    expect(screen.queryByText("partial")).toBeNull();
+    expect(screen.queryByText(/private later-page detail/)).toBeNull();
+    expect(listRuns).toHaveBeenNthCalledWith(3, "more");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
+
+    expect((await screen.findByText("partial")).isConnected).toBe(true);
+    expect(screen.queryByText("confirmed")).toBeNull();
+  });
+
+  it("keeps runs and workflow names atomic across a name failure and later Retry", async () => {
+    const nextHash = "d".repeat(64);
+    const confirmedRun = listedV3Run({ run_id: "confirmed run" });
+    const nextRun = listedV3Run({
+      run_id: "new run",
+      public_run_reference: "run1.bmV3",
+      workflow_revision_hash: nextHash,
+      started_at: "2026-08-18T16:00:00Z"
+    });
+    const listRuns = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [confirmedRun], next_after: null })
+      .mockResolvedValue({ items: [confirmedRun, nextRun], next_after: null });
+    let nextNameReads = 0;
+    const getWorkflowRevision = vi.fn(async (hash: string) => {
+      if (hash === nextHash) {
+        nextNameReads += 1;
+        if (nextNameReads === 1) throw new Error("private name detail");
+        return listedV3Revision("New workflow", hash);
+      }
+      return listedV3Revision("Confirmed workflow", hash);
+    });
+    openProject([], { listRuns, getWorkflowRevision });
+    const confirmedRow = await screen.findByRole("link", { name: /confirmed run/ });
+    expect(confirmedRow.textContent).toContain("Confirmed workflow");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh project runs" }));
+
+    await screen.findByText("Project runs unavailable");
+    expect(confirmedRow.textContent).toContain("Confirmed workflow");
+    expect(screen.queryByRole("link", { name: /new run/ })).toBeNull();
+    expect(screen.queryByText(/private name detail/)).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
+
+    const nextRow = await screen.findByRole("link", { name: /new run/ });
+    expect(nextRow.textContent).toContain("New workflow");
+    expect(screen.queryByText("Project runs unavailable")).toBeNull();
   });
 });
 

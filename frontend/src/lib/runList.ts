@@ -41,18 +41,20 @@ export async function workflowNamesOf(
     ...new Set(runs.filter(isRunV3).map((run) => run.workflow_revision_hash))
   ];
   const names = new Map<string, string>();
-  const settled = await Promise.allSettled(
+  const revisions = await Promise.all(
     hashes.map(async (hash) => {
       const revision = await readRevision(hash);
       return { hash, revision };
     })
   );
-  for (const result of settled) {
-    if (result.status !== "fulfilled") continue;
-    const { hash, revision } = result.value;
-    if (revision.graph.workflow_format_version === 3) {
-      names.set(hash, revision.graph.name);
+  for (const { hash, revision } of revisions) {
+    if (revision.workflow_revision_hash !== hash) {
+      throw new Error("a V3 run received a different workflow revision");
     }
+    if (revision.graph.workflow_format_version !== 3) {
+      throw new Error("a V3 run referenced a workflow revision of another format");
+    }
+    names.set(hash, revision.graph.name);
   }
   return names;
 }

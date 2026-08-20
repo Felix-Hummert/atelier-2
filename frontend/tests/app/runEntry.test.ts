@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -43,9 +43,10 @@ describe("mobile run entry", () => {
       `/atelier/runs/${publicReference}`
     );
     listRuns.mockRejectedValueOnce(new Error("offline"));
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh project runs" }));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("offline");
+    expect((await screen.findByRole("alert")).textContent).toContain("Project runs unavailable");
+    expect(screen.queryByText(/offline/i)).toBeNull();
     expect(screen.getByRole("link", { name: /run-draft/i }).isConnected).toBe(true);
   });
 
@@ -55,7 +56,7 @@ describe("mobile run entry", () => {
       props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect((await screen.findByRole("status")).textContent).toBe("Looking…");
+    expect(within(await screen.findByRole("status")).getByText("Looking…").isConnected).toBe(true);
     expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
     expect(screen.queryByRole("listitem")).toBeNull();
   });

@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { isRunV3, type AnyRun, type CockpitApi, type RunPage } from "../api/client";
+  import { isRunV3, type AnyRun, type CockpitApi } from "../api/client";
   import Breadcrumb from "../components/Breadcrumb.svelte";
-  import ProblemNotice from "../components/ProblemNotice.svelte";
+  import ReadState from "../components/ReadState.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
   import {
     beginRead,
     confirmRead,
+    failRead,
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
@@ -20,29 +21,45 @@
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
 
-  let runs: RetainedRead<RunPage, never> = retainedRead<RunPage, never>();
-  let workflowNames: ReadonlyMap<string, string> = new Map();
-  let failureMessage: string | null = null;
+  interface ProjectSnapshot {
+    runs: AnyRun[];
+    workflowNames: ReadonlyMap<string, string>;
+  }
+
+  type ProjectReadFailure =
+    | { kind: "unavailable"; title: string }
+    | { kind: "incomplete"; title: string };
+
+  let project: RetainedRead<ProjectSnapshot, ProjectReadFailure> =
+    retainedRead<ProjectSnapshot, ProjectReadFailure>();
   const now = new Date();
 
   onMount(load);
 
   async function load(): Promise<void> {
-    const begun = beginRead(runs);
-    runs = begun.read;
-    failureMessage = null;
+    const begun = beginRead(project);
+    project = begun.read;
     try {
       const reading = await readEveryRun((after) => cockpitApi.listRuns(after));
-      workflowNames = await workflowNamesOf(reading.runs, (hash) =>
+      if (!reading.complete) {
+        project = failRead(project, begun.generation, {
+          kind: "incomplete",
+          title: "Project runs incomplete"
+        });
+        return;
+      }
+      const workflowNames = await workflowNamesOf(reading.runs, (hash) =>
         cockpitApi.getWorkflowRevision(hash)
       );
-      runs = confirmRead(runs, begun.generation, { items: reading.runs, next_after: null });
-      if (!reading.complete) {
-        failureMessage = `Some of this project could not be read, so what is below is incomplete: ${reading.unreadable}.`;
-      }
-    } catch (error) {
-      failureMessage = error instanceof Error ? error.message : "This project could not be read.";
-      runs = { ...runs, request: { state: "idle" } };
+      project = confirmRead(project, begun.generation, {
+        runs: reading.runs,
+        workflowNames
+      });
+    } catch {
+      project = failRead(project, begun.generation, {
+        kind: "unavailable",
+        title: "Project runs unavailable"
+      });
     }
   }
 
@@ -74,7 +91,8 @@
     };
   }
 
-  $: items = newestActivityFirst(runs.confirmed?.items ?? []);
+  $: items = newestActivityFirst(project.confirmed?.runs ?? []);
+  $: workflowNames = project.confirmed?.workflowNames ?? new Map<string, string>();
   $: groups = standingOrder
     .map((standing) => ({ standing, runs: runsStanding(items, standing) }))
     .filter((group) => group.runs.length > 0);
@@ -90,13 +108,7 @@
     </div>
   </header>
 
-  <div class="toolbar">
-    <button class="quiet" type="button" onclick={load}>Refresh</button>
-  </div>
-
-  {#if failureMessage !== null}
-    <ProblemNotice message={failureMessage} />
-  {/if}
+  <ReadState read={project} label="project runs" onRetry={() => { void load(); }} />
 
   <section class="queue" aria-labelledby="queue-title">
     <h2 id="queue-title">Queue</h2>
@@ -104,7 +116,7 @@
     <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>Start a run</a>
   </section>
 
-  {#if runs.confirmed !== null}
+  {#if project.confirmed !== null}
     {#if groups.length === 0}
       <p class="muted">No runs here yet.</p>
     {:else}
@@ -140,7 +152,5 @@
         </ul>
       </section>
     {/each}
-  {:else if runs.request.state === "loading"}
-    <p class="status" role="status">Looking…</p>
   {/if}
 </section>
