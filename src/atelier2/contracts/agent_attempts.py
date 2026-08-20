@@ -201,6 +201,13 @@ class RunnerOutputStream(StrEnum):
     STANDARD_ERROR = "STANDARD_ERROR"
 
 
+class RunnerCancellationObservation(StrEnum):
+    NEVER_LAUNCHED = "NEVER_LAUNCHED"
+    EXITED_BEFORE_SIGNAL = "EXITED_BEFORE_SIGNAL"
+    REAPED_AFTER_TERM = "REAPED_AFTER_TERM"
+    REAPED_AFTER_KILL = "REAPED_AFTER_KILL"
+
+
 @dataclass(frozen=True)
 class RunnerProviderResult:
     """One provider answer already decoded into the durable result contract."""
@@ -248,14 +255,16 @@ class RunnerProviderFailure:
 class RunnerOutputLimitExceeded:
     """Which process streams crossed their separately enforced collection bounds."""
 
-    streams: frozenset[RunnerOutputStream]
+    exceeded_streams: frozenset[RunnerOutputStream]
 
     def __post_init__(self) -> None:
-        if type(self.streams) is not frozenset:
+        if type(self.exceeded_streams) is not frozenset:
             raise TypeError("runner output-limit streams must be a frozen set")
-        if not self.streams:
+        if not self.exceeded_streams:
             raise ValueError("runner output-limit streams must be nonempty")
-        if not all(isinstance(stream, RunnerOutputStream) for stream in self.streams):
+        if not all(
+            isinstance(stream, RunnerOutputStream) for stream in self.exceeded_streams
+        ):
             raise TypeError(
                 "runner output-limit streams must use the closed stream type"
             )
@@ -266,22 +275,12 @@ class RunnerProcessBoundaryFailure:
     """The process boundary failed without a provider ending to report."""
 
 
-_RUNNER_PHYSICAL_CANCELLATION_OBSERVATIONS = frozenset(
-    {
-        AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
-        AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
-        AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
-        AgentAttemptCancellationDisposition.REAPED_AFTER_KILL,
-    }
-)
-
-
 @dataclass(frozen=True)
 class RunnerCancellation:
     """The physical observation made while carrying out one cancellation command."""
 
     command_id: str
-    observation: AgentAttemptCancellationDisposition
+    observation: RunnerCancellationObservation
 
     def __post_init__(self) -> None:
         if (
@@ -292,10 +291,8 @@ class RunnerCancellation:
                 "runner cancellation command id must contain "
                 f"1..{MAXIMUM_AGENT_FIELD_CHARACTERS} characters"
             )
-        if not isinstance(self.observation, AgentAttemptCancellationDisposition):
+        if not isinstance(self.observation, RunnerCancellationObservation):
             raise TypeError("runner cancellation requires a typed physical observation")
-        if self.observation not in _RUNNER_PHYSICAL_CANCELLATION_OBSERVATIONS:
-            raise ValueError("runner cancellation requires a physical observation")
 
 
 @dataclass(frozen=True)

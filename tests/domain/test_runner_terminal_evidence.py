@@ -10,6 +10,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     ProcessExitSignature,
     RunnerCancellation,
+    RunnerCancellationObservation,
     RunnerInvocationLost,
     RunnerOutputLimitExceeded,
     RunnerOutputStream,
@@ -119,7 +120,10 @@ def test_runner_provider_failure_alone_owns_the_full_stderr_evidence_bound() -> 
 def test_output_limit_evidence_names_a_nonempty_closed_stream_set(
     streams: frozenset[RunnerOutputStream],
 ) -> None:
-    assert RunnerOutputLimitExceeded(streams).streams == streams
+    evidence = RunnerOutputLimitExceeded(streams)
+
+    assert tuple(field.name for field in fields(evidence)) == ("exceeded_streams",)
+    assert evidence.exceeded_streams == streams
 
 
 @pytest.mark.parametrize(
@@ -140,14 +144,14 @@ def test_output_limit_evidence_refuses_empty_unfrozen_or_foreign_stream_sets(
 @pytest.mark.parametrize(
     "observation",
     (
-        AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
-        AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
-        AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
-        AgentAttemptCancellationDisposition.REAPED_AFTER_KILL,
+        RunnerCancellationObservation.NEVER_LAUNCHED,
+        RunnerCancellationObservation.EXITED_BEFORE_SIGNAL,
+        RunnerCancellationObservation.REAPED_AFTER_TERM,
+        RunnerCancellationObservation.REAPED_AFTER_KILL,
     ),
 )
 def test_runner_cancellation_accepts_only_physical_observations(
-    observation: AgentAttemptCancellationDisposition,
+    observation: RunnerCancellationObservation,
 ) -> None:
     evidence = RunnerCancellation("cancel-17", observation)
 
@@ -155,34 +159,61 @@ def test_runner_cancellation_accepts_only_physical_observations(
     assert evidence.observation is observation
 
 
-def test_runner_cancellation_refuses_nonphysical_or_untyped_observations() -> None:
-    with pytest.raises(ValueError, match="physical observation"):
-        RunnerCancellation(
-            "cancel-17",
-            AgentAttemptCancellationDisposition.OWNER_LOST_AFTER_PARENT_DEATH,
-        )
+def test_runner_cancellation_observation_is_the_runner_owned_closed_set() -> None:
+    assert set(RunnerCancellationObservation) == {
+        RunnerCancellationObservation.NEVER_LAUNCHED,
+        RunnerCancellationObservation.EXITED_BEFORE_SIGNAL,
+        RunnerCancellationObservation.REAPED_AFTER_TERM,
+        RunnerCancellationObservation.REAPED_AFTER_KILL,
+    }
+
+
+@pytest.mark.parametrize(
+    "core_observation",
+    (
+        AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+        AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
+        AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
+        AgentAttemptCancellationDisposition.REAPED_AFTER_KILL,
+    ),
+)
+def test_runner_cancellation_refuses_equal_valued_core_observations(
+    core_observation: AgentAttemptCancellationDisposition,
+) -> None:
+    assert core_observation.value in {
+        observation.value for observation in RunnerCancellationObservation
+    }
+
     with pytest.raises(TypeError, match="typed physical observation"):
         RunnerCancellation(
             "cancel-17",
-            cast(AgentAttemptCancellationDisposition, "NEVER_LAUNCHED"),
+            cast(RunnerCancellationObservation, core_observation),
+        )
+
+
+def test_runner_cancellation_refuses_untyped_observations() -> None:
+    with pytest.raises(TypeError, match="typed physical observation"):
+        RunnerCancellation(
+            "cancel-17",
+            cast(RunnerCancellationObservation, "NEVER_LAUNCHED"),
         )
 
 
 def test_runner_cancellation_command_ends_at_the_existing_agent_field_bound() -> None:
     RunnerCancellation(
         "x" * MAXIMUM_AGENT_FIELD_CHARACTERS,
-        AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+        RunnerCancellationObservation.NEVER_LAUNCHED,
     )
 
     with pytest.raises(ValueError, match=str(MAXIMUM_AGENT_FIELD_CHARACTERS)):
         RunnerCancellation(
             "x" * (MAXIMUM_AGENT_FIELD_CHARACTERS + 1),
-            AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            RunnerCancellationObservation.NEVER_LAUNCHED,
         )
     with pytest.raises(ValueError, match=str(MAXIMUM_AGENT_FIELD_CHARACTERS)):
         RunnerCancellation(
             "",
-            AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            RunnerCancellationObservation.NEVER_LAUNCHED,
         )
 
 
