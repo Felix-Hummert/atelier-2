@@ -30,8 +30,8 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V25 only in a truly empty canonical store and reopens
-only an exact V25 product schema. Every schema from V9 up to the one just below
+The runtime creates schema V26 only in a truly empty canonical store and reopens
+only an exact V26 product schema. Every schema from V9 up to the one just below
 current remains a published predecessor object -- `schema.py` names each as its
 own `V*_SCHEMA_HANDOFF` constant -- and none of them are opened or migrated by
 runtime. An exact store on any source version `schema.py`'s
@@ -39,9 +39,9 @@ runtime. An exact store on any source version `schema.py`'s
 through the offline `atelier2 migrate` command, one published step at a time;
 older published predecessors stay refused by name. Older, future,
 malformed, or nonempty unowned stores are rejected without mutation. There is no
-runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 25 with
+runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 26 with
 product-schema fingerprint
-`91d8889ce6239855c894b89ab658188d9b13927dedb1cc905dacdc151a485842`.
+`0af3ca8bbbbe06a56c56bb0988de384fde2a807b1e409152a02e1e226e917ab8`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -170,6 +170,7 @@ provider contract.
 | V20 the round a loop turns | A fresh exact V20 store gives the round a durable home on the run and on every event and agent receipt it writes, keys a `node-execution-request/v3` by the execution rather than by the request it repeats, and drops the agent receipt key that said one receipt per node per run -- a sentence that stopped being true when a declared loop could run a node twice. Every round of every looped node is therefore its own request, receipt, artifact, agent receipt and durable workflow, and the first round of a node keeps byte for byte the identity it had before any loop existed. A populated exact V19 store migrates through four transactional table rebuilds that keep every stored row and read each as round one; a parked-name collision refuses by name and rolls back every earlier step; V19 joins the refused predecessors at runtime. Each rebuild materialises the shape of its own target version rather than the current declaration, so a hop that touches a table an earlier hop already rebuilt no longer breaks the chain in the middle. |
 | V24 named project-verification failure | A fresh exact V24 store admits `PROJECT_VERIFICATION_FAILED` beside the three existing attempt failure codes, so a granted verification that exits nonzero ends its attempt under its own name instead of writing a success. A populated exact V23 store migrates through one transactional `agent_attempts` rebuild that keeps every stored row; stored FAILED rows already carry one of the three old codes and nothing is reinterpreted; V23 joins the refused predecessors at runtime. |
 | V25 host configuration channel | A fresh exact V25 store adds append-only `host_project_root_revisions`, the first entry of the host's live-versioned configuration channel: `project id → root path`. The runtime reads that mapping from the channel. Compose and the runtime refuse a bad project id, and a project with no configured root, as `project-unknown`; the channel's own missing row remains `project-root-missing`; an unreadable channel is `host-configuration-unreadable`. A populated exact V24 store migrates by adding the empty table; V24 joins the refused predecessors at runtime. The HTTP door that would write or read the channel is not this hop. |
+| V26 occupancy on the host channel | A fresh exact V26 store adds append-only `host_occupancy_revisions` and `host_occupancy_bindings`, the recommended occupancy per workflow lineage: `project id + CatalogLineageId → role → agent configuration hash`, at most `MAXIMUM_OCCUPANCY_BINDINGS` roles. GET and PUT `/atelier/api/v1/projects/{public_project_reference}/occupancy/{lineage_id}` write and read the latest revision for the first project; the path carries a `project1.` public reference so a configured id such as `team/red` is addressable. Both doors require an existing workflow lineage through one application-level catalog check; a well-formed unknown lineage is `catalog-lineage-missing`, and PUT leaves both occupancy tables unchanged. Same bytes at the same key are idempotent; a different payload at the same key is `occupancy-revision-conflict`; a missing recommendation for an existing lineage is `occupancy-missing`; an unknown project is `project-unknown`; a malformed public reference is `invalid-public-project-reference`; a malformed lineage id is `catalog-lineage-missing`; stored fields that disagree with their hash are `durable-state-corrupt`. A populated exact V25 store migrates by adding the empty tables; a name already holding the second occupancy object refuses the hop and rolls back the first table and the version CAS; V25 joins the refused predecessors at runtime. The picker does not read this recommendation yet. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |
 | V2 cancellation and replacement | Real subprocesses prove natural exit, TERM, KILL escalation, reaping, parent-death cgroup recovery with and without a surviving witness, durable redrive, exact HTTP retry semantics, and one distinct ordinal-2 replacement with no ordinal 3. |

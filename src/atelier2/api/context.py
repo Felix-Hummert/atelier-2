@@ -13,6 +13,10 @@ from atelier2.application.admit_catalog_member import (
 )
 from atelier2.application.answer_wait import AnswerWaitResult
 from atelier2.application.cancel_agent_attempt import CancelAgentAttemptResult
+from atelier2.application.occupancy import (
+    GetOccupancyResult,
+    PublishOccupancyUseCaseResult,
+)
 from atelier2.application.prepare_run_events import PrepareRunEventsResult
 from atelier2.application.publish_adapter_operation_revision import (
     PublishAdapterOperationRevisionResult,
@@ -78,6 +82,7 @@ from atelier2.ports.durable_runs import (
     TransactionalWaitAnswerer,
 )
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
+from atelier2.ports.host_configuration import HostConfigurationChannel
 from atelier2.ports.published_revisions import (
     CatalogAdmissions,
     CatalogResolver,
@@ -112,6 +117,7 @@ class ApiPorts:
     catalog_admissions: CatalogAdmissions
     published_revision_registry: PublishedRevisionRegistry
     artifact_publisher: ArtifactPublisher
+    host_configuration_channel: HostConfigurationChannel
 
 
 @dataclass(frozen=True)
@@ -204,6 +210,11 @@ class ApiUseCases:
             CatalogActivatedAt,
         ],
         AdmitMemberResult,
+    ]
+    get_occupancy_revision: Callable[[str, str], GetOccupancyResult]
+    publish_occupancy_revision: Callable[
+        [str, str, int, tuple[tuple[str, str], ...]],
+        PublishOccupancyUseCaseResult,
     ]
 
 

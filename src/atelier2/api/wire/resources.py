@@ -19,7 +19,9 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
+    MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
+    PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
@@ -34,6 +36,10 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+)
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_OCCUPANCY_BINDINGS,
+    MAXIMUM_PROJECT_ID_CHARACTERS,
 )
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 
@@ -146,6 +152,25 @@ class AuthProfileRevisionPageResource(ApiModel):
 
     items: tuple[AuthProfileRevisionResource, ...]
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
+
+
+class OccupancyBindingResource(ApiModel):
+    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class OccupancyRevisionResource(ApiModel):
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    public_project_reference: str = Field(
+        pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    )
+    lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    occupancy_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    bindings: tuple[OccupancyBindingResource, ...] = Field(
+        max_length=MAXIMUM_OCCUPANCY_BINDINGS, strict=False
+    )
 
 
 class AgentReceiptResource(ApiModel):

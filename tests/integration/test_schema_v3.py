@@ -134,6 +134,17 @@ def test_v2_tables_have_exact_secret_free_columns(tmp_path: Path) -> None:
             "revision_number",
             "root_path",
         ),
+        "host_occupancy_revisions": (
+            "revision_hash",
+            "project_id",
+            "lineage_id",
+            "revision_number",
+        ),
+        "host_occupancy_bindings": (
+            "revision_hash",
+            "role",
+            "agent_configuration_revision_hash",
+        ),
         "agent_configuration_revisions": (
             "revision_hash",
             "model",

@@ -30,6 +30,7 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
+    MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
 )
 from atelier2.api.wire import events, requests, resources
@@ -41,6 +42,10 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
+)
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_OCCUPANCY_BINDINGS,
+    MAXIMUM_PROJECT_ID_CHARACTERS,
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
@@ -123,6 +128,13 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "StartRunRequestResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "InlineOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "OccupancyBindingResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "OccupancyRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "OccupancyRevisionResource.public_project_reference": (
+        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
+    ),
+    "OccupancyRevisionResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
+    "PutOccupancyRevisionRequestResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
     "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
 }

@@ -6,6 +6,11 @@ import re
 from dataclasses import dataclass
 
 from atelier2.contracts.hashing import SHA256_HEX_DIGEST
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_PROJECT_ID_CHARACTERS,
+    ProjectId,
+    ProjectUnknown,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 MAX_SIGNED_INT64 = 9_223_372_036_854_775_807
@@ -23,9 +28,12 @@ MAXIMUM_INVALID_FIELD_PATH_CHARACTERS = 256
 MAXIMUM_INVALID_FIELD_REASON_CHARACTERS = 512
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
+CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"
+PUBLIC_PROJECT_REFERENCE_PATTERN = r"^project1\.[A-Za-z0-9_-]+$"
 EVENT_CURSOR_PATTERN = r"^event1\.[A-Za-z0-9_-]+\.[1-9][0-9]*$"
 _PUBLIC_REFERENCE_PREFIX = "run1."
+_PUBLIC_PROJECT_REFERENCE_PREFIX = "project1."
 _EVENT_CURSOR_PREFIX = "event1."
 _UNPADDED_BASE64URL = re.compile(r"[A-Za-z0-9_-]+")
 _POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*")
@@ -33,6 +41,10 @@ _POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*")
 
 class InvalidPublicRunReference(ValueError):
     """A public run reference is malformed or not canonically encoded."""
+
+
+class InvalidPublicProjectReference(ValueError):
+    """A public project reference is malformed or not canonically encoded."""
 
 
 class InvalidEventCursor(ValueError):
@@ -82,6 +94,54 @@ def decode_public_run_reference(reference: str) -> RunId:
     if encode_public_run_reference(run_id) != reference:
         raise InvalidPublicRunReference("public run reference is not canonical")
     return run_id
+
+
+def encode_public_project_reference(project_id: ProjectId) -> str:
+    try:
+        payload = project_id.value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise InvalidPublicProjectReference("project id is not exact UTF-8") from error
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    return _PUBLIC_PROJECT_REFERENCE_PREFIX + encoded
+
+
+# Longest project1. encoding of a UTF-8-encodable ProjectId at the durable
+# character bound. One four-byte scalar is the widest UTF-8 a Python character
+# can occupy, so this is the bound the codec, the occupancy door, and OpenAPI
+# must share.
+MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS = len(
+    encode_public_project_reference(
+        ProjectId("\U00010000" * MAXIMUM_PROJECT_ID_CHARACTERS)
+    )
+)
+
+
+def decode_public_project_reference(reference: str) -> ProjectId:
+    if len(reference) > MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS:
+        raise InvalidPublicProjectReference(
+            "public project reference exceeds its character limit"
+        )
+    if not reference.startswith(_PUBLIC_PROJECT_REFERENCE_PREFIX):
+        raise InvalidPublicProjectReference(
+            "public project reference has the wrong version"
+        )
+    encoded = reference.removeprefix(_PUBLIC_PROJECT_REFERENCE_PREFIX)
+    if _UNPADDED_BASE64URL.fullmatch(encoded) is None:
+        raise InvalidPublicProjectReference(
+            "public project reference is not canonical base64url"
+        )
+    try:
+        payload = base64.b64decode(
+            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+        )
+        project_id = ProjectId(payload.decode("utf-8"))
+    except (binascii.Error, UnicodeDecodeError, ProjectUnknown, ValueError) as error:
+        raise InvalidPublicProjectReference(
+            "public project reference has invalid payload"
+        ) from error
+    if encode_public_project_reference(project_id) != reference:
+        raise InvalidPublicProjectReference("public project reference is not canonical")
+    return project_id
 
 
 def encode_event_cursor(run_id: RunId, sequence: int) -> str:

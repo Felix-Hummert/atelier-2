@@ -13,6 +13,7 @@ from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
 from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -293,6 +294,7 @@ def api_ports(**overrides: object) -> ApiPorts:
         "catalog_admissions": unused,
         "published_revision_registry": unused,
         "artifact_publisher": unused,
+        "host_configuration_channel": unused,
     }
     ports.update(overrides)
     return ApiPorts(**ports)
@@ -452,6 +454,7 @@ def durable_asgi_app(
             catalog_admissions=DbosCatalogStore(runtime.engine),
             published_revision_registry=DbosCatalogStore(runtime.engine),
             artifact_publisher=DbosArtifactStore(runtime.engine),
+            host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
         ),
         limits=api_limits() if limits is None else limits,
         event_poll_backoff=event_poll_backoff()
