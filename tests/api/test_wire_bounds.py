@@ -42,7 +42,10 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
-from atelier2.contracts.host_configuration import MAXIMUM_PROJECT_ID_CHARACTERS
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_OCCUPANCY_BINDINGS,
+    MAXIMUM_PROJECT_ID_CHARACTERS,
+)
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events)
@@ -126,8 +129,8 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "OccupancyBindingResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "OccupancyRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
-    "OccupancyRevisionResource.bindings": MAXIMUM_RUN_AGENT_BINDINGS,
-    "PutOccupancyRevisionRequestResource.bindings": MAXIMUM_RUN_AGENT_BINDINGS,
+    "OccupancyRevisionResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
+    "PutOccupancyRevisionRequestResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
     "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
 }

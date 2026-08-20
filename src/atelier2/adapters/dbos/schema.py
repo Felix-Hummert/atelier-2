@@ -2900,7 +2900,7 @@ def _apply_v25_to_v26(connection: sqlite3.Connection) -> None:
 
     for table in _OCCUPANCY_TABLES:
         existing = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            "SELECT name FROM sqlite_master WHERE name=?",
             (table.name,),
         ).fetchone()
         if existing is not None:

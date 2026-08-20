@@ -15,6 +15,10 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import OCCUPANCY_PATH
 from atelier2.api.problems import ApiProblem
 from atelier2.api.projection.occupancy import occupancy_revision_resource
+from atelier2.api.references import (
+    InvalidPublicProjectReference,
+    decode_public_project_reference,
+)
 from atelier2.api.wire.requests import PutOccupancyRevisionRequestResource
 from atelier2.api.wire.resources import OccupancyRevisionResource
 from atelier2.application.occupancy import (
@@ -37,6 +41,13 @@ from atelier2.application.refusals import (
 router = APIRouter()
 
 
+def _addressed_project_id(public_project_reference: str) -> str:
+    try:
+        return decode_public_project_reference(public_project_reference).value
+    except InvalidPublicProjectReference as error:
+        raise ApiProblem("invalid-public-project-reference") from error
+
+
 @router.put(
     OCCUPANCY_PATH,
     response_model=OccupancyRevisionResource,
@@ -44,12 +55,13 @@ router = APIRouter()
     responses={HTTPStatus.OK: {"model": OccupancyRevisionResource}},
 )
 async def put_occupancy_revision_route(
-    project_id: str,
+    public_project_reference: str,
     lineage_id: str,
     body: PutOccupancyRevisionRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
 ) -> JSONResponse:
+    project_id = _addressed_project_id(public_project_reference)
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.publish_occupancy_revision(
@@ -70,7 +82,7 @@ async def put_occupancy_revision_route(
         case OccupancyProjectUnknown():
             raise ApiProblem("project-unknown")
         case OccupancyLineageInvalid():
-            raise ApiProblem("invalid-revision-hash")
+            raise ApiProblem("catalog-lineage-missing")
         case UnpublishableOccupancy():
             raise ApiProblem("invalid-request")
         case OccupancyRevisionConflict():
@@ -91,10 +103,11 @@ async def put_occupancy_revision_route(
     response_model=OccupancyRevisionResource,
 )
 async def get_occupancy_revision_route(
-    project_id: str,
+    public_project_reference: str,
     lineage_id: str,
     context: ApiContext = api_context_dependency,
 ) -> OccupancyRevisionResource:
+    project_id = _addressed_project_id(public_project_reference)
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.get_occupancy_revision(project_id, lineage_id),
@@ -107,7 +120,7 @@ async def get_occupancy_revision_route(
         case OccupancyProjectUnknown():
             raise ApiProblem("project-unknown")
         case OccupancyLineageInvalid():
-            raise ApiProblem("invalid-revision-hash")
+            raise ApiProblem("catalog-lineage-missing")
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():

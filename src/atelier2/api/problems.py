@@ -286,6 +286,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
     "invalid-public-run-reference": ProblemDefinition(
         400, "Invalid public run reference", "Use a canonical run1 public reference."
     ),
+    "invalid-public-project-reference": ProblemDefinition(
+        400,
+        "Invalid public project reference",
+        "Use a canonical project1 public reference.",
+    ),
     "invalid-event-cursor": ProblemDefinition(
         400,
         "Invalid event cursor",

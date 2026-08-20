@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from atelier2.api.references import encode_public_project_reference
 from atelier2.api.wire.resources import (
     OccupancyBindingResource,
     OccupancyRevisionResource,
@@ -14,6 +15,7 @@ def occupancy_revision_resource(
 ) -> OccupancyRevisionResource:
     return OccupancyRevisionResource(
         project_id=revision.project_id.value,
+        public_project_reference=encode_public_project_reference(revision.project_id),
         lineage_id=revision.lineage_id.value,
         revision_number=revision.revision_number,
         occupancy_revision_hash=revision.revision_hash.value,

@@ -5,11 +5,11 @@ from dataclasses import dataclass, field
 from fastapi.testclient import TestClient
 
 from atelier2.api.app import create_app
-from atelier2.api.openapi import OCCUPANCY_PATH
+from atelier2.api.openapi import API_PREFIX, OCCUPANCY_PATH
+from atelier2.api.references import encode_public_project_reference
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import (
-    MAXIMUM_PROJECT_ID_CHARACTERS,
     OccupancyBinding,
     OccupancyRevision,
     ProjectId,
@@ -86,8 +86,14 @@ def _client(channel: RecordingChannel) -> TestClient:
     )
 
 
+def _reference(project: str = PROJECT) -> str:
+    return encode_public_project_reference(ProjectId(project))
+
+
 def _path(project: str = PROJECT, lineage: str = LINEAGE) -> str:
-    return OCCUPANCY_PATH.format(project_id=project, lineage_id=lineage)
+    return OCCUPANCY_PATH.format(
+        public_project_reference=_reference(project), lineage_id=lineage
+    )
 
 
 def _body(
@@ -117,6 +123,7 @@ def test_put_writes_an_occupancy_revision_and_get_reads_it(tmp_path) -> None:
     assert written.status_code == 201
     assert written.json() == {
         "project_id": PROJECT,
+        "public_project_reference": _reference(),
         "lineage_id": LINEAGE,
         "revision_number": 1,
         "occupancy_revision_hash": revision.revision_hash.value,
@@ -171,22 +178,103 @@ def test_an_unknown_project_is_project_unknown() -> None:
     assert written.json()["type"].endswith("project-unknown")
 
 
-def test_a_malformed_project_id_is_project_unknown() -> None:
+def test_a_malformed_public_project_reference_is_named() -> None:
     client = _client(RecordingChannel(None))
-    too_long = "x" * (MAXIMUM_PROJECT_ID_CHARACTERS + 1)
 
-    response = client.get(_path(project=too_long))
+    response = client.get(
+        OCCUPANCY_PATH.format(public_project_reference="studio", lineage_id=LINEAGE)
+    )
 
-    assert response.status_code == 404
-    assert response.json()["type"].endswith("project-unknown")
+    assert response.status_code == 400
+    assert response.json()["type"].endswith("invalid-public-project-reference")
 
 
-def test_a_malformed_lineage_id_is_an_invalid_revision_hash(tmp_path) -> None:
+def test_a_malformed_lineage_id_is_catalog_lineage_missing(tmp_path) -> None:
     root = tmp_path / "project"
     root.mkdir()
     client = _client(RecordingChannel(ProjectRootRevision(ProjectId(PROJECT), 1, root)))
 
     response = client.get(_path(lineage="not-a-lineage"))
 
-    assert response.status_code == 400
-    assert response.json()["type"].endswith("invalid-revision-hash")
+    assert response.status_code == 404
+    assert response.json()["type"].endswith("catalog-lineage-missing")
+
+
+def test_a_slash_bearing_project_id_is_addressable_on_the_wire(tmp_path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    project = "team/red"
+    revision = OccupancyRevision(
+        ProjectId(project),
+        CatalogLineageId(LINEAGE),
+        1,
+        (
+            OccupancyBinding(
+                AgentRole("chef"), AgentConfigurationRevisionHash(CONFIGURATION)
+            ),
+        ),
+    )
+    channel = RecordingChannel(ProjectRootRevision(ProjectId(project), 1, root))
+    client = _client(channel)
+
+    written = client.put(_path(project=project), json=_body())
+    raw_slash = client.get(f"{API_PREFIX}/projects/{project}/occupancy/{LINEAGE}")
+
+    assert written.status_code == 201
+    assert written.json()["project_id"] == project
+    assert written.json()["public_project_reference"] == _reference(project)
+    assert written.json()["occupancy_revision_hash"] == revision.revision_hash.value
+    assert raw_slash.status_code == 404
+    assert raw_slash.json()["type"].endswith("route-not-found")
+
+
+def test_one_hundred_occupancy_bindings_round_trip_and_one_more_is_refused(
+    tmp_path,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    channel = RecordingChannel(ProjectRootRevision(ProjectId(PROJECT), 1, root))
+    client = _client(channel)
+    configuration = CONFIGURATION
+    hundred = [
+        {
+            "role": f"role{index}",
+            "agent_configuration_revision_hash": configuration,
+        }
+        for index in range(100)
+    ]
+
+    accepted = client.put(_path(), json={"revision_number": 1, "bindings": hundred})
+    refused = client.put(
+        _path(),
+        json={
+            "revision_number": 2,
+            "bindings": [
+                *hundred,
+                {
+                    "role": "role100",
+                    "agent_configuration_revision_hash": configuration,
+                },
+            ],
+        },
+    )
+
+    assert accepted.status_code == 201
+    assert len(accepted.json()["bindings"]) == 100
+    assert client.get(_path()).json() == accepted.json()
+    assert refused.status_code == 422
+    assert refused.json()["type"].endswith("invalid-request")
+    assert channel.published == [
+        OccupancyRevision(
+            ProjectId(PROJECT),
+            CatalogLineageId(LINEAGE),
+            1,
+            tuple(
+                OccupancyBinding(
+                    AgentRole(f"role{index}"),
+                    AgentConfigurationRevisionHash(configuration),
+                )
+                for index in range(100)
+            ),
+        )
+    ]

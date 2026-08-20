@@ -27,6 +27,7 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
+from atelier2.contracts.host_configuration import MAXIMUM_OCCUPANCY_BINDINGS
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 
@@ -99,7 +100,7 @@ class StartRunRequestResource(ApiModel):
 class PutOccupancyRevisionRequestResource(ApiModel):
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
     bindings: tuple[OccupancyBindingResource, ...] = Field(
-        max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
+        max_length=MAXIMUM_OCCUPANCY_BINDINGS, strict=False
     )
 
 

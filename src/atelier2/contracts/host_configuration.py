@@ -23,6 +23,10 @@ MAXIMUM_PROJECT_ID_CHARACTERS = 1_024
 # Linux PATH_MAX is 4096 including the terminating NUL; a 4096-character
 # path is not openable. The published CHECK must match what open will admit.
 MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS = 4_095
+# Occupancy is one recommended role per binding. This family owns the count;
+# the run-start wire bound is a different question and must not cap a stored
+# occupancy after the fact.
+MAXIMUM_OCCUPANCY_BINDINGS = 100
 
 PROJECT_UNKNOWN = "project-unknown"
 PROJECT_ROOT_MISSING = "project-root-missing"
@@ -113,6 +117,14 @@ class OccupancyRevisionConflict(Exception):
     """The same project, lineage, and revision number already hold different bytes."""
 
 
+class OccupancyBytesDisagree(Exception):
+    """Stored occupancy fields do not hash to the revision hash they carry."""
+
+
+class OccupancyRevisionHashCollision(Exception):
+    """The same occupancy revision hash already names different fields."""
+
+
 class HostOccupancyRevisionHash(Sha256Hash):
     """Identity of one immutable occupancy mapping revision."""
 
@@ -166,6 +178,11 @@ class OccupancyRevision:
         )
         if len({binding.role for binding in ordered}) != len(ordered):
             raise ValueError("occupancy binding roles must be unique")
+        if len(ordered) > MAXIMUM_OCCUPANCY_BINDINGS:
+            raise ValueError(
+                "occupancy bindings must contain at most "
+                f"{MAXIMUM_OCCUPANCY_BINDINGS} roles"
+            )
         object.__setattr__(self, "bindings", ordered)
         object.__setattr__(
             self,

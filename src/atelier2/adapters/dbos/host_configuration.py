@@ -24,12 +24,15 @@ from atelier2.contracts.host_configuration import (
     PROJECT_ROOT_MISSING,
     HostConfigurationUnreadable,
     OccupancyBinding,
+    OccupancyBytesDisagree,
     OccupancyRevision,
     OccupancyRevisionConflict,
+    OccupancyRevisionHashCollision,
     ProjectId,
     ProjectRootMissing,
     ProjectRootRevision,
     ProjectRootRevisionConflict,
+    ProjectUnknown,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 from atelier2.ports.host_configuration import (
@@ -193,9 +196,9 @@ def occupancy_revision_from_records(
         ),
     )
     if revision.revision_hash.value != header["revision_hash"]:
-        raise HostConfigurationUnreadable(
-            f"{HOST_CONFIGURATION_UNREADABLE}: a stored occupancy hash "
-            "disagrees with its fields"
+        raise OccupancyBytesDisagree(
+            "occupancy bytes disagree: a stored occupancy hash "
+            "does not match its fields"
         )
     return revision
 
@@ -294,8 +297,8 @@ def _write_occupancy_revision(
         )
         if durable == revision:
             return OccupancyRevisionExisting(durable)
-        raise HostConfigurationUnreadable(
-            f"{HOST_CONFIGURATION_UNREADABLE}: occupancy revision "
+        raise OccupancyRevisionHashCollision(
+            "occupancy-revision-collision: occupancy revision "
             f"{revision.revision_hash.value} already names other fields"
         )
     connection.execute(
@@ -329,7 +332,12 @@ def publish_occupancy_revision(
     try:
         with canonical_write_transaction(engine) as connection:
             return _write_occupancy_revision(connection, revision).revision
-    except (OccupancyRevisionConflict, HostConfigurationUnreadable):
+    except (
+        OccupancyRevisionConflict,
+        OccupancyBytesDisagree,
+        OccupancyRevisionHashCollision,
+        HostConfigurationUnreadable,
+    ):
         raise
     except (OperationalError, PoolTimeoutError, DatabaseError) as error:
         raise HostConfigurationUnreadable(
@@ -359,7 +367,9 @@ class DbosHostConfigurationChannel:
             return latest_occupancy_revision(self._engine, project_id, lineage_id)
         except HostConfigurationUnreadable as error:
             return HostConfigurationReadUnavailable(str(error))
-        except (ValueError, RuntimeError):
+        except OccupancyBytesDisagree:
+            return DurableStateCorrupt()
+        except (ProjectUnknown, ValueError, TypeError, RuntimeError):
             return DurableStateCorrupt()
 
     def publish_occupancy_revision(
@@ -370,9 +380,13 @@ class DbosHostConfigurationChannel:
                 return _write_occupancy_revision(connection, revision)
         except OccupancyRevisionConflict:
             return PortOccupancyRevisionConflict()
-        except HostConfigurationUnreadable:
+        except OccupancyRevisionHashCollision:
             return OccupancyRevisionCollision()
+        except OccupancyBytesDisagree:
+            return DurableStateCorrupt()
+        except HostConfigurationUnreadable:
+            return DurableWriteUnavailable()
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
+        except (ProjectUnknown, ValueError, TypeError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()

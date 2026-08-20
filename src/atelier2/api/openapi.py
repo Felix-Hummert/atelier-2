@@ -21,6 +21,7 @@ from atelier2.api.references import (
     EVENT_CURSOR_PATTERN,
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
+    PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
@@ -79,7 +80,9 @@ ATTENTION_EVENT_PATH = API_PREFIX + "/events"
 CANCELLATION_PATH = (
     API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations"
 )
-OCCUPANCY_PATH = API_PREFIX + "/projects/{project_id}/occupancy/{lineage_id}"
+OCCUPANCY_PATH = (
+    API_PREFIX + "/projects/{public_project_reference}/occupancy/{lineage_id}"
+)
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -255,8 +258,9 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "internal-error",
     ),
     (OCCUPANCY_PATH, "put"): (
+        "invalid-public-project-reference",
         "project-unknown",
-        "invalid-revision-hash",
+        "catalog-lineage-missing",
         "invalid-request",
         "unsupported-media-type",
         "occupancy-revision-conflict",
@@ -266,8 +270,9 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "internal-error",
     ),
     (OCCUPANCY_PATH, "get"): (
+        "invalid-public-project-reference",
         "project-unknown",
-        "invalid-revision-hash",
+        "catalog-lineage-missing",
         "occupancy-missing",
         "temporarily-unavailable",
         "durable-state-corrupt",
@@ -675,6 +680,10 @@ def _install_event_components(schema: dict[str, Any]) -> None:
         "type": "string",
         "pattern": PUBLIC_RUN_REFERENCE_PATTERN,
     }
+    components["PublicProjectReference"] = {
+        "type": "string",
+        "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
+    }
     components["RevisionHash"] = {
         "type": "string",
         "pattern": REVISION_HASH_PATTERN,
@@ -687,6 +696,10 @@ def _install_event_components(schema: dict[str, Any]) -> None:
 
 def _install_parameter_contracts(schema: dict[str, Any]) -> None:
     references = {
+        "PublicProjectReference": (
+            (OCCUPANCY_PATH, "put", "public_project_reference", "path"),
+            (OCCUPANCY_PATH, "get", "public_project_reference", "path"),
+        ),
         "PublicRunReference": (
             (API_PREFIX + "/runs", "get", "after", "query"),
             (API_PREFIX + "/runs/{public_ref}", "get", "public_ref", "path"),

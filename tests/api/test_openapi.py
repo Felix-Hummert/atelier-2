@@ -263,9 +263,8 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head admits `GET /events` beside the V3 Action events and the V24
-    `PROJECT_VERIFICATION_FAILED` member. Refreshing the artefact alongside a
-    refactor is what this test still refuses.
+    it. This head admits occupancy under a `project1.` public project reference.
+    Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()

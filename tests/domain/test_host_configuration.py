@@ -9,6 +9,7 @@ import pytest
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import (
+    MAXIMUM_OCCUPANCY_BINDINGS,
     MAXIMUM_PROJECT_ID_CHARACTERS,
     PROJECT_UNKNOWN,
     OccupancyBinding,
@@ -130,3 +131,20 @@ def test_duplicate_occupancy_roles_are_refused() -> None:
 
     with pytest.raises(ValueError, match="unique"):
         _occupancy(bindings=(first, second))
+
+
+def test_occupancy_bindings_are_bounded_before_they_are_hashed() -> None:
+    allowed = tuple(
+        OccupancyBinding(
+            AgentRole(f"role{index}"),
+            AgentConfigurationRevisionHash("cd" * 32),
+        )
+        for index in range(MAXIMUM_OCCUPANCY_BINDINGS)
+    )
+    extra = OccupancyBinding(
+        AgentRole("role-extra"), AgentConfigurationRevisionHash("cd" * 32)
+    )
+
+    assert len(_occupancy(bindings=allowed).bindings) == MAXIMUM_OCCUPANCY_BINDINGS
+    with pytest.raises(ValueError, match="at most"):
+        _occupancy(bindings=(*allowed, extra))

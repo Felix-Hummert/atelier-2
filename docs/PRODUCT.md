@@ -670,7 +670,9 @@ revisions by provider, model, and readable auth mode; the raw publication form
 stays as a collapsed expert fallback. Last choice per role is remembered in
 this browser only — that is not the project-configuration owner for a
 recommended occupancy. The recommendation now has a backend owner on the
-wire; the picker does not read it yet. The list is empty until a configuration is published,
+wire, addressed by a `project1.` public project reference so a configured
+project id remains reachable even when it is not a single URL path segment;
+the picker does not read it yet. The list is empty until a configuration is published,
 and says so. It opens in the Studio rather than in that list: one screen across the
 whole workshop naming every run that waits for a human — the durable states
 `WAITING_INPUT` and `WAITING_RECONCILIATION`, each asked of the list by

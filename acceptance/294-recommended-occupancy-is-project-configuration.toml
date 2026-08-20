@@ -5,11 +5,12 @@ story = "https://github.com/FlexOr2/atelier-2/issues/294"
 #
 # The last browser choice still lives in localStorage. This sentence binds the
 # first backend owner: PUT then GET
-# /projects/{project_id}/occupancy/{lineage_id} store and return a typed
-# occupancy revision for a configured project. A configured project with no
-# occupancy is occupancy-missing. An unknown project is project-unknown. The
-# picker does not read this recommendation yet.
+# /projects/{public_project_reference}/occupancy/{lineage_id} store and return a
+# typed occupancy revision for a configured project, including a project id
+# that is not a single URL path segment. A configured project with no occupancy
+# is occupancy-missing. An unknown project is project-unknown. The picker does
+# not read this recommendation yet.
 
 [[sentence]]
 id = "recommended-occupancy-is-project-configuration-on-the-wire"
-text = "PUT /projects/{project_id}/occupancy/{lineage_id} stores an occupancy revision for a configured project, and GET returns that latest revision; a project with no occupancy is occupancy-missing, and an unknown project is project-unknown."
+text = "PUT /projects/{public_project_reference}/occupancy/{lineage_id} stores an occupancy revision for a configured project, and GET returns that latest revision; a project with no occupancy is occupancy-missing, and an unknown project is project-unknown."

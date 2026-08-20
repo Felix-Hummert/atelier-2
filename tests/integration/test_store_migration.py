@@ -1146,6 +1146,56 @@ def test_an_exact_v25_store_migrates_to_v26(
     engine.dispose()
 
 
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        pytest.param(
+            "CREATE TABLE host_occupancy_bindings(wrong TEXT)",
+            id="table",
+        ),
+        pytest.param(
+            "CREATE VIEW host_occupancy_bindings AS SELECT 1 AS wrong",
+            id="view",
+        ),
+    ],
+)
+def test_a_refused_occupancy_hop_rolls_back_the_first_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
+) -> None:
+    """The second occupancy object already exists, so the first create undoes.
+
+    V25→V26 creates `host_occupancy_revisions` then `host_occupancy_bindings`
+    then CAS 25→26 in one transaction. A name already holding the second
+    object refuses the hop after the first table exists in that transaction.
+    Rollback must leave no occupancy table, no occupancy trigger, and version 25.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v25_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(collision_sql)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "host_occupancy_bindings" in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (25,)
+        names = {
+            record[0]
+            for record in connection.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'host_occupancy%'"
+            )
+        }
+        assert names == {"host_occupancy_bindings"}
+
+
 @pytest.mark.proves("an-unknown-or-future-schema-is-refused-by-name")
 def test_an_unknown_or_future_schema_is_refused_by_name(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
