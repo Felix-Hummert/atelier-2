@@ -12,7 +12,7 @@ const MAXIMUM_CATALOG_DISPLAY_NAME_CHARACTERS = 128;
 const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
 
 export type CatalogNameState =
-  | { kind: "admitted"; revisionHash: string }
+  | { kind: "admitted"; revisionHash: string; lineageId: string }
   | { kind: "unlisted" }
   | { kind: "unnamable" }
   | { kind: "retired" };
@@ -28,13 +28,20 @@ export function isCatalogDisplayName(value: string): boolean {
 
 export function catalogNameStateOf(
   name: string,
-  askByName: (name: string) => Promise<{ workflow_revision_hash: string }>
+  askByName: (name: string) => Promise<{
+    workflow_revision_hash: string;
+    lineage_id: string;
+  }>
 ): Promise<CatalogNameState> {
   if (!isCatalogDisplayName(name)) {
     return Promise.resolve({ kind: "unnamable" });
   }
   return askByName(name).then(
-    (head) => ({ kind: "admitted" as const, revisionHash: head.workflow_revision_hash }),
+    (head) => ({
+      kind: "admitted" as const,
+      revisionHash: head.workflow_revision_hash,
+      lineageId: head.lineage_id
+    }),
     (error: unknown) => {
       const code = problemCode(error);
       if (code === "catalog-name-not-found") return { kind: "unlisted" as const };

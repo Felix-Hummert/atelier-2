@@ -44,11 +44,18 @@ describe("what a published name is to the catalog", () => {
 
   it("keeps an admitted name as the catalog head", async () => {
     const hash = "a".repeat(64);
-    const ask = vi.fn(async () => ({ workflow_revision_hash: hash }));
+    const lineageId = "b".repeat(64);
+    const ask = vi.fn(async () => ({
+      display_name: "diff-review",
+      lineage_id: lineageId,
+      workflow_revision_hash: hash,
+      revision_number: 1
+    }));
 
     await expect(catalogNameStateOf("diff-review", ask)).resolves.toEqual({
       kind: "admitted",
-      revisionHash: hash
+      revisionHash: hash,
+      lineageId
     });
   });
 });

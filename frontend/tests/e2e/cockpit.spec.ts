@@ -1,6 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import { NAMED_AGENT_CHOICE_STORAGE_KEY } from "../../src/lib/namedAgentChoice";
+
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
 
@@ -1502,6 +1504,200 @@ test("starts a published V3 workflow by picking a named agent", async ({ page })
   await expect(page.getByRole("heading", { level: 1, name: "Started with a named agent" })).toBeVisible();
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/named-agent-run-390x844.png", fullPage: true });
+});
+
+test("proves(new-run-prefers-project-occupancy-before-local-memory-and-empty): starts the visible project bindings", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const workflowName = "project-occupancy-browser";
+  const schemaHash = await anyJsonSchema(page);
+  const publishAgent = async (
+    profileId: string,
+    providerId: string,
+    model: string
+  ): Promise<string> => {
+    const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+      data: {
+        profile_id: profileId,
+        revision_number: 1,
+        provider_id: providerId,
+        auth_mode: "subscription"
+      }
+    });
+    expect(auth.status()).toBe(201);
+    const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+      data: {
+        model,
+        auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+        executor_revision: "immediate/v1",
+        requested_capability: "headless"
+      }
+    });
+    expect(configuration.status()).toBe(201);
+    return (await configuration.json()).agent_configuration_revision_hash as string;
+  };
+  const projectHash = await publishAgent(
+    "occupancy-project",
+    "e2e-v3",
+    "project-choice"
+  );
+  const rememberedHash = await publishAgent(
+    "occupancy-remembered",
+    "e2e-v3",
+    "remembered-choice"
+  );
+  const workflow = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      `name: ${workflowName}`,
+      "description: The project chooses before this browser does.",
+      "nodes:",
+      "  - id: implement",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: Build the requested slice.",
+      ...declaredOutput(schemaHash, "built"),
+      "  - id: review",
+      "    type: agent",
+      "    role: reviewer",
+      "    mode: headless",
+      "    instruction: Review the built slice.",
+      "    depends_on: [implement]",
+      ...declaredOutput(schemaHash, "reviewed"),
+      "  - id: audit",
+      "    type: agent",
+      "    role: auditor",
+      "    mode: headless",
+      "    instruction: Audit the reviewed slice.",
+      "    depends_on: [review]",
+      ...declaredOutput(schemaHash, "audited"),
+      ""
+    ].join("\n")
+  });
+  expect(workflow.status()).toBe(201);
+  const workflowHash = (await workflow.json()).workflow_revision_hash as string;
+  const founded = await page.request.post(`${api}/workflow-lineages`, {
+    data: {
+      workflow_revision_hash: workflowHash,
+      actor: "e2e",
+      activated_at: "2026-08-21T00:00:00Z"
+    }
+  });
+  expect(founded.status()).toBe(201);
+  const lineageId = (await founded.json()).lineage_id as string;
+  const projects = await page.request.get(`${api}/projects`);
+  expect(projects.status()).toBe(200);
+  const projectReference = (await projects.json()).items[0]
+    .public_project_reference as string;
+  const occupancyPath = `${api}/projects/${projectReference}/occupancy/${lineageId}`;
+  const written = await page.request.put(occupancyPath, {
+    data: {
+      revision_number: 1,
+      bindings: [
+        { role: "builder", agent_configuration_revision_hash: projectHash },
+        { role: "foreign", agent_configuration_revision_hash: rememberedHash }
+      ]
+    }
+  });
+  expect(written.status()).toBe(201);
+
+  await page.addInitScript(
+    ([storageKey, hash]) => {
+      localStorage.setItem(storageKey, JSON.stringify({
+        builder: hash,
+        reviewer: hash
+      }));
+    },
+    [NAMED_AGENT_CHOICE_STORAGE_KEY, rememberedHash] as const
+  );
+  const observed: Array<{ method: string; path: string }> = [];
+  const started: {
+    bindings: Array<{
+      role: string;
+      agent_configuration_revision_hash: string;
+    }> | null;
+  } = { bindings: null };
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith(api)) {
+      observed.push({ method: request.method(), path: url.pathname });
+    }
+    if (request.method() === "POST" && url.pathname === `${api}/runs`) {
+      started.bindings = (request.postDataJSON() as {
+        agent_bindings: Array<{
+          role: string;
+          agent_configuration_revision_hash: string;
+        }>;
+      }).agent_bindings;
+    }
+  });
+
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: new RegExp(workflowName) }).click();
+  const builder = page.getByRole("article", { name: "Binding builder" });
+  const reviewer = page.getByRole("article", { name: "Binding reviewer" });
+  const auditor = page.getByRole("article", { name: "Binding auditor" });
+  await expect(builder.getByLabel("Binding source: Project")).toBeVisible();
+  await expect(reviewer.getByLabel("Binding source: Remembered")).toBeVisible();
+  await expect(auditor.getByLabel("Binding source: Choose")).toBeVisible();
+  await expect(builder.getByLabel("Agent for builder")).toHaveValue(projectHash);
+  await expect(reviewer.getByLabel("Agent for reviewer")).toHaveValue(rememberedHash);
+  await expect(auditor.getByLabel("Agent for auditor")).toHaveValue("");
+  await expect(page.getByRole("article", { name: "Binding foreign" })).toHaveCount(0);
+  expect(
+    observed.filter(({ path }) =>
+      path === `${api}/projects` || path.includes("/occupancy/")
+    )
+  ).toEqual([
+    { method: "GET", path: `${api}/projects` },
+    { method: "GET", path: occupancyPath }
+  ]);
+  expect(
+    observed.filter(({ path }) =>
+      path === `${api}/workflow-revisions/by-name/${workflowName}`
+    )
+  ).toHaveLength(1);
+
+  const auditorPicker = auditor.getByLabel("Agent for auditor");
+  await auditorPicker.focus();
+  await expect(auditorPicker).toBeFocused();
+  await expectVisibleFocus(auditorPicker);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({
+    path: "test-results/project-occupancy-picker-desktop.png",
+    fullPage: true
+  });
+  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
+  await page.screenshot({
+    path: "test-results/project-occupancy-picker-grayscale-desktop.png",
+    fullPage: true
+  });
+  await page.locator("style").last().evaluate((element) => element.remove());
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({
+    path: "test-results/project-occupancy-picker-390x844.png",
+    fullPage: true
+  });
+
+  await auditorPicker.selectOption(projectHash);
+  await expect(auditor.getByLabel("Binding source: Remembered")).toBeVisible();
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible({
+    timeout: 20_000
+  });
+  expect(Object.fromEntries(
+    (started.bindings ?? []).map((binding) => [
+      binding.role,
+      binding.agent_configuration_revision_hash
+    ])
+  )).toEqual({
+    auditor: projectHash,
+    builder: projectHash,
+    reviewer: rememberedHash
+  });
 });
 
 test("publishes a V3 workflow, binds its role, and watches the line it started", async ({ page }) => {

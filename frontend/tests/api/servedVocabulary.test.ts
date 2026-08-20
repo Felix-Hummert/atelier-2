@@ -11,6 +11,7 @@ import {
   workflowNodePreviewSchema,
   workflowRevisionDetailSchema,
   catalogNameResolutionSchema,
+  occupancyRevisionSchema,
   projectListSchema,
   projectResourceSchema,
   workflowRevisionSummarySchema
@@ -209,6 +210,14 @@ describe("the served vocabulary", () => {
         items: [{ public_project_reference: "project1.dGVhbS9yZWQ" }]
       })
     ).toEqual({ items: [{ public_project_reference: "project1.dGVhbS9yZWQ" }] });
+  });
+
+  it("decodes exactly the project occupancy resource the server serves", () => {
+    const resource = servedDocument.components.schemas.OccupancyRevisionResource;
+
+    expect(Object.keys(occupancyRevisionSchema.shape).sort()).toEqual(
+      Object.keys(resource?.properties ?? {}).sort()
+    );
   });
 
   it("decodes exactly the fields the agent-configuration listing serves", () => {

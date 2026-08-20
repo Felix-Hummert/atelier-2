@@ -698,6 +698,44 @@ textarea {
 
 .binding-card::after { content: none; }
 
+.binding-source {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.binding-source > span {
+  display: inline-grid;
+  width: 1.35rem;
+  height: 1.35rem;
+  place-items: center;
+  border: 2px solid currentColor;
+  line-height: 1;
+}
+
+.source-project {
+  color: var(--accent);
+}
+
+.source-remembered {
+  color: var(--blue);
+}
+
+.source-choose > span,
+.source-looking > span {
+  border-radius: 50%;
+}
+
+.source-looking,
+.source-unavailable {
+  color: var(--warning);
+}
+
 .named-agent {
   display: grid;
   gap: 0.25rem;
