@@ -11,6 +11,8 @@ import {
   workflowNodePreviewSchema,
   workflowRevisionDetailSchema,
   catalogNameResolutionSchema,
+  projectListSchema,
+  projectResourceSchema,
   workflowRevisionSummarySchema
 } from "../../src/api/client";
 
@@ -169,6 +171,44 @@ describe("the served vocabulary", () => {
     expect(Object.keys(catalogNameResolutionSchema.shape).sort()).toEqual(
       Object.keys(served?.properties ?? {}).sort()
     );
+  });
+
+  it("decodes exactly the zero-or-one project collection the server serves", () => {
+    const resource = servedDocument.components.schemas.ProjectResource;
+    const collection = servedDocument.components.schemas.ProjectListResource as {
+      properties?: { items?: { maxItems?: number } };
+    };
+    const publicReference = servedDocument.components.schemas.PublicProjectReference as {
+      maxLength: number;
+      pattern: string;
+    };
+    const longestReference = `project1.${"A".repeat(
+      publicReference.maxLength - "project1.".length
+    )}`;
+
+    expect(Object.keys(projectResourceSchema.shape).sort()).toEqual(
+      Object.keys(resource?.properties ?? {}).sort()
+    );
+    expect(Object.keys(projectListSchema.shape).sort()).toEqual(
+      Object.keys(collection.properties ?? {}).sort()
+    );
+    expect(collection.properties?.items?.maxItems).toBe(1);
+    expect(new RegExp(publicReference.pattern).test(longestReference)).toBe(true);
+    expect(
+      projectResourceSchema.safeParse({ public_project_reference: longestReference }).success
+    ).toBe(true);
+    expect(
+      projectResourceSchema.safeParse({ public_project_reference: `${longestReference}A` })
+        .success
+    ).toBe(false);
+    expect(
+      projectResourceSchema.safeParse({ public_project_reference: "project1.@@" }).success
+    ).toBe(false);
+    expect(
+      projectListSchema.parse({
+        items: [{ public_project_reference: "project1.dGVhbS9yZWQ" }]
+      })
+    ).toEqual({ items: [{ public_project_reference: "project1.dGVhbS9yZWQ" }] });
   });
 
   it("decodes exactly the fields the agent-configuration listing serves", () => {

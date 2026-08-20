@@ -13,6 +13,12 @@ const publicRunReference = z.string().refine(
   (value) => decodePublicRunReference(value) !== null,
   "public run reference must contain canonical unpadded base64url UTF-8"
 );
+// The browser validates the public wire identity but never decodes it into the
+// internal ProjectId. servedVocabulary pins this bound and shape to OpenAPI.
+const publicProjectReference = z
+  .string()
+  .regex(/^project1\.[A-Za-z0-9_-]+$/)
+  .max(5_471);
 const eventCursor = z.string().refine(
   (value) => parseEventCursor(value) !== null,
   "event cursor must contain a canonical run reference and safe positive sequence"
@@ -244,6 +250,14 @@ export const workflowRevisionPageSchema = z
     items: z.array(workflowRevisionSummarySchema),
     next_after_revision_hash: sha256.nullable()
   })
+  .strict();
+
+export const projectResourceSchema = z
+  .object({ public_project_reference: publicProjectReference })
+  .strict();
+
+export const projectListSchema = z
+  .object({ items: z.array(projectResourceSchema).max(1) })
   .strict();
 
 /**
@@ -1040,6 +1054,8 @@ export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
 export type WorkflowRevisionSummary = z.infer<typeof workflowRevisionSummarySchema>;
 export type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
 export type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
+export type ProjectResource = z.infer<typeof projectResourceSchema>;
+export type ProjectList = z.infer<typeof projectListSchema>;
 
 /**
  * The graph of a revision a run can hold. Only an executable format carries
@@ -1088,6 +1104,7 @@ export interface HttpResult<T> {
 
 export interface CockpitApi {
   listRuns(after?: string, state?: AnyRun["state"]): Promise<RunPage>;
+  listProjects(): Promise<ProjectList>;
   listWorkflowRevisions(after?: string): Promise<WorkflowRevisionPage>;
   listAgentConfigurationRevisions(after?: string): Promise<AgentConfigurationRevisionPage>;
   getRevisionByName(name: string): Promise<CatalogNameResolution>;
@@ -1156,6 +1173,14 @@ export function createCockpitApi(
         {},
         [200],
         runPageSchema
+      ),
+    listProjects: () =>
+      requestJson(
+        fetcher,
+        "/atelier/api/v1/projects",
+        {},
+        [200],
+        projectListSchema
       ),
     listWorkflowRevisions: (after?: string) =>
       requestJson(

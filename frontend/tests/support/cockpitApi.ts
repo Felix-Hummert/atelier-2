@@ -6,13 +6,14 @@ import type { CockpitApi, RunEventHandlers, RunPage, RunV1 } from "../../src/api
  * One owner for the CockpitApi test double: when the port grows a method, the
  * suite learns about it here instead of in every app test.
  *
- * Only the two list reads carry a default — the neutral "nothing there" page.
+ * Only list reads carry a default — the neutral "nothing there" page.
  * Everything a test depends on must be handed in, so no test passes because a
  * shared default happened to answer for it.
  */
 export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return {
     listRuns: vi.fn(async () => ({ items: [], next_after: null })),
+    listProjects: vi.fn(async () => ({ items: [] })),
     listWorkflowRevisions: vi.fn(async () => ({ items: [], next_after_revision_hash: null })),
     listAgentConfigurationRevisions: vi.fn(async () => ({
       items: [],

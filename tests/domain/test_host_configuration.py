@@ -6,6 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from atelier2.api.references import (
+    decode_public_project_reference,
+    encode_public_project_reference,
+)
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import (
@@ -34,6 +38,29 @@ def test_a_project_id_is_the_exact_characters_it_was_given() -> None:
 def test_a_bad_project_id_is_refused_as_project_unknown(value: str) -> None:
     with pytest.raises(ProjectUnknown, match=PROJECT_UNKNOWN):
         ProjectId(value)
+
+
+@pytest.mark.parametrize("value", ["\ud800", "studio\udfff"])
+@pytest.mark.proves("a-project-id-is-exact-utf8-before-it-enters-configuration")
+def test_a_project_id_that_is_not_unicode_scalar_text_is_refused_before_hashing(
+    value: str,
+) -> None:
+    with pytest.raises(ProjectUnknown, match=PROJECT_UNKNOWN):
+        ProjectId(value)
+
+
+@pytest.mark.proves("a-project-id-is-exact-utf8-before-it-enters-configuration")
+def test_the_widest_maximum_project_id_round_trips_every_configuration_boundary(
+    tmp_path: Path,
+) -> None:
+    project_id = ProjectId("\U0010ffff" * MAXIMUM_PROJECT_ID_CHARACTERS)
+    revision = ProjectRootRevision(project_id, 1, tmp_path)
+
+    assert revision.project_id == project_id
+    assert (
+        decode_public_project_reference(encode_public_project_reference(project_id))
+        == project_id
+    )
 
 
 def test_the_same_project_root_revision_is_the_same_hash(tmp_path: Path) -> None:

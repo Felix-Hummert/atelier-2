@@ -1,8 +1,8 @@
 # ADR 0011: A project is a store root; the root bounds where a project exists, and destroying it is the only removal
 
 - Status: PROPOSED 2026-08-15 — first project is the host-configuration
-  mapping plus the reads that treat it as a project; store-per-project and a
-  second project are not implemented
+  mapping plus the runtime and zero-or-one HTTP reads that treat it as a
+  project; store-per-project and a second project are not implemented
 - Date: 2026-08-15
 - Decision authority: [Issue #23](https://github.com/FlexOr2/atelier-2/issues/23),
   SHA-256 over the exact served UTF-8 body bytes with nothing appended — 847 bytes,
