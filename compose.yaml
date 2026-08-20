@@ -18,8 +18,8 @@ services:
       args:
         ATELIER2_UID: "${ATELIER2_UID:-1000}"
         ATELIER2_GID: "${ATELIER2_GID:-1000}"
-        ATELIER2_SOURCE_COMMIT: "${ATELIER2_SOURCE_COMMIT:-unknown}"
-        ATELIER2_SOURCE_TREE: "${ATELIER2_SOURCE_TREE:-unknown}"
+        ATELIER2_SOURCE_COMMIT: "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}"
+        ATELIER2_SOURCE_TREE: "${ATELIER2_SOURCE_TREE:?source tree identity is missing}"
     network_mode: host
     environment:
       HOME: /home/atelier2

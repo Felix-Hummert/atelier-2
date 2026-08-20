@@ -49,8 +49,15 @@ RUN chmod 0755 /usr/local/bin/claude
 
 ARG ATELIER2_UID=1000
 ARG ATELIER2_GID=1000
-ARG ATELIER2_SOURCE_COMMIT=unknown
-ARG ATELIER2_SOURCE_TREE=unknown
+ARG ATELIER2_SOURCE_COMMIT
+ARG ATELIER2_SOURCE_TREE
+RUN if [ -z "${ATELIER2_SOURCE_COMMIT}" ] || [ "${ATELIER2_SOURCE_COMMIT}" = "unknown" ] \
+    || [ -z "${ATELIER2_SOURCE_TREE}" ] || [ "${ATELIER2_SOURCE_TREE}" = "unknown" ]; then \
+      echo "image recipe: source commit and source tree identity is missing or unknown" >&2; \
+      exit 1; \
+    fi
+LABEL ATELIER2_SOURCE_COMMIT=${ATELIER2_SOURCE_COMMIT} \
+      ATELIER2_SOURCE_TREE=${ATELIER2_SOURCE_TREE}
 RUN if ! getent group "${ATELIER2_GID}" >/dev/null; then \
       groupadd --gid "${ATELIER2_GID}" atelier2; \
     fi \
