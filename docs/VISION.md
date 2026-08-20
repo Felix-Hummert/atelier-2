@@ -37,13 +37,18 @@ Desk/Doku-Lesart of that sentence: Atelier may propose or compose. It does not
 add a hidden ceremony. Publish and start are separate acts. After start, the
 bound revision does not move.
 
-Coder and reviewer are the same node kind. The workflow names what a node
-**gets** (inputs, pinned source) and **may do** (capability, tools, grants);
-the agent definition is Markdown and defaults to everything. A follow-on node
-sees only mapped outputs, not the predecessor's throwaway directory. Landing
-(push, PR, merge) is one platform-adapter effect: an Action node, or the same
-effect as a grant on an Agent. The secret never enters the lease. A CI host may
-hold git and a token; the agent does not inherit them. The issue's own words:
+Coder and reviewer are the same node kind. A Markdown agent definition owns the
+reusable worker identity and its stable system behaviour; a workflow Agent node
+is one occurrence of that worker. The node names a portable role, a required
+workflow-generic instruction, what it **gets** (typed run inputs, pinned source)
+and what it **may do** (capability, tools, grants). At run start the role binds to
+one exact configuration; the target binding makes the exact agent definition
+behind it reconstructible. Concrete story material enters as a typed run input,
+never by interpolating task bytes into the instruction. A follow-on node sees
+only mapped outputs, not the predecessor's throwaway directory. Landing (push,
+PR, merge) is one platform-adapter effect: an Action node, or the same effect as
+a grant on an Agent. The secret never enters the lease. A CI host may hold git
+and a token; the agent does not inherit them. The issue's own words:
 
 > „Coder-Knoten und Review-Knoten sind dieselbe Node-Art (`agent`). […]
 > Irreversible externe Mutationen wie Push, Merge oder Deploy laufen
