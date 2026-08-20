@@ -43,53 +43,133 @@ def run_gate(
     )
 
 
+def append_to(project: Path, relative: str, text: str) -> None:
+    path = project / relative
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def recalibrate_copied_source_module_count(project: Path) -> None:
+    """Point the copied wrapper at this scratch tree's counted inventory.
+
+    A mutation that must add or delete a module would otherwise fail the exact
+    count before the invariant under test is reached.
+    """
+
+    script = load_architecture_script()
+    counted = script.source_module_count(project / "src/atelier2")
+    copied = project / "scripts/check_architecture.py"
+    source = copied.read_text(encoding="utf-8")
+    current = f"EXPECTED_SOURCE_MODULE_COUNT = {script.EXPECTED_SOURCE_MODULE_COUNT}"
+    updated = f"EXPECTED_SOURCE_MODULE_COUNT = {counted}"
+    assert source.count(current) == 1
+    copied.write_text(source.replace(current, updated, 1), encoding="utf-8")
+
+
+def broken_contract_named(contract_id: str) -> str:
+    name = load_architecture_script().EXPECTED_CONTRACT_NAMES[contract_id]
+    return f"{name} BROKEN"
+
+
+def assert_named_contract_broken(
+    result: subprocess.CompletedProcess[str], contract_id: str
+) -> None:
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert broken_contract_named(contract_id) in result.stdout, (
+        result.stdout + result.stderr
+    )
+
+
+def assert_named_preflight_failed(
+    result: subprocess.CompletedProcess[str], fragment: str
+) -> None:
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "architecture preflights failed:" in result.stderr
+    assert fragment in result.stderr, result.stderr
+
+
+def assert_source_module_count_mismatch(
+    result: subprocess.CompletedProcess[str], found: int
+) -> None:
+    script = load_architecture_script()
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert script.source_module_count_mismatch(found) in result.stderr
+    assert "ImportError" not in result.stderr
+    assert "could not be imported" not in result.stderr
+
+
 def add_contract_to_host_import(project: Path) -> None:
-    (project / "src/atelier2/contracts/violation.py").write_text(
-        "from atelier2.host import main\n",
-        encoding="utf-8",
+    append_to(
+        project,
+        "src/atelier2/contracts/workflow_documents.py",
+        "\nfrom atelier2.host import main\n",
     )
 
 
 def add_root_to_application_package_import(project: Path) -> None:
-    with (project / "src/atelier2/__init__.py").open("a", encoding="utf-8") as package:
-        package.write("import atelier2.application\n")
+    append_to(project, "src/atelier2/__init__.py", "import atelier2.application\n")
 
 
 def add_root_to_application_leaf_import(project: Path) -> None:
-    with (project / "src/atelier2/__init__.py").open("a", encoding="utf-8") as package:
-        package.write(
-            "from atelier2.application.answer_wait import answer_wait_result\n"
-        )
+    append_to(
+        project,
+        "src/atelier2/__init__.py",
+        "from atelier2.application.answer_wait import answer_wait_result\n",
+    )
 
 
 def add_api_to_dbos_import(project: Path) -> None:
-    (project / "src/atelier2/api/violation.py").write_text(
-        "from dbos import DBOS\n",
-        encoding="utf-8",
-    )
+    append_to(project, "src/atelier2/api/__init__.py", "\nfrom dbos import DBOS\n")
 
 
 def add_empty_rogue_package(project: Path) -> None:
     rogue = project / "src/atelier2/rogue"
     rogue.mkdir()
     (rogue / "__init__.py").touch()
+    recalibrate_copied_source_module_count(project)
 
 
 def add_wire_to_port_import(project: Path) -> None:
-    (project / "src/atelier2/api/wire/violation.py").write_text(
-        "from atelier2.ports.run_queries import RunProjection\n",
-        encoding="utf-8",
+    append_to(
+        project,
+        "src/atelier2/api/wire/__init__.py",
+        "\nfrom atelier2.ports.run_queries import RunProjection\n",
     )
 
 
+def add_port_reexport_on_application(project: Path) -> None:
+    append_to(
+        project,
+        "src/atelier2/application/__init__.py",
+        "from atelier2.ports.run_queries import RunPage as RunPage\n",
+    )
+
+
+def add_wire_to_port_reexport_through_application(project: Path) -> None:
+    add_port_reexport_on_application(project)
+    append_to(
+        project,
+        "src/atelier2/api/wire/__init__.py",
+        "\nfrom atelier2.application import RunPage\n",
+    )
+
+
+def add_application_to_yaml_import(project: Path) -> None:
+    append_to(project, "src/atelier2/application/__init__.py", "import yaml\n")
+
+
+def add_third_adapter_to_yaml_import(project: Path) -> None:
+    append_to(project, "src/atelier2/adapters/loopback.py", "\nimport yaml\n")
+
+
 @pytest.mark.parametrize(
-    "violation",
+    ("violation", "contract_id"),
     [
-        add_contract_to_host_import,
-        add_root_to_application_package_import,
-        add_root_to_application_leaf_import,
-        add_api_to_dbos_import,
-        add_empty_rogue_package,
+        (add_contract_to_host_import, "layers"),
+        (add_root_to_application_package_import, "root-facade"),
+        (add_root_to_application_leaf_import, "root-facade"),
+        (add_api_to_dbos_import, "dbos-owner"),
+        (add_empty_rogue_package, "layers"),
     ],
     ids=[
         "contracts-to-host",
@@ -100,15 +180,14 @@ def add_wire_to_port_import(project: Path) -> None:
     ],
 )
 def test_forbidden_inward_and_dbos_owner_imports_fail(
-    tmp_path: Path, violation: Callable[[Path], None]
+    tmp_path: Path, violation: Callable[[Path], None], contract_id: str
 ) -> None:
     project = copied_project(tmp_path)
     violation(project)
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert one_broken_contract() in result.stdout
+    assert_named_contract_broken(result, contract_id)
 
 
 @pytest.mark.proves("wire-schemas-name-no-port-type")
@@ -118,8 +197,37 @@ def test_a_wire_schema_module_that_names_a_port_fails(tmp_path: Path) -> None:
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert one_broken_contract() in result.stdout
+    assert_named_contract_broken(result, "wire-projection-split")
+
+
+@pytest.mark.proves("wire-schemas-name-no-port-type")
+def test_a_wire_schema_that_names_a_port_reexported_through_application_fails(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    add_wire_to_port_reexport_through_application(project)
+
+    result = run_gate(project)
+
+    assert_named_contract_broken(result, "wire-projection-split")
+
+
+def test_an_application_module_that_imports_yaml_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    add_application_to_yaml_import(project)
+
+    result = run_gate(project)
+
+    assert_named_contract_broken(result, "yaml-owner")
+
+
+def test_a_third_existing_adapter_that_imports_yaml_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    add_third_adapter_to_yaml_import(project)
+
+    result = run_gate(project)
+
+    assert_named_contract_broken(result, "yaml-owner")
 
 
 def test_green_gate_reports_positive_source_contract_layer_and_native_graph_counts(
@@ -129,15 +237,22 @@ def test_green_gate_reports_positive_source_contract_layer_and_native_graph_coun
 
     assert result.returncode == 0, result.stdout + result.stderr
     preflight_counts = re.search(
-        r"Architecture preflight: (\d+) source modules, (\d+) contracts, (\d+) layer members",
+        r"Architecture preflight: (\d+) source modules, (\d+) contracts, "
+        r"(\d+) layer members, (\d+) architecture preflights",
         result.stdout,
     )
     assert preflight_counts is not None
-    source_count, contract_count, layer_count = map(int, preflight_counts.groups())
+    source_count, contract_count, layer_count, preflight_count = map(
+        int, preflight_counts.groups()
+    )
     script = load_architecture_script()
-    assert source_count == script.source_module_count(PROJECT_ROOT / "src/atelier2")
-    assert source_count >= script.EXPECTED_SOURCE_MODULE_FLOOR
-    assert (contract_count, layer_count) == (len(script.EXPECTED_CONTRACT_NAMES), 7)
+    landed = script.source_module_count(PROJECT_ROOT / "src/atelier2")
+    assert source_count == landed == script.EXPECTED_SOURCE_MODULE_COUNT
+    assert (contract_count, layer_count, preflight_count) == (
+        len(script.EXPECTED_CONTRACT_NAMES),
+        len(script.EXPECTED_LAYER_MEMBERS),
+        len(script.ARCHITECTURE_PREFLIGHTS),
+    )
 
     native_counts = re.search(
         r"Analyzed (\d+) files, (\d+) dependencies\.", result.stdout
@@ -153,8 +268,18 @@ def empty_source_scan(project: Path) -> None:
         source.unlink()
 
 
-def shrink_source_scan(project: Path) -> None:
-    (project / "src/atelier2/contracts/hashing.py").unlink()
+def shrink_source_scan_by_deleting_a_dispensable_leaf(project: Path) -> None:
+    """Delete a production leaf the use-case-record import does not need.
+
+    hashing.py is not that leaf: context's import graph loads it, so a stale
+    count would fail the copied tree at ImportError instead of the count.
+    """
+
+    (project / "src/atelier2/__main__.py").unlink()
+
+
+def add_a_source_module(project: Path) -> None:
+    (project / "src/atelier2/contracts/extra.py").write_text("", encoding="utf-8")
 
 
 def remove_contract(project: Path) -> None:
@@ -174,31 +299,61 @@ def change_layer(project: Path) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "change",
-    [empty_source_scan, shrink_source_scan, remove_contract, change_layer],
-    ids=["empty", "below-floor", "missing-contract", "changed-layer"],
-)
-def test_empty_shrunken_or_changed_contract_scan_fails(
-    tmp_path: Path, change: Callable[[Path], None]
-) -> None:
+def test_an_empty_source_scan_fails_at_the_source_module_count(tmp_path: Path) -> None:
     project = copied_project(tmp_path)
-    change(project)
+    empty_source_scan(project)
+
+    result = run_gate(project)
+
+    assert_source_module_count_mismatch(result, found=0)
+
+
+def test_a_missing_contract_fails_as_a_reviewed_set_change(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    remove_contract(project)
 
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "Architecture preflight refused:" in result.stderr
+    assert "the reviewed contract identifiers or names changed" in result.stderr
 
 
-def one_broken_contract() -> str:
-    """What the gate prints when exactly one reviewed contract is broken.
+def test_a_changed_layer_order_fails_as_a_reviewed_set_change(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    change_layer(project)
 
-    Derived from the reviewed set rather than spelled out, so adding a contract
-    cannot leave these assertions quietly describing an older gate.
-    """
-    reviewed = len(load_architecture_script().EXPECTED_CONTRACT_NAMES)
-    return f"Contracts: {reviewed - 1} kept, 1 broken."
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "the reviewed layer order or member set changed" in result.stderr
+
+
+def test_deleting_a_dispensable_source_leaf_fails_at_the_source_module_count(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    shrink_source_scan_by_deleting_a_dispensable_leaf(project)
+    script = load_architecture_script()
+
+    result = run_gate(project)
+
+    remaining = script.source_module_count(project / "src/atelier2")
+    assert remaining == script.EXPECTED_SOURCE_MODULE_COUNT - 1
+    assert_source_module_count_mismatch(result, found=remaining)
+
+
+def test_adding_a_source_module_fails_at_the_source_module_count(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    add_a_source_module(project)
+    script = load_architecture_script()
+
+    result = run_gate(project)
+
+    counted = script.source_module_count(project / "src/atelier2")
+    assert counted == script.EXPECTED_SOURCE_MODULE_COUNT + 1
+    assert_source_module_count_mismatch(result, found=counted)
 
 
 def load_architecture_script() -> ModuleType:
@@ -291,6 +446,17 @@ def add_route_reaching_a_port(project: Path) -> None:
     )
 
 
+def add_nested_route_reaching_a_port(project: Path) -> None:
+    nested = project / "src/atelier2/api/routes/group"
+    nested.mkdir()
+    (nested / "health.py").write_text(
+        "from atelier2.api.context import ApiPorts\n\n\n"
+        "def leak(ports: ApiPorts) -> object:\n    return ports\n",
+        encoding="utf-8",
+    )
+    recalibrate_copied_source_module_count(project)
+
+
 RUN_QUERIES_IMPORT = "from atelier2.ports.run_queries import RunQueries"
 CANCELLATION_IMPORT = (
     "from atelier2.ports.agent_attempts import AgentAttemptCancellationResult"
@@ -333,8 +499,7 @@ def test_a_use_case_field_that_resolves_to_a_port_fails(
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "a route can still reach a port" in result.stderr
+    assert_named_preflight_failed(result, "use-case-record-problems")
 
 
 @pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
@@ -344,7 +509,7 @@ def test_a_use_case_record_that_disappears_fails(tmp_path: Path) -> None:
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert_named_preflight_failed(result, "use-case-record-problems")
     assert "declares no ApiUseCases" in result.stderr
 
 
@@ -357,29 +522,31 @@ def test_a_translated_route_module_that_reaches_a_port_again_fails(
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "health.py: leak reaches ('ApiPorts',)" in result.stderr
+    assert_named_preflight_failed(
+        result,
+        "route-port-problems: src/atelier2/api/routes/health.py: leak reaches "
+        "('ApiPorts',)",
+    )
+
+
+@pytest.mark.proves("no-route-reaches-a-port-and-the-verification-says-so")
+def test_a_nested_route_module_that_reaches_a_port_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    add_nested_route_reaching_a_port(project)
+
+    result = run_gate(project)
+
+    assert_named_preflight_failed(
+        result,
+        "route-port-problems: src/atelier2/api/routes/group/health.py: leak reaches "
+        "('ApiPorts',)",
+    )
 
 
 ALIAS_IMPORT = (
     "from atelier2.ports.run_queries import RunQueries\nPortAlias = RunQueries"
 )
-REEXPORT_MODULE = "src/atelier2/application/port_reexport.py"
-REEXPORT_IMPORT = "from atelier2.application.port_reexport import RunPage"
-
-
-def add_port_reexport_module(project: Path) -> None:
-    """A module of the application layer that re-exports a durable port verbatim.
-
-    Every layer contract stays green: `application` may read `ports`, and `api`
-    may read `application`. The re-exported name is deliberately one `context.py`
-    does not import itself, so this case cannot pass for the older rule's reason —
-    only a check that resolves what the field really names can see the port.
-    """
-    (project / REEXPORT_MODULE).write_text(
-        "from atelier2.ports.run_queries import RunPage as RunPage\n",
-        encoding="utf-8",
-    )
+REEXPORT_IMPORT = "from atelier2.application import RunPage"
 
 
 def reach_a_port_from_a_read_of_an_allowlisted_module(project: Path) -> None:
@@ -418,8 +585,7 @@ def test_a_use_case_field_behind_a_local_alias_fails(tmp_path: Path) -> None:
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "a route can still reach a port" in result.stderr
+    assert_named_preflight_failed(result, "use-case-record-problems")
 
 
 @pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
@@ -427,13 +593,12 @@ def test_a_use_case_field_behind_a_re_export_of_another_layer_fails(
     tmp_path: Path,
 ) -> None:
     project = copied_project(tmp_path)
-    add_port_reexport_module(project)
+    add_port_reexport_on_application(project)
     replace_use_case_field(project, "leaked: RunPage | None = None", REEXPORT_IMPORT)
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "a route can still reach a port" in result.stderr
+    assert_named_preflight_failed(result, "use-case-record-problems")
 
 
 @pytest.mark.proves("no-route-reaches-a-port-and-the-verification-says-so")
@@ -445,12 +610,13 @@ def test_a_read_that_reaches_a_port_inside_an_allowlisted_module_fails(
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert_named_preflight_failed(result, "route-port-problems")
     assert "prepare_events" in result.stderr
 
 
-LEAKING_OUTCOME_MODULE = "src/atelier2/application/leaked_outcome.py"
-LEAKING_OUTCOME_IMPORT = "from atelier2.application.leaked_outcome import LeakedOutcome"
+LEAKING_OUTCOME_IMPORT = (
+    "from atelier2.application.compose_preview import LeakedOutcome"
+)
 
 
 def add_outcome_carrying_a_port(project: Path) -> None:
@@ -460,14 +626,13 @@ def add_outcome_carrying_a_port(project: Path) -> None:
     so the shape is legal in every way the rule can see from the outside. Only
     reading what the outcome carries shows the port travelling inside it.
     """
-    (project / LEAKING_OUTCOME_MODULE).write_text(
-        "from __future__ import annotations\n\n"
-        "from dataclasses import dataclass\n\n"
-        "from atelier2.ports.run_queries import RunQueries\n\n\n"
+    append_to(
+        project,
+        "src/atelier2/application/compose_preview.py",
+        "\nfrom atelier2.ports.run_queries import RunQueries\n\n"
         "@dataclass(frozen=True)\n"
         "class LeakedOutcome:\n"
         "    port: RunQueries\n",
-        encoding="utf-8",
     )
 
 
@@ -503,8 +668,7 @@ def test_a_use_case_outcome_that_carries_a_port_inside_it_fails(
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "a route can still reach a port" in result.stderr
+    assert_named_preflight_failed(result, "use-case-record-problems")
 
 
 @pytest.mark.proves("no-route-reaches-a-port-and-the-verification-says-so")
@@ -514,7 +678,7 @@ def test_a_second_port_read_inside_an_allowlisted_call_fails(tmp_path: Path) -> 
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert_named_preflight_failed(result, "route-port-problems")
     assert "event_stream_route" in result.stderr
 
 
@@ -539,16 +703,15 @@ def reach_a_port_through_an_alias_in_a_translated_call(project: Path) -> None:
 
 def add_outcome_hiding_a_port_behind_an_unreadable_annotation(project: Path) -> None:
     """An outcome that really carries a port, behind an annotation nothing resolves."""
-    (project / "src/atelier2/application/hidden_outcome.py").write_text(
-        "from __future__ import annotations\n\n"
-        "from dataclasses import dataclass\n"
-        "from typing import TYPE_CHECKING\n\n"
+    append_to(
+        project,
+        "src/atelier2/application/compose_preview.py",
+        "\nfrom typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    from atelier2.ports.run_queries import RunQueries\n\n\n"
+        "    from atelier2.ports.run_queries import RunQueries\n\n"
         "@dataclass(frozen=True)\n"
         "class HiddenOutcome:\n"
         "    port: 'RunQueries'\n",
-        encoding="utf-8",
     )
 
 
@@ -561,7 +724,7 @@ def test_a_translated_call_that_takes_a_port_back_through_an_alias_fails(
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert_named_preflight_failed(result, "route-port-problems")
     assert "event_stream_route" in result.stderr
 
 
@@ -574,13 +737,12 @@ def test_an_outcome_this_check_cannot_read_fails_rather_than_being_reported(
     replace_use_case_field(
         project,
         "leaked: Callable[[], HiddenOutcome] = _unbound",
-        "from atelier2.application.hidden_outcome import HiddenOutcome",
+        "from atelier2.application.compose_preview import HiddenOutcome",
     )
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "a route can still reach a port" in result.stderr
+    assert_named_preflight_failed(result, "use-case-record-problems")
 
 
 def make_a_port_word_an_http_answer(project: Path) -> None:
@@ -605,7 +767,7 @@ def test_a_port_that_words_an_http_answer_fails(tmp_path: Path) -> None:
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert_named_preflight_failed(result, "port-sentence-problems")
     assert "words an answer" in result.stderr
 
 
@@ -633,7 +795,7 @@ def test_an_api_module_that_names_a_port_record_fails(tmp_path: Path) -> None:
 
     result = run_gate(project)
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert_named_preflight_failed(result, "api-port-record-problems")
     assert "belongs with the other shared values" in result.stderr
 
 
