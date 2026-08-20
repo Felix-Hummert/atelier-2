@@ -62,13 +62,14 @@ describe("the workshop reads the durable list to its end", () => {
     expect(screen.queryByText(/Not every run of this project is on this page/i)).toBeNull();
   });
 
-  it("says it could not read everything when a later page fails, and keeps what it read", async () => {
+  it("names an incomplete initial read without confirming its partial rows", async () => {
     open("/atelier/project", pagedListRuns([firstPage, secondPage], 1));
 
     const notice = await screen.findByRole("alert");
 
-    expect(notice.textContent).toContain("could not be read");
-    expect(within(screen.getByRole("region", { name: "Running" })).getAllByRole("link")).toHaveLength(50);
+    expect(notice.textContent).toContain("Project runs incomplete");
+    expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
+    expect(screen.queryByText("run-0")).toBeNull();
     expect(screen.queryByRole("region", { name: "Done" })).toBeNull();
   });
 
@@ -78,8 +79,9 @@ describe("the workshop reads the durable list to its end", () => {
 
     const notice = await screen.findByRole("alert");
 
-    expect(notice.textContent).toContain("could not be read");
+    expect(notice.textContent).toContain("Project runs incomplete");
     expect(listRuns.mock.calls.length).toBeLessThanOrEqual(3);
-    expect(screen.getByRole("region", { name: "Done" }).isConnected).toBe(true);
+    expect(screen.queryByRole("region", { name: "Done" })).toBeNull();
+    expect(screen.queryByText("the-finished-one")).toBeNull();
   });
 });

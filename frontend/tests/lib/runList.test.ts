@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { newestActivityFirst, runActivityAt, workflowNamesOf } from "../../src/lib/runList";
-import { publicReference, revisionHash, startedRun } from "../support/workflowV1";
+import {
+  publicReference,
+  revisionHash,
+  startedRun,
+  workflowRevision
+} from "../support/workflowV1";
 
 function v3Run(changes: Partial<RunV3> = {}): RunV3 {
   return {
@@ -25,9 +30,12 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
   };
 }
 
-function v3Revision(name: string): WorkflowRevisionDetail {
+function v3Revision(
+  name: string,
+  hash: string = revisionHash
+): WorkflowRevisionDetail {
   return {
-    workflow_revision_hash: revisionHash,
+    workflow_revision_hash: hash,
     document_base64: "YQ==",
     graph: {
       workflow_format_version: 3,
@@ -102,16 +110,55 @@ describe("the project run list ranks by last known activity", () => {
 
 describe("the project run list reads published workflow names", () => {
   it("maps a V3 revision hash to the name the published graph already answers", async () => {
-    const names = await workflowNamesOf([v3Run()], async () => v3Revision("Two agents in a line"));
+    const readRevision = vi.fn(async () => v3Revision("Two agents in a line"));
+    const names = await workflowNamesOf(
+      [
+        v3Run(),
+        v3Run({ run_id: "same revision", public_run_reference: "run1.c2FtZQ" })
+      ],
+      readRevision
+    );
 
     expect(names.get(revisionHash)).toBe("Two agents in a line");
+    expect(readRevision).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the list namable when a revision cannot be read", async () => {
-    const names = await workflowNamesOf([v3Run()], async () => {
-      throw new Error("revision missing");
+  it("refuses the whole name set when one of several revisions cannot be read", async () => {
+    const missingHash = "d".repeat(64);
+    const readRevision = vi.fn(async (hash: string) => {
+      if (hash === missingHash) throw new Error("revision missing");
+      return v3Revision("Two agents in a line", hash);
     });
 
-    expect(names.size).toBe(0);
+    await expect(
+      workflowNamesOf(
+        [
+          v3Run(),
+          v3Run({
+            run_id: "missing revision",
+            public_run_reference: "run1.bWlzc2luZw",
+            workflow_revision_hash: missingHash
+          })
+        ],
+        readRevision
+      )
+    ).rejects.toThrow("revision missing");
+
+    expect(readRevision).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a non-V3 revision as the name of a V3 run", async () => {
+    await expect(
+      workflowNamesOf([v3Run()], async () => workflowRevision())
+    ).rejects.toThrow("a V3 run referenced a workflow revision of another format");
+  });
+
+  it("refuses to file a different revision under the hash a run named", async () => {
+    await expect(
+      workflowNamesOf(
+        [v3Run()],
+        async () => v3Revision("Different revision", "e".repeat(64))
+      )
+    ).rejects.toThrow("a V3 run received a different workflow revision");
   });
 });
