@@ -8,13 +8,13 @@
     type AuthProfileInput,
     type CockpitApi,
     type WorkflowRevisionDetail,
-    type WorkflowRevisionPage,
     type WorkflowRevisionSummary
   } from "../api/client";
   import Breadcrumb from "../components/Breadcrumb.svelte";
   import InfoHint from "../components/InfoHint.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ProofAnchor from "../components/ProofAnchor.svelte";
+  import ReadState from "../components/ReadState.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
   import {
@@ -37,6 +37,7 @@
   import {
     beginRead,
     confirmRead,
+    failRead,
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
@@ -89,8 +90,18 @@
     orders: OrderDraft[];
   }
 
-  let revisions: RetainedRead<WorkflowRevisionPage, never> =
-    retainedRead<WorkflowRevisionPage, never>();
+  interface SavedWorkflowSnapshot {
+    items: WorkflowRevisionSummary[];
+    newestByName: Record<string, string>;
+    catalogByName: Record<string, CatalogNameState>;
+  }
+
+  type SavedWorkflowReadFailure =
+    | { kind: "unavailable"; title: string }
+    | { kind: "incomplete"; title: string };
+
+  let revisions: RetainedRead<SavedWorkflowSnapshot, SavedWorkflowReadFailure> =
+    retainedRead<SavedWorkflowSnapshot, SavedWorkflowReadFailure>();
   let publishedConfigurations: AgentConfigurationRevision[] = [];
   let configurationsRequest: "idle" | "loading" = "idle";
   let mode: "saved" | "publish" = "saved";
@@ -104,10 +115,10 @@
   let operation: "load" | "publish" | "start" | "retry" | null = null;
   $: busy = operation !== null;
   let selectionGeneration = 0;
-  let newestByName: Record<string, string> = {};
-  let catalogByName: Record<string, CatalogNameState> = {};
   let selectedHashByKey: Record<string, string> = {};
   let chosenRowKey: string | null = null;
+  $: newestByName = revisions.confirmed?.newestByName ?? {};
+  $: catalogByName = revisions.confirmed?.catalogByName ?? {};
   $: savedRows = groupSavedWorkflows(revisions.confirmed?.items ?? [], newestByName);
   $: visibleRows =
     chosenRowKey === null
@@ -139,30 +150,32 @@
   ): Promise<{
     newestByName: Record<string, string>;
     catalogByName: Record<string, CatalogNameState>;
-  }> {
+  } | null> {
     const resolved: Record<string, string> = {};
     const states: Record<string, CatalogNameState> = {};
-    const listed = new Set(items.map((item) => item.workflow_revision_hash));
     const names = [
       ...new Set(
         items.flatMap((item) => (item.name === null ? [] : [item.name]))
       )
     ];
-    await Promise.all(
+    const catalog = await Promise.all(
       names.map(async (name) => {
-        try {
-          const state = await catalogNameStateOf(name, (asked) =>
-            cockpitApi.getRevisionByName(asked)
-          );
-          states[name] = state;
-          if (state.kind === "admitted" && listed.has(state.revisionHash)) {
-            resolved[name] = state.revisionHash;
-          }
-        } catch (error) {
-          showFailure(error, "Some saved workflow names could not be resolved.");
-        }
+        const state = await catalogNameStateOf(name, (asked) =>
+          cockpitApi.getRevisionByName(asked)
+        );
+        return { name, state };
       })
     );
+    for (const { name, state } of catalog) {
+      states[name] = state;
+      if (state.kind !== "admitted") continue;
+      const listedForName = items.some(
+        (item) =>
+          item.name === name && item.workflow_revision_hash === state.revisionHash
+      );
+      if (!listedForName) return null;
+      resolved[name] = state.revisionHash;
+    }
     return { newestByName: resolved, catalogByName: states };
   }
 
@@ -234,22 +247,31 @@
     revisions = begun.read;
     try {
       const reading = await readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after));
+      if (!reading.complete) {
+        revisions = failRead(revisions, begun.generation, {
+          kind: "incomplete",
+          title: "Saved workflows incomplete"
+        });
+        return;
+      }
       const catalog = await resolveCatalogNames(reading.revisions);
-      newestByName = catalog.newestByName;
-      catalogByName = catalog.catalogByName;
+      if (catalog === null) {
+        revisions = failRead(revisions, begun.generation, {
+          kind: "unavailable",
+          title: "Saved workflows unavailable"
+        });
+        return;
+      }
       revisions = confirmRead(revisions, begun.generation, {
         items: reading.revisions,
-        next_after_revision_hash: null
+        newestByName: catalog.newestByName,
+        catalogByName: catalog.catalogByName
       });
-      if (!reading.complete) {
-        showFailure(
-          new Error(`Some saved workflows could not be read: ${reading.unreadable}.`),
-          "The workflow list is incomplete."
-        );
-      }
-    } catch (error) {
-      showFailure(error, "The workflow list could not be loaded.");
-      revisions = { ...revisions, request: { state: "idle" } };
+    } catch {
+      revisions = failRead(revisions, begun.generation, {
+        kind: "unavailable",
+        title: "Saved workflows unavailable"
+      });
     }
   }
 
@@ -787,6 +809,11 @@
   {#if mode === "saved"}
     <fieldset class="revision-picker">
       <legend>Saved workflow</legend>
+      <ReadState
+        read={revisions}
+        label="saved workflows"
+        onRetry={() => { void loadRevisions(); }}
+      />
       {#each visibleRows as row (row.key)}
         {@const revision = selectedRevisionOf(row, selectedHashByKey[row.key])}
         {@const catalogForm = catalogFormOf(
@@ -952,7 +979,6 @@
           </div>
         </article>
       {/each}
-      {#if revisions.request.state === "loading"}<p class="status" role="status">Loading saved workflows…</p>{/if}
       {#if operation === "load"}<p class="status" role="status">Loading workflow…</p>{/if}
       {#if revisions.confirmed?.items.length === 0}<p class="muted">No saved workflows yet.</p>{/if}
     </fieldset>

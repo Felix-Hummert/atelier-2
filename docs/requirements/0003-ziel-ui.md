@@ -287,10 +287,10 @@ Offen:      - Tastatur-Walkthrough (Eigentümer: #336, Ziel: späterer Prüfer)
 ### REQ-UIQ-06: Leer, lädt, Fehler und wartet sind vier benannte Zustände.
 Status:     DRAFT
 Quelle:     DESK — #336 body @ 92d5e087, Kriterium 6
-Begründung: Die Studio- und Project-Belege tragen Leer, lädt und Fehler für ihre vollständigen Reads. Diese Regel verlangt weiterhin, dass die vier Zustände nicht ineinanderfallen.
+Begründung: Die Studio-, Project- und New-Run-Workflow-Belege tragen Leer, lädt und Fehler für ihre vollständigen Reads. Diese Regel verlangt weiterhin, dass die vier Zustände nicht ineinanderfallen.
 Journeys:
-Beweis:     the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read the-project-preserves-confirmed-truth-and-retries-only-its-failed-read
-Offen:      - New Run sowie der eigene Zustand „wartet“ (Eigentümer: #440 für die Read-Flächen; „wartet“ derzeit ungebunden)
+Beweis:     the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read the-project-preserves-confirmed-truth-and-retries-only-its-failed-read new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
+Offen:      - Der New-Run-Agent-Read sowie der eigene Zustand „wartet“ (Eigentümer: #440 für die Read-Flächen; „wartet“ derzeit ungebunden)
 
 ### REQ-UIQ-07: Eine Frage hat ein Muster, und das Muster ist eine wiederverwendete Komponente.
 Status:     DRAFT
@@ -372,7 +372,7 @@ Declared:
 - REQ-UI-16: `an-empty-area-names-the-one-next-action`
 - REQ-UIQ-04: `core-surfaces-render-owned-display-strings-under-a-pseudo-locale`
 - REQ-UIQ-05: `core-surfaces-have-no-unnamed-axe-violations`
-- REQ-UIQ-06: `the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read`, `the-project-preserves-confirmed-truth-and-retries-only-its-failed-read`
+- REQ-UIQ-06: `the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read`, `the-project-preserves-confirmed-truth-and-retries-only-its-failed-read`, `new-run-preserves-workflow-truth-and-retries-only-the-workflow-read`
 
 Every other rule on this document is `UNGEBUNDEN`. The testable forms the
 previous text listed as candidates — a node demanding undeclared interactive

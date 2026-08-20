@@ -485,6 +485,203 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
   expect(page.url()).toBe(projectUrl);
 });
 
+test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read): New Run recovers one atomic workflow-and-catalog read", async ({ page }) => {
+  const workflowListPath = "/atelier/api/v1/workflow-revisions";
+  const agentListPath = "/atelier/api/v1/agent-configuration-revisions";
+  const retainedName = "retained-workflow";
+  const newName = "new-workflow";
+  const confirmedHash = "1".repeat(64);
+  const refreshedHash = "2".repeat(64);
+  const newHash = "3".repeat(64);
+  const unnamedHash = "4".repeat(64);
+  const absentHeadHash = "6".repeat(64);
+  const summary = (hash: string, name: string | null, description: string | null) => ({
+    workflow_revision_hash: hash,
+    workflow_format_version: name === null ? 2 : 3,
+    executable: true,
+    not_executable_reason: null,
+    name,
+    description
+  });
+  const catalogHead = (name: string, hash: string, revisionNumber: number) => ({
+    display_name: name,
+    lineage_id: "5".repeat(64),
+    workflow_revision_hash: hash,
+    revision_number: revisionNumber
+  });
+  const listTarget = (after?: string): string =>
+    after === undefined
+      ? `${workflowListPath}?limit=50&view=described`
+      : `${workflowListPath}?limit=50&view=described&after=${after}`;
+  const catalogTarget = (name: string): string =>
+    `${workflowListPath}/by-name/${name}`;
+  let round = 0;
+  const observed: Array<{ method: string; target: string }> = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/atelier/api/v1")) {
+      observed.push({ method: request.method(), target: `${url.pathname}${url.search}` });
+    }
+  });
+  await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: [], next_after_revision_hash: null })
+    });
+  });
+  await page.route("**/atelier/api/v1/workflow-revisions?*", async (route) => {
+    const url = new URL(route.request().url());
+    const after = url.searchParams.get("after");
+    if (after === null) round += 1;
+    if (round <= 2) {
+      await route.abort("failed");
+      return;
+    }
+    const refreshing = round >= 4;
+    if (after === null) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          items: refreshing
+            ? [
+                summary(confirmedHash, retainedName, "The confirmed catalog head."),
+                summary(refreshedHash, retainedName, "The refreshed catalog head.")
+              ]
+            : [summary(confirmedHash, retainedName, "The confirmed catalog head.")],
+          next_after_revision_hash: refreshing ? refreshedHash : confirmedHash
+        })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: refreshing
+          ? [summary(newHash, newName, "A newly confirmed catalog line.")]
+          : [summary(unnamedHash, null, null)],
+        next_after_revision_hash: null
+      })
+    });
+  });
+  await page.route("**/atelier/api/v1/workflow-revisions/by-name/*", async (route) => {
+    const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
+    const refreshed = round >= 4;
+    const hash = name === retainedName
+      ? refreshed ? refreshedHash : confirmedHash
+      : round === 4 ? absentHeadHash : newHash;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(catalogHead(name, hash, hash === confirmedHash ? 1 : 2))
+    });
+  });
+
+  const expectOnlyWorkflowRead = (targets: string[]): void => {
+    expect(observed.every(({ method }) => method === "GET")).toBe(true);
+    expect(observed.map(({ target }) => target).sort()).toEqual([...targets].sort());
+  };
+
+  await page.goto("/atelier/new");
+  await expect(page.getByText("Saved workflows unavailable")).toBeVisible();
+  await expect(page.getByText(/Failed to fetch|private/i)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry saved workflows" })).toHaveCount(1);
+  expect(observed.map(({ target }) => target).sort()).toEqual([
+    `${agentListPath}?limit=50`,
+    listTarget()
+  ].sort());
+  const retry = page.getByRole("button", { name: "Retry saved workflows" });
+  const newRunUrl = page.url();
+
+  observed.length = 0;
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Saved workflows unavailable")).toBeVisible();
+  await expect(retry).toBeFocused();
+  expectOnlyWorkflowRead([listTarget()]);
+  expect(page.url()).toBe(newRunUrl);
+
+  observed.length = 0;
+  await retry.click();
+  const retained = page.getByRole("article", { name: retainedName });
+  await expect(retained).toContainText("The confirmed catalog head.");
+  await expect(retained).toHaveAttribute("data-catalog-form", "ready");
+  await expect(page.getByRole("button", { name: "Refresh saved workflows" })).toHaveCount(1);
+  expectOnlyWorkflowRead([
+    listTarget(),
+    listTarget(confirmedHash),
+    catalogTarget(retainedName)
+  ]);
+  expect(page.url()).toBe(newRunUrl);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-desktop.png",
+    fullPage: true
+  });
+
+  observed.length = 0;
+  await page.getByRole("button", { name: "Refresh saved workflows" }).click();
+  await expect(page.getByText("Saved workflows unavailable")).toBeVisible();
+  await expect(page.getByText(/Failed to fetch|private/i)).toHaveCount(0);
+  await expect(retained).toContainText("The confirmed catalog head.");
+  await expect(retained.getByRole("radio")).toBeEnabled();
+  await expect(retained.getByText("Details")).toBeVisible();
+  await expect(page.getByText("The refreshed catalog head.")).toHaveCount(0);
+  await expect(page.getByRole("article", { name: newName })).toHaveCount(0);
+  await expect(retry).toHaveCount(1);
+  expectOnlyWorkflowRead([
+    listTarget(),
+    listTarget(refreshedHash),
+    catalogTarget(retainedName),
+    catalogTarget(newName)
+  ]);
+  expect(page.url()).toBe(newRunUrl);
+
+  await retry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(retry).toBeFocused();
+  await expectVisibleFocus(retry);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-grayscale-desktop.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-grayscale-390x844.png",
+    fullPage: true
+  });
+  await page.locator("style").last().evaluate((element) => element.remove());
+
+  observed.length = 0;
+  await retry.click();
+  await expect(page.getByText("Saved workflows unavailable")).toHaveCount(0);
+  await expect(page.getByRole("article", { name: retainedName })).toContainText(
+    "The refreshed catalog head."
+  );
+  await expect(page.getByRole("article", { name: newName })).toContainText(
+    "A newly confirmed catalog line."
+  );
+  await expect(page.getByRole("article", { name: newName })).toHaveAttribute(
+    "data-catalog-form",
+    "ready"
+  );
+  await expect(page.getByRole("button", { name: "Refresh saved workflows" })).toHaveCount(1);
+  expectOnlyWorkflowRead([
+    listTarget(),
+    listTarget(refreshedHash),
+    catalogTarget(retainedName),
+    catalogTarget(newName)
+  ]);
+  expect(page.url()).toBe(newRunUrl);
+});
+
 test("walks the whole workshop: studio into the project, project into the run, and the trail back up", async ({ page }) => {
   await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
@@ -1342,7 +1539,7 @@ test("opening Details on a saved V3 workflow shows each node with its role and i
   expect(published.status()).toBe(201);
 
   await page.goto("/atelier/new");
-  await page.getByLabel("Saved workflow").check();
+  await page.getByRole("radio", { name: "Saved workflow", exact: true }).check();
   await expect(
     page.getByRole("radio", { name: /Implement a candidate, then review it for defects/ })
   ).toBeVisible();
