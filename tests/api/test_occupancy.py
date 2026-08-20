@@ -234,7 +234,7 @@ def test_a_tight_field_limit_rejects_an_overlong_configured_project_id(
     assert channel.published == []
 
 
-def test_the_maximum_project_id_round_trips_as_a_public_project_reference(
+def test_a_maximum_length_utf8_encodable_configured_project_id_round_trips(
     tmp_path,
 ) -> None:
     project = "é" * MAXIMUM_PROJECT_ID_CHARACTERS

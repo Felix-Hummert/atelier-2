@@ -105,9 +105,10 @@ def encode_public_project_reference(project_id: ProjectId) -> str:
     return _PUBLIC_PROJECT_REFERENCE_PREFIX + encoded
 
 
-# Longest project1. encoding of a ProjectId the durable contract admits. One
-# four-byte scalar is the widest UTF-8 a Python character can occupy, so this
-# is the bound the codec, the occupancy door, and OpenAPI must share.
+# Longest project1. encoding of a UTF-8-encodable ProjectId at the durable
+# character bound. One four-byte scalar is the widest UTF-8 a Python character
+# can occupy, so this is the bound the codec, the occupancy door, and OpenAPI
+# must share.
 MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS = len(
     encode_public_project_reference(
         ProjectId("\U00010000" * MAXIMUM_PROJECT_ID_CHARACTERS)

@@ -54,9 +54,7 @@ def test_public_run_reference_rejects_noncanonical_or_invalid_values(
         decode_public_run_reference(reference)
 
 
-def test_public_project_reference_bound_is_the_longest_encoding_of_a_project_id() -> (
-    None
-):
+def test_public_project_reference_bound_is_longest_utf8_encodable_project_id() -> None:
     longest = encode_public_project_reference(
         ProjectId("\U00010000" * MAXIMUM_PROJECT_ID_CHARACTERS)
     )

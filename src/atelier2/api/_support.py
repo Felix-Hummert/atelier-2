@@ -121,8 +121,9 @@ def decode_public_reference(value: str, limits: ApiLimits) -> RunId:
 
 def decode_public_project_reference_value(value: str, limits: ApiLimits) -> ProjectId:
     try:
-        # Encoded length is the codec bound, not maximum_field_characters: a
-        # maximum ProjectId encodes longer than the decoded id.
+        # Encoded length is the codec bound, not maximum_field_characters: the
+        # configuration contract admits a maximum-length, UTF-8-encodable
+        # ProjectId whose wire encoding is longer than its decoded value.
         project_id = decode_public_project_reference(value)
         limits.require_field(project_id.value)
         return project_id
