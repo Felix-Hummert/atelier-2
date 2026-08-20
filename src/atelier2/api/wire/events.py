@@ -112,7 +112,11 @@ class AgentCompletedEventResourceV2(RunEventBaseResourceV2):
 
 class AgentFailedEventResourceV2(RunEventBaseResourceV2):
     event: Literal["AGENT_FAILED"]
-    failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"]
+    failure_code: Literal[
+        "PROCESS_EXITED_UNSUCCESSFULLY",
+        "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+        "PROCESS_SUPERVISION_FAILED",
+    ]
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
 
@@ -234,6 +238,8 @@ class AgentFailedEventResourceV3(RunEventBaseResourceV3):
     event: Literal["AGENT_FAILED"]
     failure_code: Literal[
         "PROCESS_EXITED_UNSUCCESSFULLY",
+        "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+        "PROCESS_SUPERVISION_FAILED",
         "OUTPUT_SCHEMA_REFUSED",
         "AGENT_REFUSED",
         "PROJECT_VERIFICATION_FAILED",

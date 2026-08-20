@@ -108,6 +108,26 @@ is the declaring node's decision: a V2 node bounds them and nothing else, while 
 V3 node's answer is read against the schema its own output pins before any of
 that transition is written.
 
+Schema V27 stages the Core half of the external Runner handoff; no runtime or
+codec calls it yet. One attempt can instead bind one manifest and Runner
+generation, arm one invocation, and accept one of six typed terminal evidence
+variants under a semantic hash. The product result and that evidence hash commit
+in one transaction, retries of the same evidence are idempotent, and different
+evidence collides. Success keeps the exact provider bytes; a provider failure,
+an output-limit ending, and a supervision-boundary failure use the existing
+failed-attempt seam under their closed codes, which the V2/V3 API and cockpit
+decoders now carry. A lost invocation stays publicly `POSSIBLY_RAN` and writes no
+invented ending. Physical cancellation becomes `CANCELLED` only for the exact
+Core command; an in-hand completion for a no-replacement cancellation wins and
+keeps its bytes. `NEVER_LAUNCHED` is control evidence instead: the prepared
+attempt stays nonterminal until Core commits and acknowledges it, after which
+only that same attempt may bind a fresh Runner generation and clear the old
+handoff fields. A runner-bound replacement request and a tool-grant-bound result
+are refused before product or evidence mutation. Runner-bound attempts never
+enter the legacy driver-loss queue. The later Runner readback/acknowledgement
+loop and evidence codec remain unimplemented, so this store contract alone does
+not make external execution live.
+
 Every attempt is started in a scratch working directory of its own. The operator
 declares one provider-neutral scratch root, and the runtime leases from it a
 directory named after the exact attempt identity, so an attempt and its

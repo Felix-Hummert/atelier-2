@@ -24,6 +24,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 from sqlalchemy.schema import CreateIndex
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.run_transitions import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
@@ -31,6 +32,7 @@ from atelier2.adapters.dbos.schema import (
     _PRODUCT_TRIGGERS,
     _V17_AGENT_ATTEMPT_TRIGGERS,
     _V23_AGENT_ATTEMPT_TRIGGERS,
+    _V24_AGENT_ATTEMPT_TRIGGERS,
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V13_SCHEMA_HANDOFF,
@@ -39,6 +41,7 @@ from atelier2.adapters.dbos.schema import (
     V23_SCHEMA_HANDOFF,
     V24_SCHEMA_HANDOFF,
     V25_SCHEMA_HANDOFF,
+    V26_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -78,6 +81,8 @@ from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKin
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
 from atelier2.host import main
+from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
+from tests.scenarios.agents import agent_attempt_execution
 
 ARCHIVED_RUN_ID = "live/erster-lauf-nach-der-nacht"
 ARCHIVED_NODE_ID = "cook"
@@ -784,6 +789,11 @@ def test_an_exact_v13_store_migrates_and_opens_as_the_current_schema(
         )
         assert attempt["state"] == "FAILED"
         assert attempt["failure_code"] == ARCHIVED_ATTEMPT_FAILURE_CODE
+        assert attempt["runner_manifest_id"] is None
+        assert attempt["runner_generation_id"] is None
+        assert attempt["runner_invocation_id"] is None
+        assert attempt["runner_terminal_evidence_hash"] is None
+        assert attempt["runner_evidence_acceptance_phase"] == "NONE"
         assert (
             connection.scalar(sa.select(sa.func.count()).select_from(run_inputs_v3))
             == 0
@@ -890,6 +900,20 @@ def _drop_occupancy_channel(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP TABLE {host_occupancy_revisions.name}")
 
 
+def _revert_runner_evidence_attempts(connection: sqlite3.Connection) -> None:
+    """Restore the exact V26 attempt table and its pre-Runner trigger."""
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        "agent_attempts_after_runner_evidence",
+        _AGENT_ATTEMPTS_TRIGGERS,
+        SCHEMA_VERSION,
+        V26_SCHEMA_HANDOFF.version,
+        trigger_source=_V24_AGENT_ATTEMPT_TRIGGERS,
+    )
+
+
 def _create_exact_v21_store(database_path: Path) -> None:
     """A current store with instants and AGENT_REFUSED removed: the published V21 shape."""
 
@@ -964,6 +988,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
         connection.execute(
@@ -981,6 +1006,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -988,6 +1014,22 @@ def _create_exact_v25_store(database_path: Path) -> None:
         )
         connection.commit()
         _require_product_shape(connection, V25_SCHEMA_HANDOFF.version)
+
+
+def _create_exact_v26_store(database_path: Path) -> None:
+    """The published occupancy store before Runner evidence existed."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_runner_evidence_attempts(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V26_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V26_SCHEMA_HANDOFF.version)
 
 
 def test_an_exact_v21_store_migrates_to_v22(
@@ -1108,7 +1150,7 @@ def test_an_exact_v24_store_migrates_to_v25(
     engine.dispose()
 
 
-def test_an_exact_v25_store_migrates_to_v26(
+def test_an_exact_v25_store_migrates_through_v26_to_v27(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1121,7 +1163,7 @@ def test_an_exact_v25_store_migrates_to_v26(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "25" in shown.out and "26" in shown.out
+    assert all(step in shown.out for step in ("25", "26", "27"))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -1144,6 +1186,111 @@ def test_an_exact_v25_store_migrates_to_v26(
             == 0
         )
     engine.dispose()
+
+
+def test_an_exact_v26_store_migrates_to_v27(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v26_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 26"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "26" in shown.out and "27" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+        assert tuple(agent_attempts.c.keys())[-5:] == (
+            "runner_manifest_id",
+            "runner_generation_id",
+            "runner_invocation_id",
+            "runner_terminal_evidence_hash",
+            "runner_evidence_acceptance_phase",
+        )
+    engine.dispose()
+
+
+def test_v26_attempt_bytes_cross_v27_unchanged_with_none_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    request = attempt_request(runtime, "migration/v26-populated")
+    DbosAgentAttemptStore(runtime.engine).prepare(agent_attempt_execution(request))
+    runtime.close()
+
+    with sqlite3.connect(database_path) as connection:
+        _revert_runner_evidence_attempts(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V26_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V26_SCHEMA_HANDOFF.version)
+        predecessor_columns = tuple(
+            str(record[1])
+            for record in connection.execute("PRAGMA table_info(agent_attempts)")
+        )
+        predecessor_row = connection.execute("SELECT * FROM agent_attempts").fetchone()
+    assert predecessor_row is not None
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        projected = ", ".join(predecessor_columns)
+        assert (
+            connection.execute(f"SELECT {projected} FROM agent_attempts").fetchone()
+            == predecessor_row
+        )
+        runner_fields = connection.execute(
+            "SELECT runner_manifest_id, runner_generation_id, runner_invocation_id, "
+            "runner_terminal_evidence_hash, runner_evidence_acceptance_phase "
+            "FROM agent_attempts"
+        ).fetchone()
+    assert runner_fields == (None, None, None, None, "NONE")
+
+
+@pytest.mark.parametrize(
+    "collision_sql",
+    (
+        "CREATE TABLE agent_attempts_before_runner_evidence(wrong TEXT)",
+        "CREATE VIEW agent_attempts_before_runner_evidence AS SELECT 1 AS wrong",
+    ),
+)
+def test_a_refused_v27_hop_rolls_back_the_attempt_rebuild(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    collision_sql: str,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v26_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(collision_sql)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "agent_attempts_before_runner_evidence" in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (26,)
 
 
 @pytest.mark.parametrize(

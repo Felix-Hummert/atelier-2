@@ -43,6 +43,28 @@ def test_agent_attempt_resource_rejects_incongruent_failure_shape() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "failure_code",
+    ("PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED"),
+)
+def test_agent_attempt_resource_admits_the_runner_failure_vocabulary(
+    failure_code: str,
+) -> None:
+    resource = AgentAttemptResourceV2.model_validate(
+        {
+            "attempt_id": HASH,
+            "node_execution_id": EXECUTION,
+            "request_hash": "2" * 64,
+            "attempt_ordinal": 1,
+            "state": "FAILED",
+            "failure_code": failure_code,
+            "cancellation": None,
+        }
+    )
+
+    assert resource.failure_code == failure_code
+
+
 def agent_node() -> AgentNodeResource:
     return AgentNodeResource(
         type="agent",

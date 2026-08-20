@@ -75,6 +75,8 @@ class NodeReceiptReason(StrEnum):
     OUTPUT_ACCEPTED = "output-accepted"
     OUTPUT_SCHEMA_REFUSED = "output-schema-refused"
     PROCESS_EXITED_UNSUCCESSFULLY = "process-exited-unsuccessfully"
+    PROCESS_OUTPUT_LIMIT_EXCEEDED = "process-output-limit-exceeded"
+    PROCESS_SUPERVISION_FAILED = "process-supervision-failed"
     AGENT_REFUSED = "agent-refused"
     PROJECT_VERIFICATION_FAILED = "project-verification-failed"
 

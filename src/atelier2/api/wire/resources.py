@@ -679,7 +679,14 @@ class AgentAttemptResourceV2(ApiModel):
     request_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
     state: PublicAttemptStateName
-    failure_code: Literal["PROCESS_EXITED_UNSUCCESSFULLY"] | None
+    failure_code: (
+        Literal[
+            "PROCESS_EXITED_UNSUCCESSFULLY",
+            "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+            "PROCESS_SUPERVISION_FAILED",
+        ]
+        | None
+    )
     cancellation: AgentAttemptCancellationResourceV2 | None
 
     @model_validator(mode="after")

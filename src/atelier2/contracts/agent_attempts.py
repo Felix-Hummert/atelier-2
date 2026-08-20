@@ -78,6 +78,8 @@ TERMINAL_AGENT_ATTEMPT_STATES = frozenset(
 
 class AgentAttemptFailureCode(StrEnum):
     PROCESS_EXITED_UNSUCCESSFULLY = "PROCESS_EXITED_UNSUCCESSFULLY"
+    PROCESS_OUTPUT_LIMIT_EXCEEDED = "PROCESS_OUTPUT_LIMIT_EXCEEDED"
+    PROCESS_SUPERVISION_FAILED = "PROCESS_SUPERVISION_FAILED"
     # The provider process ended fine; what it produced is what the schema its
     # own author pinned refuses. A distinct member because folding it into the
     # process code would write a durable statement about an exit that never
@@ -368,6 +370,14 @@ type RunnerTerminalEvidence = (
 )
 
 
+class RunnerEvidenceAcceptancePhase(StrEnum):
+    """How far Core durably accepted one semantic evidence object."""
+
+    NONE = "NONE"
+    CORE_COMMITTED = "CORE_COMMITTED"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+
+
 @dataclass(frozen=True)
 class RunnerTerminalEvidenceEnvelope:
     """Terminal evidence bound to the exact generation and accepted invocation."""
@@ -406,6 +416,63 @@ class RunnerTerminalEvidenceEnvelope:
             raise ValueError(
                 "runner terminal evidence without an invocation must prove never launched"
             )
+
+
+class RunnerTerminalEvidenceHash(Sha256Hash):
+    """Semantic identity of one typed Runner evidence envelope.
+
+    The hash deliberately owns the domain envelope, not a Runner transport codec:
+    a later codec may change representation without changing whether Core has
+    already accepted the same fact.
+    """
+
+    @classmethod
+    def for_envelope(
+        cls, envelope: RunnerTerminalEvidenceEnvelope
+    ) -> RunnerTerminalEvidenceHash:
+        evidence = envelope.evidence
+        match evidence:
+            case RunnerProviderResult(result):
+                variant = "provider-result"
+                payload = (result.output_bytes,)
+            case RunnerProviderFailure(exit_signature):
+                variant = "provider-failure"
+                payload = (
+                    struct.pack(">q", exit_signature.return_code),
+                    exit_signature.standard_error,
+                )
+            case RunnerOutputLimitExceeded(exceeded_streams):
+                variant = "output-limit-exceeded"
+                payload = tuple(
+                    stream.value.encode("ascii")
+                    for stream in sorted(exceeded_streams, key=lambda item: item.value)
+                )
+            case RunnerProcessBoundaryFailure():
+                variant = "process-boundary-failure"
+                payload = ()
+            case RunnerCancellation(command_id, observation):
+                variant = "cancellation"
+                payload = (
+                    command_id.encode("utf-8"),
+                    observation.value.encode("ascii"),
+                )
+            case RunnerInvocationLost():
+                variant = "invocation-lost"
+                payload = ()
+        binding = envelope.binding
+        invocation = envelope.invocation_id
+        return cls.of(
+            frame(
+                "runner-terminal-evidence/v1",
+                binding.attempt_id.value.encode("ascii"),
+                binding.request_hash.value.encode("ascii"),
+                binding.generation_id.value.encode("utf-8"),
+                binding.manifest_id.value.encode("ascii"),
+                b"" if invocation is None else invocation.value.encode("utf-8"),
+                variant.encode("ascii"),
+                *payload,
+            )
+        )
 
 
 class AgentAttemptProcessPhase(StrEnum):
@@ -521,6 +588,13 @@ class AgentAttempt:
     process_owner_id: AgentProcessOwnerId | None = None
     watchdog_generation_id: WatchdogGenerationId | None = None
     cancellation: AgentAttemptCancellation | None = None
+    runner_manifest_id: RunnerManifestId | None = None
+    runner_generation_id: RunnerGenerationId | None = None
+    runner_invocation_id: RunnerInvocationId | None = None
+    runner_terminal_evidence_hash: RunnerTerminalEvidenceHash | None = None
+    runner_evidence_acceptance_phase: RunnerEvidenceAcceptancePhase = (
+        RunnerEvidenceAcceptancePhase.NONE
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt_id, AgentAttemptId):
@@ -552,6 +626,54 @@ class AgentAttempt:
             or not isinstance(self.watchdog_generation_id, WatchdogGenerationId)
         ):
             raise TypeError("agent process owner and generation must be typed")
+        runner_manifest_bound = self.runner_manifest_id is not None
+        runner_generation_bound = self.runner_generation_id is not None
+        if runner_manifest_bound != runner_generation_bound:
+            raise ValueError("runner manifest and generation must be bound together")
+        if runner_manifest_bound and (
+            not isinstance(self.runner_manifest_id, RunnerManifestId)
+            or not isinstance(self.runner_generation_id, RunnerGenerationId)
+        ):
+            raise TypeError("runner manifest and generation must be typed")
+        if self.runner_invocation_id is not None and (
+            not isinstance(self.runner_invocation_id, RunnerInvocationId)
+            or not runner_manifest_bound
+        ):
+            raise ValueError("runner invocation requires its exact generation binding")
+        if not isinstance(
+            self.runner_evidence_acceptance_phase, RunnerEvidenceAcceptancePhase
+        ):
+            raise TypeError("runner evidence acceptance phase must be typed")
+        evidence_kept = self.runner_terminal_evidence_hash is not None
+        if evidence_kept != (
+            self.runner_evidence_acceptance_phase
+            is not RunnerEvidenceAcceptancePhase.NONE
+        ):
+            raise ValueError("runner evidence hash and acceptance phase must agree")
+        if evidence_kept and not isinstance(
+            self.runner_terminal_evidence_hash, RunnerTerminalEvidenceHash
+        ):
+            raise TypeError("runner terminal evidence hash must be typed")
+        if (
+            owner_bound or self.process_phase is not AgentAttemptProcessPhase.NONE
+        ) and (runner_manifest_bound):
+            raise ValueError(
+                "legacy process ownership and runner binding are exclusive"
+            )
+        if (self.runner_invocation_id is not None or evidence_kept) and not (
+            runner_manifest_bound
+        ):
+            raise ValueError("runner invocation and evidence require a generation")
+        if (
+            self.state is AgentAttemptState.PREPARED
+            and evidence_kept
+            and self.runner_evidence_acceptance_phase
+            not in {
+                RunnerEvidenceAcceptancePhase.CORE_COMMITTED,
+                RunnerEvidenceAcceptancePhase.ACKNOWLEDGED,
+            }
+        ):
+            raise ValueError("prepared runner evidence has a noncanonical phase")
         if self.process_phase is AgentAttemptProcessPhase.NONE and owner_bound:
             raise ValueError("unprepared agent process may not have a live owner")
         ownerless_never_launched = (
@@ -579,10 +701,16 @@ class AgentAttempt:
                     (
                         self.process_phase is AgentAttemptProcessPhase.NONE
                         and self.state_version == 0
+                        and not runner_manifest_bound
                     )
                     or (
                         self.process_phase is AgentAttemptProcessPhase.WATCHDOG_READY
                         and self.state_version == 1
+                    )
+                    or (
+                        self.process_phase is AgentAttemptProcessPhase.NONE
+                        and self.state_version >= 1
+                        and runner_manifest_bound
                     )
                 )
             )
@@ -603,6 +731,7 @@ class AgentAttempt:
                 and (
                     self.process_phase is not AgentAttemptProcessPhase.NONE
                     or self.state_version == 1
+                    or runner_manifest_bound
                 )
             )
         elif self.state is AgentAttemptState.CANCEL_REQUESTED:
@@ -622,7 +751,13 @@ class AgentAttempt:
                 and self.receipt_hash is None
                 and self.cancellation is not None
                 and self.cancellation.disposition is not None
-                and self.process_phase is AgentAttemptProcessPhase.CLEANUP_ATTESTED
+                and (
+                    self.process_phase is AgentAttemptProcessPhase.CLEANUP_ATTESTED
+                    or (
+                        runner_manifest_bound
+                        and self.process_phase is AgentAttemptProcessPhase.NONE
+                    )
+                )
             )
         elif self.state is AgentAttemptState.SUCCEEDED:
             valid = (

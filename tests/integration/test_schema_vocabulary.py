@@ -20,6 +20,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptRedriveState,
     AgentAttemptReplacement,
     AgentAttemptState,
+    RunnerEvidenceAcceptancePhase,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -356,6 +357,9 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     ),
     "agent_attempts.failure_code": _values(AgentAttemptFailureCode),
     "agent_attempts.process_phase": _values(AgentAttemptProcessPhase),
+    "agent_attempts.runner_evidence_acceptance_phase": _values(
+        RunnerEvidenceAcceptancePhase
+    ),
     "agent_attempts.redrive_state": _values(AgentAttemptRedriveState),
     "agent_attempts.replacement": _values(AgentAttemptReplacement),
     "agent_attempts.state": _values(AgentAttemptState),
@@ -393,6 +397,7 @@ UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(
         "agent_attempts.failure_code",
         "agent_attempts.redrive_state",
         "agent_attempts.replacement",
+        "agent_attempts.runner_evidence_acceptance_phase",
         "agent_attempts.state",
         "run_events.attempt_ordinal",
         "run_events.replacement",
@@ -425,6 +430,8 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "attempt_instants.attempt_id",
         "agent_attempts.node_execution_id",
         "agent_attempts.request_hash",
+        "agent_attempts.runner_manifest_id",
+        "agent_attempts.runner_terminal_evidence_hash",
         "agent_attempts.workflow_revision_hash",
         "agent_configuration_revisions.auth_profile_revision_hash",
         "agent_configuration_revisions.revision_hash",
@@ -507,6 +514,8 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "agent_attempts.executor_operational_identity": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "agent_attempts.node_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "agent_attempts.process_owner_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "agent_attempts.runner_generation_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "agent_attempts.runner_invocation_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "agent_attempts.watchdog_generation_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "agent_configuration_revisions.executor_revision": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "agent_configuration_revisions.model": MAXIMUM_AGENT_FIELD_CHARACTERS,

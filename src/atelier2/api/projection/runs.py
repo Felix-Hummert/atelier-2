@@ -255,11 +255,13 @@ def _run_resource_v2(
                 request_hash=attempt.request_hash.value,
                 attempt_ordinal=cast(Literal[1, 2], attempt.attempt_ordinal),
                 state=cast(PublicAttemptStateName, attempt.state),
-                # A format-2 attempt can only fail as a process exit; the
-                # resource's own literal still rejects any other stored code
-                # loudly at projection time, so the cast asserts, not assumes.
                 failure_code=cast(
-                    Literal["PROCESS_EXITED_UNSUCCESSFULLY"] | None,
+                    Literal[
+                        "PROCESS_EXITED_UNSUCCESSFULLY",
+                        "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+                        "PROCESS_SUPERVISION_FAILED",
+                    ]
+                    | None,
                     None
                     if attempt.failure_code is None
                     else attempt.failure_code.value,
