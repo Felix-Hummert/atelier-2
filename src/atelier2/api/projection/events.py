@@ -47,6 +47,7 @@ from atelier2.api.wire.resources import CancellationDispositionName, NodeRailRes
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.executions import (
     KINDS_NO_V1_RUN_CARRIES,
+    RunEventCancellationBinding,
     RunEventKind,
     is_canonical_integer_bytes,
 )
@@ -151,67 +152,67 @@ def _run_event_resource_v2(
         "event_hash": event.event_hash.value,
     }
     if event.event_kind is RunEventKind.AGENT_COMPLETED:
-        if event.agent_attempt_id is None or event.attempt_ordinal is None:
+        binding = event.attempt_binding
+        if binding is None:
             raise ValueError("V2 agent completion has no exact attempt binding")
         return AgentCompletedEventResourceV2(
             event=event.event_kind.value,
             output_base64=encode_canonical_base64(event.payload),
             output_hash=event.payload_hash.value,
-            attempt_id=event.agent_attempt_id,
-            attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
+            attempt_id=binding.attempt_id.value,
+            attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
             **common,
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
         failure_code = event.payload.decode("ascii")
         if failure_code != "PROCESS_EXITED_UNSUCCESSFULLY":
             raise ValueError("durable agent failure payload is not canonical")
-        if event.agent_attempt_id is None or event.attempt_ordinal is None:
+        binding = event.attempt_binding
+        if binding is None:
             raise ValueError("V2 agent failure has no exact attempt binding")
         return AgentFailedEventResourceV2(
             event=event.event_kind.value,
             failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
-            attempt_id=event.agent_attempt_id,
-            attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
+            attempt_id=binding.attempt_id.value,
+            attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
             **common,
         )
     if event.event_kind is RunEventKind.AGENT_CANCEL_REQUESTED:
-        if (
-            event.agent_attempt_id is None
-            or event.attempt_ordinal is None
-            or event.cancellation_command_id is None
-            or event.replacement is None
-        ):
+        binding = event.attempt_binding
+        if not isinstance(binding, RunEventCancellationBinding):
             raise ValueError("V2 cancellation request has no exact binding")
         return AgentCancelRequestedEventResourceV2(
             event=event.event_kind.value,
-            attempt_id=event.agent_attempt_id,
-            attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
-            command_id=event.cancellation_command_id,
-            replacement=cast(Literal["NONE", "ONE"], event.replacement),
+            attempt_id=binding.attempt_id.value,
+            attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
+            command_id=binding.command_id,
+            replacement=cast(Literal["NONE", "ONE"], binding.replacement.value),
             **common,
         )
     if event.event_kind in {
         RunEventKind.AGENT_CANCELLED,
         RunEventKind.AGENT_INTERRUPTED,
     }:
+        binding = event.attempt_binding
         if (
-            event.agent_attempt_id is None
-            or event.attempt_ordinal is None
-            or event.cancellation_command_id is None
-            or event.replacement is None
-            or event.cancellation_disposition is None
+            not isinstance(binding, RunEventCancellationBinding)
+            or binding.disposition is None
         ):
             raise ValueError("V2 cancellation terminal has no exact binding")
         terminal_common = {
-            "attempt_id": event.agent_attempt_id,
-            "attempt_ordinal": cast(Literal[1, 2], event.attempt_ordinal),
-            "command_id": event.cancellation_command_id,
-            "replacement": cast(Literal["NONE", "ONE"], event.replacement),
+            "attempt_id": binding.attempt_id.value,
+            "attempt_ordinal": cast(Literal[1, 2], binding.attempt_ordinal),
+            "command_id": binding.command_id,
+            "replacement": cast(Literal["NONE", "ONE"], binding.replacement.value),
             "disposition": cast(
                 CancellationDispositionName,
-                event.cancellation_disposition,
+                binding.disposition.value,
             ),
-            "replacement_attempt_id": event.replacement_attempt_id,
+            "replacement_attempt_id": (
+                None
+                if binding.replacement_attempt_id is None
+                else binding.replacement_attempt_id.value
+            ),
         }
         if event.event_kind is RunEventKind.AGENT_CANCELLED:
             return AgentCancelledEventResourceV2(
@@ -286,21 +287,23 @@ def _run_event_resource_v3(
         "event_hash": event.event_hash.value,
     }
     if event.event_kind is RunEventKind.AGENT_COMPLETED:
-        if event.agent_attempt_id is None or event.attempt_ordinal is None:
+        binding = event.attempt_binding
+        if binding is None:
             raise ValueError("V3 agent completion has no exact attempt binding")
         return AgentCompletedEventResourceV3(
             event=event.event_kind.value,
             output_base64=encode_canonical_base64(event.payload),
             output_hash=event.payload_hash.value,
-            attempt_id=event.agent_attempt_id,
-            attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
+            attempt_id=binding.attempt_id.value,
+            attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
             **common,
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
         failure_code = event.payload.decode("ascii")
         if failure_code not in {code.value for code in AgentAttemptFailureCode}:
             raise ValueError("durable agent failure payload is not canonical")
-        if event.agent_attempt_id is None or event.attempt_ordinal is None:
+        binding = event.attempt_binding
+        if binding is None:
             raise ValueError("V3 agent failure has no exact attempt binding")
         return AgentFailedEventResourceV3(
             event=event.event_kind.value,
@@ -314,48 +317,46 @@ def _run_event_resource_v3(
                 failure_code,
             ),
             reason=projection.node_receipt_reason,
-            attempt_id=event.agent_attempt_id,
-            attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
+            attempt_id=binding.attempt_id.value,
+            attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
             **common,
         )
     if event.event_kind is RunEventKind.AGENT_CANCEL_REQUESTED:
-        if (
-            event.agent_attempt_id is None
-            or event.attempt_ordinal is None
-            or event.cancellation_command_id is None
-            or event.replacement is None
-        ):
+        binding = event.attempt_binding
+        if not isinstance(binding, RunEventCancellationBinding):
             raise ValueError("V3 cancellation request has no exact binding")
         return AgentCancelRequestedEventResourceV3(
             event=event.event_kind.value,
-            attempt_id=event.agent_attempt_id,
-            attempt_ordinal=cast(Literal[1, 2], event.attempt_ordinal),
-            command_id=event.cancellation_command_id,
-            replacement=cast(Literal["NONE", "ONE"], event.replacement),
+            attempt_id=binding.attempt_id.value,
+            attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
+            command_id=binding.command_id,
+            replacement=cast(Literal["NONE", "ONE"], binding.replacement.value),
             **common,
         )
     if event.event_kind in {
         RunEventKind.AGENT_CANCELLED,
         RunEventKind.AGENT_INTERRUPTED,
     }:
+        binding = event.attempt_binding
         if (
-            event.agent_attempt_id is None
-            or event.attempt_ordinal is None
-            or event.cancellation_command_id is None
-            or event.replacement is None
-            or event.cancellation_disposition is None
+            not isinstance(binding, RunEventCancellationBinding)
+            or binding.disposition is None
         ):
             raise ValueError("V3 cancellation terminal has no exact binding")
         terminal_common = {
-            "attempt_id": event.agent_attempt_id,
-            "attempt_ordinal": cast(Literal[1, 2], event.attempt_ordinal),
-            "command_id": event.cancellation_command_id,
-            "replacement": cast(Literal["NONE", "ONE"], event.replacement),
+            "attempt_id": binding.attempt_id.value,
+            "attempt_ordinal": cast(Literal[1, 2], binding.attempt_ordinal),
+            "command_id": binding.command_id,
+            "replacement": cast(Literal["NONE", "ONE"], binding.replacement.value),
             "disposition": cast(
                 CancellationDispositionName,
-                event.cancellation_disposition,
+                binding.disposition.value,
             ),
-            "replacement_attempt_id": event.replacement_attempt_id,
+            "replacement_attempt_id": (
+                None
+                if binding.replacement_attempt_id is None
+                else binding.replacement_attempt_id.value
+            ),
         }
         if event.event_kind is RunEventKind.AGENT_CANCELLED:
             return AgentCancelledEventResourceV3(

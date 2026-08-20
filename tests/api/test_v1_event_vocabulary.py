@@ -4,6 +4,11 @@ import pytest
 
 from atelier2.api.openapi import EVENT_NAMES
 from atelier2.api.projection.events import run_event_resource
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptId,
+    AgentAttemptReplacement,
+)
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -17,7 +22,12 @@ from atelier2.contracts.effects import (
     EffectResult,
     LogicalEffectKey,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventCancellationBinding,
+    RunEventKind,
+)
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
@@ -75,12 +85,20 @@ def v1_projection(kind: RunEventKind) -> PersistedRunEvent:
         if receipt is None
         else receipt.intent.binding.logical_key,
         receipt_result_hash=None if receipt is None else receipt.result.payload_hash,
-        agent_attempt_id=ATTEMPT_ID if cancelling else None,
-        attempt_ordinal=1 if cancelling else None,
-        cancellation_command_id="command-1" if cancelling else None,
-        replacement="NONE" if cancelling else None,
-        cancellation_disposition=(
-            "NEVER_LAUNCHED" if kind in SETTLED_CANCELLATION_KINDS else None
+        attempt_binding=(
+            RunEventCancellationBinding(
+                AgentAttemptId(ATTEMPT_ID),
+                1,
+                AgentAttemptReplacement.NONE,
+                "command-1",
+                (
+                    AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+                    if kind in SETTLED_CANCELLATION_KINDS
+                    else None
+                ),
+            )
+            if cancelling
+            else None
         ),
     )
     return PersistedRunEvent(event, receipt, WorkflowFormatVersion.V1)

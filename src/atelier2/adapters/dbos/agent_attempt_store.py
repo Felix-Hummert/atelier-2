@@ -78,6 +78,8 @@ from atelier2.contracts.executions import (
     AgentAttemptExecution,
     NodeExecutionId,
     RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventCancellationBinding,
     RunEventKind,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -514,6 +516,18 @@ def _insert_attempt_event(
     run = load_run(connection, attempt.run_id)
     sequence = run.last_event_sequence + 1
     payload = b"" if command is None else command.command_id.encode("utf-8")
+    attempt_binding = (
+        RunEventAgentAttemptBinding(attempt.attempt_id, attempt.attempt_ordinal)
+        if command is None
+        else RunEventCancellationBinding(
+            attempt.attempt_id,
+            attempt.attempt_ordinal,
+            command.replacement,
+            command.command_id,
+            command.disposition,
+            replacement_attempt_id,
+        )
+    )
     event = RunEvent(
         attempt.run_id,
         attempt.workflow_revision_hash,
@@ -522,18 +536,7 @@ def _insert_attempt_event(
         attempt.node_execution_id,
         kind,
         payload,
-        agent_attempt_id=attempt.attempt_id.value,
-        attempt_ordinal=attempt.attempt_ordinal,
-        cancellation_command_id=(None if command is None else command.command_id),
-        replacement=None if command is None else command.replacement.value,
-        cancellation_disposition=(
-            None
-            if command is None or command.disposition is None
-            else command.disposition.value
-        ),
-        replacement_attempt_id=(
-            None if replacement_attempt_id is None else replacement_attempt_id.value
-        ),
+        attempt_binding=attempt_binding,
     )
     updated = connection.execute(
         runs.update()

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
+from fastapi.sse import ServerSentEvent
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
@@ -19,6 +20,7 @@ from sqlalchemy.engine import Engine
 from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.queries import DbosQueries
+from atelier2.adapters.dbos.run_transitions import _insert_event, event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -30,19 +32,32 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
+from atelier2.api import stream as stream_module
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
-from atelier2.api.stream import BoundedQueryRunner
+from atelier2.api.stream import (
+    BoundedQueryRunner,
+    PreparedEventStream,
+    stream_server_events,
+)
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
-from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptId
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptFailureCode,
+    AgentAttemptId,
+    AgentAttemptReplacement,
+)
 from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import EffectIntentState, ReconcileCommandState
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventCancellationBinding,
     RunEventKind,
     logical_effect_key_for,
 )
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_projections import (
     RunPage,
 )
@@ -77,6 +92,8 @@ from tests.scenarios.api import (
     durable_queries,
     event_poll_backoff,
     permissive_projection_limit,
+    stream_page_reader,
+    stream_run_projection,
 )
 
 # A checkout the pool cannot serve at once is refused without waiting at all.
@@ -207,6 +224,25 @@ def _seed_history(
         # A seeded row with an invented execution identity or event hash is
         # refused by the event contract before any reader can judge it, so a test
         # written that way proves the fixture rather than the read.
+        attempt_binding = (
+            RunEventCancellationBinding(
+                AgentAttemptId(_digest(f"attempt-{run_id.value}")),
+                1,
+                AgentAttemptReplacement.NONE,
+                "cancel-1",
+                (
+                    AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+                    if event_kind
+                    in {
+                        RunEventKind.AGENT_CANCELLED,
+                        RunEventKind.AGENT_INTERRUPTED,
+                    }
+                    else None
+                ),
+            )
+            if cancellation
+            else None
+        )
         event = RunEvent(
             run_id,
             WorkflowRevisionHash(revision.revision_hash.value),
@@ -217,12 +253,7 @@ def _seed_history(
             ),
             event_kind,
             payload,
-            agent_attempt_id=_digest(f"attempt-{run_id.value}")
-            if cancellation
-            else None,
-            attempt_ordinal=1 if cancellation else None,
-            cancellation_command_id="cancel-1" if cancellation else None,
-            replacement="NONE" if cancellation else None,
+            attempt_binding=attempt_binding,
         )
         event_records.append(
             {
@@ -238,10 +269,33 @@ def _seed_history(
                 "receipt_logical_key": None,
                 "receipt_result_hash": None,
                 "event_hash": event.event_hash.value,
-                "agent_attempt_id": event.agent_attempt_id,
-                "attempt_ordinal": event.attempt_ordinal,
-                "cancellation_command_id": event.cancellation_command_id,
-                "replacement": event.replacement,
+                "agent_attempt_id": (
+                    None
+                    if attempt_binding is None
+                    else attempt_binding.attempt_id.value
+                ),
+                "attempt_ordinal": (
+                    None if attempt_binding is None else attempt_binding.attempt_ordinal
+                ),
+                "cancellation_command_id": (
+                    None if attempt_binding is None else attempt_binding.command_id
+                ),
+                "replacement": (
+                    None
+                    if attempt_binding is None
+                    else attempt_binding.replacement.value
+                ),
+                "cancellation_disposition": (
+                    None
+                    if attempt_binding is None or attempt_binding.disposition is None
+                    else attempt_binding.disposition.value
+                ),
+                "replacement_attempt_id": (
+                    None
+                    if attempt_binding is None
+                    or attempt_binding.replacement_attempt_id is None
+                    else attempt_binding.replacement_attempt_id.value
+                ),
             }
         )
     with engine.begin() as connection:
@@ -1449,6 +1503,190 @@ def test_a_running_v3_run_whose_head_event_stands_on_its_node_still_reads(
     page = queries.read_run_event_page(run_id, 0, 5)
     assert isinstance(page, RunEventPage), page
     assert page.terminal_seen is False
+
+
+@pytest.mark.parametrize(
+    "column",
+    ("replacement", "cancellation_disposition"),
+)
+def test_foreign_stored_cancellation_tokens_are_durable_state_corruption(
+    engine: Engine,
+    column: str,
+) -> None:
+    run_id, queries = _foreign_cancellation_queries(engine, column)
+
+    result = queries.read_run_event_page(run_id, 0, 5)
+
+    assert isinstance(result, QueryDurableStateCorrupt)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    (
+        "attempt-one",
+        "attempt-two",
+        "cancel-requested",
+        "cancelled",
+        "cancelled-with-replacement",
+    ),
+)
+def test_dbos_flattens_and_reconstructs_the_closed_attempt_binding(
+    engine: Engine,
+    shape: str,
+) -> None:
+    run_id = RunId("attempt-binding-roundtrip")
+    revision = _seed_history(
+        engine,
+        run_id=run_id,
+        head=0,
+        state=RunState.STARTED,
+        workflow_format_version=3,
+        sink_node_id="working",
+    )
+    kind, payload, binding, expected_columns = _attempt_binding_scenario(shape)
+    event = RunEvent(
+        run_id,
+        revision.revision_hash,
+        1,
+        "working",
+        NodeExecutionId.for_node(run_id, revision.revision_hash, "working"),
+        kind,
+        payload,
+        attempt_binding=binding,
+    )
+    with engine.begin() as connection:
+        _insert_event(connection, event)
+        record = connection.execute(sa.select(run_events)).mappings().one()
+
+    assert (
+        record["agent_attempt_id"],
+        record["attempt_ordinal"],
+        record["cancellation_command_id"],
+        record["replacement"],
+        record["cancellation_disposition"],
+        record["replacement_attempt_id"],
+    ) == expected_columns
+    assert record["event_hash"] == event.event_hash.value
+    assert event_from_record(record) == event
+
+
+@pytest.mark.parametrize(
+    "column",
+    ("replacement", "cancellation_disposition"),
+)
+def test_foreign_stored_cancellation_tokens_refuse_before_api_projection(
+    engine: Engine,
+    column: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id, queries = _foreign_cancellation_queries(engine, column)
+
+    def unexpected_projection(*_arguments: object) -> object:
+        raise AssertionError("foreign durable token reached run_event_resource")
+
+    monkeypatch.setattr(stream_module, "run_event_resource", unexpected_projection)
+
+    async def collect_stream() -> list[ServerSentEvent]:
+        return [
+            frame
+            async for frame in stream_server_events(
+                PreparedEventStream(
+                    run_id,
+                    0,
+                    1,
+                    False,
+                    stream_run_projection(run_id.value),
+                ),
+                stream_page_reader(queries),
+                BoundedQueryRunner(1, admission_timeout_seconds=1),
+                page_size=PageLimit(5),
+                limits=api_limits(),
+                poll_backoff=event_poll_backoff(),
+            )
+        ]
+
+    frames = asyncio.run(collect_stream())
+
+    assert len(frames) == 1
+    assert frames[0].data.problem.type.endswith(":durable-state-corrupt")
+
+
+def _foreign_cancellation_queries(
+    engine: Engine,
+    column: str,
+) -> tuple[RunId, DbosQueries]:
+    run_id = RunId(f"foreign-cancellation-{column}")
+    _seed_history(
+        engine,
+        run_id=run_id,
+        head=1,
+        state=RunState.STARTED,
+        workflow_format_version=3,
+        sink_node_id="working",
+        head_event_kind=RunEventKind.AGENT_CANCEL_REQUESTED,
+    )
+    with engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints = ON")
+        connection.exec_driver_sql("DROP TRIGGER run_events_no_update")
+        connection.execute(
+            run_events.update()
+            .where(run_events.c.run_id == run_id.value)
+            .values({column: "FOREIGN_TOKEN"})
+        )
+
+    queries = durable_queries(engine)
+    return run_id, queries
+
+
+def _attempt_binding_scenario(
+    shape: str,
+) -> tuple[
+    RunEventKind,
+    bytes,
+    RunEventAgentAttemptBinding | RunEventCancellationBinding,
+    tuple[str, int, str | None, str | None, str | None, str | None],
+]:
+    attempt_id = AgentAttemptId("b" * 64)
+    if shape in {"attempt-one", "attempt-two"}:
+        ordinal = 1 if shape == "attempt-one" else 2
+        return (
+            RunEventKind.AGENT_COMPLETED,
+            b"5",
+            RunEventAgentAttemptBinding(attempt_id, ordinal),
+            (attempt_id.value, ordinal, None, None, None, None),
+        )
+    replacement_attempt_id = (
+        AgentAttemptId("c" * 64) if shape == "cancelled-with-replacement" else None
+    )
+    disposition = (
+        None
+        if shape == "cancel-requested"
+        else AgentAttemptCancellationDisposition.REAPED_AFTER_TERM
+    )
+    return (
+        (
+            RunEventKind.AGENT_CANCEL_REQUESTED
+            if disposition is None
+            else RunEventKind.AGENT_CANCELLED
+        ),
+        b"cancel",
+        RunEventCancellationBinding(
+            attempt_id,
+            1,
+            AgentAttemptReplacement.ONE,
+            "cancel",
+            disposition,
+            replacement_attempt_id,
+        ),
+        (
+            attempt_id.value,
+            1,
+            "cancel",
+            AgentAttemptReplacement.ONE.value,
+            None if disposition is None else disposition.value,
+            (None if replacement_attempt_id is None else replacement_attempt_id.value),
+        ),
+    )
 
 
 def test_a_v3_page_carries_a_failed_agent_attempt_instead_of_refusing_it(

@@ -48,7 +48,7 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.contracts.agent_attempts import AgentAttemptState
+from atelier2.contracts.agent_attempts import AgentAttemptId, AgentAttemptState
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -67,6 +67,7 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
+    RunEventAgentAttemptBinding,
     RunEventKind,
     terminal_hash_for,
 )
@@ -390,8 +391,10 @@ def _terminal_hash_a_verifier_recomputes(
             ),
             RunEventKind(str(record["event_kind"])),
             bytes(record["payload"]),
-            agent_attempt_id=str(record["agent_attempt_id"]),
-            attempt_ordinal=int(record["attempt_ordinal"]),
+            attempt_binding=RunEventAgentAttemptBinding(
+                AgentAttemptId(str(record["agent_attempt_id"])),
+                int(record["attempt_ordinal"]),
+            ),
             agent_receipt_hash=receipt_hashes[str(record["node_id"])],
         )
         for record in events

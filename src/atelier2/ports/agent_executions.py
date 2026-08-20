@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from atelier2.contracts.agent_attempts import (
+    MAXIMUM_RUNNER_STANDARD_ERROR_BYTES,
     AgentAttempt,
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
@@ -28,7 +29,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import AgentAttemptExecution
 
-MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = 49_152
+MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES = MAXIMUM_RUNNER_STANDARD_ERROR_BYTES
 
 
 class AgentExecutor(Protocol):

@@ -33,7 +33,11 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
-from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptId,
+    AgentAttemptReplacement,
+)
 from atelier2.contracts.agents import (
     AgentBindingSetHash,
     AgentReceiptHash,
@@ -44,6 +48,9 @@ from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventAttemptBinding,
+    RunEventCancellationBinding,
     RunEventKind,
     TransitionSnapshot,
     terminal_hash_for,
@@ -314,6 +321,7 @@ def _require_a_round_the_graph_declares(
 def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
     logical_key = record["receipt_logical_key"]
     result_hash = record["receipt_result_hash"]
+    attempt_binding = _event_attempt_binding_from_record(record)
     event = RunEvent(
         RunId(str(record["run_id"])),
         WorkflowRevisionHash(str(record["revision_hash"])),
@@ -324,18 +332,7 @@ def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
         bytes(record["payload"]),
         None if logical_key is None else LogicalEffectKey(str(logical_key)),
         None if result_hash is None else Sha256Hash(str(result_hash)),
-        None if record["agent_attempt_id"] is None else str(record["agent_attempt_id"]),
-        None if record["attempt_ordinal"] is None else int(record["attempt_ordinal"]),
-        None
-        if record["cancellation_command_id"] is None
-        else str(record["cancellation_command_id"]),
-        None if record["replacement"] is None else str(record["replacement"]),
-        None
-        if record["cancellation_disposition"] is None
-        else str(record["cancellation_disposition"]),
-        None
-        if record["replacement_attempt_id"] is None
-        else str(record["replacement_attempt_id"]),
+        attempt_binding,
         None
         if record["agent_receipt_hash"] is None
         else AgentReceiptHash(str(record["agent_receipt_hash"])),
@@ -346,6 +343,60 @@ def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
     if event.event_hash.value != record["event_hash"]:
         raise RunTransitionConflict("durable event hash disagrees")
     return event
+
+
+def _event_attempt_binding_from_record(
+    record: Mapping[Any, Any],
+) -> RunEventAttemptBinding | None:
+    attempt_id = record["agent_attempt_id"]
+    attempt_ordinal = record["attempt_ordinal"]
+    command_id = record["cancellation_command_id"]
+    replacement = record["replacement"]
+    disposition = record["cancellation_disposition"]
+    replacement_attempt_id = record["replacement_attempt_id"]
+    cancellation_values = (
+        command_id,
+        replacement,
+        disposition,
+        replacement_attempt_id,
+    )
+    try:
+        if attempt_id is None:
+            if attempt_ordinal is not None or any(
+                value is not None for value in cancellation_values
+            ):
+                raise ValueError("attempt columns disagree")
+            return None
+        typed_attempt_id = AgentAttemptId(str(attempt_id))
+        if attempt_ordinal is None:
+            raise ValueError("attempt ordinal is absent")
+        ordinal = int(attempt_ordinal)
+        if command_id is None:
+            if any(value is not None for value in cancellation_values[1:]):
+                raise ValueError("cancellation columns disagree")
+            return RunEventAgentAttemptBinding(typed_attempt_id, ordinal)
+        if replacement is None:
+            raise ValueError("cancellation replacement is absent")
+        return RunEventCancellationBinding(
+            typed_attempt_id,
+            ordinal,
+            AgentAttemptReplacement(str(replacement)),
+            str(command_id),
+            (
+                None
+                if disposition is None
+                else AgentAttemptCancellationDisposition(str(disposition))
+            ),
+            (
+                None
+                if replacement_attempt_id is None
+                else AgentAttemptId(str(replacement_attempt_id))
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise RunTransitionConflict(
+            "durable event attempt binding is not canonical"
+        ) from error
 
 
 def _existing_event(
@@ -412,6 +463,12 @@ def _existing_event(
 
 
 def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -> None:
+    attempt_binding = event.attempt_binding
+    cancellation_binding = (
+        attempt_binding
+        if isinstance(attempt_binding, RunEventCancellationBinding)
+        else None
+    )
     session.execute(
         run_events.insert().values(
             run_id=event.run_id.value,
@@ -433,12 +490,34 @@ def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -
                 else event.receipt_result_hash.value
             ),
             event_hash=event.event_hash.value,
-            agent_attempt_id=event.agent_attempt_id,
-            attempt_ordinal=event.attempt_ordinal,
-            cancellation_command_id=event.cancellation_command_id,
-            replacement=event.replacement,
-            cancellation_disposition=event.cancellation_disposition,
-            replacement_attempt_id=event.replacement_attempt_id,
+            agent_attempt_id=(
+                None if attempt_binding is None else attempt_binding.attempt_id.value
+            ),
+            attempt_ordinal=(
+                None if attempt_binding is None else attempt_binding.attempt_ordinal
+            ),
+            cancellation_command_id=(
+                None
+                if cancellation_binding is None
+                else cancellation_binding.command_id
+            ),
+            replacement=(
+                None
+                if cancellation_binding is None
+                else cancellation_binding.replacement.value
+            ),
+            cancellation_disposition=(
+                None
+                if cancellation_binding is None
+                or cancellation_binding.disposition is None
+                else cancellation_binding.disposition.value
+            ),
+            replacement_attempt_id=(
+                None
+                if cancellation_binding is None
+                or cancellation_binding.replacement_attempt_id is None
+                else cancellation_binding.replacement_attempt_id.value
+            ),
             agent_receipt_hash=(
                 None
                 if event.agent_receipt_hash is None
@@ -512,6 +591,13 @@ def _commit_event(
         raise RunTransitionConflict("terminal transition must finish the run's sink")
     instant = recorded_instant()
     sequence = current.last_event_sequence + 1
+    if (agent_attempt_id is None) != (attempt_ordinal is None):
+        raise RunTransitionConflict("agent event attempt binding is incomplete")
+    attempt_binding = (
+        None
+        if agent_attempt_id is None or attempt_ordinal is None
+        else RunEventAgentAttemptBinding(agent_attempt_id, attempt_ordinal)
+    )
     event = RunEvent(
         run_id,
         revision_hash,
@@ -522,8 +608,7 @@ def _commit_event(
         payload,
         receipt_logical_key,
         receipt_result_hash,
-        None if agent_attempt_id is None else agent_attempt_id.value,
-        attempt_ordinal,
+        attempt_binding,
         agent_receipt_hash=agent_receipt_hash,
         round_ordinal=round_ordinal,
     )
