@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
+from collections.abc import Sized
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import event
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
 import atelier2.adapters.dbos.agent_attempt_store as agent_attempt_store_module
@@ -28,7 +31,7 @@ from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
-from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_attempts import AgentAttempt, AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -46,6 +49,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, PageLimit
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.workflows import (
@@ -78,11 +82,13 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
     agent_attempt_execution,
+    agent_execution_request_v2,
     agent_scratch_root,
     answering,
     decode_process_exit,
     emitting,
     launching,
+    prepared_agent_attempt,
     process_exit,
     runtime_workspace_owner,
 )
@@ -189,6 +195,27 @@ def _record_driving_workflow(
             ),
             {"workflow_id": workflow_id, "status": status},
         )
+
+
+def _ordered_prepared_attempts(
+    runtime: DbosRuntime,
+    store: DbosAgentAttemptStore,
+    path_prefix: str,
+    count: int,
+) -> tuple[AgentAttempt, ...]:
+    return tuple(
+        sorted(
+            (
+                store.prepare(
+                    agent_attempt_execution(
+                        attempt_request(runtime, f"{path_prefix}/{index}")
+                    )
+                )
+                for index in range(count)
+            ),
+            key=lambda attempt: attempt.attempt_id.value,
+        )
+    )
 
 
 def _observing_durable_process_phase(runtime: DbosRuntime) -> AgentCompletionDecoder:
@@ -795,7 +822,9 @@ def test_an_attempt_is_driverless_once_its_workflow_can_no_longer_move_it(
         attempt = store.prepare(agent_attempt_execution(request))
         _record_driving_workflow(runtime, driving_workflow_id(attempt), status)
 
-        assert store.driverless_attempts() == ((attempt,) if driverless else ())
+        assert tuple(store.iter_driverless_attempts(PageLimit(1))) == (
+            (attempt,) if driverless else ()
+        )
     finally:
         runtime.close()
 
@@ -810,7 +839,7 @@ def test_an_attempt_whose_workflow_never_reached_the_store_is_driverless(
         store = DbosAgentAttemptStore(runtime.engine)
         attempt = store.prepare(agent_attempt_execution(request))
 
-        assert store.driverless_attempts() == (attempt,)
+        assert tuple(store.iter_driverless_attempts(PageLimit(1))) == (attempt,)
     finally:
         runtime.close()
 
@@ -829,6 +858,173 @@ def test_a_terminal_attempt_is_never_driverless(tmp_path: Path) -> None:
             runtime_workspace_owner(runtime),
         )
 
-        assert store.driverless_attempts() == ()
+        assert tuple(store.iter_driverless_attempts(PageLimit(1))) == ()
+    finally:
+        runtime.close()
+
+
+def test_driverless_iteration_advances_past_a_fully_driven_page(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        store = DbosAgentAttemptStore(runtime.engine)
+        ordered = _ordered_prepared_attempts(runtime, store, "attempt/keyset", 3)
+        for attempt in ordered[:2]:
+            _record_driving_workflow(runtime, driving_workflow_id(attempt), "PENDING")
+
+        assert tuple(store.iter_driverless_attempts(PageLimit(2))) == (ordered[2],)
+    finally:
+        runtime.close()
+
+
+def test_driverless_iteration_loads_only_one_page_before_its_first_yield(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        store = DbosAgentAttemptStore(runtime.engine)
+        ordered = _ordered_prepared_attempts(runtime, store, "attempt/lazy", 3)
+        observed_reads: list[str] = []
+
+        def observe_reads(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            if (
+                "FROM agent_attempts" in statement
+                or "FROM workflow_status" in statement
+            ):
+                observed_reads.append(statement)
+
+        event.listen(runtime.engine, "before_cursor_execute", observe_reads)
+        try:
+            attempts = store.iter_driverless_attempts(PageLimit(2))
+            assert next(attempts) == ordered[0]
+            assert len(observed_reads) == 2
+            assert next(attempts) == ordered[1]
+            assert len(observed_reads) == 2
+            assert next(attempts) == ordered[2]
+            assert len(observed_reads) == 4
+            with pytest.raises(StopIteration):
+                next(attempts)
+            assert len(observed_reads) == 4
+        finally:
+            event.remove(runtime.engine, "before_cursor_execute", observe_reads)
+    finally:
+        runtime.close()
+
+
+def test_driverless_iteration_reads_later_pages_from_fresh_durable_truth(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        store = DbosAgentAttemptStore(runtime.engine)
+        ordered = _ordered_prepared_attempts(runtime, store, "attempt/fresh", 2)
+
+        attempts = store.iter_driverless_attempts(PageLimit(1))
+        assert next(attempts) == ordered[0]
+        _record_driving_workflow(runtime, driving_workflow_id(ordered[1]), "PENDING")
+
+        assert tuple(attempts) == ()
+    finally:
+        runtime.close()
+
+
+def test_driverless_iteration_restart_has_no_hidden_cursor(tmp_path: Path) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        store = DbosAgentAttemptStore(runtime.engine)
+        ordered = _ordered_prepared_attempts(runtime, store, "attempt/restart", 2)
+
+        interrupted = store.iter_driverless_attempts(PageLimit(1))
+        assert next(interrupted) == ordered[0]
+        del interrupted
+
+        assert tuple(store.iter_driverless_attempts(PageLimit(1))) == ordered
+    finally:
+        runtime.close()
+
+
+def test_driverless_iteration_bounds_ten_thousand_row_queries(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        columns = tuple(agent_attempts.c.keys())
+        placeholders = ", ".join(f":{column}" for column in columns)
+        insert = (
+            f"INSERT INTO agent_attempts ({', '.join(columns)}) VALUES ({placeholders})"
+        )
+
+        # This load proof needs valid production identities and row encoding, not
+        # ten thousand unrelated parent runs whose behavior it does not exercise.
+        with sqlite3.connect(runtime.settings.database_path, timeout=30) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.executemany(
+                insert,
+                (
+                    agent_attempt_store_module._attempt_values(
+                        prepared_agent_attempt(
+                            agent_attempt_execution(
+                                agent_execution_request_v2(
+                                    f"attempt/bounded-load/{index}"
+                                )
+                            )
+                        )
+                    )
+                    for index in range(10_000)
+                ),
+            )
+
+        observed_reads: list[tuple[str, int]] = []
+
+        def observe_reads(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            if not isinstance(parameters, Sized):
+                raise TypeError("SQL parameters are not a sized collection")
+            if "FROM agent_attempts" in statement:
+                observed_reads.append(("attempts", len(parameters)))
+            elif "FROM workflow_status" in statement:
+                observed_reads.append(("workflows", len(parameters)))
+
+        event.listen(runtime.engine, "before_cursor_execute", observe_reads)
+        try:
+            discovered = sum(
+                1
+                for _attempt in DbosAgentAttemptStore(
+                    runtime.engine
+                ).iter_driverless_attempts(PageLimit(MAXIMUM_PAGE_ITEMS))
+            )
+        finally:
+            event.remove(runtime.engine, "before_cursor_execute", observe_reads)
+
+        attempt_reads = tuple(
+            parameters for owner, parameters in observed_reads if owner == "attempts"
+        )
+        workflow_reads = tuple(
+            parameters for owner, parameters in observed_reads if owner == "workflows"
+        )
+        assert discovered == 10_000
+        assert len(attempt_reads) == 101
+        assert len(workflow_reads) == 100
+        assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS + 3
+        assert len(observed_reads) == 201
     finally:
         runtime.close()

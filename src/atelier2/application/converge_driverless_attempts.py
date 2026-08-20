@@ -20,7 +20,8 @@ from __future__ import annotations
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
-from atelier2.contracts.agent_attempts import AgentAttempt, stop_command_for
+from atelier2.contracts.agent_attempts import stop_command_for
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, PageLimit
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationStale,
@@ -41,8 +42,8 @@ def converge_driverless_attempts(
     attempts: AgentAttemptStore,
     supervisor: AgentProcessRunner,
     workspaces: AgentAttemptWorkspaceOwner,
-) -> tuple[AgentAttempt, ...]:
-    """Stop every driverless attempt, and answer with the ones that ended here.
+) -> None:
+    """Stop every driverless attempt without retaining the completed inventory.
 
     An attempt whose cleanup cannot be attested yet is left under its durable
     stop command rather than forced: the command is enqueued, so the runtime
@@ -53,8 +54,7 @@ def converge_driverless_attempts(
     that is neither driven nor stoppable is a durable state nobody owns.
     """
 
-    converged: list[AgentAttempt] = []
-    for attempt in attempts.driverless_attempts():
+    for attempt in attempts.iter_driverless_attempts(PageLimit(MAXIMUM_PAGE_ITEMS)):
         command = stop_command_for(attempt)
         accepted = attempts.request_cancellation(command)
         if isinstance(
@@ -67,9 +67,4 @@ def converge_driverless_attempts(
                 f"the store refused to stop driverless attempt "
                 f"{attempt.attempt_id.value}: {type(accepted).__name__}"
             )
-        terminal = continue_agent_attempt_cancellation(
-            command, attempts, supervisor, workspaces
-        )
-        if terminal is not None:
-            converged.append(terminal.attempt)
-    return tuple(converged)
+        continue_agent_attempt_cancellation(command, attempts, supervisor, workspaces)

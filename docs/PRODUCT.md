@@ -95,7 +95,9 @@ unit takes the whole cgroup subtree with it. A serve start also stops every
 attempt no live workflow is driving any more: a workflow that ended without
 moving the attempt it drove is not pending, so nothing replays it, and the
 restart puts each such attempt under one durable `atelier2-driver-lost` command
-and lets that same cleanup path end it as `INTERRUPTED`. An attempt whose driver
+and lets that same cleanup path end it as `INTERRUPTED`. The inventory is read
+lazily in bounded attempt-identity keyset pages; scan progress is not durable,
+so a restart begins again from current durable truth. An attempt whose driver
 is merely waiting to be recovered is left alone. One explicit replacement
 creates a distinct ordinal-2
 attempt and workflow only after cleanup; ordinal 3 and automatic provider retry
