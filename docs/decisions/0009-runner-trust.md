@@ -1,16 +1,24 @@
-# ADR 0009: One trust boundary separates the coordinating service from every runner
+# ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15 — decision only, nothing implemented
+- Status: PROPOSED 2026-08-15; amended 2026-08-20 — decision only, nothing implemented
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #21](https://github.com/FlexOr2/atelier-2/issues/21),
-  SHA-256 over the exact served UTF-8 body bytes with nothing appended — 787
-  bytes, no trailing newline —
-  `5c03ceb1d5f1b85f81ec3acc1f6dea1c72d89817929a772432b9b02fbb74a56b`. This record
-  owns the ADR mandate of #21 and **does not close #21**: the issue also carries
-  code obligations (H4/M7/M8) whose predecessor is
-  [#86](https://github.com/FlexOr2/atelier-2/issues/86), which blocks that code
-  and, by its own dependency correction, not this documentation-only record.
+  SHA-256 over the exact served UTF-8 body bytes with nothing appended — 5,072
+  bytes, ending in one LF byte —
+  `afc86a8f64f39ecd6be7de5db302ffbe5319c203e2c9ac4d31d3f868b8c61fb2`.
+  The body rebind and derived-document debt are recorded in
+  [#21 comment 5354779824](https://github.com/FlexOr2/atelier-2/issues/21#issuecomment-5354779824).
+  The operator-owned architecture ruling is
+  [#5 comment 5354196886](https://github.com/FlexOr2/atelier-2/issues/5#issuecomment-5354196886);
+  the canonical terminology and owner map are
+  [#9 comment 5354522420](https://github.com/FlexOr2/atelier-2/issues/9#issuecomment-5354522420)
+  and the amended [#9 body](https://github.com/FlexOr2/atelier-2/issues/9), whose
+  rebind is recorded in
+  [comment 5354786342](https://github.com/FlexOr2/atelier-2/issues/9#issuecomment-5354786342).
+  This record owns #21's trust mandate and **does not close #21**: the concrete
+  carrier, launch authority and mutual-authentication mechanism remain its
+  operator stop-gate.
 - Depends on: [ADR 0001](0001-durable-runtime.md) (process ownership, attempt
   states), [ADR 0003](0003-http-api.md) (the control surface this record
   authenticates), [ADR 0004](0004-local-cockpit.md) (the local-only boundary this
@@ -18,18 +26,20 @@
   reused and never duplicated), [ADR 0008](0008-budget-units.md) (the attempt
   deadline this record reuses as a lifetime bound)
 - Feeds: [#7](https://github.com/FlexOr2/atelier-2/issues/7) (actor attribution),
-  [#9](https://github.com/FlexOr2/atelier-2/issues/9) part 3 (remote attach epic,
-  gated on this record), [#60](https://github.com/FlexOr2/atelier-2/issues/60)
-  (sandbox probe as attested state)
+  [#9](https://github.com/FlexOr2/atelier-2/issues/9) (operator-facing epic;
+  remote execution, Effect Worker and Remote Attach remain separate deliveries),
+  [#60](https://github.com/FlexOr2/atelier-2/issues/60) (sandbox probe as
+  attested state)
 - Names, never decides, the dependencies owned elsewhere:
   [#16](https://github.com/FlexOr2/atelier-2/issues/16) (durable failure
   vocabulary), [#23](https://github.com/FlexOr2/atelier-2/issues/23)
   (multi-project isolation), [#58](https://github.com/FlexOr2/atelier-2/issues/58)
-  (workspace lease), [#86](https://github.com/FlexOr2/atelier-2/issues/86) (the
-  graph interpreter's move into the core, predecessor of #21's code),
-  [#15](https://github.com/FlexOr2/atelier-2/issues/15) (the same-host runner
-  lifecycle itself: the accepted direct-systemd replacement, its cutover, and the
-  deletion of the watchdog and exec-guard predecessor)
+  (workspace lease), [#15](https://github.com/FlexOr2/atelier-2/issues/15)
+  (attempt state, fencing, terminal-evidence acceptance and reconciliation),
+  [#301](https://github.com/FlexOr2/atelier-2/issues/301) (the deployable Atelier
+  Runner, executor adapters and containment), and
+  [#312](https://github.com/FlexOr2/atelier-2/issues/312) (separate Serve/Runner
+  artifacts, deployment, migration and cutover)
 
 ## Context
 
@@ -45,8 +55,8 @@ boundary stays on this machine until an authenticated boundary exists.
 That refusal is correct and it is a placeholder. Nothing owns what happens when
 execution moves off this machine — who a runner is, how it proves that, what it
 may do with an attempt, and how the terminal channel that carries human
-keystrokes into a credential-bearing process is gated. #9 part 3 is blocked on
-this record, #7 needs an actor before commands can be attributed, and two
+keystrokes into a credential-bearing process is gated. #9's remote surfaces are
+blocked on this record, #7 needs an actor before commands can be attributed, and two
 vision-panel lenses marked the gap CRITICAL with no owner.
 
 The operator directive of 2026-08-15 (#1) sharpens the shape: agents are
@@ -55,142 +65,78 @@ stays exactly where the trust concerns are — credentials, billing, sandbox. Th
 record is that boundary, so strictness here follows the directive rather than
 contradicting it.
 
+The 2026-08-20 ruling resolved a later contradiction in the planned local
+carrier. The live watchdog/exec-guard path and the subsequently planned direct-
+systemd manager are predecessors, and a one-container Serve-plus-execution
+deployment is rejected rather than selectable. Their landed history remains in
+the owning issues; this record retains only the deletion fact needed to prevent
+any of them from returning as a fallback.
+
 **How the decision-authority digest above is computed.** The canonical rule is
 exact: the bytes the API serves as the issue body, hashed as they are, with
-nothing appended — no trailing newline, no re-encoding, no normalization. It is
-stated here because this record's first revision got it wrong: a shell pipeline
-(`gh ... --jq .body`) silently appended jq's newline before hashing, and the
-resulting digest bound bytes GitHub never served. Until ADR 0010's adapter
+nothing appended, re-encoded or normalized. The current body itself ends in one
+LF byte. This is stated because this record's first revision got the digest
+wrong: a shell pipeline (`gh ... --jq .body`) appended another newline before
+hashing and therefore bound bytes GitHub never served. Until ADR 0010's adapter
 publishes requirement revisions and computes this digest once instead of a human
-pasting it, every record here states the byte count and the absence of a trailing
-newline beside the digest, so a reader can re-derive it rather than trust it.
+pasting it, every record here states the byte count and terminal-byte fact so a
+reader can re-derive it rather than trust it.
 
 ## Decision
 
-### 1. A runner is the per-invocation execution scope that owns provider invocation
+### 1. Core owns truth; workers own one bounded operation
 
-A **runner** is the bounded **execution scope** that owns the provider
-invocation of exactly one bound attempt, on exactly one host, together with the
-credential material that host holds — and that is **identified per invocation**,
-so the scope begins and ends with that one invocation and no later invocation
-inherits its identity. Ownership and identity are the whole definition; the shape
-of the thing that carries the scope is not part of it. Not runners: the durable
-core and the API (the **coordinating service**), the cockpit and the conductor
-(#7) — both API clients — and the provider CLI process, which runs *inside* a
-runner and is never one.
+**Atelier Core / Serve** owns scheduling, ready-set computation, attempt and
+generation CAS, canonical artifacts, events, dispositions, receipts, retry,
+resume, cancel and reconciliation. It is the only writer of product truth.
 
-**What a runner is stays fixed; what carries it is mid-replacement**, and the
-two must not be conflated, because the same-host carrier is being replaced
-underneath this record:
+The **Atelier Runner** is a deployable Agent worker. One Runner invocation
+executes exactly one leased `AgentAttempt`, identified by its attempt, request,
+generation/invocation and pinned Runner-manifest identity. It hosts the Agent
+Executor Adapters for Claude, Claude-tools, Codex, Grok and Grok-tools, and owns
+provider CLI and local credential resolution, ephemeral workspace
+materialization and containment, bounded collection and terminal evidence. A
+provider process is its child, not a Runner; the existing `AgentProcessRunner`
+port is a lower, Serve-local predecessor, not this boundary.
 
-- **Predecessor, condemned.** Today the service spawns one watchdog process per
-  attempt (`adapters/agent_processes.py`) and reaches it over a Unix control
-  endpoint; that watchdog — not the service — launches the provider under the
-  exec guard, holds its handle and its cgroup, supervises it and reaps it
-  (`adapters/agent_process_watchdog.py`). By the definition above the watchdog is
-  the runner, without qualification. This 1,564-line supervisor, watchdog and
-  exec-guard lifecycle is **deleted** by #15's Slice 2 cutover under a binding
-  ruling. It is named here as the current state, never as the target.
-- **Successor, accepted and in build.** #15's direct-systemd replacement splits
-  what the predecessor packed into one process across three roles, and **only one
-  of them is the runner**:
-  - the **systemd manager** is long-lived, shared, and one per host — never one
-    per attempt. It installs the transient unit the service requests, enforces
-    the unit's declared bounds, kills its control group and reaps the unit. It
-    is host infrastructure the deployment already runs, shared by every unit on
-    the machine, and it is *not* a runner: it owns no attempt and carries no
-    per-attempt identity.
-  - the **transient unit invocation** is the runner: one per bound attempt,
-    carrying systemd's own per-invocation identity, and its installation *is* the
-    launch authorization. A reused unit name is a different runner, because the
-    invocation identity — not the name — is what this record binds.
-  - inside that invocation, the **collector** is the unit's main process: it
-    validates the launch envelope, publishes the durable launch and result
-    evidence bound to that exact invocation identity, starts the provider process
-    and observes its exit; the **provider process** is the child the invocation
-    exists to run. Neither is a runner — the collector is the runner's voice, the
-    provider its subject, and both live and die inside the scope.
+An **Effect Worker** is a separate worker role for one prepared `EffectIntent`.
+It hosts the existing Effect Adapter contract under an operation-scoped grant
+and returns effect evidence; only Core commits an `EffectReceipt` or
+`WAITING_RECONCILIATION`. It never shares the Agent Runner's identity,
+credential, environment or privilege lane. Wait, Join, Resume and deterministic
+or subworkflow scheduling remain in Core and are not workers.
 
-The predecessor collapses all three roles into one process, which is why a runner
-reads there as "a process"; the successor separates them. The definition survives
-that cutover precisely because it binds the runner to the scope's ownership and
-per-invocation identity rather than to whichever role executes a step — and
-because it never claims that one noun performs launch, supervision and reaping in
-both worlds. What crosses the trust boundary is identical under either carrier:
-one bound attempt in, one host's credential material held locally, evidence out,
-and no durable truth. The runner is *co-located* with the service on this tier —
-one machine, one OS user — and co-location is neither co-residence in a process
-nor shared identity. Binding the trust boundary to that ownership rather than to
-the carrier of the day is what keeps this record true across the cutover, and what
-keeps a remote runner from becoming a second architecture later.
+Serve and Runner are separate OCI images and release artifacts under #312.
+Serve contains no provider CLI or provider credential value and receives no raw
+carrier or OCI lifecycle authority. The Runner writes evidence, never product
+truth; native carrier logs or artifacts may transport evidence or provenance
+but never become the canonical store.
 
-There is exactly **one** trust boundary in the product: between the coordinating
-service and any runner. Everything a runner says is evidence; only the service
-writes durable truth. The tier below changes the mechanism that carries the
-boundary, never the rules it enforces.
+### 2. Every carrier enforces the same identity boundary; its mechanism is open
 
-### 2. Two deployment tiers, one rule set
+A **carrier / host** supplies the execution environment in which a worker runs:
+local OCI, a remote machine, GitHub Actions or GitLab CI. It is neither an
+Atelier Runner adapter nor a second scheduler or store of record. The selected
+path is deployment state; work or evidence arriving by another path is refused
+(`runner-transport-mismatch`). Who holds launch, cleanup and lifecycle authority
+remains the separate open decision below.
 
-A deployment declares its runner tier.
+Before Core binds work or accepts evidence, it establishes the exact worker
+invocation it authorized. The worker authenticates Core in the same act. The
+transport must authenticate both peers, authorize each operation for exactly its
+attempt/generation and worker role, and make replay and idempotency explicit. A
+reused name, path, job label or carrier identity never substitutes for the
+per-invocation identity (`runner-peer-unverified`).
 
-- `same-host`: service and runner are **separate execution scopes** on one
-  machine under one OS user — never the service's own scope. What carries the
-  tier is #15's to build and is being replaced: a watchdog process behind a Unix
-  control endpoint today, a transient systemd unit and durable evidence after the
-  cutover.
-- `remote`: a separate machine or trust domain. Mutual authentication is
-  mandatory in both directions. This tier is a named successor epic (#9 part 3);
-  this record binds its rules, not its transport.
-
-Work and evidence cross only by the path the declared tier owns; anything
-arriving by another path is refused (`runner-transport-mismatch`). Tier is a
-property of the deployment, not a per-request claim.
-
-**The identity invariant, stated so it outlives any transport.** Because a runner
-is never the coordinating service's own execution scope on any tier, every tier
-carries the same obligation, and it is written about the boundary rather than
-about a connection —
-the same-host boundary is losing its connection entirely:
-
-- Before the service binds an attempt to a runner, and before it accepts any
-  report as evidence about that attempt, it establishes that the runner is
-  **exactly the one it authorized** — identified per invocation, never by a name
-  or path that can be reused after the runner it named is gone.
-- A runner accepts work only from the coordinating service, which authenticates
-  itself in the same act (§4's return direction).
-
-This record decides no transport and no framing (see *Out of scope*), so it names
-no mechanism as the decision, and it deliberately names none that would preserve
-the condemned one. #15's direct-systemd successor supplies its own unit and
-manager identity when it is composed — its per-invocation unit identity is
-already the shape the first half asks for — and #9 part 3 supplies the remote
-transport's mutual credential. Both are instances of the sentence, not the
-sentence. The refusal `runner-peer-unverified` binds to the invariant; the item
-that owns the same-host lifecycle at the time (#15) binds the mechanism, and this
-record adds no second owner for it.
-
-**What `same-host` is today, stated as it is rather than as it sounds — and
-accepted as that.** The predecessor endpoint's protection is a `0700` directory
-and a `0600` socket, and its accept path performs no peer check at all
-(`adapters/agent_process_watchdog.py`). That authenticates **the OS user**, not
-the peer: any process running as that user may connect. ADR 0001's cgroup attests
-the *provider child's* descendant relationship — it says nothing about who opened
-a control connection. So `same-host` today is a **same-UID trust domain**, and
-this record accepts it as one rather than describing a control that does not
-exist. The stake is named with the acceptance: anything running as that user
-which reaches the endpoint can launch, cancel and read a billed provider process.
-Closing that gap in the predecessor is explicitly *not* asked for here — #15
-deletes it, and hardening a condemned owner is the waste this record would
-otherwise commission.
-
-That acceptance is bounded, and the bound is the point. It holds while the whole
-boundary stays on one machine, under one OS user, at exposure `this-machine`
-(§3). It **ends** — and the identity invariant above becomes mandatory before any
-attempt binding — at the first of: the `remote` tier; a `reachable` exposure; a
-second OS user or a second project sharing the host (#23); or a runner the
-service did not itself authorize. Past any of those, an unestablished runner is
-refused (`runner-peer-unverified`) rather than admitted on the strength of its
-UID.
+The concrete local and first remote/CI carrier, the component holding launch and
+cleanup authority, and the mutual-authentication mechanism are **OPEN operator
+decisions on #21**. A disposable-host proof must precede the ruling. Until it
+lands, carrier-bound #301-A work and every CI execution proof stop. Mounting a
+Docker/OCI socket, systemd or DBus into Serve, introducing a privileged broker,
+or running privileged systemd in a container is not an admissible placeholder.
+The first CI proof hosts one Atelier Runner job for one AgentAttempt; it does not
+compile the Atelier DAG into native CI jobs. A later Effect Worker may be a
+second, separately authorized job.
 
 ### 3. Operator authentication gates every exposure beyond this machine
 
@@ -236,19 +182,29 @@ Named mechanism per declared exposure, single-user V1 (#1):
 Rejected alternatives, because neither yields an actor for #7: a shared secret
 carried in a URL, and an address allowlist used as the whole authentication.
 
-### 4. A runner authenticates per runner, and the service authenticates back
+### 4. Long-lived Runners enrol; ephemeral CI jobs use a CI TrustPolicy
 
-Every remote runner holds **its own** credential. A shared fleet secret is
-refused as a design: it cannot be revoked for one host and it names no actor.
-Enrolment is an explicit operator act with a durable record binding the runner
-id, its tier, the reference to its credential verifier, the enrolling actor, and
-the runner attestation presented at enrolment (§7). An unenrolled runner receives
-no attempt binding and no attach ticket (`runner-unknown`); a revoked one
-likewise (`runner-revoked`).
+Every long-lived remote Runner holds **its own** credential. A shared fleet
+secret is refused: it cannot be revoked for one host and names no actor.
+Enrolment is an explicit operator act with a durable record binding the Runner
+id, carrier tier, credential-verifier reference, enrolling actor and Runner
+attestation (§7). An unenrolled Runner receives no attempt binding or attach
+ticket (`runner-unknown`); a revoked one likewise (`runner-revoked`). Core and
+Runner mutually authenticate in the same handshake.
 
-The service authenticates itself to the runner in the same handshake, and a
-runner refuses work from an unauthenticated service. Without that direction,
-anything that can reach a runner can spend the operator's subscription.
+An ephemeral CI job is not manually enrolled as a long-lived Runner. Instead,
+the operator enrols one narrow **CI TrustPolicy**: pinned OIDC issuer, immutable
+repository or project identity, exact workflow or configuration identity, and
+protected ref or environment. One unique workflow-run/job assertion may be
+exchanged only once for a short-lived credential bound to one attempt,
+generation and worker role. A differing claim or replay is refused. This policy
+admits the job identity; it does not make CI a scheduler, truth owner or
+capability author.
+
+Agent Runner and Effect Worker credentials are role-separated and mutually
+unusable. A CI Agent proof therefore grants no Effect operation and carries no
+ambient repository-mutation credential; a later Effect Worker proof receives
+only its prepared intent and operation-scoped grant.
 
 **Revocation marks the enrolment record revoked; it never deletes it.** A
 deleted record makes a revoked runner indistinguishable from one that was never
@@ -260,18 +216,18 @@ revoked runner id is an explicit operator act with a fresh credential and a fres
 attestation (§7), never a silent return to service. Revocation stops new
 bindings; it asserts nothing about an attempt already in flight (§10).
 
-### 5. What a runner may do, and what it must not
+### 5. What an Agent Runner may do, and what no worker may do
 
-A runner **may**: accept exactly one attempt binding — the attempt whose id and
-request hash it was handed after the *service's* own compare-and-set to
-`LAUNCH_ARMED` (ADR 0001; the service arms, never the runner); launch, supervise,
-cancel, and reap that provider process — by whichever roles its carrier assigns
-those steps to inside the scope (§1); resolve the credential its bound auth
-profile names by reference (§6); and report observations — process state, exit,
-provider frames, usage measurements.
+An Agent Runner **may** accept exactly one lease bound to immutable attempt,
+request, generation/invocation, executor and Runner-manifest identities after
+Core's compare-and-set to `LAUNCH_ARMED` (ADR 0001; Core arms, never the Runner).
+It may launch, supervise, cancel and reap that provider process, resolve the
+credential reference locally (§6), and report bounded observations and terminal
+evidence. Identical delivery returns the same invocation; a different binding
+conflicts.
 
-A runner **must not**, each enforced by the service rather than trusted to the
-runner:
+No worker may do any of the following; Core enforces each prohibition rather
+than trusting the worker:
 
 - mint a verdict. Receipts, dispositions, budget judgements, and the durable
   event sequence are written by the core (ADR 0001, 0006, 0008). A report
@@ -286,18 +242,15 @@ runner:
 - widen its own capability set. ADR 0006's rule holds unchanged at this boundary:
   capabilities are attested, never claimed.
 
-### 6. Credentials reach a runner by reference, never by value
+### 6. Provider credentials reach a runner by reference, never by value
 
-The service transmits an auth-profile revision and the credential *reference* its
-host resolves locally. It transmits no secret value, ever, in either direction.
-This confirms the landed Claude adapter contract, where
-`ClaudeSubscriptionSettings.credential_directory` is the credential owner and the
-invocation carries paths and switches only. The consequence is the point: a
-remote runner holds its own credential material locally, the service never
-becomes a secret-distribution channel, and a compromised service does not leak
-the operator's subscription. A runner that cannot resolve
-its bound reference refuses at run start (`auth-profile-unresolvable`), with no
-fallback to another auth mode.
+Core transmits the auth-profile revision and a logical credential *reference*;
+it transmits neither the value nor a Serve-local host path. The Runner resolves
+the reference from its own credential source. The current prepared-path seam is
+predecessor implementation owned for deletion by #301, not the target contract.
+A Runner that cannot resolve the bound reference refuses before provider start
+(`auth-profile-unresolvable`) with no fallback to another auth mode. Atelier is
+never a secret-distribution channel.
 
 ### 7. A runner is attested, and a binding needs a runner that attests it
 
@@ -348,9 +301,15 @@ capability revision id, a different probe result, a different observed version, 
 changed attach state — is a new attestation requiring a new operator enrolment,
 visible as a diff, never a silent widening (`runner-attestation-changed`).
 
+For an ephemeral CI Runner, the CI TrustPolicy and unique job assertion replace
+the long-lived enrolment record, not the attestation. The bound Runner manifest,
+executor identity and measured carrier facts still accompany the one-attempt
+credential; the assertion cannot author or widen ADR 0006 capabilities.
+
 **Placement is the half this record adds.** ADR 0006 refuses a capability the
 bound runtime capability revision does not attest. Run start now also refuses a
-binding that **no connected, enrolled runner** attests
+binding that **no connected, authorized Runner** attests — authorization is a
+long-lived enrolment or an ephemeral CI TrustPolicy exchange —
 (`no-runner-attests-binding`), naming the node, the binding, and the missing
 attestation, before any durable run, binding, attempt, or provider process — the
 409 shape #60 already uses. An unplaceable run is refused, never queued in the
@@ -418,8 +377,9 @@ own:
   not start. The attempt's receipt carries #9's operator-influenced marking as
   that record already requires.
 
-V1 attach stays local (#9 part 2). This record does not open remote attach; it
-states what remote attach must present when its epic runs.
+An ephemeral CI TrustPolicy grants no attach capability. V1 attach stays local
+(#9 part 2). This record does not open remote attach; it states what remote
+attach must present when its epic runs.
 
 ### 9. Every command carries a typed, authenticated actor
 
@@ -429,7 +389,9 @@ An actor is a typed identity, not a free string, with exactly three kinds:
 - `agent` — the conductor (#7) or any client acting under a published
   configuration or policy revision, recorded together with that revision id and
   the operator who enrolled it;
-- `runner` — reports only, and never a command that changes catalog or verdict.
+- `worker` — an authenticated Agent Runner or Effect Worker together with its
+  exact role; it reports evidence only and never issues a command that changes
+  catalog or verdict.
 
 Durable command records bind the actor identity and, for an `agent`, the exact
 published revision it acted under, so "who started this, under which published
@@ -463,16 +425,16 @@ unchanged through the chain, so depth never launders identity.
   mode, a longer timeout, an unauthenticated retry, or a clamped bound.
 - Authentication, enrolment, or attestation that cannot be verified refuses
   before any durable run, binding, attempt, receipt, or provider start.
-- **A lost runner connection is not evidence about the provider process.** An
-  armed attempt whose runner became unreachable stays `POSSIBLY_RAN` (ADR 0001)
-  until an authoritative observation resolves it. The service never replaces,
-  replays, or re-places that attempt on another runner. Revocation is subject to
-  the same conservatism: it stops new bindings and resolves nothing in flight.
-- Remote attempt ownership — lease, heartbeat, fencing — is what would make a
-  remote runner's silence resolvable, and it is the remote epic's contract (#9
-  part 3). Until it exists, a remote binding is not published as available. The
-  seam stays honest: this record makes remote representable and refuses it as
-  unavailable rather than pretending it runs.
+- Before `LAUNCH_ARMED`, a lost lease may be assigned again only when
+  authoritative no-launch evidence proves that no provider or Effect operation
+  began. At or after `LAUNCH_ARMED`, silence is not evidence about the external
+  operation: the attempt remains `POSSIBLY_RAN` (ADR 0001), and Core never
+  replaces, replays or re-places it. Revocation stops new bindings and resolves
+  nothing already in flight.
+- The lease, launch fence, terminal-evidence acknowledgement and reconciliation
+  protocol belong to #15. Until that protocol and the #21 carrier decision are
+  implemented, remote and CI bindings are represented but refused as
+  unavailable rather than advertised as working.
 
 ## Refusals
 
@@ -485,7 +447,7 @@ unchanged through the chain, so depth never launders identity.
 | `runner-unknown` | a runner with no enrolment record requests work or a ticket | runner connection |
 | `runner-revoked` | the enrolment record is marked revoked | runner connection |
 | `runner-attestation-changed` | the presented runner attestation differs from the enrolled one | runner connection |
-| `no-runner-attests-binding` | no connected enrolled runner attests the bound capability, executor, provider mode or auth mode | run start |
+| `no-runner-attests-binding` | no connected authorized Runner attests the bound capability, executor, provider mode or auth mode | run start |
 | `auth-profile-unresolvable` | the bound credential reference does not resolve on the runner's host | run start |
 | `attempt-binding-unknown` | a runner acts on an attempt it was not bound | attempt handoff |
 | `attempt-binding-terminal` | a runner acts under a terminal attempt id | attempt handoff |
@@ -508,24 +470,21 @@ this record borrows that owner rather than opening a second vocabulary.
 - A deployment must now state its exposure, and stating none refuses. That is a
   new obligation on every deployment including today's local one, and it is the
   price of not inferring reach from a bind address a proxy can front.
-- V1 gains no daemon and no new process of this record's making. The `same-host`
-  runner is the execution scope that already exists — the watchdog process today,
-  the transient unit under the host's own systemd manager after #15's cutover —
-  and only its name and its obligations become explicit here. The record does
-  not claim a peer control it lacks: it accepts today's same-UID trust domain in
-  writing, names what that costs, and states the boundary past which the
-  acceptance ends.
-- The identity invariant is written without a transport, so it survives the
-  same-host cutover instead of pinning the record to the owner #15 deletes — and
-  it cannot be quietly declared satisfied by changing nothing. This record
-  commissions no hardening of the condemned predecessor; that work would be
-  deleted with it.
-- The remote epic is unblocked in rules, not in build: transport, protocol and
-  the ownership lease remain to be decided by it.
-- Per-runner credentials cost an enrolment ceremony, and the operator must
-  enable attach and then authorize each one. Both costs are accepted: a shared
-  secret has neither revocation nor attribution, and attach is the only path a
-  human reaches into a billed process.
+- Serve and Runner ship as separate artifacts. Provider tools and credentials
+  leave Serve; raw carrier lifecycle authority never enters it. #312 proves the
+  exact artifacts and cutover, rather than this record duplicating that plan.
+- The identity invariant is carrier-neutral, but the carrier is not assumed.
+  #21 must record the operator's concrete carrier, launch-authority and mutual-
+  authentication ruling after the disposable-host proof before build proceeds.
+- Long-lived Runner credentials cost an enrolment ceremony. Ephemeral CI jobs
+  instead cost one narrow TrustPolicy and one short-lived, one-attempt credential
+  per unique job. Neither path accepts a shared fleet secret.
+- Agent Runner and Effect Worker are separate privilege lanes. CI may carry
+  either one as a job, but never turns the Atelier DAG, artifacts or receipts
+  into CI-owned truth.
+- The phased implementation and deletion ledger live on #15, #301 and #312:
+  `#15-A → #301-A → #15-B → #301-B → #312 → Deletion`. This ADR owns the
+  invariant and links the plan rather than copying it.
 
 ## Required proofs before implementation is accepted
 
@@ -546,6 +505,15 @@ this record borrows that owner rather than opening a second vocabulary.
   deployment's tier, not against a mechanism this record names.
 - A runner identity is not satisfied by a reused name: an identifier that
   outlives the runner it named never binds a later attempt.
+- A CI assertion with the wrong issuer, repository/project, workflow/config,
+  ref/environment or unique job identity receives no credential or work. The
+  same assertion replayed after exchange also receives neither.
+- A short-lived credential is usable only for its exact attempt, generation and
+  worker role. Agent Runner and Effect Worker credentials are mutually unusable,
+  and neither carries ambient repository-mutation authority.
+- The inspected Serve artifact contains no provider CLI or credential and has no
+  Docker/OCI socket, systemd/DBus or other raw carrier authority. The separately
+  identified Runner artifact is the only Agent-execution image.
 - Run start refuses a binding no connected runner attests, naming node, binding
   and missing attestation, with no run, binding, attempt, receipt or process.
 - A runner report carrying a disposition, receipt, or catalog mutation is
@@ -565,38 +533,50 @@ this record borrows that owner rather than opening a second vocabulary.
 - An `agent` actor with no credential is refused; one presenting an `operator`
   actor is refused rather than downgraded; and a command its enrolling operator
   may not issue is refused for it too.
-- A runner that disappears while an attempt is armed leaves that attempt
-  `POSSIBLY_RAN`, and no second runner ever receives it.
+- Before `LAUNCH_ARMED`, reassignment succeeds only with authoritative no-launch
+  evidence. At or after `LAUNCH_ARMED`, a disappearing Runner leaves the attempt
+  `POSSIBLY_RAN`, and no second Runner ever receives it.
 - Two enrolled runners with different attestations place only the bindings each
   attests, proving placement is per runner and not per deployment.
+- Deleting or expiring native CI logs and artifacts removes no canonical
+  artifact, receipt or reconciliation evidence from Core.
 
 ## Out of scope and stop conditions
 
-This record does not decide: transport, wire protocol or framing for the runner
-boundary; the remote epic's scope and its attempt-ownership lease, heartbeat and
-fencing contract (#9 part 3); multi-project or multi-tenant isolation (#23); the
-storage backend for operator credentials and the cockpit login surface; the
+This record deliberately leaves **OPEN on #21** the concrete local and first
+remote/CI carrier, the component that owns worker launch and cleanup, and the
+mutual-authentication mechanism. It also does not decide transport framing; the
+environment-requirements vocabulary; multi-project or multi-tenant isolation
+(#23); the operator-credential storage backend or cockpit login surface; the
 provider-side sandbox mechanism (#60); durable failure token names (#16); rate
-limiting and quota.
+limiting or quota. #15 owns lease/fencing/evidence acknowledgement and
+reconciliation; #301 owns the Agent worker; #312 owns packaging and cutover; #9
+owns the operator-facing epic and remote attach.
 
 Stop implementation on: a shared runner secret; a runner writing a receipt,
-disposition, or catalog revision; a credential value crossing the service in
-either direction; an attach path without a per-attach ticket and an audit
-record; a ticket value written into durable state, or redeemed by a
+disposition, or catalog revision; a provider credential value crossing the
+service in either direction; a worker-identity credential written into durable
+state, logs or carrier artifacts; an attach path without a per-attach ticket and
+an audit record; a ticket value written into durable state, or redeemed by a
 read-then-mark sequence instead of an atomic compare-and-consume; a ticket bearer
 from anything but a cryptographically secure random source, or below the entropy
 floor, or verified by a non-constant-time comparison, or treated as authorized on
-its opaque id alone; a runner bound by a reusable name instead of a
-per-invocation identity, or a same-host identity mechanism built into the
-predecessor lifecycle #15 deletes; a
+its opaque id alone; a worker bound by a reusable name instead of a
+per-invocation identity; a shared Agent Runner/Effect Worker credential or
+privilege lane; an ephemeral CI job manually enrolled as a long-lived Runner; a
+carrier assertion accepted outside its pinned TrustPolicy; raw Docker/OCI,
+systemd/DBus or privileged-broker authority entering Serve; a
 deployment-authored or probe-derived entry written into ADR 0006's immutable
 capability manifest; exposure inferred from the bind address, or a forwarded
 header read as identity; a revocation that deletes the enrolment record instead
 of marking it; an `agent` actor authorized by a revision id alone; an unplaceable
 run that is queued instead of refused; a remote binding published as available
-before the ownership contract exists; or an actor field described as attribution
-while it is still caller-asserted.
+before the ownership contract exists; an actor field described as attribution
+while it is still caller-asserted; or carrier-bound implementation beginning
+before #21 records the open operator decisions.
 
 ## Supersedes
 
-None.
+No other ADR. This record's 2026-08-20 amendment supersedes its own watchdog and
+direct-systemd target descriptions and records rejection of the one-container
+target; the compact context note above is retained only as migration history.
