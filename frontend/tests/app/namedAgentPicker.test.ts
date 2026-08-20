@@ -147,11 +147,124 @@ describe("named agent picker", () => {
     await publishWorkflow(cockpitApi);
 
     const binding = await screen.findByRole("article", { name: "Binding builder" });
-    expect(binding.textContent).toContain("No published agent configurations yet.");
-    expect(binding.textContent).toContain("Publish one below, then it will appear here.");
+    expect(screen.getAllByText("No published agents yet.")).toHaveLength(1);
     expect(binding.textContent).toContain("Expert fields");
     expect(within(binding).queryByLabelText("Agent for builder")).toBeNull();
     expect(within(binding).getByText("Expert fields").closest("details")?.open).toBe(false);
+  });
+
+  it("confirms every agent page together before replacing an initial failure", async () => {
+    const secondHash = "d".repeat(64);
+    const first = publishedAgent();
+    const second = publishedAgent({
+      agent_configuration_revision_hash: secondHash,
+      provider_id: "openai",
+      model: "codex"
+    });
+    const listAgentConfigurationRevisions = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [first], next_after_revision_hash: configurationHash })
+      .mockResolvedValueOnce({ items: [first], next_after_revision_hash: configurationHash })
+      .mockResolvedValueOnce({ items: [first], next_after_revision_hash: configurationHash })
+      .mockResolvedValueOnce({ items: [second], next_after_revision_hash: null });
+    const cockpitApi = api({ listAgentConfigurationRevisions });
+
+    await publishWorkflow(cockpitApi);
+
+    await screen.findByText("Published agents incomplete");
+    expect(screen.queryByText("No published agents yet.")).toBeNull();
+    expect(screen.queryByLabelText("Agent for builder")).toBeNull();
+    expect(screen.queryByText(/cursor it had already given/i)).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Retry published agents" })).toHaveLength(1);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry published agents" }));
+
+    const picker = await screen.findByLabelText("Agent for builder");
+    expect(picker.textContent).toContain("anthropic · sonnet · Subscription");
+    expect(picker.textContent).toContain("openai · codex · Subscription");
+    expect(listAgentConfigurationRevisions.mock.calls).toEqual([
+      [undefined],
+      [configurationHash],
+      [undefined],
+      [configurationHash]
+    ]);
+  });
+
+  it("retains the complete list, manual choice and expert draft through refresh failure", async () => {
+    const chosenHash = "d".repeat(64);
+    const addedHash = "e".repeat(64);
+    const first = publishedAgent();
+    const chosen = publishedAgent({
+      agent_configuration_revision_hash: chosenHash,
+      provider_id: "openai",
+      model: "codex"
+    });
+    const added = publishedAgent({
+      agent_configuration_revision_hash: addedHash,
+      provider_id: "google",
+      model: "gemini"
+    });
+    let round = 0;
+    const listAgentConfigurationRevisions = vi.fn(async (after?: string) => {
+      if (after === undefined) round += 1;
+      if (round === 1) return { items: [first, chosen], next_after_revision_hash: null };
+      if (round === 2 && after === undefined) {
+        return { items: [added], next_after_revision_hash: addedHash };
+      }
+      if (round === 2) throw new Error("private later-page detail");
+      return { items: [first, chosen, added], next_after_revision_hash: null };
+    });
+    const cockpitApi = api({ listAgentConfigurationRevisions });
+    await publishWorkflow(cockpitApi);
+
+    const binding = await screen.findByRole("article", { name: "Binding builder" });
+    const picker = within(binding).getByLabelText("Agent for builder") as HTMLSelectElement;
+    await fireEvent.change(picker, { target: { value: chosenHash } });
+    await fireEvent.click(within(binding).getByText("Expert fields"));
+    const expertValues = {
+      "Profile ID": "manual-profile",
+      Revision: "7",
+      Provider: "manual-provider",
+      Model: "manual-model",
+      Executor: "manual/v1"
+    } as const;
+    for (const [label, value] of Object.entries(expertValues)) {
+      await fireEvent.input(within(binding).getByLabelText(label), { target: { value } });
+    }
+    await fireEvent.change(within(binding).getByLabelText("Auth mode"), {
+      target: { value: "api_key" }
+    });
+    const workflowReads = vi.mocked(cockpitApi.listWorkflowRevisions).mock.calls.length;
+
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh published agents" }));
+
+    await screen.findByText("Published agents incomplete");
+    expect(screen.queryByText(/private later-page detail/)).toBeNull();
+    expect(picker.value).toBe(chosenHash);
+    expect(picker.textContent).toContain("anthropic · sonnet · Subscription");
+    expect(picker.textContent).not.toContain("google · gemini · Subscription");
+    for (const [label, value] of Object.entries(expertValues)) {
+      expect(within(binding).getByLabelText(label)).toHaveProperty("value", value);
+    }
+    expect(within(binding).getByLabelText("Auth mode")).toHaveProperty("value", "api_key");
+
+    await fireEvent.change(picker, { target: { value: "" } });
+    expect(picker.value).toBe("");
+    await fireEvent.click(screen.getByRole("button", { name: "Retry published agents" }));
+
+    await waitFor(() => expect(picker.textContent).toContain("google · gemini · Subscription"));
+    expect(picker.value).toBe("");
+    for (const [label, value] of Object.entries(expertValues)) {
+      expect(within(binding).getByLabelText(label)).toHaveProperty("value", value);
+    }
+    expect(within(binding).getByLabelText("Auth mode")).toHaveProperty("value", "api_key");
+    expect(listAgentConfigurationRevisions.mock.calls).toEqual([
+      [undefined],
+      [undefined],
+      [addedHash],
+      [undefined]
+    ]);
+    expect(cockpitApi.listWorkflowRevisions).toHaveBeenCalledTimes(workflowReads);
   });
 
   it("offers a published agent as provider · model · readable auth, and starts with that hash", async () => {

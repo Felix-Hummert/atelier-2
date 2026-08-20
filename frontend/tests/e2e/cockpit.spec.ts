@@ -682,6 +682,225 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
   expect(page.url()).toBe(newRunUrl);
 });
 
+test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-read): New Run retains one complete agent read and its draft", async ({ page }) => {
+  const agentListPath = "/atelier/api/v1/agent-configuration-revisions";
+  const workflowHash = "7".repeat(64);
+  const firstHash = "8".repeat(64);
+  const chosenHash = "9".repeat(64);
+  const addedHash = "a".repeat(64);
+  const workflowName = "Agent recovery proof";
+  const agent = (hash: string, provider: string, model: string) => ({
+    model,
+    auth_profile_revision_hash: "b".repeat(64),
+    executor_revision: `${provider}/v1`,
+    provider_id: provider,
+    auth_mode: "subscription",
+    requested_capability: "headless",
+    agent_configuration_revision_hash: hash
+  });
+  const first = agent(firstHash, "anthropic", "sonnet");
+  const chosen = agent(chosenHash, "openai", "codex");
+  const added = agent(addedHash, "google", "gemini");
+  const agentTarget = (after?: string): string =>
+    after === undefined
+      ? `${agentListPath}?limit=50`
+      : `${agentListPath}?limit=50&after_revision_hash=${after}`;
+  let agentRound = 0;
+  const observed: Array<{ method: string; target: string }> = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/atelier/api/v1")) {
+      observed.push({ method: request.method(), target: `${url.pathname}${url.search}` });
+    }
+  });
+  await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => {
+    const after = new URL(route.request().url()).searchParams.get("after_revision_hash");
+    if (after === null) agentRound += 1;
+    if (agentRound <= 2) {
+      await route.abort("failed");
+      return;
+    }
+    if (agentRound === 3) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(after === null
+          ? { items: [first], next_after_revision_hash: firstHash }
+          : { items: [chosen], next_after_revision_hash: null })
+      });
+      return;
+    }
+    if (agentRound === 4 && after !== null) {
+      await route.abort("failed");
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        agentRound === 4
+          ? { items: [added], next_after_revision_hash: addedHash }
+          : after === null
+            ? { items: [first], next_after_revision_hash: firstHash }
+            : { items: [chosen, added], next_after_revision_hash: null }
+      )
+    });
+  });
+  await page.route("**/atelier/api/v1/workflow-revisions?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [{
+          workflow_revision_hash: workflowHash,
+          workflow_format_version: 3,
+          executable: true,
+          not_executable_reason: null,
+          name: workflowName,
+          description: "Choose an agent without losing the draft."
+        }],
+        next_after_revision_hash: null
+      })
+    });
+  });
+  await page.route("**/atelier/api/v1/workflow-revisions/by-name/*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        display_name: workflowName,
+        lineage_id: "c".repeat(64),
+        workflow_revision_hash: workflowHash,
+        revision_number: 1
+      })
+    });
+  });
+  await page.route(`**/atelier/api/v1/workflow-revisions/${workflowHash}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        workflow_revision_hash: workflowHash,
+        document_base64: "YQ==",
+        graph: {
+          workflow_format_version: 3,
+          executable: true,
+          not_executable_reason: null,
+          node_count: 1,
+          agent_roles: ["builder"],
+          orders: [],
+          node_previews: [{
+            id: "implement",
+            kind: "agent",
+            role: "builder",
+            instruction_start: "Build the candidate.",
+            depends_on: []
+          }],
+          name: workflowName,
+          description: "Choose an agent without losing the draft."
+        }
+      })
+    });
+  });
+  const expectOnlyAgentRead = (targets: string[]): void => {
+    expect(observed.every(({ method }) => method === "GET")).toBe(true);
+    expect(observed.map(({ target }) => target).sort()).toEqual([...targets].sort());
+  };
+
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: new RegExp(workflowName) }).check();
+  const binding = page.getByRole("article", { name: "Binding builder" });
+  await expect(binding).toBeVisible();
+  await expect(page.getByText("Published agents unavailable")).toBeVisible();
+  await expect(page.getByText("No published agents yet.")).toHaveCount(0);
+  await expect(page.getByText(/Failed to fetch|private/i)).toHaveCount(0);
+  const retry = page.getByRole("button", { name: "Retry published agents" });
+  await expect(retry).toHaveCount(1);
+  const newRunUrl = page.url();
+
+  observed.length = 0;
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Published agents unavailable")).toBeVisible();
+  await expect(retry).toBeFocused();
+  expectOnlyAgentRead([agentTarget()]);
+  expect(page.url()).toBe(newRunUrl);
+
+  observed.length = 0;
+  await retry.click();
+  const picker = binding.getByLabel("Agent for builder");
+  await expect(picker).toContainText("anthropic · sonnet · Subscription");
+  await expect(picker).toContainText("openai · codex · Subscription");
+  expectOnlyAgentRead([agentTarget(), agentTarget(firstHash)]);
+  await picker.selectOption(chosenHash);
+  await binding.locator("summary").click();
+  const expertValues = {
+    "Profile ID": "manual-profile",
+    Revision: "7",
+    Provider: "manual-provider",
+    Model: "manual-model",
+    Executor: "manual/v1"
+  } as const;
+  for (const [label, value] of Object.entries(expertValues)) {
+    await binding.getByLabel(label).fill(value);
+  }
+  await binding.getByLabel("Auth mode").selectOption("api_key");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-agent-desktop.png",
+    fullPage: true
+  });
+
+  observed.length = 0;
+  await page.getByRole("button", { name: "Refresh published agents" }).click();
+  await expect(page.getByText("Published agents incomplete")).toBeVisible();
+  await expect(page.getByText(/Failed to fetch|private/i)).toHaveCount(0);
+  await expect(picker).toHaveValue(chosenHash);
+  await expect(picker).toContainText("anthropic · sonnet · Subscription");
+  await expect(picker).not.toContainText("google · gemini · Subscription");
+  for (const [label, value] of Object.entries(expertValues)) {
+    await expect(binding.getByLabel(label)).toHaveValue(value);
+  }
+  await expect(binding.getByLabel("Auth mode")).toHaveValue("api_key");
+  expectOnlyAgentRead([agentTarget(), agentTarget(addedHash)]);
+  expect(page.url()).toBe(newRunUrl);
+
+  await retry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(retry).toBeFocused();
+  await expectVisibleFocus(retry);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-agent-grayscale-desktop.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-agent-grayscale-390x844.png",
+    fullPage: true
+  });
+  await page.locator("style").last().evaluate((element) => element.remove());
+
+  await picker.selectOption("");
+  await expect(picker).toHaveValue("");
+  observed.length = 0;
+  await retry.click();
+  await expect(page.getByText("Published agents incomplete")).toHaveCount(0);
+  await expect(picker).toContainText("google · gemini · Subscription");
+  await expect(picker).toHaveValue("");
+  for (const [label, value] of Object.entries(expertValues)) {
+    await expect(binding.getByLabel(label)).toHaveValue(value);
+  }
+  await expect(binding.getByLabel("Auth mode")).toHaveValue("api_key");
+  await expect(page.getByRole("button", { name: "Refresh published agents" })).toHaveCount(1);
+  expectOnlyAgentRead([agentTarget(), agentTarget(firstHash)]);
+  expect(page.url()).toBe(newRunUrl);
+});
+
 test("walks the whole workshop: studio into the project, project into the run, and the trail back up", async ({ page }) => {
   await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
