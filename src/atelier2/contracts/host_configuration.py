@@ -57,6 +57,10 @@ class ProjectRootRevisionConflict(Exception):
     """The same project id and revision number already hold different bytes."""
 
 
+class ProjectRootBytesDisagree(Exception):
+    """Stored project-root fields do not hash to the revision hash they carry."""
+
+
 @dataclass(frozen=True)
 class ProjectId:
     value: str
