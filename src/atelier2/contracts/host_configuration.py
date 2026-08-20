@@ -20,6 +20,9 @@ from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.hashing import Sha256Hash, frame
 
 MAXIMUM_PROJECT_ID_CHARACTERS = 1_024
+# This serve slice opens no more than the single project id bound at composition.
+# The collection, application decision, and OpenAPI all answer to this owner.
+MAXIMUM_SERVED_PROJECTS = 1
 # Linux PATH_MAX is 4096 including the terminating NUL; a 4096-character
 # path is not openable. The published CHECK must match what open will admit.
 MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS = 4_095
@@ -66,6 +69,16 @@ class ProjectId:
             raise ProjectUnknown(
                 f"{PROJECT_UNKNOWN}: a project id must contain "
                 f"1..{MAXIMUM_PROJECT_ID_CHARACTERS} exact characters"
+            )
+        try:
+            encoded = self.value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ProjectUnknown(
+                f"{PROJECT_UNKNOWN}: a project id must be exact UTF-8 Unicode scalar text"
+            ) from error
+        if encoded.decode("utf-8") != self.value:
+            raise ProjectUnknown(
+                f"{PROJECT_UNKNOWN}: a project id must round-trip exact UTF-8"
             )
 
 

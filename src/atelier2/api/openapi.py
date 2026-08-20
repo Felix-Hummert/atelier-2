@@ -85,6 +85,8 @@ CANCELLATION_PATH = (
 OCCUPANCY_PATH = (
     API_PREFIX + "/projects/{public_project_reference}/occupancy/{lineage_id}"
 )
+PROJECTS_PATH = API_PREFIX + "/projects"
+PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -255,6 +257,19 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): (
         "invalid-revision-hash",
         "workflow-revision-not-found",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECTS_PATH, "get"): (
+        "project-unknown",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_PATH, "get"): (
+        "invalid-public-project-reference",
+        "project-unknown",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -704,6 +719,7 @@ def _install_event_components(schema: dict[str, Any]) -> None:
 def _install_parameter_contracts(schema: dict[str, Any]) -> None:
     references = {
         "PublicProjectReference": (
+            (PROJECT_PATH, "get", "public_project_reference", "path"),
             (OCCUPANCY_PATH, "put", "public_project_reference", "path"),
             (OCCUPANCY_PATH, "get", "public_project_reference", "path"),
         ),
@@ -764,6 +780,9 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
                 location,
                 {"$ref": f"#/components/schemas/{component}"},
             )
+    schema["components"]["schemas"]["ProjectResource"]["properties"][
+        "public_project_reference"
+    ] = {"$ref": "#/components/schemas/PublicProjectReference"}
     _replace_parameter_schema(
         schema["paths"][CANCELLATION_PATH]["post"],
         "attempt_id",

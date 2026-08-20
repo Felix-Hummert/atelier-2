@@ -25,6 +25,7 @@ from atelier2.api.routes import (
     events,
     health,
     occupancy,
+    projects,
     revisions,
     runs,
 )
@@ -60,6 +61,7 @@ from atelier2.application.read_agent_configurations import (
     list_auth_profile_revisions,
 )
 from atelier2.application.read_attention_events import read_attention_events
+from atelier2.application.read_projects import get_project, list_projects
 from atelier2.application.read_run_events import read_run_events
 from atelier2.application.read_runs import (
     get_node_detail,
@@ -75,6 +77,7 @@ from atelier2.application.read_workflow_revisions import (
 from atelier2.application.reconcile_run import reconcile_run
 from atelier2.application.resolve_catalog_name import resolve_catalog_name
 from atelier2.application.start_published_run import start_published_run
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.workflow_projections import (
     EnrichedPageBudget,
 )
@@ -84,6 +87,7 @@ def bound_use_cases(
     ports: ApiPorts,
     projection_limit: WorkflowPublicationLimits,
     enriched_page_budget: EnrichedPageBudget,
+    served_project_id: ProjectId | None,
 ) -> ApiUseCases:
     """Spend the ports here, so that nothing below this line can reach one."""
     return ApiUseCases(
@@ -213,6 +217,12 @@ def bound_use_cases(
                 after, limit, ports.agent_configuration_catalog
             )
         ),
+        list_projects=lambda: list_projects(
+            served_project_id, ports.host_configuration_channel
+        ),
+        get_project=lambda project_id: get_project(
+            project_id, served_project_id, ports.host_configuration_channel
+        ),
         start_published_run=lambda run_id, revision_hash, bindings, orders=(): (
             start_published_run(
                 run_id, revision_hash, bindings, ports.published_run_starter, orders
@@ -258,6 +268,7 @@ def create_app(
     limits: ApiLimits,
     event_poll_backoff: EventPollBackoff,
     frontend_dist: Path | None = None,
+    served_project_id: ProjectId | None = None,
 ) -> FastAPI:
     if not source_commit:
         raise ValueError("source_commit must be injected at application construction")
@@ -297,6 +308,7 @@ def create_app(
                         limits.maximum_enriched_page_document_bytes
                     ),
                 ),
+                served_project_id,
             ),
             ports=ports,
             limits=limits,
@@ -322,6 +334,7 @@ def create_app(
     app.include_router(agents.router)
     app.include_router(artifacts.router)
     app.include_router(revisions.router)
+    app.include_router(projects.router)
     app.include_router(occupancy.router)
     app.include_router(runs.router)
     app.include_router(events.router)

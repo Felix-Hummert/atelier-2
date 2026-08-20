@@ -23,6 +23,8 @@ from atelier2.api.openapi import (
     EVENT_NAMES,
     EVENT_PATH,
     OCCUPANCY_PATH,
+    PROJECT_PATH,
+    PROJECTS_PATH,
 )
 from atelier2.api.references import (
     CATALOG_LINEAGE_ID_PATTERN,
@@ -90,6 +92,8 @@ EXPECTED_PATHS = {
     API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
     API_PREFIX + "/workflow-lineages",
     API_PREFIX + "/workflow-lineages/{lineage_id}/members",
+    PROJECTS_PATH,
+    PROJECT_PATH,
     OCCUPANCY_PATH,
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
@@ -171,6 +175,8 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
         "get_revision",
     ),
+    ("GET", PROJECTS_PATH, "list_projects_route"),
+    ("GET", PROJECT_PATH, "get_project_route"),
     ("PUT", OCCUPANCY_PATH, "put_occupancy_revision_route"),
     ("GET", OCCUPANCY_PATH, "get_occupancy_revision_route"),
     ("POST", API_PREFIX + "/runs", "start_run_route"),
@@ -202,6 +208,8 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
+    (PROJECTS_PATH, "get"): {"200"},
+    (PROJECT_PATH, "get"): {"200"},
     (OCCUPANCY_PATH, "put"): {"200", "201"},
     (OCCUPANCY_PATH, "get"): {"200"},
     (API_PREFIX + "/runs", "post"): {"200", "201"},
@@ -368,6 +376,43 @@ def test_occupancy_path_parameters_use_owned_project_and_lineage_components() ->
         assert parameters[("lineage_id", "path")]["schema"] != {
             "$ref": "#/components/schemas/RevisionHash"
         }
+
+
+def test_project_paths_publish_one_opaque_resource_without_pagination() -> None:
+    schema = served_app().openapi()
+    project = schema["components"]["schemas"]["ProjectResource"]
+    collection = schema["components"]["schemas"]["ProjectListResource"]
+    detail_parameters = {
+        (parameter["name"], parameter["in"]): parameter
+        for parameter in schema["paths"][PROJECT_PATH]["get"]["parameters"]
+    }
+
+    assert project["required"] == ["public_project_reference"]
+    assert set(project["properties"]) == {"public_project_reference"}
+    assert project["properties"]["public_project_reference"] == {
+        "$ref": "#/components/schemas/PublicProjectReference"
+    }
+    assert collection["properties"]["items"]["maxItems"] == 1
+    assert collection["properties"]["items"]["items"] == {
+        "$ref": "#/components/schemas/ProjectResource"
+    }
+    assert set(schema["paths"][PROJECTS_PATH]["get"].get("parameters", ())) == set()
+    assert detail_parameters[("public_project_reference", "path")]["schema"] == {
+        "$ref": "#/components/schemas/PublicProjectReference"
+    }
+    assert set(openapi_module.OPERATION_PROBLEMS[(PROJECTS_PATH, "get")]) == {
+        "project-unknown",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    }
+    assert set(openapi_module.OPERATION_PROBLEMS[(PROJECT_PATH, "get")]) == {
+        "invalid-public-project-reference",
+        "project-unknown",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    }
 
 
 def test_every_declared_error_response_is_problem_json_one_of() -> None:

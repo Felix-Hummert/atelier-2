@@ -465,6 +465,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
             limits=limits,
             event_poll_backoff=settings.event_poll_backoff,
             frontend_dist=settings.frontend_dist,
+            served_project_id=settings.project_id,
         )
         runtime.launch()
         return app, runtime

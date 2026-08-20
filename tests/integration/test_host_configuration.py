@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.dbos.host_configuration import (
@@ -24,6 +25,7 @@ from atelier2.adapters.dbos.schema import (
     initialize_schema,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.openapi import PROJECT_PATH, PROJECTS_PATH
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
@@ -214,6 +216,32 @@ def test_bootstrap_flags_write_the_channel_and_the_runtime_reads_it(
         assert project_root_for(runtime.engine, ProjectId("studio")) == root.resolve()
         assert runtime.declared_project is not None
         assert runtime.declared_project.source.head() == pin
+    finally:
+        runtime.close()
+
+
+def test_compose_serves_the_configured_project_through_its_delivered_reference(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    git_project(root, declaring_verification(["/bin/true"]))
+    app, runtime = compose_application(
+        served_settings(tmp_path, project_id=ProjectId("studio"), project_root=root)
+    )
+
+    try:
+        client = TestClient(app)
+        listed = client.get(PROJECTS_PATH)
+        (project,) = listed.json()["items"]
+        detailed = client.get(
+            PROJECT_PATH.format(
+                public_project_reference=project["public_project_reference"]
+            )
+        )
+
+        assert listed.status_code == 200
+        assert detailed.status_code == 200
+        assert detailed.json() == project
     finally:
         runtime.close()
 

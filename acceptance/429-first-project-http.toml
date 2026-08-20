@@ -1,0 +1,10 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/429"
+
+[[sentence]]
+id = "the-served-project-door-reveals-only-its-public-reference"
+text = "A served installation lists zero or its one configured project, and following the server-generated public reference returns that same project while neither the internal project id nor its root path crosses the HTTP boundary."
+
+[[sentence]]
+id = "a-project-id-is-exact-utf8-before-it-enters-configuration"
+text = "A project id is nonempty, bounded Unicode scalar text that round-trips exact UTF-8 before hashing, configuration, persistence or public projection; lone or mixed surrogates are refused as project-unknown while the widest maximum-length valid id still round-trips."
