@@ -5,6 +5,7 @@
     isRunV3,
     type AnyRun,
     type CockpitApi,
+    type RunEvent,
     type RunEventSubscription
   } from "../api/client";
   import InboxRow from "../components/InboxRow.svelte";
@@ -43,8 +44,7 @@
   let projectionFailure: string | null = null;
   let disposed = false;
   let eventQueue: Promise<void> = Promise.resolve();
-  const pendingFrames: string[] = [];
-  let projectedFromAttention: Readonly<Record<string, true>> = {};
+  const pendingEvents: RunEvent[] = [];
 
   onMount(() => {
     void load();
@@ -71,16 +71,13 @@
         .filter((reading) => !reading.complete)
         .map((reading) => ("unreadable" in reading ? reading.unreadable : ""))
         .filter((text) => text.length > 0);
-      upsertRuns(
-        [
-          ...started.runs,
-          ...waitingInput.runs,
-          ...waitingReconciliation.runs,
-          ...completed.runs,
-          ...failed.runs
-        ],
-        "list"
-      );
+      upsertRuns([
+        ...started.runs,
+        ...waitingInput.runs,
+        ...waitingReconciliation.runs,
+        ...completed.runs,
+        ...failed.runs
+      ]);
       if (unread.length > 0) {
         failureMessage = `Some of this workshop could not be read, so what is below is incomplete: ${unread.join("; ")}.`;
       }
@@ -90,22 +87,16 @@
     }
   }
 
-  function upsertRuns(runs: readonly AnyRun[], source: "list" | "attention"): void {
+  function upsertRuns(runs: readonly AnyRun[]): void {
     const known = [...(home.confirmed?.runs ?? [])];
     for (const run of runs) {
-      if (source === "attention") {
-        projectedFromAttention = {
-          ...projectedFromAttention,
-          [run.public_run_reference]: true
-        };
-      }
       const index = known.findIndex(
         (item) => item.public_run_reference === run.public_run_reference
       );
       if (index >= 0) {
-        if (source === "attention" || projectedFromAttention[run.public_run_reference] !== true) {
-          known[index] = run;
-        }
+        const current = known[index];
+        if (current !== undefined && run.state_version < current.state_version) continue;
+        known[index] = run;
       } else {
         known.push(run);
       }
@@ -133,7 +124,16 @@
   }
 
   function applyEvent(rawData: string): void {
-    pendingFrames.push(rawData);
+    const applied = applyAttentionFrame(hold, rawData);
+    hold = applied.hold;
+    if (applied.event === null) {
+      if (attentionStopped(hold)) {
+        stream?.close();
+        stream = null;
+      }
+      return;
+    }
+    pendingEvents.push(applied.event);
     queueDrain();
   }
 
@@ -154,32 +154,15 @@
   }
 
   async function drainAttention(): Promise<void> {
-    if (disposed || projectionFailure !== null || attentionStopped(hold)) return;
-    while (
-      !disposed &&
-      pendingFrames.length > 0 &&
-      projectionFailure === null &&
-      !attentionStopped(hold)
-    ) {
-      const raw = pendingFrames[0];
-      if (raw === undefined) break;
-      const applied = applyAttentionFrame(hold, raw);
-      hold = applied.hold;
-      if (attentionStopped(hold)) {
-        stream?.close();
-        stream = null;
-        pendingFrames.shift();
-        return;
-      }
-      if (applied.event === null) {
-        pendingFrames.shift();
-        continue;
-      }
+    if (disposed || projectionFailure !== null) return;
+    while (!disposed && pendingEvents.length > 0 && projectionFailure === null) {
+      const event = pendingEvents[0];
+      if (event === undefined) break;
       try {
-        const run = await cockpitApi.getRun(applied.event.public_run_reference);
+        const run = await cockpitApi.getRun(event.public_run_reference);
         if (disposed) return;
-        upsertRuns([run], "attention");
-        pendingFrames.shift();
+        upsertRuns([run]);
+        pendingEvents.shift();
       } catch (error) {
         if (disposed) return;
         projectionFailure = humanErrorMessage(
@@ -215,7 +198,7 @@
     landedCount === 0 &&
     hold.connection === "live" &&
     !streamStopped(hold);
-  $: canStart = !attentionStopped(hold);
+  $: canStart = !attentionStopped(hold) && projectionFailure === null;
 </script>
 
 <section class="studio-home" aria-labelledby="studio-title">

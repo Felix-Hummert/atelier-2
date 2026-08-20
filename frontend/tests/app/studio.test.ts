@@ -355,6 +355,7 @@ describe("the studio holds GET /events", () => {
     expect((await screen.findByText("run missing")).isConnected).toBe(true);
     expect(screen.getByText("Live").isConnected).toBe(true);
     expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
+    expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
     expect(getRun).toHaveBeenCalledTimes(1);
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -366,6 +367,41 @@ describe("the studio holds GET /events", () => {
     expect(getRun).toHaveBeenNthCalledWith(2, "run1.YQ");
     expect(screen.queryByText("run missing")).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("stops the stream on STREAM_FAILED even while a projection is waiting for Retry", async () => {
+    const waiting = waitingInputRun({ public_run_reference: "run1.YQ" });
+    const getRun = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("run missing"))
+      .mockResolvedValueOnce(waiting);
+    const { feed } = openStudioHolding([], { getRun });
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
+    await screen.findByRole("heading", { name: "Nothing is running" });
+
+    feed.handlers?.event(
+      JSON.stringify(
+        waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" })
+      )
+    );
+    expect((await screen.findByText("run missing")).isConnected).toBe(true);
+
+    feed.handlers?.event(JSON.stringify(streamFailedFrame()));
+
+    expect((await screen.findByText("Stopped")).isConnected).toBe(true);
+    expect(screen.getByText("Durable state is corrupt").isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Retry" }).isConnected).toBe(true);
+    expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
+    expect(screen.queryByText("Live")).toBeNull();
+    expect(feed.close).toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
+    expect(within(inbox).getAllByRole("link", { name: /Answer/ })).toHaveLength(1);
+    expect(screen.getByText("Stopped").isConnected).toBe(true);
+    expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
   });
 
   it("names a failed attention stream as itself, not as an empty workshop", async () => {
