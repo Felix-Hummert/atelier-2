@@ -1,18 +1,13 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/162"
 
-# Half A of #162: the tree-only documentation-order gate. Live-thread freshness
-# against GitHub, document-level Open questions, and the generating workflow
-# (half B) stay named on the item.
-
-[[sentence]]
-id = "a-requirement-document-names-its-distilled-from-watermark"
-text = "Every numbered requirement document carries Distilled-From and the other header fields the convention names; a document that does not fails verification and the failure names that document."
+# #162 still owns the tree-only provenance check. Revision approval and strict
+# document shape are owned by #460; the later curating workflow stays on #162.
 
 [[sentence]]
 id = "a-requirement-rule-names-its-source-and-degree"
-text = "Every requirement rule's Quelle opens with OPERATOR or DESK and a source pointer; a rule that does not fails verification and the failure names that identifier."
+text = "Every active requirement rule names OPERATOR or DESK and a source pointer; a strict rule that does not fails verification and the failure names that identifier."
 
 [[sentence]]
 id = "the-documentation-order-gate-states-the-bound-of-what-it-proves"
-text = "The documentation-order gate states the same bound the documentation states: it proves provenance shape in the tree, never that Distilled-From is current against its live thread."
+text = "The documentation-order gate states the same bound the documentation states: it proves versioned shape and byte binding without claiming that a cited live source or approval says what review recorded."

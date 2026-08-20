@@ -1,265 +1,223 @@
 from __future__ import annotations
 
+import argparse
+import hashlib
+import os
 import re
+import subprocess
 import sys
-from dataclasses import dataclass
+import tempfile
 from pathlib import Path
 
-REQUIREMENTS_DIRECTORY = Path("docs/requirements")
-REQUIREMENT_DOCUMENT_NAME = re.compile(r"^\d{4}-.+\.md$")
-REQUIREMENT_BLOCK_HEADING = re.compile(r"^### (REQ-[A-Z0-9]+-[0-9]{2}):\s*(.*)$")
-HEADER_FENCE_OPEN = "```text"
-HEADER_FIELDS = (
-    "Status",
-    "Owner-Issue",
-    "Source-Threads",
-    "Distilled-From",
-    "Approved-By",
+from requirement_contract import (
+    DOCUMENT_NAME,
+    REGISTRY_LOCATION,
+    RegistryEntry,
+    RequirementContractError,
+    RequirementShelf,
+    read_requirement_registry,
+    read_requirement_shelf,
 )
-HEADER_FIELD_LINE = re.compile(r"^([A-Za-z-]+):\s*(.*)$")
-QUELLE_FIELD = "Quelle"
-TEMPLATE_FIELD_LINE = re.compile(
-    r"^(Status|Quelle|Begründung|Journeys|Beweis|Offen):\s*(.*)$"
-)
-AUTHORITY_GRADES = frozenset({"OPERATOR", "DESK"})
-VALID_DOCUMENT_STATUSES = frozenset({"DRAFT", "AGREED", "SUPERSEDED"})
-SOURCE_SEPARATORS = "—–-:"
-DISTILLED_FROM = "Distilled-From"
 
-# Freshness against the live thread would need a GitHub token in CI and would
-# flake with the tracker. Presence of Distilled-From is the in-repo invariant;
-# currency, document-level Open questions, and the generating workflow stay
-# named successors of this gate.
+EXACT_GIT_SHA = re.compile(r"[0-9a-f]{40}")
+
 HONESTY_BOUND = (
     "```text",
-    "proves: every numbered requirement document carries the header fields, and Distilled-From is not empty",
-    "proves: every requirement rule's Quelle opens with OPERATOR or DESK and a source pointer",
-    "does not prove: that Distilled-From is current against its live thread - no GitHub call",
-    "does not prove: that the cited object still says what the document quotes - review judges that",
-    "does not measure: document-level Open questions, journey files, or index completeness",
-    "does not generate: a requirement document from new thread objects - that is half B",
+    "proves: every numbered requirement is a regular in-shelf file whose exact bytes match its sole active tip or frozen legacy pin",
+    "proves: with an exact VCS base, legacy pins cannot grow or change, and may only migrate in place to approval-backed history",
+    "proves: with an exact VCS base, every existing revision remains field-identical and history grows only by a valid successor",
+    "proves: every strict requirement has only title, nonempty Intent, nonempty unique sourced rule sentences, and optional nonempty Non-goals",
+    "proves: every approval-backed revision line is predecessor-complete, unbranched, and has one tip on one numbered path",
+    "does not prove: that a cited source or approval comment exists or says what the registry claims - review judges that",
+    "does not fetch: GitHub or another live authority",
+    "does not make: a frozen legacy document an approved revision",
     "```",
 )
-
-
-class DocumentationOrderError(Exception):
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class RequirementRule:
-    identifier: str
-    quelle: str
-    located_in: Path
-
-
-@dataclass(frozen=True, slots=True)
-class RequirementDocument:
-    location: Path
-    header: dict[str, str]
-    header_order: tuple[str, ...]
-    rules: tuple[RequirementRule, ...]
-
-
-def read_requirement_documents(project_root: Path) -> tuple[RequirementDocument, ...]:
-    directory = project_root / REQUIREMENTS_DIRECTORY
-    if not directory.is_dir():
-        raise DocumentationOrderError(f"{REQUIREMENTS_DIRECTORY} is not a directory")
-    documents = tuple(
-        read_requirement_document(path, path.relative_to(project_root))
-        for path in sorted(directory.iterdir())
-        if REQUIREMENT_DOCUMENT_NAME.match(path.name)
-    )
-    if not documents:
-        raise DocumentationOrderError(
-            f"{REQUIREMENTS_DIRECTORY} contains no numbered requirement document"
-        )
-    return documents
-
-
-def read_requirement_document(path: Path, location: Path) -> RequirementDocument:
-    text = path.read_text(encoding="utf-8")
-    header, header_order = parse_header(text)
-    return RequirementDocument(
-        location, header, header_order, parse_requirement_rules(text, location)
-    )
-
-
-def parse_header(text: str) -> tuple[dict[str, str], tuple[str, ...]]:
-    fence = first_text_fence(text)
-    if fence is None:
-        return {}, ()
-    collected: dict[str, list[str]] = {}
-    order: list[str] = []
-    current: str | None = None
-    for line in fence.splitlines():
-        field = HEADER_FIELD_LINE.match(line)
-        if field is not None:
-            name = field.group(1)
-            current = name
-            collected[name] = [field.group(2) or ""]
-            if name in HEADER_FIELDS and name not in order:
-                order.append(name)
-            continue
-        if current is not None:
-            collected[current].append(line)
-    return (
-        {name: "\n".join(values).strip() for name, values in collected.items()},
-        tuple(order),
-    )
-
-
-def first_text_fence(text: str) -> str | None:
-    start = text.find(HEADER_FENCE_OPEN)
-    if start < 0:
-        return None
-    content_start = start + len(HEADER_FENCE_OPEN)
-    if content_start < len(text) and text[content_start] == "\n":
-        content_start += 1
-    end = text.find("```", content_start)
-    if end < 0:
-        return None
-    return text[content_start:end]
-
-
-def parse_requirement_rules(text: str, location: Path) -> tuple[RequirementRule, ...]:
-    lines = text.splitlines()
-    rules: list[RequirementRule] = []
-    index = 0
-    while index < len(lines):
-        heading = REQUIREMENT_BLOCK_HEADING.match(lines[index])
-        if heading is None:
-            index += 1
-            continue
-        index += 1
-        body_start = index
-        while index < len(lines) and not lines[index].startswith("##"):
-            index += 1
-        rules.append(
-            parse_requirement_block(heading.group(1), lines[body_start:index], location)
-        )
-    return tuple(rules)
-
-
-def parse_requirement_block(
-    identifier: str, body: list[str], location: Path
-) -> RequirementRule:
-    collected: list[str] = []
-    current = False
-    for line in body:
-        field = TEMPLATE_FIELD_LINE.match(line)
-        if field is not None:
-            name = field.group(1)
-            if name == QUELLE_FIELD:
-                current = True
-                collected = [field.group(2) or ""]
-                continue
-            if current:
-                break
-            continue
-        if current:
-            collected.append(line)
-    return RequirementRule(identifier, "\n".join(collected).strip(), location)
-
-
-def split_quelle(quelle: str) -> tuple[str, str]:
-    stripped = quelle.strip()
-    if not stripped:
-        return "", ""
-    grade, _, remainder = stripped.partition(" ")
-    return grade, remainder.lstrip().lstrip(SOURCE_SEPARATORS).strip()
-
-
-def documentation_order_problems(
-    documents: tuple[RequirementDocument, ...],
-) -> tuple[str, ...]:
-    problems: list[str] = []
-    for document in documents:
-        problems.extend(header_problems(document))
-        for rule in document.rules:
-            problems.extend(quelle_problems(rule))
-    return tuple(problems)
-
-
-def header_problems(document: RequirementDocument) -> tuple[str, ...]:
-    if not document.header_order and not document.header:
-        return (f"{document.location} has no header fence",)
-    problems: list[str] = []
-    for name in HEADER_FIELDS:
-        if name not in document.header:
-            problems.append(f"{document.location} has no {name} header field")
-            continue
-        if not document.header[name]:
-            problems.append(f"{document.location} has an empty {name} header field")
-    present = tuple(name for name in document.header_order if name in HEADER_FIELDS)
-    expected = tuple(name for name in HEADER_FIELDS if name in document.header)
-    if present != expected:
-        problems.append(
-            f"{document.location} has header fields {present} out of order; "
-            f"expected {expected}"
-        )
-    status = first_token(document.header.get("Status", ""))
-    if "Status" in document.header and status not in VALID_DOCUMENT_STATUSES:
-        problems.append(
-            f"{document.location} has status {status!r}; status is DRAFT, "
-            "AGREED, or SUPERSEDED"
-        )
-    return tuple(problems)
-
-
-def first_token(text: str) -> str:
-    stripped = text.strip()
-    return stripped.split()[0] if stripped else ""
-
-
-def quelle_problems(rule: RequirementRule) -> tuple[str, ...]:
-    if not rule.quelle:
-        return (
-            f"{rule.located_in} publishes {rule.identifier} without {QUELLE_FIELD}",
-        )
-    grade, source = split_quelle(rule.quelle)
-    if grade not in AUTHORITY_GRADES:
-        return (
-            (
-                f"{rule.located_in} publishes {rule.identifier} with {QUELLE_FIELD} "
-                f"grade {grade!r}; grade is OPERATOR or DESK"
-            ),
-        )
-    if not source:
-        return (
-            (
-                f"{rule.located_in} publishes {rule.identifier} with {QUELLE_FIELD} "
-                "that names no source pointer"
-            ),
-        )
-    return ()
 
 
 def render_honesty_bound() -> str:
     return "\n".join(HONESTY_BOUND)
 
 
-def render_summary(documents: tuple[RequirementDocument, ...]) -> str:
-    rules = sum(len(document.rules) for document in documents)
+def render_summary(shelf: RequirementShelf) -> str:
     return (
-        f"Documentation order: {len(documents)} document(s), {rules} rule(s), "
-        f"{DISTILLED_FROM} present, {QUELLE_FIELD} carries grade and source"
+        f"Requirement contract: {shelf.document_count} document(s), "
+        f"{len(shelf.rules)} rule(s), {shelf.legacy_count} frozen legacy, "
+        f"{shelf.document_count - shelf.legacy_count} approval-backed"
     )
 
 
-def main() -> int:
+def _arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base-revision")
+    return parser.parse_args()
+
+
+def _git_object_exists(project_root: Path, object_name: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", object_name],
+            cwd=project_root,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
+
+
+def _git_bytes(project_root: Path, *arguments: str) -> bytes:
+    result = subprocess.run(
+        ["git", *arguments], cwd=project_root, check=False, capture_output=True
+    )
+    if result.returncode != 0:
+        raise RequirementContractError(
+            f"exact base revision cannot supply {' '.join(arguments)}"
+        )
+    return result.stdout
+
+
+def _legacy_entries(entries: tuple[RegistryEntry, ...]) -> dict[str, RegistryEntry]:
+    return {entry.document: entry for entry in entries if not entry.predecessor}
+
+
+def _git_regular_file(project_root: Path, base_revision: str, location: Path) -> bytes:
+    listing = _git_bytes(
+        project_root, "ls-tree", "-z", base_revision, "--", location.as_posix()
+    )
+    records = [record for record in listing.split(b"\0") if record]
     try:
-        documents = read_requirement_documents(Path.cwd())
-    except DocumentationOrderError as error:
+        metadata, raw_location = records[0].split(b"\t", 1)
+        mode, kind, _object = metadata.decode().split()
+        exact_location = raw_location.decode() == location.as_posix()
+    except (IndexError, UnicodeDecodeError, ValueError) as error:
+        raise RequirementContractError(
+            f"{location} is not a regular Git file in exact base {base_revision}"
+        ) from error
+    if (
+        len(records) != 1
+        or mode not in {"100644", "100755"}
+        or kind != "blob"
+        or not exact_location
+    ):
+        raise RequirementContractError(
+            f"{location} is not a regular Git file in exact base {base_revision}"
+        )
+    return _git_bytes(project_root, "show", f"{base_revision}:{location.as_posix()}")
+
+
+def _base_snapshot(project_root: Path, base_revision: str) -> tuple[RegistryEntry, ...]:
+    registry_object = f"{base_revision}:{REGISTRY_LOCATION.as_posix()}"
+    if not _git_object_exists(project_root, registry_object):
+        return _bootstrap_base_snapshot(project_root, base_revision)
+    with tempfile.TemporaryDirectory() as temporary:
+        base_root = Path(temporary)
+        registry = base_root / REGISTRY_LOCATION
+        registry.parent.mkdir(parents=True)
+        registry.write_bytes(
+            _git_regular_file(project_root, base_revision, REGISTRY_LOCATION)
+        )
+        entries = read_requirement_registry(base_root)
+    for entry in entries:
+        _git_regular_file(project_root, base_revision, entry.location)
+    return entries
+
+
+def _bootstrap_base_snapshot(
+    project_root: Path, base_revision: str
+) -> tuple[RegistryEntry, ...]:
+    listing = _git_bytes(
+        project_root,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        "-z",
+        base_revision,
+        "--",
+        str(REGISTRY_LOCATION.parent),
+    )
+    entries: dict[str, RegistryEntry] = {}
+    for raw_location in listing.rstrip(b"\0").split(b"\0"):
+        if not raw_location:
+            continue
+        location = Path(raw_location.decode("utf-8"))
+        match = DOCUMENT_NAME.fullmatch(location.name)
+        if match is None:
+            continue
+        document = match["document"]
+        if previous := entries.get(document):
+            raise RequirementContractError(
+                f"base requirement {document} has two paths: "
+                f"{previous.location} and {location}"
+            )
+        content = _git_regular_file(project_root, base_revision, location)
+        entries[document] = RegistryEntry(
+            document, location, hashlib.sha256(content).hexdigest(), ""
+        )
+    return tuple(entries.values())
+
+
+def _verify_snapshot_monotonicity(project_root: Path, base_revision: str) -> None:
+    if EXACT_GIT_SHA.fullmatch(base_revision) is None or not _git_object_exists(
+        project_root, f"{base_revision}^{{commit}}"
+    ):
+        raise RequirementContractError(
+            f"exact base revision {base_revision!r} is absent or unresolvable"
+        )
+    base_entries = _base_snapshot(project_root, base_revision)
+    current_entries = read_requirement_registry(project_root)
+    base_legacy = _legacy_entries(base_entries)
+    current_legacy = _legacy_entries(current_entries)
+    if added := sorted(set(current_legacy) - set(base_legacy)):
+        raise RequirementContractError(
+            f"new legacy requirement {added[0]} is forbidden"
+        )
+    for document, base in base_legacy.items():
+        current = current_legacy.get(document)
+        if current == base:
+            continue
+        if current is not None:
+            raise RequirementContractError(
+                f"requirement {document} at {current.location} changes legacy VCS pin "
+                f"from {base.location} sha256:{base.content_sha256} to "
+                f"sha256:{current.content_sha256}; "
+                "migrate it to an approval-backed revision instead of re-pinning"
+            )
+        revisions = tuple(
+            entry
+            for entry in current_entries
+            if entry.document == document and entry.predecessor
+        )
+        if not revisions:
+            raise RequirementContractError(
+                f"legacy requirement {document} at {base.location} was removed "
+                "without an approval-backed revision"
+            )
+        if {entry.location for entry in revisions} != {base.location}:
+            raise RequirementContractError(
+                f"requirement {document} migration changes path from {base.location}"
+            )
+    for base in base_entries:
+        if base.predecessor and base not in current_entries:
+            raise RequirementContractError(
+                f"revision {base.document} {base.content_sha256} changed or deleted"
+            )
+
+
+def main() -> int:
+    arguments = _arguments()
+    try:
+        shelf = read_requirement_shelf(Path.cwd())
+        if arguments.base_revision is not None:
+            _verify_snapshot_monotonicity(Path.cwd(), arguments.base_revision)
+        elif os.environ.get("GITHUB_ACTIONS") == "true":
+            raise RequirementContractError(
+                "GitHub Actions supplied no exact base revision"
+            )
+    except RequirementContractError as error:
         print(f"Documentation-order gate refused: {error}", file=sys.stderr)
         return 1
-    problems = documentation_order_problems(documents)
-    if problems:
-        print("Documentation-order gate failed:", file=sys.stderr)
-        for problem in problems:
-            print(f"  - {problem}", file=sys.stderr)
-        return 1
-    print(render_summary(documents), flush=True)
+    print(render_summary(shelf), flush=True)
     print(render_honesty_bound(), flush=True)
     return 0
 
