@@ -13,7 +13,7 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_FLOOR = 169
+EXPECTED_SOURCE_MODULE_COUNT = 169
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
@@ -21,7 +21,7 @@ EXPECTED_CONTRACT_NAMES = {
     "wire-projection-split": "Wire schemas name no port type",
     "route-vocabulary": "Routes name no port type",
     "schema-owner": "JSON Schema evaluation stays inside one profile owner",
-    "yaml-owner": "PyYAML stays inside its adapters",
+    "yaml-owner": "PyYAML stays inside its document adapters",
 }
 ROOT_PACKAGE = "atelier2"
 PORT_PACKAGE = "atelier2.ports"
@@ -148,10 +148,14 @@ def render_contract_view(configuration: ArchitectureConfiguration) -> str:
     contract_ids = ", ".join(
         str(contract["id"]) for contract in configuration.contracts
     )
+    preflight_ids = ", ".join(
+        preflight_id for preflight_id, _check in ARCHITECTURE_PREFLIGHTS
+    )
     return "\n".join(
         (
             "```text",
             f"contracts: {contract_ids}",
+            f"preflights: {preflight_ids}",
             f"layers: {' > '.join(configuration.layer_rows)}",
             f"dbos-owner: {configuration.dbos_owner}",
             f"yaml-owner: {', '.join(configuration.yaml_owners)}",
@@ -163,6 +167,13 @@ def render_contract_view(configuration: ArchitectureConfiguration) -> str:
 
 def source_module_count(source_root: Path) -> int:
     return sum(1 for _ in source_root.rglob("*.py"))
+
+
+def source_module_count_mismatch(found: int) -> str:
+    return (
+        "source module count mismatch: "
+        f"found {found} source modules; expected {EXPECTED_SOURCE_MODULE_COUNT}"
+    )
 
 
 def _parsed(module: Path) -> ast.Module:
@@ -598,28 +609,36 @@ def route_port_problems(project_root: Path) -> tuple[str, ...]:
     return tuple(problems)
 
 
+ARCHITECTURE_PREFLIGHTS = (
+    ("port-sentence-problems", port_sentence_problems),
+    ("api-port-record-problems", api_port_record_problems),
+    ("use-case-record-problems", use_case_record_problems),
+    ("route-port-problems", route_port_problems),
+)
+
+
 def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
     source_count = source_module_count(project_root / "src/atelier2")
-    if source_count < EXPECTED_SOURCE_MODULE_FLOOR:
-        raise ArchitecturePreflightError(
-            f"found {source_count} source modules; expected at least {EXPECTED_SOURCE_MODULE_FLOOR}"
-        )
-    problems = (
-        port_sentence_problems(project_root)
-        + api_port_record_problems(project_root)
-        + use_case_record_problems(project_root)
-        + route_port_problems(project_root)
-    )
+    if source_count != EXPECTED_SOURCE_MODULE_COUNT:
+        raise ArchitecturePreflightError(source_module_count_mismatch(source_count))
+    problems: list[str] = []
+    for preflight_id, check in ARCHITECTURE_PREFLIGHTS:
+        try:
+            found = check(project_root)
+        except ArchitecturePreflightError as error:
+            problems.append(f"{preflight_id}: {error}")
+            continue
+        problems.extend(f"{preflight_id}: {problem}" for problem in found)
     if problems:
         raise ArchitecturePreflightError(
-            "a route can still reach a port:\n  " + "\n  ".join(problems)
+            "architecture preflights failed:\n  " + "\n  ".join(problems)
         )
     configuration = read_architecture_configuration(project_root / "pyproject.toml")
     print(
         "Architecture preflight: "
         f"{source_count} source modules, {len(configuration.contracts)} contracts, "
         f"{len(configuration.layer_members)} layer members, "
-        "no route port reaches declared",
+        f"{len(ARCHITECTURE_PREFLIGHTS)} architecture preflights",
         flush=True,
     )
     return configuration

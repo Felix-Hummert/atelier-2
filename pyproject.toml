@@ -152,7 +152,7 @@ unmatched_ignore_imports_alerting = "error"
 
 [[tool.importlinter.contracts]]
 id = "yaml-owner"
-name = "PyYAML stays inside its adapters"
+name = "PyYAML stays inside its document adapters"
 type = "forbidden"
 source_modules = ["atelier2"]
 forbidden_modules = ["yaml"]
