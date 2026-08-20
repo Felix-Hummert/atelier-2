@@ -22,6 +22,12 @@ from atelier2.api.openapi import (
     CANCELLATION_PATH,
     EVENT_NAMES,
     EVENT_PATH,
+    OCCUPANCY_PATH,
+)
+from atelier2.api.references import (
+    CATALOG_LINEAGE_ID_PATTERN,
+    MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    PUBLIC_PROJECT_REFERENCE_PATTERN,
 )
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
@@ -84,6 +90,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
     API_PREFIX + "/workflow-lineages",
     API_PREFIX + "/workflow-lineages/{lineage_id}/members",
+    OCCUPANCY_PATH,
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
     NODE_DETAIL_PATH,
@@ -164,6 +171,8 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
         "get_revision",
     ),
+    ("PUT", OCCUPANCY_PATH, "put_occupancy_revision_route"),
+    ("GET", OCCUPANCY_PATH, "get_occupancy_revision_route"),
     ("POST", API_PREFIX + "/runs", "start_run_route"),
     ("GET", API_PREFIX + "/runs", "list_runs"),
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
@@ -193,6 +202,8 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
+    (OCCUPANCY_PATH, "put"): {"200", "201"},
+    (OCCUPANCY_PATH, "get"): {"200"},
     (API_PREFIX + "/runs", "post"): {"200", "201"},
     (API_PREFIX + "/runs", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
@@ -257,9 +268,8 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head admits `GET /events` beside the V3 Action events and the V24
-    `PROJECT_VERIFICATION_FAILED` member. Refreshing the artefact alongside a
-    refactor is what this test still refuses.
+    it. This head admits occupancy under a `project1.` public project reference.
+    Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
     assert rendered_document(served_app().openapi()) == FROZEN_DOCUMENT_PATH.read_text()
@@ -328,6 +338,36 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     assert attention_parameters[("Last-Event-ID", "header")]["schema"] == {
         "$ref": "#/components/schemas/EventCursor"
     }
+
+
+def test_occupancy_path_parameters_use_owned_project_and_lineage_components() -> None:
+    schema = served_app().openapi()
+    project_component = schema["components"]["schemas"]["PublicProjectReference"]
+    lineage_component = schema["components"]["schemas"]["CatalogLineageId"]
+
+    assert project_component == {
+        "type": "string",
+        "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    }
+    assert lineage_component == {
+        "type": "string",
+        "pattern": CATALOG_LINEAGE_ID_PATTERN,
+    }
+    for method in ("get", "put"):
+        parameters = {
+            (parameter["name"], parameter["in"]): parameter
+            for parameter in schema["paths"][OCCUPANCY_PATH][method]["parameters"]
+        }
+        assert parameters[("public_project_reference", "path")]["schema"] == {
+            "$ref": "#/components/schemas/PublicProjectReference"
+        }
+        assert parameters[("lineage_id", "path")]["schema"] == {
+            "$ref": "#/components/schemas/CatalogLineageId"
+        }
+        assert parameters[("lineage_id", "path")]["schema"] != {
+            "$ref": "#/components/schemas/RevisionHash"
+        }
 
 
 def test_every_declared_error_response_is_problem_json_one_of() -> None:

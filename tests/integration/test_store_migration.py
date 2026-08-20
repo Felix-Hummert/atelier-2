@@ -38,6 +38,7 @@ from atelier2.adapters.dbos.schema import (
     V22_SCHEMA_HANDOFF,
     V23_SCHEMA_HANDOFF,
     V24_SCHEMA_HANDOFF,
+    V25_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -52,6 +53,8 @@ from atelier2.adapters.dbos.schema import (
     catalog_lineages,
     context_packages_v3,
     event_instants,
+    host_occupancy_bindings,
+    host_occupancy_revisions,
     host_project_root_revisions,
     initialize_schema,
     node_execution_requests_v3,
@@ -501,6 +504,8 @@ def _create_populated_v13_store(database_path: Path) -> None:
             artifacts.name,
             run_inputs_v3.name,
             tool_redemptions.name,
+            host_occupancy_bindings.name,
+            host_occupancy_revisions.name,
             host_project_root_revisions.name,
         ):
             connection.execute(sa.text(f"DROP TRIGGER {table}_no_update"))
@@ -876,6 +881,15 @@ def _drop_host_project_root_channel(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP TABLE {host_project_root_revisions.name}")
 
 
+def _drop_occupancy_channel(connection: sqlite3.Connection) -> None:
+    connection.execute("DROP TRIGGER host_occupancy_bindings_no_update")
+    connection.execute("DROP TRIGGER host_occupancy_bindings_no_delete")
+    connection.execute("DROP TRIGGER host_occupancy_revisions_no_update")
+    connection.execute("DROP TRIGGER host_occupancy_revisions_no_delete")
+    connection.execute(f"DROP TABLE {host_occupancy_bindings.name}")
+    connection.execute(f"DROP TABLE {host_occupancy_revisions.name}")
+
+
 def _create_exact_v21_store(database_path: Path) -> None:
     """A current store with instants and AGENT_REFUSED removed: the published V21 shape."""
 
@@ -884,6 +898,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _revert_agent_refused_attempts(connection)
+        _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
         for trigger in (
             "run_instants_start_no_update",
@@ -914,6 +929,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _revert_agent_refused_attempts(connection)
+        _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -931,6 +947,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _revert_project_verification_failed_attempts(connection)
+        _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -947,6 +964,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -954,6 +972,22 @@ def _create_exact_v24_store(database_path: Path) -> None:
         )
         connection.commit()
         _require_product_shape(connection, V24_SCHEMA_HANDOFF.version)
+
+
+def _create_exact_v25_store(database_path: Path) -> None:
+    """A current store without occupancy revisions: V25."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _drop_occupancy_channel(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V25_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V25_SCHEMA_HANDOFF.version)
 
 
 def test_an_exact_v21_store_migrates_to_v22(
@@ -1065,7 +1099,101 @@ def test_an_exact_v24_store_migrates_to_v25(
             )
             == 0
         )
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(host_occupancy_revisions)
+            )
+            == 0
+        )
     engine.dispose()
+
+
+def test_an_exact_v25_store_migrates_to_v26(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v25_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 25"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "25" in shown.out and "26" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(host_occupancy_revisions)
+            )
+            == 0
+        )
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(host_occupancy_bindings)
+            )
+            == 0
+        )
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        pytest.param(
+            "CREATE TABLE host_occupancy_bindings(wrong TEXT)",
+            id="table",
+        ),
+        pytest.param(
+            "CREATE VIEW host_occupancy_bindings AS SELECT 1 AS wrong",
+            id="view",
+        ),
+    ],
+)
+def test_a_refused_occupancy_hop_rolls_back_the_first_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
+) -> None:
+    """The second occupancy object already exists, so the first create undoes.
+
+    V25→V26 creates `host_occupancy_revisions` then `host_occupancy_bindings`
+    then CAS 25→26 in one transaction. A name already holding the second
+    object refuses the hop after the first table exists in that transaction.
+    Rollback must leave no occupancy table, no occupancy trigger, and version 25.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v25_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(collision_sql)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "host_occupancy_bindings" in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (25,)
+        names = {
+            record[0]
+            for record in connection.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'host_occupancy%'"
+            )
+        }
+        assert names == {"host_occupancy_bindings"}
 
 
 @pytest.mark.proves("an-unknown-or-future-schema-is-refused-by-name")
