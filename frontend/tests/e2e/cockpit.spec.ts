@@ -124,12 +124,15 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await expect(completed).toContainText("Grüße 東京");
   await expect(completed).toContainText("14 bytes");
   await expect(completed).toContainText("Verified");
+  await expect(page.getByTestId("run-state")).toHaveText("completed");
   await page.screenshot({ path: "test-results/v2-completed-desktop.png", fullPage: true });
-  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileViewport = { width: 390, height: 844 };
+  const desktopViewport = { width: 1280, height: 900 };
+  await page.setViewportSize(mobileViewport);
   const eventLog = page.locator("details.event-log");
-  if (!(await eventLog.evaluate((details) => (details as HTMLDetailsElement).open))) {
-    await eventLog.locator("summary").click();
-  }
+  await expect(eventLog).toHaveJSProperty("open", false);
+  await eventLog.locator("summary").click();
+  await expect(eventLog).toHaveJSProperty("open", true);
   const eventEvidenceRegions = page.locator(".event-evidence");
   const overflowingEventIndex = await eventEvidenceRegions.evaluateAll((events) =>
     events.findIndex((event) => event.scrollHeight > event.clientHeight)
@@ -142,22 +145,33 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await expect(eventEvidence.locator("pre")).toHaveCount(1);
   await expect(eventEvidence).toHaveAttribute("tabindex", "0");
   await expect(eventEvidence).toHaveAccessibleName(/Event evidence #[1-9][0-9]*/);
-  await eventEvidence.focus();
-  await expect(eventEvidence).toBeFocused();
-  const scrollTopBeforeKeyboard = await eventEvidence.evaluate((event) => event.scrollTop);
-  await page.keyboard.press("PageDown");
-  await expect.poll(() => eventEvidence.evaluate((event) => event.scrollTop))
-    .toBeGreaterThan(scrollTopBeforeKeyboard);
-  await expectVisibleFocus(eventEvidence);
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({ path: "test-results/v2-event-evidence-focus-390x844.png", fullPage: true });
+  for (let transition = 1; transition <= 2; transition += 1) {
+    await page.setViewportSize(mobileViewport);
+    await eventEvidence.focus();
+    await expect(eventEvidence).toBeFocused();
+    await page.keyboard.press("Home");
+    await expect.poll(() => eventEvidence.evaluate((event) => event.scrollTop)).toBe(0);
+    const scrollTopBeforeKeyboard = await eventEvidence.evaluate((event) => event.scrollTop);
+    await page.keyboard.press("PageDown");
+    await expect.poll(() => eventEvidence.evaluate((event) => event.scrollTop))
+      .toBeGreaterThan(scrollTopBeforeKeyboard);
+    await expectVisibleFocus(eventEvidence);
+    await assertNoSeriousAccessibilityFindings(page);
+    await page.screenshot({
+      path: `test-results/v2-event-evidence-focus-mobile-${transition}.png`,
+      fullPage: true
+    });
 
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await eventEvidence.focus();
-  await expect(eventEvidence).toBeFocused();
-  await expectVisibleFocus(eventEvidence);
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({ path: "test-results/v2-event-evidence-focus-desktop.png", fullPage: true });
+    await page.setViewportSize(desktopViewport);
+    await eventEvidence.focus();
+    await expect(eventEvidence).toBeFocused();
+    await expectVisibleFocus(eventEvidence);
+    await assertNoSeriousAccessibilityFindings(page);
+    await page.screenshot({
+      path: `test-results/v2-event-evidence-focus-desktop-${transition}.png`,
+      fullPage: true
+    });
+  }
 
   await page.setViewportSize({ width: 390, height: 844 });
   await assertMobileSurface(page);

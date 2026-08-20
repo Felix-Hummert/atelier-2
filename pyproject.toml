@@ -112,7 +112,8 @@ name = "Wire schemas name no port type"
 type = "forbidden"
 source_modules = ["atelier2.api.wire"]
 forbidden_modules = ["atelier2.ports", "atelier2.ports.**"]
-allow_indirect_imports = true
+# A port re-exported through application is still a port the wire named.
+allow_indirect_imports = false
 as_packages = true
 
 # The vocabulary guard, not the proof: it keeps the port types from seeping back
@@ -146,6 +147,20 @@ ignore_imports = [
     "atelier2.contracts.schemas_v3 -> jsonschema",
     "atelier2.contracts.schemas_v3 -> jsonschema_specifications",
     "atelier2.contracts.schemas_v3 -> referencing",
+]
+unmatched_ignore_imports_alerting = "error"
+
+[[tool.importlinter.contracts]]
+id = "yaml-owner"
+name = "PyYAML stays inside its document adapters"
+type = "forbidden"
+source_modules = ["atelier2"]
+forbidden_modules = ["yaml"]
+allow_indirect_imports = true
+as_packages = true
+ignore_imports = [
+    "atelier2.adapters.yaml_workflows -> yaml",
+    "atelier2.adapters.markdown_agent_definitions -> yaml",
 ]
 unmatched_ignore_imports_alerting = "error"
 
