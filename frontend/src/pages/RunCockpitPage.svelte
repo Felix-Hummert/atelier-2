@@ -8,6 +8,7 @@
     type CockpitApi,
     isRunV3,
     type AnyRun,
+    type Problem,
     type Run,
     type RunV3,
     type RunEvent,
@@ -36,19 +37,22 @@
   import V3RunView from "../components/V3RunView.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import {
+    beginRead,
+    confirmRead,
+    failRead,
+    retainedRead,
+    type RetainedRead
+  } from "../lib/readResource";
   import { runPageCopy } from "../lib/runPageCopy";
   import {
-    confirmResource,
     decodeAndApplyDurableEvent,
-    failResource,
     markComplete,
     markConnecting,
     markFailed,
     markLive,
     restartStreamProjection,
-    startLoading,
     streamProjection,
-    type RetainedResource,
     type StreamProjection
   } from "../lib/runProjection";
   import {
@@ -69,10 +73,7 @@
     revision: WorkflowRevisionDetail;
   }
 
-  let snapshot: RetainedResource<RunSnapshot> = {
-    confirmed: null,
-    request: { state: "idle" }
-  };
+  let snapshot: RetainedRead<RunSnapshot, Problem> = retainedRead<RunSnapshot, Problem>();
   /**
    * A version 3 run, held apart from the snapshot below.
    *
@@ -97,7 +98,6 @@
   let reconciliationFailureMessage: string | null = null;
   let reconciliationActionCard: ReconciliationActionCard;
   let runStateElement: { focus(): void };
-  let loadGeneration = 0;
   let disposed = false;
   let eventQueue: Promise<void> = Promise.resolve();
   $: pendingAnswer = pendingWait === null ? null : waitAnswer(pendingWait);
@@ -117,16 +117,17 @@
   });
 
   async function load(): Promise<void> {
-    const generation = ++loadGeneration;
-    snapshot = startLoading(snapshot);
+    const begun = beginRead(snapshot);
+    const generation = begun.generation;
+    snapshot = begun.read;
     failureMessage = null;
     try {
       const run = await cockpitApi.getRun(publicReference);
       requireRequestedRun(run);
       if (isRunV3(run)) {
-        if (disposed || generation !== loadGeneration) return;
+        if (disposed || generation !== snapshot.generation) return;
         v3Run = run;
-        snapshot = { confirmed: null, request: { state: "idle" } };
+        snapshot = { confirmed: null, generation, request: { state: "idle" } };
         // A version 3 run has an event stream now (#249), so the page follows it
         // like any other. It opened none while the wire carried no format-3
         // event and the page said so; saying so is what became untrue.
@@ -138,8 +139,8 @@
           ? snapshot.confirmed.revision
           : await cockpitApi.getWorkflowRevision(run.workflow_revision_hash);
       requireBoundRevision(run, revision);
-      if (disposed || generation !== loadGeneration) return;
-      snapshot = confirmResource(snapshot, { run, revision });
+      if (disposed || generation !== snapshot.generation) return;
+      snapshot = confirmRead(snapshot, generation, { run, revision });
       ensureEventStream(run);
       try {
         await loadPendingWait(run);
@@ -149,11 +150,11 @@
           ? error.message
           : "The saved exact answer could not be read.";
       }
-      if (disposed || generation !== loadGeneration) return;
+      if (disposed || generation !== snapshot.generation) return;
     } catch (error) {
-      if (disposed || generation !== loadGeneration) return;
+      if (disposed || generation !== snapshot.generation) return;
       if (error instanceof CockpitRequestError && error.problem !== null) {
-        snapshot = failResource(snapshot, error.problem);
+        snapshot = failRead(snapshot, generation, error.problem);
       } else {
         failureMessage = error instanceof Error ? error.message : "The durable run could not be loaded.";
         snapshot = { ...snapshot, request: { state: "idle" } };
@@ -590,7 +591,7 @@
       await load();
       return;
     }
-    snapshot = confirmResource(snapshot, { run: result.value, revision });
+    snapshot = confirmRead(snapshot, snapshot.generation, { run: result.value, revision });
     if (result.status === 202) {
       requireMatchingPendingCommand(result.value, mutation);
       let uncertain: JournalEntry;
@@ -755,7 +756,7 @@
       await load();
       return;
     }
-    snapshot = confirmResource(snapshot, { run: answered, revision });
+    snapshot = confirmRead(snapshot, snapshot.generation, { run: answered, revision });
     if (result.status === 202) {
       let uncertain: JournalEntry;
       try {
@@ -842,7 +843,7 @@
       }}
     />
   {:else if snapshot.request.state === "failed"}
-    <ProblemNotice problem={snapshot.request.problem} />
+    <ProblemNotice problem={snapshot.request.failure} />
   {:else if failureMessage !== null}
     <ProblemNotice title="Run unavailable" message={failureMessage} />
   {/if}

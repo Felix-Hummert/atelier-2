@@ -13,7 +13,7 @@ content_sha256 = "c270ec1e6b2bab894bca5c3f51bc78df73e83206b35f849d2ccd6169efc66b
 [[legacy]]
 document = "0003"
 path = "docs/requirements/0003-ziel-ui.md"
-content_sha256 = "efa40ad55549fb677c7e39d9a751c8737ad72e401ef0390f3db88be19755c8ef"
+content_sha256 = "f5276011ae15b2561831ffe5e545aa5fb77220281ebafd8bb8115852346cc2f7"
 
 [[legacy]]
 document = "0004"

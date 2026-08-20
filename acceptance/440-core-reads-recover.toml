@@ -1,0 +1,7 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/440"
+
+[[sentence]]
+id = "the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read"
+requirement = "REQ-UIQ-06"
+text = "Studio names an incomplete or unavailable five-list read without exposing transport trivia, preserves confirmed run truth, and offers one accessible Retry that repeats only that logical read until newly confirmed truth replaces the failure."

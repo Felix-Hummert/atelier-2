@@ -219,6 +219,100 @@ test("opens the project level from a cold link and survives a reload", async ({ 
   await expect(page).toHaveURL(/\/atelier\/project$/);
 });
 
+test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): Studio recovers one retained five-list read", async ({ page }) => {
+  const runListPath = "/atelier/api/v1/runs";
+  const expectedStates = [
+    "COMPLETED",
+    "FAILED",
+    "STARTED",
+    "WAITING_INPUT",
+    "WAITING_RECONCILIATION"
+  ];
+  let readsFail = true;
+  const observed: Array<{ method: string; path: string; state: string | null }> = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/atelier/api/v1")) {
+      observed.push({
+        method: request.method(),
+        path: url.pathname,
+        state: url.searchParams.get("state")
+      });
+    }
+  });
+  await page.route("**/atelier/api/v1/runs?*", async (route) => {
+    if (readsFail) await route.abort("failed");
+    else await route.continue();
+  });
+
+  const expectOnlyStudioRead = (): void => {
+    expect(observed).toHaveLength(5);
+    expect(observed.every(({ method, path }) => method === "GET" && path === runListPath))
+      .toBe(true);
+    expect(observed.map(({ state }) => state).sort()).toEqual(expectedStates);
+  };
+
+  await page.goto("/atelier");
+  await expect(page.getByText("Studio runs unavailable")).toBeVisible();
+  await expect(page.getByText(/Failed to fetch/)).toHaveCount(0);
+  const retry = page.getByRole("button", { name: "Retry studio runs" });
+  await expect(retry).toHaveCount(1);
+  const studioUrl = page.url();
+
+  observed.length = 0;
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Studio runs unavailable")).toBeVisible();
+  await expect(retry).toBeFocused();
+  expectOnlyStudioRead();
+  expect(page.url()).toBe(studioUrl);
+
+  readsFail = false;
+  observed.length = 0;
+  await retry.click();
+  const workshop = page.getByRole("article", { name: "This workshop" });
+  await expect(workshop).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh studio runs" })).toHaveCount(1);
+  expectOnlyStudioRead();
+  expect(page.url()).toBe(studioUrl);
+
+  readsFail = true;
+  observed.length = 0;
+  await page.getByRole("button", { name: "Refresh studio runs" }).click();
+  await expect(page.getByText("Studio runs unavailable")).toBeVisible();
+  await expect(workshop).toBeVisible();
+  expectOnlyStudioRead();
+  expect(page.url()).toBe(studioUrl);
+
+  await retry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(retry).toBeFocused();
+  await expectVisibleFocus(retry);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
+  await page.screenshot({
+    path: "test-results/read-recovery-studio-grayscale-desktop.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await page.screenshot({
+    path: "test-results/read-recovery-studio-grayscale-390x844.png",
+    fullPage: true
+  });
+  await page.locator("style").last().evaluate((element) => element.remove());
+
+  readsFail = false;
+  observed.length = 0;
+  await retry.click();
+  await expect(page.getByText("Studio runs unavailable")).toHaveCount(0);
+  await expect(workshop).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh studio runs" })).toHaveCount(1);
+  expectOnlyStudioRead();
+  expect(page.url()).toBe(studioUrl);
+});
+
 test("walks the whole workshop: studio into the project, project into the run, and the trail back up", async ({ page }) => {
   await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();

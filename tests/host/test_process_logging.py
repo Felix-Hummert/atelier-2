@@ -28,6 +28,7 @@ from atelier2.contracts.agents import (
     AgentExecutionResult,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.host.logging import PROCESS_LOGGER_NAME, configure_process_logging
 from atelier2.ports.agent_attempts import (
@@ -319,7 +320,8 @@ class _FailingAttemptStore:
         del attempt_id
         return self._attempt
 
-    def driverless_attempts(self) -> tuple[AgentAttempt, ...]:
+    def iter_driverless_attempts(self, page_limit: PageLimit) -> Iterator[AgentAttempt]:
+        del page_limit
         raise AssertionError("this attempt is driven by the call under test")
 
     def complete_success(

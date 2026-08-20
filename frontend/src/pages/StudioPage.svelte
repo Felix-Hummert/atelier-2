@@ -11,6 +11,7 @@
   import InboxRow from "../components/InboxRow.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ProjectCard from "../components/ProjectCard.svelte";
+  import ReadState from "../components/ReadState.svelte";
   import {
     applyAttentionFrame,
     attentionStopped,
@@ -20,8 +21,15 @@
     type AttentionHold
   } from "../lib/attentionHold";
   import { humanErrorMessage } from "../lib/humanRefusal";
+  import {
+    beginRead,
+    confirmRead,
+    failRead,
+    retainedRead,
+    updateConfirmed,
+    type RetainedRead
+  } from "../lib/readResource";
   import { readEveryRun } from "../lib/runPages";
-  import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
   import { countStanding, runsStanding } from "../lib/runState";
   import {
     connectionLabel,
@@ -37,7 +45,12 @@
     runs: AnyRun[];
   };
 
-  let home: RetainedResource<StudioHome> = { confirmed: null, request: { state: "idle" } };
+  type StudioReadFailure =
+    | { kind: "unavailable"; title: string }
+    | { kind: "incomplete"; title: string };
+
+  let home: RetainedRead<StudioHome, StudioReadFailure> =
+    retainedRead<StudioHome, StudioReadFailure>();
   let hold: AttentionHold = startAttentionHold();
   let stream: RunEventSubscription | null = null;
   let failureMessage: string | null = null;
@@ -57,8 +70,8 @@
   });
 
   async function load(): Promise<void> {
-    home = startLoading(home);
-    failureMessage = null;
+    const begun = beginRead(home);
+    home = begun.read;
     try {
       const [started, waitingInput, waitingReconciliation, completed, failed] = await Promise.all([
         readEveryRun((after) => cockpitApi.listRuns(after, "STARTED")),
@@ -67,28 +80,32 @@
         readEveryRun((after) => cockpitApi.listRuns(after, "COMPLETED")),
         readEveryRun((after) => cockpitApi.listRuns(after, "FAILED"))
       ]);
-      const unread = [started, waitingInput, waitingReconciliation, completed, failed]
-        .filter((reading) => !reading.complete)
-        .map((reading) => ("unreadable" in reading ? reading.unreadable : ""))
-        .filter((text) => text.length > 0);
-      upsertRuns([
+      const readings = [started, waitingInput, waitingReconciliation, completed, failed];
+      if (readings.some((reading) => !reading.complete)) {
+        home = failRead(home, begun.generation, {
+          kind: "incomplete",
+          title: "Studio runs incomplete"
+        });
+        return;
+      }
+      const known = mergedRuns(home.confirmed?.runs ?? [], [
         ...started.runs,
         ...waitingInput.runs,
         ...waitingReconciliation.runs,
         ...completed.runs,
         ...failed.runs
       ]);
-      if (unread.length > 0) {
-        failureMessage = `Some of this workshop could not be read, so what is below is incomplete: ${unread.join("; ")}.`;
-      }
-    } catch (error) {
-      failureMessage = error instanceof Error ? error.message : "The workshop could not be read.";
-      home = { ...home, request: { state: "idle" } };
+      home = confirmRead(home, begun.generation, { runs: known });
+    } catch {
+      home = failRead(home, begun.generation, {
+        kind: "unavailable",
+        title: "Studio runs unavailable"
+      });
     }
   }
 
-  function upsertRuns(runs: readonly AnyRun[]): void {
-    const known = [...(home.confirmed?.runs ?? [])];
+  function mergedRuns(currentRuns: readonly AnyRun[], runs: readonly AnyRun[]): AnyRun[] {
+    const known = [...currentRuns];
     for (const run of runs) {
       const index = known.findIndex(
         (item) => item.public_run_reference === run.public_run_reference
@@ -101,7 +118,13 @@
         known.push(run);
       }
     }
-    home = confirmResource(home, { runs: known });
+    return known;
+  }
+
+  function upsertRuns(runs: readonly AnyRun[]): void {
+    home = updateConfirmed(home, {
+      runs: mergedRuns(home.confirmed?.runs ?? [], runs)
+    });
   }
 
   function holdAttention(): void {
@@ -243,6 +266,7 @@
       <ProblemNotice message={projectionFailure} />
       <button type="button" onclick={retryProjection}>Retry</button>
     {/if}
+    <ReadState read={home} label="studio runs" onRetry={() => { void load(); }} />
     {#if failureMessage !== null}
       <ProblemNotice message={failureMessage} />
     {/if}
@@ -269,8 +293,6 @@
           {navigate}
         />
       {/if}
-    {:else if home.request.state === "loading"}
-      <p class="status" role="status">Looking…</p>
     {/if}
   </div>
 </section>
