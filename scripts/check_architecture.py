@@ -13,7 +13,7 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_FLOOR = 167
+EXPECTED_SOURCE_MODULE_FLOOR = 169
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
@@ -21,6 +21,7 @@ EXPECTED_CONTRACT_NAMES = {
     "wire-projection-split": "Wire schemas name no port type",
     "route-vocabulary": "Routes name no port type",
     "schema-owner": "JSON Schema evaluation stays inside one profile owner",
+    "yaml-owner": "PyYAML stays inside its adapters",
 }
 ROOT_PACKAGE = "atelier2"
 PORT_PACKAGE = "atelier2.ports"
@@ -66,6 +67,7 @@ class ArchitectureConfiguration:
     layer_rows: tuple[str, ...]
     layer_members: frozenset[str]
     dbos_owner: str
+    yaml_owners: tuple[str, ...]
     root_facade_owners: tuple[str, ...]
 
 
@@ -111,6 +113,18 @@ def read_architecture_configuration(
     if len(dbos_owners) != 1:
         raise ArchitecturePreflightError("the DBOS external-import owner is ambiguous")
 
+    yaml_contract = next(
+        contract for contract in contracts if contract["id"] == "yaml-owner"
+    )
+    yaml_owners = tuple(
+        dict.fromkeys(
+            str(import_expression).split(" -> ", 1)[0]
+            for import_expression in yaml_contract.get("ignore_imports", ())
+        )
+    )
+    if not yaml_owners:
+        raise ArchitecturePreflightError("the YAML external-import owner is missing")
+
     root_contract = next(
         contract for contract in contracts if contract["id"] == "root-facade"
     )
@@ -125,16 +139,22 @@ def read_architecture_configuration(
         layer_rows,
         layer_members,
         dbos_owners.pop(),
+        yaml_owners,
         root_facade_owners,
     )
 
 
 def render_contract_view(configuration: ArchitectureConfiguration) -> str:
+    contract_ids = ", ".join(
+        str(contract["id"]) for contract in configuration.contracts
+    )
     return "\n".join(
         (
             "```text",
+            f"contracts: {contract_ids}",
             f"layers: {' > '.join(configuration.layer_rows)}",
             f"dbos-owner: {configuration.dbos_owner}",
+            f"yaml-owner: {', '.join(configuration.yaml_owners)}",
             f"root-facade-forbids: {', '.join(configuration.root_facade_owners)}",
             "```",
         )
@@ -565,12 +585,14 @@ def route_port_problems(project_root: Path) -> tuple[str, ...]:
     plain one: a route reads the use-case record the composition bound for it.
     """
     problems: list[str] = []
-    for module_path in sorted((project_root / ROUTE_PACKAGE).glob("*.py")):
+    route_root = project_root / ROUTE_PACKAGE
+    for module_path in sorted(route_root.rglob("*.py")):
+        relative = module_path.relative_to(project_root).as_posix()
         for call, reached in sorted(
             _calls_reaching_ports(_parsed(module_path)).items()
         ):
             problems.append(
-                f"{ROUTE_PACKAGE}/{module_path.stem}.py: {call} reaches {reached}; "
+                f"{relative}: {call} reaches {reached}; "
                 "a route reads the use-case record the composition bound for it"
             )
     return tuple(problems)

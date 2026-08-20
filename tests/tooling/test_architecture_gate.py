@@ -82,6 +82,21 @@ def add_wire_to_port_import(project: Path) -> None:
     )
 
 
+def add_wire_to_port_reexport_through_application(project: Path) -> None:
+    add_port_reexport_module(project)
+    (project / "src/atelier2/api/wire/violation.py").write_text(
+        "from atelier2.application.port_reexport import RunPage\n",
+        encoding="utf-8",
+    )
+
+
+def add_application_to_yaml_import(project: Path) -> None:
+    (project / "src/atelier2/application/violation.py").write_text(
+        "import yaml\n",
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.parametrize(
     "violation",
     [
@@ -122,6 +137,29 @@ def test_a_wire_schema_module_that_names_a_port_fails(tmp_path: Path) -> None:
     assert one_broken_contract() in result.stdout
 
 
+@pytest.mark.proves("wire-schemas-name-no-port-type")
+def test_a_wire_schema_that_names_a_port_reexported_through_application_fails(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    add_wire_to_port_reexport_through_application(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert one_broken_contract() in result.stdout
+
+
+def test_an_application_module_that_imports_yaml_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    add_application_to_yaml_import(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert one_broken_contract() in result.stdout
+
+
 def test_green_gate_reports_positive_source_contract_layer_and_native_graph_counts(
     tmp_path: Path,
 ) -> None:
@@ -135,9 +173,12 @@ def test_green_gate_reports_positive_source_contract_layer_and_native_graph_coun
     assert preflight_counts is not None
     source_count, contract_count, layer_count = map(int, preflight_counts.groups())
     script = load_architecture_script()
-    assert source_count == script.source_module_count(PROJECT_ROOT / "src/atelier2")
-    assert source_count >= script.EXPECTED_SOURCE_MODULE_FLOOR
-    assert (contract_count, layer_count) == (len(script.EXPECTED_CONTRACT_NAMES), 7)
+    landed = script.source_module_count(PROJECT_ROOT / "src/atelier2")
+    assert source_count == landed == script.EXPECTED_SOURCE_MODULE_FLOOR
+    assert (contract_count, layer_count) == (
+        len(script.EXPECTED_CONTRACT_NAMES),
+        len(script.EXPECTED_LAYER_MEMBERS),
+    )
 
     native_counts = re.search(
         r"Analyzed (\d+) files, (\d+) dependencies\.", result.stdout
@@ -153,8 +194,14 @@ def empty_source_scan(project: Path) -> None:
         source.unlink()
 
 
-def shrink_source_scan(project: Path) -> None:
-    (project / "src/atelier2/contracts/hashing.py").unlink()
+def shrink_source_scan_by_deleting_a_dispensable_leaf(project: Path) -> None:
+    """Delete a production leaf the use-case-record import does not need.
+
+    hashing.py is not that leaf: context's import graph loads it, so a stale
+    floor would fail the copied tree at ImportError instead of the floor.
+    """
+
+    (project / "src/atelier2/__main__.py").unlink()
 
 
 def remove_contract(project: Path) -> None:
@@ -176,8 +223,8 @@ def change_layer(project: Path) -> None:
 
 @pytest.mark.parametrize(
     "change",
-    [empty_source_scan, shrink_source_scan, remove_contract, change_layer],
-    ids=["empty", "below-floor", "missing-contract", "changed-layer"],
+    [empty_source_scan, remove_contract, change_layer],
+    ids=["empty", "missing-contract", "changed-layer"],
 )
 def test_empty_shrunken_or_changed_contract_scan_fails(
     tmp_path: Path, change: Callable[[Path], None]
@@ -189,6 +236,23 @@ def test_empty_shrunken_or_changed_contract_scan_fails(
 
     assert result.returncode != 0, result.stdout + result.stderr
     assert "Architecture preflight refused:" in result.stderr
+
+
+def test_deleting_a_dispensable_source_leaf_fails_at_the_floor(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    shrink_source_scan_by_deleting_a_dispensable_leaf(project)
+    script = load_architecture_script()
+
+    result = run_gate(project)
+
+    remaining = script.source_module_count(project / "src/atelier2")
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (
+        f"found {remaining} source modules; expected at least "
+        f"{script.EXPECTED_SOURCE_MODULE_FLOOR}"
+    ) in result.stderr
+    assert "ImportError" not in result.stderr
+    assert "could not be imported" not in result.stderr
 
 
 def one_broken_contract() -> str:
@@ -291,6 +355,16 @@ def add_route_reaching_a_port(project: Path) -> None:
     )
 
 
+def add_nested_route_reaching_a_port(project: Path) -> None:
+    nested = project / "src/atelier2/api/routes/group"
+    nested.mkdir()
+    (nested / "health.py").write_text(
+        "from atelier2.api.context import ApiPorts\n\n\n"
+        "def leak(ports: ApiPorts) -> object:\n    return ports\n",
+        encoding="utf-8",
+    )
+
+
 RUN_QUERIES_IMPORT = "from atelier2.ports.run_queries import RunQueries"
 CANCELLATION_IMPORT = (
     "from atelier2.ports.agent_attempts import AgentAttemptCancellationResult"
@@ -358,7 +432,18 @@ def test_a_translated_route_module_that_reaches_a_port_again_fails(
     result = run_gate(project)
 
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "health.py: leak reaches ('ApiPorts',)" in result.stderr
+    assert "api/routes/health.py: leak reaches ('ApiPorts',)" in result.stderr
+
+
+@pytest.mark.proves("no-route-reaches-a-port-and-the-verification-says-so")
+def test_a_nested_route_module_that_reaches_a_port_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    add_nested_route_reaching_a_port(project)
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "api/routes/group/health.py: leak reaches ('ApiPorts',)" in result.stderr
 
 
 ALIAS_IMPORT = (
