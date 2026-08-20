@@ -73,6 +73,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerProcessBoundaryFailure,
     RunnerProviderFailure,
     RunnerProviderResult,
+    RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
     WatchdogGenerationId,
@@ -793,6 +794,16 @@ class DbosAgentAttemptStore:
                 "runner evidence differs from the durable invocation"
             )
 
+    @classmethod
+    def _require_durable_runner_tombstone(
+        cls, durable: AgentAttempt, tombstone: RunnerTerminalEvidenceAckTombstone
+    ) -> None:
+        cls._require_durable_runner_binding(durable, tombstone.binding)
+        if durable.runner_invocation_id != tombstone.invocation_id:
+            raise RunnerBindingConflict(
+                "runner ACK differs from the durable invocation"
+            )
+
     def bind_watchdog(
         self,
         execution: AgentAttemptExecution,
@@ -1424,13 +1435,13 @@ class DbosAgentAttemptStore:
     def mark_runner_evidence_acknowledged(
         self,
         execution: AgentAttemptExecution,
-        envelope: RunnerTerminalEvidenceEnvelope,
+        tombstone: RunnerTerminalEvidenceAckTombstone,
     ) -> AgentAttempt:
-        evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
+        evidence_hash = tombstone.evidence_hash
         with canonical_write_transaction(self._engine) as connection:
             durable = _load_attempt(connection, execution.attempt_id)
             _require_attempt_binding(durable, execution)
-            self._require_durable_runner_envelope(durable, envelope)
+            self._require_durable_runner_tombstone(durable, tombstone)
             if durable.runner_terminal_evidence_hash != evidence_hash:
                 raise RunnerBindingConflict(
                     "runner ACK differs from the durable evidence"
@@ -1471,26 +1482,19 @@ class DbosAgentAttemptStore:
     def rebind_after_acknowledged_never_launched(
         self,
         execution: AgentAttemptExecution,
-        no_launch_evidence: RunnerTerminalEvidenceEnvelope,
+        no_launch_tombstone: RunnerTerminalEvidenceAckTombstone,
         fresh_binding: RunnerGenerationBinding,
     ) -> AgentAttempt:
-        evidence = no_launch_evidence.evidence
-        if not (
-            isinstance(evidence, RunnerCancellation)
-            and evidence.observation is RunnerCancellationObservation.NEVER_LAUNCHED
-        ):
-            raise RunnerBindingConflict(
-                "only never-launched evidence permits a runner rebind"
-            )
         if (
             fresh_binding.attempt_id != execution.attempt_id
             or fresh_binding.request_hash != execution.request.request_hash
-            or no_launch_evidence.binding.attempt_id != execution.attempt_id
-            or no_launch_evidence.binding.request_hash != execution.request.request_hash
-            or fresh_binding.generation_id == no_launch_evidence.binding.generation_id
+            or no_launch_tombstone.binding.attempt_id != execution.attempt_id
+            or no_launch_tombstone.binding.request_hash
+            != execution.request.request_hash
+            or fresh_binding.generation_id == no_launch_tombstone.binding.generation_id
         ):
             raise RunnerBindingConflict("fresh runner generation differs from attempt")
-        evidence_hash = RunnerTerminalEvidenceHash.for_envelope(no_launch_evidence)
+        evidence_hash = no_launch_tombstone.evidence_hash
         with canonical_write_transaction(self._engine) as connection:
             durable = _load_attempt(connection, execution.attempt_id)
             _require_attempt_binding(durable, execution)
@@ -1509,7 +1513,7 @@ class DbosAgentAttemptStore:
                 raise RunnerBindingConflict(
                     "runner rebind target has moved beyond its fresh state"
                 )
-            self._require_durable_runner_envelope(durable, no_launch_evidence)
+            self._require_durable_runner_tombstone(durable, no_launch_tombstone)
             if (
                 durable.state is not AgentAttemptState.PREPARED
                 or durable.runner_terminal_evidence_hash != evidence_hash

@@ -14,8 +14,10 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
     RunnerGenerationBinding,
     RunnerInvocationId,
+    RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
+    RunnerTerminalEvidenceReadback,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import AgentExecutionResult
@@ -79,6 +81,20 @@ class RunnerTerminalEvidenceCommitRefused:
 type RunnerTerminalEvidenceCommitResult = (
     RunnerTerminalEvidenceCommitted | RunnerTerminalEvidenceCommitRefused
 )
+
+
+class RunnerTerminalEvidenceSource(Protocol):
+    """The external Runner operations needed to converge one terminal fact."""
+
+    def readback(
+        self, binding: RunnerGenerationBinding
+    ) -> RunnerTerminalEvidenceReadback: ...
+
+    def acknowledge(
+        self,
+        envelope: RunnerTerminalEvidenceEnvelope,
+        accepted_hash: RunnerTerminalEvidenceHash,
+    ) -> RunnerTerminalEvidenceAckTombstone: ...
 
 
 @dataclass(frozen=True)
@@ -166,13 +182,13 @@ class RunnerTerminalEvidenceStore(AgentAttemptReader, Protocol):
     def mark_runner_evidence_acknowledged(
         self,
         execution: AgentAttemptExecution,
-        envelope: RunnerTerminalEvidenceEnvelope,
+        tombstone: RunnerTerminalEvidenceAckTombstone,
     ) -> AgentAttempt: ...
 
     def rebind_after_acknowledged_never_launched(
         self,
         execution: AgentAttemptExecution,
-        no_launch_evidence: RunnerTerminalEvidenceEnvelope,
+        no_launch_tombstone: RunnerTerminalEvidenceAckTombstone,
         fresh_binding: RunnerGenerationBinding,
     ) -> AgentAttempt: ...
 
