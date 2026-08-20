@@ -23,12 +23,12 @@ CONFTEST = Path("tests/conftest.py")
 PULL_REQUEST_TEMPLATE = Path(".github/pull_request_template.md")
 DOCUMENTATION = Path("docs/requirements/README.md")
 REQUIREMENTS = Path("docs/requirements")
+A_LEGACY_REQUIREMENT = REQUIREMENTS / "0006-kontrollierte-selbstuebernahme.md"
 A_DECLARED_REQUIREMENT = "REQ-KATALOG-04"
 AN_UNDECLARED_REQUIREMENT = "REQ-NOBODY-99"
-KATALOG_DOCUMENT = REQUIREMENTS / "0005-katalog-und-benannte-workflows.md"
-A_TEMPLATE_REQUIREMENT = "REQ-KATALOG-01"
 PROOFS = Path("tests/tooling/test_acceptance_gate.py")
-COPIED_FILES = (GATE, PROOFS)
+REQUIREMENT_CONTRACT = Path("scripts/requirement_contract.py")
+COPIED_FILES = (GATE, REQUIREMENT_CONTRACT, PROOFS)
 
 BOUND_START = "<!-- acceptance-gate-bound:start -->"
 BOUND_END = "<!-- acceptance-gate-bound:end -->"
@@ -179,6 +179,9 @@ def playwright_report(
 
 
 def load_acceptance_script() -> ModuleType:
+    scripts = str(PROJECT_ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
     specification = importlib.util.spec_from_file_location(
         "check_acceptance", PROJECT_ROOT / GATE
     )
@@ -1223,7 +1226,7 @@ def test_a_sentence_naming_a_requirement_no_document_declares_is_refused(
 
     assert result.returncode == 1
     assert AN_UNDECLARED_REQUIREMENT in result.stderr
-    assert str(REQUIREMENTS) in result.stderr
+    assert "no active requirement declares" in result.stderr
 
 
 def test_a_sentence_naming_a_declared_requirement_passes_the_gate(
@@ -1239,6 +1242,19 @@ def test_a_sentence_naming_a_declared_requirement_passes_the_gate(
     result = run_gate(project)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_requirement_contract_drift_is_refused_before_trace(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    document = project / A_LEGACY_REQUIREMENT
+    document.write_bytes(document.read_bytes() + b"\n")
+
+    result = run_gate(project)
+
+    assert result.returncode != 0
+    assert "requirement contract refused" in result.stderr
+    assert str(A_LEGACY_REQUIREMENT) in result.stderr
+    assert "legacy content digest" in result.stderr
 
 
 def test_sentences_binding_no_requirement_are_listed_rather_than_refused(
@@ -1337,166 +1353,3 @@ def test_the_template_asks_for_a_form_the_gate_can_read() -> None:
     assert field is not None, "the field reader cannot find the template's own line"
     assert field.group("stated") == "", "the template's field is filled in"
     assert "the word none" in template
-
-
-@pytest.mark.proves("a-requirement-identifier-is-unique-and-carries-a-sentence")
-def test_a_duplicate_requirement_identifier_is_named_and_fails_the_gate(
-    tmp_path: Path,
-) -> None:
-    project = copied_project(tmp_path)
-    rewrite(project, KATALOG_DOCUMENT, "### REQ-KATALOG-01:", "### REQ-KATALOG-02:")
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "REQ-KATALOG-02" in result.stderr
-    assert "again" in result.stderr
-
-
-@pytest.mark.proves("a-requirement-identifier-is-unique-and-carries-a-sentence")
-def test_a_requirement_heading_without_a_sentence_is_named_and_fails_the_gate(
-    tmp_path: Path,
-) -> None:
-    project = copied_project(tmp_path)
-    rewrite(
-        project,
-        KATALOG_DOCUMENT,
-        "### REQ-KATALOG-01: Der Operator bestimmt, welche Agenten und Skills er hat und woher sie kommen.",
-        "### REQ-KATALOG-01:",
-    )
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert A_TEMPLATE_REQUIREMENT in result.stderr
-    assert "without a sentence" in result.stderr
-
-
-def test_an_invalid_requirement_status_is_named_and_fails_the_gate(
-    tmp_path: Path,
-) -> None:
-    project = copied_project(tmp_path)
-    rewrite(
-        project,
-        KATALOG_DOCUMENT,
-        "### REQ-KATALOG-01: Der Operator bestimmt, welche Agenten und Skills er hat und woher sie kommen.\nStatus:     DRAFT",
-        "### REQ-KATALOG-01: Der Operator bestimmt, welche Agenten und Skills er hat und woher sie kommen.\nStatus:     MAYBE",
-    )
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert A_TEMPLATE_REQUIREMENT in result.stderr
-    assert "MAYBE" in result.stderr
-
-
-def test_a_missing_template_field_is_named_and_fails_the_gate(tmp_path: Path) -> None:
-    project = copied_project(tmp_path)
-    rewrite(
-        project,
-        KATALOG_DOCUMENT,
-        "Journeys:\nBeweis:     UNGEBUNDEN\nOffen:      - Sharing of agents",
-        "Beweis:     UNGEBUNDEN\nOffen:      - Sharing of agents",
-    )
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert A_TEMPLATE_REQUIREMENT in result.stderr
-    assert "Journeys" in result.stderr
-
-
-@pytest.mark.proves("a-beweis-names-an-existing-sentence-or-ungebunden")
-def test_a_beweis_naming_no_declared_sentence_is_named_and_fails_the_gate(
-    tmp_path: Path,
-) -> None:
-    project = copied_project(tmp_path)
-    rewrite(
-        project,
-        KATALOG_DOCUMENT,
-        "Beweis:     UNGEBUNDEN\nOffen:      - Sharing of agents",
-        "Beweis:     a-sentence-nobody-declared\nOffen:      - Sharing of agents",
-    )
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert A_TEMPLATE_REQUIREMENT in result.stderr
-    assert "a-sentence-nobody-declared" in result.stderr
-
-
-def test_a_beweis_mixing_ungebunden_and_an_identifier_is_named_and_fails_the_gate(
-    tmp_path: Path,
-) -> None:
-    project = copied_project(tmp_path)
-    rewrite(
-        project,
-        KATALOG_DOCUMENT,
-        "Beweis:     UNGEBUNDEN\nOffen:      - Sharing of agents",
-        "Beweis:     UNGEBUNDEN a-name-is-answerable-over-the-api\nOffen:      - Sharing of agents",
-    )
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert A_TEMPLATE_REQUIREMENT in result.stderr
-    assert "UNGEBUNDEN" in result.stderr
-
-
-@pytest.mark.proves("a-nonempty-offen-names-an-owner")
-def test_an_offen_without_an_owner_is_named_and_fails_the_gate(tmp_path: Path) -> None:
-    project = copied_project(tmp_path)
-    rewrite(
-        project,
-        KATALOG_DOCUMENT,
-        "Offen:      - Sharing of agents, skills and whole workflows is a future requirement (Eigentümer: Operator / #22, Ziel: not this document)",
-        "Offen:      - Sharing of agents, skills and whole workflows is a future requirement",
-    )
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert A_TEMPLATE_REQUIREMENT in result.stderr
-    assert "owner" in result.stderr
-
-
-def test_an_agreed_sentence_may_not_carry_an_open_question(tmp_path: Path) -> None:
-    project = copied_project(tmp_path)
-    rewrite(
-        project,
-        KATALOG_DOCUMENT,
-        "### REQ-KATALOG-01: Der Operator bestimmt, welche Agenten und Skills er hat und woher sie kommen.\nStatus:     DRAFT",
-        "### REQ-KATALOG-01: Der Operator bestimmt, welche Agenten und Skills er hat und woher sie kommen.\nStatus:     AGREED",
-    )
-
-    result = run_gate(project)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert A_TEMPLATE_REQUIREMENT in result.stderr
-    assert "AGREED" in result.stderr
-    assert "Offen" in result.stderr or "open question" in result.stderr
-
-
-def test_an_agreed_ungebunden_requirement_is_listed_rather_than_refused(
-    tmp_path: Path,
-) -> None:
-    project = copied_project(tmp_path)
-    rewrite(
-        project,
-        KATALOG_DOCUMENT,
-        "### REQ-KATALOG-01: Der Operator bestimmt, welche Agenten und Skills er hat und woher sie kommen.\nStatus:     DRAFT",
-        "### REQ-KATALOG-01: Der Operator bestimmt, welche Agenten und Skills er hat und woher sie kommen.\nStatus:     AGREED",
-    )
-    rewrite(
-        project,
-        KATALOG_DOCUMENT,
-        "Offen:      - Sharing of agents, skills and whole workflows is a future requirement (Eigentümer: Operator / #22, Ziel: not this document)",
-        "Offen:",
-    )
-
-    result = run_gate(project)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert A_TEMPLATE_REQUIREMENT in result.stdout
-    assert "UNGEBUNDEN" in result.stdout
-    assert "AGREED" in result.stdout

@@ -1,20 +1,17 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/163"
 
-# The shelf already publishes the template and 83 rules. This landing is the
-# machine check over that shape, not a new reading of human intent. The
-# sentences name what the gate now refuses. Document-level Open questions,
-# journey files, Distilled-From freshness, forcing every acceptance sentence
-# onto a requirement, and the operator AGREED round stay named successors.
+# #460 replaces #163's transitional template with one strict grammar and an
+# exact revision registry. Legacy files remain byte-frozen until migrated.
 
 [[sentence]]
-id = "a-requirement-identifier-is-unique-and-carries-a-sentence"
-text = "Every requirement block publishes a unique identifier, a sentence, a valid status, and the six template fields; a block that does not fails verification and the failure names that identifier."
+id = "a-strict-requirement-has-only-contract-sections"
+text = "An approved requirement contains only a title, nonempty Intent, nonempty unique sourced rule sentences, and optional nonempty Non-goals; stale sections and unknown rule fields fail verification by name."
 
 [[sentence]]
-id = "a-beweis-names-an-existing-sentence-or-ungebunden"
-text = "A requirement's Beweis field names one or more identifiers a story declared in acceptance/, or the word UNGEBUNDEN; anything in between fails verification and the failure names the object."
+id = "a-requirement-revision-registry-is-linear-and-bound"
+text = "The requirement registry keeps one regular numbered path per document lineage, preserves every prior revision field exactly, grows only by a valid successor, and refuses unknown fields or predecessors, self-reference, branches, multiple tips, and false file or approval digests."
 
 [[sentence]]
-id = "a-nonempty-offen-names-an-owner"
-text = "A non-empty Offen field names an owner, and Offen is allowed only while the sentence is DRAFT; a violation fails verification and the failure names that identifier."
+id = "legacy-requirement-bytes-are-frozen-until-migration"
+text = "Against an exact base, no transitional legacy requirement is added or re-pinned: its path and SHA-256 bytes stay identical until an approval-backed in-place migration."
