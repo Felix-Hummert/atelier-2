@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, assert_never
 
 import sqlalchemy as sa
@@ -89,6 +89,7 @@ from atelier2.contracts.node_records_v3 import (
     PersistedReceiptDisposition,
     node_receipt_reason,
 )
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
@@ -735,7 +736,7 @@ class DbosAgentAttemptStore:
         with self._engine.connect() as connection:
             return _load_attempt(connection, attempt_id)
 
-    def driverless_attempts(self) -> tuple[AgentAttempt, ...]:
+    def iter_driverless_attempts(self, page_limit: PageLimit) -> Iterator[AgentAttempt]:
         """Ask only after the durable runtime is launched.
 
         Before the launch, the workflow table this reads is either absent or
@@ -743,37 +744,46 @@ class DbosAgentAttemptStore:
         could give would be about a machine that is not running yet.
         """
 
-        with self._engine.connect() as connection:
-            nonterminal = tuple(
-                _attempt_from_record(record)
-                for record in connection.execute(
-                    sa.select(agent_attempts)
-                    .where(
-                        agent_attempts.c.state.not_in(
-                            tuple(
-                                state.value for state in TERMINAL_AGENT_ATTEMPT_STATES
-                            )
+        terminal_states = tuple(state.value for state in TERMINAL_AGENT_ATTEMPT_STATES)
+        after: AgentAttemptId | None = None
+        while True:
+            with self._engine.connect() as connection:
+                query = sa.select(agent_attempts).where(
+                    agent_attempts.c.state.not_in(terminal_states)
+                )
+                if after is not None:
+                    query = query.where(agent_attempts.c.attempt_id > after.value)
+                candidates = tuple(
+                    _attempt_from_record(record)
+                    for record in connection.execute(
+                        query.order_by(agent_attempts.c.attempt_id).limit(
+                            page_limit.value
+                        )
+                    ).mappings()
+                )
+                if not candidates:
+                    return
+                drivers = tuple(
+                    (attempt, driving_workflow_id(attempt)) for attempt in candidates
+                )
+                driving = set(
+                    connection.scalars(
+                        sa.select(_dbos_workflow_status.c.workflow_uuid).where(
+                            _dbos_workflow_status.c.workflow_uuid.in_(
+                                tuple(driver for _attempt, driver in drivers)
+                            ),
+                            _dbos_workflow_status.c.status.in_(
+                                _DRIVING_WORKFLOW_STATUSES
+                            ),
                         )
                     )
-                    .order_by(agent_attempts.c.attempt_id)
-                ).mappings()
-            )
-            if not nonterminal:
-                return ()
-            drivers = {attempt: driving_workflow_id(attempt) for attempt in nonterminal}
-            driving = set(
-                connection.scalars(
-                    sa.select(_dbos_workflow_status.c.workflow_uuid).where(
-                        _dbos_workflow_status.c.workflow_uuid.in_(
-                            tuple(drivers.values())
-                        ),
-                        _dbos_workflow_status.c.status.in_(_DRIVING_WORKFLOW_STATUSES),
-                    )
                 )
-            )
-        return tuple(
-            attempt for attempt, driver in drivers.items() if driver not in driving
-        )
+            after = candidates[-1].attempt_id
+            for attempt, driver in drivers:
+                if driver not in driving:
+                    yield attempt
+            if len(candidates) < page_limit.value:
+                return
 
     def complete_success(
         self,
