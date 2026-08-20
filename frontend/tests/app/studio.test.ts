@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import type { CockpitApi, RunV1 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { standingMarks } from "../../src/lib/runState";
 import { cockpitApiStub, FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import {
   completedRun,
@@ -123,6 +124,7 @@ describe("the studio is the level the workshop opens on", () => {
       startedRun({ public_run_reference: "run1.YQ" }),
       startedRun({ public_run_reference: "run1.Yg" }),
       waitingInputRun({ public_run_reference: "run1.Yw" }),
+      failedRun({ public_run_reference: "run1.ZQ" }),
       completedRun({ public_run_reference: "run1.ZA" })
     ]);
 
@@ -130,6 +132,8 @@ describe("the studio is the level the workshop opens on", () => {
 
     expect(within(card).getByText("2 running").isConnected).toBe(true);
     expect(within(card).getByText("1 waiting for you").isConnected).toBe(true);
+    expect(within(card).getByText("1 failed").isConnected).toBe(true);
+    expect(within(card).getByText(standingMarks.failed).isConnected).toBe(true);
     expect(within(card).getByText("1 landed").isConnected).toBe(true);
     expect(within(card).getAllByRole("link")).toHaveLength(1);
   });
@@ -285,10 +289,83 @@ describe("the studio holds GET /events", () => {
     feed.handlers?.event(JSON.stringify(agentFailedEvent()));
 
     const card = await screen.findByRole("article", { name: "This workshop" });
-    expect(within(card).getByText("1 landed").isConnected).toBe(true);
+    expect(within(card).getByText("1 failed").isConnected).toBe(true);
+    expect(within(card).getByText(standingMarks.failed).isConnected).toBe(true);
+    expect(within(card).queryByText("1 landed")).toBeNull();
     expect(getRun).toHaveBeenCalledWith(publicReference);
     expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+  });
+
+  it("keeps a projected wait when a slower list later answers the same run as started", async () => {
+    let releaseStarted: (page: { items: RunV1[]; next_after: null }) => void = () => {
+      throw new Error("STARTED list was released before the test held it");
+    };
+    const startedPage = new Promise<{ items: RunV1[]; next_after: null }>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const waiting = waitingInputRun({ public_run_reference: "run1.YQ" });
+    const staleStarted = startedRun({ public_run_reference: "run1.YQ" });
+    const otherStarted = startedRun({ public_run_reference: "run1.Yg", run_id: "other" });
+    const listRuns = vi.fn(async (_after?: string, state?: string) => {
+      if (state === "STARTED") return startedPage;
+      return { items: [], next_after: null };
+    });
+    const getRun = vi.fn(async () => waiting);
+    const { feed } = openStudioHolding([], { listRuns, getRun });
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
+
+    feed.handlers?.event(
+      JSON.stringify(
+        waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" })
+      )
+    );
+
+    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
+    expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
+
+    releaseStarted({ items: [staleStarted, otherStarted], next_after: null });
+    const card = await screen.findByRole("article", { name: "This workshop" });
+    await waitFor(() => {
+      expect(within(card).getByText("1 running").isConnected).toBe(true);
+    });
+    expect(within(card).getByText("1 waiting for you").isConnected).toBe(true);
+    expect(within(card).queryByText("2 running")).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Waiting for you" })).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
+  });
+
+  it("retries a failed getRun until the delivered wait is visible once", async () => {
+    const waiting = waitingInputRun({ public_run_reference: "run1.YQ" });
+    const getRun = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("run missing"))
+      .mockResolvedValueOnce(waiting);
+    const { feed } = openStudioHolding([], { getRun });
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
+    await screen.findByRole("heading", { name: "Nothing is running" });
+
+    feed.handlers?.event(
+      JSON.stringify(
+        waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" })
+      )
+    );
+
+    expect((await screen.findByText("run missing")).isConnected).toBe(true);
+    expect(screen.getByText("Live").isConnected).toBe(true);
+    expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
+    expect(getRun).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
+    expect(within(inbox).getAllByRole("link", { name: /Answer/ })).toHaveLength(1);
+    expect(getRun).toHaveBeenCalledTimes(2);
+    expect(getRun).toHaveBeenNthCalledWith(1, "run1.YQ");
+    expect(getRun).toHaveBeenNthCalledWith(2, "run1.YQ");
+    expect(screen.queryByText("run missing")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("names a failed attention stream as itself, not as an empty workshop", async () => {
@@ -304,6 +381,7 @@ describe("the studio holds GET /events", () => {
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
     expect(screen.queryByText("Connecting")).toBeNull();
     expect(screen.queryByText("Live")).toBeNull();
+    expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
     expect(feed.close).toHaveBeenCalled();
   });
 });

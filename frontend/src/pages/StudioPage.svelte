@@ -18,6 +18,7 @@
     startAttentionHold,
     type AttentionHold
   } from "../lib/attentionHold";
+  import { humanErrorMessage } from "../lib/humanRefusal";
   import { readEveryRun } from "../lib/runPages";
   import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
   import { countStanding, runsStanding } from "../lib/runState";
@@ -39,8 +40,11 @@
   let hold: AttentionHold = startAttentionHold();
   let stream: RunEventSubscription | null = null;
   let failureMessage: string | null = null;
+  let projectionFailure: string | null = null;
   let disposed = false;
   let eventQueue: Promise<void> = Promise.resolve();
+  const pendingFrames: string[] = [];
+  let projectedFromAttention: Readonly<Record<string, true>> = {};
 
   onMount(() => {
     void load();
@@ -67,13 +71,16 @@
         .filter((reading) => !reading.complete)
         .map((reading) => ("unreadable" in reading ? reading.unreadable : ""))
         .filter((text) => text.length > 0);
-      upsertRuns([
-        ...started.runs,
-        ...waitingInput.runs,
-        ...waitingReconciliation.runs,
-        ...completed.runs,
-        ...failed.runs
-      ]);
+      upsertRuns(
+        [
+          ...started.runs,
+          ...waitingInput.runs,
+          ...waitingReconciliation.runs,
+          ...completed.runs,
+          ...failed.runs
+        ],
+        "list"
+      );
       if (unread.length > 0) {
         failureMessage = `Some of this workshop could not be read, so what is below is incomplete: ${unread.join("; ")}.`;
       }
@@ -83,14 +90,22 @@
     }
   }
 
-  function upsertRuns(runs: readonly AnyRun[]): void {
+  function upsertRuns(runs: readonly AnyRun[], source: "list" | "attention"): void {
     const known = [...(home.confirmed?.runs ?? [])];
     for (const run of runs) {
+      if (source === "attention") {
+        projectedFromAttention = {
+          ...projectedFromAttention,
+          [run.public_run_reference]: true
+        };
+      }
       const index = known.findIndex(
         (item) => item.public_run_reference === run.public_run_reference
       );
       if (index >= 0) {
-        known[index] = run;
+        if (source === "attention" || projectedFromAttention[run.public_run_reference] !== true) {
+          known[index] = run;
+        }
       } else {
         known.push(run);
       }
@@ -118,26 +133,62 @@
   }
 
   function applyEvent(rawData: string): void {
-    eventQueue = eventQueue.then(() => applyEventInOrder(rawData)).catch((error: unknown) => {
+    pendingFrames.push(rawData);
+    queueDrain();
+  }
+
+  function retryProjection(): void {
+    if (disposed) return;
+    projectionFailure = null;
+    queueDrain();
+  }
+
+  function queueDrain(): void {
+    eventQueue = eventQueue.then(drainAttention).catch((error: unknown) => {
       if (disposed) return;
-      failureMessage =
-        error instanceof Error ? error.message : "The attention event could not be applied.";
+      projectionFailure = humanErrorMessage(
+        error,
+        "The attention event could not be applied."
+      );
     });
   }
 
-  async function applyEventInOrder(rawData: string): Promise<void> {
-    if (disposed) return;
-    const applied = applyAttentionFrame(hold, rawData);
-    hold = applied.hold;
-    if (attentionStopped(hold)) {
-      stream?.close();
-      stream = null;
-      return;
+  async function drainAttention(): Promise<void> {
+    if (disposed || projectionFailure !== null || attentionStopped(hold)) return;
+    while (
+      !disposed &&
+      pendingFrames.length > 0 &&
+      projectionFailure === null &&
+      !attentionStopped(hold)
+    ) {
+      const raw = pendingFrames[0];
+      if (raw === undefined) break;
+      const applied = applyAttentionFrame(hold, raw);
+      hold = applied.hold;
+      if (attentionStopped(hold)) {
+        stream?.close();
+        stream = null;
+        pendingFrames.shift();
+        return;
+      }
+      if (applied.event === null) {
+        pendingFrames.shift();
+        continue;
+      }
+      try {
+        const run = await cockpitApi.getRun(applied.event.public_run_reference);
+        if (disposed) return;
+        upsertRuns([run], "attention");
+        pendingFrames.shift();
+      } catch (error) {
+        if (disposed) return;
+        projectionFailure = humanErrorMessage(
+          error,
+          "The attention event could not be applied."
+        );
+        return;
+      }
     }
-    if (applied.event === null) return;
-    const run = await cockpitApi.getRun(applied.event.public_run_reference);
-    if (disposed) return;
-    upsertRuns([run]);
   }
 
   function lastLanding(runs: readonly AnyRun[]): string | null {
@@ -153,16 +204,18 @@
   $: runs = snapshot?.runs ?? [];
   $: runningCount = countStanding(runs, "running");
   $: waitingRuns = runsStanding(runs, "waiting");
-  $: landedRuns = [...runsStanding(runs, "failed"), ...runsStanding(runs, "done")];
-  $: landedCount = landedRuns.length;
-  $: lastLandedAt = lastLanding(landedRuns);
+  $: failedCount = countStanding(runs, "failed");
+  $: landedCount = countStanding(runs, "done");
+  $: lastLandedAt = lastLanding(runsStanding(runs, "done"));
   $: empty =
     snapshot !== null &&
     runningCount === 0 &&
     waitingRuns.length === 0 &&
+    failedCount === 0 &&
     landedCount === 0 &&
     hold.connection === "live" &&
     !streamStopped(hold);
+  $: canStart = !attentionStopped(hold);
 </script>
 
 <section class="studio-home" aria-labelledby="studio-title">
@@ -184,7 +237,7 @@
         <p class="eyebrow">Atelier</p>
         <h1 id="studio-title">Studio</h1>
       </div>
-      {#if snapshot !== null && !empty}
+      {#if snapshot !== null && !empty && canStart}
         <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>Start</a>
       {/if}
     </header>
@@ -203,6 +256,10 @@
       <ProblemNotice title={protocolTitle(hold) ?? "Event invalid"} message={protocolDetail(hold) ?? ""} />
     {/if}
 
+    {#if projectionFailure !== null}
+      <ProblemNotice message={projectionFailure} />
+      <button type="button" onclick={retryProjection}>Retry</button>
+    {/if}
     {#if failureMessage !== null}
       <ProblemNotice message={failureMessage} />
     {/if}
@@ -214,13 +271,16 @@
         <div class="empty">
           <h2>Nothing is running</h2>
           <p>A workflow becomes a run, and a run is what this workshop shows.</p>
-          <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>Start a run</a>
+          {#if canStart}
+            <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>Start a run</a>
+          {/if}
         </div>
-      {:else if runningCount > 0 || waitingRuns.length > 0 || landedCount > 0}
+      {:else if runningCount > 0 || waitingRuns.length > 0 || failedCount > 0 || landedCount > 0}
         <h2 class="section-title">Projects</h2>
         <ProjectCard
           running={runningCount}
           waiting={waitingRuns.length}
+          failed={failedCount}
           landed={landedCount}
           lastLandedAt={lastLandedAt}
           {navigate}

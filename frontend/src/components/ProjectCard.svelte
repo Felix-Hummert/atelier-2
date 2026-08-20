@@ -6,6 +6,7 @@
 
   export let running: number;
   export let waiting: number;
+  export let failed: number;
   export let landed: number;
   export let lastLandedAt: string | null = null;
   export let navigate: (path: string) => void;
@@ -28,6 +29,7 @@
   <p class="project-counts">
     <span class="project-count"><span aria-hidden="true">{standingMarks.running}</span>{running} running</span>
     <span class="project-count" class:project-count-waiting={waiting > 0}><span aria-hidden="true">{standingMarks.waiting}</span>{waiting} waiting for you</span>
+    <span class="project-count" class:project-count-failed={failed > 0}><span aria-hidden="true">{standingMarks.failed}</span>{failed} failed</span>
     <span class="project-count"><span aria-hidden="true">{standingMarks.done}</span>{landed} landed</span>
     {#if lastLandedAt !== null}
       <span class="project-count">last landing <When startedAt={lastLandedAt} kind="ago" /></span>
