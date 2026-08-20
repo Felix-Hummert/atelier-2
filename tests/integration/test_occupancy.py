@@ -11,31 +11,61 @@ import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import (
     DbosHostConfigurationChannel,
     append_project_root,
 )
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import host_occupancy_revisions
+from atelier2.adapters.dbos.schema import (
+    host_occupancy_bindings,
+    host_occupancy_revisions,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.openapi import API_PREFIX, OCCUPANCY_PATH
 from atelier2.api.references import encode_public_project_reference
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
-from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogLineage,
+    CatalogLineageDisplayName,
+    CatalogLineageId,
+)
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import (
     OccupancyBinding,
     OccupancyRevision,
     ProjectId,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.ports.host_configuration import (
     OccupancyRevisionCollision,
     OccupancyRevisionCreated,
 )
+from atelier2.ports.published_revisions import (
+    CatalogLineageFounded,
+    PublishedRevisionCreated,
+)
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.runtime import exact_output_runtime
 
-LINEAGE = "ab" * 32
+WORKFLOW_REVISION = PublishedRevision(
+    RevisionKind.WORKFLOW,
+    b"""format_version: 3
+name: occupancy-workflow
+nodes:
+  - id: final
+    type: subworkflow
+    operation: add
+    operands: [1, 2]
+    next: null
+""",
+)
+LINEAGE = CatalogLineage(
+    WORKFLOW_REVISION.kind, WORKFLOW_REVISION.revision_hash
+).lineage_id.value
+MISSING_LINEAGE = "ff" * 32
 CONFIGURATION = "cd" * 32
 OTHER_CONFIGURATION = "ee" * 32
 PROJECT = "studio"
@@ -51,6 +81,17 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
             EffectDestination("occupancy-door-test"),
         ),
     )
+    catalog = DbosCatalogStore(started.engine)
+    assert isinstance(
+        catalog.publish_revision(WORKFLOW_REVISION), PublishedRevisionCreated
+    )
+    founded = catalog.found_lineage(
+        WORKFLOW_REVISION,
+        CatalogLineageDisplayName("occupancy-workflow"),
+        CatalogActor("test"),
+        CatalogActivatedAt("2026-08-20T00:00:00Z"),
+    )
+    assert isinstance(founded, CatalogLineageFounded)
     try:
         yield started
     finally:
@@ -133,6 +174,27 @@ def test_a_configured_project_without_occupancy_is_occupancy_missing(
 
     assert response.status_code == 404
     assert response.json()["type"].endswith("occupancy-missing")
+
+
+@pytest.mark.proves("recommended-occupancy-is-project-configuration-on-the-wire")
+def test_a_missing_well_formed_lineage_is_refused_without_occupancy_mutation(
+    runtime: DbosRuntime, tmp_path: Path
+) -> None:
+    client = _client(runtime, tmp_path)
+
+    response = client.put(_path(lineage=MISSING_LINEAGE), json=_body())
+    with runtime.engine.connect() as connection:
+        stored_headers = connection.execute(
+            sa.select(sa.func.count()).select_from(host_occupancy_revisions)
+        ).scalar_one()
+        stored_bindings = connection.execute(
+            sa.select(sa.func.count()).select_from(host_occupancy_bindings)
+        ).scalar_one()
+
+    assert response.status_code == 404
+    assert response.json()["type"].endswith("catalog-lineage-missing")
+    assert stored_headers == 0
+    assert stored_bindings == 0
 
 
 @pytest.mark.proves("recommended-occupancy-is-project-configuration-on-the-wire")

@@ -240,6 +240,7 @@ def bound_use_cases(
                     revision_number,
                     bindings,
                     ports.host_configuration_channel,
+                    ports.catalog_resolver,
                 )
             )
         ),

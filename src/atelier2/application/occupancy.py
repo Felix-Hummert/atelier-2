@@ -19,6 +19,7 @@ from atelier2.contracts.host_configuration import (
     ProjectRootRevision,
     ProjectUnknown,
 )
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
@@ -38,6 +39,11 @@ from atelier2.ports.host_configuration import (
 )
 from atelier2.ports.host_configuration import (
     OccupancyRevisionExisting as PortOccupancyRevisionExisting,
+)
+from atelier2.ports.published_revisions import (
+    CatalogNameFound,
+    CatalogNameMissing,
+    CatalogResolver,
 )
 
 
@@ -160,6 +166,7 @@ def publish_occupancy_revision(
     revision_number: int,
     bindings: tuple[tuple[str, str], ...],
     channel: HostConfigurationChannel,
+    catalog: CatalogResolver,
 ) -> PublishOccupancyUseCaseResult:
     try:
         project = ProjectId(project_id)
@@ -188,6 +195,13 @@ def publish_occupancy_revision(
         if isinstance(known, ReadUnavailable):
             return WriteUnavailable(known.detail)
         return known
+    match catalog.resolve_name(RevisionKind.WORKFLOW, lineage, "head"):
+        case CatalogNameFound():
+            pass
+        case CatalogNameMissing():
+            return OccupancyLineageInvalid()
+        case _ as unreachable:
+            assert_never(unreachable)
     match channel.publish_occupancy_revision(revision):
         case PortOccupancyRevisionCreated(stored):
             return OccupancyRevisionPublished(stored)

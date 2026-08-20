@@ -13,7 +13,10 @@ from atelier2.api.references import (
     encode_public_project_reference,
 )
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
-from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.catalog_v3 import (
+    CatalogLineageDisplayName,
+    CatalogLineageId,
+)
 from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ID_CHARACTERS,
     OccupancyBinding,
@@ -21,10 +24,12 @@ from atelier2.contracts.host_configuration import (
     ProjectId,
     ProjectRootRevision,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.ports.host_configuration import (
     OccupancyRevisionCreated,
     OccupancyRevisionExisting,
 )
+from atelier2.ports.published_revisions import CatalogNameFound
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 LINEAGE = "ab" * 32
@@ -80,12 +85,31 @@ class RecordingChannel:
         return OccupancyRevisionCreated(revision)
 
 
+class KnownWorkflowCatalog:
+    def resolve_name(
+        self, kind: RevisionKind, query: object, position: object
+    ) -> CatalogNameFound:
+        assert kind is RevisionKind.WORKFLOW
+        assert query == CatalogLineageId(LINEAGE)
+        assert position == "head"
+        return CatalogNameFound(
+            CatalogLineageId(LINEAGE),
+            PublishedRevisionHash("ef" * 32),
+            1,
+            CatalogLineageDisplayName("occupancy-workflow"),
+            retired=False,
+        )
+
+
 def _client(channel: RecordingChannel, limits: ApiLimits | None = None) -> TestClient:
     return TestClient(
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=api_ports(host_configuration_channel=channel),
+            ports=api_ports(
+                host_configuration_channel=channel,
+                catalog_resolver=KnownWorkflowCatalog(),
+            ),
             limits=api_limits() if limits is None else limits,
             event_poll_backoff=event_poll_backoff(),
         )
