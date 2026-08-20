@@ -59,6 +59,13 @@ duplicating the Action effect.
 Workflow format V2 adds provider-neutral Agent roles. Before a run starts, every
 role is resolved to one immutable, secret-free agent-configuration revision and
 authentication-profile revision; the complete matrix is frozen into that run.
+That frozen chain currently ends at the `AgentConfigurationRevision`: it binds
+model, authentication profile, executor and requested capability, but no Markdown
+agent-definition revision or system prompt. A format-3 node's executable job today
+is its authored instruction composed with the exact named run material it reads.
+The target configuration-to-definition link is owned by
+[ADR 0007](decisions/0007-catalog-identity.md), not inferred from matching model
+fields.
 Each configuration also binds a typed requested execution capability. Migrated
 configuration revisions retain their original V1 hash and mean `headless`; new
 API publications use the capability-aware V2 hash format and name the capability
@@ -415,11 +422,14 @@ and the revision projection names its format and says what still has no owner, w
 invalid one is refused at publication carrying that named node and field. One shape of
 it runs: a single line of Agent, Wait and linear Action nodes, each entered by at most
 one dependency and followed by at most one dependent, declaring no optional form the
-runtime does not bind. A document outside that shape is refused at the start naming
-what it is waiting for — a node kind nothing interprets, a branch nothing chooses
-between, an authored form nothing binds — rather than naming its version, and writes
-no run. V1 and V2 documents keep their exact meaning under their own models, and their
-wire bytes are unchanged.
+runtime does not bind. `required_context` and `available_context` are parsed target
+forms but remain in that refused set; neither is a template parameter and no start
+substitutes its authored source or revision. Per-run work instead enters through a
+declared `graph_input`, supplied as exact `RunInput` material. A document outside
+that shape is refused at the start naming what it is waiting for — a node kind
+nothing interprets, a branch nothing chooses between, an authored form nothing
+binds — rather than naming its version, and writes no run. V1 and V2 documents keep
+their exact meaning under their own models, and their wire bytes are unchanged.
 [ADR 0006](decisions/0006-node-vocabulary.md) owns this vocabulary and the staging
 rule behind it.
 
@@ -516,16 +526,19 @@ other key, missing required field, unreadable value, duplicated key or tool, and
 empty prompt is refused by its own name. A definition renders back to a canonical
 document that reads as the same definition — the declared tool set always as a
 sequence, so a tool name that itself spells the comma an author may separate by
-survives the round trip — and it publishes deterministically into an existing
-agent-configuration revision, with the deployment rather than the file owning the
-authentication profile, the executor, and the model an unspelled one falls back
-to. This is the authoring format alone: nothing enforces a tool declaration yet,
+survives the round trip — and the authoring helper maps it deterministically to an
+existing agent-configuration revision, with the deployment rather than the file
+owning the authentication profile, the executor, and the model an unspelled one
+falls back to. That mapping is not a binding to the definition revision. This is
+the authoring format alone: nothing enforces a tool declaration yet,
 no serving surface publishes a definition yet, and today's configuration revision
 carries no field for a name, description, tool declaration, or system prompt, so
 the published revision alone cannot reconstruct the definition it came from.
-Where an authored definition durably lives is decided by the accepted but
-unimplemented catalog-identity record; until it is implemented, the round trip
-holds over the definition's own canonical bytes and not over the catalog.
+Where an authored definition durably binds is decided by
+[ADR 0007](decisions/0007-catalog-identity.md). Its exact bytes can be reconstructed
+as an `agent_definition` revision today, but no serving surface publishes that
+definition and no agent configuration references it; the round trip therefore
+does not yet prove the configuration-to-definition chain.
 
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically

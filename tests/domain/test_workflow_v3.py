@@ -1888,9 +1888,20 @@ def test_the_worked_example_of_the_record_parses_unchanged() -> None:
     record = Path(__file__).parents[2] / "docs/decisions/0006-node-vocabulary.md"
     text = record.read_text(encoding="utf-8")
     example = text.split("## Worked example", 1)[1].split("```yaml\n", 1)[1]
+    example_document = example.split("```", 1)[0]
 
-    parsed = parse_workflow_document(example.split("```", 1)[0].encode("utf-8"))
+    parsed = parse_workflow_document(example_document.encode("utf-8"))
 
     assert isinstance(parsed, WorkflowGraphV3)
     assert parsed.entry_node_ids == ("implement",)
     assert parsed.join_of("merge_findings") == "all_terminal"
+    assert tuple(entry.name for entry in parsed.graph_inputs) == ("story",)
+    implement = cast(AgentNodeV3, parsed.node("implement"))
+    assert tuple(entry.name for entry in implement.required_context) == ("house_rules",)
+    for node_id in ("implement", "code_review", "test_review"):
+        node = cast(AgentNodeV3, parsed.node(node_id))
+        story = next(entry for entry in node.inputs if entry.name == "story")
+        assert isinstance(story.source, GraphInputSource)
+        assert story.source.graph_input == "story"
+        assert all(entry.name != "story" for entry in node.required_context)
+    assert "<requirement revision id>" not in example_document

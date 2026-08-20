@@ -5,7 +5,11 @@
 - Date: 2026-08-14, amended 2026-08-15 with "The document names itself" (the
   document-level `name` and `description`, decided while PR #41 was still draft
   because a field added to a closed hashed model after it lands is a format change),
-  amended 2026-08-16 with the reference-form clarification below
+  amended 2026-08-16 with the reference-form clarification below, and clarified
+  2026-08-20 by the operator on
+  [agent-definition versus node-instruction ownership](https://github.com/FlexOr2/atelier-2/issues/6#issuecomment-5356860566)
+  and
+  [reusable workflow input](https://github.com/FlexOr2/atelier-2/issues/6#issuecomment-5356916897)
 - Depends on: [ADR 0002](0002-exact-yaml-graph.md), [ADR 0001](0001-durable-runtime.md)
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   whose "Deklaratives Kontext- und Artefaktrouting", "Parallele DAG-Ausführung"
@@ -171,16 +175,18 @@ rather than silent hanging, and a restart reconstructs the same ready set withou
 re-running a confirmed node.
 
 `inputs` is the one construct by which any kind receives a value; there is no second
-`arguments` construct. Each entry names one of exactly four sources:
+`arguments` construct. Each entry names one of exactly five sources:
 
 ```yaml
 inputs:
+  - name: story
+    from: {graph_input: story}                    # exact material supplied at root-run start
   - name: candidate
     from: {node: implement, output: candidate}    # an upstream node's declared output
   - name: review_outcome
     from: {node: code_review, receipt: terminal}  # that node's terminal receipt
-  - name: story
-    from: {context: story}                        # a materialized required_context entry
+  - name: house_rules
+    from: {context: house_rules}                  # a materialized required_context entry
   - name: label
     value: "needs-review"                         # authored bytes, inside the revision hash
 ```
@@ -335,7 +341,7 @@ carry their retry policies — as the child declares its own context.
   role: builder
   mode: headless
   instruction: |
-    work-specific instruction text
+    Implement the bound story.
   profile: {ref: "<profile id>", revision: "<profile revision id>"}
   skills:
     - {ref: "<skill id>", revision: "<skill revision id>"}
@@ -344,8 +350,11 @@ carry their retry policies — as the child declares its own context.
   policy: {ref: "<policy id>", revision: "<policy revision id>"}
 ```
 
-`instruction` replaces `job` and carries **only work-specific instruction** — what
-this node must do in this chain. It is authored text inside the exact document
+`instruction` replaces `job` and carries **only the work this node occurrence
+performs in the workflow**. It is required, short and workflow-generic: every run
+of the same revision receives the same instruction, while its concrete story or
+other task material arrives through typed inputs. It is never a template field and
+task bytes are never interpolated into it. The text sits inside the exact document
 bytes, so it is inside the revision hash, immutable for a started run, and visible
 in the composed preview. It is instruction, never context and never a secret; its
 bound is 16 KiB of UTF-8, and an empty or oversized instruction is refused. Context
@@ -547,7 +556,7 @@ accountable operator command resolves.
 | Reference | What it carries | Who binds it | Can it make a run unstartable? |
 | --- | --- | --- | --- |
 | `role` | a logical name for who performs the work | the run-start command, to exactly one immutable agent-configuration revision (provider, model, auth profile) | yes — a role without exactly one bound configuration refuses the start |
-| `profile` | reusable provider-neutral **instruction**: a role's standing method, house output conventions | the document, revision-pinned | at binding like every versioned reference — an unresolved profile revision refuses. Never at executability: resolved text needs no execution capability |
+| `profile` | reusable provider-neutral **task method** and house output conventions; never the worker's system identity | the document, revision-pinned | at binding like every versioned reference — an unresolved profile revision refuses. Never at executability: resolved text needs no execution capability |
 | `skills` | published **capability bundles** an adapter installs into a provider session: a named procedure and the tool grants it needs | the document, revision-pinned, attested per adapter | at binding, and at executability too — a skill the bound adapter does not attest in `skill_installation`, or a tool grant it carries that is unattested in `tool_grants`, refuses the run naming it |
 
 `role` keeps its V2 meaning exactly: the portable document names the logical role
@@ -556,6 +565,15 @@ agent-configuration revision and no others. The document must not pin that
 revision, because the same published chain has to run on a different provider
 matrix without becoming a different document. Two nodes needing two configurations
 name two roles.
+
+A Markdown **agent definition is deliberately absent from this reference table**.
+It owns reusable worker identity and stable system behaviour; the node's
+`instruction` owns only this occurrence's work, and a `profile` may share a task
+method without becoming a second system prompt. The target binding is
+`role → AgentConfigurationRevision → exact AgentDefinition revision`, with the
+definition bytes owned by [ADR 0007](0007-catalog-identity.md). The document never
+copies that prompt or pins the deployment configuration. Current implementation
+stops at `AgentConfigurationRevision`; [PRODUCT.md](../PRODUCT.md) owns that status.
 
 **A profile is not a skill.** Both refuse at binding when their revision does not
 resolve; they differ at executability. A resolved profile is text, contributes no
@@ -586,8 +604,8 @@ revision-bound; per #1 they differ in provenance and in when they are fetched.
 
 ```yaml
 required_context:
-  - name: story
-    source: {ref: requirement, revision: "<requirement revision id>", selector: story_acceptance}
+  - name: house_rules
+    source: {ref: engineering_policy, revision: "<policy source revision id>", selector: required_rules}
 available_context:
   - name: decision_records
     source: {ref: decision_record_index, revision: "<index revision id>"}
@@ -600,6 +618,13 @@ available_context:
 each naming the exact `selector` to materialize; a source that cannot be
 materialized means the node does not START. A materialized entry is addressable as
 `from: {context: <name>}` by that node's inputs.
+
+Both the source and its revision are fixed authored bytes, not template
+parameters. Material that should vary per run while the workflow revision stays
+unchanged — a story, diff, order or brief — is a declared `graph_input`, supplied
+as exact `RunInput` material at root-run start and read through
+`from: {graph_input: <name>}`. Parameterizing a context-source binding would need
+one explicit typed owner before it could be presented as executable syntax.
 
 `available_context` is #1's on-demand grant, and per #1 it grants **both a source
 and the read operations allowed on it**. A read the grant does not name is refused
@@ -905,10 +930,13 @@ record and is named, not hidden.
 ## Worked example: the smallest cross-kind chain
 
 One example, kept to what only a whole chain can show: declared fan-out, a fan-in
-join, both context kinds on one node, a deterministic merge of two review branches,
-and a landed effect. Every `revision` value is a placeholder for a published
-revision id, the instructions are illustrative authored text, and the shape is the
-decision. The per-kind YAML above owns `wait` and `subworkflow`.
+join, the difference between per-run material and fixed or granted context, a
+deterministic merge of two review branches, and a landed effect. Every `revision`
+value is a placeholder for a published revision id, the instructions are
+illustrative workflow-generic text, and the shape is the decision. It is a format
+example, not a claim that every authored form is executable by the current runtime;
+[PRODUCT.md](../PRODUCT.md) owns that status. The per-kind YAML above owns `wait`
+and `subworkflow`.
 
 The full self-build chain this record used to carry is a **catalog seed, and #6
 owns the catalog**: it now lives at
@@ -927,6 +955,9 @@ flowchart LR
 ```yaml
 format_version: 3
 name: Implement, review from two sides, publish the merged verdict
+graph_inputs:
+  - name: story
+    schema: {ref: story, revision: "<schema revision id>"}
 nodes:
   - id: implement
     type: agent
@@ -940,13 +971,16 @@ nodes:
       - {ref: workspace_discipline, revision: "<skill revision id>"}
     budget: {ref: build_budget, revision: "<budget revision id>"}
     required_context:
-      - name: story
-        source: {ref: requirement, revision: "<requirement revision id>", selector: story_acceptance}
+      - name: house_rules
+        source: {ref: engineering_policy, revision: "<policy source revision id>", selector: required_rules}
     available_context:
       - name: decision_records
         source: {ref: decision_record_index, revision: "<index revision id>"}
         read_operations:
           - {ref: search, revision: "<read operation revision id>"}
+    inputs:
+      - name: story
+        from: {graph_input: story}
     outputs:
       - name: candidate
         schema: {ref: workspace_candidate, revision: "<schema revision id>"}
@@ -958,10 +992,9 @@ nodes:
     instruction: |
       Name every defect in the candidate with its file and the sentence it violates.
     depends_on: [implement]
-    required_context:
-      - name: story
-        source: {ref: requirement, revision: "<requirement revision id>", selector: story_acceptance}
     inputs:
+      - name: story
+        from: {graph_input: story}
       - name: candidate
         from: {node: implement, output: candidate}
     outputs:
@@ -976,6 +1009,8 @@ nodes:
       Name every acceptance sentence no behavioral test pins.
     depends_on: [implement]
     inputs:
+      - name: story
+        from: {graph_input: story}
       - name: candidate
         from: {node: implement, output: candidate}
     outputs:
@@ -1018,42 +1053,11 @@ runs any of this is #1 story 3.
 
 ## Implementation status
 
-[`docs/PRODUCT.md`](../PRODUCT.md) owns implementation status. What this record must
-say: only the document surface above is implemented — the parser accepts
-`format_version: 3` into the closed model and refuses every parse-time form named
-here, naming the node and the field, and the subworkflow half of binding holds — a
-node's inputs and outputs bind one to one against the published child revision's own
-`graph_inputs` and `graph_outputs`, and a chain deeper than the depth its caller
-attests is refused naming the chain. Binding at large holds too: every other
-versioned reference this record lists, in the document and in every child it reuses,
-resolves by the exact revision hash it pins against the registry of its authored
-kind, and a malformed reference or an answer that is unpublished, of another kind or
-of another hash refuses naming node, field, declared entry, chain and reference. What resolves is frozen into the run
-configuration revision this record names — the role matrix by its existing binding
-identity, every resolved reference, and every subworkflow's child revision — as one
-immutable framed snapshot, before any run exists.
-
-The publication half of the staging rule above holds too: a valid V3 document
-publishes as an immutable revision under the exact bytes identity V1 and V2 already
-use, needing no new durable shape, and the revision projection carries it marked
-unexecutable, while an invalid one is refused at publication naming the node and the
-field.
-
-Nothing else behind it exists. Those registries are ports, not store state: no
-durable registry shape and no publication command for one exists, so a caller
-supplies what resolves and nothing has yet been published to resolve against — the
-store cutover this record makes a hard predecessor is unbuilt, and lineage identity,
-admitted membership and name resolution are the catalog record's, not this one's. The
-run configuration is a computed value rather than a published, bound revision, and it
-carries no runtime capability revision, because none exists: no capability above is
-attested and the depth bound is still a caller argument rather than a proven
-`subworkflow_execution` entry, and there is no V3 record shape in the store. Every
-execution path still refuses a V3 document naming the format, without writing a run.
-The stories that implement the rest attest the subset
-they prove, and every later capability is an attestation change rather than a format
-change.
-Falsifiably: if a later capability forces a format version anyway, this record was
-wrong.
+[`docs/PRODUCT.md`](../PRODUCT.md) is the sole owner of what the current parser,
+binder, runtime and store execute. This record owns the target contract and its
+staging invariant: a valid authored form may be publishable before it is executable,
+but a runtime must name and refuse every form it does not bind rather than ignore it.
+No example in this record is an implementation-status inventory.
 
 ## Migration and the persistence cutover
 
@@ -1113,9 +1117,10 @@ store without mutation, and provides no runtime upgrade or downgrade migration. 
   automatic fix-review cycle. Bounded iteration is #25's, and this record decides
   nothing about its author surface.
 
-## Required proofs before acceptance
+## Proof obligations
 
-This record is a draft; nothing below exists yet.
+These are the record's proof obligations. [PRODUCT.md](../PRODUCT.md) owns which
+capabilities and proofs exist today; this list does not restate that inventory.
 
 - A V3 document parses to a closed frozen model, and every parse-time refusal
   above is proven by its own behavioral case, parametrized over the refusal list
