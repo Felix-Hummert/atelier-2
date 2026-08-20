@@ -5,17 +5,22 @@
   import Breadcrumb from "../components/Breadcrumb.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
+  import {
+    beginRead,
+    confirmRead,
+    retainedRead,
+    type RetainedRead
+  } from "../lib/readResource";
   import { runPath } from "../lib/route";
   import { newestActivityFirst, workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
-  import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
   import { humanMove, runsStanding, standingMarks, standingOrder, standingWords } from "../lib/runState";
   import { ageLabel, exactLocal } from "../lib/when";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
 
-  let runs: RetainedResource<RunPage> = { confirmed: null, request: { state: "idle" } };
+  let runs: RetainedRead<RunPage, never> = retainedRead<RunPage, never>();
   let workflowNames: ReadonlyMap<string, string> = new Map();
   let failureMessage: string | null = null;
   const now = new Date();
@@ -23,14 +28,15 @@
   onMount(load);
 
   async function load(): Promise<void> {
-    runs = startLoading(runs);
+    const begun = beginRead(runs);
+    runs = begun.read;
     failureMessage = null;
     try {
       const reading = await readEveryRun((after) => cockpitApi.listRuns(after));
       workflowNames = await workflowNamesOf(reading.runs, (hash) =>
         cockpitApi.getWorkflowRevision(hash)
       );
-      runs = confirmResource(runs, { items: reading.runs, next_after: null });
+      runs = confirmRead(runs, begun.generation, { items: reading.runs, next_after: null });
       if (!reading.complete) {
         failureMessage = `Some of this project could not be read, so what is below is incomplete: ${reading.unreadable}.`;
       }
