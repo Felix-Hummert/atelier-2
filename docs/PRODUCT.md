@@ -124,9 +124,11 @@ attempt stays nonterminal until Core commits and acknowledges it, after which
 only that same attempt may bind a fresh Runner generation and clear the old
 handoff fields. A runner-bound replacement request and a tool-grant-bound result
 are refused before product or evidence mutation. Runner-bound attempts never
-enter the legacy driver-loss queue. The later Runner readback/acknowledgement
-loop and evidence codec remain unimplemented, so this store contract alone does
-not make external execution live.
+enter the legacy driver-loss queue. A carrier-neutral Application handshake now
+reads terminal evidence, commits it, acknowledges it outside the Core
+transaction, and recovers Runner GC from the typed ACK tombstone. That handshake
+is proven only against a test Fake: no production Runner adapter, runtime caller,
+transport, evidence codec or journal, or live execution path exists yet.
 
 Every attempt is started in a scratch working directory of its own. The operator
 declares one provider-neutral scratch root, and the runtime leases from it a
@@ -921,7 +923,7 @@ empty collection, and unreadable or corrupt configuration stays visibly
 unavailable or corrupt. There is no HTTP project write, second project,
 pagination, project editor, or store-per-project process.
 
-The canonical store is schema V26. A fresh store is created as exact V26 and
+The canonical store is schema V27. A fresh store is created as exact V27 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output and

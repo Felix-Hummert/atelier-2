@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, replace
+from dataclasses import fields, replace
 from typing import cast
 
 import pytest
@@ -34,92 +34,13 @@ from atelier2.contracts.run_projections import (
     PublicAgentAttemptState,
     public_agent_attempt_state,
 )
-
-
-@dataclass
-class _AcceptedGeneration:
-    binding: RunnerGenerationBinding
-    invocation_id: RunnerInvocationId
-    launched: bool = False
-    terminal_evidence: RunnerTerminalEvidenceEnvelope | None = None
-
-
-class _FakeRunner:
-    """Operation-shaped proof double; no production Runner boundary exists in A.2."""
-
-    def __init__(self) -> None:
-        self._accepted: dict[RunnerGenerationId, _AcceptedGeneration] = {}
-        self.provider_start_count = 0
-
-    def accept(self, binding: RunnerGenerationBinding) -> RunnerInvocationId:
-        accepted = self._accepted.get(binding.generation_id)
-        if accepted is not None:
-            if accepted.binding != binding:
-                raise RunnerBindingConflict(
-                    "runner generation is already bound to different work"
-                )
-            return accepted.invocation_id
-
-        invocation_id = RunnerInvocationId(
-            f"runner-invocation-{len(self._accepted) + 1}"
-        )
-        self._accepted[binding.generation_id] = _AcceptedGeneration(
-            binding, invocation_id
-        )
-        return invocation_id
-
-    def launch(
-        self,
-        binding: RunnerGenerationBinding,
-        invocation_id: RunnerInvocationId,
-    ) -> None:
-        accepted = self._accepted.get(binding.generation_id)
-        if (
-            accepted is None
-            or accepted.binding != binding
-            or accepted.invocation_id != invocation_id
-        ):
-            raise RunnerBindingConflict(
-                "runner launch differs from its accepted generation binding"
-            )
-        if not accepted.launched:
-            accepted.launched = True
-            self.provider_start_count += 1
-
-    def observe(
-        self, envelope: RunnerTerminalEvidenceEnvelope
-    ) -> RunnerTerminalEvidenceEnvelope:
-        accepted = self._accepted.get(envelope.binding.generation_id)
-        if accepted is None or accepted.binding != envelope.binding:
-            raise RunnerBindingConflict(
-                "runner evidence differs from its accepted generation binding"
-            )
-        if (
-            envelope.invocation_id is not None
-            and envelope.invocation_id != accepted.invocation_id
-        ):
-            raise RunnerBindingConflict(
-                "runner evidence differs from its accepted invocation"
-            )
-        if accepted.terminal_evidence is None:
-            accepted.terminal_evidence = envelope
-        return accepted.terminal_evidence
-
-    def readback(
-        self, generation_id: RunnerGenerationId
-    ) -> RunnerTerminalEvidenceEnvelope | None:
-        accepted = self._accepted[generation_id]
-        return accepted.terminal_evidence
-
-    @property
-    def accepted_generation_ids(self) -> frozenset[RunnerGenerationId]:
-        return frozenset(self._accepted)
+from tests.scenarios.runners import FakeRunner
 
 
 class _FakeCoreFence:
     """The Core side of the A.2 scenario, deliberately local to this test."""
 
-    def __init__(self, runner: _FakeRunner) -> None:
+    def __init__(self, runner: FakeRunner) -> None:
         self._runner = runner
         self._binding: RunnerGenerationBinding | None = None
         self._invocation_id: RunnerInvocationId | None = None
@@ -260,7 +181,7 @@ def test_generation_binding_contains_only_the_four_decided_identities() -> None:
 
 
 def test_exact_generation_delivery_returns_one_invocation_and_starts_once() -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     binding = _binding()
 
     first = runner.accept(binding)
@@ -284,7 +205,7 @@ def test_exact_generation_delivery_returns_one_invocation_and_starts_once() -> N
 def test_changed_binding_under_one_generation_conflicts_before_start(
     changed_binding: RunnerGenerationBinding,
 ) -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     runner.accept(_binding())
 
     with pytest.raises(RunnerBindingConflict, match="different work"):
@@ -294,7 +215,7 @@ def test_changed_binding_under_one_generation_conflicts_before_start(
 
 
 def test_launch_refuses_a_second_invocation_for_one_generation() -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     binding = _binding()
     runner.accept(binding)
 
@@ -308,7 +229,7 @@ def test_launch_refuses_a_second_invocation_for_one_generation() -> None:
 def test_evidence_delivery_refuses_identity_drift_without_storing_it(
     drift: str,
 ) -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     binding = _binding()
     invocation_id = runner.accept(binding)
     runner.launch(binding, invocation_id)
@@ -329,7 +250,7 @@ def test_evidence_delivery_refuses_identity_drift_without_storing_it(
     with pytest.raises(RunnerBindingConflict, match=drift):
         runner.observe(envelope)
 
-    assert runner.readback(binding.generation_id) is None
+    assert runner.observed_evidence(binding) is None
     assert runner.accepted_generation_ids == frozenset((binding.generation_id,))
     assert runner.provider_start_count == 1
     assert runner.accept(binding) is invocation_id
@@ -339,7 +260,7 @@ def test_evidence_delivery_refuses_identity_drift_without_storing_it(
 def test_never_launched_accepts_none_or_the_exact_accepted_invocation(
     bind_accepted_invocation: bool,
 ) -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     binding = _binding()
     accepted_invocation = runner.accept(binding)
     authoritative_no_launch = RunnerTerminalEvidenceEnvelope(
@@ -415,7 +336,7 @@ def test_evidence_identity_requires_typed_binding_and_invocation() -> None:
 def test_each_terminal_evidence_variant_accepts_the_exact_runner_invocation(
     evidence: RunnerTerminalEvidence,
 ) -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     binding = _binding()
     invocation_id = runner.accept(binding)
     runner.launch(binding, invocation_id)
@@ -446,7 +367,7 @@ def test_terminal_evidence_envelope_refuses_foreign_evidence() -> None:
 def test_authoritative_pre_arm_no_launch_allows_one_fresh_generation(
     bind_accepted_invocation: bool,
 ) -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     core = _FakeCoreFence(runner)
     first = _binding()
     first_invocation = core.place(first)
@@ -474,7 +395,7 @@ def test_authoritative_pre_arm_no_launch_allows_one_fresh_generation(
 def test_fresh_generation_refuses_silence_wrong_fact_and_post_arm_no_launch(
     refusal_scenario: str,
 ) -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     core = _FakeCoreFence(runner)
     first = _binding()
     first_invocation = core.place(first)
@@ -502,14 +423,14 @@ def test_fresh_generation_refuses_silence_wrong_fact_and_post_arm_no_launch(
             ),
         )
 
-    evidence_before_refusal = runner.readback(first.generation_id)
+    evidence_before_refusal = runner.observed_evidence(first)
     starts_before_refusal = runner.provider_start_count
     second = replace(first, generation_id=RunnerGenerationId("core-generation-2"))
 
     with pytest.raises(RunnerBindingConflict, match="pre-arm no-launch evidence"):
         core.place(second, evidence)
 
-    evidence_after_refusal = runner.readback(first.generation_id)
+    evidence_after_refusal = runner.observed_evidence(first)
     assert core.binding is first
     assert runner.accepted_generation_ids == frozenset((first.generation_id,))
     assert runner.provider_start_count == starts_before_refusal
@@ -521,13 +442,13 @@ def test_fresh_generation_refuses_silence_wrong_fact_and_post_arm_no_launch(
 
 
 def test_silence_at_or_after_arm_stays_possibly_ran_without_replacement() -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     core = _FakeCoreFence(runner)
     first = _binding()
     first_invocation = core.place(first)
     core.arm_and_launch()
 
-    assert runner.readback(first.generation_id) is None
+    assert runner.observed_evidence(first) is None
     assert public_agent_attempt_state(core.attempt_state) is (
         PublicAgentAttemptState.POSSIBLY_RAN
     )
@@ -536,12 +457,12 @@ def test_silence_at_or_after_arm_stays_possibly_ran_without_replacement() -> Non
         core.place(second)
 
     assert runner.provider_start_count == 1
-    assert runner.readback(first.generation_id) is None
+    assert runner.observed_evidence(first) is None
     assert runner.accept(first) is first_invocation
 
 
 def test_late_cancel_does_not_erase_observed_completion_or_change_generation() -> None:
-    runner = _FakeRunner()
+    runner = FakeRunner()
     binding = _binding()
     invocation_id = runner.accept(binding)
     runner.launch(binding, invocation_id)
