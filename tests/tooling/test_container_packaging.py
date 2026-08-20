@@ -484,6 +484,21 @@ def test_candidate_context_identity_matches_the_git_owner(tmp_path: Path) -> Non
     assert build["source_tree"] != "atelier2-container"
 
 
+def test_success_reports_the_cockpit_and_untouched_live_unit(tmp_path: Path) -> None:
+    repository = packaging_repository(tmp_path)
+
+    completed = run_container_up(repository, tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == [
+        "container up: cockpit -> http://127.0.0.1:8422/atelier/",
+        (
+            "  live unit atelier2-live.service was not touched. "
+            "Redeploy is a rerun of this script."
+        ),
+    ]
+
+
 def test_a_missing_source_commit_identity_is_refused_before_build(
     tmp_path: Path,
 ) -> None:

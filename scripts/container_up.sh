@@ -91,5 +91,4 @@ docker compose up -d
 cd "${REPO}"
 
 echo "container up: cockpit -> http://127.0.0.1:8422/atelier/"
-echo "  logs: (cd ${REPO} && docker compose logs -f)"
 echo "  live unit atelier2-live.service was not touched. Redeploy is a rerun of this script."
