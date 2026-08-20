@@ -34,8 +34,13 @@
     readLastNamedAgentChoices,
     rememberNamedAgentChoice
   } from "../lib/namedAgentChoice";
+  import {
+    beginRead,
+    confirmRead,
+    retainedRead,
+    type RetainedRead
+  } from "../lib/readResource";
   import { readEveryAgentConfiguration, readEveryRevision } from "../lib/runPages";
-  import { confirmResource, startLoading, type RetainedResource } from "../lib/runProjection";
   import { cannotBeStarted, humanErrorMessage } from "../lib/humanRefusal";
   import {
     admitPublishedRevision,
@@ -84,10 +89,8 @@
     orders: OrderDraft[];
   }
 
-  let revisions: RetainedResource<WorkflowRevisionPage> = {
-    confirmed: null,
-    request: { state: "idle" }
-  };
+  let revisions: RetainedRead<WorkflowRevisionPage, never> =
+    retainedRead<WorkflowRevisionPage, never>();
   let publishedConfigurations: AgentConfigurationRevision[] = [];
   let configurationsRequest: "idle" | "loading" = "idle";
   let mode: "saved" | "publish" = "saved";
@@ -227,13 +230,14 @@
   });
 
   async function loadRevisions(): Promise<void> {
-    revisions = startLoading(revisions);
+    const begun = beginRead(revisions);
+    revisions = begun.read;
     try {
       const reading = await readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after));
       const catalog = await resolveCatalogNames(reading.revisions);
       newestByName = catalog.newestByName;
       catalogByName = catalog.catalogByName;
-      revisions = confirmResource(revisions, {
+      revisions = confirmRead(revisions, begun.generation, {
         items: reading.revisions,
         next_after_revision_hash: null
       });

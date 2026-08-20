@@ -2,7 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type { CockpitApi, RunV1 } from "../../src/api/client";
+import {
+  CockpitRequestError,
+  type CockpitApi,
+  type Problem,
+  type RunV1
+} from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { standingMarks } from "../../src/lib/runState";
 import { cockpitApiStub, FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
@@ -228,16 +233,96 @@ describe("an empty studio teaches the one next action", () => {
     expect((await screen.findByRole("heading", { name: "Choose a workflow" })).isConnected).toBe(true);
   });
 
-  it("tells the truth while it is still looking, and when the read fails", async () => {
+  it("tells the truth while it is still looking, and names the failed read without raw transport text", async () => {
     const listRuns = vi.fn(() => new Promise<never>(() => undefined));
     openStudio([], { listRuns } as Partial<CockpitApi>);
 
     expect((await screen.findByText("Looking…")).isConnected).toBe(true);
 
     cleanup();
-    openStudio([], { listRuns: vi.fn().mockRejectedValue(new Error("offline")) });
+    const problem = {
+      type: "urn:atelier2:problem:v1:temporarily-unavailable",
+      title: "Temporarily unavailable",
+      status: 503,
+      detail: "private adapter failure"
+    } as Problem;
+    openStudio([], {
+      listRuns: vi.fn().mockRejectedValue(
+        new CockpitRequestError("raw transport failure", problem)
+      )
+    });
 
-    expect((await screen.findByText(/offline/)).isConnected).toBe(true);
+    expect((await screen.findByText("Studio runs unavailable")).isConnected).toBe(true);
+    expect(screen.queryByText(/raw transport failure|private adapter failure|Failed to fetch/))
+      .toBeNull();
+    expect(screen.getAllByRole("button", { name: "Retry studio runs" })).toHaveLength(1);
+  });
+
+  it("repeats only the failed Studio read until a successful retry replaces the error", async () => {
+    const listRuns = vi.fn(async (_after?: string, state?: string) => {
+      const round = Math.floor((listRuns.mock.calls.length - 1) / 5);
+      if (round < 2) throw new Error("socket detail must stay private");
+      return {
+        items: state === "STARTED" ? [startedRun()] : [],
+        next_after: null
+      };
+    });
+    openStudio([], { listRuns });
+
+    await screen.findByText("Studio runs unavailable");
+    const retry = screen.getByRole("button", { name: "Retry studio runs" });
+    await fireEvent.click(retry);
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(10));
+    await screen.findByRole("button", { name: "Retry studio runs" });
+    expect(screen.getAllByRole("button", { name: "Retry studio runs" })).toHaveLength(1);
+    expect(screen.queryByText(/socket detail/)).toBeNull();
+
+    await fireEvent.click(retry);
+
+    expect((await screen.findByRole("article", { name: "This workshop" })).isConnected).toBe(true);
+    expect(listRuns).toHaveBeenCalledTimes(15);
+    expect(screen.queryByRole("button", { name: "Retry studio runs" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh studio runs" }).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier");
+  });
+
+  it("keeps confirmed Studio truth through a failed refresh and confirms newer truth after Retry", async () => {
+    let response: "started" | "failed" | "completed" = "started";
+    const listRuns = vi.fn(async (_after?: string, state?: string) => {
+      if (response === "failed") throw new Error("wire detail");
+      const run = response === "started" ? startedRun() : completedRun();
+      return { items: state === run.state ? [run] : [], next_after: null };
+    });
+    openStudio([], { listRuns });
+    const card = await screen.findByRole("article", { name: "This workshop" });
+    expect(within(card).getByText("1 running").isConnected).toBe(true);
+
+    response = "failed";
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh studio runs" }));
+
+    await screen.findByText("Studio runs unavailable");
+    expect(within(card).getByText("1 running").isConnected).toBe(true);
+    response = "completed";
+    await fireEvent.click(screen.getByRole("button", { name: "Retry studio runs" }));
+
+    await waitFor(() => expect(within(card).getByText("1 landed").isConnected).toBe(true));
+    expect(within(card).queryByText("1 running")).toBeNull();
+  });
+
+  it("does not confirm a partial initial five-list reading", async () => {
+    const listRuns = vi.fn(async (after?: string, state?: string) => {
+      if (state === "STARTED" && after === undefined) {
+        return { items: [startedRun()], next_after: "run1.bmV4dA" };
+      }
+      if (state === "STARTED") throw new Error("later page detail");
+      return { items: [], next_after: null };
+    });
+    openStudio([], { listRuns });
+
+    expect((await screen.findByText("Studio runs incomplete")).isConnected).toBe(true);
+    expect(screen.queryByRole("article", { name: "This workshop" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+    expect(screen.queryByText(/later page detail/)).toBeNull();
   });
 });
 

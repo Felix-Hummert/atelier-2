@@ -13,16 +13,6 @@ import {
 } from "../api/client";
 import { sha256Hex } from "./exactBytes";
 
-export type RequestState =
-  | { state: "idle" }
-  | { state: "loading" }
-  | { state: "failed"; problem: Problem };
-
-export interface RetainedResource<T> {
-  confirmed: T | null;
-  request: RequestState;
-}
-
 export type ConnectionState =
   | "connecting"
   | "live"
@@ -61,24 +51,6 @@ export interface NodeProjection {
   state: NodeState;
   last_event: RunEvent | null;
   attempt: AgentAttemptProjection | null;
-}
-
-export function startLoading<T>(resource: RetainedResource<T>): RetainedResource<T> {
-  return { confirmed: resource.confirmed, request: { state: "loading" } };
-}
-
-export function confirmResource<T>(
-  _resource: RetainedResource<T>,
-  confirmed: T
-): RetainedResource<T> {
-  return { confirmed, request: { state: "idle" } };
-}
-
-export function failResource<T>(
-  resource: RetainedResource<T>,
-  problem: Problem
-): RetainedResource<T> {
-  return { confirmed: resource.confirmed, request: { state: "failed", problem } };
 }
 
 export function streamProjection(

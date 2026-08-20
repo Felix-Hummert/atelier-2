@@ -2,14 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyDurableEvent,
-  confirmResource,
   decodeAndApplyDurableEvent,
-  failResource,
   markConnecting,
   markLive,
   projectNodeRail,
   restartStreamProjection,
-  startLoading,
   streamProjection,
   type AgentAttemptProjection,
   type NodeState
@@ -28,18 +25,6 @@ import {
   waitingInputRun as waitingRun,
   workflowRevision as workflow
 } from "../support/workflowV1";
-
-describe("retained resource truth", () => {
-  it("keeps confirmed data visible while a refresh loads and later fails", () => {
-    const confirmed = confirmResource({ confirmed: null, request: { state: "idle" } }, { id: "run" });
-    const loading = startLoading(confirmed);
-    const failed = failResource(loading, problem());
-
-    expect(loading.confirmed).toEqual({ id: "run" });
-    expect(failed.confirmed).toEqual({ id: "run" });
-    expect(failed.request.state).toBe("failed");
-  });
-});
 
 describe("contiguous durable SSE projection", () => {
   it("accepts the next sequence and an exact byte-equal replay", () => {
@@ -374,15 +359,6 @@ describe("read-only node rail", () => {
 
 function projection() {
   return streamProjection(publicReference, digest);
-}
-
-function problem() {
-  return {
-    type: "urn:atelier2:problem:v1:temporarily-unavailable" as const,
-    title: "Temporarily unavailable" as const,
-    status: 503 as const,
-    detail: "Retry later."
-  };
 }
 
 function streamFailure() {
