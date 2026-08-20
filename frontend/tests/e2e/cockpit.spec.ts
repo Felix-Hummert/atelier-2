@@ -126,6 +126,40 @@ test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await expect(completed).toContainText("Verified");
   await page.screenshot({ path: "test-results/v2-completed-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
+  const eventLog = page.locator("details.event-log");
+  if (!(await eventLog.evaluate((details) => (details as HTMLDetailsElement).open))) {
+    await eventLog.locator("summary").click();
+  }
+  const eventEvidenceRegions = page.locator(".event-evidence");
+  const overflowingEventIndex = await eventEvidenceRegions.evaluateAll((events) =>
+    events.findIndex((event) => event.scrollHeight > event.clientHeight)
+  );
+  expect(
+    overflowingEventIndex,
+    "the V2 completion fixture must keep one exact event taller than its scroll region"
+  ).toBeGreaterThanOrEqual(0);
+  const eventEvidence = eventEvidenceRegions.nth(overflowingEventIndex);
+  await expect(eventEvidence.locator("pre")).toHaveCount(1);
+  await expect(eventEvidence).toHaveAttribute("tabindex", "0");
+  await expect(eventEvidence).toHaveAccessibleName(/Event evidence #[1-9][0-9]*/);
+  await eventEvidence.focus();
+  await expect(eventEvidence).toBeFocused();
+  const scrollTopBeforeKeyboard = await eventEvidence.evaluate((event) => event.scrollTop);
+  await page.keyboard.press("PageDown");
+  await expect.poll(() => eventEvidence.evaluate((event) => event.scrollTop))
+    .toBeGreaterThan(scrollTopBeforeKeyboard);
+  await expectVisibleFocus(eventEvidence);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({ path: "test-results/v2-event-evidence-focus-390x844.png", fullPage: true });
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await eventEvidence.focus();
+  await expect(eventEvidence).toBeFocused();
+  await expectVisibleFocus(eventEvidence);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({ path: "test-results/v2-event-evidence-focus-desktop.png", fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/v2-completed-390x844.png", fullPage: true });
 
@@ -222,7 +256,7 @@ test("mobile Found and Absent reconcile exact durable runs", async ({ browser })
   await page.locator("style").last().evaluate((element) => element.remove());
 
   const foundActor = page.getByLabel("Actor");
-  const foundEvidence = page.getByLabel("Evidence");
+  const foundEvidence = page.getByLabel("Evidence", { exact: true });
   const foundChoice = page.getByRole("radio", { name: "Found" });
   const foundEffect = page.getByLabel("Effect ID");
   const foundResult = page.getByLabel("Exact result (base64)");
@@ -248,7 +282,7 @@ test("mobile Found and Absent reconcile exact durable runs", async ({ browser })
   await page.goto(`/atelier/runs/${absentReference}`);
   await expect(page.getByRole("heading", { name: "Decision needed" })).toBeVisible();
   const absentActor = page.getByLabel("Actor");
-  const absentEvidence = page.getByLabel("Evidence");
+  const absentEvidence = page.getByLabel("Evidence", { exact: true });
   const absentChoice = page.getByRole("radio", { name: "Absent" });
   await absentActor.focus();
   await absentActor.fill("Felix");
@@ -364,6 +398,15 @@ async function assertContrastAtLeast(control: Locator, minimum: number): Promise
   };
   const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
   expect((values[0]! + 0.05) / (values[1]! + 0.05)).toBeGreaterThanOrEqual(minimum);
+}
+
+async function expectVisibleFocus(control: Locator): Promise<void> {
+  const outline = await control.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { style: style.outlineStyle, width: Number.parseFloat(style.outlineWidth) };
+  });
+  expect(outline.style).not.toBe("none");
+  expect(outline.width).toBeGreaterThanOrEqual(3);
 }
 
 test("opens a V3 run at its own address and shows the line it drove", async ({ page }) => {
@@ -1482,4 +1525,3 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
     fullPage: true
   });
 });
-

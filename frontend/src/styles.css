@@ -1362,13 +1362,21 @@ textarea {
   font-size: 0.72rem;
 }
 
-.event-log pre {
+.event-evidence {
   max-height: 14rem;
-  margin: 0;
   overflow: auto;
+}
+
+.event-evidence pre {
+  margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 0.72rem;
+}
+
+.event-evidence:focus-visible {
+  outline: 3px solid var(--amber);
+  outline-offset: 3px;
 }
 
 .empty-event {
@@ -1617,6 +1625,11 @@ textarea {
 
 .project-count-waiting {
   color: var(--warning);
+  font-weight: 700;
+}
+
+.project-count-failed {
+  color: var(--danger);
   font-weight: 700;
 }
 

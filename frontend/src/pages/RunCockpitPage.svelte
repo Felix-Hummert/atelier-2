@@ -812,6 +812,10 @@
     return bytes === undefined ? JSON.stringify(event) : new globalThis.TextDecoder().decode(bytes);
   }
 
+  function keyboardScrollableEventEvidence(region: HTMLElement): void {
+    region.tabIndex = 0;
+  }
+
   $: trailHere =
     v3Run !== null
       ? `Run ${v3Run.run_id}`
@@ -946,7 +950,14 @@
                 seals={runPageCopy.sealsEvent}
                 value={event.event_hash}
               />
-              <pre>{exactEvent(event)}</pre>
+              <div
+                class="event-evidence"
+                role="region"
+                use:keyboardScrollableEventEvidence
+                aria-label={`${wrapDisplayCopy(runPageCopy.eventEvidence)} #${event.sequence}`}
+              >
+                <pre>{exactEvent(event)}</pre>
+              </div>
             </li>
           {/each}
         </ol>

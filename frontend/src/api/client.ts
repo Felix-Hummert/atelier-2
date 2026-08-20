@@ -1108,6 +1108,7 @@ export interface CockpitApi {
   getNodeDetail(publicReference: string, nodeId: string): Promise<NodeDetail>;
   getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
   openRunEvents(publicReference: string, handlers: RunEventHandlers): RunEventSubscription;
+  openAttentionEvents(handlers: RunEventHandlers): RunEventSubscription;
 }
 
 export interface RunEventHandlers {
@@ -1346,19 +1347,30 @@ export function createCockpitApi(
       if (decodePublicRunReference(publicReference) === null) {
         throw new CockpitRequestError("The run event target was not a valid public reference.");
       }
-      const source = eventSourceFactory(
-        `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}/events`
+      return subscribeEventSource(
+        eventSourceFactory(
+          `/atelier/api/v1/runs/${encodeURIComponent(publicReference)}/events`
+        ),
+        handlers
       );
-      source.addEventListener("open", () => handlers.opened());
-      source.addEventListener("message", (event) => {
-        if (event instanceof MessageEvent && typeof event.data === "string") {
-          handlers.event(event.data);
-        }
-      });
-      source.addEventListener("error", () => handlers.disconnected());
-      return source;
-    }
+    },
+    openAttentionEvents: (handlers) =>
+      subscribeEventSource(eventSourceFactory("/atelier/api/v1/events"), handlers)
   };
+}
+
+function subscribeEventSource(
+  source: EventSourcePort,
+  handlers: RunEventHandlers
+): RunEventSubscription {
+  source.addEventListener("open", () => handlers.opened());
+  source.addEventListener("message", (event) => {
+    if (event instanceof MessageEvent && typeof event.data === "string") {
+      handlers.event(event.data);
+    }
+  });
+  source.addEventListener("error", () => handlers.disconnected());
+  return source;
 }
 
 export function decodeProblem(value: unknown): Problem {

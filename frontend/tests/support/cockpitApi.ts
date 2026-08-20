@@ -31,6 +31,7 @@ export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi 
     getNodeDetail: vi.fn(),
     getWorkflowRevision: vi.fn(),
     openRunEvents: vi.fn(() => ({ close: vi.fn() })),
+    openAttentionEvents: vi.fn(() => ({ close: vi.fn() })),
     ...overrides
   };
 }
@@ -40,6 +41,10 @@ export class FakeRunEventFeed {
   handlers: RunEventHandlers | null = null;
   close = vi.fn();
   open: CockpitApi["openRunEvents"] = vi.fn((_publicReference: string, handlers: RunEventHandlers) => {
+    this.handlers = handlers;
+    return { close: this.close };
+  });
+  openAttention: CockpitApi["openAttentionEvents"] = vi.fn((handlers: RunEventHandlers) => {
     this.handlers = handlers;
     return { close: this.close };
   });

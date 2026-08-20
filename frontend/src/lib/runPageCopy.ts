@@ -43,6 +43,7 @@ export const runPageCopy = {
   streamDisconnected: "Disconnected",
   streamStopped: "Stopped",
   finished: "What finished",
+  eventEvidence: "Event evidence",
   terminalHash: "Terminal hash",
   runConfiguration: "Run configuration",
   workflowRevision: "Workflow revision",
