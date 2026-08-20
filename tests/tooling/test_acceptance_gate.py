@@ -36,6 +36,7 @@ REPORTS_DIRECTORY = Path("reports")
 QUALITY_REPORT = "quality.junit.xml"
 CRASH_REPORT = "crash.junit.xml"
 FRONTEND_REPORT = "frontend.vitest.json"
+PLAYWRIGHT_REPORT = "frontend.playwright.json"
 MOVABLE_SENTENCE = "an-unproven-sentence-fails-the-gate"
 REPORT_ONLY_SENTENCE = "one-page-of-a-stream-is-decided-before-any-frame-is-written"
 UNDECLARED_SENTENCE = "a-sentence-no-story-declares"
@@ -69,6 +70,7 @@ class ReportedTest:
     outcome: Outcome = Outcome.PASSED
     located_in: Path | None = None
     class_scope: tuple[str, ...] = ()
+    ran: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +137,43 @@ def vitest_report(
                     ],
                 }
             ]
+        }
+    )
+
+
+def playwright_report(
+    reported: Iterable[ReportedTest],
+    located_in: Path = Path("frontend/tests/e2e/proof.spec.ts"),
+    *,
+    root_dir: Path = Path("/workspace/frontend/tests/e2e"),
+    spec_file: str | None = None,
+) -> str:
+    reported_file = spec_file or str(Path(*located_in.parts[3:]))
+    return json.dumps(
+        {
+            "config": {"rootDir": str(root_dir)},
+            "suites": [
+                {
+                    "title": Path(reported_file).name,
+                    "file": reported_file,
+                    "specs": [
+                        {
+                            "title": test.name,
+                            "file": reported_file,
+                            "tests": [
+                                {
+                                    "results": (
+                                        [{"status": test.outcome.value}]
+                                        if test.ran
+                                        else []
+                                    )
+                                }
+                            ],
+                        }
+                        for test in reported
+                    ],
+                }
+            ],
         }
     )
 
@@ -207,6 +246,7 @@ def copied_project(
         QUALITY_REPORT: a_pytest_run_proving_every_sentence(project, without=unproven),
         CRASH_REPORT: junit_report(()),
         FRONTEND_REPORT: vitest_report(()),
+        PLAYWRIGHT_REPORT: playwright_report(()),
         **(reports or {}),
     }
     (project / REPORTS_DIRECTORY).mkdir(parents=True)
@@ -623,6 +663,124 @@ def test_each_typescript_title_must_appear_in_a_required_report(tmp_path: Path) 
     assert f"{reported_claim}:{reported_title} claims" not in result.stderr
 
 
+def test_a_browser_claim_needs_its_passing_playwright_result(tmp_path: Path) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    claim = Path("frontend/tests/e2e/proof.spec.ts")
+    title = f"proves({REPORT_ONLY_SENTENCE}): the browser flow"
+    write_claim(project, claim, f'test("{title}", async () => {{}});\n')
+    (project / REPORTS_DIRECTORY / PLAYWRIGHT_REPORT).write_text(
+        playwright_report((ReportedTest(title),), located_in=claim), encoding="utf-8"
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        playwright_report((ReportedTest("CLAIM", outcome=Outcome.FAILED),)),
+        playwright_report((ReportedTest("CLAIM", outcome=Outcome.SKIPPED),)),
+        playwright_report((ReportedTest("CLAIM", ran=False),)),
+    ],
+    ids=["failed", "skipped", "unrun"],
+)
+def test_a_browser_claim_that_did_not_pass_is_named_and_fails_the_gate(
+    tmp_path: Path, report: str
+) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    claim = Path("frontend/tests/e2e/proof.spec.ts")
+    title = f"proves({REPORT_ONLY_SENTENCE}): the browser flow"
+    write_claim(project, claim, f'test("{title}", async () => {{}});\n')
+    (project / REPORTS_DIRECTORY / PLAYWRIGHT_REPORT).write_text(
+        report.replace("CLAIM", title), encoding="utf-8"
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (
+        f"{claim}:{title} claims {REPORT_ONLY_SENTENCE!r}, "
+        "which no run report shows passing"
+    ) in result.stderr
+
+
+def test_a_browser_claim_cannot_borrow_a_passing_vitest_row(tmp_path: Path) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    claim = Path("frontend/tests/e2e/proof.spec.ts")
+    title = f"proves({REPORT_ONLY_SENTENCE}): the browser flow"
+    write_claim(project, claim, f'test("{title}", async () => {{}});\n')
+    (project / REPORTS_DIRECTORY / FRONTEND_REPORT).write_text(
+        vitest_report((ReportedTest(title),), located_in=claim), encoding="utf-8"
+    )
+    (project / REPORTS_DIRECTORY / PLAYWRIGHT_REPORT).write_text(
+        playwright_report((ReportedTest(title, outcome=Outcome.FAILED),)),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert f"{claim}:{title} claims" in result.stderr
+
+
+def test_a_unit_claim_cannot_borrow_a_passing_playwright_row(tmp_path: Path) -> None:
+    project = copied_project(tmp_path, unproven=REPORT_ONLY_SENTENCE)
+    claim = Path("frontend/tests/lib/proof.test.ts")
+    title = f"proves({REPORT_ONLY_SENTENCE}): the unit flow"
+    write_claim(project, claim, f'it("{title}", () => {{}});\n')
+    (project / REPORTS_DIRECTORY / FRONTEND_REPORT).write_text(
+        vitest_report((ReportedTest(title, outcome=Outcome.FAILED),), located_in=claim),
+        encoding="utf-8",
+    )
+    (project / REPORTS_DIRECTORY / PLAYWRIGHT_REPORT).write_text(
+        playwright_report(
+            (ReportedTest(title),),
+            root_dir=Path("/workspace/frontend/tests"),
+            spec_file="lib/proof.test.ts",
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert f"{claim}:{title} claims" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("root_dir", "spec_file", "problem"),
+    [
+        (Path("frontend/tests/e2e"), "proof.spec.ts", "rootDir is not absolute"),
+        (
+            Path("/workspace/frontend/tests/e2e"),
+            "../proof.spec.ts",
+            "file is outside rootDir",
+        ),
+    ],
+    ids=["relative-root", "escaping-file"],
+)
+def test_a_playwright_report_path_outside_its_absolute_root_is_refused(
+    tmp_path: Path, root_dir: Path, spec_file: str, problem: str
+) -> None:
+    project = copied_project(tmp_path)
+    (project / REPORTS_DIRECTORY / PLAYWRIGHT_REPORT).write_text(
+        playwright_report(
+            (ReportedTest("a test without a claim"),),
+            root_dir=root_dir,
+            spec_file=spec_file,
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert f"{PLAYWRIGHT_REPORT} is not readable as a run report" in result.stderr
+    assert problem in result.stderr
+
+
 def test_same_named_python_tests_in_different_files_are_distinct_claims(
     tmp_path: Path,
 ) -> None:
@@ -916,6 +1074,10 @@ def lose_the_cockpit_report(project: Path) -> None:
     (project / REPORTS_DIRECTORY / FRONTEND_REPORT).unlink()
 
 
+def lose_the_browser_report(project: Path) -> None:
+    (project / REPORTS_DIRECTORY / PLAYWRIGHT_REPORT).unlink()
+
+
 def truncate_the_quality_report(project: Path) -> None:
     (project / REPORTS_DIRECTORY / QUALITY_REPORT).write_text(
         "<testsuites>", encoding="utf-8"
@@ -924,6 +1086,10 @@ def truncate_the_quality_report(project: Path) -> None:
 
 def truncate_the_cockpit_report(project: Path) -> None:
     (project / REPORTS_DIRECTORY / FRONTEND_REPORT).write_text("{}", encoding="utf-8")
+
+
+def truncate_the_browser_report(project: Path) -> None:
+    (project / REPORTS_DIRECTORY / PLAYWRIGHT_REPORT).write_text("{}", encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -935,6 +1101,7 @@ def truncate_the_cockpit_report(project: Path) -> None:
         (declare_a_sentence_twice, "is declared twice"),
         (claim_without_naming_a_sentence, "without naming one sentence"),
         (lose_the_cockpit_report, f"the run report {FRONTEND_REPORT} is absent"),
+        (lose_the_browser_report, f"the run report {PLAYWRIGHT_REPORT} is absent"),
         (
             truncate_the_quality_report,
             f"{QUALITY_REPORT} is not readable as a run report",
@@ -942,6 +1109,10 @@ def truncate_the_cockpit_report(project: Path) -> None:
         (
             truncate_the_cockpit_report,
             f"{FRONTEND_REPORT} is not readable as a run report",
+        ),
+        (
+            truncate_the_browser_report,
+            f"{PLAYWRIGHT_REPORT} is not readable as a run report",
         ),
     ],
     ids=[
@@ -951,8 +1122,10 @@ def truncate_the_cockpit_report(project: Path) -> None:
         "duplicate-sentence",
         "marker-without-a-sentence",
         "missing-run-report",
+        "missing-browser-report",
         "unreadable-pytest-report",
         "unreadable-vitest-report",
+        "unreadable-playwright-report",
     ],
 )
 def test_a_declaration_or_run_report_the_gate_cannot_read_is_refused(

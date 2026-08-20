@@ -382,14 +382,14 @@ A test names the sentence it proves where the test run itself reports it:
 - Python: `@pytest.mark.proves("<sentence id>")` on a test function. The marker is
   registered in `pyproject.toml`, so `--strict-markers` refuses a typo, and
   `tests/conftest.py` carries it into the run report pytest writes.
-- TypeScript: `proves(<sentence id>)` inside the vitest title, as in
+- TypeScript: `proves(<sentence id>)` inside the Vitest or Playwright title, as in
   `it("proves(<sentence id>): shows the failed stream", ...)`. The title is what
   the run prints, so the claim cannot drift out of the reported test the way a
   comment can.
 
 `scripts/check_acceptance.py` runs in the `Acceptance trace` job, after the three
-verification jobs, over the run reports they uploaded: the two pytest
-`--junitxml` files and the cockpit's vitest JSON. A sentence counts as proven
+verification jobs, over the four run reports they uploaded: the two pytest
+`--junitxml` files and the cockpit's Vitest and Playwright JSON. A sentence counts as proven
 only where one of those reports carries a test claiming it with the outcome
 passed, so a test that was collected without being executed, skipped, filtered
 away, or failed proves nothing, and nothing is read out of the workflow's own
