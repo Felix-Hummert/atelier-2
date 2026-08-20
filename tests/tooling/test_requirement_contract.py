@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -16,16 +15,32 @@ from scripts.requirement_contract import (
 PROJECT_ROOT = Path(__file__).parents[2]
 REQUIREMENTS = Path("docs/requirements")
 REGISTRY = REQUIREMENTS / "revisions.toml"
-LEGACY_DOCUMENT = REQUIREMENTS / "0006-kontrollierte-selbstuebernahme.md"
+STRICT_DOCUMENT = REQUIREMENTS / "0008-example.md"
+LEGACY_DOCUMENT = REQUIREMENTS / "0008-legacy.md"
 
 
 def sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def copied_requirements(tmp_path: Path) -> Path:
+def write_legacy_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
-    shutil.copytree(PROJECT_ROOT / REQUIREMENTS, project / REQUIREMENTS)
+    directory = project / REQUIREMENTS
+    directory.mkdir(parents=True)
+    content = (
+        "# Legacy requirement\n\n"
+        "### REQ-LEGACY-01: Legacy bytes remain frozen.\n"
+        "Quelle: DESK — test fixture\n"
+    ).encode()
+    (project / LEGACY_DOCUMENT).write_bytes(content)
+    (project / REGISTRY).write_text(
+        "schema_version = 1\n\n"
+        "[[legacy]]\n"
+        'document = "0008"\n'
+        f'path = "{LEGACY_DOCUMENT}"\n'
+        f'content_sha256 = "{sha256(content)}"\n',
+        encoding="utf-8",
+    )
     return project
 
 
@@ -72,7 +87,7 @@ def write_strict_project(
     directory = project / REQUIREMENTS
     directory.mkdir(parents=True)
     encoded = content.encode()
-    (directory / "0008-example.md").write_bytes(encoded)
+    (project / STRICT_DOCUMENT).write_bytes(encoded)
     (project / REGISTRY).write_text(
         registry or f"schema_version = 1\n\n{revision_table(sha256(encoded))}",
         encoding="utf-8",
@@ -82,19 +97,19 @@ def write_strict_project(
 
 @pytest.mark.proves("legacy-requirement-bytes-are-frozen-until-migration")
 @pytest.mark.proves("a-requirement-rule-names-its-source-and-degree")
-def test_the_current_requirement_shelf_matches_its_frozen_registry() -> None:
+def test_the_current_requirement_shelf_matches_its_registry() -> None:
     shelf = read_requirement_shelf(PROJECT_ROOT)
 
     assert shelf.document_count == 7
     assert len(shelf.rules) == 96
-    assert shelf.legacy_count == 7
+    assert shelf.legacy_count == 6
 
 
 @pytest.mark.proves("legacy-requirement-bytes-are-frozen-until-migration")
 def test_legacy_byte_drift_fails_by_document_and_cannot_use_the_new_grammar(
     tmp_path: Path,
 ) -> None:
-    project = copied_requirements(tmp_path)
+    project = write_legacy_project(tmp_path)
     document = project / LEGACY_DOCUMENT
     document.write_bytes(document.read_bytes() + b"\n")
 
@@ -107,11 +122,11 @@ def test_legacy_byte_drift_fails_by_document_and_cannot_use_the_new_grammar(
 
 
 @pytest.mark.proves("a-requirement-revision-registry-is-linear-and-bound")
-@pytest.mark.parametrize("relative", (LEGACY_DOCUMENT, REGISTRY))
+@pytest.mark.parametrize("relative", (STRICT_DOCUMENT, REGISTRY))
 def test_current_requirement_files_must_be_regular_and_inside_the_real_shelf(
     tmp_path: Path, relative: Path
 ) -> None:
-    project = copied_requirements(tmp_path)
+    project = write_strict_project(tmp_path, strict_document())
     target = project / relative
     outside = tmp_path / f"outside-{target.name}"
     outside.write_bytes(target.read_bytes())
