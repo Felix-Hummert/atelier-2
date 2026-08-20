@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -14,6 +15,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.contracts.workflows import NodeCompletion
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
@@ -114,13 +116,17 @@ class AgentAttemptReader(Protocol):
 
 
 class AgentAttemptStore(AgentAttemptReader, Protocol):
-    def driverless_attempts(self) -> tuple[AgentAttempt, ...]:
+    def iter_driverless_attempts(self, page_limit: PageLimit) -> Iterator[AgentAttempt]:
         """Every nonterminal attempt no live workflow is driving any more.
 
         Answered by the durable runtime, because only it knows which of its
         workflows are still going to run. An attempt whose driver is merely
         waiting to be recovered is *not* driverless: recovery will move it, and
         stopping it would take work away from the machine that owns it.
+
+        The iteration reads one bounded page at a time. Its cursor is local to
+        this call, so a restart begins again from durable truth rather than from
+        scan progress that never became product state.
         """
         ...
 
