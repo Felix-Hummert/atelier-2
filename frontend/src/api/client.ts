@@ -260,6 +260,33 @@ export const projectListSchema = z
   .object({ items: z.array(projectResourceSchema).max(1) })
   .strict();
 
+const occupancyBindingSchema = z
+  .object({
+    role: z.string().min(1).max(1_024),
+    agent_configuration_revision_hash: sha256
+  })
+  .strict();
+
+export const occupancyRevisionSchema = z
+  .object({
+    project_id: z.string().min(1).max(1_024),
+    public_project_reference: publicProjectReference,
+    lineage_id: sha256,
+    revision_number: positiveSafeInteger,
+    occupancy_revision_hash: sha256,
+    bindings: z.array(occupancyBindingSchema).max(100)
+  })
+  .strict()
+  .superRefine((revision, context) => {
+    const roles = new Set<string>();
+    for (const binding of revision.bindings) {
+      if (roles.has(binding.role)) {
+        context.addIssue({ code: "custom", message: "occupancy roles must be unique" });
+      }
+      roles.add(binding.role);
+    }
+  });
+
 /**
  * What `GET /workflow-revisions/by-name/{name}` answers: which revision that
  * catalog name holds. The described listing does not carry lineage recency, so
@@ -1056,6 +1083,7 @@ export type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
 export type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
 export type ProjectResource = z.infer<typeof projectResourceSchema>;
 export type ProjectList = z.infer<typeof projectListSchema>;
+export type OccupancyRevision = z.infer<typeof occupancyRevisionSchema>;
 
 /**
  * The graph of a revision a run can hold. Only an executable format carries
@@ -1105,6 +1133,10 @@ export interface HttpResult<T> {
 export interface CockpitApi {
   listRuns(after?: string, state?: AnyRun["state"]): Promise<RunPage>;
   listProjects(): Promise<ProjectList>;
+  getProjectOccupancy(
+    publicProjectReference: string,
+    lineageId: string
+  ): Promise<OccupancyRevision>;
   listWorkflowRevisions(after?: string): Promise<WorkflowRevisionPage>;
   listAgentConfigurationRevisions(after?: string): Promise<AgentConfigurationRevisionPage>;
   getRevisionByName(name: string): Promise<CatalogNameResolution>;
@@ -1182,6 +1214,25 @@ export function createCockpitApi(
         [200],
         projectListSchema
       ),
+    getProjectOccupancy: async (publicProjectReference, lineageId) => {
+      const occupancy = await requestJson(
+        fetcher,
+        `/atelier/api/v1/projects/${encodeURIComponent(publicProjectReference)}` +
+          `/occupancy/${encodeURIComponent(lineageId)}`,
+        {},
+        [200],
+        occupancyRevisionSchema
+      );
+      if (
+        occupancy.public_project_reference !== publicProjectReference ||
+        occupancy.lineage_id !== lineageId
+      ) {
+        throw new CockpitRequestError(
+          "The occupancy response named another project or lineage."
+        );
+      }
+      return occupancy;
+    },
     listWorkflowRevisions: (after?: string) =>
       requestJson(
         fetcher,

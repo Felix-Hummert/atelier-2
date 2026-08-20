@@ -32,6 +32,7 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     PerformedEffect,
 )
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.host import serving
 from atelier2.host.serving import HostSettings
@@ -272,6 +273,8 @@ def main() -> None:
         source_tree="r3-phase5-e2e",
         frontend_dist=Path(os.environ["ATELIER2_E2E_FRONTEND_DIST"]),
         port=port,
+        project_id=ProjectId("e2e-workshop"),
+        project_root=Path(__file__).resolve().parents[2],
     )
     with patch.object(serving, "DbosRuntime", side_effect=runtime):
         app, live_runtime = serving.compose_application(settings)

@@ -9,6 +9,7 @@ import {
   decodeRunEvent,
   decodeWorkflowRevisionDetail,
   executableGraph,
+  occupancyRevisionSchema,
   problemDefinitions,
   type Problem
 } from "../../src/api/client";
@@ -928,6 +929,71 @@ describe("the project listing the picker will consume", () => {
     await expect(createCockpitApi(fetcher).listProjects()).rejects.toThrow(
       "durable wire contract"
     );
+  });
+});
+
+describe("the project occupancy the picker will consume", () => {
+  const projectReference = "project1.dGVhbS9yZWQ";
+  const lineageId = "b".repeat(64);
+  const occupancy = {
+    project_id: "team/red",
+    public_project_reference: projectReference,
+    lineage_id: lineageId,
+    revision_number: 3,
+    occupancy_revision_hash: "c".repeat(64),
+    bindings: [
+      { role: "builder", agent_configuration_revision_hash: "d".repeat(64) }
+    ]
+  };
+
+  it("asks the existing project-and-lineage door and decodes its exact resource", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(occupancy), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const read = await createCockpitApi(fetcher).getProjectOccupancy(
+      projectReference,
+      lineageId
+    );
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `/atelier/api/v1/projects/${projectReference}/occupancy/${lineageId}`
+    );
+    expect(read).toEqual(occupancyRevisionSchema.parse(occupancy));
+  });
+
+  it("refuses a response for another project or lineage", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ...occupancy, public_project_reference: "project1.b3RoZXI" }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...occupancy, lineage_id: "e".repeat(64) }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const client = createCockpitApi(fetcher);
+
+    await expect(client.getProjectOccupancy(projectReference, lineageId)).rejects.toThrow(
+      /another project or lineage/
+    );
+    await expect(client.getProjectOccupancy(projectReference, lineageId)).rejects.toThrow(
+      /another project or lineage/
+    );
+  });
+
+  it("refuses ambiguous duplicate role bindings", () => {
+    expect(() => occupancyRevisionSchema.parse({
+      ...occupancy,
+      bindings: [occupancy.bindings[0], occupancy.bindings[0]]
+    })).toThrow(/roles must be unique/);
   });
 });
 

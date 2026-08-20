@@ -706,13 +706,16 @@ that declares none shows no field. Role
 bindings on `/new` offer published agent-configuration
 revisions by provider, model, and readable auth mode; the raw publication form
 stays as a collapsed expert fallback. Last choice per role is remembered in
-this browser only — that is not the project-configuration owner for a
-recommended occupancy. The recommendation now has a backend owner on the
-wire for an existing workflow lineage, addressed by a `project1.` public
-project reference so a configured project id remains reachable even when it
-is not a single URL path segment;
-the picker does not read it yet. The list is empty until a configuration is published,
-and says so. It opens in the Studio rather than in that list: one screen across the
+this browser only. For an admitted workflow with roles, the picker reuses the
+catalog read's lineage id and reads the configured project's current occupancy.
+Each untouched role takes a known project binding before a valid remembered
+choice before empty; missing project roles fall through independently, while an
+unknown project hash stays visibly unavailable rather than becoming the browser
+choice. Late reads do not replace manual draft values, and a failed read keeps
+same-lineage confirmed truth with one retry. Unlisted, retired, unnamable, and
+roleless workflows do not read occupancy. The agent list is empty until a
+configuration is published, and says so. It opens in the Studio rather than in
+that list: one screen across the
 whole workshop naming every run that waits for a human — the durable states
 `WAITING_INPUT` and `WAITING_RECONCILIATION`, each asked of the list by
 `state` — beside the one project of this installation, whose card counts
