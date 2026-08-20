@@ -848,8 +848,9 @@ claim: the deadline does not run a clock, the reported token thresholds judge no
 usage report, a tool-free attempt does not read the bound, and the executor-side
 declaration of which dimensions a revision requires and what ceiling it attests
 is not built.
-That remaining enforcement is ADR 0008's second delivery boundary, and it waits
-on the durable failure vocabulary and an amended receipt.
+The first fully budgeted V3 Agent attempt -- deadline clock, reported-token
+thresholds, executor-attested refusal, usage and receipt binding -- belongs to
+#455 after the durable Runner work in #15 and #301.
 
 Whoever recomputes a finished run's terminal hash now also proves under which
 binding it ran. The agent receipt already folded provider, auth mode, auth
