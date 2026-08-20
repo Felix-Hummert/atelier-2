@@ -8,13 +8,13 @@
     type AuthProfileInput,
     type CockpitApi,
     type WorkflowRevisionDetail,
-    type WorkflowRevisionPage,
     type WorkflowRevisionSummary
   } from "../api/client";
   import Breadcrumb from "../components/Breadcrumb.svelte";
   import InfoHint from "../components/InfoHint.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ProofAnchor from "../components/ProofAnchor.svelte";
+  import ReadState from "../components/ReadState.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
   import { THE_ONE_PROJECT } from "../lib/project";
   import {
@@ -37,6 +37,7 @@
   import {
     beginRead,
     confirmRead,
+    failRead,
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
@@ -89,10 +90,21 @@
     orders: OrderDraft[];
   }
 
-  let revisions: RetainedRead<WorkflowRevisionPage, never> =
-    retainedRead<WorkflowRevisionPage, never>();
+  interface SavedWorkflowSnapshot {
+    items: WorkflowRevisionSummary[];
+    newestByName: Record<string, string>;
+    catalogByName: Record<string, CatalogNameState>;
+  }
+
+  type ReadFailure =
+    | { kind: "unavailable"; title: string }
+    | { kind: "incomplete"; title: string };
+
+  let revisions: RetainedRead<SavedWorkflowSnapshot, ReadFailure> =
+    retainedRead<SavedWorkflowSnapshot, ReadFailure>();
+  let configurations: RetainedRead<AgentConfigurationRevision[], ReadFailure> =
+    retainedRead<AgentConfigurationRevision[], ReadFailure>();
   let publishedConfigurations: AgentConfigurationRevision[] = [];
-  let configurationsRequest: "idle" | "loading" = "idle";
   let mode: "saved" | "publish" = "saved";
   let exactYaml = "";
   let draft: RunDraft | null = null;
@@ -104,11 +116,12 @@
   let operation: "load" | "publish" | "start" | "retry" | null = null;
   $: busy = operation !== null;
   let selectionGeneration = 0;
-  let newestByName: Record<string, string> = {};
-  let catalogByName: Record<string, CatalogNameState> = {};
   let selectedHashByKey: Record<string, string> = {};
   let chosenRowKey: string | null = null;
+  $: newestByName = revisions.confirmed?.newestByName ?? {};
+  $: catalogByName = revisions.confirmed?.catalogByName ?? {};
   $: savedRows = groupSavedWorkflows(revisions.confirmed?.items ?? [], newestByName);
+  $: publishedConfigurations = configurations.confirmed ?? [];
   $: visibleRows =
     chosenRowKey === null
       ? savedRows
@@ -139,30 +152,32 @@
   ): Promise<{
     newestByName: Record<string, string>;
     catalogByName: Record<string, CatalogNameState>;
-  }> {
+  } | null> {
     const resolved: Record<string, string> = {};
     const states: Record<string, CatalogNameState> = {};
-    const listed = new Set(items.map((item) => item.workflow_revision_hash));
     const names = [
       ...new Set(
         items.flatMap((item) => (item.name === null ? [] : [item.name]))
       )
     ];
-    await Promise.all(
+    const catalog = await Promise.all(
       names.map(async (name) => {
-        try {
-          const state = await catalogNameStateOf(name, (asked) =>
-            cockpitApi.getRevisionByName(asked)
-          );
-          states[name] = state;
-          if (state.kind === "admitted" && listed.has(state.revisionHash)) {
-            resolved[name] = state.revisionHash;
-          }
-        } catch (error) {
-          showFailure(error, "Some saved workflow names could not be resolved.");
-        }
+        const state = await catalogNameStateOf(name, (asked) =>
+          cockpitApi.getRevisionByName(asked)
+        );
+        return { name, state };
       })
     );
+    for (const { name, state } of catalog) {
+      states[name] = state;
+      if (state.kind !== "admitted") continue;
+      const listedForName = items.some(
+        (item) =>
+          item.name === name && item.workflow_revision_hash === state.revisionHash
+      );
+      if (!listedForName) return null;
+      resolved[name] = state.revisionHash;
+    }
     return { newestByName: resolved, catalogByName: states };
   }
 
@@ -234,43 +249,58 @@
     revisions = begun.read;
     try {
       const reading = await readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after));
+      if (!reading.complete) {
+        revisions = failRead(revisions, begun.generation, {
+          kind: "incomplete",
+          title: "Saved workflows incomplete"
+        });
+        return;
+      }
       const catalog = await resolveCatalogNames(reading.revisions);
-      newestByName = catalog.newestByName;
-      catalogByName = catalog.catalogByName;
+      if (catalog === null) {
+        revisions = failRead(revisions, begun.generation, {
+          kind: "unavailable",
+          title: "Saved workflows unavailable"
+        });
+        return;
+      }
       revisions = confirmRead(revisions, begun.generation, {
         items: reading.revisions,
-        next_after_revision_hash: null
+        newestByName: catalog.newestByName,
+        catalogByName: catalog.catalogByName
       });
-      if (!reading.complete) {
-        showFailure(
-          new Error(`Some saved workflows could not be read: ${reading.unreadable}.`),
-          "The workflow list is incomplete."
-        );
-      }
-    } catch (error) {
-      showFailure(error, "The workflow list could not be loaded.");
-      revisions = { ...revisions, request: { state: "idle" } };
+    } catch {
+      revisions = failRead(revisions, begun.generation, {
+        kind: "unavailable",
+        title: "Saved workflows unavailable"
+      });
     }
   }
 
   async function loadConfigurations(): Promise<void> {
-    configurationsRequest = "loading";
+    const begun = beginRead(configurations);
+    configurations = begun.read;
     try {
       const reading = await readEveryAgentConfiguration((after) =>
         cockpitApi.listAgentConfigurationRevisions(after)
       );
-      publishedConfigurations = reading.configurations;
-      applyRememberedChoices();
       if (!reading.complete) {
-        showFailure(
-          new Error(`Some published agents could not be read: ${reading.unreadable}.`),
-          "The published agent list is incomplete."
-        );
+        configurations = failRead(configurations, begun.generation, {
+          kind: "incomplete",
+          title: "Published agents incomplete"
+        });
+        return;
       }
-    } catch (error) {
-      showFailure(error, "The published agent list could not be loaded.");
-    } finally {
-      configurationsRequest = "idle";
+      const confirmed = confirmRead(configurations, begun.generation, reading.configurations);
+      configurations = confirmed;
+      if (confirmed.generation === begun.generation) {
+        applyRememberedChoices(reading.configurations);
+      }
+    } catch {
+      configurations = failRead(configurations, begun.generation, {
+        kind: "unavailable",
+        title: "Published agents unavailable"
+      });
     }
   }
 
@@ -588,17 +618,27 @@
     };
   }
 
-  function applyRememberedChoices(): void {
-    if (draft === null || publishedConfigurations.length === 0) return;
+  function applyRememberedChoices(
+    availableConfigurations: readonly AgentConfigurationRevision[] = publishedConfigurations
+  ): void {
+    if (draft === null || availableConfigurations.length === 0) return;
     const remembered = readLastNamedAgentChoices(globalThis.localStorage);
     const known = new Set(
-      publishedConfigurations.map((item) => item.agent_configuration_revision_hash)
+      availableConfigurations.map((item) => item.agent_configuration_revision_hash)
     );
     draft = {
       ...draft,
       bindings: draft.bindings.map((binding) => {
         const hash = remembered[binding.role];
-        if (hash === undefined || !known.has(hash)) return binding;
+        const untouched =
+          binding.selectedHash === "" &&
+          binding.profileId === "" &&
+          binding.revisionNumber === "" &&
+          binding.providerId === "" &&
+          binding.authMode === "" &&
+          binding.model === "" &&
+          binding.executorRevision === "";
+        if (!untouched || hash === undefined || !known.has(hash)) return binding;
         return { ...binding, selectedHash: hash };
       })
     };
@@ -787,6 +827,11 @@
   {#if mode === "saved"}
     <fieldset class="revision-picker">
       <legend>Saved workflow</legend>
+      <ReadState
+        read={revisions}
+        label="saved workflows"
+        onRetry={() => { void loadRevisions(); }}
+      />
       {#each visibleRows as row (row.key)}
         {@const revision = selectedRevisionOf(row, selectedHashByKey[row.key])}
         {@const catalogForm = catalogFormOf(
@@ -952,7 +997,6 @@
           </div>
         </article>
       {/each}
-      {#if revisions.request.state === "loading"}<p class="status" role="status">Loading saved workflows…</p>{/if}
       {#if operation === "load"}<p class="status" role="status">Loading workflow…</p>{/if}
       {#if revisions.confirmed?.items.length === 0}<p class="muted">No saved workflows yet.</p>{/if}
     </fieldset>
@@ -1004,16 +1048,16 @@
       <section class="binding-list" aria-labelledby="binding-list-title">
         <p class="eyebrow">Agent setup</p>
         <h2 id="binding-list-title">Bindings</h2>
+        <ReadState read={configurations} label="published agents" onRetry={() => void loadConfigurations()} />
+        {#if configurations.confirmed?.length === 0}
+          <p class="muted">No published agents yet.</p>
+        {/if}
         {#each draft.bindings as binding (binding.role)}
           <article class="node-card binding-card" class:node-queued={operation !== "start" && binding.error === null} class:node-working={operation === "start" && binding.error === null} class:node-needs_you={binding.error !== null} aria-label={`Binding ${binding.role}`}>
             <header class="node-header">
               <span class="node-kind">Agent role</span><h3>{binding.role}</h3>
             </header>
-            {#if configurationsRequest === "loading"}
-              <p class="status" role="status">Loading published agents…</p>
-            {:else if publishedConfigurations.length === 0}
-              <p class="muted">No published agent configurations yet. Publish one below, then it will appear here.</p>
-            {:else}
+            {#if publishedConfigurations.length > 0}
               <label class="named-agent">Agent
                 <select
                   value={binding.selectedHash}

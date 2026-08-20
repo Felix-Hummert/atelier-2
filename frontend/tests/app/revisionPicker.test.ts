@@ -56,6 +56,26 @@ const unnamedRevision = () =>
     description: null
   });
 
+function savedRevision(hash: string, name: string, description: string) {
+  return decodedRow({
+    workflow_revision_hash: hash,
+    workflow_format_version: 3,
+    executable: true,
+    not_executable_reason: null,
+    name,
+    description
+  });
+}
+
+function catalogHead(name: string, hash: string, revisionNumber: number) {
+  return {
+    display_name: name,
+    lineage_id: "e".repeat(64),
+    workflow_revision_hash: hash,
+    revision_number: revisionNumber
+  };
+}
+
 /**
  * The graph the detail route already publishes for the named V3 row.
  *
@@ -133,6 +153,105 @@ afterEach(() => {
 });
 
 describe("the saved-workflow picker", () => {
+  it("repeats only an unavailable saved-workflow read until truth confirms", async () => {
+    const listWorkflowRevisions = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("first private workflow detail"))
+      .mockRejectedValueOnce(new Error("second private workflow detail"))
+      .mockResolvedValueOnce({
+        items: [unnamedRevision()],
+        next_after_revision_hash: null
+      });
+    const cockpitApi = cockpitApiStub({ listWorkflowRevisions });
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByText("Saved workflows unavailable");
+    const retry = screen.getByRole("button", { name: "Retry saved workflows" });
+    expect(screen.queryByText(/private workflow detail|Failed to fetch/)).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Retry saved workflows" })).toHaveLength(1);
+
+    await fireEvent.click(retry);
+    await waitFor(() => expect(listWorkflowRevisions).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByRole("button", { name: "Retry saved workflows" })).toHaveLength(1);
+    expect(screen.queryByText(/private workflow detail|Failed to fetch/)).toBeNull();
+
+    await fireEvent.click(retry);
+
+    expect((await screen.findByRole("radio", { name: /unnamed/i })).isConnected).toBe(true);
+    expect(listWorkflowRevisions).toHaveBeenCalledTimes(3);
+    expect(cockpitApi.listAgentConfigurationRevisions).toHaveBeenCalledTimes(1);
+    expect(cockpitApi.getRevisionByName).not.toHaveBeenCalled();
+    expect(cockpitApi.getWorkflowRevision).not.toHaveBeenCalled();
+    expect(cockpitApi.publish).not.toHaveBeenCalled();
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Refresh saved workflows" }).isConnected).toBe(
+      true
+    );
+    expect(window.location.pathname).toBe("/atelier/new");
+  });
+
+  it("does not confirm a partial saved-workflow page", async () => {
+    const listWorkflowRevisions = vi
+      .fn()
+      .mockResolvedValueOnce({
+        items: [unnamedRevision()],
+        next_after_revision_hash: unnamedHash
+      })
+      .mockRejectedValueOnce(new Error("private later-page detail"))
+      .mockResolvedValueOnce({
+        items: [namedRevision()],
+        next_after_revision_hash: null
+      });
+    const cockpitApi = cockpitApiStub({ listWorkflowRevisions });
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByText("Saved workflows incomplete");
+    expect(screen.queryByRole("radio", { name: /unnamed/i })).toBeNull();
+    expect(screen.queryByText(/private later-page detail/)).toBeNull();
+    expect(listWorkflowRevisions).toHaveBeenNthCalledWith(2, unnamedHash);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry saved workflows" }));
+
+    expect(
+      (await screen.findByRole("radio", {
+        name: /Implement a candidate, then review it for defects/
+      })).isConnected
+    ).toBe(true);
+    expect(screen.queryByRole("radio", { name: /unnamed/i })).toBeNull();
+  });
+
+  it("does not confirm an admitted catalog head absent from the same named listing", async () => {
+    const listedName = "listed-line";
+    const listedHash = "6".repeat(64);
+    const absentHeadHash = "7".repeat(64);
+    const getRevisionByName = vi
+      .fn()
+      .mockResolvedValueOnce(catalogHead(listedName, absentHeadHash, 2))
+      .mockResolvedValueOnce(catalogHead(listedName, listedHash, 1));
+    const cockpitApi = api(
+      [savedRevision(listedHash, listedName, "The listed revision.")],
+      { getRevisionByName }
+    );
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByText("Saved workflows unavailable");
+    expect(screen.queryByRole("article", { name: listedName })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Retry saved workflows" })).toHaveLength(1);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry saved workflows" }));
+
+    expect((await screen.findByRole("article", { name: listedName })).isConnected).toBe(true);
+    expect(cockpitApi.listWorkflowRevisions).toHaveBeenCalledTimes(2);
+    expect(getRevisionByName).toHaveBeenCalledTimes(2);
+    expect(cockpitApi.listAgentConfigurationRevisions).toHaveBeenCalledTimes(1);
+  });
+
   it("names the empty listing instead of offering a silent choice", async () => {
     renderPicker([]);
 
@@ -458,6 +577,84 @@ describe("the picker groups revisions that share a published name", () => {
     expect(vi.mocked(cockpitApi.getRevisionByName).mock.calls).toEqual([[lineageName]]);
   });
 
+  it("retains rows, head ordering and catalog forms until the whole refresh confirms", async () => {
+    const retainedName = "retained-line";
+    const newName = "new-line";
+    const confirmedHash = "1".repeat(64);
+    const refreshedHash = "2".repeat(64);
+    const newHash = "3".repeat(64);
+    const absentHeadHash = "4".repeat(64);
+    const confirmed = savedRevision(
+      confirmedHash,
+      retainedName,
+      "The confirmed catalog head."
+    );
+    const refreshed = savedRevision(
+      refreshedHash,
+      retainedName,
+      "The refreshed catalog head."
+    );
+    const added = savedRevision(newHash, newName, "A newly read catalog line.");
+    const listWorkflowRevisions = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [confirmed], next_after_revision_hash: null })
+      .mockResolvedValue({
+        items: [confirmed, refreshed, added],
+        next_after_revision_hash: null
+      });
+    let newNameReads = 0;
+    const getRevisionByName = vi.fn(async (name: string) => {
+      if (name === retainedName) {
+        const hash = listWorkflowRevisions.mock.calls.length === 1
+          ? confirmedHash
+          : refreshedHash;
+        return catalogHead(name, hash, hash === confirmedHash ? 1 : 2);
+      }
+      newNameReads += 1;
+      if (newNameReads === 1) return catalogHead(name, absentHeadHash, 2);
+      return catalogHead(name, newHash, 1);
+    });
+    const cockpitApi = cockpitApiStub({ listWorkflowRevisions, getRevisionByName });
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    const retained = await screen.findByRole("article", { name: retainedName });
+    expect(retained.textContent).toContain("The confirmed catalog head.");
+    expect(retained.getAttribute("data-catalog-form")).toBe("ready");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh saved workflows" }));
+
+    await screen.findByText("Saved workflows unavailable");
+    expect(screen.getByRole("article", { name: retainedName }).textContent).toContain(
+      "The confirmed catalog head."
+    );
+    expect(screen.queryByText("The refreshed catalog head.")).toBeNull();
+    expect(screen.queryByRole("article", { name: newName })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Retry saved workflows" })).toHaveLength(1);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry saved workflows" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("article", { name: retainedName }).textContent).toContain(
+        "The refreshed catalog head."
+      );
+    });
+    expect(screen.getByRole("article", { name: newName }).getAttribute("data-catalog-form")).toBe(
+      "ready"
+    );
+    expect(vi.mocked(getRevisionByName).mock.calls.map(([name]) => name)).toEqual([
+      retainedName,
+      retainedName,
+      newName,
+      retainedName,
+      newName
+    ]);
+    expect(cockpitApi.listAgentConfigurationRevisions).toHaveBeenCalledTimes(1);
+    expect(cockpitApi.getWorkflowRevision).not.toHaveBeenCalled();
+    expect(cockpitApi.publish).not.toHaveBeenCalled();
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+  });
+
   it("proves(an-unadmitted-or-uncatalogable-published-name-is-named-in-the-picker): names a legal missing name as unlisted", async () => {
     const legalName = "diff-review";
     const cockpitApi = api(
@@ -493,6 +690,36 @@ describe("the picker groups revisions that share a published name", () => {
     await screen.findByRole("radio", { name: new RegExp(legalName) });
     expect(screen.getByText("Unlisted")).toBeTruthy();
     expect(vi.mocked(cockpitApi.getRevisionByName).mock.calls).toEqual([[legalName]]);
+  });
+
+  it("keeps a retired catalog name as domain truth instead of a read failure", async () => {
+    const retiredName = "retired-line";
+    const cockpitApi = api(
+      [savedRevision(namedHash, retiredName, "A retired catalog line.")],
+      {
+        getRevisionByName: vi.fn(async () => {
+          throw new CockpitRequestError(
+            "private retirement detail",
+            {
+              type: "urn:atelier2:problem:v1:catalog-lineage-retired",
+              title: "Catalog lineage retired",
+              status: 410,
+              detail: "private retirement detail"
+            },
+            true
+          );
+        })
+      }
+    );
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    const retired = await screen.findByRole("article", { name: retiredName });
+    expect(retired.getAttribute("data-catalog-form")).toBe("retired");
+    expect(within(retired).getByText("Retired").isConnected).toBe(true);
+    expect(screen.queryByText("Saved workflows unavailable")).toBeNull();
+    expect(screen.queryByText(/private retirement detail/)).toBeNull();
   });
 
   it("proves(an-unadmitted-or-uncatalogable-published-name-is-named-in-the-picker): names the live illegal title without asking the catalog", async () => {

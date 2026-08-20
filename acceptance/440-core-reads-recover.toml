@@ -10,3 +10,13 @@ text = "Studio names an incomplete or unavailable five-list read without exposin
 id = "the-project-preserves-confirmed-truth-and-retries-only-its-failed-read"
 requirement = "REQ-UIQ-06"
 text = "Project names an incomplete or unavailable joint read of its complete run list and published workflow names without exposing transport trivia, preserves its last jointly confirmed rows and names, and offers one accessible Retry that repeats only that logical read until newly confirmed truth replaces the failure."
+
+[[sentence]]
+id = "new-run-preserves-workflow-truth-and-retries-only-the-workflow-read"
+requirement = "REQ-UIQ-06"
+text = "New Run confirms its complete saved-workflow list and every distinct authored name's catalog state only when each admitted catalog head is present under that name in the same listing; otherwise it names the read incomplete or unavailable without exposing transport trivia, preserves its last jointly confirmed picker rows, newest-head ordering, and catalog forms, and offers one accessible Retry that repeats only that logical GET set until newly confirmed truth replaces the failure."
+
+[[sentence]]
+id = "new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-read"
+requirement = "REQ-UIQ-06"
+text = "New Run confirms every published-agent page together or none, distinguishes an unavailable read from a confirmed empty list, preserves its last complete agent list and every current draft and expert value through refresh failure, and offers one accessible Retry that repeats only that agent-list GET set until newly confirmed truth replaces the failure."
