@@ -19,7 +19,7 @@ CONTRACT = Path("scripts/requirement_contract.py")
 REQUIREMENTS = Path("docs/requirements")
 REGISTRY = REQUIREMENTS / "revisions.toml"
 DOCUMENTATION = REQUIREMENTS / "README.md"
-LEGACY_DOCUMENT = REQUIREMENTS / "0006-kontrollierte-selbstuebernahme.md"
+LEGACY_DOCUMENT = REQUIREMENTS / "0008-example.md"
 BOUND_START = "<!-- documentation-order-gate-bound:start -->"
 BOUND_END = "<!-- documentation-order-gate-bound:end -->"
 
@@ -31,6 +31,20 @@ def copied_project(tmp_path: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT_ROOT / relative, destination)
     shutil.copytree(PROJECT_ROOT / REQUIREMENTS, project / REQUIREMENTS)
+    return project
+
+
+def copied_legacy_project(tmp_path: Path) -> Path:
+    project = copied_project(tmp_path)
+    content = (
+        "# Legacy requirement\n\n"
+        "### REQ-LEGACY-01: Legacy bytes remain frozen.\n"
+        "Quelle: DESK — test fixture\n"
+    ).encode()
+    (project / LEGACY_DOCUMENT).write_bytes(content)
+    registry = project / REGISTRY
+    with registry.open("a", encoding="utf-8") as stream:
+        stream.write("\n" + legacy_table("0008", LEGACY_DOCUMENT, digest(content)))
     return project
 
 
@@ -97,9 +111,9 @@ def revision_table(
     predecessor: str = "GENESIS",
     comment: int = 123456,
 ) -> str:
-    approval = digest(approval_bytes("0006", content_digest))
+    approval = digest(approval_bytes("0008", content_digest))
     return (
-        '[[revision]]\ndocument = "0006"\n'
+        '[[revision]]\ndocument = "0008"\n'
         f'path = "{LEGACY_DOCUMENT}"\ncontent_sha256 = "{content_digest}"\n'
         f'approval_comment_id = {comment}\napproval_sha256 = "{approval}"\n'
         f'predecessor = "{predecessor}"\n'
@@ -122,7 +136,7 @@ def migrate_legacy(project: Path, content: bytes | None = None) -> str:
     current_digest = digest(migrated)
     registry = project / REGISTRY
     original = registry.read_text(encoding="utf-8")
-    before = legacy_table("0006", LEGACY_DOCUMENT, old_digest)
+    before = legacy_table("0008", LEGACY_DOCUMENT, old_digest)
     assert before in original
     registry.write_text(
         original.replace(before, revision_table(current_digest)), encoding="utf-8"
@@ -150,12 +164,12 @@ def test_the_current_requirement_contract_passes_both_wrappers(tmp_path: Path) -
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (
-        "7 document(s), 96 rule(s), 7 frozen legacy, 0 approval-backed" in result.stdout
+        "7 document(s), 96 rule(s), 6 frozen legacy, 1 approval-backed" in result.stdout
     )
 
 
 def test_the_documentation_wrapper_names_a_contract_refusal(tmp_path: Path) -> None:
-    project = copied_project(tmp_path)
+    project = copied_legacy_project(tmp_path)
     document = project / LEGACY_DOCUMENT
     document.write_bytes(document.read_bytes() + b"\n")
 
@@ -171,7 +185,7 @@ def test_the_documentation_wrapper_names_a_contract_refusal(tmp_path: Path) -> N
 def test_same_change_legacy_bytes_and_matching_registry_repin_are_refused(
     tmp_path: Path,
 ) -> None:
-    project = copied_project(tmp_path)
+    project = copied_legacy_project(tmp_path)
     registry = project / REGISTRY
     registry_text = registry.read_text(encoding="utf-8")
     registry.unlink()
@@ -185,13 +199,13 @@ def test_same_change_legacy_bytes_and_matching_registry_repin_are_refused(
     result = run_gate(project, base_revision=base_revision)
 
     assert result.returncode != 0
-    assert "requirement 0006" in result.stderr
+    assert "requirement 0008" in result.stderr
     assert str(LEGACY_DOCUMENT) in result.stderr
     assert "migrate" in result.stderr
 
 
 def test_a_legacy_pin_may_be_removed_only_into_a_revision(tmp_path: Path) -> None:
-    project = copied_project(tmp_path)
+    project = copied_legacy_project(tmp_path)
     base_revision = commit_project(project)
     migrate_legacy(project)
 
@@ -234,7 +248,7 @@ def test_a_new_legacy_document_after_the_registry_is_refused(tmp_path: Path) -> 
 
 @pytest.mark.proves("a-requirement-revision-registry-is-linear-and-bound")
 def test_an_approval_backed_successor_extends_history(tmp_path: Path) -> None:
-    project = copied_project(tmp_path)
+    project = copied_legacy_project(tmp_path)
     predecessor = migrate_legacy(project)
     base_revision = commit_project(project)
     content = strict_content("A successor remains controlled.")
@@ -249,7 +263,7 @@ def test_an_approval_backed_successor_extends_history(tmp_path: Path) -> None:
 
 @pytest.mark.proves("a-requirement-revision-registry-is-linear-and-bound")
 def test_approval_backed_history_cannot_be_rewritten_in_place(tmp_path: Path) -> None:
-    project = copied_project(tmp_path)
+    project = copied_legacy_project(tmp_path)
     migrate_legacy(project)
     base_revision = commit_project(project)
     registry = project / REGISTRY
@@ -263,7 +277,7 @@ def test_approval_backed_history_cannot_be_rewritten_in_place(tmp_path: Path) ->
     result = run_gate(project, base_revision=base_revision)
 
     assert result.returncode != 0
-    assert "revision 0006" in result.stderr
+    assert "revision 0008" in result.stderr
     assert "changed or deleted" in result.stderr
 
 
@@ -271,7 +285,7 @@ def test_approval_backed_history_cannot_be_rewritten_in_place(tmp_path: Path) ->
 def test_approval_backed_history_cannot_be_deleted_and_restarted(
     tmp_path: Path,
 ) -> None:
-    project = copied_project(tmp_path)
+    project = copied_legacy_project(tmp_path)
     old_digest = migrate_legacy(project)
     base_revision = commit_project(project)
     content = strict_content("Replacement history is forbidden.")
@@ -287,7 +301,7 @@ def test_approval_backed_history_cannot_be_deleted_and_restarted(
     result = run_gate(project, base_revision=base_revision)
 
     assert result.returncode != 0
-    assert "revision 0006" in result.stderr
+    assert "revision 0008" in result.stderr
     assert "changed or deleted" in result.stderr
 
 
@@ -296,7 +310,7 @@ def test_approval_backed_history_cannot_be_deleted_and_restarted(
 def test_base_snapshot_refuses_nonregular_git_tree_modes(
     tmp_path: Path, relative: Path
 ) -> None:
-    project = copied_project(tmp_path)
+    project = copied_legacy_project(tmp_path)
     target = project / relative
     content = target.read_bytes()
     outside = tmp_path / f"base-{target.name}"

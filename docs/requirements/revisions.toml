@@ -26,11 +26,14 @@ path = "docs/requirements/0005-katalog-und-benannte-workflows.md"
 content_sha256 = "a7270fa0ecda54e4e62980bea0ada58c54a76747546ba5a71053189ac57c9335"
 
 [[legacy]]
-document = "0006"
-path = "docs/requirements/0006-kontrollierte-selbstuebernahme.md"
-content_sha256 = "a24d48901493125c293a1f01b5083d91eccc76507ce96f1b20bbdc5f5a7d63c5"
-
-[[legacy]]
 document = "0007"
 path = "docs/requirements/0007-beweis-dossier.md"
 content_sha256 = "1b9f100aaed6567a887f57635e87f7b311633cac0aedbd07a3c0b312ccf29336"
+
+[[revision]]
+document = "0006"
+path = "docs/requirements/0006-kontrollierte-selbstuebernahme.md"
+content_sha256 = "552b9dac8c32c04a708d6093d8d528c410b0e830db8b32aecd1a2d3b122b26b0"
+approval_comment_id = 5361527176
+approval_sha256 = "939a56d8e114f0507ecfbb86ffb8980330b5f0acbe1ec5ec5a842054ae12e1e1"
+predecessor = "GENESIS"

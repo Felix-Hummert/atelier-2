@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -23,7 +24,7 @@ CONFTEST = Path("tests/conftest.py")
 PULL_REQUEST_TEMPLATE = Path(".github/pull_request_template.md")
 DOCUMENTATION = Path("docs/requirements/README.md")
 REQUIREMENTS = Path("docs/requirements")
-A_LEGACY_REQUIREMENT = REQUIREMENTS / "0006-kontrollierte-selbstuebernahme.md"
+A_LEGACY_REQUIREMENT = REQUIREMENTS / "0008-test-legacy.md"
 A_DECLARED_REQUIREMENT = "REQ-KATALOG-04"
 AN_UNDECLARED_REQUIREMENT = "REQ-NOBODY-99"
 PROOFS = Path("tests/tooling/test_acceptance_gate.py")
@@ -1246,7 +1247,21 @@ def test_a_sentence_naming_a_declared_requirement_passes_the_gate(
 
 def test_requirement_contract_drift_is_refused_before_trace(tmp_path: Path) -> None:
     project = copied_project(tmp_path)
+    content = (
+        "# Legacy requirement\n\n"
+        "### REQ-LEGACY-01: Legacy bytes remain frozen.\n"
+        "Quelle: DESK — test fixture\n"
+    ).encode()
     document = project / A_LEGACY_REQUIREMENT
+    document.write_bytes(content)
+    registry = project / REQUIREMENTS / "revisions.toml"
+    with registry.open("a", encoding="utf-8") as stream:
+        stream.write(
+            "\n[[legacy]]\n"
+            'document = "0008"\n'
+            f'path = "{A_LEGACY_REQUIREMENT}"\n'
+            f'content_sha256 = "{hashlib.sha256(content).hexdigest()}"\n'
+        )
     document.write_bytes(document.read_bytes() + b"\n")
 
     result = run_gate(project)

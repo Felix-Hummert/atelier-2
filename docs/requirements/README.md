@@ -71,7 +71,7 @@ Changing approved bytes always creates a successor. Supersession or retirement
 is added only when a real revision needs it; no unused registry field is
 reserved in advance.
 
-The `[[legacy]]` entries are temporary metadata for seven pre-lifecycle
+The `[[legacy]]` entries are temporary metadata for pre-lifecycle
 documents. `revisions.toml` alone owns current shelf metadata. Against an exact
 VCS base, CI admits no new legacy, keeps every prior registry field identical,
 and allows only in-place approval migration or a valid successor. Thus bytes
