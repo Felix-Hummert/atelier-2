@@ -63,9 +63,13 @@ bash scripts/container_up.sh
 ```
 
 The script creates the state root and its `store` and `scratch` directories
-at mode `0700`, builds the image for the current operator uid/gid, and starts
-the compose service. Rerun it after a landing to redeploy. It does not start
-autonomy and it does not arm anything.
+at mode `0700`, resolves one source commit and the source tree of that commit,
+and refuses a missing or unknown identity by name before build. The candidate
+image context is that exact git commit, not dirty tracked files or untracked
+worktree files. The same identity is bound into the image labels and the
+serve-health inputs. It then builds the image for the current operator uid/gid
+and starts the compose service. Rerun it after a landing to redeploy. It does
+not start autonomy and it does not arm anything.
 
 ## Pin an executor toolchain
 
@@ -131,11 +135,13 @@ unaltered and said to be already current.
 - **Network hardening.** Reachability, exposure declaration, and anything
   beyond this machine stay with ADR 0009, which is not implemented. Host
   networking plus a loopback bind is packaging, not that decision.
-- **CI image build.** The workflows do not build the image. A full
-  frontend, Python, and Claude install on every pull request is not justified
-  by what the image would prove: the serve still needs a real credential to
-  start a billed provider, and the cheap contracts (non-root, pin, mounts,
-  loopback, no secrets in the recipe) are checked as files.
+- **CI image build.** The workflows do not build the image. The packaging job
+  exercises the recipes and the start script without a real image build. It
+  does not build a real image or start a container. A full frontend, Python,
+  and Claude install on every pull request is not justified by what the image
+  would prove: the serve still needs a real credential to start a billed
+  provider, and the cheap contracts (non-root, pin, mounts, loopback, no
+  secrets in the recipe, immutable git identity) are checked as files.
 
 ## Measure concurrent fake-executor load
 
@@ -160,7 +166,8 @@ Container recipes:
 
 `uv run --locked pytest --dist loadgroup -n auto tests/tooling/test_container_packaging.py`
 
-That job reads the recipes. It does not build or run the image.
+That job exercises the recipes and the start script with a fake `docker`.
+It does not build a real image.
 
 Store migration:
 
