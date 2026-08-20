@@ -19,7 +19,15 @@ from atelier2.api.limits import (
 )
 from atelier2.api.openapi import API_PREFIX, install_custom_openapi
 from atelier2.api.problems import install_problem_handlers
-from atelier2.api.routes import agents, artifacts, events, health, revisions, runs
+from atelier2.api.routes import (
+    agents,
+    artifacts,
+    events,
+    health,
+    occupancy,
+    revisions,
+    runs,
+)
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
 from atelier2.application.admit_catalog_member import (
     admit_catalog_member,
@@ -27,6 +35,10 @@ from atelier2.application.admit_catalog_member import (
 )
 from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
+from atelier2.application.occupancy import (
+    get_occupancy_revision,
+    publish_occupancy_revision,
+)
 from atelier2.application.prepare_run_events import prepare_run_events
 from atelier2.application.publish_adapter_operation_revision import (
     publish_adapter_operation_revision,
@@ -217,6 +229,24 @@ def bound_use_cases(
         reconcile_run=lambda request: reconcile_run(
             request, ports.run_queries, ports.reconcile_commander
         ),
+        get_occupancy_revision=lambda project_id, lineage_id: get_occupancy_revision(
+            project_id,
+            lineage_id,
+            ports.host_configuration_channel,
+            ports.catalog_resolver,
+        ),
+        publish_occupancy_revision=(
+            lambda project_id, lineage_id, revision_number, bindings: (
+                publish_occupancy_revision(
+                    project_id,
+                    lineage_id,
+                    revision_number,
+                    bindings,
+                    ports.host_configuration_channel,
+                    ports.catalog_resolver,
+                )
+            )
+        ),
     )
 
 
@@ -286,12 +316,13 @@ def create_app(
     if frontend_dist is not None:
         _mount_frontend(app, frontend_dist)
 
-    # The order of these five calls is the order of the published document's
-    # `paths` keys, which the frozen artefact pins byte for byte.
+    # The order of these router includes is the order of the published
+    # document's `paths` keys, which the frozen artefact pins byte for byte.
     app.include_router(health.router)
     app.include_router(agents.router)
     app.include_router(artifacts.router)
     app.include_router(revisions.router)
+    app.include_router(occupancy.router)
     app.include_router(runs.router)
     app.include_router(events.router)
 

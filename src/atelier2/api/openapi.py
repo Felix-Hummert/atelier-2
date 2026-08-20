@@ -18,9 +18,12 @@ from atelier2.api.problems import (
     TOOL_GRANT_DOCUMENT_PROBLEM_CODES,
 )
 from atelier2.api.references import (
+    CATALOG_LINEAGE_ID_PATTERN,
     EVENT_CURSOR_PATTERN,
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
+    MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
     SHA256_HASH_PATTERN,
@@ -78,6 +81,9 @@ EVENT_PATH = API_PREFIX + "/runs/{public_ref}/events"
 ATTENTION_EVENT_PATH = API_PREFIX + "/events"
 CANCELLATION_PATH = (
     API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations"
+)
+OCCUPANCY_PATH = (
+    API_PREFIX + "/projects/{public_project_reference}/occupancy/{lineage_id}"
 )
 
 EVENT_MODELS = (
@@ -249,6 +255,27 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): (
         "invalid-revision-hash",
         "workflow-revision-not-found",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (OCCUPANCY_PATH, "put"): (
+        "invalid-public-project-reference",
+        "project-unknown",
+        "catalog-lineage-missing",
+        "invalid-request",
+        "unsupported-media-type",
+        "occupancy-revision-conflict",
+        "occupancy-revision-collision",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (OCCUPANCY_PATH, "get"): (
+        "invalid-public-project-reference",
+        "project-unknown",
+        "catalog-lineage-missing",
+        "occupancy-missing",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -655,6 +682,15 @@ def _install_event_components(schema: dict[str, Any]) -> None:
         "type": "string",
         "pattern": PUBLIC_RUN_REFERENCE_PATTERN,
     }
+    components["PublicProjectReference"] = {
+        "type": "string",
+        "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    }
+    components["CatalogLineageId"] = {
+        "type": "string",
+        "pattern": CATALOG_LINEAGE_ID_PATTERN,
+    }
     components["RevisionHash"] = {
         "type": "string",
         "pattern": REVISION_HASH_PATTERN,
@@ -667,6 +703,14 @@ def _install_event_components(schema: dict[str, Any]) -> None:
 
 def _install_parameter_contracts(schema: dict[str, Any]) -> None:
     references = {
+        "PublicProjectReference": (
+            (OCCUPANCY_PATH, "put", "public_project_reference", "path"),
+            (OCCUPANCY_PATH, "get", "public_project_reference", "path"),
+        ),
+        "CatalogLineageId": (
+            (OCCUPANCY_PATH, "put", "lineage_id", "path"),
+            (OCCUPANCY_PATH, "get", "lineage_id", "path"),
+        ),
         "PublicRunReference": (
             (API_PREFIX + "/runs", "get", "after", "query"),
             (API_PREFIX + "/runs/{public_ref}", "get", "public_ref", "path"),

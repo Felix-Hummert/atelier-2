@@ -46,10 +46,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits the host configuration channel. Predecessor is
-# today's published version (PROJECT_VERIFICATION_FAILED landed as 24). Change
-# only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 24
+# Movable hop: this head admits occupancy revisions on the host configuration
+# channel. Predecessor is today's published version (host project-root landed
+# as 25). Change only this constant to restack.
+_HOP_PREDECESSOR_VERSION = 25
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -67,6 +67,7 @@ _VERSION_TWENTY_ONE = 21
 _VERSION_TWENTY_TWO = 22
 _VERSION_TWENTY_THREE = 23
 _VERSION_TWENTY_FOUR = 24
+_VERSION_TWENTY_FIVE = 25
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -101,7 +102,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # third attempt failure code. V24 admits PROJECT_VERIFICATION_FAILED as a
 # fourth, so a granted verification that exits nonzero ends under its own name.
 # V25 gives the host its live-versioned configuration channel, first entry
-# project id → root path, as append-only revisions. The hop number is movable:
+# project id → root path, as append-only revisions. V26 adds recommended
+# occupancy per workflow lineage as a second family on that channel: revision
+# header and role bindings, append-only. The hop number is movable:
 # `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
@@ -123,6 +126,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     23: "6d8a3af85ecc40781c6eea454e33ae625de1cf6d8726ca5c502cdcc33eb2c124",
     24: "ba573ba80dbdbb5d9b2a93bc6958b7544838915be3e0f5fc816cacc718dfe9c8",
     25: "91d8889ce6239855c894b89ab658188d9b13927dedb1cc905dacdc151a485842",
+    26: "0af3ca8bbbbe06a56c56bb0988de384fde2a807b1e409152a02e1e226e917ab8",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -187,6 +191,10 @@ V23_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V24_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_FOUR,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_FOUR],
+)
+V25_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY_FIVE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_FIVE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1425,6 +1433,55 @@ host_project_root_revisions = sa.Table(
         f"length(root_path) BETWEEN 1 AND {MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS}"
     ),
 )
+host_occupancy_revisions = sa.Table(
+    "host_occupancy_revisions",
+    metadata,
+    sa.Column("revision_hash", sa.Text, primary_key=True),
+    sa.Column("project_id", sa.Text, nullable=False),
+    sa.Column("lineage_id", sa.Text, nullable=False),
+    sa.Column("revision_number", sa.Integer, nullable=False),
+    sa.UniqueConstraint("project_id", "lineage_id", "revision_number"),
+    sa.UniqueConstraint(
+        "revision_hash",
+        "project_id",
+        "lineage_id",
+        "revision_number",
+    ),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint("length(lineage_id) = 64 AND lineage_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
+)
+host_occupancy_bindings = sa.Table(
+    "host_occupancy_bindings",
+    metadata,
+    sa.Column(
+        "revision_hash",
+        sa.Text,
+        sa.ForeignKey("host_occupancy_revisions.revision_hash"),
+        nullable=False,
+    ),
+    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("agent_configuration_revision_hash", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("revision_hash", "role"),
+    sa.UniqueConstraint(
+        "revision_hash",
+        "role",
+        "agent_configuration_revision_hash",
+    ),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(f"length(role) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
+    sa.CheckConstraint(
+        "length(agent_configuration_revision_hash) = 64 "
+        "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
 
 PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
 
@@ -1979,6 +2036,30 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'host project-root revisions are immutable');
         END
     """,
+    "host_occupancy_revisions_no_update": """
+        CREATE TRIGGER host_occupancy_revisions_no_update
+        BEFORE UPDATE ON host_occupancy_revisions BEGIN
+          SELECT RAISE(ABORT, 'host occupancy revisions are immutable');
+        END
+    """,
+    "host_occupancy_revisions_no_delete": """
+        CREATE TRIGGER host_occupancy_revisions_no_delete
+        BEFORE DELETE ON host_occupancy_revisions BEGIN
+          SELECT RAISE(ABORT, 'host occupancy revisions are immutable');
+        END
+    """,
+    "host_occupancy_bindings_no_update": """
+        CREATE TRIGGER host_occupancy_bindings_no_update
+        BEFORE UPDATE ON host_occupancy_bindings BEGIN
+          SELECT RAISE(ABORT, 'host occupancy bindings are immutable');
+        END
+    """,
+    "host_occupancy_bindings_no_delete": """
+        CREATE TRIGGER host_occupancy_bindings_no_delete
+        BEFORE DELETE ON host_occupancy_bindings BEGIN
+          SELECT RAISE(ABORT, 'host occupancy bindings are immutable');
+        END
+    """,
 }
 
 
@@ -2140,24 +2221,28 @@ def _table_fingerprint(
 def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
+    occupancy = {host_occupancy_revisions.name, host_occupancy_bindings.name}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version == _VERSION_TWENTY_FIVE:
+        return PRODUCT_TABLE_NAMES - occupancy
     if version in {_VERSION_TWENTY_FOUR, _VERSION_TWENTY_THREE, _VERSION_TWENTY_TWO}:
-        return PRODUCT_TABLE_NAMES - host_channel
+        return PRODUCT_TABLE_NAMES - occupancy - host_channel
     if version in {_VERSION_TWENTY_ONE, _VERSION_TWENTY, _VERSION_NINETEEN}:
-        return PRODUCT_TABLE_NAMES - later - host_channel
+        return PRODUCT_TABLE_NAMES - later - occupancy - host_channel
     if version in {
         _VERSION_EIGHTEEN,
         _VERSION_SEVENTEEN,
         _VERSION_SIXTEEN,
         _VERSION_FIFTEEN,
     }:
-        return PRODUCT_TABLE_NAMES - {artifacts.name} - later - host_channel
+        return PRODUCT_TABLE_NAMES - {artifacts.name} - later - occupancy - host_channel
     if version == _VERSION_FOURTEEN:
         return (
             PRODUCT_TABLE_NAMES
             - {artifacts.name, tool_redemptions.name}
             - later
+            - occupancy
             - host_channel
         )
     if version == _VERSION_THIRTEEN:
@@ -2169,6 +2254,7 @@ def _table_names_for_version(version: int) -> frozenset[str]:
                 tool_redemptions.name,
             }
             - later
+            - occupancy
             - host_channel
         )
     raise UnsupportedSchemaVersion(version)
@@ -2795,6 +2881,41 @@ def _apply_v23_to_v24(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_TWENTY_THREE, _VERSION_TWENTY_FOUR)
 
 
+_OCCUPANCY_TABLES = (host_occupancy_revisions, host_occupancy_bindings)
+_OCCUPANCY_TRIGGERS = (
+    "host_occupancy_revisions_no_update",
+    "host_occupancy_revisions_no_delete",
+    "host_occupancy_bindings_no_update",
+    "host_occupancy_bindings_no_delete",
+)
+
+
+def _apply_v25_to_v26(connection: sqlite3.Connection) -> None:
+    """Give occupancy a durable home beside the project-root channel.
+
+    Two additive tables, no reinterpretation of a predecessor row: a store that
+    already existed has no occupancy, which is what "this project has not
+    recommended a binding" means.
+    """
+
+    for table in _OCCUPANCY_TABLES:
+        existing = connection.execute(
+            "SELECT name FROM sqlite_master WHERE name=?",
+            (table.name,),
+        ).fetchone()
+        if existing is not None:
+            raise StoreMigrationRefused(
+                f"schema version {_VERSION_TWENTY_FIVE} already has {table.name}; "
+                "this command will not alter it"
+            )
+        connection.execute(
+            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger in _OCCUPANCY_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+    _raise_declared_version(connection, _VERSION_TWENTY_FIVE, SCHEMA_VERSION)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -2845,7 +2966,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     ),
     _SchemaMigrationStep(
         _VERSION_TWENTY_FOUR,
-        SCHEMA_VERSION,
+        _VERSION_TWENTY_FIVE,
         _added_table_step(
             host_project_root_revisions,
             (
@@ -2853,9 +2974,10 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
                 "host_project_root_revisions_no_delete",
             ),
             _VERSION_TWENTY_FOUR,
-            SCHEMA_VERSION,
+            _VERSION_TWENTY_FIVE,
         ),
     ),
+    _SchemaMigrationStep(_VERSION_TWENTY_FIVE, SCHEMA_VERSION, _apply_v25_to_v26),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
