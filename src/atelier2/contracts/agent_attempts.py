@@ -196,6 +196,64 @@ class AgentAttemptCancellationDisposition(StrEnum):
     OWNER_LOST_AFTER_PARENT_DEATH = "OWNER_LOST_AFTER_PARENT_DEATH"
 
 
+class RunnerBindingConflict(RuntimeError):
+    """A generation, invocation, or evidence delivery contradicts its binding."""
+
+
+class RunnerManifestId(Sha256Hash):
+    """SHA-256 content identity of the exact Runner offer Core selected."""
+
+
+def _require_runner_identity(value: str, owner: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= MAXIMUM_AGENT_FIELD_CHARACTERS
+    ):
+        raise ValueError(
+            f"{owner} must contain 1..{MAXIMUM_AGENT_FIELD_CHARACTERS} exact characters"
+        )
+
+
+@dataclass(frozen=True)
+class RunnerGenerationId:
+    """Core-owned identity of one placement, minted before an external effect."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_runner_identity(self.value, "runner generation id")
+
+
+@dataclass(frozen=True)
+class RunnerInvocationId:
+    """Runner-owned identity of the one execution accepted for a generation."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_runner_identity(self.value, "runner invocation id")
+
+
+@dataclass(frozen=True)
+class RunnerGenerationBinding:
+    """The immutable work and Runner offer bound to one Core generation."""
+
+    attempt_id: AgentAttemptId
+    request_hash: AgentExecutionRequestHash
+    generation_id: RunnerGenerationId
+    manifest_id: RunnerManifestId
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.attempt_id, AgentAttemptId):
+            raise TypeError("runner generation binding requires a typed attempt id")
+        if not isinstance(self.request_hash, AgentExecutionRequestHash):
+            raise TypeError("runner generation binding requires a typed request hash")
+        if not isinstance(self.generation_id, RunnerGenerationId):
+            raise TypeError("runner generation binding requires a typed generation id")
+        if not isinstance(self.manifest_id, RunnerManifestId):
+            raise TypeError("runner generation binding requires a typed manifest id")
+
+
 class RunnerOutputStream(StrEnum):
     STANDARD_OUTPUT = "STANDARD_OUTPUT"
     STANDARD_ERROR = "STANDARD_ERROR"
@@ -308,6 +366,46 @@ type RunnerTerminalEvidence = (
     | RunnerCancellation
     | RunnerInvocationLost
 )
+
+
+@dataclass(frozen=True)
+class RunnerTerminalEvidenceEnvelope:
+    """Terminal evidence bound to the exact generation and accepted invocation."""
+
+    binding: RunnerGenerationBinding
+    invocation_id: RunnerInvocationId | None
+    evidence: RunnerTerminalEvidence
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binding, RunnerGenerationBinding):
+            raise TypeError("runner terminal evidence requires a typed binding")
+        if self.invocation_id is not None and not isinstance(
+            self.invocation_id, RunnerInvocationId
+        ):
+            raise TypeError("runner terminal evidence requires a typed invocation id")
+        if not isinstance(
+            self.evidence,
+            (
+                RunnerProviderResult,
+                RunnerProviderFailure,
+                RunnerOutputLimitExceeded,
+                RunnerProcessBoundaryFailure,
+                RunnerCancellation,
+                RunnerInvocationLost,
+            ),
+        ):
+            raise TypeError(
+                "runner terminal evidence requires a closed terminal evidence"
+            )
+        authoritative_no_launch = (
+            isinstance(self.evidence, RunnerCancellation)
+            and self.evidence.observation
+            is RunnerCancellationObservation.NEVER_LAUNCHED
+        )
+        if self.invocation_id is None and not authoritative_no_launch:
+            raise ValueError(
+                "runner terminal evidence without an invocation must prove never launched"
+            )
 
 
 class AgentAttemptProcessPhase(StrEnum):
