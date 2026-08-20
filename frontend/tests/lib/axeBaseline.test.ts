@@ -13,14 +13,14 @@ const checkedIn = JSON.parse(
 ) as AxeBaselineEntry[];
 
 describe("the axe baseline is a named exception list", () => {
-  it("proves(core-surfaces-have-no-unnamed-axe-violations): every checked-in row names an issue and a core surface", () => {
+  it("every checked-in row names an issue and a core surface", () => {
     expect(Array.isArray(checkedIn)).toBe(true);
     for (const entry of checkedIn) {
       expect(baselineEntryProblems(entry), JSON.stringify(entry)).toEqual([]);
     }
   });
 
-  it("proves(core-surfaces-have-no-unnamed-axe-violations): a violation the baseline does not name stays unnamed", () => {
+  it("a violation the baseline does not name stays unnamed", () => {
     const baseline: AxeBaselineEntry[] = [
       {
         id: "color-contrast",
@@ -74,7 +74,7 @@ describe("the axe baseline is a named exception list", () => {
     ).toHaveLength(1);
   });
 
-  it("proves(core-surfaces-have-no-unnamed-axe-violations): a row without an issue is not a baseline entry", () => {
+  it("a row without an issue is not a baseline entry", () => {
     expect(
       baselineEntryProblems({
         id: "color-contrast",

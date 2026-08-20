@@ -57,6 +57,9 @@ TYPESCRIPT_SIMPLE_ESCAPES = {
 PYTHON_SUFFIX = ".py"
 TYPESCRIPT_SUFFIX = ".ts"
 FRONTEND_DIRECTORY = "frontend"
+PLAYWRIGHT_TEST_DIRECTORY = Path(FRONTEND_DIRECTORY, "tests", "e2e")
+VITEST_REPORT_FILE_NAME = "frontend.vitest.json"
+PLAYWRIGHT_REPORT_FILE_NAME = "frontend.playwright.json"
 CLAIMABLE_SUFFIXES = (PYTHON_SUFFIX, TYPESCRIPT_SUFFIX)
 UNSCANNED_DIRECTORIES = frozenset(
     {".git", ".venv", "__pycache__", "node_modules", "dist"}
@@ -66,6 +69,7 @@ JUNIT_TESTCASE = "testcase"
 JUNIT_PROPERTY = "properties/property"
 JUNIT_UNPASSED_OUTCOMES = ("failure", "error", "skipped")
 VITEST_PASSED_STATUS = "passed"
+PLAYWRIGHT_PASSED_STATUS = "passed"
 
 LANDING_FIELD = re.compile(
     r"^[ \t]*[-*]?[ \t]*Literal acceptance sentence\(s\)[^:]*:[ \t]*(?P<stated>.*?)[ \t]*$",
@@ -106,6 +110,7 @@ class AcceptanceGateError(Exception):
 class ReportFormat(Enum):
     PYTEST_JUNIT = "pytest --junitxml"
     VITEST_JSON = "vitest --reporter=json"
+    PLAYWRIGHT_JSON = "Playwright JSON reporter"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,8 +128,13 @@ REQUIRED_REPORTS = (
     ),
     RequiredReport("crash.junit.xml", ReportFormat.PYTEST_JUNIT, "Crash recovery"),
     RequiredReport(
-        "frontend.vitest.json",
+        VITEST_REPORT_FILE_NAME,
         ReportFormat.VITEST_JSON,
+        "Cockpit: types, lint, tests, e2e",
+    ),
+    RequiredReport(
+        PLAYWRIGHT_REPORT_FILE_NAME,
+        ReportFormat.PLAYWRIGHT_JSON,
         "Cockpit: types, lint, tests, e2e",
     ),
 )
@@ -391,6 +401,94 @@ def read_vitest_proofs(report: Path) -> Iterator[ReportedProof]:
             )
 
 
+def read_playwright_proofs(report: Path) -> Iterator[ReportedProof]:
+    try:
+        run = json.loads(report.read_text(encoding="utf-8"))
+        root_dir = run["config"]["rootDir"]
+        if not isinstance(root_dir, str) or not root_dir:
+            raise TypeError("config.rootDir is not a path")
+        specs = tuple(playwright_specs(run["suites"]))
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise AcceptanceGateError(
+            f"{report.name} is not readable as a run report: {error}"
+        ) from error
+    for spec in specs:
+        title = spec.get("title")
+        tests = spec.get("tests")
+        if not isinstance(title, str) or not isinstance(tests, list):
+            raise AcceptanceGateError(
+                f"{report.name} is not readable as a run report: malformed spec"
+            )
+        try:
+            location = playwright_test_location(root_dir, spec.get("file"))
+        except ValueError as error:
+            raise AcceptanceGateError(
+                f"{report.name} is not readable as a run report: {error}"
+            ) from error
+        if not any(playwright_test_passed(test) for test in tests):
+            continue
+        for claim in TYPESCRIPT_PROOF_CLAIM.finditer(title):
+            yield ReportedProof(
+                claim.group("identifier"),
+                title,
+                location,
+                None,
+                report.name,
+            )
+
+
+def playwright_specs(suites: Any) -> Iterator[dict[str, Any]]:
+    if not isinstance(suites, list):
+        raise TypeError("suites is not a list")
+    for suite in suites:
+        if not isinstance(suite, dict):
+            raise TypeError("suite is not an object")
+        specs = suite.get("specs", [])
+        if not isinstance(specs, list) or not all(
+            isinstance(spec, dict) for spec in specs
+        ):
+            raise TypeError("specs is not a list of objects")
+        yield from specs
+        yield from playwright_specs(suite.get("suites", []))
+
+
+def playwright_test_passed(test: Any) -> bool:
+    return (
+        isinstance(test, dict)
+        and isinstance(test.get("results"), list)
+        and any(
+            isinstance(result, dict)
+            and result.get("status") == PLAYWRIGHT_PASSED_STATUS
+            for result in test["results"]
+        )
+    )
+
+
+def playwright_test_location(root_dir: str, file_name: Any) -> Path:
+    root = Path(os.path.normpath(root_dir.replace("\\", "/")))
+    if not root.is_absolute():
+        raise ValueError("config.rootDir is not absolute")
+    if not isinstance(file_name, str) or not file_name:
+        raise ValueError("spec file is not a path")
+    reported_file = Path(file_name.replace("\\", "/"))
+    if reported_file.is_absolute():
+        raise ValueError("spec file is outside rootDir")
+    located = Path(os.path.normpath(str(root / reported_file)))
+    try:
+        relative = located.relative_to(root)
+    except ValueError:
+        raise ValueError("spec file is outside rootDir") from None
+    if relative == Path("."):
+        raise ValueError("spec file is not a strict child of rootDir")
+    repository_root = typescript_test_location(str(root))
+    repository_location = typescript_test_location(str(located))
+    if repository_root is None or repository_location is None:
+        raise ValueError("config.rootDir is outside the repository")
+    if not repository_location.is_relative_to(repository_root):
+        raise ValueError("spec file is outside rootDir")
+    return repository_location
+
+
 def typescript_test_location(file_name: Any) -> Path | None:
     if not isinstance(file_name, str) or not file_name:
         return None
@@ -408,6 +506,7 @@ def typescript_test_location(file_name: Any) -> Path | None:
 REPORT_READERS: dict[ReportFormat, Callable[[Path], Iterator[ReportedProof]]] = {
     ReportFormat.PYTEST_JUNIT: read_junit_proofs,
     ReportFormat.VITEST_JSON: read_vitest_proofs,
+    ReportFormat.PLAYWRIGHT_JSON: read_playwright_proofs,
 }
 
 
@@ -565,6 +664,13 @@ def proof_honours_claim(proof: ReportedProof, claim: ProofClaim) -> bool:
             for suffix in ("[", "@")
         )
     if proof.located_in != claim.located_in:
+        return False
+    expected_report = (
+        PLAYWRIGHT_REPORT_FILE_NAME
+        if claim.located_in.is_relative_to(PLAYWRIGHT_TEST_DIRECTORY)
+        else VITEST_REPORT_FILE_NAME
+    )
+    if proof.reported_in != expected_report:
         return False
     return (
         re.fullmatch(vitest_title_pattern(claim.claiming_test), proof.proving_test)
