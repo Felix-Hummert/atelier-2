@@ -8,21 +8,29 @@ import pytest
 from atelier2.contracts.agent_attempts import (
     MAXIMUM_RUNNER_STANDARD_ERROR_BYTES,
     AgentAttemptCancellationDisposition,
+    AgentAttemptId,
     ProcessExitSignature,
     RunnerCancellation,
     RunnerCancellationObservation,
+    RunnerGenerationBinding,
+    RunnerGenerationId,
+    RunnerInvocationId,
     RunnerInvocationLost,
+    RunnerManifestId,
     RunnerOutputLimitExceeded,
     RunnerOutputStream,
     RunnerProcessBoundaryFailure,
     RunnerProviderFailure,
     RunnerProviderResult,
     RunnerTerminalEvidence,
+    RunnerTerminalEvidenceEnvelope,
+    RunnerTerminalEvidenceHash,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     MAXIMUM_SIGNED_INT64,
+    AgentExecutionRequestHash,
     AgentExecutionResult,
 )
 from atelier2.ports.agent_executions import (
@@ -222,3 +230,173 @@ def test_process_boundary_failure_and_invocation_loss_carry_no_payload() -> None
     assert fields(RunnerInvocationLost) == ()
     assert RunnerProcessBoundaryFailure() == RunnerProcessBoundaryFailure()
     assert RunnerInvocationLost() == RunnerInvocationLost()
+
+
+def test_semantic_evidence_hash_owns_the_envelope_and_all_six_variant_payloads() -> (
+    None
+):
+    binding = RunnerGenerationBinding(
+        AgentAttemptId("a" * 64),
+        AgentExecutionRequestHash("b" * 64),
+        RunnerGenerationId("generation-1"),
+        RunnerManifestId("c" * 64),
+    )
+    invocation = RunnerInvocationId("invocation-1")
+    variants = (
+        RunnerProviderResult(AgentExecutionResult(b"answer")),
+        RunnerProviderFailure(ProcessExitSignature(-9, b"stderr")),
+        RunnerOutputLimitExceeded(
+            frozenset(
+                {
+                    RunnerOutputStream.STANDARD_OUTPUT,
+                    RunnerOutputStream.STANDARD_ERROR,
+                }
+            )
+        ),
+        RunnerProcessBoundaryFailure(),
+        RunnerCancellation("cancel-1", RunnerCancellationObservation.REAPED_AFTER_TERM),
+        RunnerInvocationLost(),
+    )
+
+    hashes = {
+        RunnerTerminalEvidenceHash.for_envelope(
+            RunnerTerminalEvidenceEnvelope(binding, invocation, evidence)
+        )
+        for evidence in variants
+    }
+
+    assert len(hashes) == 6
+
+    def envelope(
+        evidence: RunnerTerminalEvidence,
+        *,
+        bound: RunnerGenerationBinding = binding,
+        invoked: RunnerInvocationId = invocation,
+    ) -> RunnerTerminalEvidenceEnvelope:
+        return RunnerTerminalEvidenceEnvelope(bound, invoked, evidence)
+
+    provider_result = RunnerProviderResult(AgentExecutionResult(b"answer"))
+    provider_failure = RunnerProviderFailure(ProcessExitSignature(-9, b"stderr"))
+    perturbations = (
+        (
+            "attempt id",
+            envelope(provider_result),
+            envelope(
+                provider_result,
+                bound=RunnerGenerationBinding(
+                    AgentAttemptId("d" * 64),
+                    binding.request_hash,
+                    binding.generation_id,
+                    binding.manifest_id,
+                ),
+            ),
+        ),
+        (
+            "request hash",
+            envelope(provider_result),
+            envelope(
+                provider_result,
+                bound=RunnerGenerationBinding(
+                    binding.attempt_id,
+                    AgentExecutionRequestHash("e" * 64),
+                    binding.generation_id,
+                    binding.manifest_id,
+                ),
+            ),
+        ),
+        (
+            "generation id",
+            envelope(provider_result),
+            envelope(
+                provider_result,
+                bound=RunnerGenerationBinding(
+                    binding.attempt_id,
+                    binding.request_hash,
+                    RunnerGenerationId("generation-2"),
+                    binding.manifest_id,
+                ),
+            ),
+        ),
+        (
+            "manifest id",
+            envelope(provider_result),
+            envelope(
+                provider_result,
+                bound=RunnerGenerationBinding(
+                    binding.attempt_id,
+                    binding.request_hash,
+                    binding.generation_id,
+                    RunnerManifestId("f" * 64),
+                ),
+            ),
+        ),
+        (
+            "invocation id",
+            envelope(provider_result),
+            envelope(provider_result, invoked=RunnerInvocationId("invocation-2")),
+        ),
+        (
+            "provider output bytes",
+            envelope(provider_result),
+            envelope(RunnerProviderResult(AgentExecutionResult(b"other answer"))),
+        ),
+        (
+            "provider return code",
+            envelope(provider_failure),
+            envelope(RunnerProviderFailure(ProcessExitSignature(-8, b"stderr"))),
+        ),
+        (
+            "provider standard error",
+            envelope(provider_failure),
+            envelope(RunnerProviderFailure(ProcessExitSignature(-9, b"other stderr"))),
+        ),
+        (
+            "exceeded streams",
+            envelope(
+                RunnerOutputLimitExceeded(
+                    frozenset({RunnerOutputStream.STANDARD_OUTPUT})
+                )
+            ),
+            envelope(
+                RunnerOutputLimitExceeded(
+                    frozenset({RunnerOutputStream.STANDARD_ERROR})
+                )
+            ),
+        ),
+        (
+            "cancellation command",
+            envelope(
+                RunnerCancellation(
+                    "cancel-1", RunnerCancellationObservation.REAPED_AFTER_TERM
+                )
+            ),
+            envelope(
+                RunnerCancellation(
+                    "cancel-2", RunnerCancellationObservation.REAPED_AFTER_TERM
+                )
+            ),
+        ),
+        (
+            "cancellation observation",
+            envelope(
+                RunnerCancellation(
+                    "cancel-1", RunnerCancellationObservation.REAPED_AFTER_TERM
+                )
+            ),
+            envelope(
+                RunnerCancellation(
+                    "cancel-1", RunnerCancellationObservation.REAPED_AFTER_KILL
+                )
+            ),
+        ),
+        (
+            "payloadless variant tag",
+            envelope(RunnerProcessBoundaryFailure()),
+            envelope(RunnerInvocationLost()),
+        ),
+    )
+
+    for field_name, left, right in perturbations:
+        assert RunnerTerminalEvidenceHash.for_envelope(
+            left
+        ) != RunnerTerminalEvidenceHash.for_envelope(right), field_name

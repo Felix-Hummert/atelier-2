@@ -165,14 +165,25 @@ def _run_event_resource_v2(
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
         failure_code = event.payload.decode("ascii")
-        if failure_code != "PROCESS_EXITED_UNSUCCESSFULLY":
+        if failure_code not in {
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value,
+            AgentAttemptFailureCode.PROCESS_OUTPUT_LIMIT_EXCEEDED.value,
+            AgentAttemptFailureCode.PROCESS_SUPERVISION_FAILED.value,
+        }:
             raise ValueError("durable agent failure payload is not canonical")
         binding = event.attempt_binding
         if binding is None:
             raise ValueError("V2 agent failure has no exact attempt binding")
         return AgentFailedEventResourceV2(
             event=event.event_kind.value,
-            failure_code="PROCESS_EXITED_UNSUCCESSFULLY",
+            failure_code=cast(
+                Literal[
+                    "PROCESS_EXITED_UNSUCCESSFULLY",
+                    "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+                    "PROCESS_SUPERVISION_FAILED",
+                ],
+                failure_code,
+            ),
             attempt_id=binding.attempt_id.value,
             attempt_ordinal=cast(Literal[1, 2], binding.attempt_ordinal),
             **common,
@@ -310,6 +321,8 @@ def _run_event_resource_v3(
             failure_code=cast(
                 Literal[
                     "PROCESS_EXITED_UNSUCCESSFULLY",
+                    "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+                    "PROCESS_SUPERVISION_FAILED",
                     "OUTPUT_SCHEMA_REFUSED",
                     "AGENT_REFUSED",
                     "PROJECT_VERIFICATION_FAILED",

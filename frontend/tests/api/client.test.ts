@@ -230,6 +230,18 @@ describe("closed API decoders", () => {
     ).toBe("Grüße-東京");
   });
 
+  it.each(["PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED"])(
+    "decodes a failed V2 run snapshot carrying the Runner failure code: %s",
+    (failureCode) => {
+      const decoded = decodeRun(failedV2Run(failureCode));
+
+      expect(decoded.state).toBe("FAILED");
+      expect("agent_attempts" in decoded && decoded.agent_attempts[0]?.failure_code).toBe(
+        failureCode
+      );
+    }
+  );
+
   it.each([
     event("AGENT_COMPLETED", { output: "answer", payload_hash: digest }),
     event("ACTION_RECONCILIATION_REQUIRED", { request_base64: "eA==", request_hash: digest }),
@@ -253,6 +265,8 @@ describe("closed API decoders", () => {
   it.each([
     v2Event("AGENT_COMPLETED", { ...v2Attempt, output_base64: "YW5zd2Vy", output_hash: digest }),
     v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: "PROCESS_EXITED_UNSUCCESSFULLY" }),
+    v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: "PROCESS_OUTPUT_LIMIT_EXCEEDED" }),
+    v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: "PROCESS_SUPERVISION_FAILED" }),
     v2Event("AGENT_CANCEL_REQUESTED", v2Cancellation),
     v2Event("AGENT_CANCELLED", {
       ...v2Cancellation,
@@ -277,6 +291,30 @@ describe("closed API decoders", () => {
 
   it("refuses an unknown V2 event member instead of dropping it", () => {
     expect(() => decodeRunEvent(v2Event("NODE_PROGRESS", { percent: 50 }))).toThrow();
+  });
+
+  it.each(["PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED"])(
+    "decodes the new runner failure in both public event families: %s",
+    (failureCode) => {
+      expect(
+        decodeRunEvent(v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: failureCode })).event
+      ).toBe("AGENT_FAILED");
+      expect(
+        decodeRunEvent(
+          v3Event("AGENT_FAILED", {
+            ...v2Attempt,
+            failure_code: failureCode,
+            reason: null
+          })
+        ).event
+      ).toBe("AGENT_FAILED");
+    }
+  );
+
+  it("refuses a failure code outside the published vocabulary", () => {
+    expect(() =>
+      decodeRunEvent(v2Event("AGENT_FAILED", { ...v2Attempt, failure_code: "RUNNER_BROKE" }))
+    ).toThrow();
   });
 
   it("refuses an unknown durable event kind", () => {
@@ -522,6 +560,44 @@ function startedRun(changes: Record<string, unknown> = {}) {
     terminal_hash: null,
     latest_event_cursor: "event1.cnVuLTE.1",
     ...changes
+  };
+}
+
+function failedV2Run(failure_code: string) {
+  return {
+    workflow_format_version: 2,
+    run_id: "run-1",
+    public_run_reference: publicReference,
+    workflow_revision_hash: digest,
+    agent_binding_set_hash: digest,
+    agent_bindings: [],
+    state_version: 2,
+    state: "FAILED",
+    current_node: {
+      type: "agent",
+      node_id: "agent",
+      role: "builder",
+      job: "work",
+      next_node_id: "done"
+    },
+    node_rail: [
+      { node_id: "agent", state: "failed", attempt: { ordinal: 1, state: "FAILED" } },
+      { node_id: "done", state: "queued", attempt: null }
+    ],
+    agent_attempts: [
+      {
+        attempt_id: digest,
+        node_execution_id: digest,
+        request_hash: digest,
+        attempt_ordinal: 1,
+        state: "FAILED",
+        failure_code,
+        cancellation: null
+      }
+    ],
+    waiting: { type: "NONE" },
+    terminal_hash: digest,
+    latest_event_cursor: "event1.cnVuLTE.1"
   };
 }
 

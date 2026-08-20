@@ -81,6 +81,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     CancelAgentAttemptRequest,
     ProcessExitSignature,
+    RunnerEvidenceAcceptancePhase,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -1065,6 +1066,9 @@ def test_converge_uncontinuable_runs_does_not_end_a_run_that_can_still_continue(
                 state=AgentAttemptState.LAUNCH_ARMED.value,
                 state_version=1,
                 process_phase=AgentAttemptProcessPhase.NONE.value,
+                runner_evidence_acceptance_phase=(
+                    RunnerEvidenceAcceptancePhase.NONE.value
+                ),
             )
         )
         connection.commit()

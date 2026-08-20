@@ -81,16 +81,27 @@ def test_format_3_agent_completed_is_a_v3_resource_not_the_frozen_v1() -> None:
     assert type(resource).__name__ == "AgentCompletedEventResourceV3"
 
 
+@pytest.mark.parametrize(
+    "failure_code",
+    (
+        "PROCESS_EXITED_UNSUCCESSFULLY",
+        "PROCESS_OUTPUT_LIMIT_EXCEEDED",
+        "PROCESS_SUPERVISION_FAILED",
+    ),
+)
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")
-def test_format_3_agent_failed_is_a_v3_failure_not_the_v1_cannot_carry_path() -> None:
+def test_format_3_agent_failed_is_a_v3_failure_not_the_v1_cannot_carry_path(
+    failure_code: str,
+) -> None:
     resource = run_event_resource(
-        v3_projection(RunEventKind.AGENT_FAILED, FAILURE_PAYLOAD), SERVED_RAIL
+        v3_projection(RunEventKind.AGENT_FAILED, failure_code.encode("ascii")),
+        SERVED_RAIL,
     )
 
     dumped = resource.model_dump(mode="json")
     assert dumped["workflow_format_version"] == 3
     assert dumped["event"] == "AGENT_FAILED"
-    assert dumped["failure_code"] == "PROCESS_EXITED_UNSUCCESSFULLY"
+    assert dumped["failure_code"] == failure_code
     assert dumped["reason"] is None
     assert dumped["attempt_id"] == ATTEMPT_ID
     assert dumped["node_rail"] == [

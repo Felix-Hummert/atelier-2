@@ -204,6 +204,11 @@ def test_v2_tables_have_exact_secret_free_columns(tmp_path: Path) -> None:
             "cancellation_workflow_id",
             "failure_code",
             "receipt_hash",
+            "runner_manifest_id",
+            "runner_generation_id",
+            "runner_invocation_id",
+            "runner_terminal_evidence_hash",
+            "runner_evidence_acceptance_phase",
         ),
     }
 

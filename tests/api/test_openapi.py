@@ -295,6 +295,14 @@ def test_openapi_31_validates_and_describes_exact_r2_surface() -> None:
     encoded = json.dumps(schema)
     assert "itemSchema" not in encoded
     assert "contentSchema" not in encoded
+    for private_runner_field in (
+        "runner_manifest_id",
+        "runner_generation_id",
+        "runner_invocation_id",
+        "runner_terminal_evidence_hash",
+        "runner_evidence_acceptance_phase",
+    ):
+        assert private_runner_field not in encoded
     assert "/docs" not in schema["paths"]
     assert "/redoc" not in schema["paths"]
 
