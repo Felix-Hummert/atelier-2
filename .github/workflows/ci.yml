@@ -59,16 +59,6 @@ jobs:
       - name: Test frontend behavior
         run: npm test -- --reporter=default --reporter=json --outputFile=../reports/frontend.vitest.json
 
-      - name: Upload the cockpit run report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: acceptance-report-frontend
-          path: reports/frontend.vitest.json
-          if-no-files-found: error
-          retention-days: 7
-          overwrite: true
-
       - name: Build the production cockpit
         run: npm run build
 
@@ -142,6 +132,18 @@ jobs:
             --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
             --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
             "${npm_path}" run e2e
+
+      - name: Upload the cockpit run reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: acceptance-report-frontend
+          path: |
+            reports/frontend.vitest.json
+            reports/frontend.playwright.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
 
 
   secrets:

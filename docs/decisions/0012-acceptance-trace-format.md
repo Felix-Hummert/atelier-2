@@ -27,12 +27,13 @@ unread schema version, a textless sentence, and a repeated identifier are
 refused rather than ignored.
 
 **The claim.** A test claims a sentence in the syntax its own runner reports:
-`@pytest.mark.proves("<id>")` in Python, `proves(<id>)` inside the vitest title.
+`@pytest.mark.proves("<id>")` in Python, `proves(<id>)` inside a Vitest or
+Playwright title.
 A claim carried only by a comment does not exist, because the run never prints
 it.
 
 **The evidence.** What proves a claim was honoured is the pipeline's own run
-report for the job that ran the test — the pytest and vitest reports the
+report for the job that ran the test — the pytest, Vitest, and Playwright reports the
 verification jobs emit — and nothing else. The gate derives nothing from
 workflow text, and a required report it cannot read is a refusal, never a
 smaller proof surface. The passing report entry must name the same source file
@@ -44,8 +45,8 @@ therefore refused instead of letting one report entry stand for both.
 
 - A claim in a file no runner collects is named red rather than staying
   invisible: the source carries the claim and no report carries its result.
-- A sentence whose only honest proof is an end-to-end flow cannot be claimed
-  until that runner's report joins the required set.
+- A browser claim counts only when the Playwright report names the same test in
+  the same file as passed; a unit result cannot stand in for it.
 - The gate proves linkage and existence. Whether a test carries its sentence in
   meaning stays review judgment — the same bound `docs/requirements/README.md`
   states and the gate prints.

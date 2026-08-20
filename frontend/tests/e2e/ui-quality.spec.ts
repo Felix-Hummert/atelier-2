@@ -47,7 +47,7 @@ async function scanSurface(page: Page) {
   return scan.violations;
 }
 
-test("core surfaces have no unnamed axe-core violations", async ({ page }) => {
+test("proves(core-surfaces-have-no-unnamed-axe-violations): core surfaces have no unnamed axe-core violations", async ({ page }) => {
   for (const { surface, path, ready } of surfaces) {
     await page.goto(path);
     await ready(page);
