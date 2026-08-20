@@ -20,7 +20,13 @@ from atelier2.api.wire.events import (
     ActionCompletedEventResourceV3,
     AgentCompletedEventResource,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventKind,
+)
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
@@ -37,6 +43,11 @@ COMPLETED_PAYLOAD = b"hello"
 
 
 def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
+    attempt_binding = (
+        RunEventAgentAttemptBinding(AgentAttemptId(ATTEMPT_ID), 1)
+        if kind in {RunEventKind.AGENT_COMPLETED, RunEventKind.AGENT_FAILED}
+        else None
+    )
     event = RunEvent(
         RUN_ID,
         REVISION_HASH,
@@ -45,8 +56,7 @@ def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
         NodeExecutionId.for_node(RUN_ID, REVISION_HASH, NODE_ID),
         kind,
         payload,
-        agent_attempt_id=ATTEMPT_ID,
-        attempt_ordinal=1,
+        attempt_binding=attempt_binding,
     )
     return PersistedRunEvent(event, None, WorkflowFormatVersion.V3)
 

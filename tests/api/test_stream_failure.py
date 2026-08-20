@@ -26,8 +26,18 @@ from atelier2.api.stream import (
     PreparedEventStream,
     stream_server_events,
 )
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptId,
+    AgentAttemptReplacement,
+)
 from atelier2.contracts.effects import LogicalEffectKey
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventCancellationBinding,
+    RunEventKind,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
@@ -141,11 +151,13 @@ def persisted_v1_cancellation() -> PersistedRunEvent:
             NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "agent"),
             RunEventKind.AGENT_CANCELLED,
             b"",
-            agent_attempt_id="a" * 64,
-            attempt_ordinal=1,
-            cancellation_command_id="command",
-            replacement="NONE",
-            cancellation_disposition="NEVER_LAUNCHED",
+            attempt_binding=RunEventCancellationBinding(
+                AgentAttemptId("a" * 64),
+                1,
+                AgentAttemptReplacement.NONE,
+                "command",
+                AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            ),
         ),
         None,
         workflow_format_version=WorkflowFormatVersion.V1,

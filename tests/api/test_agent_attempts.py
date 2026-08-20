@@ -24,7 +24,12 @@ from atelier2.contracts.agents import (
     ProviderId,
     ResolvedAgentBinding,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventKind,
+)
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -167,8 +172,7 @@ def test_v2_attempt_and_failed_event_have_exact_wire_shape() -> None:
         attempt.node_execution_id,
         RunEventKind.AGENT_FAILED,
         b"PROCESS_EXITED_UNSUCCESSFULLY",
-        agent_attempt_id=attempt.attempt_id.value,
-        attempt_ordinal=1,
+        attempt_binding=RunEventAgentAttemptBinding(attempt.attempt_id, 1),
     )
     persisted = PersistedRunEvent(event, None, WorkflowFormatVersion.V2)
     event_resource = run_event_resource(persisted, SERVED_RAIL)

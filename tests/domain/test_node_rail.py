@@ -18,7 +18,11 @@ from atelier2.application.project_node_rail import (
     NodeRailUnprojectable,
     project_node_rail,
 )
-from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptId,
+    AgentAttemptReplacement,
+)
 from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentExecutionRequestHash,
@@ -41,7 +45,13 @@ from atelier2.contracts.effects import (
     ReconcileCommandSnapshot,
     ReconcileCommandState,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventCancellationBinding,
+    RunEventKind,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
@@ -135,6 +145,24 @@ def durable_event(
     payload = b"1"
     carries_receipt = kind in RECEIPT_KINDS
     cancelling = kind in CANCELLATION_KINDS
+    attempt_binding = None
+    if attempt_ordinal is not None:
+        attempt_id = AgentAttemptId("b" * 64)
+        attempt_binding = (
+            RunEventCancellationBinding(
+                attempt_id,
+                attempt_ordinal,
+                AgentAttemptReplacement.NONE,
+                "cancel",
+                (
+                    AgentAttemptCancellationDisposition.REAPED_AFTER_TERM
+                    if kind in SETTLED_CANCELLATION_KINDS
+                    else None
+                ),
+            )
+            if cancelling
+            else RunEventAgentAttemptBinding(attempt_id, attempt_ordinal)
+        )
     event = RunEvent(
         RUN_ID,
         REVISION_HASH,
@@ -147,13 +175,7 @@ def durable_event(
             LogicalEffectKey("node-rail/effect") if carries_receipt else None
         ),
         receipt_result_hash=Sha256Hash.of(payload) if carries_receipt else None,
-        agent_attempt_id="b" * 64 if attempt_ordinal is not None else None,
-        attempt_ordinal=attempt_ordinal,
-        cancellation_command_id="cancel" if cancelling else None,
-        replacement="NONE" if cancelling else None,
-        cancellation_disposition=(
-            "REAPED_AFTER_TERM" if kind in SETTLED_CANCELLATION_KINDS else None
-        ),
+        attempt_binding=attempt_binding,
     )
     return PersistedRunEvent(event, None, workflow_format_version)
 
