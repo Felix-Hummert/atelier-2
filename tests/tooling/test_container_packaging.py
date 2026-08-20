@@ -140,6 +140,11 @@ if argv[:2] == ["compose", "build"]:
     if snapshot.exists():
         shutil.rmtree(snapshot)
     shutil.copytree(os.getcwd(), snapshot, ignore_dangling_symlinks=True)
+if (
+    argv[:3] == ["compose", "up", "-d"]
+    and "ATELIER2_TEST_DOCKER_STDOUT" in os.environ
+):
+    print(os.environ["ATELIER2_TEST_DOCKER_STDOUT"])
 raise SystemExit(0)
 """,
     )
@@ -486,11 +491,18 @@ def test_candidate_context_identity_matches_the_git_owner(tmp_path: Path) -> Non
 
 def test_success_reports_the_cockpit_and_untouched_live_unit(tmp_path: Path) -> None:
     repository = packaging_repository(tmp_path)
+    child_output = "compose: candidate started"
 
-    completed = run_container_up(repository, tmp_path)
+    completed = run_container_up(
+        repository,
+        tmp_path,
+        extra_environment={"ATELIER2_TEST_DOCKER_STDOUT": child_output},
+    )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.splitlines() == [
+    output_lines = completed.stdout.splitlines()
+    assert output_lines[0] == child_output
+    assert output_lines[-2:] == [
         "container up: cockpit -> http://127.0.0.1:8422/atelier/",
         (
             "  live unit atelier2-live.service was not touched. "
