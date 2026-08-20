@@ -1620,6 +1620,11 @@ textarea {
   font-weight: 700;
 }
 
+.project-count-failed {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .chat-door {
   margin-top: 1.75rem;
   border-style: dashed;

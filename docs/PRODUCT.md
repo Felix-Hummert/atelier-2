@@ -566,7 +566,8 @@ answer a waiting node; cancel the current V2 Agent attempt with an optional
 single replacement; submit an accountable reconciliation; and follow the
 closed durable event history as a resumable server-sent event stream. A
 subscriber who does not already know a run holds `GET /events`; opening that
-stream is the subscription. The feed is closed to `WAITING_INPUT` and
+stream is the subscription. The cockpit holds that stream, so a Wait or an
+agent failure appears without `POST /subscriptions`. The feed is closed to `WAITING_INPUT` and
 `AGENT_FAILED`, in the same envelope and `VersionedRunEventResource` the
 per-run stream emits. `Last-Event-ID` resumes by same-instant identity
 exclusion: from that event1's instant T,
