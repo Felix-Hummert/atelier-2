@@ -312,6 +312,111 @@ describe("the saved-workflow picker", () => {
     ]);
   });
 
+  it("retains one failed detail read until exact Retry confirms it, then Edit reuses that immutable truth", async () => {
+    const getWorkflowRevision = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("first private detail"))
+      .mockRejectedValueOnce(new Error("second private detail"))
+      .mockResolvedValueOnce(namedDetail());
+    const cockpitApi = api([namedRevision()], { getWorkflowRevision });
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("radio", {
+      name: /Implement a candidate, then review it for defects/
+    });
+
+    await fireEvent.click(screen.getByText("Details"));
+    expect(await screen.findByText("Workflow detail unavailable")).toBeTruthy();
+    expect(screen.queryByText(/private detail|Failed to fetch/)).toBeNull();
+    const retry = screen.getByRole("button", { name: "Retry workflow detail" });
+    expect(screen.getAllByRole("button", { name: "Retry workflow detail" })).toHaveLength(1);
+    expect(getWorkflowRevision).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(retry);
+    await waitFor(() => expect(getWorkflowRevision).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByRole("button", { name: "Retry workflow detail" })).toHaveLength(1);
+    expect(screen.queryByText(/private detail|Failed to fetch/)).toBeNull();
+
+    await fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByText("Details").closest("details")?.textContent).toContain("builder"));
+    await fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect((await screen.findByLabelText("Exact workflow YAML") as HTMLTextAreaElement).value).toBe(
+      "job: NEVER_PARSE_THIS_INSTRUCTION\n"
+    );
+    expect(getWorkflowRevision.mock.calls.map(([hash]) => hash)).toEqual([
+      namedHash,
+      namedHash,
+      namedHash
+    ]);
+    expect(screen.queryByRole("button", { name: "Refresh workflow detail" })).toBeNull();
+  });
+
+  it("retains the confirmed revision and draft until a mismatched revision choice retries exact", async () => {
+    const name = "Revision recovery proof";
+    const confirmedHash = "1".repeat(64);
+    const attemptedHash = "2".repeat(64);
+    const detail = (hash: string, document: string) => ({
+      workflow_revision_hash: hash,
+      document_base64: utf8Base64(document),
+      graph: {
+        ...namedGraph(),
+        executable: true as const,
+        not_executable_reason: null,
+        name,
+        description: "Keeps one exact saved revision."
+      }
+    });
+    const confirmed = detail(confirmedHash, "format_version: 3\nname: confirmed\n");
+    const attempted = detail(attemptedHash, "format_version: 3\nname: attempted\n");
+    const getWorkflowRevision = vi
+      .fn()
+      .mockResolvedValueOnce(confirmed)
+      .mockResolvedValueOnce(confirmed)
+      .mockResolvedValueOnce(attempted);
+    const cockpitApi = api(
+      [
+        savedRevision(confirmedHash, name, "Confirmed revision."),
+        savedRevision(attemptedHash, name, "Attempted revision.")
+      ],
+      {
+        getRevisionByName: vi.fn(async () => catalogHead(name, confirmedHash, 2)),
+        getWorkflowRevision
+      }
+    );
+    const createRunId = vi.fn().mockReturnValueOnce("run-confirmed").mockReturnValueOnce("run-attempted");
+    render(App, {
+      props: {
+        cockpitApi,
+        mutationJournal: new MutationJournal(sessionStorage),
+        createRunId
+      }
+    });
+
+    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(name) }));
+    expect(await screen.findByText("run-confirmed")).toBeTruthy();
+    await fireEvent.click(screen.getByText("Details"));
+    const choice = screen.getByLabelText(`Revision of ${name}`) as HTMLSelectElement;
+    await fireEvent.change(choice, { target: { value: attemptedHash } });
+
+    expect(await screen.findByText("Workflow detail unavailable")).toBeTruthy();
+    expect(choice.value).toBe(confirmedHash);
+    expect(screen.getByText("run-confirmed").isConnected).toBe(true);
+    expect(screen.queryByText("run-attempted")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Retry workflow detail" })).toHaveLength(1);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry workflow detail" }));
+    await waitFor(() => expect(choice.value).toBe(attemptedHash));
+    expect(screen.getByText("run-attempted").isConnected).toBe(true);
+    expect(screen.queryByText("run-confirmed")).toBeNull();
+    expect(getWorkflowRevision.mock.calls.map(([hash]) => hash)).toEqual([
+      confirmedHash,
+      attemptedHash,
+      attemptedHash
+    ]);
+  });
+
   it("opening Details shows each published node with its role and instruction start", async () => {
     const graph = namedGraph();
     const cockpitApi = api([namedRevision()], {
@@ -535,7 +640,19 @@ describe("the picker groups revisions that share a published name", () => {
   it("offers two revisions of one lineage as one row, defaults to the newest, and switching revision changes startability", async () => {
     render(App, {
       props: {
-        cockpitApi: lineageApi(),
+        cockpitApi: lineageApi({
+          getWorkflowRevision: vi.fn(async (hash: string) => ({
+            workflow_revision_hash: hash,
+            document_base64: "",
+            graph: {
+              ...namedGraph(),
+              executable: true as const,
+              not_executable_reason: null,
+              name: lineageName,
+              description: "The first admitted member."
+            }
+          }))
+        }),
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
@@ -559,10 +676,9 @@ describe("the picker groups revisions that share a published name", () => {
       target: { value: olderHash }
     });
 
-    expect(screen.getByRole("radio", { name: new RegExp(lineageName) })).toHaveProperty(
-      "disabled",
-      false
-    );
+    await waitFor(() => expect(
+      screen.getByRole("radio", { name: new RegExp(lineageName) })
+    ).toHaveProperty("disabled", false));
     expect(row.getByText("The first admitted member.")).toBeTruthy();
     expect(row.getByRole("radio").closest("label")?.textContent).not.toMatch(/cannot be started/i);
   });
