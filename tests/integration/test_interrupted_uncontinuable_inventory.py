@@ -53,6 +53,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
+    RunnerEvidenceAcceptancePhase,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
@@ -398,6 +399,9 @@ def seed_v1_interrupted(runtime: DbosRuntime, run_id: RunId) -> None:
                     AgentAttemptCancellationDisposition.OWNER_LOST_AFTER_PARENT_DEATH.value
                 ),
                 cancellation_workflow_id=f"cancel-{run_id.value}",
+                runner_evidence_acceptance_phase=(
+                    RunnerEvidenceAcceptancePhase.NONE.value
+                ),
             )
         )
         connection.commit()
@@ -630,6 +634,9 @@ def test_converge_does_not_end_an_interrupted_run_that_can_still_continue(
                 state=AgentAttemptState.LAUNCH_ARMED.value,
                 state_version=1,
                 process_phase=AgentAttemptProcessPhase.NONE.value,
+                runner_evidence_acceptance_phase=(
+                    RunnerEvidenceAcceptancePhase.NONE.value
+                ),
             )
         )
         connection.commit()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 from atelier2.contracts.agent_attempts import (
@@ -11,6 +12,10 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
     ProcessExitSignature,
+    RunnerGenerationBinding,
+    RunnerInvocationId,
+    RunnerTerminalEvidenceEnvelope,
+    RunnerTerminalEvidenceHash,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import AgentExecutionResult
@@ -50,6 +55,29 @@ type AgentAttemptClaimResult = (
 )
 type AgentAttemptExecutionOutcome = (
     AgentAttemptSucceeded | AgentAttemptFailed | AgentAttemptPossiblyRan
+)
+
+
+class RunnerTerminalEvidenceRefusal(StrEnum):
+    """Why Core retained no delivered Runner evidence."""
+
+    TOOL_GRANT_BOUND = "TOOL_GRANT_BOUND"
+
+
+@dataclass(frozen=True)
+class RunnerTerminalEvidenceCommitted:
+    attempt: AgentAttempt
+    evidence_hash: RunnerTerminalEvidenceHash
+    completion: NodeCompletion | None = None
+
+
+@dataclass(frozen=True)
+class RunnerTerminalEvidenceCommitRefused:
+    reason: RunnerTerminalEvidenceRefusal
+
+
+type RunnerTerminalEvidenceCommitResult = (
+    RunnerTerminalEvidenceCommitted | RunnerTerminalEvidenceCommitRefused
 )
 
 
@@ -113,6 +141,40 @@ class AgentAttemptReader(Protocol):
     """Read one durable attempt back: all that workspace reconciliation needs."""
 
     def load(self, attempt_id: AgentAttemptId) -> AgentAttempt: ...
+
+
+class RunnerTerminalEvidenceStore(AgentAttemptReader, Protocol):
+    """Core's staged persistence boundary for one external Runner generation."""
+
+    def bind_runner_generation(
+        self, execution: AgentAttemptExecution, binding: RunnerGenerationBinding
+    ) -> AgentAttempt: ...
+
+    def arm_runner_invocation(
+        self,
+        execution: AgentAttemptExecution,
+        binding: RunnerGenerationBinding,
+        invocation_id: RunnerInvocationId,
+    ) -> AgentAttempt: ...
+
+    def commit_runner_terminal_evidence(
+        self,
+        execution: AgentAttemptExecution,
+        envelope: RunnerTerminalEvidenceEnvelope,
+    ) -> RunnerTerminalEvidenceCommitResult: ...
+
+    def mark_runner_evidence_acknowledged(
+        self,
+        execution: AgentAttemptExecution,
+        envelope: RunnerTerminalEvidenceEnvelope,
+    ) -> AgentAttempt: ...
+
+    def rebind_after_acknowledged_never_launched(
+        self,
+        execution: AgentAttemptExecution,
+        no_launch_evidence: RunnerTerminalEvidenceEnvelope,
+        fresh_binding: RunnerGenerationBinding,
+    ) -> AgentAttempt: ...
 
 
 class AgentAttemptStore(AgentAttemptReader, Protocol):

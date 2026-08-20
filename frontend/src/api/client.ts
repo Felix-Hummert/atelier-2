@@ -471,7 +471,7 @@ const agentAttemptV2Schema = z
     request_hash: sha256,
     attempt_ordinal: z.union([z.literal(1), z.literal(2)]),
     state: z.enum(PUBLIC_ATTEMPT_STATES),
-    failure_code: z.literal("PROCESS_EXITED_UNSUCCESSFULLY").nullable(),
+    failure_code: z.enum(["PROCESS_EXITED_UNSUCCESSFULLY", "PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED"]).nullable(),
     cancellation: attemptCancellationV2Schema.nullable()
   })
   .strict()
@@ -763,7 +763,7 @@ const runEventV1Schema = z
 const runEventV2Schema = z
   .discriminatedUnion("event", [
     z.object({ ...v2EventBase, ...v2AttemptEvent, event: z.literal("AGENT_COMPLETED"), output_base64: standardBase64, output_hash: sha256 }).strict(),
-    z.object({ ...v2EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.literal("PROCESS_EXITED_UNSUCCESSFULLY") }).strict(),
+    z.object({ ...v2EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.enum(["PROCESS_EXITED_UNSUCCESSFULLY", "PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED"]) }).strict(),
     z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
     z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
     z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
@@ -799,7 +799,7 @@ const v3EventBase = {
 const runEventV3Schema = z
   .discriminatedUnion("event", [
     z.object({ ...v3EventBase, ...v2AttemptEvent, event: z.literal("AGENT_COMPLETED"), output_base64: standardBase64, output_hash: sha256 }).strict(),
-    z.object({ ...v3EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.enum(["PROCESS_EXITED_UNSUCCESSFULLY", "OUTPUT_SCHEMA_REFUSED", "AGENT_REFUSED", "PROJECT_VERIFICATION_FAILED"]), reason: z.string().min(1).nullable() }).strict(),
+    z.object({ ...v3EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.enum(["PROCESS_EXITED_UNSUCCESSFULLY", "PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED", "OUTPUT_SCHEMA_REFUSED", "AGENT_REFUSED", "PROJECT_VERIFICATION_FAILED"]), reason: z.string().min(1).nullable() }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),

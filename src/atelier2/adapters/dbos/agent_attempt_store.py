@@ -60,6 +60,21 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
     ProcessExitSignature,
+    RunnerBindingConflict,
+    RunnerCancellation,
+    RunnerCancellationObservation,
+    RunnerEvidenceAcceptancePhase,
+    RunnerGenerationBinding,
+    RunnerGenerationId,
+    RunnerInvocationId,
+    RunnerInvocationLost,
+    RunnerManifestId,
+    RunnerOutputLimitExceeded,
+    RunnerProcessBoundaryFailure,
+    RunnerProviderFailure,
+    RunnerProviderResult,
+    RunnerTerminalEvidenceEnvelope,
+    RunnerTerminalEvidenceHash,
     WatchdogGenerationId,
 )
 from atelier2.contracts.agent_refusals import (
@@ -123,6 +138,10 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptPossiblyRan,
     AgentAttemptReplacementNotAllowed,
     AgentAttemptSucceeded,
+    RunnerTerminalEvidenceCommitRefused,
+    RunnerTerminalEvidenceCommitResult,
+    RunnerTerminalEvidenceCommitted,
+    RunnerTerminalEvidenceRefusal,
 )
 
 # DBOS owns this table and these tokens; the store only reads them, and only to
@@ -144,6 +163,10 @@ def _attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
         generation = record["watchdog_generation_id"]
         command_id = record["cancellation_command_id"]
         disposition = record["cancellation_disposition"]
+        runner_manifest = record["runner_manifest_id"]
+        runner_generation = record["runner_generation_id"]
+        runner_invocation = record["runner_invocation_id"]
+        runner_evidence_hash = record["runner_terminal_evidence_hash"]
         cancellation = (
             None
             if command_id is None
@@ -178,6 +201,19 @@ def _attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
             None if owner is None else AgentProcessOwnerId(str(owner)),
             None if generation is None else WatchdogGenerationId(str(generation)),
             cancellation,
+            None if runner_manifest is None else RunnerManifestId(str(runner_manifest)),
+            None
+            if runner_generation is None
+            else RunnerGenerationId(str(runner_generation)),
+            None
+            if runner_invocation is None
+            else RunnerInvocationId(str(runner_invocation)),
+            None
+            if runner_evidence_hash is None
+            else RunnerTerminalEvidenceHash(str(runner_evidence_hash)),
+            RunnerEvidenceAcceptancePhase(
+                str(record["runner_evidence_acceptance_phase"])
+            ),
         )
     except (TypeError, ValueError) as error:
         raise RunTransitionConflict(
@@ -235,6 +271,29 @@ def _attempt_values(attempt: AgentAttempt) -> dict[str, object]:
         ),
         "receipt_hash": (
             None if attempt.receipt_hash is None else attempt.receipt_hash.value
+        ),
+        "runner_manifest_id": (
+            None
+            if attempt.runner_manifest_id is None
+            else attempt.runner_manifest_id.value
+        ),
+        "runner_generation_id": (
+            None
+            if attempt.runner_generation_id is None
+            else attempt.runner_generation_id.value
+        ),
+        "runner_invocation_id": (
+            None
+            if attempt.runner_invocation_id is None
+            else attempt.runner_invocation_id.value
+        ),
+        "runner_terminal_evidence_hash": (
+            None
+            if attempt.runner_terminal_evidence_hash is None
+            else attempt.runner_terminal_evidence_hash.value
+        ),
+        "runner_evidence_acceptance_phase": (
+            attempt.runner_evidence_acceptance_phase.value
         ),
     }
 
@@ -388,6 +447,7 @@ def _fail_current_attempt(
     receipt_reason: str,
     schema_revision: PublishedRevisionHash | None = None,
     value_hash: Sha256Hash | None = None,
+    runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
 ) -> AgentAttemptFailed:
     """One durable failure seam for every way an armed attempt ends badly.
 
@@ -412,18 +472,35 @@ def _fail_current_attempt(
         schema_revision=schema_revision,
         value_hash=value_hash,
     )
+    values: dict[str, object] = {
+        "state": AgentAttemptState.FAILED.value,
+        "state_version": durable.state_version + 1,
+        "failure_code": failure.value,
+    }
+    if runner_evidence_hash is not None:
+        values.update(
+            runner_terminal_evidence_hash=runner_evidence_hash.value,
+            runner_evidence_acceptance_phase=(
+                RunnerEvidenceAcceptancePhase.CORE_COMMITTED.value
+            ),
+        )
+        if durable.state is AgentAttemptState.CANCEL_REQUESTED:
+            values.update(
+                cancellation_command_id=None,
+                cancellation_expected_state_version=None,
+                replacement=None,
+                redrive_state=None,
+                cancellation_disposition=None,
+                cancellation_workflow_id=None,
+            )
     updated = connection.execute(
         agent_attempts.update()
         .where(
             agent_attempts.c.attempt_id == attempt_id.value,
-            agent_attempts.c.state == AgentAttemptState.LAUNCH_ARMED.value,
+            agent_attempts.c.state == durable.state.value,
             agent_attempts.c.state_version == durable.state_version,
         )
-        .values(
-            state=AgentAttemptState.FAILED.value,
-            state_version=durable.state_version + 1,
-            failure_code=failure.value,
-        )
+        .values(**values)
     )
     if updated.rowcount != 1:
         raise RunTransitionConflict("agent failure lost its attempt CAS")
@@ -588,6 +665,134 @@ class DbosAgentAttemptStore:
             _require_attempt_binding(durable, execution)
             return durable
 
+    def bind_runner_generation(
+        self, execution: AgentAttemptExecution, binding: RunnerGenerationBinding
+    ) -> AgentAttempt:
+        if (
+            binding.attempt_id != execution.attempt_id
+            or binding.request_hash != execution.request.request_hash
+        ):
+            raise RunnerBindingConflict(
+                "runner generation differs from the exact attempt request"
+            )
+        with canonical_write_transaction(self._engine) as connection:
+            _validate_request(connection, execution.request)
+            durable = _load_attempt(connection, execution.attempt_id)
+            _require_attempt_binding(durable, execution)
+            if durable.runner_manifest_id is not None:
+                if (
+                    durable.runner_manifest_id != binding.manifest_id
+                    or durable.runner_generation_id != binding.generation_id
+                ):
+                    raise RunnerBindingConflict(
+                        "runner binding retry differs from durable generation"
+                    )
+                return durable
+            if (
+                durable.state is not AgentAttemptState.PREPARED
+                or durable.process_phase is not AgentAttemptProcessPhase.NONE
+                or durable.runner_evidence_acceptance_phase
+                is not RunnerEvidenceAcceptancePhase.NONE
+            ):
+                raise RunnerBindingConflict(
+                    "only an unbound prepared attempt can bind a runner generation"
+                )
+            updated = connection.execute(
+                agent_attempts.update()
+                .where(
+                    agent_attempts.c.attempt_id == durable.attempt_id.value,
+                    agent_attempts.c.state == AgentAttemptState.PREPARED.value,
+                    agent_attempts.c.state_version == durable.state_version,
+                    agent_attempts.c.runner_manifest_id.is_(None),
+                )
+                .values(
+                    state_version=durable.state_version + 1,
+                    runner_manifest_id=binding.manifest_id.value,
+                    runner_generation_id=binding.generation_id.value,
+                )
+            )
+            if updated.rowcount != 1:
+                raise RunnerBindingConflict("runner binding lost its attempt CAS")
+            return _load_attempt(connection, durable.attempt_id)
+
+    def arm_runner_invocation(
+        self,
+        execution: AgentAttemptExecution,
+        binding: RunnerGenerationBinding,
+        invocation_id: RunnerInvocationId,
+    ) -> AgentAttempt:
+        if (
+            binding.attempt_id != execution.attempt_id
+            or binding.request_hash != execution.request.request_hash
+        ):
+            raise RunnerBindingConflict(
+                "runner invocation differs from the exact attempt request"
+            )
+        with canonical_write_transaction(self._engine) as connection:
+            _validate_request(connection, execution.request)
+            durable = _load_attempt(connection, execution.attempt_id)
+            _require_attempt_binding(durable, execution)
+            self._require_durable_runner_binding(durable, binding)
+            if durable.runner_invocation_id is not None:
+                if durable.runner_invocation_id != invocation_id:
+                    raise RunnerBindingConflict(
+                        "runner invocation retry differs from durable invocation"
+                    )
+                if durable.state is AgentAttemptState.PREPARED:
+                    raise RunnerBindingConflict(
+                        "prepared runner evidence did not arm its invocation"
+                    )
+                return durable
+            if (
+                durable.state is not AgentAttemptState.PREPARED
+                or durable.runner_evidence_acceptance_phase
+                is not RunnerEvidenceAcceptancePhase.NONE
+            ):
+                raise RunnerBindingConflict(
+                    "only a bound prepared attempt can arm a runner invocation"
+                )
+            updated = connection.execute(
+                agent_attempts.update()
+                .where(
+                    agent_attempts.c.attempt_id == durable.attempt_id.value,
+                    agent_attempts.c.state == AgentAttemptState.PREPARED.value,
+                    agent_attempts.c.state_version == durable.state_version,
+                    agent_attempts.c.runner_invocation_id.is_(None),
+                )
+                .values(
+                    state=AgentAttemptState.LAUNCH_ARMED.value,
+                    state_version=durable.state_version + 1,
+                    runner_invocation_id=invocation_id.value,
+                )
+            )
+            if updated.rowcount != 1:
+                raise RunnerBindingConflict("runner invocation lost its attempt CAS")
+            return _load_attempt(connection, durable.attempt_id)
+
+    @staticmethod
+    def _require_durable_runner_binding(
+        durable: AgentAttempt, binding: RunnerGenerationBinding
+    ) -> None:
+        if (
+            durable.attempt_id != binding.attempt_id
+            or durable.request_hash != binding.request_hash
+            or durable.runner_manifest_id != binding.manifest_id
+            or durable.runner_generation_id != binding.generation_id
+        ):
+            raise RunnerBindingConflict(
+                "runner evidence differs from the durable generation binding"
+            )
+
+    @classmethod
+    def _require_durable_runner_envelope(
+        cls, durable: AgentAttempt, envelope: RunnerTerminalEvidenceEnvelope
+    ) -> None:
+        cls._require_durable_runner_binding(durable, envelope.binding)
+        if durable.runner_invocation_id != envelope.invocation_id:
+            raise RunnerBindingConflict(
+                "runner evidence differs from the durable invocation"
+            )
+
     def bind_watchdog(
         self,
         execution: AgentAttemptExecution,
@@ -610,9 +815,10 @@ class DbosAgentAttemptStore:
             if (
                 durable.state is not AgentAttemptState.PREPARED
                 or durable.process_phase is not AgentAttemptProcessPhase.NONE
+                or durable.runner_manifest_id is not None
             ):
                 raise RunTransitionConflict(
-                    "only an unbound prepared attempt can bind a watchdog"
+                    "only a legacy unbound prepared attempt can bind a watchdog"
                 )
             updated = connection.execute(
                 agent_attempts.update()
@@ -641,6 +847,10 @@ class DbosAgentAttemptStore:
             run, graph = _validate_request(connection, request)
             durable = _load_attempt(connection, attempt_id)
             _require_attempt_binding(durable, execution)
+            if durable.runner_manifest_id is not None:
+                raise RunTransitionConflict(
+                    "a runner-bound attempt cannot enter the legacy claim path"
+                )
             if durable.state is AgentAttemptState.PREPARED:
                 if (
                     run.state is not RunState.STARTED
@@ -749,7 +959,8 @@ class DbosAgentAttemptStore:
         while True:
             with self._engine.connect() as connection:
                 query = sa.select(agent_attempts).where(
-                    agent_attempts.c.state.not_in(terminal_states)
+                    agent_attempts.c.state.not_in(terminal_states),
+                    agent_attempts.c.runner_manifest_id.is_(None),
                 )
                 if after is not None:
                     query = query.where(agent_attempts.c.attempt_id > after.value)
@@ -784,6 +995,556 @@ class DbosAgentAttemptStore:
                     yield attempt
             if len(candidates) < page_limit.value:
                 return
+
+    def commit_runner_terminal_evidence(
+        self,
+        execution: AgentAttemptExecution,
+        envelope: RunnerTerminalEvidenceEnvelope,
+    ) -> RunnerTerminalEvidenceCommitResult:
+        if (
+            envelope.binding.attempt_id != execution.attempt_id
+            or envelope.binding.request_hash != execution.request.request_hash
+        ):
+            raise RunnerBindingConflict(
+                "runner evidence differs from the exact attempt request"
+            )
+        evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
+        with canonical_write_transaction(self._engine) as connection:
+            run, graph = _validate_request(connection, execution.request)
+            durable = _load_attempt(connection, execution.attempt_id)
+            _require_attempt_binding(durable, execution)
+            if durable.runner_terminal_evidence_hash is not None:
+                self._require_durable_runner_envelope(durable, envelope)
+                if durable.runner_terminal_evidence_hash != evidence_hash:
+                    raise RunnerBindingConflict(
+                        "runner evidence retry differs from the durable evidence"
+                    )
+                completion = None
+                if durable.state is AgentAttemptState.SUCCEEDED:
+                    completion = completion_after_node(
+                        graph,
+                        execution.request.node_id,
+                        execution.request.round_ordinal,
+                        _kept_verdict(connection, graph, execution.request),
+                    )
+                return RunnerTerminalEvidenceCommitted(
+                    durable, evidence_hash, completion
+                )
+            self._require_durable_runner_binding(durable, envelope.binding)
+            node = graph.node(execution.request.node_id)
+            if isinstance(node, AgentNodeV3) and node.tools:
+                return RunnerTerminalEvidenceCommitRefused(
+                    RunnerTerminalEvidenceRefusal.TOOL_GRANT_BOUND
+                )
+            evidence = envelope.evidence
+            if isinstance(evidence, RunnerCancellation) and (
+                evidence.observation is RunnerCancellationObservation.NEVER_LAUNCHED
+            ):
+                if (
+                    durable.state is not AgentAttemptState.PREPARED
+                    or durable.runner_invocation_id is not None
+                ):
+                    raise RunnerBindingConflict(
+                        "never-launched evidence requires its bound pre-arm attempt"
+                    )
+                updated = connection.execute(
+                    agent_attempts.update()
+                    .where(
+                        agent_attempts.c.attempt_id == durable.attempt_id.value,
+                        agent_attempts.c.state == AgentAttemptState.PREPARED.value,
+                        agent_attempts.c.state_version == durable.state_version,
+                        agent_attempts.c.runner_terminal_evidence_hash.is_(None),
+                    )
+                    .values(
+                        state_version=durable.state_version + 1,
+                        runner_invocation_id=(
+                            None
+                            if envelope.invocation_id is None
+                            else envelope.invocation_id.value
+                        ),
+                        runner_terminal_evidence_hash=evidence_hash.value,
+                        runner_evidence_acceptance_phase=(
+                            RunnerEvidenceAcceptancePhase.CORE_COMMITTED.value
+                        ),
+                    )
+                )
+                if updated.rowcount != 1:
+                    raise RunnerBindingConflict(
+                        "never-launched evidence lost its attempt CAS"
+                    )
+                return RunnerTerminalEvidenceCommitted(
+                    _load_attempt(connection, durable.attempt_id), evidence_hash
+                )
+
+            self._require_durable_runner_envelope(durable, envelope)
+            if isinstance(evidence, RunnerInvocationLost):
+                if durable.state is not AgentAttemptState.LAUNCH_ARMED:
+                    raise RunnerBindingConflict(
+                        "invocation loss requires its armed attempt"
+                    )
+                updated = connection.execute(
+                    agent_attempts.update()
+                    .where(
+                        agent_attempts.c.attempt_id == durable.attempt_id.value,
+                        agent_attempts.c.state == AgentAttemptState.LAUNCH_ARMED.value,
+                        agent_attempts.c.state_version == durable.state_version,
+                        agent_attempts.c.runner_terminal_evidence_hash.is_(None),
+                    )
+                    .values(
+                        state_version=durable.state_version + 1,
+                        runner_terminal_evidence_hash=evidence_hash.value,
+                        runner_evidence_acceptance_phase=(
+                            RunnerEvidenceAcceptancePhase.CORE_COMMITTED.value
+                        ),
+                    )
+                )
+                if updated.rowcount != 1:
+                    raise RunnerBindingConflict(
+                        "invocation-loss evidence lost its attempt CAS"
+                    )
+                return RunnerTerminalEvidenceCommitted(
+                    _load_attempt(connection, durable.attempt_id), evidence_hash
+                )
+
+            if (
+                durable.state
+                not in {
+                    AgentAttemptState.LAUNCH_ARMED,
+                    AgentAttemptState.CANCEL_REQUESTED,
+                }
+                or run.state is not RunState.STARTED
+                or run.current_node_id != execution.request.node_id
+                or run.current_round_ordinal != execution.request.round_ordinal
+            ):
+                raise RunnerBindingConflict(
+                    "only the armed current runner attempt can accept terminal evidence"
+                )
+            if isinstance(evidence, RunnerProviderResult):
+                outcome = self._commit_success(
+                    connection,
+                    execution,
+                    durable,
+                    run,
+                    graph,
+                    evidence.result,
+                    runner_evidence_hash=evidence_hash,
+                )
+                return RunnerTerminalEvidenceCommitted(
+                    outcome.attempt,
+                    evidence_hash,
+                    (
+                        outcome.completion
+                        if isinstance(outcome, AgentAttemptSucceeded)
+                        else None
+                    ),
+                )
+            if isinstance(evidence, RunnerProviderFailure):
+                failed = _fail_current_attempt(
+                    connection,
+                    execution,
+                    durable,
+                    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+                    node_receipt_reason(
+                        NodeReceiptReason.PROCESS_EXITED_UNSUCCESSFULLY,
+                        evidence.exit_signature.named(),
+                    ),
+                    runner_evidence_hash=evidence_hash,
+                )
+                return RunnerTerminalEvidenceCommitted(failed.attempt, evidence_hash)
+            if isinstance(evidence, RunnerOutputLimitExceeded):
+                streams = ", ".join(
+                    stream.value
+                    for stream in sorted(
+                        evidence.exceeded_streams, key=lambda item: item.value
+                    )
+                )
+                failed = _fail_current_attempt(
+                    connection,
+                    execution,
+                    durable,
+                    AgentAttemptFailureCode.PROCESS_OUTPUT_LIMIT_EXCEEDED,
+                    node_receipt_reason(
+                        NodeReceiptReason.PROCESS_OUTPUT_LIMIT_EXCEEDED, streams
+                    ),
+                    runner_evidence_hash=evidence_hash,
+                )
+                return RunnerTerminalEvidenceCommitted(failed.attempt, evidence_hash)
+            if isinstance(evidence, RunnerProcessBoundaryFailure):
+                failed = _fail_current_attempt(
+                    connection,
+                    execution,
+                    durable,
+                    AgentAttemptFailureCode.PROCESS_SUPERVISION_FAILED,
+                    node_receipt_reason(NodeReceiptReason.PROCESS_SUPERVISION_FAILED),
+                    runner_evidence_hash=evidence_hash,
+                )
+                return RunnerTerminalEvidenceCommitted(failed.attempt, evidence_hash)
+            if isinstance(evidence, RunnerCancellation):
+                return self._commit_runner_cancellation(
+                    connection, durable, evidence, evidence_hash
+                )
+            raise AssertionError("closed Runner evidence union was not exhaustive")
+
+    def _commit_success(
+        self,
+        connection: Any,
+        execution: AgentAttemptExecution,
+        durable: AgentAttempt,
+        run: RunV2 | RunV3,
+        graph: WorkflowGraphV2 | WorkflowGraphV3,
+        result: AgentExecutionResult,
+        *,
+        redemption: ToolRedemptionReceipt | None = None,
+        runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
+    ) -> AgentAttemptSucceeded | AgentAttemptFailed:
+        request = execution.request
+        node = graph.node(request.node_id)
+        if isinstance(node, AgentNodeV3):
+            declared = node.outputs[0]
+            if declared.refusal is not None:
+                named = agent_refusal_reason(result.output_bytes)
+                if named is not None:
+                    failed = _fail_current_attempt(
+                        connection,
+                        execution,
+                        durable,
+                        AgentAttemptFailureCode.AGENT_REFUSED,
+                        node_receipt_reason(NodeReceiptReason.AGENT_REFUSED, named),
+                        AGENT_REFUSAL_SCHEMA.revision_hash,
+                        Sha256Hash.of(result.output_bytes),
+                        runner_evidence_hash,
+                    )
+                    return failed
+            refusal = why_a_value_its_declared_schema_refuses(
+                connection, node.id, declared, result.output_bytes
+            )
+            if refusal is not None:
+                failed = _fail_current_attempt(
+                    connection,
+                    execution,
+                    durable,
+                    AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
+                    node_receipt_reason(
+                        NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, refusal
+                    ),
+                    PublishedRevisionHash(declared.schema_reference.revision),
+                    Sha256Hash.of(result.output_bytes),
+                    runner_evidence_hash,
+                )
+                return failed
+        if redemption is not None and redemption.exit_code != 0:
+            return _fail_current_attempt(
+                connection,
+                execution,
+                durable,
+                AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
+                node_receipt_reason(
+                    NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
+                    f"exit {redemption.exit_code}",
+                ),
+                runner_evidence_hash=runner_evidence_hash,
+            )
+        receipt = AgentReceiptV2.for_execution(request, run.binding_set_hash, result)
+        connection.execute(
+            agent_receipts_v2.insert()
+            .prefix_with("OR IGNORE")
+            .values(_agent_receipt_v2_values(receipt))
+        )
+        receipt_record = (
+            connection.execute(
+                sa.select(agent_receipts_v2).where(
+                    agent_receipts_v2.c.node_execution_id
+                    == request.node_execution_id.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if _agent_receipt_v2_from_record(receipt_record) != receipt:
+            raise AgentReceiptConflict(
+                "durable V2 agent receipt differs from exact result"
+            )
+        _keep_tool_redemption(connection, execution, redemption)
+        if isinstance(node, AgentNodeV3):
+            declared = node.outputs[0]
+            keep_node_receipt(
+                connection,
+                request.node_execution_id,
+                PersistedReceiptDisposition.SUCCEEDED,
+                node_receipt_reason(NodeReceiptReason.OUTPUT_ACCEPTED),
+                NodeArtifact(
+                    request.run_id,
+                    node.id,
+                    request.node_execution_id,
+                    declared.name,
+                    PublishedRevisionHash(declared.schema_reference.revision),
+                    result.output_bytes,
+                ),
+            )
+        values: dict[str, object] = {
+            "state": AgentAttemptState.SUCCEEDED.value,
+            "state_version": durable.state_version + 1,
+            "receipt_hash": receipt.receipt_hash.value,
+        }
+        if runner_evidence_hash is not None:
+            values.update(
+                runner_terminal_evidence_hash=runner_evidence_hash.value,
+                runner_evidence_acceptance_phase=(
+                    RunnerEvidenceAcceptancePhase.CORE_COMMITTED.value
+                ),
+            )
+            if durable.state is AgentAttemptState.CANCEL_REQUESTED:
+                values.update(
+                    cancellation_command_id=None,
+                    cancellation_expected_state_version=None,
+                    replacement=None,
+                    redrive_state=None,
+                    cancellation_disposition=None,
+                    cancellation_workflow_id=None,
+                )
+        updated = connection.execute(
+            agent_attempts.update()
+            .where(
+                agent_attempts.c.attempt_id == durable.attempt_id.value,
+                agent_attempts.c.state == durable.state.value,
+                agent_attempts.c.state_version == durable.state_version,
+            )
+            .values(**values)
+        )
+        if updated.rowcount != 1:
+            raise RunTransitionConflict("agent success lost its attempt CAS")
+        record_attempt_ended(connection, durable.attempt_id.value)
+        completion = completion_after_node(
+            graph,
+            request.node_id,
+            request.round_ordinal,
+            None
+            if verdict_condition_of(graph, request.node_id) is None
+            else read_verdict(result.output_bytes),
+        )
+        match completion:
+            case RunContinues(node_id, target_round):
+                target_state = RunState.STARTED
+                target_node_id = node_id
+                target_round_ordinal = target_round
+                terminal = False
+            case RunCompletes():
+                target_state = RunState.COMPLETED
+                target_node_id = request.node_id
+                target_round_ordinal = request.round_ordinal
+                terminal = True
+            case _ as unreachable:
+                assert_never(unreachable)
+        _commit_event(
+            connection,
+            request.run_id,
+            request.workflow_revision_hash,
+            request.node_id,
+            RunEventKind.AGENT_COMPLETED,
+            result.output_bytes,
+            RunState.STARTED,
+            target_state,
+            target_node_id,
+            terminal=terminal,
+            agent_attempt_id=durable.attempt_id,
+            attempt_ordinal=execution.ordinal,
+            agent_receipt_hash=receipt.receipt_hash,
+            round_ordinal=request.round_ordinal,
+            target_round_ordinal=target_round_ordinal,
+        )
+        return AgentAttemptSucceeded(
+            _load_attempt(connection, durable.attempt_id), completion
+        )
+
+    def _commit_runner_cancellation(
+        self,
+        connection: Any,
+        durable: AgentAttempt,
+        evidence: RunnerCancellation,
+        evidence_hash: RunnerTerminalEvidenceHash,
+    ) -> RunnerTerminalEvidenceCommitted:
+        cancellation = durable.cancellation
+        if (
+            durable.state is not AgentAttemptState.CANCEL_REQUESTED
+            or cancellation is None
+            or cancellation.command_id != evidence.command_id
+            or cancellation.replacement is not AgentAttemptReplacement.NONE
+        ):
+            raise RunnerBindingConflict(
+                "runner cancellation evidence differs from its Core command"
+            )
+        dispositions = {
+            RunnerCancellationObservation.EXITED_BEFORE_SIGNAL: (
+                AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL
+            ),
+            RunnerCancellationObservation.REAPED_AFTER_TERM: (
+                AgentAttemptCancellationDisposition.REAPED_AFTER_TERM
+            ),
+            RunnerCancellationObservation.REAPED_AFTER_KILL: (
+                AgentAttemptCancellationDisposition.REAPED_AFTER_KILL
+            ),
+        }
+        disposition = dispositions.get(evidence.observation)
+        if disposition is None:
+            raise RunnerBindingConflict(
+                "never-launched evidence cannot terminally cancel an attempt"
+            )
+        updated = connection.execute(
+            agent_attempts.update()
+            .where(
+                agent_attempts.c.attempt_id == durable.attempt_id.value,
+                agent_attempts.c.state == AgentAttemptState.CANCEL_REQUESTED.value,
+                agent_attempts.c.state_version == durable.state_version,
+                agent_attempts.c.cancellation_command_id == evidence.command_id,
+                agent_attempts.c.runner_terminal_evidence_hash.is_(None),
+            )
+            .values(
+                state=AgentAttemptState.CANCELLED.value,
+                state_version=durable.state_version + 1,
+                redrive_state=AgentAttemptRedriveState.CLEANUP_ATTESTED.value,
+                cancellation_disposition=disposition.value,
+                runner_terminal_evidence_hash=evidence_hash.value,
+                runner_evidence_acceptance_phase=(
+                    RunnerEvidenceAcceptancePhase.CORE_COMMITTED.value
+                ),
+            )
+        )
+        if updated.rowcount != 1:
+            raise RunnerBindingConflict("runner cancellation lost its attempt CAS")
+        record_attempt_ended(connection, durable.attempt_id.value)
+        terminal = _load_attempt(connection, durable.attempt_id)
+        _insert_attempt_event(
+            connection,
+            terminal,
+            RunEventKind.AGENT_CANCELLED,
+            command=terminal.cancellation,
+        )
+        return RunnerTerminalEvidenceCommitted(terminal, evidence_hash)
+
+    def mark_runner_evidence_acknowledged(
+        self,
+        execution: AgentAttemptExecution,
+        envelope: RunnerTerminalEvidenceEnvelope,
+    ) -> AgentAttempt:
+        evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
+        with canonical_write_transaction(self._engine) as connection:
+            durable = _load_attempt(connection, execution.attempt_id)
+            _require_attempt_binding(durable, execution)
+            self._require_durable_runner_envelope(durable, envelope)
+            if durable.runner_terminal_evidence_hash != evidence_hash:
+                raise RunnerBindingConflict(
+                    "runner ACK differs from the durable evidence"
+                )
+            if (
+                durable.runner_evidence_acceptance_phase
+                is RunnerEvidenceAcceptancePhase.ACKNOWLEDGED
+            ):
+                return durable
+            if (
+                durable.runner_evidence_acceptance_phase
+                is not RunnerEvidenceAcceptancePhase.CORE_COMMITTED
+            ):
+                raise RunnerBindingConflict(
+                    "runner evidence must commit before it can be acknowledged"
+                )
+            updated = connection.execute(
+                agent_attempts.update()
+                .where(
+                    agent_attempts.c.attempt_id == durable.attempt_id.value,
+                    agent_attempts.c.state_version == durable.state_version,
+                    agent_attempts.c.runner_terminal_evidence_hash
+                    == evidence_hash.value,
+                    agent_attempts.c.runner_evidence_acceptance_phase
+                    == RunnerEvidenceAcceptancePhase.CORE_COMMITTED.value,
+                )
+                .values(
+                    state_version=durable.state_version + 1,
+                    runner_evidence_acceptance_phase=(
+                        RunnerEvidenceAcceptancePhase.ACKNOWLEDGED.value
+                    ),
+                )
+            )
+            if updated.rowcount != 1:
+                raise RunnerBindingConflict("runner ACK lost its attempt CAS")
+            return _load_attempt(connection, durable.attempt_id)
+
+    def rebind_after_acknowledged_never_launched(
+        self,
+        execution: AgentAttemptExecution,
+        no_launch_evidence: RunnerTerminalEvidenceEnvelope,
+        fresh_binding: RunnerGenerationBinding,
+    ) -> AgentAttempt:
+        evidence = no_launch_evidence.evidence
+        if not (
+            isinstance(evidence, RunnerCancellation)
+            and evidence.observation is RunnerCancellationObservation.NEVER_LAUNCHED
+        ):
+            raise RunnerBindingConflict(
+                "only never-launched evidence permits a runner rebind"
+            )
+        if (
+            fresh_binding.attempt_id != execution.attempt_id
+            or fresh_binding.request_hash != execution.request.request_hash
+            or no_launch_evidence.binding.attempt_id != execution.attempt_id
+            or no_launch_evidence.binding.request_hash != execution.request.request_hash
+            or fresh_binding.generation_id == no_launch_evidence.binding.generation_id
+        ):
+            raise RunnerBindingConflict("fresh runner generation differs from attempt")
+        evidence_hash = RunnerTerminalEvidenceHash.for_envelope(no_launch_evidence)
+        with canonical_write_transaction(self._engine) as connection:
+            durable = _load_attempt(connection, execution.attempt_id)
+            _require_attempt_binding(durable, execution)
+            if (
+                durable.state is AgentAttemptState.PREPARED
+                and durable.runner_manifest_id == fresh_binding.manifest_id
+                and durable.runner_generation_id == fresh_binding.generation_id
+            ):
+                if (
+                    durable.runner_invocation_id is None
+                    and durable.runner_terminal_evidence_hash is None
+                    and durable.runner_evidence_acceptance_phase
+                    is RunnerEvidenceAcceptancePhase.NONE
+                ):
+                    return durable
+                raise RunnerBindingConflict(
+                    "runner rebind target has moved beyond its fresh state"
+                )
+            self._require_durable_runner_envelope(durable, no_launch_evidence)
+            if (
+                durable.state is not AgentAttemptState.PREPARED
+                or durable.runner_terminal_evidence_hash != evidence_hash
+                or durable.runner_evidence_acceptance_phase
+                is not RunnerEvidenceAcceptancePhase.ACKNOWLEDGED
+                or durable.runner_generation_id == fresh_binding.generation_id
+            ):
+                raise RunnerBindingConflict(
+                    "runner rebind requires ACKed never-launched evidence and a fresh generation"
+                )
+            updated = connection.execute(
+                agent_attempts.update()
+                .where(
+                    agent_attempts.c.attempt_id == durable.attempt_id.value,
+                    agent_attempts.c.state == AgentAttemptState.PREPARED.value,
+                    agent_attempts.c.state_version == durable.state_version,
+                    agent_attempts.c.runner_terminal_evidence_hash
+                    == evidence_hash.value,
+                    agent_attempts.c.runner_evidence_acceptance_phase
+                    == RunnerEvidenceAcceptancePhase.ACKNOWLEDGED.value,
+                )
+                .values(
+                    state_version=durable.state_version + 1,
+                    runner_manifest_id=fresh_binding.manifest_id.value,
+                    runner_generation_id=fresh_binding.generation_id.value,
+                    runner_invocation_id=None,
+                    runner_terminal_evidence_hash=None,
+                    runner_evidence_acceptance_phase=(
+                        RunnerEvidenceAcceptancePhase.NONE.value
+                    ),
+                )
+            )
+            if updated.rowcount != 1:
+                raise RunnerBindingConflict("runner rebind lost its attempt CAS")
+            return _load_attempt(connection, durable.attempt_id)
 
     def complete_success(
         self,
@@ -825,146 +1586,15 @@ class DbosAgentAttemptStore:
                 raise RunTransitionConflict(
                     "only the armed current attempt can succeed"
                 )
-            node = graph.node(request.node_id)
-            if isinstance(node, AgentNodeV3):
-                declared = node.outputs[0]
-                if declared.refusal is not None:
-                    named = agent_refusal_reason(result.output_bytes)
-                    if named is not None:
-                        return _fail_current_attempt(
-                            connection,
-                            execution,
-                            durable,
-                            AgentAttemptFailureCode.AGENT_REFUSED,
-                            node_receipt_reason(NodeReceiptReason.AGENT_REFUSED, named),
-                            AGENT_REFUSAL_SCHEMA.revision_hash,
-                            Sha256Hash.of(result.output_bytes),
-                        )
-                refusal = why_a_value_its_declared_schema_refuses(
-                    connection, node.id, declared, result.output_bytes
-                )
-                if refusal is not None:
-                    return _fail_current_attempt(
-                        connection,
-                        execution,
-                        durable,
-                        AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
-                        node_receipt_reason(
-                            NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, refusal
-                        ),
-                        PublishedRevisionHash(declared.schema_reference.revision),
-                        Sha256Hash.of(result.output_bytes),
-                    )
-            if redemption is not None and redemption.exit_code != 0:
-                return _fail_current_attempt(
-                    connection,
-                    execution,
-                    durable,
-                    AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
-                    node_receipt_reason(
-                        NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
-                        f"exit {redemption.exit_code}",
-                    ),
-                )
-            receipt = AgentReceiptV2.for_execution(
-                request, run.binding_set_hash, result
-            )
-            connection.execute(
-                agent_receipts_v2.insert()
-                .prefix_with("OR IGNORE")
-                .values(_agent_receipt_v2_values(receipt))
-            )
-            receipt_record = (
-                connection.execute(
-                    sa.select(agent_receipts_v2).where(
-                        agent_receipts_v2.c.node_execution_id
-                        == request.node_execution_id.value
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            if _agent_receipt_v2_from_record(receipt_record) != receipt:
-                raise AgentReceiptConflict(
-                    "durable V2 agent receipt differs from exact result"
-                )
-            _keep_tool_redemption(connection, execution, redemption)
-            if isinstance(node, AgentNodeV3):
-                declared = node.outputs[0]
-                keep_node_receipt(
-                    connection,
-                    request.node_execution_id,
-                    PersistedReceiptDisposition.SUCCEEDED,
-                    node_receipt_reason(NodeReceiptReason.OUTPUT_ACCEPTED),
-                    NodeArtifact(
-                        request.run_id,
-                        node.id,
-                        request.node_execution_id,
-                        declared.name,
-                        PublishedRevisionHash(declared.schema_reference.revision),
-                        result.output_bytes,
-                    ),
-                )
-            updated = connection.execute(
-                agent_attempts.update()
-                .where(
-                    agent_attempts.c.attempt_id == attempt_id.value,
-                    agent_attempts.c.state == AgentAttemptState.LAUNCH_ARMED.value,
-                    agent_attempts.c.state_version == durable.state_version,
-                )
-                .values(
-                    state=AgentAttemptState.SUCCEEDED.value,
-                    state_version=durable.state_version + 1,
-                    receipt_hash=receipt.receipt_hash.value,
-                )
-            )
-            if updated.rowcount != 1:
-                raise RunTransitionConflict("agent success lost its attempt CAS")
-            record_attempt_ended(connection, attempt_id.value)
-            durable_success = _load_attempt(connection, attempt_id)
-            # Read from the answer in hand rather than from what was just kept:
-            # these are the same bytes the artifact holds, and asking the store
-            # for what this transaction wrote a moment ago would put a second
-            # reader between an answer and the edge it steers.
-            completion = completion_after_node(
-                graph,
-                request.node_id,
-                request.round_ordinal,
-                None
-                if verdict_condition_of(graph, request.node_id) is None
-                else read_verdict(result.output_bytes),
-            )
-            match completion:
-                case RunContinues(node_id, target_round):
-                    target_state = RunState.STARTED
-                    target_node_id = node_id
-                    target_round_ordinal = target_round
-                    terminal = False
-                case RunCompletes():
-                    target_state = RunState.COMPLETED
-                    target_node_id = request.node_id
-                    target_round_ordinal = request.round_ordinal
-                    terminal = True
-                case _ as unreachable:
-                    assert_never(unreachable)
-            _commit_event(
+            return self._commit_success(
                 connection,
-                request.run_id,
-                request.workflow_revision_hash,
-                request.node_id,
-                RunEventKind.AGENT_COMPLETED,
-                result.output_bytes,
-                RunState.STARTED,
-                target_state,
-                target_node_id,
-                terminal=terminal,
-                agent_attempt_id=attempt_id,
-                attempt_ordinal=execution.ordinal,
-                agent_receipt_hash=receipt.receipt_hash,
-                round_ordinal=request.round_ordinal,
-                target_round_ordinal=target_round_ordinal,
+                execution,
+                durable,
+                run,
+                graph,
+                result,
+                redemption=redemption,
             )
-            return AgentAttemptSucceeded(durable_success, completion)
 
     def complete_known_failure(
         self, execution: AgentAttemptExecution, exit_signature: ProcessExitSignature
@@ -1086,6 +1716,11 @@ class DbosAgentAttemptStore:
                     return AgentAttemptCancellationTerminalConflict()
                 if attempt.state_version != request.expected_attempt_state_version:
                     return AgentAttemptCancellationStale()
+                if (
+                    attempt.runner_manifest_id is not None
+                    and request.replacement is AgentAttemptReplacement.ONE
+                ):
+                    return AgentAttemptReplacementNotAllowed()
                 if request.replacement is AgentAttemptReplacement.ONE and (
                     attempt.attempt_ordinal != 1
                 ):
@@ -1133,6 +1768,8 @@ class DbosAgentAttemptStore:
                     RunEventKind.AGENT_CANCEL_REQUESTED,
                     command=accepted.cancellation,
                 )
+                if accepted.runner_manifest_id is not None:
+                    return AgentAttemptCancellationAccepted(accepted, False)
                 if self._application_version is None:
                     raise RunTransitionConflict(
                         "cancellation submission requires the runtime application version"
@@ -1167,6 +1804,10 @@ class DbosAgentAttemptStore:
     ) -> AgentAttemptCancellationAccepted:
         with canonical_write_transaction(self._engine) as connection:
             attempt = _load_attempt(connection, request.attempt_id)
+            if attempt.runner_manifest_id is not None:
+                raise RunTransitionConflict(
+                    "runner-bound cancellation cleanup requires Runner evidence"
+                )
             cancellation = attempt.cancellation
             if cancellation is None or not cancellation.matches(request):
                 raise RunTransitionConflict(
