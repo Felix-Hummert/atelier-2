@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import cast, get_args
 
 import pytest
@@ -23,8 +23,10 @@ from atelier2.contracts.agent_attempts import (
     RunnerProviderFailure,
     RunnerProviderResult,
     RunnerTerminalEvidence,
+    RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
+    RunnerTerminalEvidenceReadback,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -33,6 +35,7 @@ from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionResult,
 )
+from atelier2.ports.agent_attempts import RunnerTerminalEvidenceSource
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
     AgentProcessCompletion,
@@ -51,6 +54,50 @@ def test_runner_terminal_evidence_is_exactly_the_six_authoritative_endings() -> 
         RunnerInvocationLost,
     }
     assert AgentProcessCompletion not in members
+
+
+def _ack_tombstone() -> RunnerTerminalEvidenceAckTombstone:
+    binding = RunnerGenerationBinding(
+        AgentAttemptId("a" * 64),
+        AgentExecutionRequestHash("b" * 64),
+        RunnerGenerationId("generation-1"),
+        RunnerManifestId("c" * 64),
+    )
+    evidence_hash = RunnerTerminalEvidenceHash("d" * 64)
+    return RunnerTerminalEvidenceAckTombstone(binding, None, evidence_hash)
+
+
+def test_runner_ack_tombstone_keeps_only_the_exact_ack_identity() -> None:
+    tombstone = _ack_tombstone()
+
+    assert tuple(field.name for field in fields(tombstone)) == (
+        "binding",
+        "invocation_id",
+        "evidence_hash",
+    )
+    assert set(get_args(RunnerTerminalEvidenceReadback.__value__)) == {
+        RunnerTerminalEvidenceEnvelope,
+        RunnerTerminalEvidenceAckTombstone,
+    }
+    assert {
+        name for name in vars(RunnerTerminalEvidenceSource) if not name.startswith("_")
+    } == {"readback", "acknowledge"}
+
+
+@pytest.mark.parametrize(
+    ("foreign_field", "message"),
+    (
+        ("binding", "typed binding"),
+        ("invocation_id", "typed invocation id"),
+        ("evidence_hash", "typed evidence hash"),
+    ),
+    ids=("foreign-binding", "foreign-non-none-invocation", "foreign-evidence-hash"),
+)
+def test_runner_ack_tombstone_refuses_each_foreign_runtime_type(
+    foreign_field: str, message: str
+) -> None:
+    with pytest.raises(TypeError, match=message):
+        replace(_ack_tombstone(), **{foreign_field: object()})
 
 
 def test_the_condemned_process_port_reexports_the_runner_evidence_bound() -> None:

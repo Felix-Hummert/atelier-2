@@ -475,6 +475,30 @@ class RunnerTerminalEvidenceHash(Sha256Hash):
         )
 
 
+@dataclass(frozen=True)
+class RunnerTerminalEvidenceAckTombstone:
+    """Runner proof that exact terminal evidence was acknowledged and collected."""
+
+    binding: RunnerGenerationBinding
+    invocation_id: RunnerInvocationId | None
+    evidence_hash: RunnerTerminalEvidenceHash
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binding, RunnerGenerationBinding):
+            raise TypeError("runner evidence ACK requires a typed binding")
+        if self.invocation_id is not None and not isinstance(
+            self.invocation_id, RunnerInvocationId
+        ):
+            raise TypeError("runner evidence ACK requires a typed invocation id")
+        if not isinstance(self.evidence_hash, RunnerTerminalEvidenceHash):
+            raise TypeError("runner evidence ACK requires a typed evidence hash")
+
+
+type RunnerTerminalEvidenceReadback = (
+    RunnerTerminalEvidenceEnvelope | RunnerTerminalEvidenceAckTombstone
+)
+
+
 class AgentAttemptProcessPhase(StrEnum):
     NONE = "NONE"
     WATCHDOG_READY = "WATCHDOG_READY"
