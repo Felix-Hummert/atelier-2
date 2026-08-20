@@ -346,18 +346,6 @@ Offen:      - Welcher Carrier, welche Launch-/Cleanup-Instanz und welcher Mutual
   sequence without copying their acceptance. REQ-REMOTE-11 and -28 keep remote
   and CI execution refused until the gate closes.
 
-- **Does an unplaceable binding wait or refuse? — closed by citation.** The
-  question was whether the thread's „Arbeit wartet sichtbar statt unsicher zu
-  laufen" (5302587068) and the ADR's refusal at run start were the same answer.
-  [ADR 0009](../decisions/0009-runner-trust.md) §7, landed, rules it: an
-  unplaceable run is **refused** — before any durable run, binding, attempt, or
-  provider process — and "never queued in the hope a runner appears, because
-  queueing it turns fail-closed into a hang". The refusal
-  `no-runner-attests-binding` names the node, the binding and the missing
-  attestation, so what „wartet sichtbar" wanted — the operator seeing it rather
-  than a silent stall — is carried by the refusal and not by a waiting item.
-  Nothing is left for this document to choose.
-
 ## Acceptance
 
 No story has declared an acceptance sentence for this requirement, so what
