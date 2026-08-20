@@ -4,7 +4,8 @@
   [#63](https://github.com/FlexOr2/atelier-2/issues/63#issuecomment-5307533025), clarified
   by [the prototype-store ruling](https://github.com/FlexOr2/atelier-2/issues/63#issuecomment-5307545004):
   build and isolated proof are authorized, the proven prototype store may replace its
-  predecessor, and unattended arming remains gated; document only, not implemented
+  predecessor, and unattended arming remains gated. [PRODUCT.md](../PRODUCT.md) owns
+  current implementation status
 - Date: 2026-08-15
 - Depends on: [ADR 0001](0001-durable-runtime.md),
   [ADR 0002](0002-exact-yaml-graph.md), [ADR 0006](0006-node-vocabulary.md)
@@ -61,7 +62,7 @@
   source scope), [#9](https://github.com/FlexOr2/atelier-2/issues/9) (the library and
   canvas surface), [#38](https://github.com/FlexOr2/atelier-2/issues/38) (a run's own
   purpose and input, which is never a catalog fact)
-- Evidence: documentary. Read at `f9ff73c`: ADRs 0001–0006 and 0008–0012,
+- Acceptance evidence, read at `f9ff73c`: documentary. ADRs 0001–0006 and 0008–0012,
   `src/atelier2/adapters/dbos/schema.py` (`SCHEMA_VERSION = 7`, `workflow_revisions`,
   `auth_profile_revisions`), `src/atelier2/contracts/agents.py`
   (`auth-profile-revision/v1`), `src/atelier2/contracts/hashing.py` (`frame`),
@@ -71,7 +72,8 @@
   stated gap, landed with PR #68 as `f9ff73c7` together with
   `acceptance/66-agent-as-a-markdown-file.toml` and
   `tests/domain/test_agent_definitions.py`; issues #1, #6, #8, #16, #22, #23, #24,
-  #63, #66, #79. No code changed, no gate run; nothing below is implemented.
+  #63, #66, #79. Acceptance changed no code and ran no gate; current status is
+  intentionally not copied here.
 
 ## Context
 
@@ -431,11 +433,15 @@ in no file and stays the agent-configuration revision's, which references the de
 revision by hash. A definition carries no deployment fact, so it can be shared into another
 operator's atelier — decision 2's sharing — without carrying this one's credentials.
 
-**This adds no binding path.** An `agent_definition` revision is bound where ADR 0006
-already binds a role: by the run-start command, to one exact revision hash. It carries no
-`ref` in any document, so it binds through the lineage-free `resolve` of decision 9, and
-its lineage exists for the library, the scorecard and the operator's rename — not for
-reference resolution.
+**This adds no workflow binding path.** A workflow still names only a `role`; at
+run start that role binds to one exact `AgentConfigurationRevision`, and the target
+configuration in turn references the exact `agent_definition` revision hash. The
+system prompt stays reconstructible without being copied into the node instruction.
+The definition carries no `ref` in any workflow document, so the target
+configuration binding uses the lineage-free `resolve` of decision 9; its lineage
+exists for the library, the scorecard and the operator's rename — not for workflow
+reference resolution. Current implementation stops at the configuration revision;
+[PRODUCT.md](../PRODUCT.md) owns that status.
 
 ### 5. Measurements are an append-only ledger with cross-store-stable identity
 
