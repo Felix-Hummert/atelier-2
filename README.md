@@ -18,9 +18,7 @@ question is mapped in [docs/README.md](docs/README.md).
 | Which documentation layer answers which question | [docs/README.md](docs/README.md) |
 | Why this atelier exists (Desk/Doku reading of Issue #1; the issue wins) | [docs/VISION.md](docs/VISION.md) |
 | Implementation status | [docs/PRODUCT.md](docs/PRODUCT.md) |
-| The settled reading of a requirement thread (derived; the thread wins) | Documents indexed by [docs/requirements/README.md](docs/requirements/README.md) |
-| Editable human requirement | [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1), with revision rules in [docs/requirements/README.md](docs/requirements/README.md) |
-| Story acceptance sentences and their proofs | `acceptance/`, with schema and trace rules in [docs/requirements/README.md](docs/requirements/README.md) |
+| Human requirement, numbered views, revision and acceptance trace | [docs/requirements/README.md](docs/requirements/README.md) |
 | Technical decisions | Records indexed by [docs/decisions/README.md](docs/decisions/README.md) |
 | Reusable agent policy | [AGENTS.md](AGENTS.md); [CLAUDE.md](CLAUDE.md) only loads it for Claude |
 | Foundation verification | [.github/workflows/foundation.yml](.github/workflows/foundation.yml) |

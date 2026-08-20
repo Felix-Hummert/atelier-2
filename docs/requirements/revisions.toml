@@ -1,0 +1,36 @@
+schema_version = 1
+
+[[legacy]]
+document = "0001"
+path = "docs/requirements/0001-queue-und-autonomie.md"
+content_sha256 = "5b1a4291177b5967f5098d35bcdaa5664aaea70f559570fc321a881b97c9cfdb"
+
+[[legacy]]
+document = "0002"
+path = "docs/requirements/0002-teams-und-zugang.md"
+content_sha256 = "c270ec1e6b2bab894bca5c3f51bc78df73e83206b35f849d2ccd6169efc66bb3"
+
+[[legacy]]
+document = "0003"
+path = "docs/requirements/0003-ziel-ui.md"
+content_sha256 = "0f18db4ef0b74541ae8a1c0114c7b75752cd76a453fd8571e04f5184ee9bb592"
+
+[[legacy]]
+document = "0004"
+path = "docs/requirements/0004-runner-und-remote.md"
+content_sha256 = "35a22bc2f60c30cd3a9cca8a8d285dda806646fbf9bca72b48e5c2e605b23f79"
+
+[[legacy]]
+document = "0005"
+path = "docs/requirements/0005-katalog-und-benannte-workflows.md"
+content_sha256 = "a7270fa0ecda54e4e62980bea0ada58c54a76747546ba5a71053189ac57c9335"
+
+[[legacy]]
+document = "0006"
+path = "docs/requirements/0006-kontrollierte-selbstuebernahme.md"
+content_sha256 = "a24d48901493125c293a1f01b5083d91eccc76507ce96f1b20bbdc5f5a7d63c5"
+
+[[legacy]]
+document = "0007"
+path = "docs/requirements/0007-beweis-dossier.md"
+content_sha256 = "1b9f100aaed6567a887f57635e87f7b311633cac0aedbd07a3c0b312ccf29336"
