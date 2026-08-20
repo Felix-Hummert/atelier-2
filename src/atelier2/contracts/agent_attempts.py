@@ -6,7 +6,10 @@ from enum import StrEnum
 
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    MAXIMUM_SIGNED_INT64,
     AgentExecutionRequestHash,
+    AgentExecutionResult,
     AgentExecutorOperationalIdentity,
     AgentReceiptHash,
 )
@@ -16,6 +19,7 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 AGENT_ATTEMPT_ORDINAL = 1
 REPLACEMENT_AGENT_ATTEMPT_ORDINAL = 2
+MAXIMUM_RUNNER_STANDARD_ERROR_BYTES = 49_152
 STOP_AFTER_DRIVER_LOSS = "atelier2-driver-lost"
 """The command id a restart stops an attempt under when its driver is gone.
 
@@ -190,6 +194,120 @@ class AgentAttemptCancellationDisposition(StrEnum):
     REAPED_AFTER_TERM = "REAPED_AFTER_TERM"
     REAPED_AFTER_KILL = "REAPED_AFTER_KILL"
     OWNER_LOST_AFTER_PARENT_DEATH = "OWNER_LOST_AFTER_PARENT_DEATH"
+
+
+class RunnerOutputStream(StrEnum):
+    STANDARD_OUTPUT = "STANDARD_OUTPUT"
+    STANDARD_ERROR = "STANDARD_ERROR"
+
+
+class RunnerCancellationObservation(StrEnum):
+    NEVER_LAUNCHED = "NEVER_LAUNCHED"
+    EXITED_BEFORE_SIGNAL = "EXITED_BEFORE_SIGNAL"
+    REAPED_AFTER_TERM = "REAPED_AFTER_TERM"
+    REAPED_AFTER_KILL = "REAPED_AFTER_KILL"
+
+
+@dataclass(frozen=True)
+class RunnerProviderResult:
+    """One provider answer already decoded into the durable result contract."""
+
+    result: AgentExecutionResult
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.result, AgentExecutionResult):
+            raise TypeError(
+                "runner provider result requires a decoded agent execution result"
+            )
+        if type(self.result.output_bytes) is not bytes:
+            raise TypeError("runner provider result requires exact output bytes")
+        if len(self.result.output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
+            raise ValueError("runner provider result exceeds the durable output bound")
+
+
+@dataclass(frozen=True)
+class RunnerProviderFailure:
+    """One provider ending whose bounded process evidence is authoritative."""
+
+    exit_signature: ProcessExitSignature
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.exit_signature, ProcessExitSignature):
+            raise TypeError("runner provider failure requires a process exit signature")
+        if not (
+            -MAXIMUM_SIGNED_INT64 - 1
+            <= self.exit_signature.return_code
+            <= MAXIMUM_SIGNED_INT64
+        ):
+            raise ValueError(
+                "runner provider failure return code must fit signed int64"
+            )
+        if (
+            len(self.exit_signature.standard_error)
+            > MAXIMUM_RUNNER_STANDARD_ERROR_BYTES
+        ):
+            raise ValueError(
+                "runner provider failure standard error evidence is too large"
+            )
+
+
+@dataclass(frozen=True)
+class RunnerOutputLimitExceeded:
+    """Which process streams crossed their separately enforced collection bounds."""
+
+    exceeded_streams: frozenset[RunnerOutputStream]
+
+    def __post_init__(self) -> None:
+        if type(self.exceeded_streams) is not frozenset:
+            raise TypeError("runner output-limit streams must be a frozen set")
+        if not self.exceeded_streams:
+            raise ValueError("runner output-limit streams must be nonempty")
+        if not all(
+            isinstance(stream, RunnerOutputStream) for stream in self.exceeded_streams
+        ):
+            raise TypeError(
+                "runner output-limit streams must use the closed stream type"
+            )
+
+
+@dataclass(frozen=True)
+class RunnerProcessBoundaryFailure:
+    """The process boundary failed without a provider ending to report."""
+
+
+@dataclass(frozen=True)
+class RunnerCancellation:
+    """The physical observation made while carrying out one cancellation command."""
+
+    command_id: str
+    observation: RunnerCancellationObservation
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.command_id, str)
+            or not 1 <= len(self.command_id) <= MAXIMUM_AGENT_FIELD_CHARACTERS
+        ):
+            raise ValueError(
+                "runner cancellation command id must contain "
+                f"1..{MAXIMUM_AGENT_FIELD_CHARACTERS} characters"
+            )
+        if not isinstance(self.observation, RunnerCancellationObservation):
+            raise TypeError("runner cancellation requires a typed physical observation")
+
+
+@dataclass(frozen=True)
+class RunnerInvocationLost:
+    """Positive authoritative evidence that the exact invocation was lost."""
+
+
+type RunnerTerminalEvidence = (
+    RunnerProviderResult
+    | RunnerProviderFailure
+    | RunnerOutputLimitExceeded
+    | RunnerProcessBoundaryFailure
+    | RunnerCancellation
+    | RunnerInvocationLost
+)
 
 
 class AgentAttemptProcessPhase(StrEnum):

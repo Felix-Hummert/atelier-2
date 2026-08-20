@@ -33,7 +33,11 @@ from atelier2.contracts.agent_attempts import (
     CancelAgentAttemptRequest,
 )
 from atelier2.contracts.agents import AgentExecutionResult
-from atelier2.contracts.executions import RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    RunEvent,
+    RunEventCancellationBinding,
+    RunEventKind,
+)
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
@@ -102,6 +106,31 @@ def test_cancel_commits_before_signal_and_exact_retry_is_idempotent(
             None,
         )
         assert terminal.attempt.state is AgentAttemptState.CANCELLED
+        with runtime.engine.connect() as connection:
+            terminal_event = (
+                connection.execute(
+                    sa.select(run_events).where(
+                        run_events.c.event_kind == RunEventKind.AGENT_CANCELLED.value
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert (
+            terminal_event["agent_attempt_id"],
+            terminal_event["attempt_ordinal"],
+            terminal_event["cancellation_command_id"],
+            terminal_event["replacement"],
+            terminal_event["cancellation_disposition"],
+            terminal_event["replacement_attempt_id"],
+        ) == (
+            prepared.attempt_id.value,
+            prepared.attempt_ordinal,
+            command.command_id,
+            command.replacement.value,
+            AgentAttemptCancellationDisposition.NEVER_LAUNCHED.value,
+            None,
+        )
         assert (
             store.attest_cancellation_cleanup(
                 command,
@@ -156,6 +185,30 @@ def test_cancel_replacement_creates_exactly_ordinal_two_and_never_three(
                     )
                 ).scalars()
             ) == (1, 2)
+            terminal_event = (
+                connection.execute(
+                    sa.select(run_events).where(
+                        run_events.c.event_kind == RunEventKind.AGENT_CANCELLED.value
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert (
+            terminal_event["agent_attempt_id"],
+            terminal_event["attempt_ordinal"],
+            terminal_event["cancellation_command_id"],
+            terminal_event["replacement"],
+            terminal_event["cancellation_disposition"],
+            terminal_event["replacement_attempt_id"],
+        ) == (
+            prepared.attempt_id.value,
+            prepared.attempt_ordinal,
+            command.command_id,
+            command.replacement.value,
+            AgentAttemptCancellationDisposition.NEVER_LAUNCHED.value,
+            expected.value,
+        )
 
         replacement = store.load(expected)
         refused = store.request_cancellation(
@@ -295,6 +348,20 @@ def test_the_attempt_path_writes_the_event_row_the_run_store_writer_writes(
     )
 
     assert through_the_attempt_path == through_the_run_store_writer
+    AgentAttemptId(str(through_the_attempt_path["agent_attempt_id"]))
+    assert (
+        through_the_attempt_path["attempt_ordinal"],
+        through_the_attempt_path["cancellation_command_id"],
+        through_the_attempt_path["replacement"],
+        through_the_attempt_path["cancellation_disposition"],
+        through_the_attempt_path["replacement_attempt_id"],
+    ) == (
+        1,
+        _PARITY_COMMAND_ID,
+        AgentAttemptReplacement.NONE.value,
+        None,
+        None,
+    )
 
 
 def test_cancellation_and_replacement_enqueue_into_a_registered_queue(
@@ -393,10 +460,12 @@ def _event_row_from_the_run_store_writer(root: Path) -> Mapping[str, Any]:
                     prepared.node_execution_id,
                     RunEventKind.AGENT_CANCEL_REQUESTED,
                     _PARITY_COMMAND_ID.encode("utf-8"),
-                    agent_attempt_id=prepared.attempt_id.value,
-                    attempt_ordinal=prepared.attempt_ordinal,
-                    cancellation_command_id=_PARITY_COMMAND_ID,
-                    replacement=AgentAttemptReplacement.NONE.value,
+                    attempt_binding=RunEventCancellationBinding(
+                        prepared.attempt_id,
+                        prepared.attempt_ordinal,
+                        AgentAttemptReplacement.NONE,
+                        _PARITY_COMMAND_ID,
+                    ),
                 ),
             )
         return _only_event_row(runtime)

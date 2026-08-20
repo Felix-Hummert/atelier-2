@@ -13,7 +13,13 @@ from atelier2.api.stream import (
 )
 from atelier2.api.wire.events import AgentCompletedEventResourceV2
 from atelier2.api.wire.resources import NodeRailAttemptResource, NodeRailResource
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventKind,
+)
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -84,10 +90,14 @@ def agent_completed(projection: RunProjection) -> PersistedRunEvent:
             execution_id,
             RunEventKind.AGENT_COMPLETED,
             b"output",
-            agent_attempt_id=NodeExecutionId.for_node(
-                run.run_id, run.revision_hash, "build"
-            ).value,
-            attempt_ordinal=1,
+            attempt_binding=RunEventAgentAttemptBinding(
+                AgentAttemptId(
+                    NodeExecutionId.for_node(
+                        run.run_id, run.revision_hash, "build"
+                    ).value
+                ),
+                1,
+            ),
         ),
         None,
         WorkflowFormatVersion.V2,

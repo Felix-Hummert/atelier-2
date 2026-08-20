@@ -328,8 +328,11 @@ def _attempt_the_event_proves(
         WorkflowFormatVersion.V3,
     ):
         return None
-    ordinal = persisted.event.attempt_ordinal
+    attempt_binding = persisted.event.attempt_binding
     durable_state = _ATTEMPT_STATES_PROVEN_BY_EVENT.get(persisted.event.event_kind)
-    if ordinal is None or durable_state is None:
+    if attempt_binding is None or durable_state is None:
         return None
-    return NodeRailAttempt(ordinal, public_agent_attempt_state(durable_state))
+    return NodeRailAttempt(
+        attempt_binding.attempt_ordinal,
+        public_agent_attempt_state(durable_state),
+    )

@@ -16,8 +16,19 @@ from atelier2.contracts.runs import (
 )
 
 if TYPE_CHECKING:
-    from atelier2.contracts.agent_attempts import AgentAttemptId
+    from atelier2.contracts.agent_attempts import (
+        AgentAttemptCancellationDisposition,
+        AgentAttemptId,
+        AgentAttemptReplacement,
+    )
     from atelier2.contracts.agents import AgentExecutionRequestV2
+else:
+    # agent_attempts owns these exact types but already imports NodeExecutionId.
+    # Runtime lower bounds keep recursive contract inspection resolvable without
+    # creating that import cycle; each binding constructor enforces the exact type.
+    AgentAttemptCancellationDisposition = StrEnum
+    AgentAttemptId = Sha256Hash
+    AgentAttemptReplacement = StrEnum
 
 _CANONICAL_INTEGER_BYTES = re.compile(rb"(?:0|-?[1-9][0-9]*)")
 
@@ -123,6 +134,65 @@ class WaitAnswerState(StrEnum):
 
 
 @dataclass(frozen=True)
+class RunEventAgentAttemptBinding:
+    attempt_id: AgentAttemptId
+    attempt_ordinal: int
+
+    def __post_init__(self) -> None:
+        from atelier2.contracts.agent_attempts import AgentAttemptId
+
+        if not isinstance(self.attempt_id, AgentAttemptId):
+            raise TypeError("run event attempt id must be typed")
+        if type(self.attempt_ordinal) is not int or self.attempt_ordinal not in (1, 2):
+            raise ValueError("run event attempt ordinal must be exactly 1 or 2")
+
+
+@dataclass(frozen=True)
+class RunEventCancellationBinding:
+    attempt_id: AgentAttemptId
+    attempt_ordinal: int
+    replacement: AgentAttemptReplacement
+    command_id: str
+    disposition: AgentAttemptCancellationDisposition | None = None
+    replacement_attempt_id: AgentAttemptId | None = None
+
+    def __post_init__(self) -> None:
+        from atelier2.contracts.agent_attempts import (
+            AgentAttemptCancellationDisposition,
+            AgentAttemptId,
+            AgentAttemptReplacement,
+        )
+        from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
+
+        RunEventAgentAttemptBinding(self.attempt_id, self.attempt_ordinal)
+        if not isinstance(self.replacement, AgentAttemptReplacement):
+            raise TypeError("run event cancellation replacement policy must be typed")
+        if (
+            not isinstance(self.command_id, str)
+            or not 1 <= len(self.command_id) <= MAXIMUM_AGENT_FIELD_CHARACTERS
+        ):
+            raise ValueError(
+                "run event cancellation command id must contain "
+                f"1..{MAXIMUM_AGENT_FIELD_CHARACTERS} characters"
+            )
+        if self.disposition is not None and not isinstance(
+            self.disposition, AgentAttemptCancellationDisposition
+        ):
+            raise TypeError("run event cancellation disposition must be typed")
+        if self.replacement_attempt_id is not None and not isinstance(
+            self.replacement_attempt_id, AgentAttemptId
+        ):
+            raise TypeError("run event replacement attempt id must be typed")
+        if self.replacement_attempt_id is not None and self.disposition is None:
+            raise ValueError(
+                "run event replacement attempt requires a terminal disposition"
+            )
+
+
+type RunEventAttemptBinding = RunEventAgentAttemptBinding | RunEventCancellationBinding
+
+
+@dataclass(frozen=True)
 class RunEvent:
     run_id: RunId
     revision_hash: WorkflowRevisionHash
@@ -134,12 +204,7 @@ class RunEvent:
     payload_hash: Sha256Hash = field(init=False)
     receipt_logical_key: LogicalEffectKey | None = None
     receipt_result_hash: Sha256Hash | None = None
-    agent_attempt_id: str | None = None
-    attempt_ordinal: int | None = None
-    cancellation_command_id: str | None = None
-    replacement: str | None = None
-    cancellation_disposition: str | None = None
-    replacement_attempt_id: str | None = None
+    attempt_binding: RunEventAttemptBinding | None = None
     agent_receipt_hash: Sha256Hash | None = None
     round_ordinal: int = FIRST_ROUND_ORDINAL
     event_hash: Sha256Hash = field(init=False)
@@ -181,22 +246,19 @@ class RunEvent:
             and self.event_kind is not RunEventKind.AGENT_COMPLETED
         ):
             raise ValueError("nonagent-completion event may not carry a receipt hash")
-        attempt_bound = self.agent_attempt_id is not None
-        if attempt_bound != (self.attempt_ordinal is not None):
-            raise ValueError("attempt event requires both exact attempt fields")
-        if self.attempt_ordinal not in (None, 1, 2):
-            raise ValueError("attempt event ordinal must be exactly 1 or 2")
+        attempt_binding = self.attempt_binding
+        if attempt_binding is not None and not isinstance(
+            attempt_binding,
+            RunEventAgentAttemptBinding | RunEventCancellationBinding,
+        ):
+            raise TypeError("run event attempt binding must use its closed type")
         cancellation_kind = self.event_kind in {
             RunEventKind.AGENT_CANCEL_REQUESTED,
             RunEventKind.AGENT_CANCELLED,
             RunEventKind.AGENT_INTERRUPTED,
         }
         if cancellation_kind:
-            if (
-                not attempt_bound
-                or self.cancellation_command_id is None
-                or self.replacement not in {"NONE", "ONE"}
-            ):
+            if not isinstance(attempt_binding, RunEventCancellationBinding):
                 raise ValueError(
                     "cancellation event requires its exact command binding"
                 )
@@ -204,20 +266,25 @@ class RunEvent:
                 RunEventKind.AGENT_CANCELLED,
                 RunEventKind.AGENT_INTERRUPTED,
             }
-            if terminal_cancellation != (self.cancellation_disposition is not None):
+            if terminal_cancellation != (attempt_binding.disposition is not None):
                 raise ValueError("cancellation event disposition shape disagrees")
-        elif any(
-            value is not None
-            for value in (
-                self.cancellation_command_id,
-                self.replacement,
-                self.cancellation_disposition,
-                self.replacement_attempt_id,
+            if not terminal_cancellation and attempt_binding.replacement_attempt_id:
+                raise ValueError(
+                    "cancellation request may not name a replacement attempt"
+                )
+        elif isinstance(attempt_binding, RunEventCancellationBinding):
+            raise ValueError(
+                "noncancellation event may not carry a cancellation binding"
             )
-        ):
-            raise ValueError("noncancellation event may not carry cancellation fields")
+        elif attempt_binding is not None and self.event_kind not in {
+            RunEventKind.AGENT_COMPLETED,
+            RunEventKind.AGENT_FAILED,
+        }:
+            raise ValueError("nonagent event may not carry an attempt binding")
         agent_receipt_bound = self.agent_receipt_hash is not None
-        use_v2_hash = cancellation_kind or self.attempt_ordinal == 2
+        use_v2_hash = cancellation_kind or (
+            attempt_binding is not None and attempt_binding.attempt_ordinal == 2
+        )
         if agent_receipt_bound:
             hash_domain = "node-event-hash/v3"
         elif use_v2_hash:
@@ -229,14 +296,36 @@ class RunEvent:
         # attempt binding an ordinal-2 completion already has.
         attempt_fields = (
             (
-                (self.agent_attempt_id or "").encode("ascii"),
-                str(self.attempt_ordinal or "").encode(
-                    "ascii"
-                ),  # persisted event-hash family
-                (self.cancellation_command_id or "").encode("utf-8"),
-                (self.replacement or "").encode("ascii"),
-                (self.cancellation_disposition or "").encode("ascii"),
-                (self.replacement_attempt_id or "").encode("ascii"),
+                (
+                    b""
+                    if attempt_binding is None
+                    else attempt_binding.attempt_id.value.encode("ascii")
+                ),
+                str(
+                    "" if attempt_binding is None else attempt_binding.attempt_ordinal
+                ).encode("ascii"),  # persisted event-hash family
+                (
+                    ""
+                    if not isinstance(attempt_binding, RunEventCancellationBinding)
+                    else attempt_binding.command_id
+                ).encode("utf-8"),
+                (
+                    ""
+                    if not isinstance(attempt_binding, RunEventCancellationBinding)
+                    else attempt_binding.replacement.value
+                ).encode("ascii"),
+                (
+                    ""
+                    if not isinstance(attempt_binding, RunEventCancellationBinding)
+                    or attempt_binding.disposition is None
+                    else attempt_binding.disposition.value
+                ).encode("ascii"),
+                (
+                    ""
+                    if not isinstance(attempt_binding, RunEventCancellationBinding)
+                    or attempt_binding.replacement_attempt_id is None
+                    else attempt_binding.replacement_attempt_id.value
+                ).encode("ascii"),
             )
             if use_v2_hash or agent_receipt_bound
             else ()

@@ -31,7 +31,12 @@ from atelier2.contracts.agents import (
     ProviderId,
     ResolvedAgentBinding,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventKind,
+)
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -701,12 +706,14 @@ def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None
         NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),
         RunEventKind.AGENT_COMPLETED,
         b"\x00\xffoutput",
-        agent_attempt_id=AgentAttemptId.for_execution(
-            NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),
-            AgentExecutionRequestHash("1" * 64),
+        attempt_binding=RunEventAgentAttemptBinding(
+            AgentAttemptId.for_execution(
+                NodeExecutionId.for_node(run_id, workflow.revision_hash, "build"),
+                AgentExecutionRequestHash("1" * 64),
+                1,
+            ),
             1,
-        ).value,
-        attempt_ordinal=1,
+        ),
     )
 
     resource = run_event_resource(
@@ -715,6 +722,7 @@ def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None
     api_limits().require_event_projection(
         PersistedRunEvent(event, None, WorkflowFormatVersion.V2)
     )
+    assert event.attempt_binding is not None
 
     assert resource.model_dump(mode="json") == {
         "workflow_format_version": 2,
@@ -732,7 +740,7 @@ def test_v2_agent_event_roundtrips_arbitrary_bytes_as_canonical_base64() -> None
         "event": "AGENT_COMPLETED",
         "output_base64": "AP9vdXRwdXQ=",
         "output_hash": event.payload_hash.value,
-        "attempt_id": event.agent_attempt_id,
+        "attempt_id": event.attempt_binding.attempt_id.value,
         "attempt_ordinal": 1,
     }
 

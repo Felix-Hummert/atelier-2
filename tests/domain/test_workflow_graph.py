@@ -4,11 +4,18 @@ from typing import cast
 
 import pytest
 
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptId,
+    AgentAttemptReplacement,
+)
 from atelier2.contracts.agents import AgentReceiptHash
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventCancellationBinding,
     RunEventKind,
     WaitAnswer,
     terminal_hash_for,
@@ -79,11 +86,13 @@ def test_v2_cancellation_event_hash_vector_pins_attempt_ordinal() -> None:
         execution,
         RunEventKind.AGENT_CANCELLED,
         b"5",
-        agent_attempt_id="b" * 64,
-        attempt_ordinal=1,
-        cancellation_command_id="cancel",
-        replacement="NONE",
-        cancellation_disposition="REAPED_AFTER_TERM",
+        attempt_binding=RunEventCancellationBinding(
+            AgentAttemptId("b" * 64),
+            1,
+            AgentAttemptReplacement.NONE,
+            "cancel",
+            AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
+        ),
     )
 
     assert event.event_hash.value == (
@@ -132,8 +141,7 @@ def _agent_completion(
         NodeExecutionId.for_node(run_id, revision.revision_hash, node_id),
         RunEventKind.AGENT_COMPLETED,
         b"5",
-        agent_attempt_id="b" * 64,
-        attempt_ordinal=ordinal,
+        attempt_binding=RunEventAgentAttemptBinding(AgentAttemptId("b" * 64), ordinal),
         agent_receipt_hash=agent_receipt_hash,
     )
 
@@ -238,8 +246,11 @@ def test_only_an_agent_completion_may_carry_a_receipt_hash(
             execution,
             event_kind,
             b"result",
-            agent_attempt_id="b" * 64 if attempt_bound else None,
-            attempt_ordinal=1 if attempt_bound else None,
+            attempt_binding=(
+                RunEventAgentAttemptBinding(AgentAttemptId("b" * 64), 1)
+                if attempt_bound
+                else None
+            ),
             agent_receipt_hash=AgentReceiptHash("c" * 64),
         )
 
