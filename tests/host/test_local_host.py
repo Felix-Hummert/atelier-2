@@ -9,6 +9,7 @@ import subprocess
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import pytest
@@ -48,7 +49,8 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
-from atelier2.api.openapi import API_PREFIX
+from atelier2.api.openapi import API_PREFIX, PROJECT_PATH, PROJECTS_PATH
+from atelier2.api.references import encode_public_project_reference
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
@@ -935,6 +937,79 @@ def test_real_console_launcher_starts_and_closes_one_runtime(tmp_path: Path) -> 
     finally:
         second_error = stop_child_process(second)
     assert second.returncode == 0, second_error.decode(errors="replace")
+
+
+@pytest.mark.proves("the-served-project-door-reveals-only-its-public-reference")
+def test_real_console_launcher_serves_one_opaque_project_resource(
+    tmp_path: Path,
+) -> None:
+    frontend = tmp_path / "frontend"
+    (frontend / "assets").mkdir(parents=True)
+    (frontend / "index.html").write_text("<main>project launcher</main>")
+    project_root = tmp_path / "operator-project"
+    git_project(project_root, declaring_verification(["/bin/true"]))
+    port = free_port()
+    project_id = ProjectId("studio")
+    command = [
+        "uv",
+        "run",
+        "atelier2",
+        "serve",
+        "--database",
+        str(tmp_path / "durable.sqlite"),
+        "--effect-store",
+        str(tmp_path / "effects.sqlite"),
+        "--effect-adapter-revision",
+        "loopback-v1",
+        "--effect-destination",
+        "project-launcher-test",
+        "--application-version",
+        "project-launcher-v1",
+        "--source-commit",
+        "exact-commit",
+        "--source-tree",
+        "exact-tree",
+        "--frontend-dist",
+        str(frontend),
+        "--project-id",
+        project_id.value,
+        "--project-root",
+        str(project_root),
+        "--port",
+        str(port),
+    ]
+
+    child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_for_health(port)
+        with urlopen(f"http://127.0.0.1:{port}{PROJECTS_PATH}", timeout=2) as response:
+            listed = json.load(response)
+        (project,) = listed["items"]
+        public_reference = project["public_project_reference"]
+        with urlopen(
+            "http://127.0.0.1:"
+            f"{port}{PROJECT_PATH.format(public_project_reference=public_reference)}",
+            timeout=2,
+        ) as response:
+            detailed = json.load(response)
+        unknown_reference = encode_public_project_reference(ProjectId("other"))
+        with pytest.raises(HTTPError) as refusal:
+            urlopen(
+                "http://127.0.0.1:"
+                f"{port}{PROJECT_PATH.format(public_project_reference=unknown_reference)}",
+                timeout=2,
+            )
+        unknown = json.load(refusal.value)
+    finally:
+        child_error = stop_child_process(child)
+
+    assert child.returncode == 0, child_error.decode(errors="replace")
+    assert listed == {"items": [{"public_project_reference": public_reference}]}
+    assert detailed == project
+    assert unknown["type"].endswith("project-unknown")
+    exposed = repr((listed, detailed))
+    assert project_id.value not in exposed
+    assert str(project_root.resolve()) not in exposed
 
 
 def stop_child_process(child: subprocess.Popen[bytes]) -> bytes:

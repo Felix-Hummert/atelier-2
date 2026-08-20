@@ -97,10 +97,7 @@ def decode_public_run_reference(reference: str) -> RunId:
 
 
 def encode_public_project_reference(project_id: ProjectId) -> str:
-    try:
-        payload = project_id.value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise InvalidPublicProjectReference("project id is not exact UTF-8") from error
+    payload = project_id.value.encode("utf-8")
     encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
     return _PUBLIC_PROJECT_REFERENCE_PREFIX + encoded
 

@@ -29,6 +29,7 @@ from atelier2.contracts.host_configuration import (
     OccupancyRevisionConflict,
     OccupancyRevisionHashCollision,
     ProjectId,
+    ProjectRootBytesDisagree,
     ProjectRootMissing,
     ProjectRootRevision,
     ProjectRootRevisionConflict,
@@ -56,9 +57,9 @@ def project_root_revision_from_record(record: Mapping[Any, Any]) -> ProjectRootR
         Path(str(record["root_path"])),
     )
     if revision.revision_hash.value != record["revision_hash"]:
-        raise HostConfigurationUnreadable(
-            f"{HOST_CONFIGURATION_UNREADABLE}: a stored project-root hash "
-            "disagrees with its fields"
+        raise ProjectRootBytesDisagree(
+            "project-root bytes disagree: a stored project-root hash "
+            "does not match its fields"
         )
     return revision
 
@@ -152,6 +153,7 @@ def publish_project_root_revision(
             )
             return revision
     except (
+        ProjectRootBytesDisagree,
         ProjectRootRevisionConflict,
         HostConfigurationUnreadable,
         ProjectRootMissing,
@@ -357,6 +359,8 @@ class DbosHostConfigurationChannel:
             return latest_project_root_revision(self._engine, project_id)
         except HostConfigurationUnreadable as error:
             return HostConfigurationReadUnavailable(str(error))
+        except ProjectRootBytesDisagree:
+            return DurableStateCorrupt()
         except (ValueError, RuntimeError):
             return DurableStateCorrupt()
 

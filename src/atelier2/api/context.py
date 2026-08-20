@@ -40,6 +40,10 @@ from atelier2.application.read_agent_configurations import (
     ListAuthProfileRevisionsResult,
 )
 from atelier2.application.read_attention_events import ReadAttentionEventsResult
+from atelier2.application.read_projects import (
+    GetProjectResult,
+    ListProjectsResult,
+)
 from atelier2.application.read_run_events import ReadRunEventsResult
 from atelier2.application.read_runs import (
     GetNodeDetailUseCaseResult,
@@ -72,6 +76,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageId,
     CatalogLineageQuery,
 )
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
@@ -174,6 +179,8 @@ class ApiUseCases:
         [AuthProfileRevisionHash | None, int],
         ListAuthProfileRevisionsResult,
     ]
+    list_projects: Callable[[], ListProjectsResult]
+    get_project: Callable[[ProjectId], GetProjectResult]
     start_published_run: Callable[
         [
             RunId,

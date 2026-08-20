@@ -828,6 +828,33 @@ describe("the run listing the studio opens on", () => {
   });
 });
 
+describe("the project listing the picker will consume", () => {
+  it("asks the zero-or-one project door and refuses fields the server did not declare", async () => {
+    const project = { public_project_reference: "project1.dGVhbS9yZWQ" };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [project] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const listed = await createCockpitApi(fetcher).listProjects();
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/atelier/api/v1/projects");
+    expect(listed.items).toEqual([project]);
+
+    fetcher.mockResolvedValueOnce(
+      new Response(JSON.stringify({ items: [{ ...project, project_id: "team/red" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    await expect(createCockpitApi(fetcher).listProjects()).rejects.toThrow(
+      "durable wire contract"
+    );
+  });
+});
+
 describe("the node a click asks the server about", () => {
   const nodeDetail = {
     run_id: "run-1",
