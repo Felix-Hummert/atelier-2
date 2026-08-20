@@ -808,7 +808,9 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
   };
 
   await page.goto("/atelier/new");
-  await page.getByRole("radio", { name: new RegExp(workflowName) }).check();
+  const workflow = page.getByRole("radio", { name: new RegExp(workflowName) });
+  await workflow.click();
+  await expect(workflow).toBeChecked();
   const binding = page.getByRole("article", { name: "Binding builder" });
   await expect(binding).toBeVisible();
   await expect(page.getByText("Published agents unavailable")).toBeVisible();
@@ -898,6 +900,226 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
   await expect(binding.getByLabel("Auth mode")).toHaveValue("api_key");
   await expect(page.getByRole("button", { name: "Refresh published agents" })).toHaveCount(1);
   expectOnlyAgentRead([agentTarget(), agentTarget(firstHash)]);
+  expect(page.url()).toBe(newRunUrl);
+});
+
+test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-draft): New Run retains one exact immutable workflow detail", async ({ page }) => {
+  const workflowListPath = "/atelier/api/v1/workflow-revisions";
+  const name = "detail-recovery-proof";
+  const confirmedHash = "1".repeat(64);
+  const attemptedHash = "2".repeat(64);
+  const detailTarget = (hash: string): string => `${workflowListPath}/${hash}`;
+  const summary = (hash: string, description: string) => ({
+    workflow_revision_hash: hash,
+    workflow_format_version: 3,
+    executable: true,
+    not_executable_reason: null,
+    name,
+    description
+  });
+  const detail = (hash: string, description: string) => ({
+    workflow_revision_hash: hash,
+    document_base64: "Zm9ybWF0X3ZlcnNpb246IDMK",
+    graph: {
+      workflow_format_version: 3,
+      executable: true,
+      not_executable_reason: null,
+      node_count: 1,
+      agent_roles: [],
+      orders: [],
+      node_previews: [{
+        id: "wait",
+        kind: "wait",
+        role: null,
+        instruction_start: null,
+        depends_on: []
+      }],
+      name,
+      description
+    }
+  });
+  let secondJourney = false;
+  let confirmedCalls = 0;
+  let attemptedCalls = 0;
+  let releaseLateConfirmed = (): void => {};
+  const lateConfirmedGate = new Promise<void>((resolve) => { releaseLateConfirmed = resolve; });
+  const observed: Array<{ method: string; target: string }> = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/atelier/api/v1")) {
+      observed.push({ method: request.method(), target: `${url.pathname}${url.search}` });
+    }
+  });
+  await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: [], next_after_revision_hash: null })
+    });
+  });
+  await page.route("**/atelier/api/v1/workflow-revisions?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [
+          summary(confirmedHash, "The retained confirmed revision."),
+          summary(attemptedHash, "The attempted revision.")
+        ],
+        next_after_revision_hash: null
+      })
+    });
+  });
+  await page.route("**/atelier/api/v1/workflow-revisions/by-name/*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        display_name: name,
+        lineage_id: "3".repeat(64),
+        workflow_revision_hash: confirmedHash,
+        revision_number: 2
+      })
+    });
+  });
+  await page.route(/\/atelier\/api\/v1\/workflow-revisions\/[0-9a-f]{64}$/, async (route) => {
+    const hash = new URL(route.request().url()).pathname.split("/").at(-1);
+    if (hash === confirmedHash) {
+      confirmedCalls += 1;
+      if (secondJourney) {
+        await lateConfirmedGate;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(detail(confirmedHash, "Late confirmed detail."))
+        });
+        return;
+      }
+      if (confirmedCalls <= 2) {
+        await route.abort("failed");
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(detail(confirmedHash, "The retained confirmed revision."))
+      });
+      return;
+    }
+    attemptedCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        !secondJourney && attemptedCalls === 1
+          ? detail(confirmedHash, "Mismatched detail.")
+          : detail(attemptedHash, "The attempted revision.")
+      )
+    });
+  });
+  const expectOnlyDetailGets = (targets: string[]): void => {
+    expect(observed.every(({ method }) => method === "GET")).toBe(true);
+    expect(observed.map(({ target }) => target).sort()).toEqual([...targets].sort());
+  };
+
+  await page.goto("/atelier/new");
+  const row = page.getByRole("article", { name });
+  await expect(row).toBeVisible();
+  const newRunUrl = page.url();
+  observed.length = 0;
+
+  await row.getByText("Details", { exact: true }).click();
+  await expect(page.getByText("Workflow detail unavailable")).toBeVisible();
+  await expect(page.getByText(/Failed to fetch|private/i)).toHaveCount(0);
+  let retry = page.getByRole("button", { name: "Retry workflow detail" });
+  await expect(retry).toHaveCount(1);
+  expectOnlyDetailGets([detailTarget(confirmedHash)]);
+
+  observed.length = 0;
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Workflow detail unavailable")).toBeVisible();
+  await expect(retry).toBeFocused();
+  expectOnlyDetailGets([detailTarget(confirmedHash)]);
+
+  observed.length = 0;
+  await retry.click();
+  await expect(row).toContainText("1 nodes");
+  await expect(retry).toHaveCount(0);
+  expectOnlyDetailGets([detailTarget(confirmedHash)]);
+  observed.length = 0;
+  await row.getByRole("button", { name: "Edit" }).click();
+  await expect(page.getByLabel("Exact workflow YAML")).toHaveValue("format_version: 3\n");
+  expectOnlyDetailGets([]);
+  await expect(page.getByRole("button", { name: "Refresh workflow detail" })).toHaveCount(0);
+
+  await row.getByRole("radio").check();
+  const runId = await page.getByRole("heading", { name: "Run ID" }).locator("..").locator("code").textContent();
+  const revisionChoice = row.getByLabel(`Revision of ${name}`);
+  observed.length = 0;
+  await revisionChoice.selectOption(attemptedHash);
+  await expect(page.getByText("Workflow detail unavailable")).toBeVisible();
+  await expect(revisionChoice).toHaveValue(confirmedHash);
+  await expect(page.getByRole("heading", { name: "Run ID" }).locator("..").locator("code")).toHaveText(runId ?? "");
+  expectOnlyDetailGets([detailTarget(attemptedHash)]);
+  expect(page.url()).toBe(newRunUrl);
+
+  retry = page.getByRole("button", { name: "Retry workflow detail" });
+  await retry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(retry).toBeFocused();
+  await expectVisibleFocus(retry);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-detail-grayscale-desktop.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-detail-grayscale-390x844.png",
+    fullPage: true
+  });
+  await page.locator("style").last().evaluate((element) => element.remove());
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  observed.length = 0;
+  await retry.click();
+  await expect(page.getByText("Workflow detail unavailable")).toHaveCount(0);
+  await expect(revisionChoice).toHaveValue(attemptedHash);
+  await expect(page.getByRole("heading", { name: "Run ID" }).locator("..").locator("code")).not.toHaveText(runId ?? "");
+  await expect(page.getByRole("button", { name: "Refresh workflow detail" })).toHaveCount(0);
+  expectOnlyDetailGets([detailTarget(attemptedHash)]);
+  expect(page.url()).toBe(newRunUrl);
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-detail-desktop.png",
+    fullPage: true
+  });
+
+  secondJourney = true;
+  await page.reload();
+  const reloadedRow = page.getByRole("article", { name });
+  await expect(reloadedRow).toBeVisible();
+  observed.length = 0;
+  await reloadedRow.getByText("Details", { exact: true }).click();
+  await expect(page.getByRole("button", { name: "Refresh workflow detail" })).toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
+  const reloadedChoice = reloadedRow.getByLabel(`Revision of ${name}`);
+  await reloadedChoice.selectOption(attemptedHash);
+  await expect(reloadedChoice).toHaveValue(attemptedHash);
+  await reloadedRow.getByRole("radio").check();
+  await expect(page.getByRole("heading", { name: "Run ID" })).toBeVisible();
+  await page.getByLabel("Publish YAML").check();
+  releaseLateConfirmed();
+  await expect(page.getByRole("button", { name: "Start" })).toHaveCount(0);
+  await page.getByLabel("Saved workflow").check();
+  await reloadedRow.getByText("Details", { exact: true }).click();
+  await expect(reloadedRow.getByLabel(`Revision of ${name}`)).toHaveValue(attemptedHash);
+  expectOnlyDetailGets([detailTarget(confirmedHash), detailTarget(attemptedHash)]);
   expect(page.url()).toBe(newRunUrl);
 });
 
@@ -1844,7 +2066,9 @@ test("a declared order is a material field on start, and the typed value travels
 
   await page.goto("/atelier/new");
   await page.getByRole("radio", { name: "Saved workflow" }).check();
-  await page.getByRole("radio", { name: /Cook to order/ }).check();
+  const workflow = page.getByRole("radio", { name: /Cook to order/ });
+  await workflow.click();
+  await expect(workflow).toBeChecked();
 
   const order = page.getByRole("article", { name: "Order portions" });
   await expect(order).toBeVisible();
@@ -1887,7 +2111,9 @@ test("a declared order is a material field on start, and the typed value travels
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/atelier/new");
-  await page.getByRole("radio", { name: /Cook to order/ }).check();
+  const mobileWorkflow = page.getByRole("radio", { name: /Cook to order/ });
+  await mobileWorkflow.click();
+  await expect(mobileWorkflow).toBeChecked();
   await expect(page.getByRole("article", { name: "Order portions" })).toBeVisible();
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/v3-material-390x844.png", fullPage: true });

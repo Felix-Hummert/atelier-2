@@ -461,19 +461,78 @@ describe("mobile run entry", () => {
     expect(cockpitApi.publish).not.toHaveBeenCalled();
   });
 
-  it("discards a stale saved-workflow response after switching to publication", async () => {
+  it("keeps an unconfirmed saved-workflow radio unchecked until exact Retry supplies its draft", async () => {
     window.history.replaceState(null, "", "/atelier/new");
+    const getWorkflowRevision = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("private detail failure"))
+      .mockResolvedValueOnce(revision());
+    render(App, {
+      props: {
+        cockpitApi: api({ getWorkflowRevision }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    const option = await screen.findByRole("radio", { name: new RegExp(revisionHash) });
+
+    await fireEvent.click(option);
+    expect(await screen.findByText("Workflow detail unavailable")).toBeTruthy();
+    expect((option as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByRole("heading", { name: "Run ID" })).toBeNull();
+    expect(screen.queryByText(/private detail failure/i)).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry workflow detail" }));
+    await waitFor(() => expect((option as HTMLInputElement).checked).toBe(true));
+    expect(screen.getByRole("heading", { name: "Run ID" }).isConnected).toBe(true);
+    expect(getWorkflowRevision.mock.calls.map(([hash]) => hash)).toEqual([
+      revisionHash,
+      revisionHash
+    ]);
+  });
+
+  it("keeps a published draft when an earlier saved-detail response arrives late", async () => {
+    window.history.replaceState(null, "", "/atelier/new");
+    let publishedHash = "";
     let resolveRevision = (revision: WorkflowRevisionDetail): void => void revision;
     const deferred = new Promise<WorkflowRevisionDetail>((resolve) => { resolveRevision = resolve; });
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(() => deferred),
+      publish: vi.fn(async (mutation) => {
+        publishedHash = mutation.mutation_id.slice("publish:".length);
+        return {
+          status: 201,
+          value: {
+            ...revision(),
+            workflow_revision_hash: publishedHash,
+            document_base64: mutation.body_base64
+          }
+        };
+      })
+    });
     render(App, {
-      props: { cockpitApi: api({ getWorkflowRevision: vi.fn(() => deferred) }), mutationJournal: new MutationJournal(sessionStorage) }
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
     await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
-    expect(screen.getByText("Loading workflow…")).toBeTruthy();
+    expect((await screen.findByRole("button", {
+      name: "Refresh workflow detail"
+    })).getAttribute("aria-disabled")).toBe("true");
     await fireEvent.click(screen.getByLabelText("Publish YAML"));
+    await fireEvent.input(screen.getByLabelText("Exact workflow YAML"), {
+      target: { value: "format_version: 1\nstart_node_id: agent\n" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Review publication" }));
+    await fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Publish this exact workflow?" }))
+        .getByRole("button", { name: "Publish" })
+    );
+    await screen.findByRole("button", { name: "Start" });
     resolveRevision(revision());
 
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Start" })).toBeNull());
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    expect(jsonBody(vi.mocked(cockpitApi.start).mock.calls[0]?.[0])).toMatchObject({
+      workflow_revision_hash: publishedHash
+    });
   });
 
   it("keeps an ambiguous start byte-identical and exposes Retry or Discard after reload", async () => {

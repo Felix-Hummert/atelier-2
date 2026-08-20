@@ -96,6 +96,16 @@
     catalogByName: Record<string, CatalogNameState>;
   }
 
+  type WorkflowDetailIntent =
+    | { kind: "details"; rowKey: string; revisionHash: string }
+    | { kind: "edit"; rowKey: string; revisionHash: string }
+    | { kind: "select"; rowKey: string; revisionHash: string; chooseRow: boolean };
+
+  interface WorkflowDetailResource {
+    read: RetainedRead<WorkflowRevisionDetail, ReadFailure>;
+    intent: WorkflowDetailIntent;
+  }
+
   type ReadFailure =
     | { kind: "unavailable"; title: string }
     | { kind: "incomplete"; title: string };
@@ -113,9 +123,8 @@
   let publicationTrigger: HTMLButtonElement;
   let publicationDialog: HTMLDivElement;
   let pending: JournalEntry[] = [];
-  let operation: "load" | "publish" | "start" | "retry" | null = null;
+  let operation: "publish" | "start" | "retry" | null = null;
   $: busy = operation !== null;
-  let selectionGeneration = 0;
   let selectedHashByKey: Record<string, string> = {};
   let chosenRowKey: string | null = null;
   $: newestByName = revisions.confirmed?.newestByName ?? {};
@@ -140,11 +149,12 @@
   }
 
   function setRowRevision(row: SavedWorkflowRow, revisionHash: string): void {
-    selectedHashByKey = { ...selectedHashByKey, [row.key]: revisionHash };
-    void revealPublishedGraph(revisionHash);
-    if (chosenRowKey === row.key) {
-      void chooseSaved(revisionHash);
-    }
+    void requestWorkflowDetail({
+      kind: "select",
+      rowKey: row.key,
+      revisionHash,
+      chooseRow: chosenRowKey === row.key
+    });
   }
 
   async function resolveCatalogNames(
@@ -209,30 +219,14 @@
   function changeChosenWorkflow(): void {
     chosenRowKey = null;
     draft = null;
-    selectionGeneration += 1;
-    operation = null;
+    activeWorkflowDetailHash = null;
     failureMessage = null;
     editingHash = null;
     editYaml = null;
   }
 
-  async function chooseSaved(revisionHash: string): Promise<void> {
-    const generation = ++selectionGeneration;
-    operation = "load";
-    failureMessage = null;
-    try {
-      const revision = await cockpitApi.getWorkflowRevision(revisionHash);
-      if (generation === selectionGeneration) prepareDraft(revision);
-    } catch (error) {
-      if (generation === selectionGeneration) showFailure(error, "The workflow could not be loaded.");
-    } finally {
-      if (generation === selectionGeneration) operation = null;
-    }
-  }
-
   function changeWorkflowSource(): void {
-    selectionGeneration += 1;
-    operation = null;
+    activeWorkflowDetailHash = null;
     draft = null;
     failureMessage = null;
     chosenRowKey = null;
@@ -383,8 +377,8 @@
     return [];
   }
 
-  let publishedDetails: Record<string, WorkflowRevisionDetail> = {};
-  let revealingHash: string | null = null;
+  let workflowDetails: Record<string, WorkflowDetailResource> = {};
+  let activeWorkflowDetailHash: string | null = null;
   let editingHash: string | null = null;
   let editYaml: string | null = null;
   let publicationDocument = "";
@@ -435,31 +429,93 @@
     return parts.join(" · ");
   }
 
-  async function revealPublishedGraph(revisionHash: string): Promise<void> {
-    if (publishedDetails[revisionHash] !== undefined) return;
-    revealingHash = revisionHash;
-    try {
-      const revision = await cockpitApi.getWorkflowRevision(revisionHash);
-      publishedDetails = { ...publishedDetails, [revisionHash]: revision };
-    } catch (error) {
-      showFailure(error, "The workflow could not be loaded.");
-    } finally {
-      if (revealingHash === revisionHash) revealingHash = null;
+  function applyWorkflowDetailIntent(
+    detail: WorkflowRevisionDetail,
+    intent: WorkflowDetailIntent
+  ): void {
+    if (intent.kind === "details") return;
+    if (intent.kind === "edit") {
+      editingHash = intent.revisionHash;
+      editYaml = yamlOfPublishedDocument(detail);
+      if (editYaml === null) {
+        showFailure(
+          new Error("The published document is not UTF-8."),
+          "The published document could not be read."
+        );
+      }
+      return;
+    }
+    selectedHashByKey = { ...selectedHashByKey, [intent.rowKey]: intent.revisionHash };
+    editingHash = null;
+    editYaml = null;
+    if (intent.chooseRow) {
+      chosenRowKey = intent.rowKey;
+      prepareDraft(detail);
     }
   }
 
-  async function openEdit(revisionHash: string): Promise<void> {
-    await revealPublishedGraph(revisionHash);
-    const detail = publishedDetails[revisionHash];
-    if (detail === undefined) return;
-    editingHash = revisionHash;
-    editYaml = yamlOfPublishedDocument(detail);
-    if (editYaml === null) {
-      showFailure(
-        new Error("The published document is not UTF-8."),
-        "The published document could not be read."
-      );
+  async function requestWorkflowDetail(
+    intent: WorkflowDetailIntent,
+    retry = false
+  ): Promise<void> {
+    const current = workflowDetails[intent.revisionHash] ?? {
+      read: retainedRead<WorkflowRevisionDetail, ReadFailure>(),
+      intent
+    };
+    activeWorkflowDetailHash = intent.revisionHash;
+    workflowDetails = { ...workflowDetails, [intent.revisionHash]: { ...current, intent } };
+    if (current.read.confirmed !== null) {
+      applyWorkflowDetailIntent(current.read.confirmed, intent);
+      return;
     }
+    if (current.read.request.state === "loading" ||
+        (current.read.request.state === "failed" && !retry)) return;
+    const begun = beginRead(current.read);
+    workflowDetails = {
+      ...workflowDetails,
+      [intent.revisionHash]: { read: begun.read, intent }
+    };
+    try {
+      const detail = await cockpitApi.getWorkflowRevision(intent.revisionHash);
+      const owned = workflowDetails[intent.revisionHash];
+      if (owned === undefined) return;
+      if (detail.workflow_revision_hash !== intent.revisionHash) {
+        workflowDetails = {
+          ...workflowDetails,
+          [intent.revisionHash]: {
+            ...owned,
+            read: failRead(owned.read, begun.generation, {
+              kind: "unavailable",
+              title: "Workflow detail unavailable"
+            })
+          }
+        };
+        return;
+      }
+      const read = confirmRead(owned.read, begun.generation, detail);
+      workflowDetails = { ...workflowDetails, [intent.revisionHash]: { ...owned, read } };
+      if (activeWorkflowDetailHash === intent.revisionHash && read.confirmed !== null) {
+        applyWorkflowDetailIntent(read.confirmed, owned.intent);
+      }
+    } catch {
+      const owned = workflowDetails[intent.revisionHash];
+      if (owned === undefined) return;
+      workflowDetails = {
+        ...workflowDetails,
+        [intent.revisionHash]: {
+          ...owned,
+          read: failRead(owned.read, begun.generation, {
+            kind: "unavailable",
+            title: "Workflow detail unavailable"
+          })
+        }
+      };
+    }
+  }
+
+  function retryWorkflowDetail(revisionHash: string): void {
+    const resource = workflowDetails[revisionHash];
+    if (resource !== undefined) void requestWorkflowDetail(resource.intent, true);
   }
 
   function declaredOrdersOf(graph: WorkflowRevisionDetail["graph"]): OrderDraft[] {
@@ -575,6 +631,7 @@
       document_base64: result.value.document_base64
     });
     if (!resolved) throw new Error("The publication response did not prove the exact request.");
+    activeWorkflowDetailHash = null;
     editingHash = null;
     editYaml = null;
     prepareDraft(result.value);
@@ -838,7 +895,11 @@
           revision,
           revision.name === null ? undefined : catalogByName[revision.name]
         )}
-        {@const published = publishedDetails[revision.workflow_revision_hash]?.graph}
+        {@const published = workflowDetails[revision.workflow_revision_hash]?.read.confirmed?.graph}
+        {@const activeDetail = activeWorkflowDetailHash === null
+          ? undefined
+          : workflowDetails[activeWorkflowDetailHash]}
+        {@const rowDetail = activeDetail?.intent.rowKey === row.key ? activeDetail : undefined}
         <article
           class="saved-workflow form-{catalogForm}"
           data-catalog-form={catalogForm}
@@ -854,9 +915,14 @@
                   value={row.key}
                   checked={chosenRowKey === row.key}
                   disabled={busy || !cockpitCanShow(revision)}
-                  onchange={() => {
-                    chosenRowKey = row.key;
-                    void chooseSaved(revision.workflow_revision_hash);
+                  onchange={(event) => {
+                    event.currentTarget.checked = chosenRowKey === row.key;
+                    void requestWorkflowDetail({
+                      kind: "select",
+                      rowKey: row.key,
+                      revisionHash: revision.workflow_revision_hash,
+                      chooseRow: true
+                    });
                   }}
                 />
                 <span class="revision-label">
@@ -887,11 +953,22 @@
                 </button>
               {/if}
             </div>
+            {#if rowDetail !== undefined && rowDetail.read.request.state !== "idle"}
+              <ReadState
+                read={rowDetail.read}
+                label="workflow detail"
+                onRetry={() => retryWorkflowDetail(rowDetail.intent.revisionHash)}
+              />
+            {/if}
             <details
               class="revision-details"
               ontoggle={(event) => {
                 if (event.currentTarget.open) {
-                  void revealPublishedGraph(revision.workflow_revision_hash);
+                  void requestWorkflowDetail({
+                    kind: "details",
+                    rowKey: row.key,
+                    revisionHash: revision.workflow_revision_hash
+                  });
                 }
               }}
             >
@@ -899,11 +976,9 @@
                 aria-label={revision.name === null
                   ? "Details for this unnamed workflow"
                   : `Details for ${revision.name}`}
-                onclick={() => { void revealPublishedGraph(revision.workflow_revision_hash); }}
               >Details</summary>
               <p class="revision-facts">
                 {publishedRevisionFacts(revision, published)}
-                {#if revealingHash === revision.workflow_revision_hash} · Loading workflow…{/if}
               </p>
               {#if publishedNodePreviews(published) !== null}
                 <WorkflowGraphDrawing
@@ -942,7 +1017,11 @@
                     <label class="revision-choice">
                       <select
                         value={revision.workflow_revision_hash}
-                        onchange={(event) => setRowRevision(row, event.currentTarget.value)}
+                        onchange={(event) => {
+                          const attemptedHash = event.currentTarget.value;
+                          event.currentTarget.value = revision.workflow_revision_hash;
+                          setRowRevision(row, attemptedHash);
+                        }}
                         disabled={busy}
                         aria-label={`Revision of ${row.name}`}
                       >
@@ -969,8 +1048,14 @@
               <button
                 type="button"
                 class="quiet"
-                disabled={busy}
-                onclick={() => { void openEdit(revision.workflow_revision_hash); }}
+                disabled={busy || (rowDetail !== undefined && rowDetail.read.request.state !== "idle")}
+                onclick={() => {
+                  void requestWorkflowDetail({
+                    kind: "edit",
+                    rowKey: row.key,
+                    revisionHash: revision.workflow_revision_hash
+                  });
+                }}
               >Edit</button>
               {#if editingHash === revision.workflow_revision_hash}
                 {#if editYaml === null}
@@ -997,7 +1082,6 @@
           </div>
         </article>
       {/each}
-      {#if operation === "load"}<p class="status" role="status">Loading workflow…</p>{/if}
       {#if revisions.confirmed?.items.length === 0}<p class="muted">No saved workflows yet.</p>{/if}
     </fieldset>
   {:else}
