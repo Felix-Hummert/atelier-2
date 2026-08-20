@@ -46,6 +46,7 @@ from atelier2.contracts.catalog_v3 import (
 from atelier2.contracts.host_configuration import (
     MAXIMUM_OCCUPANCY_BINDINGS,
     MAXIMUM_PROJECT_ID_CHARACTERS,
+    MAXIMUM_SERVED_PROJECTS,
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
@@ -129,6 +130,10 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "InlineOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "OccupancyBindingResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "ProjectResource.public_project_reference": (
+        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
+    ),
+    "ProjectListResource.items": MAXIMUM_SERVED_PROJECTS,
     "OccupancyRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "OccupancyRevisionResource.public_project_reference": (
         MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS

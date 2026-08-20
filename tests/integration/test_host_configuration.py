@@ -6,9 +6,12 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from fastapi.testclient import TestClient
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.dbos.host_configuration import (
+    DbosHostConfigurationChannel,
     append_project_root,
     latest_occupancy_revision,
     latest_project_root_revision,
@@ -24,6 +27,8 @@ from atelier2.adapters.dbos.schema import (
     initialize_schema,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.app import create_app
+from atelier2.api.openapi import PROJECT_PATH, PROJECTS_PATH
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
@@ -37,6 +42,7 @@ from atelier2.contracts.host_configuration import (
     OccupancyRevision,
     OccupancyRevisionConflict,
     ProjectId,
+    ProjectRootBytesDisagree,
     ProjectRootMissing,
     ProjectRootRevision,
     ProjectUnknown,
@@ -44,14 +50,30 @@ from atelier2.contracts.host_configuration import (
 from atelier2.host import main
 from atelier2.host.serving import compose_application
 from tests.host.test_local_host import serve_arguments, served_settings
+from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 from tests.scenarios.projects import declaring_verification, git_project
 from tests.scenarios.runtime import exact_output_runtime
 
 
-def opened_channel(tmp_path: Path):
+def opened_channel(tmp_path: Path) -> Engine:
     engine = create_canonical_engine(tmp_path / "atelier.sqlite")
     initialize_schema(engine)
     return engine
+
+
+def project_http_client(engine: Engine, project_id: ProjectId) -> TestClient:
+    return TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=api_ports(
+                host_configuration_channel=DbosHostConfigurationChannel(engine)
+            ),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+            served_project_id=project_id,
+        )
+    )
 
 
 def test_a_written_project_root_is_read_back(tmp_path: Path) -> None:
@@ -216,6 +238,77 @@ def test_bootstrap_flags_write_the_channel_and_the_runtime_reads_it(
         assert runtime.declared_project.source.head() == pin
     finally:
         runtime.close()
+
+
+def test_compose_serves_the_configured_project_through_its_delivered_reference(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    git_project(root, declaring_verification(["/bin/true"]))
+    app, runtime = compose_application(
+        served_settings(tmp_path, project_id=ProjectId("studio"), project_root=root)
+    )
+
+    try:
+        client = TestClient(app)
+        listed = client.get(PROJECTS_PATH)
+        (project,) = listed.json()["items"]
+        detailed = client.get(
+            PROJECT_PATH.format(
+                public_project_reference=project["public_project_reference"]
+            )
+        )
+
+        assert listed.status_code == 200
+        assert detailed.status_code == 200
+        assert detailed.json() == project
+    finally:
+        runtime.close()
+
+
+def test_tampered_project_root_bytes_are_durable_state_corrupt_over_http(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    engine = opened_channel(tmp_path)
+    project_id = ProjectId("studio")
+    publish_project_root_revision(engine, ProjectRootRevision(project_id, 1, root))
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text("DROP TRIGGER host_project_root_revisions_no_update")
+        )
+        connection.execute(
+            sa.text("UPDATE host_project_root_revisions SET root_path = '/tampered'")
+        )
+
+    try:
+        with pytest.raises(ProjectRootBytesDisagree):
+            latest_project_root_revision(engine, project_id)
+        response = project_http_client(engine, project_id).get(PROJECTS_PATH)
+
+        assert response.status_code == 500
+        assert response.json()["type"].endswith("durable-state-corrupt")
+    finally:
+        engine.dispose()
+
+
+def test_a_real_unreadable_project_channel_stays_temporarily_unavailable(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    engine = opened_channel(tmp_path)
+    engine.dispose()
+    database.rename(tmp_path / "unavailable.sqlite")
+    database.mkdir()
+
+    try:
+        response = project_http_client(engine, ProjectId("studio")).get(PROJECTS_PATH)
+
+        assert response.status_code == 503
+        assert response.json()["type"].endswith("temporarily-unavailable")
+    finally:
+        engine.dispose()
 
 
 def test_compose_reads_the_pinned_project_from_the_channel_without_a_second_flag(

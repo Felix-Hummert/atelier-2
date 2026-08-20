@@ -888,11 +888,16 @@ project. CLI flags remain bootstrap of where the channel lives --
 the first mapping -- they are not a second copy of the map. After the mapping
 exists, compose and the run path that needs a project root read it from the
 channel for that project id, not from a second `--project-root` flag. A bad
-project id is refused `project-unknown`. An operation that names a project
-with no configured root is also `project-unknown`; the channel itself still
-names a missing row `project-root-missing`. An unreadable channel is
-`host-configuration-unreadable`. There is no HTTP project resource, no second
-project, and no store-per-project process.
+project id -- including text that is not exact UTF-8 Unicode scalar text -- is
+refused `project-unknown` before hashing or configuration. `GET
+/atelier/api/v1/projects` answers zero or the one project this process opened,
+and its delivered `project1.` reference addresses the identical detail
+resource. That resource exposes neither the internal id nor the root path. A
+different well-formed reference is `project-unknown`; a malformed reference is
+`invalid-public-project-reference`. A configured id with no root is not an
+empty collection, and unreadable or corrupt configuration stays visibly
+unavailable or corrupt. There is no HTTP project write, second project,
+pagination, project editor, or store-per-project process.
 
 The canonical store is schema V26. A fresh store is created as exact V26 and
 carries published revisions of the closed kind set, lineage membership bound

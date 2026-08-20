@@ -40,6 +40,7 @@ from atelier2.contracts.catalog_v3 import (
 from atelier2.contracts.host_configuration import (
     MAXIMUM_OCCUPANCY_BINDINGS,
     MAXIMUM_PROJECT_ID_CHARACTERS,
+    MAXIMUM_SERVED_PROJECTS,
 )
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 
@@ -157,6 +158,19 @@ class AuthProfileRevisionPageResource(ApiModel):
 class OccupancyBindingResource(ApiModel):
     role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ProjectResource(ApiModel):
+    public_project_reference: str = Field(
+        pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    )
+
+
+class ProjectListResource(ApiModel):
+    items: tuple[ProjectResource, ...] = Field(
+        max_length=MAXIMUM_SERVED_PROJECTS, strict=False
+    )
 
 
 class OccupancyRevisionResource(ApiModel):
