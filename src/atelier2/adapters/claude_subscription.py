@@ -148,9 +148,10 @@ _DISABLE_SLASH_COMMANDS_FLAG = "--disable-slash-commands"
 _NO_CHROME_FLAG = "--no-chrome"
 _NO_SESSION_PERSISTENCE_FLAG = "--no-session-persistence"
 _MAXIMUM_TURNS_FLAG = "--max-turns"
-# Stopgap until issue #26 owns a provider-neutral budget: a tool-free print
-# call needs exactly one assistant turn, so one turn cannot truncate an answer
-# and no unbounded subscription loop can start.
+# The tool-free executor intentionally does not consume a workflow Budget. Its
+# fixed one-turn cap is an internal safety invariant even when a request carries
+# a bound: one turn can print the answer and no unbounded subscription loop can
+# start.
 _HEARTBEAT_MAXIMUM_TURNS = "1"
 
 _CREDENTIAL_DIRECTORY_VARIABLE = "CLAUDE_CONFIG_DIR"
