@@ -335,6 +335,42 @@ describe("the studio holds GET /events", () => {
     expect(within(screen.getByRole("region", { name: "Waiting for you" })).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
   });
 
+  it("replaces a projected wait when a later list answers the same run as completed at a newer version", async () => {
+    let releaseCompleted: (page: { items: RunV1[]; next_after: null }) => void = () => {
+      throw new Error("COMPLETED list was released before the test held it");
+    };
+    const completedPage = new Promise<{ items: RunV1[]; next_after: null }>((resolve) => {
+      releaseCompleted = resolve;
+    });
+    const waiting = waitingInputRun({ public_run_reference: "run1.YQ" });
+    const newerCompleted = completedRun({ public_run_reference: "run1.YQ", state_version: 4 });
+    const listRuns = vi.fn(async (_after?: string, state?: string) => {
+      if (state === "COMPLETED") return completedPage;
+      return { items: [], next_after: null };
+    });
+    const getRun = vi.fn(async () => waiting);
+    const { feed } = openStudioHolding([], { listRuns, getRun });
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
+
+    feed.handlers?.event(
+      JSON.stringify(
+        waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" })
+      )
+    );
+
+    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
+    expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
+
+    releaseCompleted({ items: [newerCompleted], next_after: null });
+    const card = await screen.findByRole("article", { name: "This workshop" });
+    await waitFor(() => {
+      expect(within(card).getByText("1 landed").isConnected).toBe(true);
+    });
+    expect(within(card).queryByText("1 waiting for you")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
+  });
+
   it("retries a failed getRun until the delivered wait is visible once", async () => {
     const waiting = waitingInputRun({ public_run_reference: "run1.YQ" });
     const getRun = vi
