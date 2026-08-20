@@ -24,6 +24,11 @@ from atelier2.api.openapi import (
     EVENT_PATH,
     OCCUPANCY_PATH,
 )
+from atelier2.api.references import (
+    CATALOG_LINEAGE_ID_PATTERN,
+    MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    PUBLIC_PROJECT_REFERENCE_PATTERN,
+)
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
@@ -333,6 +338,36 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     assert attention_parameters[("Last-Event-ID", "header")]["schema"] == {
         "$ref": "#/components/schemas/EventCursor"
     }
+
+
+def test_occupancy_path_parameters_use_owned_project_and_lineage_components() -> None:
+    schema = served_app().openapi()
+    project_component = schema["components"]["schemas"]["PublicProjectReference"]
+    lineage_component = schema["components"]["schemas"]["CatalogLineageId"]
+
+    assert project_component == {
+        "type": "string",
+        "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    }
+    assert lineage_component == {
+        "type": "string",
+        "pattern": CATALOG_LINEAGE_ID_PATTERN,
+    }
+    for method in ("get", "put"):
+        parameters = {
+            (parameter["name"], parameter["in"]): parameter
+            for parameter in schema["paths"][OCCUPANCY_PATH][method]["parameters"]
+        }
+        assert parameters[("public_project_reference", "path")]["schema"] == {
+            "$ref": "#/components/schemas/PublicProjectReference"
+        }
+        assert parameters[("lineage_id", "path")]["schema"] == {
+            "$ref": "#/components/schemas/CatalogLineageId"
+        }
+        assert parameters[("lineage_id", "path")]["schema"] != {
+            "$ref": "#/components/schemas/RevisionHash"
+        }
 
 
 def test_every_declared_error_response_is_problem_json_one_of() -> None:

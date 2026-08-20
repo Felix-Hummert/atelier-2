@@ -18,9 +18,11 @@ from atelier2.api.problems import (
     TOOL_GRANT_DOCUMENT_PROBLEM_CODES,
 )
 from atelier2.api.references import (
+    CATALOG_LINEAGE_ID_PATTERN,
     EVENT_CURSOR_PATTERN,
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
+    MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
@@ -683,6 +685,11 @@ def _install_event_components(schema: dict[str, Any]) -> None:
     components["PublicProjectReference"] = {
         "type": "string",
         "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    }
+    components["CatalogLineageId"] = {
+        "type": "string",
+        "pattern": CATALOG_LINEAGE_ID_PATTERN,
     }
     components["RevisionHash"] = {
         "type": "string",
@@ -699,6 +706,10 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
         "PublicProjectReference": (
             (OCCUPANCY_PATH, "put", "public_project_reference", "path"),
             (OCCUPANCY_PATH, "get", "public_project_reference", "path"),
+        ),
+        "CatalogLineageId": (
+            (OCCUPANCY_PATH, "put", "lineage_id", "path"),
+            (OCCUPANCY_PATH, "get", "lineage_id", "path"),
         ),
         "PublicRunReference": (
             (API_PREFIX + "/runs", "get", "after", "query"),

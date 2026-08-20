@@ -4,16 +4,24 @@ import pytest
 
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
+    MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     EventCursor,
     InvalidEventCursor,
+    InvalidPublicProjectReference,
     InvalidPublicRunReference,
     InvalidRevisionHash,
     decode_canonical_base64,
+    decode_public_project_reference,
     decode_public_run_reference,
     encode_event_cursor,
+    encode_public_project_reference,
     encode_public_run_reference,
     parse_event_cursor,
     parse_revision_hash,
+)
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_PROJECT_ID_CHARACTERS,
+    ProjectId,
 )
 from atelier2.contracts.runs import RunId
 
@@ -44,6 +52,36 @@ def test_public_run_reference_rejects_noncanonical_or_invalid_values(
 ) -> None:
     with pytest.raises(InvalidPublicRunReference):
         decode_public_run_reference(reference)
+
+
+def test_public_project_reference_bound_is_the_longest_encoding_of_a_project_id() -> (
+    None
+):
+    longest = encode_public_project_reference(
+        ProjectId("\U00010000" * MAXIMUM_PROJECT_ID_CHARACTERS)
+    )
+
+    assert len(longest) == MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
+    assert decode_public_project_reference(longest) == ProjectId(
+        "\U00010000" * MAXIMUM_PROJECT_ID_CHARACTERS
+    )
+
+
+def test_overlong_public_project_reference_is_rejected_before_payload_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_decode(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError(
+            "over-limit public project reference reached base64 decoding"
+        )
+
+    monkeypatch.setattr("atelier2.api.references.base64.b64decode", unexpected_decode)
+    over_bound = "project1." + "A" * (
+        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS + 1 - len("project1.")
+    )
+
+    with pytest.raises(InvalidPublicProjectReference):
+        decode_public_project_reference(over_bound)
 
 
 @pytest.mark.parametrize("sequence", [1, MAX_SIGNED_INT64])

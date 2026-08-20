@@ -6,7 +6,11 @@ import re
 from dataclasses import dataclass
 
 from atelier2.contracts.hashing import SHA256_HEX_DIGEST
-from atelier2.contracts.host_configuration import ProjectId, ProjectUnknown
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_PROJECT_ID_CHARACTERS,
+    ProjectId,
+    ProjectUnknown,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 MAX_SIGNED_INT64 = 9_223_372_036_854_775_807
@@ -24,6 +28,7 @@ MAXIMUM_INVALID_FIELD_PATH_CHARACTERS = 256
 MAXIMUM_INVALID_FIELD_REASON_CHARACTERS = 512
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
+CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"
 PUBLIC_PROJECT_REFERENCE_PATTERN = r"^project1\.[A-Za-z0-9_-]+$"
 EVENT_CURSOR_PATTERN = r"^event1\.[A-Za-z0-9_-]+\.[1-9][0-9]*$"
@@ -100,7 +105,21 @@ def encode_public_project_reference(project_id: ProjectId) -> str:
     return _PUBLIC_PROJECT_REFERENCE_PREFIX + encoded
 
 
+# Longest project1. encoding of a ProjectId the durable contract admits. One
+# four-byte scalar is the widest UTF-8 a Python character can occupy, so this
+# is the bound the codec, the occupancy door, and OpenAPI must share.
+MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS = len(
+    encode_public_project_reference(
+        ProjectId("\U00010000" * MAXIMUM_PROJECT_ID_CHARACTERS)
+    )
+)
+
+
 def decode_public_project_reference(reference: str) -> ProjectId:
+    if len(reference) > MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS:
+        raise InvalidPublicProjectReference(
+            "public project reference exceeds its character limit"
+        )
     if not reference.startswith(_PUBLIC_PROJECT_REFERENCE_PREFIX):
         raise InvalidPublicProjectReference(
             "public project reference has the wrong version"

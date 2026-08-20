@@ -14,8 +14,10 @@ from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, ApiProblem
 from atelier2.api.projection.runs import run_resource
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
+    InvalidPublicProjectReference,
     InvalidPublicRunReference,
     decode_canonical_base64,
+    decode_public_project_reference,
     decode_public_run_reference,
 )
 from atelier2.api.stream import BoundedQueryRunner, QueryAdmissionTimeout
@@ -31,6 +33,7 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_projections import (
     RunProjection,
@@ -114,6 +117,19 @@ def decode_public_reference(value: str, limits: ApiLimits) -> RunId:
         raise ApiProblem("invalid-public-run-reference") from error
     except InvalidPublicRunReference as error:
         raise ApiProblem("invalid-public-run-reference") from error
+
+
+def decode_public_project_reference_value(value: str, limits: ApiLimits) -> ProjectId:
+    try:
+        # Encoded length is the codec bound, not maximum_field_characters: a
+        # maximum ProjectId encodes longer than the decoded id.
+        project_id = decode_public_project_reference(value)
+        limits.require_field(project_id.value)
+        return project_id
+    except ApiLimitExceeded as error:
+        raise ApiProblem("invalid-public-project-reference") from error
+    except InvalidPublicProjectReference as error:
+        raise ApiProblem("invalid-public-project-reference") from error
 
 
 def decode_base64(value: str, limits: ApiLimits) -> bytes:

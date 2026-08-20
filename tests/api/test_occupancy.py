@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
 from fastapi.testclient import TestClient
 
 from atelier2.api.app import create_app
+from atelier2.api.limits import ApiLimits
 from atelier2.api.openapi import API_PREFIX, OCCUPANCY_PATH
-from atelier2.api.references import encode_public_project_reference
+from atelier2.api.references import (
+    MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    encode_public_project_reference,
+)
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import (
+    MAXIMUM_PROJECT_ID_CHARACTERS,
     OccupancyBinding,
     OccupancyRevision,
     ProjectId,
@@ -74,13 +80,13 @@ class RecordingChannel:
         return OccupancyRevisionCreated(revision)
 
 
-def _client(channel: RecordingChannel) -> TestClient:
+def _client(channel: RecordingChannel, limits: ApiLimits | None = None) -> TestClient:
     return TestClient(
         create_app(
             source_commit="commit",
             source_tree="tree",
             ports=api_ports(host_configuration_channel=channel),
-            limits=api_limits(),
+            limits=api_limits() if limits is None else limits,
             event_poll_backoff=event_poll_backoff(),
         )
     )
@@ -187,6 +193,76 @@ def test_a_malformed_public_project_reference_is_named() -> None:
 
     assert response.status_code == 400
     assert response.json()["type"].endswith("invalid-public-project-reference")
+
+
+def test_an_over_bound_public_project_reference_never_reaches_base64_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(RecordingChannel(None))
+
+    def unexpected_decode(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError(
+            "over-limit public project reference reached base64 decoding"
+        )
+
+    monkeypatch.setattr("atelier2.api.references.base64.b64decode", unexpected_decode)
+    over_bound = "project1." + "A" * (
+        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS + 1 - len("project1.")
+    )
+
+    response = client.get(
+        OCCUPANCY_PATH.format(public_project_reference=over_bound, lineage_id=LINEAGE)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["type"].endswith("invalid-public-project-reference")
+
+
+def test_a_tight_field_limit_rejects_an_overlong_configured_project_id(
+    tmp_path,
+) -> None:
+    project = "1234567890123"
+    root = tmp_path / "project"
+    root.mkdir()
+    channel = RecordingChannel(ProjectRootRevision(ProjectId(project), 1, root))
+    client = _client(channel, limits=api_limits(maximum_field_characters=12))
+
+    response = client.get(_path(project=project))
+
+    assert response.status_code == 400
+    assert response.json()["type"].endswith("invalid-public-project-reference")
+    assert channel.published == []
+
+
+def test_the_maximum_project_id_round_trips_as_a_public_project_reference(
+    tmp_path,
+) -> None:
+    project = "é" * MAXIMUM_PROJECT_ID_CHARACTERS
+    root = tmp_path / "project"
+    root.mkdir()
+    channel = RecordingChannel(ProjectRootRevision(ProjectId(project), 1, root))
+    client = _client(channel)
+    revision = OccupancyRevision(
+        ProjectId(project),
+        CatalogLineageId(LINEAGE),
+        1,
+        (
+            OccupancyBinding(
+                AgentRole("chef"), AgentConfigurationRevisionHash(CONFIGURATION)
+            ),
+        ),
+    )
+
+    written = client.put(_path(project=project), json=_body())
+    read = client.get(_path(project=project))
+
+    assert written.status_code == 201
+    assert read.status_code == 200
+    assert written.json()["project_id"] == project
+    assert written.json()["public_project_reference"] == _reference(project)
+    assert written.json()["occupancy_revision_hash"] == revision.revision_hash.value
+    assert read.json() == written.json()
+    assert channel.published == [revision]
 
 
 def test_a_malformed_lineage_id_is_catalog_lineage_missing(tmp_path) -> None:

@@ -30,6 +30,7 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
+    MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
 )
 from atelier2.api.wire import events, requests, resources
@@ -129,6 +130,9 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "OccupancyBindingResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "OccupancyRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "OccupancyRevisionResource.public_project_reference": (
+        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
+    ),
     "OccupancyRevisionResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
     "PutOccupancyRevisionRequestResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
     "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
