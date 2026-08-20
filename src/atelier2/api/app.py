@@ -230,7 +230,10 @@ def bound_use_cases(
             request, ports.run_queries, ports.reconcile_commander
         ),
         get_occupancy_revision=lambda project_id, lineage_id: get_occupancy_revision(
-            project_id, lineage_id, ports.host_configuration_channel
+            project_id,
+            lineage_id,
+            ports.host_configuration_channel,
+            ports.catalog_resolver,
         ),
         publish_occupancy_revision=(
             lambda project_id, lineage_id, revision_number, bindings: (

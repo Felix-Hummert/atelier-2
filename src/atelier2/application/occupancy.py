@@ -131,10 +131,23 @@ def _known_project(
             assert_never(unreachable)
 
 
+def _known_workflow_lineage(
+    lineage_id: CatalogLineageId, catalog: CatalogResolver
+) -> OccupancyLineageInvalid | None:
+    match catalog.resolve_name(RevisionKind.WORKFLOW, lineage_id, "head"):
+        case CatalogNameFound():
+            return None
+        case CatalogNameMissing():
+            return OccupancyLineageInvalid()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def get_occupancy_revision(
     project_id: str,
     lineage_id: str,
     channel: HostConfigurationChannel,
+    catalog: CatalogResolver,
 ) -> GetOccupancyResult:
     try:
         project = ProjectId(project_id)
@@ -147,6 +160,9 @@ def get_occupancy_revision(
     known = _known_project(project, channel)
     if known is not None:
         return known
+    known_lineage = _known_workflow_lineage(lineage, catalog)
+    if known_lineage is not None:
+        return known_lineage
     match channel.latest_occupancy_revision(project, lineage):
         case OccupancyRevision() as revision:
             return OccupancyRead(revision)
@@ -195,13 +211,9 @@ def publish_occupancy_revision(
         if isinstance(known, ReadUnavailable):
             return WriteUnavailable(known.detail)
         return known
-    match catalog.resolve_name(RevisionKind.WORKFLOW, lineage, "head"):
-        case CatalogNameFound():
-            pass
-        case CatalogNameMissing():
-            return OccupancyLineageInvalid()
-        case _ as unreachable:
-            assert_never(unreachable)
+    known_lineage = _known_workflow_lineage(lineage, catalog)
+    if known_lineage is not None:
+        return known_lineage
     match channel.publish_occupancy_revision(revision):
         case PortOccupancyRevisionCreated(stored):
             return OccupancyRevisionPublished(stored)

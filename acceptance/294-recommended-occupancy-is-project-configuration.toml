@@ -9,9 +9,10 @@ story = "https://github.com/FlexOr2/atelier-2/issues/294"
 # typed occupancy revision for a configured project and an existing workflow
 # lineage, including a project id that is not a single URL path segment. A
 # configured project with no occupancy is occupancy-missing. An unknown project
-# is project-unknown. An unknown lineage is catalog-lineage-missing and leaves
-# occupancy unchanged. The picker does not read this recommendation yet.
+# is project-unknown. GET and PUT of an unknown lineage are
+# catalog-lineage-missing, and PUT leaves occupancy unchanged. The picker does
+# not read this recommendation yet.
 
 [[sentence]]
 id = "recommended-occupancy-is-project-configuration-on-the-wire"
-text = "PUT /projects/{public_project_reference}/occupancy/{lineage_id} stores an occupancy revision for a configured project and an existing workflow lineage, and GET returns that latest revision; a project with no occupancy is occupancy-missing, an unknown project is project-unknown, and an unknown lineage is catalog-lineage-missing without occupancy mutation."
+text = "PUT /projects/{public_project_reference}/occupancy/{lineage_id} stores an occupancy revision for a configured project and an existing workflow lineage, and GET returns that latest revision; a project with no occupancy is occupancy-missing, an unknown project is project-unknown, and GET or PUT for an unknown lineage is catalog-lineage-missing while PUT leaves occupancy unchanged."

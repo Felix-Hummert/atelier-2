@@ -177,12 +177,13 @@ def test_a_configured_project_without_occupancy_is_occupancy_missing(
 
 
 @pytest.mark.proves("recommended-occupancy-is-project-configuration-on-the-wire")
-def test_a_missing_well_formed_lineage_is_refused_without_occupancy_mutation(
+def test_a_missing_well_formed_lineage_is_refused_on_both_occupancy_doors(
     runtime: DbosRuntime, tmp_path: Path
 ) -> None:
     client = _client(runtime, tmp_path)
 
-    response = client.put(_path(lineage=MISSING_LINEAGE), json=_body())
+    read = client.get(_path(lineage=MISSING_LINEAGE))
+    written = client.put(_path(lineage=MISSING_LINEAGE), json=_body())
     with runtime.engine.connect() as connection:
         stored_headers = connection.execute(
             sa.select(sa.func.count()).select_from(host_occupancy_revisions)
@@ -191,8 +192,10 @@ def test_a_missing_well_formed_lineage_is_refused_without_occupancy_mutation(
             sa.select(sa.func.count()).select_from(host_occupancy_bindings)
         ).scalar_one()
 
-    assert response.status_code == 404
-    assert response.json()["type"].endswith("catalog-lineage-missing")
+    assert read.status_code == 404
+    assert read.json()["type"].endswith("catalog-lineage-missing")
+    assert written.status_code == 404
+    assert written.json()["type"].endswith("catalog-lineage-missing")
     assert stored_headers == 0
     assert stored_bindings == 0
 
