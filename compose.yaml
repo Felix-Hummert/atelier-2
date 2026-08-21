@@ -1,29 +1,51 @@
-# Packaged serve. Code is in the image; durable store and scratch live on the
-# host state directory. Credentials stay on the host and are mounted as one
-# read-only file. This file does not replace atelier2-live.service.
-#
-# Host networking keeps the process bind on 127.0.0.1 (required once Claude is
-# composed) while still reaching that loopback from the host browser. A bridge
-# `ports:` mapping is deliberately absent: it would need 0.0.0.0 inside.
-#
-# Network reachability beyond this machine is ADR 0009, not this file.
-
-name: atelier2
-
 services:
-  atelier2:
+  serve:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        ATELIER2_UID: "${ATELIER2_UID:-1000}"
-        ATELIER2_GID: "${ATELIER2_GID:-1000}"
         ATELIER2_SOURCE_COMMIT: "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}"
         ATELIER2_SOURCE_TREE: "${ATELIER2_SOURCE_TREE:?source tree identity is missing}"
-    network_mode: host
-    environment:
-      HOME: /home/atelier2
-      PATH: /app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, os; from urllib.request import urlopen; health = json.load(urlopen('http://127.0.0.1:8422/atelier/api/v1/health', timeout=2)); raise SystemExit(0 if health == {'status': 'serving', 'source_commit': os.environ['ATELIER2_SOURCE_COMMIT'], 'source_tree': os.environ['ATELIER2_SOURCE_TREE']} else 1)"
+      interval: 1s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+    ports:
+      - target: 8422
+        published: "0"
+        host_ip: 127.0.0.1
+        protocol: tcp
     volumes:
-      - ${ATELIER2_STATE}:/var/lib/atelier2
-      - ${ATELIER2_CLAUDE_CREDENTIALS}:/run/atelier2/claude/.credentials.json:ro
+      - type: volume
+        source: store
+        target: /var/lib/atelier2/store
+        volume:
+          nocopy: false
+    networks:
+      - serve
+    labels:
+      atelier2.source.commit: "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}"
+      atelier2.source.tree: "${ATELIER2_SOURCE_TREE:?source tree identity is missing}"
+
+volumes:
+  store:
+    labels:
+      atelier2.source.commit: "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}"
+      atelier2.source.tree: "${ATELIER2_SOURCE_TREE:?source tree identity is missing}"
+
+networks:
+  serve:
+    labels:
+      atelier2.source.commit: "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}"
+      atelier2.source.tree: "${ATELIER2_SOURCE_TREE:?source tree identity is missing}"
