@@ -1,0 +1,6 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/446"
+
+[[sentence]]
+id = "round-sensitive-run-views-preserve-current-execution-truth"
+text = "Every public run view addresses the durable current node execution, so live and completed bounded loops expose the selected round's attempt, detail, receipt, provenance, answer, timing and ordered events without poisoning another run or making stream preparation disagree with event-page terminality."

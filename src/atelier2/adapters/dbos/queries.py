@@ -45,6 +45,10 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
+from atelier2.adapters.dbos.workflow import (
+    _declared_output_schema_document,
+    _pinned_maximum_assistant_turns,
+)
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.compose_node_job import node_job
 from atelier2.application.project_node_rail import project_node_rail
@@ -77,7 +81,7 @@ from atelier2.contracts.node_records_v3 import (
     read_stored_node_receipt_reason,
 )
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
-from atelier2.contracts.run_bindings import RunV2, RunV3
+from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
@@ -108,8 +112,13 @@ from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
-from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2
-from atelier2.contracts.workflows_v3 import AgentNodeV3, WaitNodeV3, WorkflowGraphV3
+from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2, round_of
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    AnyWorkflowDocument,
+    WaitNodeV3,
+    WorkflowGraphV3,
+)
 from atelier2.ports.run_events import (
     CursorAhead,
     EventHistoryCorrupt,
@@ -270,8 +279,9 @@ _AGENT_FAILURE_FORMATS = frozenset((WorkflowFormatVersion.V2, WorkflowFormatVers
 
 
 def _run_ending_event_predicate(
-    workflow_format_version: WorkflowFormatVersion, current_node_id: str
-) -> Callable[[tuple[str, str]], bool]:
+    workflow_format_version: WorkflowFormatVersion,
+    current_node_execution_id: NodeExecutionId,
+) -> Callable[[tuple[str, NodeExecutionId]], bool]:
     """Whether one event is the event that ended this run.
 
     Two families spell an ending differently, and both readers have to ask the
@@ -282,12 +292,11 @@ def _run_ending_event_predicate(
     condition off the subworkflow node onto the run -- and there neither half
     identifies it alone. The kind cannot, because every agent node completes or
     fails with the same pair, and a linear Action completes with its own kind.
-    The node cannot either, and that is the less obvious half: an attempt event
-    is written at the node the run is standing on and advances the run's head
-    without moving it, so a healthy running history would have its last event
-    sitting on the current node and be read as an ending. What ends a V3 run is
-    the **completion or failure** of the node it stands on, so both halves are
-    asked.
+    The execution cannot either, and that is the less obvious half: an attempt
+    event can advance the run's head without moving it. What ends a V3 run is
+    the **completion or failure** of the exact execution it stands on, so both
+    halves are asked. Exact identity also keeps an earlier round's completion
+    at the same looped node from posing as the current round's ending.
 
     Asking the run row rather than parsing its document keeps this cheap: it is a
     pre-flight before stream headers and a check beside a page read, never a
@@ -300,13 +309,39 @@ def _run_ending_event_predicate(
             RunEventKind.AGENT_FAILED.value,
             RunEventKind.ACTION_COMPLETED.value,
         }
-        return lambda endpoint: endpoint[0] in ending and endpoint[1] == current_node_id
+        return lambda endpoint: (
+            endpoint[0] in ending and endpoint[1] == current_node_execution_id
+        )
     terminal_kind = RunEventKind.SUBWORKFLOW_COMPLETED.value
     failed = RunEventKind.AGENT_FAILED.value
     return lambda endpoint: (
         endpoint[0] == terminal_kind
-        or (endpoint[0] == failed and endpoint[1] == current_node_id)
+        or (endpoint[0] == failed and endpoint[1] == current_node_execution_id)
     )
+
+
+def _node_execution_id(
+    run: AnyRun, graph: AnyWorkflowDocument, node_id: str
+) -> NodeExecutionId:
+    return NodeExecutionId.for_node(
+        run.run_id,
+        run.revision_hash,
+        node_id,
+        round_of(graph, node_id, run.current_round_ordinal),
+    )
+
+
+def _event_endpoint(record: Mapping[Any, Any]) -> tuple[str, NodeExecutionId]:
+    execution_id = NodeExecutionId(str(record["node_execution_id"]))
+    expected = NodeExecutionId.for_node(
+        RunId(str(record["run_id"])),
+        WorkflowRevisionHash(str(record["revision_hash"])),
+        str(record["node_id"]),
+        int(record["round_ordinal"]),
+    )
+    if execution_id != expected:
+        raise RunTransitionConflict("event node execution binding disagrees")
+    return str(record["event_kind"]), execution_id
 
 
 def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
@@ -337,9 +372,7 @@ def _current_attempt_projection(
     operational_identity = AgentExecutorOperationalIdentity(
         str(record["executor_operational_identity"])
     )
-    execution_id = NodeExecutionId.for_node(
-        run.run_id, run.revision_hash, run.current_node_id
-    )
+    execution_id = _node_execution_id(run, graph, run.current_node_id)
     # Recomputed through the one composition owner, with everything that owner
     # is given: the orders the run was started with and the work earlier nodes
     # handed on. A recomputation that knew only part of it would answer a run
@@ -368,6 +401,14 @@ def _current_attempt_projection(
         binding,
         operational_identity,
         authored_job,
+        (
+            None
+            if (output_schema := _declared_output_schema_document(session, node))
+            is None
+            else output_schema.encode("utf-8")
+        ),
+        run.current_round_ordinal,
+        _pinned_maximum_assistant_turns(session, node),
     )
     request_hash = AgentExecutionRequestHash(str(record["request_hash"]))
     attempt_id = AgentAttemptId(str(record["attempt_id"]))
@@ -446,9 +487,7 @@ def _current_attempt_projection(
 
 def _node_receipt_refusal(
     connection: Connection,
-    run_id: RunId,
-    revision_hash: WorkflowRevisionHash,
-    node_id: str,
+    execution_id: NodeExecutionId,
 ) -> str | None:
     """The durably named reason this node's execution ended without a success.
 
@@ -460,8 +499,7 @@ def _node_receipt_refusal(
     """
     record = connection.execute(
         sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
-            node_receipts_v3.c.node_execution_id
-            == NodeExecutionId.for_node(run_id, revision_hash, node_id).value
+            node_receipts_v3.c.node_execution_id == execution_id.value
         )
     ).one_or_none()
     if record is None:
@@ -479,6 +517,7 @@ def _node_job_and_refusal(
     connection: Connection,
     projection: RunProjection,
     node: object,
+    round_ordinal: int,
 ) -> tuple[bytes | None, str | None, str | None]:
     """What this node was handed, and what stops it if something does.
 
@@ -513,7 +552,7 @@ def _node_job_and_refusal(
                 run.revision_hash,
                 projection.graph,
                 node,
-                run.current_round_ordinal,
+                round_ordinal,
             ),
         ).encode("utf-8")
     except NodeOutputNotWritten:
@@ -527,7 +566,7 @@ def _node_job_and_refusal(
 
 
 def _node_instants(
-    connection: Connection, run_id: RunId, node_id: str
+    connection: Connection, execution_id: NodeExecutionId
 ) -> tuple[RecordedAt | None, RecordedAt | None]:
     """The first start and last end recorded for this node's attempts."""
 
@@ -540,10 +579,7 @@ def _node_instants(
                     attempt_instants.c.attempt_id == agent_attempts.c.attempt_id,
                 )
             )
-            .where(
-                agent_attempts.c.run_id == run_id.value,
-                agent_attempts.c.node_id == node_id,
-            )
+            .where(agent_attempts.c.node_execution_id == execution_id.value)
             .order_by(agent_attempts.c.attempt_ordinal)
         ).mappings()
     )
@@ -558,17 +594,13 @@ def _node_instants(
 
 def _node_answer(
     connection: Connection,
-    run_id: RunId,
-    projection: RunProjection,
-    node_id: str,
+    execution_id: NodeExecutionId,
 ) -> NodeAnswer | None:
     """The value this node wrote, or nothing when it has written none yet."""
 
     record = connection.execute(
         sa.select(run_events.c.payload, run_events.c.payload_hash).where(
-            run_events.c.run_id == run_id.value,
-            run_events.c.revision_hash == projection.run.revision_hash.value,
-            run_events.c.node_id == node_id,
+            run_events.c.node_execution_id == execution_id.value,
             run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
         )
     ).one_or_none()
@@ -578,15 +610,14 @@ def _node_answer(
 
 
 def _node_provenance(
-    connection: Connection, run_id: RunId, node_id: str
+    connection: Connection, execution_id: NodeExecutionId
 ) -> NodeProvenance | None:
     """Which agent produced this node's answer, as its receipt recorded it."""
 
     record = (
         connection.execute(
             sa.select(agent_receipts_v2).where(
-                agent_receipts_v2.c.run_id == run_id.value,
-                agent_receipts_v2.c.node_id == node_id,
+                agent_receipts_v2.c.node_execution_id == execution_id.value,
             )
         )
         .mappings()
@@ -849,13 +880,19 @@ class DbosQueries:
                 }
                 if node_id not in rail:
                     return NodeQueryMissing()
+                round_ordinal = round_of(
+                    projection.graph,
+                    node_id,
+                    projection.run.current_round_ordinal,
+                )
+                execution_id = _node_execution_id(
+                    projection.run, projection.graph, node_id
+                )
                 job, job_hash, refusal = _node_job_and_refusal(
-                    connection, projection, node
+                    connection, projection, node, round_ordinal
                 )
-                durable_refusal = _node_receipt_refusal(
-                    connection, run_id, projection.run.revision_hash, node_id
-                )
-                started_at, ended_at = _node_instants(connection, run_id, node_id)
+                durable_refusal = _node_receipt_refusal(connection, execution_id)
+                started_at, ended_at = _node_instants(connection, execution_id)
                 return NodeDetailFound(
                     NodeDetail(
                         run_id=run_id,
@@ -863,8 +900,8 @@ class DbosQueries:
                         state=rail[node_id],
                         job=job,
                         job_hash=job_hash,
-                        answer=_node_answer(connection, run_id, projection, node_id),
-                        provenance=_node_provenance(connection, run_id, node_id),
+                        answer=_node_answer(connection, execution_id),
+                        provenance=_node_provenance(connection, execution_id),
                         refusal=durable_refusal
                         if durable_refusal is not None
                         else refusal,
@@ -1129,8 +1166,8 @@ class DbosQueries:
             validate_run_graph_binding(run, graphs[run.revision_hash])
 
         current_agent_executions = {
-            run.run_id: NodeExecutionId.for_node(
-                run.run_id, run.revision_hash, run.current_node_id
+            run.run_id: _node_execution_id(
+                run, graphs[run.revision_hash], run.current_node_id
             )
             for run in loaded_runs
             if isinstance(
@@ -1178,9 +1215,7 @@ class DbosQueries:
         )
         logical_keys_by_run = {
             run.run_id: logical_effect_key_for(
-                NodeExecutionId.for_node(
-                    run.run_id, run.revision_hash, run.current_node_id
-                )
+                _node_execution_id(run, graphs[run.revision_hash], run.current_node_id)
             )
             for run in waiting_runs
         }
@@ -1345,7 +1380,9 @@ class DbosQueries:
                             runs.c.state,
                             runs.c.last_event_sequence,
                             runs.c.workflow_format_version,
+                            runs.c.revision_hash,
                             runs.c.current_node_id,
+                            runs.c.current_round_ordinal,
                         ).where(runs.c.run_id == run_id.value)
                     )
                     .mappings()
@@ -1375,15 +1412,16 @@ class DbosQueries:
                 if after_sequence > 0:
                     required_sequences.add(after_sequence)
                 endpoint_records = {
-                    int(endpoint["event_sequence"]): (
-                        str(endpoint["event_kind"]),
-                        str(endpoint["node_id"]),
-                    )
+                    int(endpoint["event_sequence"]): _event_endpoint(endpoint)
                     for endpoint in connection.execute(
                         sa.select(
                             run_events.c.event_sequence,
                             run_events.c.event_kind,
+                            run_events.c.run_id,
+                            run_events.c.revision_hash,
                             run_events.c.node_id,
+                            run_events.c.node_execution_id,
+                            run_events.c.round_ordinal,
                         ).where(
                             run_events.c.run_id == run_id.value,
                             run_events.c.event_sequence.in_(required_sequences),
@@ -1394,7 +1432,12 @@ class DbosQueries:
                     return EventHistoryCorrupt()
                 ended_the_run = _run_ending_event_predicate(
                     WorkflowFormatVersion(int(record["workflow_format_version"])),
-                    str(record["current_node_id"]),
+                    NodeExecutionId.for_node(
+                        run_id,
+                        WorkflowRevisionHash(str(record["revision_hash"])),
+                        str(record["current_node_id"]),
+                        int(record["current_round_ordinal"]),
+                    ),
                 )
                 if ended_the_run(endpoint_records[head]) != terminal or any(
                     sequence < head and ended_the_run(endpoint)
@@ -1425,7 +1468,9 @@ class DbosQueries:
                             runs.c.state,
                             runs.c.last_event_sequence,
                             runs.c.workflow_format_version,
+                            runs.c.revision_hash,
                             runs.c.current_node_id,
+                            runs.c.current_round_ordinal,
                         ).where(runs.c.run_id == run_id.value)
                     )
                     .mappings()
@@ -1469,14 +1514,17 @@ class DbosQueries:
                     return EventHistoryCorrupt()
                 ended_the_run = _run_ending_event_predicate(
                     WorkflowFormatVersion(int(run_record["workflow_format_version"])),
-                    str(run_record["current_node_id"]),
+                    NodeExecutionId.for_node(
+                        run_id,
+                        WorkflowRevisionHash(str(run_record["revision_hash"])),
+                        str(run_record["current_node_id"]),
+                        int(run_record["current_round_ordinal"]),
+                    ),
                 )
                 terminal_sequences = tuple(
                     int(record["event_sequence"])
                     for record in records
-                    if ended_the_run(
-                        (str(record["event_kind"]), str(record["node_id"]))
-                    )
+                    if ended_the_run(_event_endpoint(record))
                 )
                 terminal = str(run_record["state"]) in {
                     RunState.COMPLETED.value,
@@ -1570,9 +1618,7 @@ class DbosQueries:
         }:
             raise RunTransitionConflict("agent failure event payload is not canonical")
         node_receipt_reason = (
-            _node_receipt_refusal(
-                connection, event.run_id, event.revision_hash, event.node_id
-            )
+            _node_receipt_refusal(connection, event.node_execution_id)
             if event.event_kind is RunEventKind.AGENT_FAILED
             else None
         )
