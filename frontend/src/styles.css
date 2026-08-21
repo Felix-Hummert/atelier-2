@@ -417,7 +417,8 @@ small {
 .inbox,
 .project-card,
 .chat-door,
-.queue {
+.queue,
+.occupancy-editor {
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   padding: 1rem;
@@ -1688,12 +1689,32 @@ textarea {
   border-style: dashed;
 }
 
-.queue h2 {
+.occupancy-editor {
+  margin-bottom: 0.5rem;
+}
+
+.occupancy-confirmed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.3rem 0.65rem;
+  color: var(--accent);
+  background: var(--paper);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.queue h2,
+.occupancy-editor h2 {
   margin: 0 0 0.35rem;
   font-size: 1.05rem;
 }
 
-.queue p {
+.queue p,
+.occupancy-editor > p {
   margin: 0 0 0.85rem;
   color: var(--muted);
 }

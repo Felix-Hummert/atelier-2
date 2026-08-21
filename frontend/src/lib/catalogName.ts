@@ -1,4 +1,4 @@
-import { CockpitRequestError, type Problem } from "../api/client";
+import { CockpitRequestError, type Problem, type WorkflowRevisionSummary } from "../api/client";
 
 /**
  * Whether a published title can be a catalog display name.
@@ -49,6 +49,26 @@ export function catalogNameStateOf(
       throw error;
     }
   );
+}
+
+/**
+ * The complete catalog reading for a workflow list. An admitted head belongs
+ * to that list only when its exact revision is present there; otherwise the
+ * two reads are not one snapshot.
+ */
+export function catalogHeadsOf(
+  items: readonly WorkflowRevisionSummary[],
+  states: Readonly<Record<string, CatalogNameState>>
+): Record<string, string> | null {
+  const heads: Record<string, string> = {};
+  for (const [name, state] of Object.entries(states)) {
+    if (state.kind !== "admitted") continue;
+    if (!items.some((item) => item.name === name && item.workflow_revision_hash === state.revisionHash)) {
+      return null;
+    }
+    heads[name] = state.revisionHash;
+  }
+  return heads;
 }
 
 export function problemCode(error: unknown): string | null {

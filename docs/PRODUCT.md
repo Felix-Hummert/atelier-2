@@ -730,7 +730,12 @@ when the last run landed. Every level sits in the target-UI skeleton from mockup
 and a topbar. Studio and Projekte open today's pages; Runs, Library, and
 Settings are named and disabled with their vision reference. The topbar carries
 the atelier·2 wordmark and the one project. No page was added behind those
-destinations. The new-run trail names the project the same way the other
+destinations. Project is the one editing surface for that durable
+recommendation: after it confirms one complete workflow, catalog, agent,
+detail, and occupancy snapshot, an operator may choose or explicitly remove an
+authored role. Foreign and unavailable bindings stay intact unless the operator
+changes an authored role; an uncertain save retries the same bytes and a
+conflict requires Reload. The new-run trail names the project the same way the other
 levels do. It can answer the exact integer requested by a Wait node and resolve an
 unknown Action outcome as either an exact found effect or an accountable,
 confirmed absence. For a V2 run it renders the node states the API names rather

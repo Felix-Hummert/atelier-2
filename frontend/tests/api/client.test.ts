@@ -697,6 +697,20 @@ describe("the catalog name the picker asks for the head", () => {
     expect(resolved).toEqual(body);
   });
 
+  it("refuses a catalog head whose display name is not the asked name", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        display_name: "another-name",
+        lineage_id: digest,
+        workflow_revision_hash: digest,
+        revision_number: 2
+      }), { status: 200, headers: { "content-type": "application/json" } })
+    );
+
+    await expect(createCockpitApi(fetcher).getRevisionByName("drei-saetze-review-sehend"))
+      .rejects.toThrow(/another display name/);
+  });
+
   it("proves(a-cockpit-published-v3-workflow-is-named-over-the-api): founds a lineage through the existing door", async () => {
     const body = {
       display_name: "diff-review",
@@ -987,6 +1001,71 @@ describe("the project occupancy the picker will consume", () => {
     await expect(client.getProjectOccupancy(projectReference, lineageId)).rejects.toThrow(
       /another project or lineage/
     );
+  });
+
+  it("writes the exact revision and bindings through the existing occupancy door", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ ...occupancy, revision_number: 4 }), {
+        status: 201,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const result = await createCockpitApi(fetcher).putProjectOccupancy(
+      projectReference,
+      lineageId,
+      {
+        input: { revision_number: 4, bindings: occupancy.bindings },
+        body: JSON.stringify({ revision_number: 4, bindings: occupancy.bindings })
+      }
+    );
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `/atelier/api/v1/projects/${projectReference}/occupancy/${lineageId}`
+    );
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      method: "PUT",
+      body: JSON.stringify({ revision_number: 4, bindings: occupancy.bindings })
+    });
+    expect(result.status).toBe(201);
+    expect(result.value.revision_number).toBe(4);
+  });
+
+  it("sends frozen occupancy JSON bytes unchanged on a retry", async () => {
+    const input = { revision_number: 4, bindings: occupancy.bindings };
+    const body = JSON.stringify(input);
+    const response = () => new Response(JSON.stringify({ ...occupancy, revision_number: 4 }), {
+      status: 201,
+      headers: { "content-type": "application/json" }
+    });
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response())
+      .mockResolvedValueOnce(response());
+    const client = createCockpitApi(fetcher);
+
+    await client.putProjectOccupancy(projectReference, lineageId, { input, body });
+    await client.putProjectOccupancy(projectReference, lineageId, { input, body });
+
+    expect(fetcher.mock.calls.map(([, init]) => init?.body)).toEqual([body, body]);
+  });
+
+  it("refuses mismatched frozen bytes before it opens the occupancy door", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(createCockpitApi(fetcher).putProjectOccupancy(projectReference, lineageId, {
+      input: { revision_number: 4, bindings: occupancy.bindings }, body: "{}"
+    })).rejects.toThrow(/frozen occupancy bytes/);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("refuses a write response for another project or lineage", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...occupancy, public_project_reference: "project1.b3RoZXI", revision_number: 4 }), { status: 201, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...occupancy, lineage_id: "e".repeat(64), revision_number: 4 }), { status: 201, headers: { "content-type": "application/json" } }));
+    const write = { input: { revision_number: 4, bindings: occupancy.bindings }, body: JSON.stringify({ revision_number: 4, bindings: occupancy.bindings }) };
+    const client = createCockpitApi(fetcher);
+
+    await expect(client.putProjectOccupancy(projectReference, lineageId, write)).rejects.toThrow(/another project or lineage/);
+    await expect(client.putProjectOccupancy(projectReference, lineageId, write)).rejects.toThrow(/another project or lineage/);
   });
 
   it("refuses ambiguous duplicate role bindings", () => {

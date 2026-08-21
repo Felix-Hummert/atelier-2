@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import shutil
 import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -143,9 +145,17 @@ class DelayedAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
 
 class BrowserProofHarness:
     def __init__(
-        self, app: ASGIApp, engine: sa.Engine, factory: BlockingAgentExecutorFactory
+        self,
+        app: ASGIApp,
+        runtime: DbosRuntime,
+        factory: BlockingAgentExecutorFactory,
+        recompose: Callable[[], tuple[ASGIApp, DbosRuntime]],
+        request_restart: Callable[[], None],
     ) -> None:
-        self.app, self.engine, self.factory = app, engine, factory
+        self.app, self.runtime, self.factory = app, runtime, factory
+        self.recompose = recompose
+        self.request_restart = request_restart
+        self.generation = 1
         self.expected_hash = hashlib.sha256(factory.output).hexdigest().encode("ascii")
         self.released = False
         self.start_response_observed = False
@@ -154,11 +164,45 @@ class BrowserProofHarness:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         path = scope.get("path", "")
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "GET"
+            and path == "/__e2e/generation"
+        ):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": str(self.generation).encode("ascii"),
+                }
+            )
+            return
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "POST"
+            and path == "/__e2e/recompose"
+        ):
+            self.request_restart()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 202,
+                    "headers": [(b"cache-control", b"no-store")],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": str(self.generation + 1).encode("ascii"),
+                }
+            )
+            return
         stream_number = 0
         if path.endswith("/events"):
             stream_number = self.stream_counts.get(path, 0) + 1
             self.stream_counts[path] = stream_number
         status = 0
+        start_response_body = bytearray()
 
         async def proof_send(message: Message) -> None:
             nonlocal status
@@ -169,14 +213,33 @@ class BrowserProofHarness:
                 message = {**message, "body": body}
             if (
                 message["type"] == "http.response.body"
+                and scope.get("method") == "POST"
+                and path == "/atelier/api/v1/runs"
+                and status in {200, 201}
+            ):
+                start_response_body.extend(message.get("body", b""))
+            if (
+                message["type"] == "http.response.body"
                 and not message.get("more_body", False)
                 and not self.start_response_observed
                 and scope["method"] == "POST"
                 and path == "/atelier/api/v1/runs"
                 and status in {200, 201}
             ):
-                executor = self.factory.opened
-                if executor is not None:
+                response = json.loads(start_response_body)
+                bindings = response.get("agent_bindings")
+                if not isinstance(bindings, list):
+                    raise TypeError(
+                        "the successful start did not return agent bindings"
+                    )
+                blocking_start = any(
+                    isinstance(binding, dict)
+                    and binding.get("provider_id") == self.factory.provider
+                    and binding.get("executor_revision") == self.factory.revision
+                    for binding in bindings
+                )
+                if blocking_start:
+                    executor = self.factory.opened
                     if not isinstance(executor, BlockingAgentExecutor):
                         raise TypeError(
                             "the blocking start did not open its expected executor"
@@ -215,7 +278,7 @@ class BrowserProofHarness:
             return
         if not isinstance(executor, BlockingAgentExecutor):
             raise TypeError("the test executor changed while the browser observed it")
-        with self.engine.connect() as connection:
+        with self.runtime.engine.connect() as connection:
             observed = connection.scalar(
                 sa.select(sa.func.count())
                 .select_from(agent_attempts)
@@ -225,6 +288,14 @@ class BrowserProofHarness:
             raise RuntimeError("the blocking attempt was not durably observed")
         self.released = True
         executor.release.set()
+
+    def close(self) -> None:
+        self.runtime.close()
+
+    def recompose_after_server_stop(self) -> None:
+        self.runtime.close()
+        self.app, self.runtime = self.recompose()
+        self.generation += 1
 
 
 def main() -> None:
@@ -279,6 +350,7 @@ def main() -> None:
     delayed = DelayedAgentExecutorFactory(
         "e2e-v3-slow", "delayed/v1", "e2e-delayed-process", b"V3 provider bytes"
     )
+    scratch_root = Path(tempfile.mkdtemp(prefix="atelier2-e2e-scratch-"))
 
     def runtime(
         settings: DbosRuntimeSettings,
@@ -292,9 +364,7 @@ def main() -> None:
         return DbosRuntime(
             replace(
                 settings,
-                agent_scratch_root=Path(
-                    tempfile.mkdtemp(prefix="atelier2-e2e-scratch-")
-                ),
+                agent_scratch_root=scratch_root,
             ),
             effect_factory,
             agent_factory,
@@ -314,18 +384,39 @@ def main() -> None:
         project_id=ProjectId("e2e-workshop"),
         project_root=Path(__file__).resolve().parents[2],
     )
-    with patch.object(serving, "DbosRuntime", side_effect=runtime):
-        app, live_runtime = serving.compose_application(settings)
+
+    def compose() -> tuple[ASGIApp, DbosRuntime]:
+        with patch.object(serving, "DbosRuntime", side_effect=runtime):
+            return serving.compose_application(settings)
+
+    app, live_runtime = compose()
+    restart_requested = threading.Event()
+    server: uvicorn.Server | None = None
+
+    def request_restart() -> None:
+        restart_requested.set()
+        if server is None:
+            raise RuntimeError("the e2e server is not running")
+        server.should_exit = True
+
+    harness = BrowserProofHarness(app, live_runtime, factory, compose, request_restart)
     try:
-        uvicorn.Server(
-            uvicorn.Config(
-                BrowserProofHarness(app, live_runtime.engine, factory),
-                host=settings.host,
-                port=settings.port,
+        while True:
+            server = uvicorn.Server(
+                uvicorn.Config(
+                    harness,
+                    host=settings.host,
+                    port=settings.port,
+                )
             )
-        ).run()
+            server.run()
+            if not restart_requested.is_set():
+                break
+            restart_requested.clear()
+            harness.recompose_after_server_stop()
     finally:
-        live_runtime.close()
+        harness.close()
+        shutil.rmtree(scratch_root, ignore_errors=True)
 
 
 def wait_for_reconciliation(runtime: DbosRuntime) -> None:

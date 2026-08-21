@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 
 import { NAMED_AGENT_CHOICE_STORAGE_KEY } from "../../src/lib/namedAgentChoice";
 
@@ -464,6 +464,10 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
   await page.route("**/atelier/api/v1/workflow-revisions/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const hash = path.slice(path.lastIndexOf("/") + 1);
+    if (hash !== oldHash && hash !== newHash) {
+      await route.continue();
+      return;
+    }
     if (round === 4 && hash === newHash) {
       await route.abort("failed");
       return;
@@ -484,11 +488,11 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
 
   await page.goto("/atelier/project");
   await expect(page.getByText("Project runs unavailable")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh project occupancy" })).toHaveAttribute("aria-disabled", "false");
   await expect(page.getByText(/Failed to fetch/)).toHaveCount(0);
   const retry = page.getByRole("button", { name: "Retry project runs" });
   await expect(retry).toHaveCount(1);
   const projectUrl = page.url();
-  expectOnlyProjectRead([runListPath]);
 
   observed.length = 0;
   await retry.focus();
@@ -1339,7 +1343,7 @@ async function assertMobileSurface(page: Page): Promise<void> {
     expect(clipped, `surface ${index} must not clip content`).toBeLessThanOrEqual(0);
   }
   const controls = page.locator(
-    "button, input[type=text], textarea, .determination-picker label, summary"
+    "button, input[type=text], textarea, select, .determination-picker label, summary"
   );
   for (let index = 0; index < await controls.count(); index += 1) {
     const box = await controls.nth(index).boundingBox();
@@ -1736,6 +1740,207 @@ test("proves(new-run-prefers-project-occupancy-before-local-memory-and-empty): s
     builder: projectHash,
     reviewer: rememberedHash
   });
+});
+
+test("proves(project-occupancy-editor-confirms-complete-project-truth): edits one project recommendation through the cockpit", async ({ page }) => {
+  const workflowName = "occupancy-editor-browser";
+  const schemaHash = await anyJsonSchema(page);
+  await page.goto("/atelier/new");
+  await page.getByLabel("Publish YAML").check();
+  await page.getByLabel("Exact workflow YAML").fill([
+    "format_version: 3",
+    `name: ${workflowName}`,
+    "nodes:",
+    "  - id: builder",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Build the one thing.",
+    ...declaredOutput(schemaHash, "built"),
+    "  - id: reviewer",
+    "    type: agent",
+    "    role: reviewer",
+    "    mode: headless",
+    "    instruction: Review the thing.",
+    "    depends_on: [builder]",
+    ...declaredOutput(schemaHash, "reviewed"),
+    "  - id: auditor",
+    "    type: agent",
+    "    role: auditor",
+    "    mode: headless",
+    "    instruction: Audit the thing.",
+    "    depends_on: [reviewer]",
+    ...declaredOutput(schemaHash, "audited"),
+    ""
+  ].join("\n"));
+  await page.getByRole("button", { name: "Review publication" }).click();
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+
+  for (const [role, model] of [["builder", "editor-builder"], ["reviewer", "editor-reviewer"], ["auditor", "editor-auditor"]] as const) {
+    const binding = page.getByRole("article", { name: `Binding ${role}` });
+    await expect(binding).toBeVisible();
+    await binding.getByText("Expert fields", { exact: true }).click();
+    await binding.getByLabel("Profile ID").fill(`occupancy-${role}`);
+    await binding.getByLabel("Revision").fill("1");
+    await binding.getByLabel("Provider").fill("e2e-v3");
+    await binding.getByLabel("Auth mode").selectOption("subscription");
+    await binding.getByLabel("Model").fill(model);
+    await binding.getByLabel("Executor").fill("immediate/v1");
+  }
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible({ timeout: 20_000 });
+
+  await page.goto("/atelier/project");
+  const workflow = page.getByRole("combobox", { name: "Workflow occupancy" });
+  await expect(workflow).toBeVisible();
+  await workflow.selectOption({ label: workflowName });
+  const builder = page.getByRole("combobox", { name: "Recommendation for builder" });
+  const reviewer = page.getByRole("combobox", { name: "Recommendation for reviewer" });
+  const auditor = page.getByRole("combobox", { name: "Recommendation for auditor" });
+  await expect(builder).toBeVisible();
+  await expect(page.getByText("No project recommendations yet.")).toBeVisible();
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({ path: "test-results/project-occupancy-editor-empty.png", fullPage: true });
+  await builder.selectOption({ label: "e2e-v3 · editor-builder · Subscription" });
+  await reviewer.selectOption({ label: "e2e-v3 · editor-reviewer · Subscription" });
+  await auditor.selectOption({ label: "e2e-v3 · editor-auditor · Subscription" });
+  const builderHash = await builder.inputValue();
+  const reviewerHash = await reviewer.inputValue();
+  const auditorHash = await auditor.inputValue();
+  const save = page.getByRole("button", { name: "Save" });
+  await expect(save).toBeEnabled();
+  await workflow.focus();
+  await expect(workflow).toBeFocused();
+  await expectVisibleFocus(workflow);
+  await builder.focus();
+  await expect(builder).toBeFocused();
+  await expectVisibleFocus(builder);
+  await save.focus();
+  await expect(save).toBeFocused();
+  await expectVisibleFocus(save);
+  await save.click();
+  await expect(save).toBeDisabled();
+  await expect(page.locator(".occupancy-confirmed")).toBeVisible();
+  await expect(page.getByText("Saving occupancy…")).toHaveCount(0);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({ path: "test-results/project-occupancy-editor-desktop.png", fullPage: true });
+  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
+  await page.screenshot({ path: "test-results/project-occupancy-editor-grayscale-desktop.png", fullPage: true });
+  await page.locator("style").last().evaluate((element) => element.remove());
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({ path: "test-results/project-occupancy-editor-390x844.png", fullPage: true });
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: new RegExp(workflowName) }).click();
+  await page.getByRole("article", { name: "Binding builder" }).getByLabel("Agent for builder").selectOption(builderHash);
+  await page.getByRole("article", { name: "Binding reviewer" }).getByLabel("Agent for reviewer").selectOption(auditorHash);
+  await expect(page.getByRole("article", { name: "Binding builder" }).getByLabel("Binding source: Remembered")).toBeVisible();
+  await expect(page.getByRole("article", { name: "Binding reviewer" }).getByLabel("Binding source: Remembered")).toBeVisible();
+
+  await page.goto("/atelier/project");
+  await page.getByRole("combobox", { name: "Workflow occupancy" }).selectOption({ label: workflowName });
+  await expect(page.getByRole("combobox", { name: "Recommendation for reviewer" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Recommendation for builder" }).selectOption(reviewerHash);
+  await page.getByRole("combobox", { name: "Recommendation for reviewer" }).selectOption("");
+  await page.getByRole("combobox", { name: "Recommendation for auditor" }).selectOption("");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
+  await expect(page.locator(".occupancy-confirmed")).toBeVisible();
+
+  const restarted = await page.request.post("/__e2e/recompose");
+  expect(restarted.status()).toBe(202);
+  const expectedGeneration = await restarted.text();
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
+  }).toPass({ timeout: 20_000 });
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: new RegExp(workflowName) }).click();
+  await expect(page.getByRole("article", { name: "Binding builder" }).getByLabel("Binding source: Project")).toBeVisible();
+  await expect(page.getByRole("article", { name: "Binding reviewer" }).getByLabel("Binding source: Remembered")).toBeVisible();
+  await expect(page.getByRole("article", { name: "Binding auditor" }).getByLabel("Binding source: Choose")).toBeVisible();
+  await expect(page.getByRole("article", { name: "Binding builder" }).getByLabel("Agent for builder")).toHaveValue(reviewerHash);
+  await expect(page.getByRole("article", { name: "Binding reviewer" }).getByLabel("Agent for reviewer")).toHaveValue(auditorHash);
+
+  const unavailable = async (route: Route) => route.abort();
+  await page.route("**/atelier/api/v1/projects", unavailable);
+  await page.goto("/atelier/project");
+  await expect(page.getByText("Project occupancy unavailable")).toBeVisible();
+  await page.screenshot({ path: "test-results/project-occupancy-editor-unavailable.png", fullPage: true });
+  await page.unroute("**/atelier/api/v1/projects", unavailable);
+
+  await page.reload();
+  await page.getByRole("combobox", { name: "Workflow occupancy" }).selectOption({ label: workflowName });
+  await expect(page.getByRole("combobox", { name: "Recommendation for builder" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Recommendation for builder" }).selectOption(builderHash);
+  const conflict = async (route: Route) => {
+    if (route.request().method() === "PUT") {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/problem+json",
+        body: JSON.stringify({
+          type: "urn:atelier2:problem:v1:occupancy-revision-conflict",
+          title: "Occupancy revision conflict",
+          status: 409,
+          detail: "another operator changed the recommendation"
+        })
+      });
+      return;
+    }
+    await route.continue();
+  };
+  await page.route("**/occupancy/**", conflict);
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("Occupancy changed elsewhere.")).toBeVisible();
+  await page.screenshot({ path: "test-results/project-occupancy-editor-conflict.png", fullPage: true });
+  await page.unroute("**/occupancy/**", conflict);
+  await page.getByRole("button", { name: "Reload" }).click();
+  await expect(page.getByRole("combobox", { name: "Recommendation for builder" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Recommendation for builder" }).selectOption(builderHash);
+  let uncertainWriteBody: Buffer | null = null;
+  const uncertain = async (route: Route) => {
+    if (route.request().method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    uncertainWriteBody = route.request().postDataBuffer();
+    await route.abort();
+  };
+  await page.route("**/occupancy/**", uncertain);
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("Occupancy save unconfirmed.")).toBeVisible();
+  expect(uncertainWriteBody).not.toBeNull();
+  await page.screenshot({ path: "test-results/project-occupancy-editor-uncertain.png", fullPage: true });
+  await page.unroute("**/occupancy/**", uncertain);
+  let retryWriteBody: Buffer | null = null;
+  const observeRetry = async (route: Route) => {
+    if (route.request().method() === "PUT") retryWriteBody = route.request().postDataBuffer();
+    await route.continue();
+  };
+  await page.route("**/occupancy/**", observeRetry);
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator(".occupancy-confirmed")).toContainText("Saved");
+  expect(retryWriteBody).not.toBeNull();
+  expect(retryWriteBody).toEqual(uncertainWriteBody);
+  await page.unroute("**/occupancy/**", observeRetry);
+  const noWorkflows = async (route: Route) => {
+    if (route.request().url().includes("/workflow-revisions?")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [], next_after_revision_hash: null })
+      });
+      return;
+    }
+    await route.continue();
+  };
+  await page.route("**/workflow-revisions**", noWorkflows);
+  await page.reload();
+  await expect(page.getByText("No admitted workflows yet.")).toBeVisible();
+  await page.screenshot({ path: "test-results/project-occupancy-editor-empty-catalog.png", fullPage: true });
+  await page.unroute("**/workflow-revisions**", noWorkflows);
 });
 
 test("publishes a V3 workflow, binds its role, and watches the line it started", async ({ page }) => {
