@@ -20,7 +20,8 @@ RUN python -c "import sqlite3; assert sqlite3.connect(':memory:').execute(\"SELE
 
 COPY src/ ./src/
 COPY --from=frontend /build/frontend/dist ./frontend/dist
-RUN uv sync --locked --no-dev \
+RUN uv sync --locked --no-dev --no-editable \
+    && rm -rf /app/src \
     && rm -f /bin/uv /bin/uvx
 
 ARG ATELIER2_SOURCE_COMMIT
@@ -40,4 +41,6 @@ USER atelier2
 ENV PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin \
     ATELIER2_SOURCE_COMMIT=${ATELIER2_SOURCE_COMMIT} \
     ATELIER2_SOURCE_TREE=${ATELIER2_SOURCE_TREE}
+RUN python -c "import sysconfig; from pathlib import Path; import atelier2.host; purelib = Path(sysconfig.get_path('purelib')).resolve(); module = Path(atelier2.host.__file__).resolve(); assert module.is_relative_to(purelib), module" \
+    && atelier2 --help >/dev/null
 ENTRYPOINT ["/app/container_serve.sh"]

@@ -770,6 +770,21 @@ remains Core behavior, not a packaged provider. The operator runbook is
 [OPERATIONS.md](OPERATIONS.md); network hardening remains
 [ADR 0009](decisions/0009-runner-trust.md).
 
+One separate stable local installation now gives the operator that same
+provider-free Serve console at exact loopback port 8422. Its private XDG state
+first records durable installation intent, then binds the completed source,
+engine, frozen Compose descriptor, image, container, volume, network and
+configuration identities. Read-only status names running, stopped, incomplete
+or drifted state; stop and start validate that record and address only its exact
+container ID. Its volume survives both operations and its restart policy is
+`unless-stopped`. Colliding listeners, host Atelier services, duplicate stable
+Docker resources and identity drift are refusals, never adoption authority.
+This slice can install, inspect, stop and start one fresh installation; it
+cannot update, copy, migrate, preview, activate, roll back, accept, retire or
+delete one. It remains current Core/V1 behavior without a provider or Runner,
+while the disposable candidate remains the zero-residue release gate. The
+operator contract and commands live in [OPERATIONS.md](OPERATIONS.md).
+
 That API now has a command-line client of its own, so starting real work costs
 one command instead of four ceremonies. `atelier2 run` publishes one workflow
 document and one agent file per bound role, starts the run they describe,

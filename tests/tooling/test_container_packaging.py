@@ -21,6 +21,7 @@ DOCKERFILE = PROJECT_ROOT / "Dockerfile"
 COMPOSE = PROJECT_ROOT / "compose.yaml"
 DOCKERIGNORE = PROJECT_ROOT / ".dockerignore"
 CONTAINER_UP = PROJECT_ROOT / "scripts" / "container_up.sh"
+CONTAINER_SNAPSHOT = PROJECT_ROOT / "scripts" / "container_snapshot.sh"
 CONTAINER_SERVE = PROJECT_ROOT / "scripts" / "container_serve.sh"
 OPERATIONS = PROJECT_ROOT / "docs" / "OPERATIONS.md"
 PRODUCT = PROJECT_ROOT / "docs" / "PRODUCT.md"
@@ -30,7 +31,7 @@ CI = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
 
 SOURCE_COMMIT = "ATELIER2_SOURCE_COMMIT"
 SOURCE_TREE = "ATELIER2_SOURCE_TREE"
-DIRTY_TREE_REFUSAL = "container up: source tree must be clean"
+DIRTY_TREE_REFUSAL = "container snapshot: source tree must be clean"
 PROJECT_NAME = re.compile(r"^atelier2-[0-9a-f]{16}$")
 
 _FROM = re.compile(r"^FROM\s+", re.MULTILINE | re.IGNORECASE)
@@ -42,6 +43,25 @@ SQLITE_MILLISECOND_PROBE = (
     "RUN python -c \"import sqlite3; assert sqlite3.connect(':memory:').execute(\\"
     '"SELECT unixepoch(\'subsec\') * 1000\\").fetchone()[0] is not None"'
 )
+FINAL_PATH = (
+    "ENV PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin \\\n"
+    "    ATELIER2_SOURCE_COMMIT=${ATELIER2_SOURCE_COMMIT} \\\n"
+    "    ATELIER2_SOURCE_TREE=${ATELIER2_SOURCE_TREE}"
+)
+FINAL_PROJECT_SYNC = (
+    "RUN uv sync --locked --no-dev --no-editable \\\n"
+    "    && rm -rf /app/src \\\n"
+    "    && rm -f /bin/uv /bin/uvx"
+)
+INSTALLED_HOST_PROBE = (
+    'RUN python -c "import sysconfig; from pathlib import Path; import atelier2.host; '
+    "purelib = Path(sysconfig.get_path('purelib')).resolve(); "
+    "module = Path(atelier2.host.__file__).resolve(); "
+    'assert module.is_relative_to(purelib), module" \\\n'
+    "    && atelier2 --help >/dev/null"
+)
+ENTRYPOINT = 'ENTRYPOINT ["/app/container_serve.sh"]'
+TEARDOWN_ARGUMENTS = ["down", "--volumes", "--rmi", "local", "--remove-orphans"]
 
 
 def final_user(recipe: str) -> str:
@@ -54,6 +74,15 @@ def final_user(recipe: str) -> str:
 
 def source_labels() -> dict[str, str]:
     return {
+        "atelier2.deployment": "${ATELIER2_DEPLOYMENT:?container deployment identity is missing}",
+        "atelier2.source.commit": "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}",
+        "atelier2.source.tree": "${ATELIER2_SOURCE_TREE:?source tree identity is missing}",
+    }
+
+
+def disposable_labels() -> dict[str, str]:
+    return {
+        "atelier2.deployment": "disposable",
         "atelier2.source.commit": "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}",
         "atelier2.source.tree": "${ATELIER2_SOURCE_TREE:?source tree identity is missing}",
     }
@@ -94,6 +123,20 @@ def assert_provider_free_recipe(recipe: str) -> None:
         "    ATELIER2_SOURCE_COMMIT=${ATELIER2_SOURCE_COMMIT} \\\n"
         "    ATELIER2_SOURCE_TREE=${ATELIER2_SOURCE_TREE}"
     ) in runtime
+    assert FINAL_PATH in runtime, "image omits the final runtime PATH"
+    assert FINAL_PROJECT_SYNC in runtime, (
+        "image final project sync is not locked, production-only, non-editable, and source-free"
+    )
+    assert INSTALLED_HOST_PROBE in runtime, (
+        "image omits the installed host import and console-entry-point proof"
+    )
+    final_user_index = runtime.rindex("USER atelier2")
+    final_path_index = runtime.index(FINAL_PATH)
+    host_probe_index = runtime.index(INSTALLED_HOST_PROBE)
+    entrypoint_index = runtime.index(ENTRYPOINT)
+    assert final_user_index < final_path_index < host_probe_index < entrypoint_index, (
+        "image probes its installed host outside the final USER/PATH/ENTRYPOINT boundary"
+    )
     for required in (
         "COPY frontend/package.json frontend/package-lock.json ./",
         "RUN npm ci --no-audit --no-fund",
@@ -103,11 +146,11 @@ def assert_provider_free_recipe(recipe: str) -> None:
         "RUN uv sync --locked --no-dev --no-install-project",
         "COPY src/ ./src/",
         "COPY --from=frontend /build/frontend/dist ./frontend/dist",
-        "RUN uv sync --locked --no-dev",
+        FINAL_PROJECT_SYNC,
         "install --directory --owner atelier2 --group atelier2 --mode 0700 /var/lib/atelier2/store",
         "COPY scripts/container_serve.sh /app/container_serve.sh",
         "RUN chmod 0755 /app/container_serve.sh",
-        'ENTRYPOINT ["/app/container_serve.sh"]',
+        ENTRYPOINT,
     ):
         assert required in recipe, f"image omits {required}"
 
@@ -131,6 +174,7 @@ def assert_isolated_compose(document: dict[str, Any]) -> None:
         "build",
         "cap_drop",
         "read_only",
+        "restart",
         "security_opt",
         "healthcheck",
         "ports",
@@ -147,13 +191,16 @@ def assert_isolated_compose(document: dict[str, Any]) -> None:
     assert "env_file" not in service
     assert service["cap_drop"] == ["ALL"]
     assert service["read_only"] is True
+    assert service["restart"] == (
+        "${ATELIER2_RESTART_POLICY:?container restart policy is missing}"
+    )
     assert "no-new-privileges:true" in service["security_opt"]
     assert service["security_opt"] == ["no-new-privileges:true"]
     assert len(service["ports"]) == 1
     port = service["ports"][0]
     assert port == {
         "target": 8422,
-        "published": "0",
+        "published": "${ATELIER2_PUBLISHED_PORT:?container published port is missing}",
         "host_ip": "127.0.0.1",
         "protocol": "tcp",
     }
@@ -215,11 +262,11 @@ def assert_teardown_descriptor(document: dict[str, Any], project: str) -> None:
                     }
                 ],
                 "networks": ["serve"],
-                "labels": source_labels(),
+                "labels": disposable_labels(),
             }
         },
-        "volumes": {"store": {"labels": source_labels()}},
-        "networks": {"serve": {"labels": source_labels()}},
+        "volumes": {"store": {"labels": disposable_labels()}},
+        "networks": {"serve": {"labels": disposable_labels()}},
     }
 
 
@@ -293,12 +340,27 @@ def install_git_stub(directory: Path) -> None:
         directory / "git",
         f"""\\
 import os
+import subprocess
 import sys
 
 if os.environ.get("ATELIER2_TEST_GIT_STATUS_FAILURE") == "1" and "status" in sys.argv:
     raise SystemExit(17)
 if os.environ.get("ATELIER2_TEST_GIT_ARCHIVE_FAILURE") == "1" and "archive" in sys.argv:
     raise SystemExit(18)
+if os.environ.get("ATELIER2_TEST_GIT_HEAD_DRIFT") == "1" and "archive" in sys.argv:
+    completed = subprocess.run([{real_git!r}, *sys.argv[1:]], check=False)
+    if completed.returncode:
+        raise SystemExit(completed.returncode)
+    repository = sys.argv[sys.argv.index("-C") + 1]
+    marker = os.path.join(repository, "head-drift.txt")
+    with open(marker, "w", encoding="utf-8") as output:
+        output.write("drift\\n")
+    subprocess.run([{real_git!r}, "-C", repository, "add", "head-drift.txt"], check=True)
+    subprocess.run(
+        [{real_git!r}, "-C", repository, "-c", "user.name=test", "-c", "user.email=test@invalid", "commit", "--quiet", "--message", "drift"],
+        check=True,
+    )
+    raise SystemExit(0)
 os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
 """,
     )
@@ -328,6 +390,7 @@ def packaging_repository(tmp_path: Path, name: str = "repository") -> Path:
     (repository / "scripts").mkdir(parents=True)
     for source, destination in (
         (CONTAINER_UP, repository / "scripts" / "container_up.sh"),
+        (CONTAINER_SNAPSHOT, repository / "scripts" / "container_snapshot.sh"),
         (CONTAINER_SERVE, repository / "scripts" / "container_serve.sh"),
         (DOCKERFILE, repository / "Dockerfile"),
         (COMPOSE, repository / "compose.yaml"),
@@ -354,6 +417,7 @@ def container_environment(
     descriptor_remove_fails: bool = False,
     git_status_fails: bool = False,
     archive_fails: bool = False,
+    head_drifts: bool = False,
     mutate_after_preflight: bool = False,
     wait_phases: tuple[str, ...] = (),
 ) -> dict[str, str]:
@@ -376,6 +440,7 @@ def container_environment(
         ),
         "ATELIER2_TEST_GIT_STATUS_FAILURE": "1" if git_status_fails else "0",
         "ATELIER2_TEST_GIT_ARCHIVE_FAILURE": "1" if archive_fails else "0",
+        "ATELIER2_TEST_GIT_HEAD_DRIFT": "1" if head_drifts else "0",
         "ATELIER2_TEST_MUTATE_AFTER_PREFLIGHT": (
             str(repository / "frontend" / "marker.txt")
             if mutate_after_preflight
@@ -424,6 +489,23 @@ def snapshot_from(arguments: list[str]) -> Path:
 
 def lifecycle_directories(tmp_path: Path) -> list[Path]:
     return list(tmp_path.glob("atelier2-lifecycle.*"))
+
+
+def assert_exact_candidate_teardown(tmp_path: Path) -> list[list[str]]:
+    invocations = docker_invocations(tmp_path)
+    project = project_from(invocations[0])
+    assert all(project_from(arguments) == project for arguments in invocations)
+    assert invocations[-1][-5:] == TEARDOWN_ARGUMENTS
+    assert not snapshot_from(invocations[0]).exists()
+    assert lifecycle_directories(tmp_path) == []
+    return invocations
+
+
+def wait_until_exists(path: Path, message: str) -> None:
+    deadline = time.monotonic() + 5
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert path.exists(), message
 
 
 def test_recipe_is_provider_free_and_unprivileged() -> None:
@@ -511,6 +593,46 @@ def test_recipe_guard_rejects_provider_or_privilege_mutations() -> None:
             assert_provider_free_recipe(mutation)
 
 
+def test_recipe_guard_rejects_installed_host_contract_mutations() -> None:
+    recipe = DOCKERFILE.read_text(encoding="utf-8")
+    assert_provider_free_recipe(recipe)
+    without_probe = recipe.replace(INSTALLED_HOST_PROBE, "")
+    before_final_user = without_probe.replace(
+        "USER atelier2", f"{INSTALLED_HOST_PROBE}\n\nUSER atelier2"
+    )
+    before_final_path = without_probe.replace(
+        FINAL_PATH, f"{INSTALLED_HOST_PROBE}\n{FINAL_PATH}"
+    )
+    mutations = (
+        recipe.replace("--no-editable", "--editable"),
+        recipe.replace("--no-editable", ""),
+        recipe.replace("rm -rf /app/src", "true"),
+        recipe.replace(
+            "PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+        ),
+        before_final_user,
+        before_final_path,
+        recipe.replace("import atelier2.host", "import atelier2"),
+        recipe.replace(
+            "assert module.is_relative_to(purelib), module", "assert module, module"
+        ),
+        recipe.replace(
+            "assert module.is_relative_to(purelib), module",
+            "assert module.is_relative_to(purelib) or module.is_relative_to(Path('/app/src')), module",
+        ),
+        recipe.replace("atelier2 --help >/dev/null", "true"),
+        recipe.replace(
+            "atelier2 --help >/dev/null", "/app/.venv/bin/atelier2 --help >/dev/null"
+        ),
+    )
+
+    for mutated_recipe in mutations:
+        assert mutated_recipe != recipe, "mutation did not change the recipe"
+        with pytest.raises(AssertionError):
+            assert_provider_free_recipe(mutated_recipe)
+
+
 def test_ignore_excludes_provider_configuration_and_build_noise() -> None:
     ignored = DOCKERIGNORE.read_text(encoding="utf-8")
     for required in (
@@ -547,6 +669,9 @@ def test_compose_guard_rejects_authority_and_static_resource_mutations() -> None
     static_port = copy.deepcopy(document)
     static_port["services"]["serve"]["ports"][0]["published"] = "8422"
     mutations.append(static_port)
+    static_restart = copy.deepcopy(document)
+    static_restart["services"]["serve"]["restart"] = "unless-stopped"
+    mutations.append(static_restart)
     broad_port = copy.deepcopy(document)
     broad_port["services"]["serve"]["ports"].append(
         {"target": 8423, "published": "0", "host_ip": "0.0.0.0", "protocol": "tcp"}
@@ -634,12 +759,7 @@ def test_clean_tree_starts_one_random_project_and_prints_scoped_teardown(
         "-f",
         command[7],
     ]
-    assert command[8:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
+    assert command[8:] == TEARDOWN_ARGUMENTS + [
         "&&",
         "rm",
         "-f",
@@ -693,6 +813,9 @@ def test_teardown_descriptor_renders_only_the_candidate_resources(
             **os.environ,
             SOURCE_COMMIT: run_git(repository, "rev-parse", "HEAD"),
             SOURCE_TREE: run_git(repository, "rev-parse", "HEAD^{tree}"),
+            "ATELIER2_DEPLOYMENT": "disposable",
+            "ATELIER2_PUBLISHED_PORT": "0",
+            "ATELIER2_RESTART_POLICY": "no",
         },
         capture_output=True,
         check=False,
@@ -715,74 +838,107 @@ def test_teardown_descriptor_renders_only_the_candidate_resources(
     assert set(document["services"]["serve"]["networks"]) == {"serve"}
 
 
-def test_dirty_or_untracked_source_is_refused_before_docker(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("settings", "refusal", "make_source_dirty"),
+    (
+        ({}, DIRTY_TREE_REFUSAL, True),
+        (
+            {"git_status_fails": True},
+            "container snapshot: source status is unavailable",
+            False,
+        ),
+        ({"archive_fails": True}, None, False),
+        ({"head_drifts": True}, "source changed while it was archived", False),
+    ),
+    ids=(
+        "dirty-or-untracked-source",
+        "source-status-unavailable",
+        "archive-failure",
+        "head-drift-during-archive",
+    ),
+)
+def test_snapshot_refusals_leave_no_docker_or_lifecycle_state(
+    tmp_path: Path,
+    settings: dict[str, bool],
+    refusal: str | None,
+    make_source_dirty: bool,
+) -> None:
     repository = packaging_repository(tmp_path)
-    (repository / "ambient.txt").write_text("not committed\n", encoding="utf-8")
+    if make_source_dirty:
+        (repository / "ambient.txt").write_text("not committed\n", encoding="utf-8")
 
-    completed = run_container_up(repository, tmp_path)
+    completed = run_container_up(repository, tmp_path, **settings)
 
     assert completed.returncode != 0
-    assert DIRTY_TREE_REFUSAL in completed.stderr
-    assert docker_invocations(tmp_path) == []
-
-
-def test_failed_start_tears_down_only_the_generated_project(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, port_status=23)
-
-    assert completed.returncode == 23
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert all(project_from(arguments) == project for arguments in invocations)
-    assert invocations[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-    assert not snapshot_from(invocations[0]).exists()
-    assert lifecycle_directories(tmp_path) == []
-
-
-def test_unhealthy_or_exited_wait_refuses_and_tears_down(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, up_status=42)
-
-    assert completed.returncode == 42
-    assert docker_invocations(tmp_path)[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-
-
-def test_status_failure_refuses_before_snapshot_or_docker(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, git_status_fails=True)
-
-    assert completed.returncode != 0
-    assert "source status is unavailable" in completed.stderr
-    assert docker_invocations(tmp_path) == []
-
-
-def test_archive_failure_removes_early_lifecycle_state(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, archive_fails=True)
-
-    assert completed.returncode != 0
+    if refusal is not None:
+        assert refusal in completed.stderr
     assert docker_invocations(tmp_path) == []
     assert lifecycle_directories(tmp_path) == []
 
 
-def test_snapshot_uses_committed_bytes_after_preflight(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("settings", "expected_status", "refusal"),
+    (
+        ({"port_status": 23}, 23, None),
+        ({"up_status": 42}, 42, None),
+        ({"port_output": ""}, None, "invalid loopback port"),
+        ({"port_output": "0.0.0.0:49152"}, None, "invalid loopback port"),
+        ({"port_output": "127.0.0.1:0"}, None, "invalid loopback port"),
+        ({"port_output": "127.0.0.1:65536"}, None, "invalid loopback port"),
+        ({"port_output": "127.0.0.1:49152 extra"}, None, "invalid loopback port"),
+    ),
+    ids=(
+        "port-discovery-failure",
+        "unhealthy-or-exited-wait",
+        "empty-port",
+        "non-loopback-port",
+        "zero-port",
+        "out-of-range-port",
+        "extra-port-output",
+    ),
+)
+def test_candidate_refusals_teardown_only_the_generated_project(
+    tmp_path: Path,
+    settings: dict[str, int | str],
+    expected_status: int | None,
+    refusal: str | None,
+) -> None:
     repository = packaging_repository(tmp_path)
+
+    completed = run_container_up(repository, tmp_path, **settings)
+
+    if expected_status is not None:
+        assert completed.returncode == expected_status
+    else:
+        assert completed.returncode != 0
+    if refusal is not None:
+        assert refusal in completed.stderr
+    assert_exact_candidate_teardown(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("use_mutable_checkout", "expected_context"),
+    (
+        pytest.param(False, "committed\n", id="committed-archive"),
+        pytest.param(
+            True, "changed after preflight\n", id="mutable-checkout-regression"
+        ),
+    ),
+)
+def test_snapshot_uses_committed_bytes_after_preflight(
+    tmp_path: Path, use_mutable_checkout: bool, expected_context: str
+) -> None:
+    repository = packaging_repository(tmp_path)
+    if use_mutable_checkout:
+        script = repository / "scripts" / "container_up.sh"
+        script.write_text(
+            script.read_text(encoding="utf-8").replace(
+                '-f "${snapshot}/compose.yaml"', '-f "${repository}/compose.yaml"'
+            ),
+            encoding="utf-8",
+        )
+        run_git(repository, "add", "scripts/container_up.sh")
+        run_git(repository, "commit", "--quiet", "--message", "break snapshot context")
 
     completed = run_container_up(repository, tmp_path, mutate_after_preflight=True)
 
@@ -792,143 +948,97 @@ def test_snapshot_uses_committed_bytes_after_preflight(tmp_path: Path) -> None:
     ) == "changed after preflight\n"
     assert (tmp_path / "docker-context" / "frontend" / "marker.txt").read_text(
         encoding="utf-8"
-    ) == "committed\n"
-    assert not snapshot_from(docker_invocations(tmp_path)[0]).exists()
-
-
-def test_snapshot_proof_bites_when_build_context_uses_mutable_checkout(
-    tmp_path: Path,
-) -> None:
-    repository = packaging_repository(tmp_path)
-    script = repository / "scripts" / "container_up.sh"
-    script.write_text(
-        script.read_text(encoding="utf-8").replace(
-            '-f "${snapshot}/compose.yaml"', '-f "${repository}/compose.yaml"'
-        ),
-        encoding="utf-8",
-    )
-    run_git(repository, "add", "scripts/container_up.sh")
-    run_git(repository, "commit", "--quiet", "--message", "break snapshot context")
-
-    completed = run_container_up(repository, tmp_path, mutate_after_preflight=True)
-
-    assert completed.returncode == 0, completed.stderr
-    assert (tmp_path / "docker-context" / "frontend" / "marker.txt").read_text(
-        encoding="utf-8"
-    ) == "changed after preflight\n"
+    ) == expected_context
+    if not use_mutable_checkout:
+        assert not snapshot_from(docker_invocations(tmp_path)[0]).exists()
 
 
 @pytest.mark.parametrize(
-    "address",
-    ("", "0.0.0.0:49152", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:49152 extra"),
-)
-def test_invalid_port_output_refuses_and_tears_down(
-    tmp_path: Path, address: str
-) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, port_output=address)
-
-    assert completed.returncode != 0
-    assert "invalid loopback port" in completed.stderr
-    assert docker_invocations(tmp_path)[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-
-
-def test_cleanup_failure_prints_replayable_exact_teardown(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path, "repository with ; metacharacters")
-
-    completed = run_container_up(repository, tmp_path, port_status=23, down_fails=True)
-
-    assert completed.returncode == 23
-    command = completed.stderr.split("container up: cleanup failed; run: ", 1)[
-        1
-    ].strip()
-    parsed = shlex.split(command)
-    down = parsed.index("down")
-    assert parsed[down : down + 5] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-    descriptor = Path(parsed[parsed.index("-f") + 1])
-    assert descriptor.is_file()
-    environment = container_environment(repository, tmp_path)
-    environment.pop(SOURCE_COMMIT, None)
-    environment.pop(SOURCE_TREE, None)
-    replay = subprocess.run(["bash", "-c", command], env=environment, check=False)
-    assert replay.returncode == 0
-    assert not descriptor.exists()
-    assert not descriptor.parent.exists()
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert {project_from(arguments) for arguments in invocations} == {project}
-
-
-def test_descriptor_removal_failure_keeps_recovery_state(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(
-        repository, tmp_path, port_status=23, descriptor_remove_fails=True
-    )
-
-    assert completed.returncode == 23
-    command = completed.stderr.split(
-        "container up: lifecycle descriptor cleanup failed; run: ", 1
-    )[1].strip()
-    descriptor = Path(shlex.split(command)[7])
-    assert descriptor.is_file()
-    assert not snapshot_from(docker_invocations(tmp_path)[0]).exists()
-    descriptor.parent.chmod(0o700)
-    environment = container_environment(repository, tmp_path)
-    environment.pop(SOURCE_COMMIT, None)
-    environment.pop(SOURCE_TREE, None)
-    replay = subprocess.run(["bash", "-c", command], env=environment, check=False)
-    assert replay.returncode == 0
-    assert not descriptor.exists()
-    assert not descriptor.parent.exists()
-
-
-def test_printed_stop_command_replays_without_ambient_identity(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path, "repository with ; metacharacters")
-    completed = run_container_up(repository, tmp_path)
-
-    assert completed.returncode == 0, completed.stderr
-    command = completed.stdout.splitlines()[1].removeprefix("container up: stop -> ")
-    descriptor = Path(shlex.split(command)[7])
-    (repository / "compose.yaml").rename(repository / "obsolete-compose.yaml")
-    environment = container_environment(repository, tmp_path)
-    environment.pop(SOURCE_COMMIT, None)
-    environment.pop(SOURCE_TREE, None)
-    replay = subprocess.run(["bash", "-c", command], env=environment, check=False)
-    assert replay.returncode == 0
-    assert not descriptor.exists()
-    assert not descriptor.parent.exists()
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert {project_from(arguments) for arguments in invocations} == {project}
-
-
-@pytest.mark.parametrize(
-    ("phase", "interruption", "status"),
+    ("settings", "prefix", "recovery", "repository_name"),
     (
-        ("build", signal.SIGHUP, 129),
-        ("up", signal.SIGINT, 130),
-        ("up", signal.SIGTERM, 143),
+        pytest.param(
+            {"port_status": 23, "down_fails": True},
+            "container up: cleanup failed; run: ",
+            "exact-down",
+            "repository with ; metacharacters",
+            id="cleanup-failure",
+        ),
+        pytest.param(
+            {"port_status": 23, "descriptor_remove_fails": True},
+            "container up: lifecycle descriptor cleanup failed; run: ",
+            "restore-descriptor-directory",
+            "repository",
+            id="descriptor-removal-failure",
+        ),
+        pytest.param(
+            {},
+            "container up: stop -> ",
+            "remove-ambient-compose",
+            "repository with ; metacharacters",
+            id="normal-stop-command",
+        ),
     ),
 )
-def test_signals_preserve_status_and_teardown_exact_project(
-    tmp_path: Path, phase: str, interruption: signal.Signals, status: int
+def test_printed_teardown_commands_replay_without_ambient_identity(
+    tmp_path: Path,
+    settings: dict[str, int | bool],
+    prefix: str,
+    recovery: str,
+    repository_name: str,
+) -> None:
+    repository = packaging_repository(tmp_path, repository_name)
+    completed = run_container_up(repository, tmp_path, **settings)
+
+    assert completed.returncode == (0 if recovery == "remove-ambient-compose" else 23)
+    output = (
+        completed.stdout if recovery == "remove-ambient-compose" else completed.stderr
+    )
+    command = output.split(prefix, 1)[1].strip()
+    parsed = shlex.split(command)
+    descriptor = Path(parsed[parsed.index("-f") + 1])
+    assert descriptor.is_file()
+    if recovery == "exact-down":
+        down = parsed.index("down")
+        assert parsed[down : down + 5] == TEARDOWN_ARGUMENTS
+    elif recovery == "restore-descriptor-directory":
+        assert not snapshot_from(docker_invocations(tmp_path)[0]).exists()
+        descriptor.parent.chmod(0o700)
+    else:
+        (repository / "compose.yaml").rename(repository / "obsolete-compose.yaml")
+    environment = container_environment(repository, tmp_path)
+    environment.pop(SOURCE_COMMIT, None)
+    environment.pop(SOURCE_TREE, None)
+    replay = subprocess.run(["bash", "-c", command], env=environment, check=False)
+    assert replay.returncode == 0
+    assert not descriptor.exists()
+    assert not descriptor.parent.exists()
+    if recovery != "restore-descriptor-directory":
+        projects = {
+            project_from(arguments) for arguments in docker_invocations(tmp_path)
+        }
+        assert len(projects) == 1
+
+
+@pytest.mark.parametrize(
+    ("phase", "first_signal", "status", "second_signal"),
+    (
+        ("build", signal.SIGHUP, 129, None),
+        ("up", signal.SIGINT, 130, None),
+        ("up", signal.SIGTERM, 143, None),
+        ("up", signal.SIGINT, 130, signal.SIGTERM),
+    ),
+    ids=("build-sighup", "up-sigint", "up-sigterm", "cleanup-second-signal"),
+)
+def test_signals_preserve_first_status_and_teardown_exact_project(
+    tmp_path: Path,
+    phase: str,
+    first_signal: signal.Signals,
+    status: int,
+    second_signal: signal.Signals | None,
 ) -> None:
     repository = packaging_repository(tmp_path)
-    environment = container_environment(repository, tmp_path, wait_phases=(phase,))
+    wait_phases = (phase, "down") if second_signal is not None else (phase,)
+    environment = container_environment(repository, tmp_path, wait_phases=wait_phases)
     process = subprocess.Popen(
         ["bash", str(repository / "scripts" / "container_up.sh")],
         cwd=repository,
@@ -936,69 +1046,19 @@ def test_signals_preserve_status_and_teardown_exact_project(
         start_new_session=True,
     )
     ready = tmp_path / f"{phase}-ready"
-    deadline = time.monotonic() + 5
-    while not ready.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert ready.exists(), "Docker stub did not reach the launch boundary"
-    os.killpg(process.pid, interruption)
+    wait_until_exists(ready, "Docker stub did not reach the launch boundary")
+    os.killpg(process.pid, first_signal)
+    if second_signal is not None:
+        wait_until_exists(tmp_path / "down-ready", "Docker stub did not reach cleanup")
+        os.killpg(process.pid, second_signal)
+        (tmp_path / "docker-down-release").touch()
     assert process.wait(timeout=5) == status
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert all(project_from(arguments) == project for arguments in invocations)
-    assert invocations[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-    assert not snapshot_from(invocations[0]).exists()
-    assert lifecycle_directories(tmp_path) == []
-
-
-def test_repeated_signal_during_cleanup_preserves_first_signal_status(
-    tmp_path: Path,
-) -> None:
-    repository = packaging_repository(tmp_path)
-    environment = container_environment(
-        repository, tmp_path, wait_phases=("up", "down")
-    )
-    process = subprocess.Popen(
-        ["bash", str(repository / "scripts" / "container_up.sh")],
-        cwd=repository,
-        env=environment,
-        start_new_session=True,
-    )
-    up_ready = tmp_path / "up-ready"
-    deadline = time.monotonic() + 5
-    while not up_ready.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert up_ready.exists(), "Docker stub did not reach the launch boundary"
-    os.killpg(process.pid, signal.SIGINT)
-    down_ready = tmp_path / "down-ready"
-    while not down_ready.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert down_ready.exists(), "Docker stub did not reach cleanup"
-    os.killpg(process.pid, signal.SIGTERM)
-    (tmp_path / "docker-down-release").touch()
-    assert process.wait(timeout=5) == 130
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert {project_from(arguments) for arguments in invocations} == {project}
-    assert invocations[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-    assert not snapshot_from(invocations[0]).exists()
-    assert lifecycle_directories(tmp_path) == []
+    assert_exact_candidate_teardown(tmp_path)
 
 
 def test_clean_tree_refusal_bites_when_its_preflight_is_removed(tmp_path: Path) -> None:
     repository = packaging_repository(tmp_path)
-    script = repository / "scripts" / "container_up.sh"
+    script = repository / "scripts" / "container_snapshot.sh"
     script.write_text(
         script.read_text(encoding="utf-8").replace(
             'git -C "${repository}" status --porcelain --untracked-files=all',
