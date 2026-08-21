@@ -941,11 +941,11 @@ empty collection, and unreadable or corrupt configuration stays visibly
 unavailable or corrupt. There is no HTTP project write, second project,
 pagination, project editor, or store-per-project process.
 
-The canonical store is schema V27. A fresh store is created as exact V27 and
+The canonical store is schema V28. A fresh store is created as exact V28 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
-runs, immutable node artifact bytes, node receipts, their ordered output and
-access bindings, and the immutable declared context packages, node-execution request
+runs, immutable node artifact bytes, node receipts, their ordered output
+bindings, and the immutable declared context packages, node-execution request
 preimages and run configuration snapshots those receipts name, and the immutable
 orders a run was started with, the immutable proof of every redeemed tool
 grant, the receipt hash an agent completion binds, immutable content-addressed
@@ -966,6 +966,10 @@ runtime without mutation, with no runtime migration or downgrade. An offline
 `schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder still names to the current
 schema, one published step at a time. Until a named maturity there is no
 compatibility promise.
+V28 removes the writerless receipt-Access table and triggers. Its offline V27
+hop drops only an empty table and refuses any row without mutation; the
+published V3 receipt hash retains its literal empty Access subframe as frozen
+byte identity, not as a public input or writable store.
 
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent
 fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,

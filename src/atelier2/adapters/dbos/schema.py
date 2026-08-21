@@ -46,10 +46,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits Runner evidence on durable agent attempts.
-# Predecessor is the published occupancy schema. Change only this constant to
-# restack.
-_HOP_PREDECESSOR_VERSION = 26
+# Movable hop: this head removes the writerless receipt-access store.
+# Predecessor is the published Runner-evidence schema. Change only this
+# constant to restack.
+_HOP_PREDECESSOR_VERSION = 27
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -69,11 +69,13 @@ _VERSION_TWENTY_THREE = 23
 _VERSION_TWENTY_FOUR = 24
 _VERSION_TWENTY_FIVE = 25
 _VERSION_TWENTY_SIX = 26
+_VERSION_TWENTY_SEVEN = 27
+_VERSION_TWENTY_EIGHT = 28
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V9 product tables equal V8. V10 adds the thin catalog/receipt foundation. V11
-# closes the artifact/output/access store shape that Cut B writes atomically.
+# closes the artifact/output and now-retired access store shape.
 # V12 adds append-only catalog alias and retirement histories. V13 gives the
 # context-package manifest, the node-execution-request preimage and the run
 # configuration snapshot durable, immutable homes, and records the run
@@ -107,7 +109,8 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # occupancy per workflow lineage as a second family on that channel: revision
 # header and role bindings, append-only. The hop number is movable:
 # V27 gives Core the exact Runner generation/invocation binding and the durable
-# semantic evidence acceptance phase. The hop number is movable:
+# semantic evidence acceptance phase. V28 removes the receipt-access table that
+# never acquired a writer. The hop number is movable:
 # `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
@@ -131,6 +134,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     25: "91d8889ce6239855c894b89ab658188d9b13927dedb1cc905dacdc151a485842",
     26: "0af3ca8bbbbe06a56c56bb0988de384fde2a807b1e409152a02e1e226e917ab8",
     27: "7f929ab33c6b8742ff24a301bb13cb1f49a4ced2d96b52b97dbb26196ebd2ac4",
+    28: "8e15796b7361796fc5c70e9c1682ddf58b967dea7fb112127366cfca600c9b36",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -203,6 +207,10 @@ V25_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V26_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_SIX,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_SIX],
+)
+V27_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY_SEVEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_SEVEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1434,27 +1442,6 @@ node_receipt_outputs_v3 = sa.Table(
     ),
     sa.CheckConstraint("length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"),
 )
-node_receipt_access_v3 = sa.Table(
-    "node_receipt_access_v3",
-    metadata,
-    sa.Column(
-        "node_execution_id",
-        sa.Text,
-        sa.ForeignKey("node_receipts_v3.node_execution_id"),
-        nullable=False,
-    ),
-    sa.Column("position", sa.Integer, nullable=False),
-    sa.Column("access_receipt_hash", sa.Text, nullable=False),
-    sa.PrimaryKeyConstraint("node_execution_id", "position"),
-    sa.CheckConstraint("position >= 0"),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint(
-        "length(access_receipt_hash) = 64 "
-        "AND access_receipt_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-)
 host_project_root_revisions = sa.Table(
     "host_project_root_revisions",
     metadata,
@@ -2159,18 +2146,6 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'v3 node receipt outputs are immutable');
         END
     """,
-    "node_receipt_access_v3_no_update": """
-        CREATE TRIGGER node_receipt_access_v3_no_update
-        BEFORE UPDATE ON node_receipt_access_v3 BEGIN
-          SELECT RAISE(ABORT, 'v3 node receipt access is immutable');
-        END
-    """,
-    "node_receipt_access_v3_no_delete": """
-        CREATE TRIGGER node_receipt_access_v3_no_delete
-        BEFORE DELETE ON node_receipt_access_v3 BEGIN
-          SELECT RAISE(ABORT, 'v3 node receipt access is immutable');
-        END
-    """,
     "run_instants_start_no_update": """
         CREATE TRIGGER run_instants_start_no_update
         BEFORE UPDATE OF run_id, started_at ON run_instants BEGIN
@@ -2415,30 +2390,38 @@ def _table_fingerprint(
     )
 
 
+_V27_ACCESS_TABLE_NAME = "node_receipt_access_v3"
+_V27_ACCESS_TRIGGER_NAMES = (
+    "node_receipt_access_v3_no_update",
+    "node_receipt_access_v3_no_delete",
+)
+
+
 def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
     occupancy = {host_occupancy_revisions.name, host_occupancy_bindings.name}
+    predecessor_tables = PRODUCT_TABLE_NAMES | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
-    if version == _VERSION_TWENTY_SIX:
-        return PRODUCT_TABLE_NAMES
+    if version in {_VERSION_TWENTY_SEVEN, _VERSION_TWENTY_SIX}:
+        return predecessor_tables
     if version == _VERSION_TWENTY_FIVE:
-        return PRODUCT_TABLE_NAMES - occupancy
+        return predecessor_tables - occupancy
     if version in {_VERSION_TWENTY_FOUR, _VERSION_TWENTY_THREE, _VERSION_TWENTY_TWO}:
-        return PRODUCT_TABLE_NAMES - occupancy - host_channel
+        return predecessor_tables - occupancy - host_channel
     if version in {_VERSION_TWENTY_ONE, _VERSION_TWENTY, _VERSION_NINETEEN}:
-        return PRODUCT_TABLE_NAMES - later - occupancy - host_channel
+        return predecessor_tables - later - occupancy - host_channel
     if version in {
         _VERSION_EIGHTEEN,
         _VERSION_SEVENTEEN,
         _VERSION_SIXTEEN,
         _VERSION_FIFTEEN,
     }:
-        return PRODUCT_TABLE_NAMES - {artifacts.name} - later - occupancy - host_channel
+        return predecessor_tables - {artifacts.name} - later - occupancy - host_channel
     if version == _VERSION_FOURTEEN:
         return (
-            PRODUCT_TABLE_NAMES
+            predecessor_tables
             - {artifacts.name, tool_redemptions.name}
             - later
             - occupancy
@@ -2446,7 +2429,7 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         )
     if version == _VERSION_THIRTEEN:
         return (
-            PRODUCT_TABLE_NAMES
+            predecessor_tables
             - {
                 artifacts.name,
                 run_inputs_v3.name,
@@ -3221,10 +3204,28 @@ def _apply_v26_to_v27(connection: sqlite3.Connection) -> None:
         _PREDECESSOR_ATTEMPTS_BEFORE_RUNNER_EVIDENCE,
         _AGENT_ATTEMPTS_TRIGGERS,
         _VERSION_TWENTY_SIX,
-        SCHEMA_VERSION,
+        _VERSION_TWENTY_SEVEN,
         {agent_attempts.c.runner_evidence_acceptance_phase.name: "'NONE'"},
     )
-    _raise_declared_version(connection, _VERSION_TWENTY_SIX, SCHEMA_VERSION)
+    _raise_declared_version(connection, _VERSION_TWENTY_SIX, _VERSION_TWENTY_SEVEN)
+
+
+def _apply_v27_to_v28(connection: sqlite3.Connection) -> None:
+    """Remove the unused Access store only when it holds no unowned truth."""
+
+    access_row = connection.execute(
+        f"SELECT 1 FROM {_V27_ACCESS_TABLE_NAME} LIMIT 1"
+    ).fetchone()
+    if access_row is not None:
+        raise StoreMigrationRefused(
+            f"schema version {_VERSION_TWENTY_SEVEN} has rows in "
+            f"{_V27_ACCESS_TABLE_NAME}, but no production owner can translate "
+            "them; this command will not alter it"
+        )
+    for trigger_name in _V27_ACCESS_TRIGGER_NAMES:
+        connection.execute(f"DROP TRIGGER {trigger_name}")
+    connection.execute(f"DROP TABLE {_V27_ACCESS_TABLE_NAME}")
+    _raise_declared_version(connection, _VERSION_TWENTY_SEVEN, _VERSION_TWENTY_EIGHT)
 
 
 @dataclass(frozen=True)
@@ -3289,7 +3290,10 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         ),
     ),
     _SchemaMigrationStep(_VERSION_TWENTY_FIVE, _VERSION_TWENTY_SIX, _apply_v25_to_v26),
-    _SchemaMigrationStep(_VERSION_TWENTY_SIX, SCHEMA_VERSION, _apply_v26_to_v27),
+    _SchemaMigrationStep(_VERSION_TWENTY_SIX, _VERSION_TWENTY_SEVEN, _apply_v26_to_v27),
+    _SchemaMigrationStep(
+        _VERSION_TWENTY_SEVEN, _VERSION_TWENTY_EIGHT, _apply_v27_to_v28
+    ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

@@ -497,8 +497,6 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "node_artifacts_v3.node_execution_id",
         "node_artifacts_v3.schema_revision_hash",
         "node_artifacts_v3.value_hash",
-        "node_receipt_access_v3.access_receipt_hash",
-        "node_receipt_access_v3.node_execution_id",
         "node_receipt_outputs_v3.node_execution_id",
         "node_receipt_outputs_v3.schema_revision_hash",
         "node_receipt_outputs_v3.value_hash",
