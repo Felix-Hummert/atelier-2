@@ -1,13 +1,13 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-20 — decision only, nothing implemented
+- Status: PROPOSED 2026-08-15; amended 2026-08-21 — decision only, nothing implemented
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #21](https://github.com/FlexOr2/atelier-2/issues/21),
-  SHA-256 over the exact served UTF-8 body bytes with nothing appended — 5,072
-  bytes, ending in one LF byte —
-  `afc86a8f64f39ecd6be7de5db302ffbe5319c203e2c9ac4d31d3f868b8c61fb2`.
-  The body rebind and derived-document debt are recorded in
+  intended final served `#21 body @ 3c1f663cd51a1c7aedbeffc39c3f38ee2ed6174d16103ab68d9d811014352ed0`
+  — 7,961 UTF-8 bytes, ending in one LF byte. This candidate binds only when that
+  exact body is read back; until then the current served body remains the
+  authority. The prior rebind and derived-document debt are recorded in
   [#21 comment 5354779824](https://github.com/FlexOr2/atelier-2/issues/21#issuecomment-5354779824).
   The operator-owned architecture ruling is
   [#5 comment 5354196886](https://github.com/FlexOr2/atelier-2/issues/5#issuecomment-5354196886);
@@ -16,9 +16,8 @@
   and the amended [#9 body](https://github.com/FlexOr2/atelier-2/issues/9), whose
   rebind is recorded in
   [comment 5354786342](https://github.com/FlexOr2/atelier-2/issues/9#issuecomment-5354786342).
-  This record owns #21's trust mandate and **does not close #21**: the concrete
-  carrier, launch authority and mutual-authentication mechanism remain its
-  operator stop-gate.
+  This record owns #21's trust mandate and **does not close #21**: the local
+  carrier decision is bounded below; remote/CI remains its separate stop-gate.
 - Depends on: [ADR 0001](0001-durable-runtime.md) (process ownership, attempt
   states), [ADR 0003](0003-http-api.md) (the control surface this record
   authenticates), [ADR 0004](0004-local-cockpit.md) (the local-only boundary this
@@ -112,14 +111,14 @@ carrier or OCI lifecycle authority. The Runner writes evidence, never product
 truth; native carrier logs or artifacts may transport evidence or provenance
 but never become the canonical store.
 
-### 2. Every carrier enforces the same identity boundary; its mechanism is open
+### 2. Every carrier enforces the same identity boundary; the first local form is decided
 
 A **carrier / host** supplies the execution environment in which a worker runs:
 local OCI, a remote machine, GitHub Actions or GitLab CI. It is neither an
 Atelier Runner adapter nor a second scheduler or store of record. The selected
 path is deployment state; work or evidence arriving by another path is refused
-(`runner-transport-mismatch`). Who holds launch, cleanup and lifecycle authority
-remains the separate open decision below.
+(`runner-transport-mismatch`). For remote/CI, who holds launch, cleanup and
+lifecycle authority remains the separate open decision below.
 
 Before Core binds work or accepts evidence, it establishes the exact worker
 invocation it authorized. The worker authenticates Core in the same act. The
@@ -128,15 +127,40 @@ attempt/generation and worker role, and make replay and idempotency explicit. A
 reused name, path, job label or carrier identity never substitutes for the
 per-invocation identity (`runner-peer-unverified`).
 
-The concrete local and first remote/CI carrier, the component holding launch and
-cleanup authority, and the mutual-authentication mechanism are **OPEN operator
-decisions on #21**. A disposable-host proof must precede the ruling. Until it
-lands, carrier-bound #301-A work and every CI execution proof stop. Mounting a
+For the first local Agent Runner, rootful Docker Engine/Compose is the carrier.
+The host launcher alone owns Runner-container launch, stop and cleanup; Core owns
+none of that authority. A Runner owns only its provider child, including start,
+TERM→KILL, reap and journal. Each Attempt gets one hardened, non-privileged
+Runner container and one internal private network. Core may join the needed
+Attempt networks; Runner containers from different Attempts may not reach one
+another. The exact proof surface is read-only root, `cap-drop=ALL`,
+`no-new-privileges`, an unprivileged user, a PID limit, no published port, no
+Docker socket and no Docker, project, home, workspace or general host mount. The
+host launcher may inject only exact per-invocation identity material read-only.
+The read-only harness-code bind mounts in the disposable witness are witness-only
+test plumbing, not a production mount form. It proves only the local carrier
+boundary, not provider egress, `LAUNCH_ARMED`, cancellation, crash/host-loss or
+remote/CI.
+
+Core and Runner mutually authenticate with X.509. The Runner client leaf carries
+one exact URI-SAN binding of Attempt, Request, Generation, Invocation and
+Runner-manifest identity; both peers check their expected peer, CA, EKU and the
+complete binding before an operation. Server and client EKUs differ. This is an
+X.509-SAN contract; no identity-framework literal is part of it. Host-managed
+keys are mode 0600 and read-only-mounted only into their matching disposable
+container; Core has only its own leaf/key and the CA. Issuance, rotation,
+revocation and retention remain external operator CA responsibilities, not an
+Atelier PKI.
+
+Rootful Docker daemon, host launcher, host and operator CA are the local TCB.
+Remote/CI carrier, lifecycle authority and mutual authentication remain **OPEN
+on #21**. They stay refused until #15-B proves carrier-neutral crash, cancel and
+readback behavior; then #9 owns GitHub first and GitLab parity. Mounting a
 Docker/OCI socket, systemd or DBus into Serve, introducing a privileged broker,
 or running privileged systemd in a container is not an admissible placeholder.
 The first CI proof hosts one Atelier Runner job for one AgentAttempt; it does not
-compile the Atelier DAG into native CI jobs. A later Effect Worker may be a
-second, separately authorized job.
+compile the Atelier DAG into native CI jobs. A later Effect Worker remains a
+separately authorized job.
 
 ### 3. Operator authentication gates every exposure beyond this machine
 
@@ -473,9 +497,11 @@ this record borrows that owner rather than opening a second vocabulary.
 - Serve and Runner ship as separate artifacts. Provider tools and credentials
   leave Serve; raw carrier lifecycle authority never enters it. #312 proves the
   exact artifacts and cutover, rather than this record duplicating that plan.
-- The identity invariant is carrier-neutral, but the carrier is not assumed.
-  #21 must record the operator's concrete carrier, launch-authority and mutual-
-  authentication ruling after the disposable-host proof before build proceeds.
+- The identity invariant is carrier-neutral. #21 decides the first local form:
+  rootful Docker Engine/Compose, host-launcher container lifecycle, per-Attempt
+  hardened containers and private networks, and X.509 mutual authentication.
+  Rootful Docker, host launcher, host and operator CA remain the local TCB.
+  Remote/CI stays an explicit later decision rather than inheriting this form.
 - Long-lived Runner credentials cost an enrolment ceremony. Ephemeral CI jobs
   instead cost one narrow TrustPolicy and one short-lived, one-attempt credential
   per unique job. Neither path accepts a shared fleet secret.
@@ -485,6 +511,9 @@ this record borrows that owner rather than opening a second vocabulary.
 - The phased implementation and deletion ledger live on #15, #301 and #312:
   `#15-A → #301-A → #15-B → #301-B → #312 → Deletion`. This ADR owns the
   invariant and links the plan rather than copying it.
+- The static one-network form in #301-A is disposable test composition only.
+  #312 owns dynamic per-Attempt network creation, drift refusal and cutover; no
+  local live installation changes before that owner reaches its own gate.
 
 ## Required proofs before implementation is accepted
 
@@ -499,10 +528,26 @@ this record borrows that owner rather than opening a second vocabulary.
   and no attach ticket, and no durable row is written for the refusal path.
 - A revoked runner and a never-enrolled one produce **different** refusals from
   durable state, and re-enrolling a revoked id requires an explicit operator act.
-- Where §2's identity invariant is required, a runner whose per-invocation
+- Where remote/CI needs §2's identity invariant, a runner whose per-invocation
   identity is not established is refused before any attempt binding, and so is a
-  service that does not authenticate back — proven against whatever carries that
-  deployment's tier, not against a mechanism this record names.
+  service that does not authenticate back — proven against the mechanism of that
+  remote/CI tier.
+- The bounded current local live-host witness records the two expected Core/Runner
+  peers authorizing, exact expected client URI-SAN binding, same-CA wrong-URI
+  identity refusal before an operation, wrong-EKU TLS refusal, cross-Attempt
+  network probes unreachable, and removal of one Attempt's Runner while Core and
+  the other Runner keep running. It does not execute a wrong-CA or wrong-server-
+  identity case. Its `result.md` SHA-256 is
+  `9c4d962b2bb1dfb3c1dc152979998b4c5297e102d8fedc8416e4c1c787d39da5`
+  with successful transcript SHA-256
+  `9cc5704b8273c431879695735a38045d8893adcd5ca4f6c015a1f6deadfbac04`,
+  manifest SHA-256
+  `952eb84623cd20fcbb1dc555a255689f020d7644bd952f1872675c16ac3c73a9`
+  and external cleanup proof SHA-256
+  `7eaf668be6129fcf78fe46eb25d58e18e14a3b0df14cc0f83cb73edc842eef0f`.
+- The future #301-A implementation acceptance must prove wrong-CA and wrong-
+  server-identity refusal against its real per-Attempt boundary; the witness
+  above neither substitutes for that acceptance nor claims those cases executed.
 - A runner identity is not satisfied by a reused name: an identifier that
   outlives the runner it named never binds a later attempt.
 - A CI assertion with the wrong issuer, repository/project, workflow/config,
@@ -543,15 +588,16 @@ this record borrows that owner rather than opening a second vocabulary.
 
 ## Out of scope and stop conditions
 
-This record deliberately leaves **OPEN on #21** the concrete local and first
-remote/CI carrier, the component that owns worker launch and cleanup, and the
-mutual-authentication mechanism. It also does not decide transport framing; the
-environment-requirements vocabulary; multi-project or multi-tenant isolation
+This record decides only the local rootful Docker form described in §2. It leaves
+**OPEN on #21** the first remote/CI carrier, its launch/cleanup authority and
+its mutual-authentication mechanism. It also does not decide transport framing;
+the environment-requirements vocabulary; multi-project or multi-tenant isolation
 (#23); the operator-credential storage backend or cockpit login surface; the
 provider-side sandbox mechanism (#60); durable failure token names (#16); rate
 limiting or quota. #15 owns lease/fencing/evidence acknowledgement and
-reconciliation; #301 owns the Agent worker; #312 owns packaging and cutover; #9
-owns the operator-facing epic and remote attach.
+reconciliation; #301 owns the Agent worker; #312 owns dynamic per-Attempt
+networks, packaging and cutover; #9 owns the operator-facing epic and remote
+attach.
 
 Stop implementation on: a shared runner secret; a runner writing a receipt,
 disposition, or catalog revision; a provider credential value crossing the
@@ -572,8 +618,9 @@ header read as identity; a revocation that deletes the enrolment record instead
 of marking it; an `agent` actor authorized by a revision id alone; an unplaceable
 run that is queued instead of refused; a remote binding published as available
 before the ownership contract exists; an actor field described as attribution
-while it is still caller-asserted; or carrier-bound implementation beginning
-before #21 records the open operator decisions.
+while it is still caller-asserted; local #301-A mutating a live installation;
+or remote/CI carrier-bound implementation beginning before #21 records its
+separate open decision.
 
 ## Supersedes
 
