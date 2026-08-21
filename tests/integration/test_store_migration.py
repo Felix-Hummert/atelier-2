@@ -1769,3 +1769,35 @@ def test_a_failed_step_leaves_the_predecessor_intact(
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (13,)
+
+
+def test_a_foreign_trigger_name_collision_is_refused_without_altering_the_store(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v13_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE foreign_objects(value TEXT);
+            CREATE TRIGGER run_inputs_v3_no_update
+            BEFORE UPDATE ON foreign_objects BEGIN
+              SELECT RAISE(ABORT, 'foreign object is immutable');
+            END;
+            """
+        )
+        connection.commit()
+    before_bytes = database_path.read_bytes()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "run_inputs_v3_no_update" in shown.err
+    assert "will not alter" in shown.err
+    assert database_path.read_bytes() == before_bytes
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (13,)
