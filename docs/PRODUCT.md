@@ -126,9 +126,12 @@ handoff fields. A runner-bound replacement request and a tool-grant-bound result
 are refused before product or evidence mutation. Runner-bound attempts never
 enter the legacy driver-loss queue. A carrier-neutral Application handshake now
 reads terminal evidence, commits it, acknowledges it outside the Core
-transaction, and recovers Runner GC from the typed ACK tombstone. That handshake
-is proven only against a test Fake: no production Runner adapter, runtime caller,
-transport, evidence codec or journal, or live execution path exists yet.
+transaction, and recovers Runner GC from the typed ACK tombstone. A canonical,
+bounded, self-checking V1 record now carries the envelope or its payload-free
+tombstone; missing, corrupt, oversized and unavailable-ACK outcomes remain
+distinct without inventing evidence. This is proven only against a byte-backed
+test Fake: no production journal reader, Runner adapter, transport, runtime
+caller, carrier, or live execution path exists yet.
 
 Every attempt is started in a scratch working directory of its own. The operator
 declares one provider-neutral scratch root, and the runtime leases from it a
