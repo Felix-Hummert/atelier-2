@@ -49,6 +49,19 @@ function openEmptyStudio() {
   return feed;
 }
 
+function openProjectPseudoLocale() {
+  window.history.replaceState(null, "", "/atelier/project?pseudo-locale=1");
+  return render(App, {
+    props: {
+      cockpitApi: cockpitApiStub({
+        listRuns: vi.fn(async () => ({ items: [], next_after: null })),
+        listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.dGVzdA" }] }))
+      }),
+      mutationJournal: new MutationJournal(sessionStorage)
+    }
+  });
+}
+
 async function railShowsOwnedPseudoLocale(): Promise<void> {
   const rail = await screen.findByRole("navigation", { name: "Workshop" });
   const labels = within(rail)
@@ -86,5 +99,15 @@ describe("core surfaces read owned display strings", () => {
     open(`/atelier/runs/${publicReference}?pseudo-locale=1`);
     await screen.findByRole("heading", { name: "Run run" });
     await railShowsOwnedPseudoLocale();
+  });
+
+  it("Project renders its new work-first copy through the display transform", async () => {
+    openProjectPseudoLocale();
+
+    await screen.findByRole("heading", { name: "This workshop" });
+    expect(screen.getByText("[[[ Project ]]]").isConnected).toBe(true);
+    expect(screen.getByRole("link", { name: "[[[ Start a run ]]]" }).isConnected).toBe(true);
+    expect(screen.getByRole("heading", { name: "[[[ Queue ]]]" }).isConnected).toBe(true);
+    expect(screen.getByText("[[[ No priority or assignment. ]]]").isConnected).toBe(true);
   });
 });

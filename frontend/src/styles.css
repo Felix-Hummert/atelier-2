@@ -402,7 +402,15 @@ small {
 }
 
 .run-card .state-label.state-waiting {
-  color: #7a580e;
+  color: var(--danger);
+}
+
+.run-card .state-label.state-running {
+  color: var(--working);
+}
+
+.run-card .state-label.state-failed {
+  color: var(--danger);
 }
 
 .run-card .state-label.state-done {
@@ -1687,6 +1695,7 @@ textarea {
 }
 
 .queue {
+  margin-top: 1rem;
   margin-bottom: 0.5rem;
   border-style: dashed;
 }

@@ -1,26 +1,38 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { runPageSchema } from "../../src/api/client";
 import {
   unnamedAxeViolations,
   type AxeBaselineEntry,
   type CoreSurface
 } from "../support/axeBaseline";
+import { completedRun, startedRun, waitingInputRun } from "../support/workflowV1";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const baseline = JSON.parse(
   readFileSync(resolve(import.meta.dirname, "../support/axeBaseline.json"), "utf8")
 ) as AxeBaselineEntry[];
 
-const surfaces: readonly { surface: CoreSurface; path: string; ready: (page: Page) => Promise<void> }[] =
+const surfaces: readonly { surface: CoreSurface; path: string; ready: (page: Page) => Promise<void>; pseudoReady?: (page: Page) => Promise<void> }[] =
   [
     {
       surface: "studio",
       path: "/atelier",
       ready: async (page) => {
         await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+      }
+    },
+    {
+      surface: "project",
+      path: "/atelier/project",
+      ready: async (page) => {
+        await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+      },
+      pseudoReady: async (page) => {
+        await expect(page.getByText("[[[ Project ]]]", { exact: true })).toBeVisible();
       }
     },
     {
@@ -52,6 +64,40 @@ const studioViewports = [
   { width: 390, height: 844 }
 ] as const;
 
+const projectViewports = [
+  { width: 1280, height: 900 },
+  { width: 390, height: 844 }
+] as const;
+
+type ProjectRunReply = "common" | "empty" | "loading" | "retained-error";
+
+function projectRuns() {
+  return [
+    startedRun({ run_id: "running project", public_run_reference: "run1.cnVubmluZyBwcm9qZWN0" }),
+    waitingInputRun({ run_id: "waiting project", public_run_reference: "run1.d2FpdGluZyBwcm9qZWN0", latest_event_cursor: null }),
+    completedRun({ run_id: "done project", public_run_reference: "run1.ZG9uZSBwcm9qZWN0" })
+  ];
+}
+
+async function routeProjectReads(page: Page, read: () => ProjectRunReply, loading: { release: () => void; retainedReads: number }): Promise<void> {
+  await page.route("**/atelier/api/v1/runs*", async (route: Route) => {
+    const reply = read();
+    if (reply === "loading") {
+      await new Promise<void>((resolve) => { loading.release = resolve; });
+      await route.fulfill({ json: { items: projectRuns(), next_after: null } });
+      return;
+    }
+    if (reply === "retained-error" && loading.retainedReads++ > 0) {
+      await route.abort();
+      return;
+    }
+    await route.fulfill({ json: { items: reply === "empty" ? [] : projectRuns(), next_after: null } });
+  });
+  await page.route("**/atelier/api/v1/projects", (route) => route.fulfill({ json: { items: [{ public_project_reference: "project1.dGVzdA" }] } }));
+  await page.route("**/atelier/api/v1/workflow-revisions*", (route) => route.fulfill({ json: { items: [], next_after_revision_hash: null } }));
+  await page.route("**/atelier/api/v1/agent-configuration-revisions*", (route) => route.fulfill({ json: { items: [], next_after_agent_configuration_revision_hash: null } }));
+}
+
 async function expectStudioCopyFits(page: Page, desktop: boolean): Promise<void> {
   const heading = page.getByRole("heading", { name: "[[[ Studio ]]]" });
   const board = page.locator(".studio-board");
@@ -76,11 +122,13 @@ test("proves(core-surfaces-have-no-unnamed-axe-violations): core surfaces have n
 });
 
 test("core surfaces render owned display strings under a pseudo-locale", async ({ page }) => {
-  for (const { path, ready } of surfaces) {
+  for (const { path, ready, pseudoReady } of surfaces) {
     const separator = path.includes("?") ? "&" : "?";
     await page.goto(`${path}${separator}pseudo-locale=1`);
     if (path === "/atelier") {
       await expect(page.getByRole("heading", { name: "[[[ Studio ]]]" })).toBeVisible();
+    } else if (pseudoReady !== undefined) {
+      await pseudoReady(page);
     } else {
       await ready(page);
     }
@@ -119,5 +167,51 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await expect(page.getByRole("link", { name: "[[[ Start a run ]]]" })).toBeVisible();
     await expectStudioCopyFits(page, viewport.width === 1280);
     await page.screenshot({ path: `test-results/studio-empty-${viewport.width}.png`, fullPage: true });
+  }
+});
+
+test("Project keeps work, absence, loading, and retained failure readable", async ({ page }) => {
+  expect(runPageSchema.safeParse({ items: projectRuns(), next_after: null }).success).toBe(true);
+  let reply: ProjectRunReply = "common";
+  const loading = { release: () => {}, retainedReads: 0 };
+  await routeProjectReads(page, () => reply, loading);
+
+  for (const pseudoLocale of [false, true]) {
+    const locale = pseudoLocale ? "pseudo" : "normal";
+    const suffix = pseudoLocale ? "?pseudo-locale=1" : "";
+    for (const viewport of projectViewports) {
+      await page.setViewportSize(viewport);
+      reply = "common";
+      await page.goto(`/atelier/project${suffix}`);
+      await expect(page.getByText("Project runs unavailable")).toHaveCount(0);
+      await expect(page.getByRole("region", { name: "Running" })).toContainText("▲Running");
+      await expect(page.getByRole("region", { name: "Waiting for you" })).toContainText("⬢Waiting for you");
+      await expect(page.getByRole("region", { name: "Done" })).toContainText("●Done");
+      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-common.png`, fullPage: true });
+
+      reply = "empty";
+      await page.goto(`/atelier/project${suffix}`);
+      await expect(page.getByText(pseudoLocale ? "[[[ No runs here yet. ]]]" : "No runs here yet.")).toBeVisible();
+      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-empty.png`, fullPage: true });
+
+      reply = "loading";
+      await page.goto(`/atelier/project${suffix}`, { waitUntil: "domcontentloaded" });
+      await expect(page.getByText("Looking…")).toBeVisible();
+      await page.locator("main.workshop-stage").evaluate((stage) => { stage.scrollTop = 0; });
+      await expect(page.getByRole("heading", { level: 1, name: "This workshop" })).toBeVisible();
+      await expect(page.getByRole("link", { name: pseudoLocale ? "[[[ Start a run ]]]" : "Start a run" })).toBeVisible();
+      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-loading.png`, fullPage: true });
+      loading.release();
+      await expect(page.getByRole("region", { name: "Running" })).toBeVisible();
+
+      reply = "retained-error";
+      loading.retainedReads = 0;
+      await page.goto(`/atelier/project${suffix}`);
+      await expect(page.getByRole("region", { name: "Running" })).toBeVisible();
+      await page.getByRole("button", { name: "Refresh project runs" }).click();
+      await expect(page.getByText("Project runs unavailable")).toBeVisible();
+      await expect(page.getByRole("region", { name: "Running" })).toBeVisible();
+      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-retained-error.png`, fullPage: true });
+    }
   }
 });

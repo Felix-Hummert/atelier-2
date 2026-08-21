@@ -1,16 +1,16 @@
 /**
- * Named axe-core exceptions for the three core surfaces.
+ * Named axe-core exceptions for the four core surfaces.
  *
  * A violation that is not in this list fails CI. A row without an owning
  * GitHub issue is not a baseline entry — it is a swallowed finding.
  *
- * The checked-in list is empty: the 19.08.2026 Chromium scan of Studio,
+ * The checked-in list is empty: the Chromium scan of Studio, Project,
  * New Run, and the seeded Run page under wcag2a / wcag2aa / wcag22aa
  * (66 axe rules) reported no violations. A later finding is a new row
  * with an issue URL, or it is red.
  */
 
-export const CORE_SURFACES = ["studio", "new-run", "run"] as const;
+export const CORE_SURFACES = ["studio", "project", "new-run", "run"] as const;
 
 export type CoreSurface = (typeof CORE_SURFACES)[number];
 
