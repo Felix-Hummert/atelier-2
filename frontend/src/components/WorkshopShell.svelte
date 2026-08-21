@@ -10,6 +10,11 @@
 
   export let route: CockpitRoute;
   export let navigate: (path: string) => void;
+  let stage: HTMLElement;
+
+  export function focusStage(): void {
+    stage.focus();
+  }
 
   const destinationMarks: Record<(typeof WORKSHOP_DESTINATIONS)[number]["id"], string> = {
     studio: "✳",
@@ -63,7 +68,7 @@
     {/each}
   </nav>
 
-  <main class="workshop-stage">
+  <main bind:this={stage} class="workshop-stage" tabindex="-1">
     <slot />
   </main>
 </div>

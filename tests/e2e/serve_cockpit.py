@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import shutil
@@ -98,11 +99,13 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
         release: threading.Event,
     ) -> None:
         super().__init__(output, requests, lifecycle, name)
+        self.observed = threading.Event()
         self.release = release
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
+        self.observed.set()
         if not self.release.wait(TIMEOUT_SECONDS):
             raise RuntimeError("browser did not observe the working attempt")
         return super().decode_process_completion(invocation, completion)
@@ -145,7 +148,8 @@ class BrowserProofHarness:
         self.app, self.engine, self.factory = app, engine, factory
         self.expected_hash = hashlib.sha256(factory.output).hexdigest().encode("ascii")
         self.released = False
-        self.observed_run_responses = 0
+        self.start_response_observed = False
+        self.run_response_counts: dict[str, int] = {}
         self.stream_counts: dict[str, int] = {}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -163,6 +167,28 @@ class BrowserProofHarness:
             if message["type"] == "http.response.body" and stream_number >= 2:
                 body = message.get("body", b"").replace(self.expected_hash, b"0" * 64)
                 message = {**message, "body": body}
+            if (
+                message["type"] == "http.response.body"
+                and not message.get("more_body", False)
+                and not self.start_response_observed
+                and scope["method"] == "POST"
+                and path == "/atelier/api/v1/runs"
+                and status in {200, 201}
+            ):
+                executor = self.factory.opened
+                if executor is not None:
+                    if not isinstance(executor, BlockingAgentExecutor):
+                        raise TypeError(
+                            "the blocking start did not open its expected executor"
+                        )
+                    observed = await asyncio.to_thread(
+                        executor.observed.wait, TIMEOUT_SECONDS
+                    )
+                    if not observed:
+                        raise RuntimeError(
+                            "the blocking start did not observe its process"
+                        )
+                    self.start_response_observed = True
             await send(message)
             if message["type"] == "http.response.body" and not message.get(
                 "more_body", False
@@ -172,28 +198,33 @@ class BrowserProofHarness:
         await self.app(scope, receive, proof_send)
 
     def release_after_observed(self, path: str, status: int) -> None:
+        if (
+            self.released
+            or status != 200
+            or not path.startswith("/atelier/api/v1/runs/")
+        ):
+            return
+        self.run_response_counts[path] = self.run_response_counts.get(path, 0) + 1
         executor = self.factory.opened
-        if self.released or status != 200 or executor is None or not executor.requests:
+        if executor is None or not executor.requests:
             return
         reference = encode_public_run_reference(executor.requests[0].run_id)
         if path != f"/atelier/api/v1/runs/{reference}":
             return
+        if self.run_response_counts[path] < 3:
+            return
+        if not isinstance(executor, BlockingAgentExecutor):
+            raise TypeError("the test executor changed while the browser observed it")
         with self.engine.connect() as connection:
             observed = connection.scalar(
                 sa.select(sa.func.count())
                 .select_from(agent_attempts)
                 .where(agent_attempts.c.process_phase == "PROCESS_OBSERVED")
             )
-        if observed:
-            self.observed_run_responses += 1
-            if self.observed_run_responses < 3:
-                return
-            self.released = True
-            if not isinstance(executor, BlockingAgentExecutor):
-                raise RuntimeError(
-                    "the test executor changed while the browser observed it"
-                )
-            executor.release.set()
+        if not observed:
+            raise RuntimeError("the blocking attempt was not durably observed")
+        self.released = True
+        executor.release.set()
 
 
 def main() -> None:
@@ -229,7 +260,14 @@ def main() -> None:
         prepare.close()
 
     factory = BlockingAgentExecutorFactory(
-        "e2e", "blocking/v1", "e2e-blocking-process", "Grüße 東京".encode()
+        "e2e",
+        "blocking/v1",
+        "e2e-blocking-process",
+        (
+            "Provider terminal evidence:\n"
+            + "Grüße 東京 — durable agent output remains readable after completion.\n"
+            * 20
+        ).encode(),
     )
     # The blocking provider exists so the browser can catch a V2 attempt
     # mid-flight. The immediate one finishes a V3 line without a hold. The

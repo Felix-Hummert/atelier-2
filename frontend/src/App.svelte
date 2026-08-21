@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
 
   import { createCockpitApi, type CockpitApi } from "./api/client";
   import {
@@ -20,6 +20,7 @@
   export let createReconcileCommandId: () => string = makeReconcileCommandId;
 
   let route = cockpitRoute(window.location.pathname);
+  let workshopShell: WorkshopShell;
 
   onMount(() => {
     const readRoute = () => { route = cockpitRoute(window.location.pathname); };
@@ -27,15 +28,17 @@
     return () => window.removeEventListener("popstate", readRoute);
   });
 
-  function navigate(path: string): void {
+  async function navigate(path: string): Promise<void> {
     window.history.pushState(null, "", path);
     route = cockpitRoute(path);
+    await tick();
+    workshopShell?.focusStage();
   }
 </script>
 
 <svelte:head><meta name="theme-color" content="#f2efe7" /><title>Atelier 2</title></svelte:head>
 
-<WorkshopShell {route} {navigate}>
+<WorkshopShell bind:this={workshopShell} {route} {navigate}>
   {#if route.page === "studio"}
     <StudioPage {cockpitApi} {navigate} />
   {:else if route.page === "project"}
