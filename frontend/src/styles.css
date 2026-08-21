@@ -416,7 +416,6 @@ small {
 .run-summary,
 .inbox,
 .project-card,
-.chat-door,
 .queue,
 .occupancy-editor {
   border: 1px solid var(--line);
@@ -1491,52 +1490,54 @@ textarea {
 }
 
 .studio-home {
-  display: grid;
-  grid-template-areas: "board" "chat";
   max-width: none;
   min-height: 100%;
 }
 
-.studio-chat {
-  grid-area: chat;
-  padding: 1.1rem 1.2rem 1.5rem;
-  border-top: 1px dashed var(--line);
-  color: var(--muted);
-}
-
-.studio-chat-head h2 {
-  margin: 0;
-  color: var(--ink);
-  font-family: var(--serif);
-  font-size: 1.15rem;
-}
-
-.studio-chat-head p {
-  margin: 0.15rem 0 0.85rem;
-  font-size: 0.82rem;
-}
-
-.studio-chat p {
-  margin: 0;
-}
-
 .studio-board {
-  grid-area: board;
+  display: grid;
+  align-content: start;
+  gap: 1rem;
   min-width: 0;
 }
 
-@media (min-width: 720px) {
-  .studio-home {
-    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
-    grid-template-areas: "chat board";
-    align-items: stretch;
-  }
+.studio-board .page-header,
+.studio-board .connection,
+.studio-board .notice,
+.studio-board .read-state,
+.studio-board .inbox,
+.studio-board .section-title {
+  margin: 0;
+}
 
-  .studio-chat {
-    border-top: none;
-    border-right: 1px solid var(--line);
-    background: var(--panel);
-  }
+.chat-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+  color: var(--muted);
+}
+
+.chat-status h2,
+.chat-status p {
+  margin: 0;
+}
+
+.chat-status h2 {
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 1.05rem;
+}
+
+.chat-status p {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
 .inbox {
@@ -1546,8 +1547,7 @@ textarea {
   background: transparent;
 }
 
-.inbox h2,
-.chat-door h2 {
+.inbox h2 {
   margin: 0 0 0.25rem;
   font-size: 1.05rem;
 }
@@ -1573,7 +1573,7 @@ textarea {
   min-height: 44px;
   padding: 0.75rem 0.9rem;
   border: 1px solid var(--line);
-  border-left: 3px solid var(--warning);
+  border-left: 4px solid var(--warning);
   border-radius: var(--r-lg);
   background: var(--panel2);
   color: inherit;
@@ -1616,7 +1616,7 @@ textarea {
 
 .project-card {
   display: grid;
-  gap: 0.35rem;
+  gap: 0.75rem;
   border-left: 4px solid var(--accent);
   padding: 1.05rem 1.25rem 1.15rem;
 }
@@ -1651,17 +1651,23 @@ textarea {
 }
 
 .project-counts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem 1.25rem;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
   margin: 0;
   color: var(--muted);
 }
 
 .project-count {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
   align-items: baseline;
-  gap: 0.4rem;
+  column-gap: 0.4rem;
+  min-height: 2.75rem;
+  border-radius: var(--r);
+  padding: 0.4rem 0.55rem;
+  background: var(--chip);
+  font-size: 0.82rem;
 }
 
 .project-count-waiting {
@@ -1674,14 +1680,10 @@ textarea {
   font-weight: 700;
 }
 
-.chat-door {
-  margin-top: 1.75rem;
-  border-style: dashed;
-  color: var(--muted);
-}
-
-.chat-door p {
-  margin: 0;
+@media (max-width: 36rem) {
+  .project-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .queue {
