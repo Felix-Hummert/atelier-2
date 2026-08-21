@@ -34,6 +34,21 @@ function open(pathname: string) {
   });
 }
 
+function openEmptyStudio() {
+  window.history.replaceState(null, "", "/atelier?pseudo-locale=1");
+  const feed = new FakeRunEventFeed();
+  render(App, {
+    props: {
+      cockpitApi: cockpitApiStub({
+        listRuns: vi.fn(async () => ({ items: [], next_after: null })),
+        openAttentionEvents: feed.openAttention
+      }),
+      mutationJournal: new MutationJournal(sessionStorage)
+    }
+  });
+  return feed;
+}
+
 async function railShowsOwnedPseudoLocale(): Promise<void> {
   const rail = await screen.findByRole("navigation", { name: "Workshop" });
   const labels = within(rail)
@@ -43,9 +58,21 @@ async function railShowsOwnedPseudoLocale(): Promise<void> {
 }
 
 describe("core surfaces read owned display strings", () => {
+  it("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio renders its header and confirmed empty copy through the display transform", async () => {
+    const feed = openEmptyStudio();
+
+    await screen.findByRole("heading", { name: "[[[ Studio ]]]" });
+    feed.handlers?.opened();
+    await screen.findByRole("heading", { name: "[[[ Nothing is running ]]]" });
+
+    expect(screen.getByText("[[[ Atelier ]]]").isConnected).toBe(true);
+    expect(screen.getByText("[[[ A workflow becomes a run, and a run is what this workshop shows. ]]]").isConnected).toBe(true);
+    expect(screen.getByRole("link", { name: "[[[ Start a run ]]]" }).isConnected).toBe(true);
+  });
+
   it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): Studio rail uses the owner, not a hardcoded copy", async () => {
     open("/atelier?pseudo-locale=1");
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "[[[ Studio ]]]" });
     await railShowsOwnedPseudoLocale();
   });
 

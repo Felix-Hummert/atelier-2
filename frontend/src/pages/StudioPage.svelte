@@ -20,6 +20,7 @@
     startAttentionHold,
     type AttentionHold
   } from "../lib/attentionHold";
+  import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import {
     beginRead,
@@ -31,6 +32,7 @@
   } from "../lib/readResource";
   import { readEveryRun } from "../lib/runPages";
   import { countStanding, runsStanding } from "../lib/runState";
+  import { studioPageCopy } from "../lib/studioPageCopy";
   import {
     connectionLabel,
     protocolDetail,
@@ -240,11 +242,11 @@
   <div class="studio-board">
     <header class="page-header">
       <div>
-        <p class="eyebrow">Atelier</p>
-        <h1 id="studio-title">Studio</h1>
+        <p class="eyebrow">{wrapDisplayCopy(studioPageCopy.eyebrow)}</p>
+        <h1 id="studio-title">{wrapDisplayCopy(studioPageCopy.title)}</h1>
       </div>
       {#if snapshot !== null && !empty && canStart}
-        <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>Start</a>
+        <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>{wrapDisplayCopy(studioPageCopy.start)}</a>
       {/if}
     </header>
 
@@ -276,10 +278,10 @@
 
       {#if empty}
         <div class="empty">
-          <h2>Nothing is running</h2>
-          <p>A workflow becomes a run, and a run is what this workshop shows.</p>
+          <h2>{wrapDisplayCopy(studioPageCopy.emptyTitle)}</h2>
+          <p>{wrapDisplayCopy(studioPageCopy.emptyDescription)}</p>
           {#if canStart}
-            <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>Start a run</a>
+            <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>{wrapDisplayCopy(studioPageCopy.emptyStart)}</a>
           {/if}
         </div>
       {:else if runningCount > 0 || waitingRuns.length > 0 || failedCount > 0 || landedCount > 0}
