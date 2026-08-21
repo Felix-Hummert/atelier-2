@@ -601,6 +601,9 @@ a cancelled attempt's cleanup disposition is one
 list and inspect a V3 run from the published document it was started
 against, not today's executable parse;
 read the agent receipts a run has written;
+for a bounded loop, every run query selects the durable current round's exact
+node execution, while the receipt list and event page retain every round and
+stream preparation agrees with the page about the one terminal event;
 an `invalid-request` names the field and reason the validator already knew;
 answer a waiting node; cancel the current V2 Agent attempt with an optional
 single replacement; submit an accountable reconciliation; and follow the
