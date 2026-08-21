@@ -9,8 +9,8 @@ documentation layers; `docs/PRODUCT.md` owns implementation status;
 `.github/workflows/ci.yml` owns current code verification; `README.md` is the
 human entry point to those owners.
 
-`docs/COORDINATION.md` owns the working agreement between the agent heads
-(roles, ceremony, claims, fences); issue #5 is its live source.
+Repository edits use the globally installed `agent-claim` CLI. A subagent stays
+within its parent head's current claimed scope; the CLI owns the protocol.
 
 ## Growth
 
