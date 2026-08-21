@@ -29,6 +29,7 @@ export default defineConfig({
       ATELIER2_E2E_PORT: String(port),
       ATELIER2_E2E_FRONTEND_DIST: resolve(frontendRoot, "dist")
     },
+    gracefulShutdown: { signal: "SIGINT", timeout: 30_000 },
     url: `http://127.0.0.1:${port}/atelier/api/v1/health`,
     reuseExistingServer: false,
     timeout: 30_000
