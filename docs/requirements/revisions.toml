@@ -15,10 +15,13 @@ document = "0003"
 path = "docs/requirements/0003-ziel-ui.md"
 content_sha256 = "0f18db4ef0b74541ae8a1c0114c7b75752cd76a453fd8571e04f5184ee9bb592"
 
-[[legacy]]
+[[revision]]
 document = "0004"
 path = "docs/requirements/0004-runner-und-remote.md"
-content_sha256 = "35a22bc2f60c30cd3a9cca8a8d285dda806646fbf9bca72b48e5c2e605b23f79"
+content_sha256 = "866b718c0be69be0121dfcda77c75d18f70bbee150e277e2fad503bbaf02efb3"
+approval_comment_id = 5376087845
+approval_sha256 = "939cd099ae2b933e5f0c801d4f7f70d7a38133283468e5110a06889261320508"
+predecessor = "GENESIS"
 
 [[legacy]]
 document = "0005"
