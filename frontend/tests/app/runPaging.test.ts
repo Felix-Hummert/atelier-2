@@ -63,7 +63,17 @@ describe("the workshop reads the durable list to its end", () => {
   });
 
   it("names an incomplete initial read without confirming its partial rows", async () => {
-    open("/atelier/project", pagedListRuns([firstPage, secondPage], 1));
+    const listRuns = pagedListRuns([firstPage, secondPage], 1);
+    window.history.replaceState(null, "", "/atelier/project");
+    render(App, {
+      props: {
+        cockpitApi: cockpitApiStub({
+          listRuns,
+          listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.dGVzdA" }] }))
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
 
     const notice = await screen.findByRole("alert");
 
@@ -75,7 +85,16 @@ describe("the workshop reads the durable list to its end", () => {
 
   it("ends visibly instead of spinning when the durable list repeats a cursor", async () => {
     const listRuns = repeatingCursorListRuns(secondPage);
-    open("/atelier/project", listRuns);
+    window.history.replaceState(null, "", "/atelier/project");
+    render(App, {
+      props: {
+        cockpitApi: cockpitApiStub({
+          listRuns,
+          listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.dGVzdA" }] }))
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
 
     const notice = await screen.findByRole("alert");
 

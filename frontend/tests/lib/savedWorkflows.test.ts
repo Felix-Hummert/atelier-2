@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { WorkflowRevisionSummary } from "../../src/api/client";
+import type { WorkflowRevisionDetail, WorkflowRevisionSummary } from "../../src/api/client";
 import {
+  agentRolesOf,
   groupSavedWorkflows,
   revisionChoiceLabel,
   selectedRevisionOf
@@ -115,5 +116,37 @@ describe("grouping saved workflows by the name the listing already publishes", (
 
     expect(revisionChoiceLabel(newest, newest.workflow_revision_hash)).toBe("Latest");
     expect(revisionChoiceLabel(older, newest.workflow_revision_hash)).toBe("Earlier");
+  });
+});
+
+describe("the authored agent roles a second consumer may edit", () => {
+  it("keeps only real V2/V3 roles once and never invents one for V1", () => {
+    const graph = (workflow_format_version: 1 | 2 | 3, roles: string[]) => ({
+      workflow_format_version,
+      executable: true,
+      not_executable_reason: null,
+      node_count: 1,
+      agent_roles: roles,
+      orders: [],
+      node_previews: [],
+      name: "roles",
+      description: null
+    }) as WorkflowRevisionDetail["graph"];
+
+    expect(agentRolesOf(graph(3, ["builder", "reviewer", "builder"]))).toEqual(["builder", "reviewer"]);
+    expect(agentRolesOf({
+      workflow_format_version: 2,
+      start_node_id: "one",
+      nodes: [
+        { type: "agent", node_id: "one", role: "builder", job: "one", next_node_id: "two" },
+        { type: "agent", node_id: "two", role: "builder", job: "two", next_node_id: "done" },
+        { type: "subworkflow", node_id: "done", operation: "add", operands: [1, 2], next_node_id: null }
+      ]
+    })).toEqual(["builder"]);
+    expect(agentRolesOf({
+      workflow_format_version: 1,
+      start_node_id: "done",
+      nodes: [{ type: "subworkflow", node_id: "done", operation: "add", operands: [1, 2], next_node_id: null }]
+    })).toEqual([]);
   });
 });

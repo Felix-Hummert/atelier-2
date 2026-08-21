@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { CockpitRequestError, type Problem } from "../../src/api/client";
-import { catalogNameStateOf, isCatalogDisplayName } from "../../src/lib/catalogName";
+import type { WorkflowRevisionSummary } from "../../src/api/client";
+import { catalogHeadsOf, catalogNameStateOf, isCatalogDisplayName } from "../../src/lib/catalogName";
 
 function problem(code: string): Problem {
   return {
@@ -57,5 +58,34 @@ describe("what a published name is to the catalog", () => {
       revisionHash: hash,
       lineageId
     });
+  });
+});
+
+describe("the complete catalog head snapshot", () => {
+  const revision = (name: string, hash: string): WorkflowRevisionSummary => ({
+    workflow_revision_hash: hash,
+    workflow_format_version: 3,
+    executable: true,
+    not_executable_reason: null,
+    name,
+    description: null
+  });
+
+  it("refuses an admitted head that the full list does not carry under its exact name", () => {
+    const hash = "a".repeat(64);
+    expect(catalogHeadsOf([revision("other", hash)], {
+      named: { kind: "admitted", revisionHash: hash, lineageId: "b".repeat(64) }
+    })).toBeNull();
+    expect(catalogHeadsOf([revision("named", "c".repeat(64))], {
+      named: { kind: "admitted", revisionHash: hash, lineageId: "b".repeat(64) }
+    })).toBeNull();
+  });
+
+  it("returns only exact admitted heads", () => {
+    const hash = "a".repeat(64);
+    expect(catalogHeadsOf([revision("named", hash)], {
+      named: { kind: "admitted", revisionHash: hash, lineageId: "b".repeat(64) },
+      retired: { kind: "retired" }
+    })).toEqual({ named: hash });
   });
 });

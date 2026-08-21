@@ -1,4 +1,4 @@
-import type { WorkflowRevisionSummary } from "../api/client";
+import type { WorkflowRevisionDetail, WorkflowRevisionSummary } from "../api/client";
 
 /**
  * One picker row: either a published name with every listed revision of it,
@@ -74,6 +74,15 @@ export function revisionChoiceLabel(
   newestHash: string
 ): string {
   return revision.workflow_revision_hash === newestHash ? "Latest" : "Earlier";
+}
+
+/** The roles authored by an executable workflow document, once each. */
+export function agentRolesOf(graph: WorkflowRevisionDetail["graph"]): string[] {
+  if (graph.workflow_format_version === 3) return [...new Set(graph.agent_roles)];
+  if (graph.workflow_format_version === 2) {
+    return [...new Set(graph.nodes.filter((node) => node.type === "agent").map((node) => node.role))];
+  }
+  return [];
 }
 
 function withHeadFirst(

@@ -51,11 +51,13 @@
   } from "../lib/catalogAdmission";
   import {
     catalogNameStateOf,
+    catalogHeadsOf,
     problemCode,
     type CatalogNameState
   } from "../lib/catalogName";
   import {
     groupSavedWorkflows,
+    agentRolesOf,
     revisionChoiceLabel,
     selectedRevisionOf,
     type SavedWorkflowRow
@@ -195,7 +197,6 @@
     newestByName: Record<string, string>;
     catalogByName: Record<string, CatalogNameState>;
   } | null> {
-    const resolved: Record<string, string> = {};
     const states: Record<string, CatalogNameState> = {};
     const names = [
       ...new Set(
@@ -212,15 +213,9 @@
     );
     for (const { name, state } of catalog) {
       states[name] = state;
-      if (state.kind !== "admitted") continue;
-      const listedForName = items.some(
-        (item) =>
-          item.name === name && item.workflow_revision_hash === state.revisionHash
-      );
-      if (!listedForName) return null;
-      resolved[name] = state.revisionHash;
     }
-    return { newestByName: resolved, catalogByName: states };
+    const newestByName = catalogHeadsOf(items, states);
+    return newestByName === null ? null : { newestByName, catalogByName: states };
   }
 
   function catalogStateLabel(state: CatalogNameState | undefined): string | null {
@@ -402,18 +397,6 @@
    * document with no agent node still starts through the bound request, so "which
    * roles" and "which start request" must not be collapsed into one answer.
    */
-  function agentRolesOf(graph: WorkflowRevisionDetail["graph"]): string[] {
-    if (graph.workflow_format_version === 3) return [...graph.agent_roles];
-    if (graph.workflow_format_version === 2) {
-      return [
-        ...new Set(
-          graph.nodes.filter((node) => node.type === "agent").map((node) => node.role)
-        )
-      ];
-    }
-    return [];
-  }
-
   let workflowDetails: Record<string, WorkflowDetailResource> = {};
   let activeWorkflowDetailHash: string | null = null;
   let editingHash: string | null = null;

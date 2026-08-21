@@ -1085,6 +1085,16 @@ export type ProjectResource = z.infer<typeof projectResourceSchema>;
 export type ProjectList = z.infer<typeof projectListSchema>;
 export type OccupancyRevision = z.infer<typeof occupancyRevisionSchema>;
 
+export interface OccupancyRevisionInput {
+  revision_number: number;
+  bindings: Array<{ role: string; agent_configuration_revision_hash: string }>;
+}
+
+export interface ExactOccupancyRevisionWrite {
+  input: OccupancyRevisionInput;
+  body: string;
+}
+
 /**
  * The graph of a revision a run can hold. Only an executable format carries
  * nodes to walk, so everything that walks them asks for this rather than
@@ -1137,6 +1147,11 @@ export interface CockpitApi {
     publicProjectReference: string,
     lineageId: string
   ): Promise<OccupancyRevision>;
+  putProjectOccupancy(
+    publicProjectReference: string,
+    lineageId: string,
+    write: ExactOccupancyRevisionWrite
+  ): Promise<HttpResult<OccupancyRevision>>;
   listWorkflowRevisions(after?: string): Promise<WorkflowRevisionPage>;
   listAgentConfigurationRevisions(after?: string): Promise<AgentConfigurationRevisionPage>;
   getRevisionByName(name: string): Promise<CatalogNameResolution>;
@@ -1233,6 +1248,32 @@ export function createCockpitApi(
       }
       return occupancy;
     },
+    putProjectOccupancy: async (publicProjectReference, lineageId, write) => {
+      if (write.body !== JSON.stringify(write.input)) {
+        throw new CockpitRequestError("The frozen occupancy bytes did not name the sent input.");
+      }
+      const result = await requestJsonResult(
+        fetcher,
+        `/atelier/api/v1/projects/${encodeURIComponent(publicProjectReference)}` +
+          `/occupancy/${encodeURIComponent(lineageId)}`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: write.body
+        },
+        [200, 201],
+        occupancyRevisionSchema
+      );
+      if (
+        result.value.public_project_reference !== publicProjectReference ||
+        result.value.lineage_id !== lineageId
+      ) {
+        throw new CockpitRequestError(
+          "The occupancy response named another project or lineage."
+        );
+      }
+      return result;
+    },
     listWorkflowRevisions: (after?: string) =>
       requestJson(
         fetcher,
@@ -1253,14 +1294,19 @@ export function createCockpitApi(
         [200],
         agentConfigurationRevisionPageSchema
       ),
-    getRevisionByName: (name: string) =>
-      requestJson(
+    getRevisionByName: async (name: string) => {
+      const resolution = await requestJson(
         fetcher,
         `/atelier/api/v1/workflow-revisions/by-name/${encodeURIComponent(name)}`,
         {},
         [200],
         catalogNameResolutionSchema
-      ),
+      );
+      if (resolution.display_name !== name) {
+        throw new CockpitRequestError("The catalog response named another display name.");
+      }
+      return resolution;
+    },
     foundCatalogLineage: (input) =>
       requestJsonResult(
         fetcher,
