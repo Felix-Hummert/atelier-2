@@ -16,60 +16,36 @@ No operations owner existed. [docs/README.md](README.md) now names this file
 for that question. [Journeys](journeys/) illustrate requirements and bind
 nothing.
 
-## What is packaged
+## Disposable Serve candidate
 
-A repository `Dockerfile` bakes the locked uv project and the built
-`frontend/dist` into a slim image and runs as a non-root user. The image
-carries exactly one provider executable: the Claude CLI pinned to the
-conformant version the subscription executor already attests. Codex and Grok
-are not in the image.
+The repository `Dockerfile` bakes the locked project and production cockpit
+into one provider-free Serve image. It has no provider executable,
+credential/configuration mount, host home, scratch mount, Docker socket,
+system service access, added capability, privileged mode, or Runner service.
+It runs non-root with a read-only root filesystem, dropped capabilities and
+`no-new-privileges`. Its only writable durable state is one Compose-named
+`store` volume.
 
-Durable store and attempt scratch live on the host at
-`${XDG_STATE_HOME:-$HOME/.local/state}/atelier2` and are bind-mounted. Code
-is not mounted: a redeploy is an image rebuild, so a container swap replaces
-the code atomically.
-
-The process binds `127.0.0.1:8422`. Compose uses the host network so that
-loopback bind is the host loopback. A bridge `ports:` mapping is refused by
-construction, because it would require binding `0.0.0.0` inside the container
-and the billed-provider loopback rule would then refuse to serve.
-
-The named process loggers share one JSON object per line on stderr; the root
-logger is not configured. The two product sentences a diagnosing agent can
-query are a failed agent attempt
-(`agent_attempt_failed`, with `run_id` / `node_id` / `attempt_id`) and an
-unhandled HTTP exception (`http_internal_error`). The uvicorn access log is
-off: it has no reader. Run facts, including why a run stopped, belong on the
-run resource, not in this journal.
-
-## Credentials
-
-Authentication is never baked into the image, its layers, logs, fixtures, or
-this file. The start script mounts one regular host file named
-`.credentials.json`, read-only, into an otherwise empty credential directory.
-The container `HOME` is isolated. The operator's `~/.claude` tree, settings,
-and any other provider home are not mounted.
-
-Set `ATELIER2_CLAUDE_CREDENTIALS` to that file before starting. The script
-refuses a missing path, a directory, a symlink, or a file of any other name,
-because a missing bind source would make Docker create a directory on the
-host.
-
-## Start and redeploy
+Start it from a clean checkout at a committed tree:
 
 ```bash
-export ATELIER2_CLAUDE_CREDENTIALS=/path/to/.credentials.json
 bash scripts/container_up.sh
 ```
 
-The script creates the state root and its `store` and `scratch` directories
-at mode `0700`, resolves one source commit and the source tree of that commit,
-and refuses a missing or unknown identity by name before build. The candidate
-image context is that exact git commit, not dirty tracked files or untracked
-worktree files. The same identity is bound into the image labels and the
-serve-health inputs. It then builds the image for the current operator uid/gid
-and starts the compose service. Rerun it after a landing to redeploy. It does
-not start autonomy and it does not arm anything.
+The script refuses dirty, untracked, or unreadable source before Docker, then
+archives the resolved commit into a temporary build context. It binds that
+commit and tree to image and Compose resource labels, creates a fresh Compose
+project, waits for `/atelier/api/v1/health` to report that same identity, and
+only then prints the Docker-assigned loopback URL. A private candidate-lifecycle
+descriptor freezes its teardown shape, so the shell-quoted
+`down --volumes --rmi local --remove-orphans` command carries the exact identity
+without ambient variables or a mutable checkout. It removes only this
+candidate's container, network, volume and local project image; errors and
+interrupts attempt that same cleanup and preserve the descriptor for retry when
+it fails. Successful teardown removes it. Other containers and services are not
+selected or changed. A rerun creates a new disposable candidate. The current Core
+`ExactOutput` executor can still serve its fixture; this package supplies no
+external provider or Runner.
 
 ## Pin an executor toolchain
 
@@ -100,9 +76,9 @@ npm package: pass `--from` to a conformant executable and the script copies it
 to `grok-<version>/grok`. `--from` copies an already-held executable into that
 layout instead of fetching.
 
-This script does not rewrite `atelier2-live.service`, does not download during
-`serve`, and does not resolve the executable path from admission. Those remain
-later slices of the toolchain item.
+This script does not alter a running Serve, download during `serve`, or resolve
+the executable path from admission. Those remain later slices of the toolchain
+item.
 
 ## Raise an older store
 
@@ -128,20 +104,14 @@ unaltered and said to be already current.
 
 ## What this slice does not do
 
-- **Live cutover.** The host unit `atelier2-live.service` stays the live
-  serve until the operator switches it. The start script refuses to run while
-  that unit is active and never issues `systemctl start`, `stop`, or
-  `restart`.
-- **Network hardening.** Reachability, exposure declaration, and anything
-  beyond this machine stay with ADR 0009, which is not implemented. Host
-  networking plus a loopback bind is packaging, not that decision.
-- **CI image build.** The workflows do not build the image. The packaging job
-  exercises the recipes and the start script without a real image build. It
-  does not build a real image or start a container. A full frontend, Python,
-  and Claude install on every pull request is not justified by what the image
-  would prove: the serve still needs a real credential to start a billed
-  provider, and the cheap contracts (non-root, pin, mounts, loopback, no
-  secrets in the recipe, immutable git identity) are checked as files.
+- **Live cutover.** The candidate selects no existing process, port, container,
+  network or volume; it is not a replacement action.
+- **Runner or provider execution.** The image supplies neither. A Start may
+  reach existing Core `ExactOutput` behavior, but A.0 proves no external call.
+- **CI image build.** CI checks the cheap recipe contract. The release/local
+  gate, after a reviewed clean commit, builds, inspects, browses, restarts and
+  tears down the candidate. Network hardening beyond its loopback publication
+  stays with ADR 0009.
 
 ## Measure concurrent fake-executor load
 

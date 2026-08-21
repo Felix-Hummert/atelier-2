@@ -1,94 +1,139 @@
 #!/usr/bin/env bash
-# Build and start the packaged serve. Redeploy is a deliberate rerun.
-# This script does not start, stop, or replace atelier2-live.service.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export ATELIER2_STATE="${ATELIER2_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/atelier2}"
-export ATELIER2_UID="${ATELIER2_UID:-$(id -u)}"
-export ATELIER2_GID="${ATELIER2_GID:-$(id -g)}"
-
-if ! ATELIER2_SOURCE_COMMIT="$(git -C "${REPO}" rev-parse --verify "HEAD^{commit}" 2>/dev/null)"; then
+repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if ! status="$(git -C "${repository}" status --porcelain --untracked-files=all)"; then
+  echo "container up: source status is unavailable" >&2
+  exit 1
+fi
+if [[ -n "${status}" ]]; then
+  echo "container up: source tree must be clean" >&2
+  exit 1
+fi
+if ! export ATELIER2_SOURCE_COMMIT="$(git -C "${repository}" rev-parse --verify 'HEAD^{commit}')"; then
   echo "container up: source commit identity is missing" >&2
   exit 1
 fi
-if [[ -z "${ATELIER2_SOURCE_COMMIT}" || "${ATELIER2_SOURCE_COMMIT}" == "unknown" ]]; then
-  echo "container up: source commit identity is unknown" >&2
-  exit 1
-fi
-if ! git -C "${REPO}" cat-file -e "${ATELIER2_SOURCE_COMMIT}^{commit}" 2>/dev/null; then
-  echo "container up: source commit identity is unknown" >&2
-  exit 1
-fi
-if ! ATELIER2_SOURCE_TREE="$(git -C "${REPO}" rev-parse --verify "HEAD^{tree}" 2>/dev/null)"; then
+if ! export ATELIER2_SOURCE_TREE="$(git -C "${repository}" rev-parse --verify 'HEAD^{tree}')"; then
   echo "container up: source tree identity is missing" >&2
   exit 1
 fi
-if [[ -z "${ATELIER2_SOURCE_TREE}" || "${ATELIER2_SOURCE_TREE}" == "unknown" ]]; then
-  echo "container up: source tree identity is unknown" >&2
-  exit 1
-fi
-if ! git -C "${REPO}" cat-file -e "${ATELIER2_SOURCE_TREE}^{tree}" 2>/dev/null; then
-  echo "container up: source tree identity is unknown" >&2
-  exit 1
-fi
-if ! EXPECTED_SOURCE_TREE="$(git -C "${REPO}" rev-parse --verify "${ATELIER2_SOURCE_COMMIT}^{tree}" 2>/dev/null)"; then
-  echo "container up: source tree identity is missing" >&2
-  exit 1
-fi
-if [[ "${ATELIER2_SOURCE_TREE}" != "${EXPECTED_SOURCE_TREE}" ]]; then
+if [[ "${ATELIER2_SOURCE_TREE}" != "$(git -C "${repository}" rev-parse "${ATELIER2_SOURCE_COMMIT}^{tree}")" ]]; then
   echo "container up: source tree does not belong to source commit" >&2
   exit 1
 fi
-export ATELIER2_SOURCE_COMMIT
-export ATELIER2_SOURCE_TREE
 
-if [[ -z "${ATELIER2_CLAUDE_CREDENTIALS:-}" ]]; then
-  echo "container up: set ATELIER2_CLAUDE_CREDENTIALS to the host path of .credentials.json" >&2
-  exit 1
-fi
-if [[ ! -f "${ATELIER2_CLAUDE_CREDENTIALS}" || -L "${ATELIER2_CLAUDE_CREDENTIALS}" ]]; then
-  echo "container up: ATELIER2_CLAUDE_CREDENTIALS must be a regular file, not a directory or symlink" >&2
-  exit 1
-fi
-if [[ "$(basename "${ATELIER2_CLAUDE_CREDENTIALS}")" != ".credentials.json" ]]; then
-  echo "container up: ATELIER2_CLAUDE_CREDENTIALS must be a file named .credentials.json" >&2
-  exit 1
-fi
+lifecycle=""
+snapshot=""
+descriptor=""
+project=""
+docker_started=0
+handoff=0
+cleanup_running=0
 
-if command -v systemctl >/dev/null 2>&1; then
-  if systemctl --user is-active --quiet atelier2-live.service 2>/dev/null; then
-    echo "container up: atelier2-live.service is still active." >&2
-    echo "  this script will not stop it. Container start is documented, not a live cutover." >&2
-    exit 1
-  fi
-fi
-
-umask 077
-mkdir -p "${ATELIER2_STATE}/store" "${ATELIER2_STATE}/scratch"
-chmod 0700 "${ATELIER2_STATE}" "${ATELIER2_STATE}/store" "${ATELIER2_STATE}/scratch"
-
-for path in "${ATELIER2_STATE}" "${ATELIER2_STATE}/store" "${ATELIER2_STATE}/scratch"; do
-  mode="$(stat -c '%a' "${path}")"
-  if [[ "${mode}" != "700" ]]; then
-    echo "container up: ${path} must be mode 0700, is ${mode}" >&2
-    exit 1
-  fi
-done
-
-# Candidate bytes come from the named commit, never from dirty or untracked
-# worktree files that would otherwise sit in compose's context directory.
-CANDIDATE="$(mktemp -d "${TMPDIR:-/tmp}/atelier2-candidate.XXXXXX")"
-cleanup_candidate() {
-  cd "${REPO}"
-  rm -rf "${CANDIDATE}"
+print_teardown_command() {
+  printf 'ATELIER2_SOURCE_COMMIT=%q ATELIER2_SOURCE_TREE=%q ' \
+    "${ATELIER2_SOURCE_COMMIT}" "${ATELIER2_SOURCE_TREE}"
+  printf '%q ' docker compose --project-name "${project}" -f "${descriptor}" \
+    down --volumes --rmi local --remove-orphans
+  printf '&& rm -f -- %q && rmdir -- %q\n' "${descriptor}" "${lifecycle}"
 }
-trap cleanup_candidate EXIT
-git -C "${REPO}" archive --format=tar "${ATELIER2_SOURCE_COMMIT}" | tar -C "${CANDIDATE}" -xf -
-cd "${CANDIDATE}"
-docker compose build
-docker compose up -d
-cd "${REPO}"
+cleanup() {
+  local original_status="$?"
+  local final_status="${original_status}"
+  if ((cleanup_running)); then
+    exit "${original_status}"
+  fi
+  cleanup_running=1
+  trap - EXIT
+  trap '' HUP INT TERM
 
-echo "container up: cockpit -> http://127.0.0.1:8422/atelier/"
-echo "  live unit atelier2-live.service was not touched. Redeploy is a rerun of this script."
+  if [[ -n "${snapshot}" ]] && ! rm -rf -- "${snapshot}"; then
+    echo "container up: build snapshot cleanup failed" >&2
+    if ((original_status == 0)); then
+      final_status=1
+    fi
+  fi
+
+  if ((handoff && original_status == 0)); then
+    :
+  elif ((docker_started)); then
+    if ! docker compose --project-name "${project}" -f "${descriptor}" down \
+      --volumes --rmi local --remove-orphans; then
+      printf 'container up: cleanup failed; run: ' >&2
+      print_teardown_command >&2
+    elif ! rm -f -- "${descriptor}"; then
+      printf 'container up: lifecycle descriptor cleanup failed; run: ' >&2
+      print_teardown_command >&2
+      if ((original_status == 0)); then
+        final_status=1
+      fi
+    fi
+  elif [[ -n "${descriptor}" ]] && ! rm -f -- "${descriptor}"; then
+    echo "container up: lifecycle descriptor cleanup failed" >&2
+    if ((original_status == 0)); then
+      final_status=1
+    fi
+  fi
+
+  if [[ -n "${lifecycle}" && ! -e "${descriptor}" ]] && ! rmdir "${lifecycle}"; then
+    echo "container up: lifecycle directory cleanup failed" >&2
+    if ((original_status == 0)); then
+      final_status=1
+    fi
+  fi
+  exit "${final_status}"
+}
+lifecycle="$(mktemp -d "${TMPDIR:-/tmp}/atelier2-lifecycle.XXXXXX")"
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+snapshot="$(mktemp -d "${lifecycle}/snapshot.XXXXXX")"
+descriptor="${lifecycle}/teardown.compose.yaml"
+project="atelier2-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+compose=(docker compose --project-name "${project}" --project-directory "${snapshot}" -f "${snapshot}/compose.yaml")
+git -C "${repository}" archive --format=tar "${ATELIER2_SOURCE_COMMIT}" | tar -C "${snapshot}" -xf -
+{
+  printf 'name: %s\n' "${project}"
+  cat <<'YAML'
+services:
+  serve:
+    build: .
+    volumes:
+      - type: volume
+        source: store
+        target: /var/lib/atelier2/store
+        volume:
+          nocopy: false
+    networks:
+      - serve
+    labels: &source_labels
+      atelier2.source.commit: ${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}
+      atelier2.source.tree: ${ATELIER2_SOURCE_TREE:?source tree identity is missing}
+volumes:
+  store:
+    labels: *source_labels
+networks:
+  serve:
+    labels: *source_labels
+YAML
+} >"${descriptor}"
+chmod 0600 "${descriptor}"
+docker_started=1
+"${compose[@]}" build
+"${compose[@]}" up --detach --wait --wait-timeout 30 --no-build
+address="$("${compose[@]}" port serve 8422)"
+if [[ "${address}" =~ ^127\.0\.0\.1:([0-9]{1,5})$ ]] \
+  && ((10#${BASH_REMATCH[1]} >= 1 && 10#${BASH_REMATCH[1]} <= 65535)); then
+  port="${BASH_REMATCH[1]}"
+else
+  echo "container up: Docker returned an invalid loopback port" >&2
+  exit 1
+fi
+handoff=1
+
+echo "container up: cockpit -> http://127.0.0.1:${port}/atelier/"
+printf 'container up: stop -> '
+print_teardown_command

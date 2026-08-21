@@ -6,7 +6,6 @@ from typing import Any, assert_never, cast
 import sqlalchemy as sa
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
-from atelier2.adapters.agent_processes import AgentProcessSupervisor
 from atelier2.adapters.dbos.advancer import prepare_graph_action
 from atelier2.adapters.dbos.continuation import (
     checkpoint_confirmed_action,
@@ -138,6 +137,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutor,
     AgentExecutorKey,
     AgentExecutorV2,
+    AgentProcessRunner,
 )
 from atelier2.ports.effects import EffectAdapter
 from atelier2.ports.project_verification import (
@@ -152,9 +152,19 @@ def _declared_workspace_owner(
 ) -> AgentAttemptWorkspaceOwner:
     if owner is None:
         raise RunBindingConflict(
-            "a V2 agent node requires the declared agent scratch root"
+            "an agent node requires the declared agent scratch root"
         )
     return owner
+
+
+def _declared_process_runner(
+    runner: AgentProcessRunner | None,
+) -> AgentProcessRunner:
+    if runner is None:
+        raise RunBindingConflict(
+            "an agent node requires the declared local agent process runner"
+        )
+    return runner
 
 
 def bootstrap_run_binding(
@@ -385,7 +395,7 @@ def register_durable_run_workflow(
         ],
     ],
     agent_attempt_store: AgentAttemptStore,
-    agent_process_supervisor: AgentProcessSupervisor,
+    agent_process_runner: AgentProcessRunner | None,
     agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
     project: DeclaredProject | None,
     adapter: EffectAdapter,
@@ -445,7 +455,7 @@ def register_durable_run_workflow(
             continue_agent_attempt_cancellation(
                 request,
                 agent_attempt_store,
-                agent_process_supervisor,
+                _declared_process_runner(agent_process_runner),
                 _declared_workspace_owner(agent_workspace_owner),
             )
             is None
@@ -471,7 +481,8 @@ def register_durable_run_workflow(
             )
         )
         if not isinstance(binding, AgentNodeBindingV2):
-            raise RunTransitionConflict("replacement attempt is not a V2 agent node")
+            raise RunTransitionConflict("replacement attempt is not an agent node")
+        runner = _declared_process_runner(agent_process_runner)
         executor, operational_identity, declared_capabilities = agent_executors_v2[
             _executor_key(binding)
         ]
@@ -496,7 +507,7 @@ def register_durable_run_workflow(
             AgentAttemptExecution(request, replacement.attempt_id, 2),
             executor,
             agent_attempt_store,
-            agent_process_supervisor,
+            runner,
             _declared_workspace_owner(agent_workspace_owner),
             pinned_project(binding, project),
         )
@@ -541,6 +552,7 @@ def register_durable_run_workflow(
             start_node(typed_run_id, typed_revision, str(successor))
             return RunState.STARTED.value
         if isinstance(binding, AgentNodeBindingV2):
+            runner = _declared_process_runner(agent_process_runner)
             executor, operational_identity, declared_capabilities = agent_executors_v2[
                 _executor_key(binding)
             ]
@@ -565,7 +577,7 @@ def register_durable_run_workflow(
                 attempt_execution,
                 executor,
                 agent_attempt_store,
-                agent_process_supervisor,
+                runner,
                 _declared_workspace_owner(agent_workspace_owner),
                 pinned_project(binding, project),
             )

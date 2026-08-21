@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import cast
+from typing import Never, cast
 
 import pytest
 import sqlalchemy as sa
@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
 
+import atelier2.adapters.dbos.runtime as dbos_runtime
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
@@ -28,6 +29,7 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeSettings,
 )
 from atelier2.adapters.dbos.schema import (
+    agent_attempts,
     agent_receipts_v2,
     run_agent_bindings,
     run_events,
@@ -82,10 +84,16 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionCreated,
     AuthProfileRevisionPage,
 )
+from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
+    DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
     DurableRunCreated,
     StartPublishedRunRequestV2,
+)
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
 )
 from atelier2.ports.run_queries import (
     RunFound,
@@ -96,6 +104,7 @@ from tests.scenarios.agents import (
     agent_scratch_root,
 )
 from tests.scenarios.api import api_limits, durable_queries, event_poll_backoff
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 _DOCUMENT = b"""format_version: 2
 start: build
@@ -205,10 +214,16 @@ def _publish_matrix(
 
 
 def _publish_single_capability(
-    runtime: DbosRuntime, capability: AgentExecutionCapability
+    runtime: DbosRuntime,
+    capability: AgentExecutionCapability,
+    catalog_registry: AgentExecutorRegistry | None = None,
+    document: bytes | None = None,
 ) -> tuple[WorkflowRevision, AgentBindingSet]:
     catalog = DbosAgentConfigurationCatalog(
-        runtime.engine, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.agent_executor_registry
+        if catalog_registry is None
+        else catalog_registry,
     )
     auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
     assert isinstance(
@@ -232,6 +247,8 @@ nodes:
   - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
   - {id: build, type: agent, role: builder, job: build, next: done}
 """
+        if document is None
+        else document
     )
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(
@@ -575,6 +592,168 @@ def test_start_refuses_unattested_capability_before_enqueue_or_provider_process(
     runtime.close()
 
 
+def test_v2_start_against_an_empty_registry_creates_no_durable_run_or_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden_process_authority() -> Never:
+        raise AssertionError("empty registry resolved process authority")
+
+    monkeypatch.setattr(
+        dbos_runtime, "delegated_cgroup_root", forbidden_process_authority
+    )
+    runtime = _runtime(tmp_path, ())
+    try:
+        runtime.initialize_storage()
+        binding = runtime.settings.binding(
+            runtime.agent_executor_binding,
+            runtime.agent_executor_registry.manifest,
+            runtime.effect_adapter_binding,
+        )
+        assert binding.agent_process_control_root is None
+        assert binding.agent_process_cgroup_root is None
+        assert binding.agent_scratch_root is None
+        assert binding.agent_termination_grace_seconds is None
+        publication_factory = RecordingAgentExecutorFactoryV2(
+            "anthropic", "claude-cli/v1", "publication", b"unused"
+        )
+        workflow, bindings = _publish_single_capability(
+            runtime,
+            AgentExecutionCapability.HEADLESS,
+            AgentExecutorRegistry((publication_factory,)),
+        )
+        result = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(
+                RunId("empty-registry/refused"), workflow.revision_hash, bindings
+            )
+        )
+
+        assert isinstance(result, DurableAgentExecutorBindingUnavailable)
+        assert publication_factory.opens == 0
+        with runtime.engine.connect() as connection:
+            assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(run_agent_bindings)
+                )
+                == 0
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(agent_attempts)
+                )
+                == 0
+            )
+    finally:
+        runtime.close()
+
+
+def test_nonterminal_v2_restart_with_an_empty_registry_refuses_before_cgroup_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "seed", b"unused"
+    )
+    seeded = _runtime(tmp_path, (seeded_factory,))
+    seeded.initialize_storage()
+    workflow, bindings = _publish_single_capability(
+        seeded, AgentExecutionCapability.HEADLESS
+    )
+    result = DbosDurableRunStarter(
+        seeded.engine, seeded.settings, seeded.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV2(
+            RunId("empty-registry/restart"), workflow.revision_hash, bindings
+        )
+    )
+    assert isinstance(result, DurableRunCreated)
+    seeded.close()
+
+    def forbidden_process_authority() -> Never:
+        raise AssertionError("missing durable executor reached cgroup access")
+
+    monkeypatch.setattr(
+        dbos_runtime, "delegated_cgroup_root", forbidden_process_authority
+    )
+    with pytest.raises(
+        DbosRuntimeBindingConflict, match="nonterminal durable executor"
+    ):
+        _runtime(tmp_path, ())
+
+
+def test_nonterminal_v3_restart_with_an_empty_registry_refuses_before_cgroup_or_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded = _runtime(
+        tmp_path,
+        (RecordingAgentExecutorFactoryV2("anthropic", "claude-cli/v1", "seed", b""),),
+    )
+    document = b"""format_version: 3
+name: One agent
+nodes:
+  - id: build
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Build the one thing.
+""" + declared_output()
+    run_id = RunId("empty-registry/v3-restart")
+    try:
+        seeded.initialize_storage()
+        published_schema = DbosCatalogStore(seeded.engine).publish_revision(
+            ANY_JSON_SCHEMA
+        )
+        assert isinstance(
+            published_schema, (PublishedRevisionCreated, PublishedRevisionExisting)
+        )
+        workflow, bindings = _publish_single_capability(
+            seeded, AgentExecutionCapability.HEADLESS, document=document
+        )
+        started = DbosDurableRunStarter(
+            seeded.engine, seeded.settings, seeded.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        with seeded.engine.connect() as connection:
+            before = tuple(
+                connection.scalar(sa.select(sa.func.count()).select_from(table))
+                for table in (runs, run_agent_bindings, agent_attempts)
+            )
+    finally:
+        seeded.close()
+
+    def forbidden_process_authority(*_args: object) -> Never:
+        raise AssertionError("missing durable executor reached process authority")
+
+    monkeypatch.setattr(
+        dbos_runtime, "delegated_cgroup_root", forbidden_process_authority
+    )
+    monkeypatch.setattr(
+        ExactOutputAgentExecutorFactory, "open", forbidden_process_authority
+    )
+    monkeypatch.setattr(
+        LoopbackEffectAdapterFactory, "open", forbidden_process_authority
+    )
+
+    with pytest.raises(
+        DbosRuntimeBindingConflict, match="nonterminal durable executor"
+    ):
+        _runtime(tmp_path, ())
+
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'atelier.sqlite'}")
+    try:
+        with engine.connect() as connection:
+            after = tuple(
+                connection.scalar(sa.select(sa.func.count()).select_from(table))
+                for table in (runs, run_agent_bindings, agent_attempts)
+            )
+    finally:
+        engine.dispose()
+    assert after == before
+
+
 def test_restart_refuses_unattested_nonterminal_capability_before_factory_open(
     tmp_path: Path,
 ) -> None:
@@ -627,6 +806,53 @@ def _wait_completed(runtime: DbosRuntime, run_id: RunId) -> RunV2:
             return result.projection.run
         time.sleep(0.025)
     raise AssertionError("V2 run did not complete")
+
+
+def test_completed_v2_history_reopens_without_process_supervision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = _runtime(
+        tmp_path,
+        (
+            RecordingAgentExecutorFactoryV2(
+                "anthropic", "claude-cli/v1", "completed-history", b"built"
+            ),
+        ),
+    )
+    run_id = RunId("empty-registry/completed-history")
+    try:
+        first.initialize_storage()
+        workflow, bindings = _publish_single_capability(
+            first, AgentExecutionCapability.HEADLESS
+        )
+        started = DbosDurableRunStarter(
+            first.engine, first.settings, first.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        first.launch()
+        _wait_completed(first, run_id)
+    finally:
+        first.close()
+
+    def forbidden_process_authority() -> Never:
+        raise AssertionError("completed history resolved process authority")
+
+    monkeypatch.setattr(
+        dbos_runtime, "delegated_cgroup_root", forbidden_process_authority
+    )
+    monkeypatch.setattr(
+        dbos_runtime, "AgentProcessSupervisor", forbidden_process_authority
+    )
+    restarted = _runtime(tmp_path, ())
+    try:
+        restarted.launch()
+        found = durable_queries(restarted.engine).get_run(run_id)
+        assert isinstance(found, RunFound)
+        assert found.projection.run.state is RunState.COMPLETED
+    finally:
+        restarted.close()
 
 
 def test_two_provider_configs_survive_restart_and_drive_their_exact_executors(

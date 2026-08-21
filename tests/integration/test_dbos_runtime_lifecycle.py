@@ -15,7 +15,9 @@ import sqlalchemy as sa
 from dbos import SQLAlchemyDatasource
 from sqlalchemy.engine import Engine
 
+import atelier2.adapters.dbos.runtime as dbos_runtime
 from atelier2.adapters.dbos.runtime import (
+    AgentProcessSupervisorUnavailable,
     DbosRuntime,
     DbosRuntimeBindingConflict,
     DbosRuntimeLeaseClosed,
@@ -579,6 +581,73 @@ def _runtime_with_v2(
         ExactOutputAgentExecutorFactory(),
         factories,
     )
+
+
+def test_empty_registry_runs_v1_without_process_supervision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden_process_authority() -> Never:
+        raise AssertionError("empty registry resolved process authority")
+
+    monkeypatch.setattr(
+        dbos_runtime, "delegated_cgroup_root", forbidden_process_authority
+    )
+    monkeypatch.setattr(
+        dbos_runtime, "AgentProcessSupervisor", forbidden_process_authority
+    )
+    runtime = exact_output_runtime(
+        runtime_settings(canonical_database(tmp_path)),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "effects.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("lifecycle"),
+        ),
+    )
+    try:
+        with pytest.raises(
+            AgentProcessSupervisorUnavailable, match="empty executor registry"
+        ):
+            _ = runtime.agent_process_supervisor
+        assert execute_one_bootstrap(runtime) is RunState.WAITING_INPUT
+    finally:
+        runtime.close()
+
+    restarted = exact_output_runtime(
+        runtime_settings(canonical_database(tmp_path)),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "effects.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("lifecycle"),
+        ),
+    )
+    try:
+        restarted.launch()
+        with pytest.raises(
+            AgentProcessSupervisorUnavailable, match="empty executor registry"
+        ):
+            _ = restarted.agent_process_supervisor
+    finally:
+        restarted.close()
+
+
+def test_nonempty_registry_refuses_missing_cgroup_before_factory_or_store_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude/v1", "operation", b"unused"
+    )
+
+    def missing_cgroup() -> Never:
+        raise RuntimeError("cgroup root is unavailable")
+
+    monkeypatch.setattr(dbos_runtime, "delegated_cgroup_root", missing_cgroup)
+
+    with pytest.raises(RuntimeError, match="cgroup root is unavailable"):
+        _runtime_with_v2(tmp_path, (factory,))
+
+    assert factory.opens == 0
+    assert not (tmp_path / "atelier.sqlite").exists()
+    assert not (tmp_path / "effects.sqlite").exists()
 
 
 class ChangingKeyFactory(RecordingAgentExecutorFactoryV2):
