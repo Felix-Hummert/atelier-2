@@ -10,8 +10,9 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Protocol
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -63,6 +64,38 @@ nodes:
 """
 RUN_IDS = ("found-run", "absent-run")
 TIMEOUT_SECONDS = 10.0
+
+
+class RuntimeCloser(Protocol):
+    def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class BrowserScratchRoot:
+    path: Path
+    created_by_harness: bool
+
+    @classmethod
+    def create(cls) -> BrowserScratchRoot:
+        return cls(Path(tempfile.mkdtemp(prefix="atelier2-e2e-scratch-")), True)
+
+    @classmethod
+    def borrow(cls, path: Path) -> BrowserScratchRoot:
+        return cls(path, False)
+
+    def close(self) -> None:
+        if self.created_by_harness:
+            shutil.rmtree(self.path)
+
+
+def close_runtime_and_scratch_root(
+    runtime: RuntimeCloser | None, scratch_root: BrowserScratchRoot
+) -> None:
+    try:
+        if runtime is not None:
+            runtime.close()
+    finally:
+        scratch_root.close()
 
 
 class UnknownReadbackAdapter:
@@ -350,7 +383,6 @@ def main() -> None:
     delayed = DelayedAgentExecutorFactory(
         "e2e-v3-slow", "delayed/v1", "e2e-delayed-process", b"V3 provider bytes"
     )
-    scratch_root = Path(tempfile.mkdtemp(prefix="atelier2-e2e-scratch-"))
 
     def runtime(
         settings: DbosRuntimeSettings,
@@ -364,7 +396,7 @@ def main() -> None:
         return DbosRuntime(
             replace(
                 settings,
-                agent_scratch_root=scratch_root,
+                agent_scratch_root=scratch_root.path,
             ),
             effect_factory,
             agent_factory,
@@ -389,7 +421,6 @@ def main() -> None:
         with patch.object(serving, "DbosRuntime", side_effect=runtime):
             return serving.compose_application(settings)
 
-    app, live_runtime = compose()
     restart_requested = threading.Event()
     server: uvicorn.Server | None = None
 
@@ -399,8 +430,15 @@ def main() -> None:
             raise RuntimeError("the e2e server is not running")
         server.should_exit = True
 
-    harness = BrowserProofHarness(app, live_runtime, factory, compose, request_restart)
+    scratch_root = BrowserScratchRoot.create()
+    runtime_to_close: RuntimeCloser | None = None
     try:
+        app, live_runtime = compose()
+        runtime_to_close = live_runtime
+        harness = BrowserProofHarness(
+            app, live_runtime, factory, compose, request_restart
+        )
+        runtime_to_close = harness
         while True:
             server = uvicorn.Server(
                 uvicorn.Config(
@@ -415,8 +453,7 @@ def main() -> None:
             restart_requested.clear()
             harness.recompose_after_server_stop()
     finally:
-        harness.close()
-        shutil.rmtree(scratch_root, ignore_errors=True)
+        close_runtime_and_scratch_root(runtime_to_close, scratch_root)
 
 
 def wait_for_reconciliation(runtime: DbosRuntime) -> None:
