@@ -9,6 +9,7 @@ services:
     cap_drop:
       - ALL
     read_only: true
+    restart: "${ATELIER2_RESTART_POLICY:?container restart policy is missing}"
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -23,7 +24,7 @@ services:
       start_period: 2s
     ports:
       - target: 8422
-        published: "0"
+        published: "${ATELIER2_PUBLISHED_PORT:?container published port is missing}"
         host_ip: 127.0.0.1
         protocol: tcp
     volumes:
@@ -35,17 +36,20 @@ services:
     networks:
       - serve
     labels:
+      atelier2.deployment: "${ATELIER2_DEPLOYMENT:?container deployment identity is missing}"
       atelier2.source.commit: "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}"
       atelier2.source.tree: "${ATELIER2_SOURCE_TREE:?source tree identity is missing}"
 
 volumes:
   store:
     labels:
+      atelier2.deployment: "${ATELIER2_DEPLOYMENT:?container deployment identity is missing}"
       atelier2.source.commit: "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}"
       atelier2.source.tree: "${ATELIER2_SOURCE_TREE:?source tree identity is missing}"
 
 networks:
   serve:
     labels:
+      atelier2.deployment: "${ATELIER2_DEPLOYMENT:?container deployment identity is missing}"
       atelier2.source.commit: "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}"
       atelier2.source.tree: "${ATELIER2_SOURCE_TREE:?source tree identity is missing}"

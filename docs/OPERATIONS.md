@@ -47,6 +47,48 @@ selected or changed. A rerun creates a new disposable candidate. The current Cor
 `ExactOutput` executor can still serve its fixture; this package supplies no
 external provider or Runner.
 
+## Stable local Serve installation
+
+From a clean committed checkout, install the one stable provider-free console:
+
+```bash
+bash scripts/container_live.sh install
+```
+
+The command refuses an active or enabled host Atelier service, a listener on
+port 8422, another Docker resource labelled as the stable deployment, ambient
+Compose mode values, or an existing accepted installation. It archives the
+committed source through the same snapshot owner as the disposable candidate,
+records durable `INSTALLING` intent before Docker can mutate anything, and
+publishes the completed exact container, image, volume, network, configuration,
+engine, source and frozen-descriptor identity only after health succeeds. The
+private record lives under
+`${XDG_STATE_HOME:-$HOME/.local/state}/atelier2/container-live`.
+
+The console then owns `http://127.0.0.1:8422/atelier/`, uses
+`restart: unless-stopped`, and preserves its Compose volume. Operate only its
+recorded identity:
+
+```bash
+bash scripts/container_live.sh status
+bash scripts/container_live.sh stop
+bash scripts/container_live.sh start
+```
+
+`status` is read-only and prints exactly `RUNNING`, `STOPPED`, `INCOMPLETE`, or
+`DRIFTED`. `stop` and `start` first validate the complete record and then address
+only its exact container ID; they never rebuild, recreate, search for a
+replacement, or adopt a listener or Docker resource. A failed start stops that
+same container and leaves the volume intact. A failed install removes only its
+intent-owned project when exact identity can be proved; otherwise it leaves the
+incomplete record and fails loudly.
+
+This slice deliberately has no update, copy, migration, preview, activation,
+rollback, acceptance, retirement, or uninstall command. Do not manually delete
+an accepted record or its volume. The stable console exposes current Core/V1
+provider-free behavior only; it adds no provider or Runner. Use the disposable
+candidate above for zero-residue release proof.
+
 ## Pin an executor toolchain
 
 The atelier owns the executor copies it serves. The operator's daily CLI
@@ -136,8 +178,12 @@ Container recipes:
 
 `uv run --locked pytest --dist loadgroup -n auto tests/tooling/test_container_packaging.py`
 
-That job exercises the recipes and the start script with a fake `docker`.
-It does not build a real image.
+Stable local lifecycle:
+
+`uv run --locked pytest --dist loadgroup -n auto tests/tooling/test_container_live.py`
+
+Those jobs exercise the recipes and lifecycle scripts with a fake `docker`.
+They do not build a real image.
 
 Store migration:
 
