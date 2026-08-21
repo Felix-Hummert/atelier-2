@@ -8,9 +8,6 @@ from types import MappingProxyType
 import pytest
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.bind_subworkflow_boundaries import (
-    bind_subworkflow_boundaries,
-)
 from atelier2.application.compose_preview import compose_preview
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
@@ -31,7 +28,6 @@ from atelier2.contracts.capabilities_v3 import (
     Executable,
     NotExecutable,
     PublishedSkills,
-    RoleBindingRefused,
     RuntimeCapability,
     SkillContents,
     SubjectIdentity,
@@ -61,11 +57,6 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionMissing,
     PublishRevisionResult,
     ResolvePublishedRevisionResult,
-)
-from atelier2.ports.workflow_revisions import (
-    PublishedWorkflowFound,
-    PublishedWorkflowMissing,
-    ResolvePublishedWorkflowResult,
 )
 
 
@@ -351,17 +342,6 @@ class PublishedRegistry:
         raise NotImplementedError("composing a preview publishes nothing")
 
 
-@dataclass(frozen=True)
-class PublishedWorkflows:
-    documents: Mapping[tuple[str, str], bytes]
-
-    def resolve(self, reference: VersionedReference) -> ResolvePublishedWorkflowResult:
-        document = self.documents.get((reference.ref, reference.revision))
-        if document is None:
-            return PublishedWorkflowMissing()
-        return PublishedWorkflowFound(WorkflowRevision(document))
-
-
 def _auth() -> AuthProfileRevision:
     return AuthProfileRevision(
         "workshop", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
@@ -398,22 +378,12 @@ def parsed(document: bytes = PARENT) -> WorkflowGraphV3:
 MAXIMUM_ITERATION_ROUNDS = 8
 
 
-def bound_children(document: bytes = PARENT) -> SubworkflowBinding:
-    return bind_subworkflow_boundaries(
-        parsed(document),
-        PublishedWorkflows({(CHILD_REFERENCE.ref, CHILD_REFERENCE.revision): CHILD}),
-        parse_workflow_document,
-        2,
-        MAXIMUM_ITERATION_ROUNDS,
-    )
-
-
 def demanded(
     document: bytes = PARENT,
     role_matrix: Sequence[ResolvedAgentBinding] = ROLE_MATRIX,
 ) -> tuple[CapabilityRequirement, ...]:
     return required_capabilities(
-        parsed(document), bound_children(document), tuple(role_matrix), SKILL_CONTENTS
+        parsed(document), SubworkflowBinding(), tuple(role_matrix), SKILL_CONTENTS
     )
 
 
@@ -463,7 +433,7 @@ def preview(
     return compose_preview(
         WorkflowRevision(document).revision_hash,
         parsed(document),
-        bound_children(document),
+        SubworkflowBinding(),
         tuple(role_matrix),
         skills,
         attested,
@@ -479,23 +449,8 @@ def node_of(graph: ComposedPreviewGraph, node_id: str) -> PreviewNode:
     raise AssertionError(f"the preview carries no node {node_id!r}")
 
 
-def child_of(preview_graph: ComposedPreviewGraph, node_id: str) -> ComposedPreviewGraph:
-    child = node_of(preview_graph, node_id).child
-    assert child is not None
-    return child.graph
-
-
 def demands_of(node: PreviewNode) -> set[RuntimeCapability]:
     return {requirement.capability for requirement in node.demands}
-
-
-def every_node(graph: ComposedPreviewGraph) -> tuple[PreviewNode, ...]:
-    nodes: list[PreviewNode] = []
-    for node in graph.nodes:
-        nodes.append(node)
-        if node.child is not None:
-            nodes.extend(every_node(node.child.graph))
-    return tuple(nodes)
 
 
 def test_every_node_is_previewed_under_the_kind_the_parser_gave_it() -> None:
@@ -548,18 +503,6 @@ def test_a_node_that_binds_no_role_previews_neither_a_role_nor_a_mode() -> None:
     ]
 
 
-def test_an_interactive_node_of_a_bound_child_previews_its_mode() -> None:
-    read_it = node_of(child_of(preview().graph, "panel"), "read_it")
-
-    assert read_it.mode == "interactive"
-    assert read_it.role == PreviewRole(
-        "reviewer",
-        "anthropic",
-        "claude-sonnet-5",
-        REVIEWER.configuration.revision_hash.value,
-    )
-
-
 def test_the_preview_carries_the_dependency_edges_the_document_declares() -> None:
     composed = preview()
 
@@ -598,7 +541,7 @@ def test_every_node_previews_the_join_a_scheduler_really_applies() -> None:
                 RuntimeCapability.TOOL_GRANTS,
             },
         ),
-        ("panel", {RuntimeCapability.SUBWORKFLOW_EXECUTION}),
+        ("panel", set()),
         (
             "decide",
             {
@@ -639,51 +582,10 @@ def test_every_demand_of_the_closure_lands_on_exactly_one_node() -> None:
     composed = preview()
 
     landed = [
-        requirement
-        for node in every_node(composed.graph)
-        for requirement in node.demands
+        requirement for node in composed.graph.nodes for requirement in node.demands
     ]
 
     assert sorted(map(str, landed)) == sorted(map(str, demanded()))
-
-
-def test_a_subworkflow_node_carries_the_preview_of_the_child_it_binds() -> None:
-    child = child_of(preview().graph, "panel")
-
-    assert [(node.id, node.kind) for node in child.nodes] == [
-        ("read_it", PreviewNodeKind.AGENT),
-        ("merge", PreviewNodeKind.DETERMINISTIC),
-    ]
-    assert child.edges == (PreviewEdge("read_it", "merge"),)
-
-
-def test_a_child_bound_by_two_nodes_is_previewed_once_under_each_of_them() -> None:
-    composed = preview(document=TWICE_BOUND, attested=attesting(demanded(TWICE_BOUND)))
-
-    first = child_of(composed.graph, "panel")
-    second = child_of(composed.graph, "panel_two")
-    assert first == second
-    assert [
-        (node.id, tuple(requirement.capability for requirement in node.demands))
-        for node in first.nodes
-    ] == [
-        (
-            "read_it",
-            (
-                RuntimeCapability.AGENT_EXECUTION,
-                RuntimeCapability.OUTPUT_VALIDATION,
-            ),
-        ),
-        ("merge", (RuntimeCapability.DETERMINISTIC_OPERATIONS,)),
-    ]
-
-
-def test_a_demand_of_a_child_names_the_chain_it_entered_through() -> None:
-    child = child_of(preview().graph, "panel")
-
-    assert {
-        requirement.site.chain for node in child.nodes for requirement in node.demands
-    } == {CHILD_CHAIN}
 
 
 def test_every_reference_previews_the_published_revision_it_lands_in() -> None:
@@ -727,12 +629,6 @@ def test_every_reference_previews_the_published_revision_it_lands_in() -> None:
             SCHEMA_VERDICT.revision_hash.value,
         ),
         (
-            "panel",
-            "workflow",
-            RevisionKind.WORKFLOW,
-            CHILD_REFERENCE.revision,
-        ),
-        (
             "decide",
             "operation",
             RevisionKind.DETERMINISTIC_OPERATION,
@@ -764,20 +660,6 @@ def test_every_reference_previews_the_published_revision_it_lands_in() -> None:
         ),
     }
     assert composed.graph.unresolved_references == ()
-
-
-def test_a_child_previews_the_references_it_declares_itself() -> None:
-    child = child_of(preview().graph, "panel")
-
-    assert {
-        (entry.site.node, entry.site.field, entry.site.chain)
-        for entry in child.resolved_references
-    } == {
-        (None, "graph_inputs.schema", CHILD_CHAIN),
-        ("read_it", "outputs.schema", CHILD_CHAIN),
-        ("merge", "operation", CHILD_CHAIN),
-        ("merge", "outputs.schema", CHILD_CHAIN),
-    }
 
 
 def test_an_unresolved_reference_is_named_instead_of_stopping_the_preview() -> None:
@@ -883,30 +765,6 @@ def test_a_withdrawn_skill_is_no_unknown_reading_because_it_installs_nothing() -
     assert composed.graph.unknown_skill_grants == ()
 
 
-def test_a_subworkflow_node_previews_the_child_it_named_and_what_that_resolved_to() -> (
-    None
-):
-    child = node_of(preview().graph, "panel").child
-
-    assert child is not None
-    assert child.reference == CHILD_REFERENCE
-    assert child.revision_hash == WorkflowRevision(CHILD).revision_hash.value
-    assert [node.id for node in child.graph.nodes] == ["read_it", "merge"]
-
-
-@pytest.mark.proves("the-preview-names-every-declared-graph-input-with-its-schema")
-def test_the_preview_names_the_order_each_graph_demands_where_it_was_declared() -> None:
-    composed = preview()
-    child = node_of(composed.graph, "panel").child
-
-    assert child is not None
-    assert [
-        (entry.name, entry.schema_reference.ref, entry.schema_reference.revision)
-        for entry in child.graph.graph_inputs
-    ] == [("candidate", "workspace_candidate", SCHEMA_CANDIDATE.revision_hash.value)]
-    assert composed.graph.graph_inputs == ()
-
-
 def test_a_reference_that_pins_no_revision_hash_is_named_as_malformed() -> None:
     composed = compose_preview(
         WorkflowRevision(UNPINNED_PARENT).revision_hash,
@@ -932,7 +790,7 @@ def test_a_fully_attested_preview_carries_the_executable_verdict() -> None:
     composed = preview()
 
     assert composed.executability == Executable()
-    assert all(node.unproven == () for node in every_node(composed.graph))
+    assert all(node.unproven == () for node in composed.graph.nodes)
 
 
 def test_a_node_names_the_capability_it_is_still_waiting_for() -> None:
@@ -943,10 +801,9 @@ def test_a_node_names_the_capability_it_is_still_waiting_for() -> None:
     assert isinstance(composed.executability, NotExecutable)
     assert [
         (node.id, tuple(refusal.requirement.capability for refusal in node.unproven))
-        for node in every_node(composed.graph)
+        for node in composed.graph.nodes
         if node.unproven
     ] == [
-        ("merge", (RuntimeCapability.DETERMINISTIC_OPERATIONS,)),
         ("decide", (RuntimeCapability.DETERMINISTIC_OPERATIONS,)),
     ]
 
@@ -960,11 +817,7 @@ def test_an_unproven_demand_of_the_run_is_named_on_the_node_that_raised_it() -> 
     assert sorted(
         map(
             str,
-            (
-                refusal
-                for node in every_node(composed.graph)
-                for refusal in node.unproven
-            ),
+            (refusal for node in composed.graph.nodes for refusal in node.unproven),
         )
     ) == sorted(map(str, composed.executability.refusals))
 
@@ -987,11 +840,14 @@ def test_one_role_matrix_reached_in_any_order_is_one_preview() -> None:
     )
 
 
-def test_a_role_bound_to_no_configuration_stays_the_capability_refusal() -> None:
-    with pytest.raises(RoleBindingRefused) as refused:
-        preview(role_matrix=(BUILDER,))
+@pytest.mark.proves("the-preview-names-every-declared-graph-input-with-its-schema")
+def test_a_root_preview_names_its_declared_graph_input_and_schema() -> None:
+    composed = preview(document=CHILD, attested=attesting(demanded(CHILD)))
 
-    assert refused.value.refusal.role == "reviewer"
+    assert [
+        (entry.name, entry.schema_reference.ref, entry.schema_reference.revision)
+        for entry in composed.graph.graph_inputs
+    ] == [("candidate", "workspace_candidate", SCHEMA_CANDIDATE.revision_hash.value)]
 
 
 _PANEL_TAIL = b"\n  - id: decide\n"

@@ -366,27 +366,18 @@ source's immediately previous round — one payload, the producing output's sche
 refused by name because no rule here says which round wrote it. Unsafe YAML is
 refused by name too, before any vocabulary is read: an
 anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
-a document that is not UTF-8 without a byte order mark, and one nested past the
-bound that keeps the refusal a refusal instead of an exhausted stack.
+a document that is not UTF-8 without a byte order mark.
 
-Every reference behind that surface now binds. A subworkflow node's declared inputs
-and outputs match the graph boundary of the published child revision it names one to
-one, by name and schema revision, read against that child's real content, and a chain
-nesting deeper than the depth its caller attests is refused before that depth resolves
-or reads anything. The order a graph declares is readable by name: a node of any kind
-binds it as an input, and a parent's own order reaches a child through that boundary
-under the schema revision both levels agreed on, a differing one refused by name.
-That boundary is checked from both sides — a node reading an order its graph never
-declared, and a declared order no node reads, are each refused naming what they
-concern. An input whose source proves no schema revision — a terminal receipt, a
-context entry, an authored value — still cannot bind a typed graph input, and
-recursion is impossible rather than checked: no revision can carry its own hash.
-Every other versioned reference — schema, deterministic and adapter
-operation, context source, read operation, profile, skill, tool, and the policy,
-budget, retry and cancellation policies — resolves against the registry of the kind
-its authored position puts it in, by the exact revision hash it pins, and so does
-every reference of every child the document reuses. A reference whose revision is no
-pinned hash, that no publication of that kind carries, or that a registry answers
+V3 subworkflow and iterate forms remain authored and readable, but unexecutable.
+The real starter refuses them before a run, configuration or enqueue write; no child
+closure, boundary binding, depth check, or child preview exists. The order a root
+graph declares is readable by name, and a node reading an order its graph never
+declared, or an unread declared order, is refused naming what it concerns.
+Every non-workflow versioned reference of a root document — schema, deterministic
+and adapter operation, context source, read operation, profile, skill, tool, and
+the policy, budget, retry and cancellation policies — resolves against the registry of the kind
+its authored position puts it in, by the exact revision hash it pins. A reference
+whose revision is no pinned hash, that no publication of that kind carries, or that a registry answers
 with a revision of another kind or another hash is refused naming the node, the
 field, the declared entry, the chain it was reached through, and the reference
 itself. A `schema` reference proves more than its hash: the revision it pins must be
@@ -410,12 +401,9 @@ agent's answer is read against the schema its node declared, by that one owner,
 before the answer can become anything. Bytes that fall outside the profile are
 refused by name, so the whole snapshot fails rather than binding a type nobody can
 read, and the preview says so instead of drawing it.
-A subworkflow's own `workflow` reference is one of them and resolves through the
-binder that already read that child, so one question keeps one answer. What resolves
-is frozen into one run-configuration revision — the role matrix by its existing
-binding identity and every resolved reference, the child revisions among them —
-hash-framed as one immutable snapshot whose identity does not depend on the order it
-was assembled in. From those parts one composed preview is derived, so what a
+A root run's non-workflow references are frozen into one run-configuration revision
+with its role matrix, hash-framed as one immutable snapshot whose identity does not
+depend on assembly order. From those parts one composed preview is derived, so what a
 revision will do is readable before anything of it runs: every node under the kind
 the document wrote it in, an agent node with the role, provider, model, configuration
 revision and mode it is bound to, the dependency edges and the join a scheduler
@@ -424,11 +412,8 @@ carry in transitively, the published revision every reference lands in or the na
 reason it lands nowhere — a withdrawn skill among them, named rather than ending the
 drawing — every published skill whose contents nobody read, whose carried grants the
 preview says are unknown instead of answering that it carries none, every order a
-graph declares with its name and schema revision at the graph that declared it, the
-child every subworkflow node binds, by the reference it authored and the exact
-revision that resolved to, with that child's own preview under it, and the
-executability verdict with the capability each still-waiting node needs — marked
-proposed or bound, so an
+root graph declares with its name and schema revision, and the executability verdict
+with the capability each still-waiting node needs — marked proposed or bound, so an
 author's intent is never read as a binding. That preview is a derivation and nothing
 else: no route, no rendering and no stored shape carries it. Behind that, nothing:
 the registries are ports a caller supplies. A durable catalog adapter now

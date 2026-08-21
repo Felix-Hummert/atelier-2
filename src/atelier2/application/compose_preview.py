@@ -5,15 +5,6 @@ capability demands are exactly what the executability record derives, the verdic
 is exactly what it decides, and the registries answer through the same resolution
 the run-configuration binding uses. Nothing here re-derives any of it.
 
-Where a slice before this one already ruled, its ruling is propagated rather than
-softened: a child that does not bind is the subworkflow binding's refusal, and a
-role bound to no agent-configuration revision is the executability record's. What
-this decision does add is tolerance for the state decision 0006 exists for — a
-revision that is publishable and not yet executable — so an unresolved reference,
-an unproven capability and a skill nobody read the contents of are drawn instead of
-ending the drawing. Tolerance is not silence: a skill the registry carries but this
-composition was handed no contents for keeps its grants *unknown*, and the preview
-says so at the site that declared it rather than answering that it carries none.
 """
 
 from __future__ import annotations
@@ -23,7 +14,6 @@ from dataclasses import dataclass
 
 from atelier2.application.resolve_references import (
     ReferenceResolution,
-    bound_children,
     declared_through,
     resolve_declared_reference,
 )
@@ -41,7 +31,6 @@ from atelier2.contracts.composed_preview_v3 import (
     ComposedPreview,
     ComposedPreviewGraph,
     ConfigurationBinding,
-    PreviewChild,
     PreviewEdge,
     PreviewGraphInput,
     PreviewIteration,
@@ -59,7 +48,7 @@ from atelier2.contracts.run_configuration_v3 import (
     declared_references,
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
-from atelier2.contracts.workflow_bindings_v3 import BoundSubworkflow, SubworkflowBinding
+from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     SubworkflowNodeV3,
@@ -79,15 +68,8 @@ def compose_preview(
     registry: PublishedRevisionRegistry,
     configuration: ConfigurationBinding,
 ) -> ComposedPreview:
-    """The whole renderable truth of one V3 revision, over the closure it reuses.
-
-    Requirements are derived once for the closure and then hung on the node that
-    demanded them, so a surface reads per-node demands without a second traversal
-    and the verdict stays one decision about the whole run.
-    """
-    children = bound_children(subworkflows)
     resolutions = {
-        declared: resolve_declared_reference(declared, registry, children)
+        declared: resolve_declared_reference(declared, registry)
         for declared in declared_through(document, subworkflows)
     }
     withdrawn = skills.with_unresolved(_unresolved_skills(resolutions))
@@ -107,7 +89,7 @@ def compose_preview(
         resolutions,
         frozenset(unread),
     )
-    graph = _preview_graph(document, subworkflows.subworkflows, (), derivation)
+    graph = _preview_graph(document, (), derivation)
     return ComposedPreview(workflow_revision_hash, configuration, graph, executability)
 
 
@@ -158,15 +140,15 @@ class _Derivation:
 
 def _preview_graph(
     graph: WorkflowGraphV3,
-    bound: tuple[BoundSubworkflow, ...],
     chain: ReferenceChain,
     derivation: _Derivation,
 ) -> ComposedPreviewGraph:
-    children = {child.node_id: child for child in bound}
     resolved: list[ResolvedReference] = []
     unresolved: list[ReferenceRefusal] = []
     unknown_grants: list[UnknownSkillGrants] = []
     for declared in declared_references(graph, chain):
+        if declared.kind is RevisionKind.WORKFLOW:
+            continue
         resolution = derivation.resolutions[declared]
         if isinstance(resolution, ResolvedReference):
             resolved.append(resolution)
@@ -184,10 +166,7 @@ def _preview_graph(
             PreviewGraphInput(entry.name, entry.schema_reference)
             for entry in graph.graph_inputs
         ),
-        tuple(
-            _preview_node(node, graph, children, chain, derivation)
-            for node in graph.nodes
-        ),
+        tuple(_preview_node(node, graph, chain, derivation) for node in graph.nodes),
         tuple(
             PreviewEdge(dependency, node.id)
             for node in graph.nodes
@@ -202,7 +181,6 @@ def _preview_graph(
 def _preview_node(
     node: WorkflowNodeV3,
     graph: WorkflowGraphV3,
-    children: dict[str, BoundSubworkflow],
     chain: ReferenceChain,
     derivation: _Derivation,
 ) -> PreviewNode:
@@ -224,20 +202,11 @@ def _preview_node(
             for refusal in derivation.unproven
             if refusal.requirement in demanded
         ),
-        _preview_child(node, children, chain, derivation),
         _preview_iteration(node),
     )
 
 
 def _distinct[Entry: Hashable](entries: Iterable[Entry]) -> tuple[Entry, ...]:
-    """The entries in the order they were derived, each of them once.
-
-    A node demands a capability or waits for one; how many times a requirement
-    entered is not a fact the preview claims. Two subworkflow nodes binding the
-    same child revision reach that child through one and the same reference, so
-    its demands are derived once per node that binds it and would otherwise be
-    drawn twice on each node of the child.
-    """
     return tuple(dict.fromkeys(entries))
 
 
@@ -249,24 +218,6 @@ def _preview_iteration(node: WorkflowNodeV3) -> PreviewIteration | None:
         node.iterate.maximum_rounds,
         node.iterate.until.output,
         node.iterate.until.schema_reference,
-    )
-
-
-def _preview_child(
-    node: WorkflowNodeV3,
-    children: dict[str, BoundSubworkflow],
-    chain: ReferenceChain,
-    derivation: _Derivation,
-) -> PreviewChild | None:
-    if not isinstance(node, SubworkflowNodeV3):
-        return None
-    child = children[node.id]
-    return PreviewChild(
-        child.reference,
-        child.child_revision_hash.value,
-        _preview_graph(
-            child.child, child.children, chain + (child.reference,), derivation
-        ),
     )
 
 

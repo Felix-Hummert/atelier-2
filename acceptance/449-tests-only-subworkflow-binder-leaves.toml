@@ -1,0 +1,10 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/449"
+
+[[sentence]]
+id = "an-authored-v3-subworkflow-remains-unexecutable-without-start-writes"
+text = "V3 subworkflow and iterate declarations read back exactly as authored; executable admission and the real starter refuse them before run, configuration, or enqueue writes."
+
+[[sentence]]
+id = "existing-runtime-lines-survive-the-binder-deletion"
+text = "V1 Agent, Action, Wait and Subworkflow runtime behavior remains unchanged; V2's two bound agents and terminal Subworkflow survive restart; a linear V3 agent chain starts, runs autonomously, and reaches its terminal hash."

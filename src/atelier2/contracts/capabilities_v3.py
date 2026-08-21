@@ -26,7 +26,7 @@ from enum import StrEnum
 from atelier2.contracts.agents import AgentExecutionCapability, ResolvedAgentBinding
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_configuration_v3 import ReferenceChain, ReferenceSite
-from atelier2.contracts.workflow_bindings_v3 import BoundSubworkflow, SubworkflowBinding
+from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import (
     ActionNodeV3,
     AgentNodeV3,
@@ -57,7 +57,6 @@ class RuntimeCapability(StrEnum):
     ISOLATED_WORKSPACE = "isolated_workspace"
     EXTERNAL_EFFECTS = "external_effects"
     DETERMINISTIC_OPERATIONS = "deterministic_operations"
-    SUBWORKFLOW_EXECUTION = "subworkflow_execution"
 
 
 class OutputProfile(StrEnum):
@@ -423,18 +422,7 @@ def required_capabilities(
     agent_bindings: tuple[ResolvedAgentBinding, ...],
     skills: PublishedSkills,
 ) -> tuple[CapabilityRequirement, ...]:
-    """Every capability one bound document demands, over the closure it references.
-
-    Requirements are transitive: a bound child contributes its own whole set, each
-    requirement naming the chain it entered through, and a bound skill's carried
-    grants enter under `tool_grants` exactly as a node's own `tools` entry does.
-
-    The role matrix is read as the run bound it; roles are unique in every container
-    that produces one, so an ambiguous matrix is refused before it reaches here.
-    """
-    return tuple(
-        _required_of(document, subworkflows.subworkflows, agent_bindings, skills, ())
-    )
+    return tuple(_required_of(document, agent_bindings, skills, ()))
 
 
 def decide_executability(
@@ -475,12 +463,10 @@ def _refusal_for(
 
 def _required_of(
     graph: WorkflowGraphV3,
-    bound: tuple[BoundSubworkflow, ...],
     agent_bindings: tuple[ResolvedAgentBinding, ...],
     skills: PublishedSkills,
     chain: ReferenceChain,
 ) -> Iterator[CapabilityRequirement]:
-    children = {child.node_id: child for child in bound}
     scheduled = _scheduled_node_ids(graph)
     for node in graph.nodes:
         if node.id in scheduled:
@@ -489,15 +475,6 @@ def _required_of(
                 ReferenceSite("depends_on", node.id, None, chain),
             )
         yield from _required_of_node(node, agent_bindings, skills, chain)
-        if isinstance(node, SubworkflowNodeV3):
-            child = children[node.id]
-            yield from _required_of(
-                child.child,
-                child.children,
-                agent_bindings,
-                skills,
-                chain + (child.reference,),
-            )
 
 
 def _scheduled_node_ids(graph: WorkflowGraphV3) -> frozenset[str]:
@@ -544,11 +521,6 @@ def _required_of_node(
             RuntimeCapability.EXTERNAL_EFFECTS,
             ReferenceSite("operation", node.id, None, chain),
             CapabilitySubject.of(RevisionKind.ADAPTER_OPERATION, node.operation),
-        )
-    if isinstance(node, SubworkflowNodeV3):
-        yield CapabilityRequirement(
-            RuntimeCapability.SUBWORKFLOW_EXECUTION,
-            ReferenceSite("workflow", node.id, None, chain),
         )
 
 

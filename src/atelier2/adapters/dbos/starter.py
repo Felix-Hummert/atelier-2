@@ -126,9 +126,6 @@ def _v3_run_configuration(
     already freezes the matrix, and a run whose own configuration nobody resolved
     is exactly what it exists to prevent.
 
-    The binding is empty because the admitted shape has no subworkflow node. A
-    document that grows one resolves its child through the binder that read it,
-    which is the parameter this passes through untouched.
     """
     return bind_run_configuration(
         revision_hash,

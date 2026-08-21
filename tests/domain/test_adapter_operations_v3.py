@@ -73,7 +73,7 @@ def resolution_of(document: bytes) -> ResolvedReference | ReferenceRefusal:
         RevisionKind.ADAPTER_OPERATION,
         VersionedReference(ref="open-pr", revision=revision.revision_hash.value),
     )
-    return resolve_declared_reference(declared, OneRevisionRegistry(revision), {})
+    return resolve_declared_reference(declared, OneRevisionRegistry(revision))
 
 
 def test_the_one_published_operation_this_runtime_performs_is_read_and_resolves() -> (

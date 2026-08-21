@@ -319,8 +319,8 @@ alike — refused with no dependency, optional with one, required with several.
 | `prompt` | — | — | R | — | — |
 | `required_context` | O | O | O | — | O |
 | `available_context` | O | — | — | — | — |
-| `inputs` | O | O | O | one per child `graph_input` | one per operation parameter |
-| `outputs` | O | R | exactly one | one per child `graph_output` | O |
+| `inputs` | O | O | O | O — authored, unbound | one per operation parameter |
+| `outputs` | O | R | exactly one | O — authored, unbound | O |
 | `budget` | O | — | — | O | — |
 | `retry` | O | O | — | — | — |
 | `cancellation` | O | O | O | O | O |
@@ -330,8 +330,8 @@ The refusals in that table are decisions, not omissions. Only `agent` accepts
 refuses `budget`: a pure computation buys no provider work, and a wall-clock bound
 belongs to the operation revision, which knows its own cost. `retry` is refused by
 `wait` because it is answered once, by `action` because a re-attempt of an effect is
-reconciliation under ADR 0001, and by `subworkflow` because the child's own nodes
-carry their retry policies — as the child declares its own context.
+reconciliation under ADR 0001, and by `subworkflow` because it is authored and
+unexecutable: no V3 runtime owns retry for it.
 
 #### `agent`
 
@@ -443,6 +443,10 @@ without a second prompt or a second acceptance; a run cancel drives it to one
 
 #### `subworkflow`
 
+#449 withdrew the tests-only child closure, boundary binding, recursive capability
+derivation, child preview and parent disposition. The authored form remains valid;
+the real starter refuses it before durable writes.
+
 A V3 document may declare graph-level inputs and outputs, which is what makes a
 revision reusable as a child:
 
@@ -470,39 +474,6 @@ nodes: []
     - name: verdict
       schema: {ref: review_verdict, revision: "<schema revision id>"}
 ```
-
-**Mapping is by name and schema revision, one to one.** Every `graph_input` must
-be matched by an input of the same name, every declared output by a `graph_output`
-of the same name, and each pair's schema revisions must be identical. A missing,
-extra or differently-typed name is refused at binding, naming it. There is no
-positional mapping and no implicit pass-through. A root run binds every
-`graph_input` through its start command, and a missing one refuses the start
-naming the input.
-
-**A `graph_output` must source from a sink.** Its `from` may only name a node with
-no dependents, and a `from` naming a non-sink node is refused at parse naming both
-the output and the node. A result read out of the middle of a graph would let a
-child report a finished value while work behind it was still deciding, which is the
-one way a child could look succeeded before it was.
-
-**Cycles.** A document's bytes can only name an already published revision id and no
-revision can contain its own hash, so direct and mutual recursion are structurally
-impossible rather than merely checked. Depth *is* checked: binding refuses a chain
-deeper than the maximum `subworkflow_execution` proves, naming the chain, so nesting
-cannot exhaust the runtime.
-
-**Restart:** the child is a durable run of its own, bound one to one to the parent
-node execution id, so a restart re-attaches instead of starting a second child.
-The parent node's terminal receipt binds the child run's terminal hash. Its
-disposition is `succeeded` only when the child run is terminal, **every** sink holds
-a `succeeded` receipt, and every `graph_output` was produced; `cancelled` when the
-child run was cancelled; otherwise `failed`, naming the child sink whose receipt
-broke it. A sink sourcing no `graph_output` still performed the child's work — a
-handoff Action is exactly that shape — so its failure is the child's failure even
-when every output-sourcing sink succeeded, and the parent then delivers the receipt
-envelope downstream rather than any produced value. Cancelling the parent run
-cancels the child. ADR 0002's toy adder — `operation: add` with `operands` — is not
-part of V3.
 
 #### `action`
 
@@ -679,9 +650,9 @@ it, and the number of effects per run that crash evidence covers. An operation
 absent from its manifest refuses the run naming it, exactly like a missing
 capability.
 
-**Requirements are transitive.** The capability set a document requires is
-computed over the closure of everything it references, not over its own node kinds
-alone:
+**Root requirements are derived from supported references.** The capability set a
+root document requires is computed from its node kinds and non-workflow
+references:
 
 - the agent-configuration revision a `role` binds contributes `agent_execution` for
   its executor identity and provider mode; `mode` itself stays that configuration's
@@ -697,11 +668,9 @@ alone:
   else — never `context_resolution`, whose subject is the grant it does not carry;
 - an `available_context` source contributes `context_resolution` together with every
   read operation revision it grants;
-- a bound subworkflow revision contributes its entire requirement set, plus
-  `subworkflow_execution` at the resulting depth.
 
 A refusal names the node, the reference through which the requirement entered, and
-the missing capability, so a nested one stays diagnosable.
+the missing capability.
 
 **A skill's carried grants are requirements, not decoration.** A skill is a
 capability bundle carrying tool grants, so each grant it carries must be attested
@@ -728,7 +697,6 @@ stable:
 | `isolated_workspace` | an attempt's isolated hashed workspace, and any output schema derived from it |
 | `external_effects` | the enumerated adapter operation revisions, each with its proven scope and per-run effect count |
 | `deterministic_operations` | the enumerated deterministic operation revisions the core can compute |
-| `subworkflow_execution` | child-run execution and the maximum proven nesting depth |
 
 Why `required_context` never contributes `context_resolution`: it is materialized by
 whichever materializer the run binds — today #1's external bootstrap harness, later
@@ -834,22 +802,18 @@ output or sourcing a node that is not a sink; a malformed or unpinned versioned
 reference; a document that does not name itself; a document `name` that is blank,
 oversized or carries a Unicode line boundary; and an oversized `description`.
 
-Refused at binding: any versioned reference — profile, skill, tool, policy,
-budget, retry, cancellation, schema, deterministic operation, adapter operation,
-context source, read operation, subworkflow — that does not resolve to a published
-revision; a subworkflow input or output that does not match the child's
-`graph_inputs` and `graph_outputs` one to one by name and schema revision; an
-operation whose declared parameters the node's inputs do not match exactly; a
-deterministic or Action output the bound operation revision does not declare, or
-declares under a different schema revision; a subworkflow chain deeper than the
-attested maximum.
+Refused at binding: any non-workflow versioned reference — profile, skill, tool,
+policy, budget, retry, cancellation, schema, deterministic operation, adapter
+operation, context source or read operation — that does not resolve to a published
+revision; an operation whose declared parameters the node's inputs do not match
+exactly; or a deterministic or Action output the bound operation revision does not
+declare, or declares under a different schema revision.
 
 Refused at run start: an ungranted adapter operation; a role without exactly one
 bound agent-configuration revision; an unbound `graph_input`; an `interactive`
 node whose bound agent-configuration revision does not declare interactive; and
-any capability the document requires — including one entering transitively — that
-the bound runtime capability revision does not attest, naming node, reference and
-capability.
+any root requirement the bound runtime capability revision does not attest, naming
+node, reference and capability.
 
 A V3 document carrying `job`, `output`, `next`, `start`, `answer_type`,
 `operands`, `arguments` or `logical_key` is refused with the retired key and its
@@ -1114,10 +1078,9 @@ store without mutation, and provides no runtime upgrade or downgrade migration. 
   manifest hash and resolved revision ids. With the persisted-disposition set and
   the supersede marker that is a durable-contract change needing crash evidence and
   the store cutover above, not a field addition.
-- The runtime's terminal handling and single-successor advance both move: to the
-  run-level terminal condition over dispositions, and to a ready set over
-  `depends_on`. Terminal handling is bound to the Subworkflow node kind today, and
-  that binding must go before V3 executes.
+- V3 has no terminal child handling or binding: the real starter refuses a
+  `subworkflow` before any durable write. A future executable slice would own the
+  terminal and successor decisions it needs.
 - The format expresses no conditional branching and no loop; per #1 there is no
   automatic fix-review cycle. Bounded iteration is #25's, and this record decides
   nothing about its author surface.
@@ -1162,18 +1125,15 @@ capabilities and proofs exist today; this list does not restate that inventory.
 - Result mapping refuses instead of inventing: a deterministic or Action `outputs`
   entry the bound operation revision does not declare, and one declared under a
   different schema revision, are each refused at binding naming the output, while a
-  declared subset binds; a `graph_output` sourcing a non-sink node is refused at
-  parse; and a child whose output-sourcing sinks all succeeded while another sink
-  failed gives the parent a `failed` receipt naming that sink and delivers no value
-  downstream.
+  declared subset binds; a root `graph_output` sourcing a non-sink node is refused
+  at parse.
 - Executability is proven separately from validity: the same valid document is
   accepted at publish, marked in the preview, and refused at run start naming the
   exact node and missing capability; it starts unchanged once the capability
-  revision attests that capability; and a capability entering only through a
-  subworkflow or schema reference is refused with that reference named.
-- Every versioned reference kind refuses an unresolvable revision at binding,
-  naming it; a subworkflow whose mapping does not match the child's
-  `graph_inputs`/`graph_outputs` one to one is refused naming the mismatch.
+  revision attests that capability; and a capability entering only through a schema
+  reference is refused with that reference named.
+- Every root non-workflow versioned reference kind refuses an unresolvable revision
+  at binding, naming it.
 - Two Action nodes with identical inputs in one run receive distinct derived
   idempotency keys, and a crash re-attempt of one node receives the same key and
   produces exactly one effect and one receipt.
