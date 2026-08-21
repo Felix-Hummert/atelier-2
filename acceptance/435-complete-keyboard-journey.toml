@@ -1,0 +1,7 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/435"
+
+[[sentence]]
+id = "core-surfaces-support-one-complete-keyboard-journey"
+requirement = "REQ-UIQ-05"
+text = "One keyboard-only journey navigates the core Studio, Project, New Run, and V2 Run surfaces; starts the existing singleton V2 run with a remembered published agent; refreshes it exactly twice to terminal evidence; scrolls named event evidence; and returns through the Studio rail with focus on each newly rendered main stage."
