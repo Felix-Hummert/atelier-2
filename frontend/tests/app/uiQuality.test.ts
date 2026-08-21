@@ -101,7 +101,7 @@ describe("core surfaces read owned display strings", () => {
     await railShowsOwnedPseudoLocale();
   });
 
-  it("proves(project-copy-is-owned-and-survives-pseudo-locale): Project renders its new work-first copy through the display transform", async () => {
+  it("Project renders its new work-first copy through the display transform", async () => {
     openProjectPseudoLocale();
 
     await screen.findByRole("heading", { name: "This workshop" });

@@ -170,7 +170,7 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
   }
 });
 
-test("proves(project-states-stay-honest-at-every-viewport-and-locale): Project keeps work, absence, loading, and retained failure readable", async ({ page }) => {
+test("Project keeps work, absence, loading, and retained failure readable", async ({ page }) => {
   expect(runPageSchema.safeParse({ items: projectRuns(), next_after: null }).success).toBe(true);
   let reply: ProjectRunReply = "common";
   const loading = { release: () => {}, retainedReads: 0 };
