@@ -23,6 +23,11 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.pages import PageLimit
+from atelier2.contracts.runner_terminal_evidence_codec import (
+    RunnerTerminalEvidenceRecordCorrupt,
+    RunnerTerminalEvidenceRecordMissing,
+    RunnerTerminalEvidenceRecordOversized,
+)
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.contracts.workflows import NodeCompletion
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
@@ -88,13 +93,30 @@ class RunnerTerminalEvidenceSource(Protocol):
 
     def readback(
         self, binding: RunnerGenerationBinding
-    ) -> RunnerTerminalEvidenceReadback: ...
+    ) -> RunnerTerminalEvidenceSourceReadback: ...
 
     def acknowledge(
         self,
         envelope: RunnerTerminalEvidenceEnvelope,
         accepted_hash: RunnerTerminalEvidenceHash,
-    ) -> RunnerTerminalEvidenceAckTombstone: ...
+    ) -> RunnerTerminalEvidenceAcknowledgement: ...
+
+
+@dataclass(frozen=True)
+class RunnerTerminalEvidenceAcknowledgementUnavailable:
+    """Runner evidence remains retained because ACK could not complete."""
+
+
+type RunnerTerminalEvidenceSourceReadback = (
+    RunnerTerminalEvidenceReadback
+    | RunnerTerminalEvidenceRecordMissing
+    | RunnerTerminalEvidenceRecordCorrupt
+    | RunnerTerminalEvidenceRecordOversized
+)
+type RunnerTerminalEvidenceAcknowledgement = (
+    RunnerTerminalEvidenceAckTombstone
+    | RunnerTerminalEvidenceAcknowledgementUnavailable
+)
 
 
 @dataclass(frozen=True)

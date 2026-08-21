@@ -14,6 +14,16 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
     RunnerTerminalEvidenceReadback,
 )
+from atelier2.contracts.runner_terminal_evidence_codec import (
+    RunnerTerminalEvidenceRecordMissing,
+    decode_runner_terminal_evidence_record,
+    encode_runner_terminal_evidence_record,
+)
+from atelier2.ports.agent_attempts import (
+    RunnerTerminalEvidenceAcknowledgement,
+    RunnerTerminalEvidenceAcknowledgementUnavailable,
+    RunnerTerminalEvidenceSourceReadback,
+)
 
 
 class SimulatedRunnerCrash(RuntimeError):
@@ -25,12 +35,12 @@ class _AcceptedGeneration:
     binding: RunnerGenerationBinding
     invocation_id: RunnerInvocationId
     launched: bool = False
-    terminal_evidence: RunnerTerminalEvidenceEnvelope | None = None
-    ack_tombstone: RunnerTerminalEvidenceAckTombstone | None = None
+    record: bytes | None = None
     acknowledgement_calls: int = 0
     garbage_collection_count: int = 0
     fail_before_readback: bool = False
     fail_after_acknowledge: bool = False
+    fail_acknowledgement: bool = False
     acknowledge_entered: threading.Event | None = None
     acknowledge_release: threading.Event | None = None
     readback_probe: Callable[[], None] | None = None
@@ -43,19 +53,21 @@ class FakeRunner:
 
     def __init__(self) -> None:
         self._accepted: dict[RunnerGenerationId, _AcceptedGeneration] = {}
+        self._registry_lock = threading.Lock()
 
     def accept(self, binding: RunnerGenerationBinding) -> RunnerInvocationId:
-        accepted = self._accepted.get(binding.generation_id)
-        if accepted is not None:
-            self._require_binding(accepted, binding)
-            return accepted.invocation_id
-        invocation_id = RunnerInvocationId(
-            f"runner-invocation-{binding.generation_id.value}"
-        )
-        self._accepted[binding.generation_id] = _AcceptedGeneration(
-            binding, invocation_id
-        )
-        return invocation_id
+        with self._registry_lock:
+            accepted = self._accepted.get(binding.generation_id)
+            if accepted is not None:
+                self._require_binding(accepted, binding)
+                return accepted.invocation_id
+            invocation_id = RunnerInvocationId(
+                f"runner-invocation-{binding.generation_id.value}"
+            )
+            self._accepted[binding.generation_id] = _AcceptedGeneration(
+                binding, invocation_id
+            )
+            return invocation_id
 
     def launch(
         self,
@@ -82,15 +94,19 @@ class FakeRunner:
                 )
             if envelope.invocation_id not in (None, accepted.invocation_id):
                 raise RunnerBindingConflict("runner evidence differs from invocation")
-            if accepted.ack_tombstone is not None:
+            decoded = decode_runner_terminal_evidence_record(accepted.record)
+            if isinstance(decoded, RunnerTerminalEvidenceAckTombstone):
                 raise RunnerBindingConflict("runner evidence was already acknowledged")
-            if accepted.terminal_evidence is None:
-                accepted.terminal_evidence = envelope
-            return accepted.terminal_evidence
+            if isinstance(decoded, RunnerTerminalEvidenceEnvelope):
+                return decoded
+            if not isinstance(decoded, RunnerTerminalEvidenceRecordMissing):
+                raise RunnerBindingConflict("runner evidence record is unusable")
+            accepted.record = encode_runner_terminal_evidence_record(envelope)
+            return envelope
 
     def readback(
         self, binding: RunnerGenerationBinding
-    ) -> RunnerTerminalEvidenceReadback:
+    ) -> RunnerTerminalEvidenceSourceReadback:
         accepted = self._accepted[binding.generation_id]
         with accepted.lock:
             self._require_binding(accepted, binding)
@@ -99,20 +115,26 @@ class FakeRunner:
                 raise SimulatedRunnerCrash("before terminal-evidence readback")
             if accepted.readback_probe is not None:
                 accepted.readback_probe()
-            readback = accepted.ack_tombstone or accepted.terminal_evidence
-            if readback is None:
-                raise AssertionError("the scenario Runner has no terminal evidence")
+            readback = decode_runner_terminal_evidence_record(accepted.record)
+            if isinstance(
+                readback,
+                (RunnerTerminalEvidenceEnvelope, RunnerTerminalEvidenceAckTombstone),
+            ):
+                self._require_readback_binding(readback, binding)
             return readback
 
     def acknowledge(
         self,
         envelope: RunnerTerminalEvidenceEnvelope,
         accepted_hash: RunnerTerminalEvidenceHash,
-    ) -> RunnerTerminalEvidenceAckTombstone:
+    ) -> RunnerTerminalEvidenceAcknowledgement:
         accepted = self._accepted[envelope.binding.generation_id]
         with accepted.lock:
             self._require_binding(accepted, envelope.binding)
             accepted.acknowledgement_calls += 1
+            if accepted.fail_acknowledgement:
+                accepted.fail_acknowledgement = False
+                return RunnerTerminalEvidenceAcknowledgementUnavailable()
             if accepted.acknowledgement_probe is not None:
                 accepted.acknowledgement_probe()
             evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
@@ -121,15 +143,17 @@ class FakeRunner:
             expected = RunnerTerminalEvidenceAckTombstone(
                 envelope.binding, envelope.invocation_id, accepted_hash
             )
-            if accepted.ack_tombstone is not None:
-                if accepted.ack_tombstone != expected:
+            retained = decode_runner_terminal_evidence_record(accepted.record)
+            if isinstance(retained, RunnerTerminalEvidenceAckTombstone):
+                if retained != expected:
                     raise RunnerBindingConflict("runner ACK differs from tombstone")
-            else:
-                if accepted.terminal_evidence != envelope:
+            elif isinstance(retained, RunnerTerminalEvidenceEnvelope):
+                if retained != envelope:
                     raise RunnerBindingConflict("runner ACK differs from evidence")
-                accepted.ack_tombstone = expected
-                accepted.terminal_evidence = None
+                accepted.record = encode_runner_terminal_evidence_record(expected)
                 accepted.garbage_collection_count += 1
+            else:
+                raise RunnerBindingConflict("runner ACK has no usable evidence")
 
             if accepted.acknowledge_entered is not None:
                 accepted.acknowledge_entered.set()
@@ -147,13 +171,35 @@ class FakeRunner:
         accepted = self._accepted[binding.generation_id]
         with accepted.lock:
             self._require_binding(accepted, binding)
-            return accepted.terminal_evidence
+            readback = decode_runner_terminal_evidence_record(accepted.record)
+            return (
+                readback
+                if isinstance(readback, RunnerTerminalEvidenceEnvelope)
+                else None
+            )
+
+    def retain_record(
+        self, binding: RunnerGenerationBinding, record: bytes | None
+    ) -> None:
+        accepted = self._accepted[binding.generation_id]
+        with accepted.lock:
+            self._require_binding(accepted, binding)
+            accepted.record = record
+
+    def record_bytes(self, binding: RunnerGenerationBinding) -> bytes | None:
+        accepted = self._accepted[binding.generation_id]
+        with accepted.lock:
+            self._require_binding(accepted, binding)
+            return accepted.record
 
     def fail_next_readback(self, binding: RunnerGenerationBinding) -> None:
         self._accepted[binding.generation_id].fail_before_readback = True
 
     def fail_after_next_acknowledge(self, binding: RunnerGenerationBinding) -> None:
         self._accepted[binding.generation_id].fail_after_acknowledge = True
+
+    def fail_next_acknowledgement(self, binding: RunnerGenerationBinding) -> None:
+        self._accepted[binding.generation_id].fail_acknowledgement = True
 
     def hold_acknowledge(
         self,
@@ -195,3 +241,13 @@ class FakeRunner:
     ) -> None:
         if accepted.binding != binding:
             raise RunnerBindingConflict("runner generation is bound to different work")
+
+    @staticmethod
+    def _require_readback_binding(
+        readback: RunnerTerminalEvidenceReadback,
+        binding: RunnerGenerationBinding,
+    ) -> None:
+        if readback.binding != binding:
+            raise RunnerBindingConflict(
+                "runner readback differs from requested binding"
+            )

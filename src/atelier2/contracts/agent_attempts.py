@@ -214,6 +214,16 @@ def _require_runner_identity(value: str, owner: str) -> None:
         raise ValueError(
             f"{owner} must contain 1..{MAXIMUM_AGENT_FIELD_CHARACTERS} exact characters"
         )
+    _require_runner_text(value, owner)
+
+
+def _require_runner_text(value: str, owner: str) -> None:
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{owner} must be encodable as UTF-8") from error
+    if encoded.decode("utf-8") != value:
+        raise ValueError(f"{owner} must have one canonical UTF-8 encoding")
 
 
 @dataclass(frozen=True)
@@ -351,6 +361,7 @@ class RunnerCancellation:
                 "runner cancellation command id must contain "
                 f"1..{MAXIMUM_AGENT_FIELD_CHARACTERS} characters"
             )
+        _require_runner_text(self.command_id, "runner cancellation command id")
         if not isinstance(self.observation, RunnerCancellationObservation):
             raise TypeError("runner cancellation requires a typed physical observation")
 

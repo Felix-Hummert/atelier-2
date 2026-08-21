@@ -158,8 +158,13 @@ def _armed(
     return runtime, store, execution, binding, invocation
 
 
+_DEFAULT_V3_RUNNER_INVOCATION = RunnerInvocationId("runner-invocation-1")
+
+
 def _v3_armed(
-    root: Path, run_name: str
+    root: Path,
+    run_name: str,
+    invocation: RunnerInvocationId = _DEFAULT_V3_RUNNER_INVOCATION,
 ) -> tuple[
     DbosRuntime,
     DbosAgentAttemptStore,
@@ -216,7 +221,6 @@ def _v3_armed(
     store.prepare(execution)
     binding = _binding(execution)
     store.bind_runner_generation(execution, binding)
-    invocation = RunnerInvocationId("runner-invocation-1")
     store.arm_runner_invocation(execution, binding, invocation)
     return runtime, store, execution, binding, invocation
 
@@ -1186,7 +1190,7 @@ def test_grant_bound_runner_evidence_is_refused_before_any_commit(
             RunnerTerminalEvidenceRefusal.TOOL_GRANT_BOUND
         )
         assert store.load(execution.attempt_id) == before
-        assert runner.observed_evidence(binding) is envelope
+        assert runner.observed_evidence(binding) == envelope
         assert runner.acknowledgement_count(binding) == 0
         assert runner.garbage_collection_count(binding) == 0
         with runtime.engine.connect() as connection:
