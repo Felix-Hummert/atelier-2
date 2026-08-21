@@ -2,26 +2,15 @@
 set -euo pipefail
 
 repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if ! status="$(git -C "${repository}" status --porcelain --untracked-files=all)"; then
-  echo "container up: source status is unavailable" >&2
-  exit 1
-fi
-if [[ -n "${status}" ]]; then
-  echo "container up: source tree must be clean" >&2
-  exit 1
-fi
-if ! export ATELIER2_SOURCE_COMMIT="$(git -C "${repository}" rev-parse --verify 'HEAD^{commit}')"; then
-  echo "container up: source commit identity is missing" >&2
-  exit 1
-fi
-if ! export ATELIER2_SOURCE_TREE="$(git -C "${repository}" rev-parse --verify 'HEAD^{tree}')"; then
-  echo "container up: source tree identity is missing" >&2
-  exit 1
-fi
-if [[ "${ATELIER2_SOURCE_TREE}" != "$(git -C "${repository}" rev-parse "${ATELIER2_SOURCE_COMMIT}^{tree}")" ]]; then
-  echo "container up: source tree does not belong to source commit" >&2
-  exit 1
-fi
+for variable in ATELIER2_DEPLOYMENT ATELIER2_PUBLISHED_PORT ATELIER2_RESTART_POLICY; do
+  if [[ -n "${!variable+x}" ]]; then
+    echo "container up: ambient container mode is forbidden" >&2
+    exit 1
+  fi
+done
+export ATELIER2_DEPLOYMENT="disposable"
+export ATELIER2_PUBLISHED_PORT="0"
+export ATELIER2_RESTART_POLICY="no"
 
 lifecycle=""
 snapshot=""
@@ -94,7 +83,11 @@ snapshot="$(mktemp -d "${lifecycle}/snapshot.XXXXXX")"
 descriptor="${lifecycle}/teardown.compose.yaml"
 project="atelier2-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 compose=(docker compose --project-name "${project}" --project-directory "${snapshot}" -f "${snapshot}/compose.yaml")
-git -C "${repository}" archive --format=tar "${ATELIER2_SOURCE_COMMIT}" | tar -C "${snapshot}" -xf -
+if ! read -r ATELIER2_SOURCE_COMMIT ATELIER2_SOURCE_TREE \
+  < <("${repository}/scripts/container_snapshot.sh" "${repository}" "${snapshot}"); then
+  exit 1
+fi
+export ATELIER2_SOURCE_COMMIT ATELIER2_SOURCE_TREE
 {
   printf 'name: %s\n' "${project}"
   cat <<'YAML'
@@ -110,6 +103,7 @@ services:
     networks:
       - serve
     labels: &source_labels
+      atelier2.deployment: disposable
       atelier2.source.commit: ${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}
       atelier2.source.tree: ${ATELIER2_SOURCE_TREE:?source tree identity is missing}
 volumes:

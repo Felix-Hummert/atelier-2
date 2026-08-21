@@ -21,6 +21,7 @@ DOCKERFILE = PROJECT_ROOT / "Dockerfile"
 COMPOSE = PROJECT_ROOT / "compose.yaml"
 DOCKERIGNORE = PROJECT_ROOT / ".dockerignore"
 CONTAINER_UP = PROJECT_ROOT / "scripts" / "container_up.sh"
+CONTAINER_SNAPSHOT = PROJECT_ROOT / "scripts" / "container_snapshot.sh"
 CONTAINER_SERVE = PROJECT_ROOT / "scripts" / "container_serve.sh"
 OPERATIONS = PROJECT_ROOT / "docs" / "OPERATIONS.md"
 PRODUCT = PROJECT_ROOT / "docs" / "PRODUCT.md"
@@ -30,7 +31,7 @@ CI = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
 
 SOURCE_COMMIT = "ATELIER2_SOURCE_COMMIT"
 SOURCE_TREE = "ATELIER2_SOURCE_TREE"
-DIRTY_TREE_REFUSAL = "container up: source tree must be clean"
+DIRTY_TREE_REFUSAL = "container snapshot: source tree must be clean"
 PROJECT_NAME = re.compile(r"^atelier2-[0-9a-f]{16}$")
 
 _FROM = re.compile(r"^FROM\s+", re.MULTILINE | re.IGNORECASE)
@@ -54,6 +55,15 @@ def final_user(recipe: str) -> str:
 
 def source_labels() -> dict[str, str]:
     return {
+        "atelier2.deployment": "${ATELIER2_DEPLOYMENT:?container deployment identity is missing}",
+        "atelier2.source.commit": "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}",
+        "atelier2.source.tree": "${ATELIER2_SOURCE_TREE:?source tree identity is missing}",
+    }
+
+
+def disposable_labels() -> dict[str, str]:
+    return {
+        "atelier2.deployment": "disposable",
         "atelier2.source.commit": "${ATELIER2_SOURCE_COMMIT:?source commit identity is missing}",
         "atelier2.source.tree": "${ATELIER2_SOURCE_TREE:?source tree identity is missing}",
     }
@@ -131,6 +141,7 @@ def assert_isolated_compose(document: dict[str, Any]) -> None:
         "build",
         "cap_drop",
         "read_only",
+        "restart",
         "security_opt",
         "healthcheck",
         "ports",
@@ -147,13 +158,16 @@ def assert_isolated_compose(document: dict[str, Any]) -> None:
     assert "env_file" not in service
     assert service["cap_drop"] == ["ALL"]
     assert service["read_only"] is True
+    assert service["restart"] == (
+        "${ATELIER2_RESTART_POLICY:?container restart policy is missing}"
+    )
     assert "no-new-privileges:true" in service["security_opt"]
     assert service["security_opt"] == ["no-new-privileges:true"]
     assert len(service["ports"]) == 1
     port = service["ports"][0]
     assert port == {
         "target": 8422,
-        "published": "0",
+        "published": "${ATELIER2_PUBLISHED_PORT:?container published port is missing}",
         "host_ip": "127.0.0.1",
         "protocol": "tcp",
     }
@@ -215,11 +229,11 @@ def assert_teardown_descriptor(document: dict[str, Any], project: str) -> None:
                     }
                 ],
                 "networks": ["serve"],
-                "labels": source_labels(),
+                "labels": disposable_labels(),
             }
         },
-        "volumes": {"store": {"labels": source_labels()}},
-        "networks": {"serve": {"labels": source_labels()}},
+        "volumes": {"store": {"labels": disposable_labels()}},
+        "networks": {"serve": {"labels": disposable_labels()}},
     }
 
 
@@ -293,12 +307,27 @@ def install_git_stub(directory: Path) -> None:
         directory / "git",
         f"""\\
 import os
+import subprocess
 import sys
 
 if os.environ.get("ATELIER2_TEST_GIT_STATUS_FAILURE") == "1" and "status" in sys.argv:
     raise SystemExit(17)
 if os.environ.get("ATELIER2_TEST_GIT_ARCHIVE_FAILURE") == "1" and "archive" in sys.argv:
     raise SystemExit(18)
+if os.environ.get("ATELIER2_TEST_GIT_HEAD_DRIFT") == "1" and "archive" in sys.argv:
+    completed = subprocess.run([{real_git!r}, *sys.argv[1:]], check=False)
+    if completed.returncode:
+        raise SystemExit(completed.returncode)
+    repository = sys.argv[sys.argv.index("-C") + 1]
+    marker = os.path.join(repository, "head-drift.txt")
+    with open(marker, "w", encoding="utf-8") as output:
+        output.write("drift\\n")
+    subprocess.run([{real_git!r}, "-C", repository, "add", "head-drift.txt"], check=True)
+    subprocess.run(
+        [{real_git!r}, "-C", repository, "-c", "user.name=test", "-c", "user.email=test@invalid", "commit", "--quiet", "--message", "drift"],
+        check=True,
+    )
+    raise SystemExit(0)
 os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
 """,
     )
@@ -328,6 +357,7 @@ def packaging_repository(tmp_path: Path, name: str = "repository") -> Path:
     (repository / "scripts").mkdir(parents=True)
     for source, destination in (
         (CONTAINER_UP, repository / "scripts" / "container_up.sh"),
+        (CONTAINER_SNAPSHOT, repository / "scripts" / "container_snapshot.sh"),
         (CONTAINER_SERVE, repository / "scripts" / "container_serve.sh"),
         (DOCKERFILE, repository / "Dockerfile"),
         (COMPOSE, repository / "compose.yaml"),
@@ -354,6 +384,7 @@ def container_environment(
     descriptor_remove_fails: bool = False,
     git_status_fails: bool = False,
     archive_fails: bool = False,
+    head_drifts: bool = False,
     mutate_after_preflight: bool = False,
     wait_phases: tuple[str, ...] = (),
 ) -> dict[str, str]:
@@ -376,6 +407,7 @@ def container_environment(
         ),
         "ATELIER2_TEST_GIT_STATUS_FAILURE": "1" if git_status_fails else "0",
         "ATELIER2_TEST_GIT_ARCHIVE_FAILURE": "1" if archive_fails else "0",
+        "ATELIER2_TEST_GIT_HEAD_DRIFT": "1" if head_drifts else "0",
         "ATELIER2_TEST_MUTATE_AFTER_PREFLIGHT": (
             str(repository / "frontend" / "marker.txt")
             if mutate_after_preflight
@@ -547,6 +579,9 @@ def test_compose_guard_rejects_authority_and_static_resource_mutations() -> None
     static_port = copy.deepcopy(document)
     static_port["services"]["serve"]["ports"][0]["published"] = "8422"
     mutations.append(static_port)
+    static_restart = copy.deepcopy(document)
+    static_restart["services"]["serve"]["restart"] = "unless-stopped"
+    mutations.append(static_restart)
     broad_port = copy.deepcopy(document)
     broad_port["services"]["serve"]["ports"].append(
         {"target": 8423, "published": "0", "host_ip": "0.0.0.0", "protocol": "tcp"}
@@ -693,6 +728,9 @@ def test_teardown_descriptor_renders_only_the_candidate_resources(
             **os.environ,
             SOURCE_COMMIT: run_git(repository, "rev-parse", "HEAD"),
             SOURCE_TREE: run_git(repository, "rev-parse", "HEAD^{tree}"),
+            "ATELIER2_DEPLOYMENT": "disposable",
+            "ATELIER2_PUBLISHED_PORT": "0",
+            "ATELIER2_RESTART_POLICY": "no",
         },
         capture_output=True,
         check=False,
@@ -767,7 +805,7 @@ def test_status_failure_refuses_before_snapshot_or_docker(tmp_path: Path) -> Non
     completed = run_container_up(repository, tmp_path, git_status_fails=True)
 
     assert completed.returncode != 0
-    assert "source status is unavailable" in completed.stderr
+    assert "container snapshot: source status is unavailable" in completed.stderr
     assert docker_invocations(tmp_path) == []
 
 
@@ -777,6 +815,17 @@ def test_archive_failure_removes_early_lifecycle_state(tmp_path: Path) -> None:
     completed = run_container_up(repository, tmp_path, archive_fails=True)
 
     assert completed.returncode != 0
+    assert docker_invocations(tmp_path) == []
+    assert lifecycle_directories(tmp_path) == []
+
+
+def test_head_drift_during_archive_refuses_before_docker(tmp_path: Path) -> None:
+    repository = packaging_repository(tmp_path)
+
+    completed = run_container_up(repository, tmp_path, head_drifts=True)
+
+    assert completed.returncode != 0
+    assert "source changed while it was archived" in completed.stderr
     assert docker_invocations(tmp_path) == []
     assert lifecycle_directories(tmp_path) == []
 
@@ -998,7 +1047,7 @@ def test_repeated_signal_during_cleanup_preserves_first_signal_status(
 
 def test_clean_tree_refusal_bites_when_its_preflight_is_removed(tmp_path: Path) -> None:
     repository = packaging_repository(tmp_path)
-    script = repository / "scripts" / "container_up.sh"
+    script = repository / "scripts" / "container_snapshot.sh"
     script.write_text(
         script.read_text(encoding="utf-8").replace(
             'git -C "${repository}" status --porcelain --untracked-files=all',
