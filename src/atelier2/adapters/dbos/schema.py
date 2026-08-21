@@ -3424,7 +3424,13 @@ def migrate_store(database_path: Path) -> StoreMigrationReport:
                         f"schema version {current} has no migration step; "
                         "this command will not alter it"
                     )
-                current_step.apply(connection)
+                try:
+                    current_step.apply(connection)
+                except sqlite3.DatabaseError as error:
+                    raise StoreMigrationRefused(
+                        f"migration from schema version {current} failed: {error}; "
+                        "this command will not alter it"
+                    ) from error
                 try:
                     fingerprint = _fingerprint_for_version(
                         connection, current_step.target_version
