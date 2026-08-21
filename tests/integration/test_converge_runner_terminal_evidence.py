@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,21 +17,33 @@ from atelier2.application.converge_runner_terminal_evidence import (
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
+    AgentAttemptFailureCode,
+    RunnerBindingConflict,
     RunnerCancellation,
     RunnerCancellationObservation,
     RunnerEvidenceAcceptancePhase,
     RunnerGenerationBinding,
     RunnerGenerationId,
+    RunnerInvocationId,
     RunnerInvocationLost,
     RunnerManifestId,
+    RunnerProviderResult,
     RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
 )
+from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.runner_terminal_evidence_codec import (
+    RunnerTerminalEvidenceRecordCorrupt,
+    RunnerTerminalEvidenceRecordMissing,
+    RunnerTerminalEvidenceRecordOversized,
+    encode_runner_terminal_evidence_record,
+)
 from atelier2.ports.agent_attempts import (
+    RunnerTerminalEvidenceAcknowledgementUnavailable,
     RunnerTerminalEvidenceCommitResult,
 )
-from tests.integration.test_runner_terminal_evidence_store import _bound
+from tests.integration.test_runner_terminal_evidence_store import _bound, _v3_armed
 from tests.scenarios.runners import FakeRunner, SimulatedRunnerCrash
 
 
@@ -73,6 +86,127 @@ def _armed_invocation_loss(
         RunnerTerminalEvidenceEnvelope(binding, invocation, RunnerInvocationLost())
     )
     return runtime, store, execution, binding, source
+
+
+@pytest.mark.parametrize(
+    ("record", "outcome"),
+    (
+        (None, RunnerTerminalEvidenceRecordMissing()),
+        (b"corrupt", RunnerTerminalEvidenceRecordCorrupt()),
+        (b"x" * 57_762, RunnerTerminalEvidenceRecordOversized()),
+    ),
+    ids=("missing", "corrupt", "oversized"),
+)
+def test_unusable_runner_records_preserve_core_and_runner_without_acknowledging(
+    tmp_path: Path,
+    record: bytes | None,
+    outcome: object,
+) -> None:
+    runtime, store, execution, binding = _bound(
+        tmp_path, f"runner/evidence/{type(outcome).__name__}"
+    )
+    runner = FakeRunner()
+    runner.accept(binding)
+    runner.retain_record(binding, record)
+    before = store.load(execution.attempt_id)
+    try:
+        assert (
+            converge_runner_terminal_evidence(execution, binding, runner, store)
+            == outcome
+        )
+        assert store.load(execution.attempt_id) == before
+        assert runner.record_bytes(binding) == record
+        assert runner.acknowledgement_count(binding) == 0
+        assert runner.garbage_collection_count(binding) == 0
+    finally:
+        runtime.close()
+
+
+def test_acknowledgement_unavailable_keeps_committed_core_and_envelope_for_retry(
+    tmp_path: Path,
+) -> None:
+    runtime, store, execution, binding, runner = _armed_invocation_loss(
+        tmp_path, "runner/evidence/ack-unavailable"
+    )
+    envelope_bytes = runner.record_bytes(binding)
+    runner.fail_next_acknowledgement(binding)
+    try:
+        assert (
+            converge_runner_terminal_evidence(execution, binding, runner, store)
+            == RunnerTerminalEvidenceAcknowledgementUnavailable()
+        )
+        committed = store.load(execution.attempt_id)
+        assert committed.runner_evidence_acceptance_phase is (
+            RunnerEvidenceAcceptancePhase.CORE_COMMITTED
+        )
+        assert runner.record_bytes(binding) == envelope_bytes
+        assert runner.garbage_collection_count(binding) == 0
+
+        converged = converge_runner_terminal_evidence(execution, binding, runner, store)
+        assert isinstance(converged, AgentAttempt)
+        assert converged.runner_evidence_acceptance_phase is (
+            RunnerEvidenceAcceptancePhase.ACKNOWLEDGED
+        )
+        assert runner.garbage_collection_count(binding) == 1
+    finally:
+        runtime.close()
+
+
+def test_valid_record_from_another_generation_conflicts_without_core_mutation(
+    tmp_path: Path,
+) -> None:
+    runtime, store, execution, binding, runner = _armed_invocation_loss(
+        tmp_path, "runner/evidence/foreign-source-binding"
+    )
+    foreign = replace(binding, generation_id=RunnerGenerationId("foreign-generation"))
+    record = encode_runner_terminal_evidence_record(
+        RunnerTerminalEvidenceEnvelope(
+            foreign,
+            RunnerInvocationId("runner-invocation-runner-generation-1"),
+            RunnerInvocationLost(),
+        )
+    )
+    runner.retain_record(binding, record)
+    before = store.load(execution.attempt_id)
+    try:
+        with pytest.raises(RunnerBindingConflict, match="requested binding"):
+            converge_runner_terminal_evidence(execution, binding, runner, store)
+
+        assert store.load(execution.attempt_id) == before
+        assert runner.record_bytes(binding) == record
+        assert runner.acknowledgement_count(binding) == 0
+    finally:
+        runtime.close()
+
+
+def test_valid_provider_bytes_refused_by_product_schema_are_still_acknowledged(
+    tmp_path: Path,
+) -> None:
+    invocation = RunnerInvocationId("runner-invocation-runner-generation-1")
+    runtime, store, execution, binding, invocation = _v3_armed(
+        tmp_path, "runner/evidence/schema-refused", invocation
+    )
+    runner = FakeRunner()
+    assert runner.accept(binding) == invocation
+    runner.observe(
+        RunnerTerminalEvidenceEnvelope(
+            binding,
+            invocation,
+            RunnerProviderResult(AgentExecutionResult(b"not-json")),
+        )
+    )
+    try:
+        converged = converge_runner_terminal_evidence(execution, binding, runner, store)
+
+        assert isinstance(converged, AgentAttempt)
+        assert converged.failure_code is AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
+        assert converged.runner_evidence_acceptance_phase is (
+            RunnerEvidenceAcceptancePhase.ACKNOWLEDGED
+        )
+        assert runner.garbage_collection_count(binding) == 1
+        assert b"not-json" not in (runner.record_bytes(binding) or b"")
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("crash_after_ack", (False, True))

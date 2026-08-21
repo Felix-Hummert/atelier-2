@@ -434,7 +434,7 @@ def test_fresh_generation_refuses_silence_wrong_fact_and_post_arm_no_launch(
     assert core.binding is first
     assert runner.accepted_generation_ids == frozenset((first.generation_id,))
     assert runner.provider_start_count == starts_before_refusal
-    assert evidence_after_refusal is evidence_before_refusal
+    assert evidence_after_refusal == evidence_before_refusal
     assert evidence_after_refusal is None or not isinstance(
         evidence_after_refusal.evidence, RunnerInvocationLost
     )
@@ -484,6 +484,6 @@ def test_late_cancel_does_not_erase_observed_completion_or_change_generation() -
         )
     )
 
-    assert after_cancel is completion
-    assert after_cancel.binding.generation_id is binding.generation_id
+    assert after_cancel == completion
+    assert after_cancel.binding.generation_id == binding.generation_id
     assert isinstance(after_cancel.evidence, RunnerProviderResult)
