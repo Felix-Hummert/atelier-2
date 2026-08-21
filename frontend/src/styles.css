@@ -109,7 +109,8 @@ button:focus-visible,
 a:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
-input:focus-visible {
+input:focus-visible,
+.workshop-stage:focus-visible {
   outline: 3px solid var(--amber);
   outline-offset: 3px;
 }

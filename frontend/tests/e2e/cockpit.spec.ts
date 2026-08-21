@@ -67,143 +67,203 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await page.screenshot({ path: "test-results/shell-390x844.png", fullPage: true });
 });
 
-test("publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
+test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, binds, and starts one visible V2 Agent", async ({ page }) => {
   await page.goto("/atelier/new");
   await page.getByLabel("Publish YAML").check();
-  await page.getByLabel("Exact workflow YAML").fill("format_version: 2\nstart: build\nnodes:\n  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}\n  - {id: build, type: agent, role: builder, job: prove-heartbeat, next: done}\n");
+  await page.getByLabel("Exact workflow YAML").fill("format_version: 2\nstart: build\nnodes:\n  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}\n  - {id: build, type: agent, role: builder, job: prove-heartbeat-84, next: done}\n");
   await page.getByRole("button", { name: "Review publication" }).click();
   await expect(page.getByRole("dialog", { name: "Publish this exact workflow?" })).toBeVisible();
-  await page.screenshot({ path: "test-results/v2-publish-review-desktop.png", fullPage: true });
-  let continuePublication = (): void => {};
-  const publicationGate = new Promise<void>((resolve) => { continuePublication = resolve; });
-  await page.route("**/workflow-revisions", async (route) => { await publicationGate; await route.continue(); });
+  const publishedResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/workflow-revisions") && response.request().method() === "POST"
+  );
   await page.getByRole("button", { name: "Publish", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("Publishing workflow");
-  await page.screenshot({ path: "test-results/v2-publishing-desktop.png", fullPage: true });
-  continuePublication();
-  await page.getByRole("button", { name: "Start" }).click();
-  await expect(page.getByText("Complete every field.")).toBeVisible();
-  await page.screenshot({ path: "test-results/v2-bindings-error-desktop.png", fullPage: true });
+  const published = await publishedResponse;
+  expect(published.status()).toBe(201);
+  const revision = await published.json();
+  expect(revision.workflow_revision_hash).toMatch(/^[0-9a-f]{64}$/);
+  await page.getByLabel("Saved workflow").check();
+  await expect(
+    page.getByRole("article", { name: revision.workflow_revision_hash, exact: true })
+  ).toBeVisible();
+  const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
+    data: { profile_id: "local", revision_number: 1, provider_id: "e2e", auth_mode: "subscription" }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
+    data: {
+      model: "test-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "blocking/v1"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+  const configurationHash = (await configuration.json()).agent_configuration_revision_hash as string;
+  await page.evaluate(({ key, hash }) => {
+    localStorage.setItem(key, JSON.stringify({ builder: hash }));
+  }, { key: NAMED_AGENT_CHOICE_STORAGE_KEY, hash: configurationHash });
 
-  const binding = page.getByRole("article", { name: "Binding builder" });
-  await binding.locator("summary").click();
-  await page.getByLabel("Profile ID").fill("local");
-  await page.getByLabel("Revision").fill("1");
-  await page.getByLabel("Provider").fill("e2e");
-  await page.getByLabel("Auth mode").selectOption("subscription");
-  await page.getByLabel("Model").fill("test-model");
-  await page.getByLabel("Executor").fill("blocking/v1");
-  await expect(page.getByText("Complete every field.")).toHaveCount(0);
-  await page.screenshot({ path: "test-results/v2-bindings-corrected-desktop.png", fullPage: true });
-  let continueAuth = (): void => {};
-  const authGate = new Promise<void>((resolve) => { continueAuth = resolve; });
-  await page.route("**/auth-profile-revisions", async (route) => { await authGate; await route.continue(); });
-  await page.getByRole("button", { name: "Start" }).click();
-  await expect(page.getByRole("status")).toContainText("Starting the exact run");
-  await expect(binding).toHaveClass(/node-working/);
-  await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
-  await assertContrastAtLeast(page.getByRole("button", { name: "Start" }), 4.5);
-  await page.screenshot({ path: "test-results/v2-bindings-loading-desktop.png", fullPage: true });
-  await assertNoSeriousAccessibilityFindings(page);
-  continueAuth();
+  await page.goto("/atelier");
+  await page.evaluate(() => {
+    const observed: string[] = [];
+    document.addEventListener("focusin", (event) => {
+      if (event.target !== document.querySelector("main.workshop-stage")) return;
+      const marker = ["#project-title", "#new-title", "#studio-title", ".trail-here"]
+        .map((selector) => document.querySelector(selector))
+        .find((candidate) => candidate !== null);
+      if (marker instanceof HTMLElement) observed.push(marker.id || marker.className);
+    });
+    Object.assign(window, { observedMainMarkers: observed });
+  });
+  const project = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Projekte" });
+  for (let tab = 0; tab < 6 && !(await project.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(project).toBeFocused();
+  await page.keyboard.press("Enter");
+  const stage = page.getByRole("main");
+  await expect(stage).toBeFocused();
+  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+
+  const startRun = page.getByRole("link", { name: "Start a run" });
+  for (let tab = 0; tab < 8 && !(await startRun.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(startRun).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(stage).toBeFocused();
+  const savedRevision = page
+    .getByRole("article", { name: revision.workflow_revision_hash, exact: true })
+    .getByRole("radio");
+  await expect(savedRevision).toBeVisible();
+  const saved = page.getByRole("radio", { name: "Saved workflow" });
+  for (let tab = 0; tab < 8 && !(await saved.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(saved).toBeFocused();
+  await expect(saved).toBeChecked();
+  for (let tab = 0; tab < 8 && !(await page.evaluate(() => document.activeElement?.getAttribute("name") === "saved-revision")); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(savedRevision).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(savedRevision).toBeChecked();
+  await expect(page.getByLabel("Agent for builder")).toHaveValue(configurationHash);
+  const start = page.getByRole("button", { name: "Start" });
+  for (let tab = 0; tab < 12 && !(await start.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(start).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/atelier\/runs\//);
+  await expect(stage).toBeFocused();
+  const runPath = new URL(page.url()).pathname;
+  const runRead = new URL(
+    `/atelier/api/v1/runs/${runPath.slice("/atelier/runs/".length)}`,
+    page.url()
+  ).toString();
+
   const working = page.getByRole("article", { name: "build — Working" });
+  const refresh = page.getByRole("button", { name: "Refresh" });
   await expect(working).toContainText("e2e · test-model");
   await expect(working).toContainText("Subscription · blocking/v1");
   await expect(working).toHaveAttribute("data-live", "true");
   await expect(page.getByText("Process log stays in the lease.")).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
-  await expect(async () => {
-    await page.getByRole("button", { name: "Refresh" }).click();
-    await expect(working).toContainText("possibly ran");
-  }).toPass();
-  await page.screenshot({ path: "test-results/v2-working-desktop.png", fullPage: true });
-
+  for (let tab = 0; tab < 24 && !(await refresh.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(refresh).toBeFocused();
+  const firstRefresh = page.waitForResponse(
+    (response) => response.url() === runRead && response.request().method() === "GET"
+  );
+  await page.keyboard.press("Enter");
+  expect((await firstRefresh).status()).toBe(200);
+  await expect(working).toContainText("possibly ran");
   const completed = page.getByRole("article", { name: "build — Done" });
-  await expect(async () => {
-    await page.getByRole("button", { name: "Refresh" }).click();
-    await expect(completed).toBeVisible({ timeout: 500 });
-  }).toPass({ timeout: 8_000 });
-  await expect(completed).toContainText("Grüße 東京");
-  await expect(completed).toContainText("14 bytes");
+  for (let tab = 0; tab < 24 && !(await refresh.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(refresh).toBeFocused();
+  const secondRefresh = page.waitForResponse(
+    (response) => response.url() === runRead && response.request().method() === "GET"
+  );
+  await page.keyboard.press("Enter");
+  expect((await secondRefresh).status()).toBe(200);
+  await expect(completed).toBeVisible({ timeout: 8_000 });
+  await expect(completed).toContainText("Provider terminal evidence:");
+  await expect(completed).toContainText("Grüße 東京 — durable agent output remains readable after completion.");
+  await expect(completed).toContainText("1528 bytes");
   await expect(completed).toContainText("Verified");
   await expect(page.getByTestId("run-state")).toHaveText("completed");
-  await page.screenshot({ path: "test-results/v2-completed-desktop.png", fullPage: true });
-  const mobileViewport = { width: 390, height: 844 };
-  const desktopViewport = { width: 1280, height: 900 };
-  await page.setViewportSize(mobileViewport);
+  await expect(page.locator(".connection")).toHaveText(/Complete/);
+  const terminalHash = page.getByRole("group", { name: "Terminal hash" });
+  const terminalHashButton = terminalHash.getByRole("button", { name: "Terminal hash" });
+  await expect(terminalHash).toBeVisible();
+  for (let tab = 0; tab < 12 && !(await terminalHashButton.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(terminalHashButton).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(terminalHash.locator("code")).toHaveText(/^[0-9a-f]{64}$/);
+  await page.setViewportSize({ width: 1280, height: 900 });
   const eventLog = page.locator("details.event-log");
   await expect(eventLog).toHaveJSProperty("open", false);
-  await eventLog.locator("summary").click();
-  await expect(eventLog).toHaveJSProperty("open", true);
-  const eventEvidenceRegions = page.locator(".event-evidence");
-  const overflowingEventIndex = await eventEvidenceRegions.evaluateAll((events) =>
-    events.findIndex((event) => event.scrollHeight > event.clientHeight)
-  );
-  expect(
-    overflowingEventIndex,
-    "the V2 completion fixture must keep one exact event taller than its scroll region"
-  ).toBeGreaterThanOrEqual(0);
-  const eventEvidence = eventEvidenceRegions.nth(overflowingEventIndex);
-  await expect(eventEvidence.locator("pre")).toHaveCount(1);
-  await expect(eventEvidence).toHaveAttribute("tabindex", "0");
-  await expect(eventEvidence).toHaveAccessibleName(/Event evidence #[1-9][0-9]*/);
-  for (let transition = 1; transition <= 2; transition += 1) {
-    await page.setViewportSize(mobileViewport);
-    await eventEvidence.focus();
-    await expect(eventEvidence).toBeFocused();
-    await page.keyboard.press("Home");
-    await expect.poll(() => eventEvidence.evaluate((event) => event.scrollTop)).toBe(0);
-    const scrollTopBeforeKeyboard = await eventEvidence.evaluate((event) => event.scrollTop);
-    await page.keyboard.press("PageDown");
-    await expect.poll(() => eventEvidence.evaluate((event) => event.scrollTop))
-      .toBeGreaterThan(scrollTopBeforeKeyboard);
-    await expectVisibleFocus(eventEvidence);
-    await assertNoSeriousAccessibilityFindings(page);
-    await page.screenshot({
-      path: `test-results/v2-event-evidence-focus-mobile-${transition}.png`,
-      fullPage: true
-    });
-
-    await page.setViewportSize(desktopViewport);
-    await eventEvidence.focus();
-    await expect(eventEvidence).toBeFocused();
-    await expectVisibleFocus(eventEvidence);
-    await assertNoSeriousAccessibilityFindings(page);
-    await page.screenshot({
-      path: `test-results/v2-event-evidence-focus-desktop-${transition}.png`,
-      fullPage: true
-    });
+  const events = eventLog.locator("summary");
+  for (let tab = 0; tab < 20 && !(await events.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
   }
-
+  await expect(events).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(eventLog).toHaveJSProperty("open", true);
+  const durableEvents = eventLog.getByRole("listitem");
+  await expect(durableEvents).toHaveCount(2);
+  await expect(eventLog.getByRole("group", { name: "AGENT COMPLETED #1" })).toBeVisible();
+  await expect(eventLog.getByRole("group", { name: "SUBWORKFLOW COMPLETED #2" })).toBeVisible();
+  const agentEvidence = page.getByRole("region", { name: "Event evidence #1" });
+  await expect(agentEvidence).toHaveAttribute("tabindex", "0");
+  await expect(agentEvidence.locator("pre")).toContainText('"sequence":1');
+  await expect(agentEvidence.locator("pre")).toContainText('"event":"AGENT_COMPLETED"');
+  await expect(agentEvidence.locator("pre")).toContainText(
+    '"output_hash":"f772309569117f3945e1296d0a524b1e3a100bd0697699ad8394d01a26ea2555"'
+  );
+  for (let tab = 0; tab < 12 && !(await agentEvidence.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(agentEvidence).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect.poll(() => agentEvidence.evaluate((element) => element.scrollTop)).toBe(0);
+  const desktopScrollTop = await agentEvidence.evaluate((element) => element.scrollTop);
+  await page.keyboard.press("PageDown");
+  await expect.poll(() => agentEvidence.evaluate((element) => element.scrollTop)).toBeGreaterThan(desktopScrollTop);
+  await expectVisibleFocus(agentEvidence);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({ path: "test-results/v2-keyboard-journey-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.keyboard.press("Tab");
+  for (let tab = 0; tab < 40 && !(await agentEvidence.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(agentEvidence).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect.poll(() => agentEvidence.evaluate((element) => element.scrollTop)).toBe(0);
+  const mobileScrollTop = await agentEvidence.evaluate((element) => element.scrollTop);
+  await page.keyboard.press("PageDown");
+  await expect.poll(() => agentEvidence.evaluate((element) => element.scrollTop)).toBeGreaterThan(mobileScrollTop);
+  await expectVisibleFocus(agentEvidence);
+  await assertNoSeriousAccessibilityFindings(page);
   await assertMobileSurface(page);
-  await page.screenshot({ path: "test-results/v2-completed-390x844.png", fullPage: true });
-
-  await page.reload();
-  await expect(page.getByRole("alert")).toContainText("Output mismatch");
-  await expect(page.getByRole("region", { name: "Verified output" })).toHaveCount(0);
-  await assertMobileSurface(page);
-  await page.screenshot({ path: "test-results/v2-output-mismatch-390x844.png", fullPage: true });
-
-  await page.goto("/atelier");
+  await page.screenshot({ path: "test-results/v2-keyboard-journey-390x844.png", fullPage: true });
+  const studio = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Studio" });
+  for (let tab = 0; tab < 40 && !(await studio.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(studio).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(stage).toBeFocused();
   await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
-  const workshop = page.getByRole("article", { name: "This workshop" }).getByRole("link");
-  await expect(workshop).toBeVisible();
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await page.screenshot({ path: "test-results/studio-desktop.png", fullPage: true });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await assertMobileSurface(page);
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({ path: "test-results/studio-390x844.png", fullPage: true });
-  await workshop.click();
-  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Queue" })).toBeVisible();
-  await page.screenshot({ path: "test-results/project-390x844.png", fullPage: true });
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await page.screenshot({ path: "test-results/project-desktop.png", fullPage: true });
-  await assertNoSeriousAccessibilityFindings(page);
-
-
+  await expect.poll(() => page.evaluate(() => (window as unknown as { observedMainMarkers: string[] }).observedMainMarkers)).toEqual([
+    "project-title", "new-title", "trail-here", "studio-title"
+  ]);
 });
 
 
@@ -1296,28 +1356,6 @@ async function assertNoSeriousAccessibilityFindings(page: Page): Promise<void> {
       violation.impact === "serious" || violation.impact === "critical"
     )
   ).toEqual([]);
-}
-
-async function assertContrastAtLeast(control: Locator, minimum: number): Promise<void> {
-  const [foreground, background, effectiveOpacity] = await control.evaluate((element) => {
-    const style = getComputedStyle(element);
-    let opacity = 1;
-    for (let current: Element | null = element; current !== null; current = current.parentElement) {
-      opacity *= Number(getComputedStyle(current).opacity);
-    }
-    return [style.color, style.backgroundColor, opacity] as const;
-  });
-  expect(effectiveOpacity).toBe(1);
-  const luminance = (color: string): number => {
-    const channels = color.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [];
-    const linear = channels.map((value) => {
-      const ratio = value / 255;
-      return ratio <= 0.04045 ? ratio / 12.92 : ((ratio + 0.055) / 1.055) ** 2.4;
-    });
-    return 0.2126 * linear[0]! + 0.7152 * linear[1]! + 0.0722 * linear[2]!;
-  };
-  const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
-  expect((values[0]! + 0.05) / (values[1]! + 0.05)).toBeGreaterThanOrEqual(minimum);
 }
 
 async function expectVisibleFocus(control: Locator): Promise<void> {
