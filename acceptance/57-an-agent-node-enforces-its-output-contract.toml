@@ -69,7 +69,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/57"
 #       sentence declared below: a fake process per adapter (claude, codex,
 #       grok) proves they take the same success-write seam and the same
 #       `output-schema-refused` token. A canary is still no construct of this
-#       catalog -- `docs/COORDINATION.md` owns it as an operator gate -- and
+#       catalog -- the operator owns it as a gate -- and
 #       stays named, not built.
 #
 # The first sentence declared below is 1a, and 1a is EXPRESSLY NOT a substitute
