@@ -298,6 +298,8 @@ verify_installed_configuration() {
   [[ "$(docker network inspect --format '{{.Name}}' "${record[network_name]}")" == "${record[network_name]}" ]] || return 1
   [[ "$(docker network inspect --format '{{.Id}}' "${record[network_name]}")" == "${record[network_id]}" ]] || return 1
   resource_identity_is_exact network "${record[network_name]}" || return 1
+  [[ "$(docker_container_field '{{len .NetworkSettings.Networks}}')" == "1" ]] || return 1
+  [[ "$(docker_container_field "{{with index .NetworkSettings.Networks \"${record[network_name]}\"}}{{.NetworkID}}{{end}}")" == "${record[network_id]}" ]] || return 1
   [[ "$(configuration_sha256)" == "${record[configuration_sha256]}" ]]
 }
 

@@ -160,6 +160,10 @@ if arguments and arguments[0] == "inspect":
         print("127.0.0.1:9999" if drift == "port" else "127.0.0.1:8422")
     elif "range .Mounts" in template:
         print("bind||/var/lib/atelier2/store|true" if drift == "mount" else f"volume|{{state['project']}}_store|/var/lib/atelier2/store|true")
+    elif template == "{{len .NetworkSettings.Networks}}":
+        print("0" if drift == "network-detached" else "2" if drift == "network-extra" else "1")
+    elif "index .NetworkSettings.Networks" in template:
+        print("" if drift == "network-wrong" else "d" * 64 if drift == "network-attachment-id" else NETWORK_ID)
     elif template == "{{json .Config}}":
         configuration = {{"image": IMAGE_ID, "project": state["project"], "source": state["source_commit"]}}
         if drift == "config": configuration["changed"] = True
@@ -538,6 +542,10 @@ def test_dirty_source_refuses_before_docker_and_durable_intent(tmp_path: Path) -
         "port",
         "mount",
         "network",
+        "network-detached",
+        "network-wrong",
+        "network-extra",
+        "network-attachment-id",
         "config",
     ),
 )
@@ -550,11 +558,14 @@ def test_identity_drift_refuses_status_and_exact_operations(
 
     status = run_live(repository, tmp_path, "status", ATELIER2_TEST_DRIFT=drift)
     stopped = run_live(repository, tmp_path, "stop", ATELIER2_TEST_DRIFT=drift)
+    started = run_live(repository, tmp_path, "start", ATELIER2_TEST_DRIFT=drift)
 
     assert status.returncode == 0
     assert status.stdout == "DRIFTED\n"
     assert stopped.returncode != 0
     assert "drifted" in stopped.stderr
+    assert started.returncode != 0
+    assert "drifted" in started.stderr
     assert docker_mutations(docker_invocations(tmp_path)) == []
 
 
