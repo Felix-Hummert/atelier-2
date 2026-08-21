@@ -152,6 +152,22 @@ describe("the project answers what is happening here", () => {
     }
   });
 
+  it("shows every grouped run's owned standing mark and word", async () => {
+    openProject([
+      startedRun({ public_run_reference: "run1.YQ", run_id: "running" }),
+      waitingInputRun({ public_run_reference: "run1.Yg", run_id: "waiting" }),
+      { ...startedRun({ public_run_reference: "run1.Yw", run_id: "failed" }), state: "FAILED" },
+      completedRun({ public_run_reference: "run1.ZA", run_id: "done" })
+    ]);
+
+    const expectedStandings: Array<[string, string]> = [
+      ["running", "▲Running"], ["waiting", "⬢Waiting for you"], ["failed", "◇Failed"], ["done", "●Done"]
+    ];
+    for (const [run, standing] of expectedStandings) {
+      expect((await screen.findByRole("link", { name: new RegExp(run) })).textContent).toContain(standing);
+    }
+  });
+
   it("leads down into a run of this project", async () => {
     openProject([startedRun()]);
 
@@ -336,13 +352,11 @@ describe("the queue names what does not exist yet", () => {
 
     const queue = await screen.findByRole("region", { name: "Queue" });
 
-    expect(
-      within(queue).getByText("This project has no priority and no assignment yet.").isConnected
-    ).toBe(true);
+    expect(within(queue).getByText("No priority or assignment.").isConnected).toBe(true);
     expect(within(queue).queryByText(/order|first|next|schedul|priorit\w+ is/i)).toBeNull();
     expect(screen.getAllByRole("link", { name: "Start a run" })).toHaveLength(1);
 
-    await fireEvent.click(within(queue).getByRole("link", { name: "Start a run" }));
+    await fireEvent.click(screen.getByRole("link", { name: "Start a run" }));
 
     expect((await screen.findByRole("heading", { name: "Choose a workflow" })).isConnected).toBe(true);
   });
@@ -353,6 +367,17 @@ describe("the queue names what does not exist yet", () => {
 
     expect(within(queue).queryByRole("button")).toBeNull();
     expect(screen.queryByRole("region", { name: /Rules|Sources|Settings|Library/ })).toBeNull();
+  });
+
+  it("keeps existing runs before the subordinate queue and occupancy controls", async () => {
+    openProject([startedRun()]);
+
+    const runGroup = await screen.findByRole("region", { name: "Running" });
+    const queue = screen.getByRole("region", { name: "Queue" });
+    const occupancy = screen.getByRole("region", { name: "Occupancy" });
+
+    expect(runGroup.compareDocumentPosition(queue) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(runGroup.compareDocumentPosition(occupancy) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 });
 

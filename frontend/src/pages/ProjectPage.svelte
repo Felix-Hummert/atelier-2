@@ -13,7 +13,9 @@
   } from "../api/client";
   import Breadcrumb from "../components/Breadcrumb.svelte";
   import ReadState from "../components/ReadState.svelte";
+  import { wrapDisplayCopy } from "../lib/displayCopy";
   import { THE_ONE_PROJECT } from "../lib/project";
+  import { projectPageCopy } from "../lib/projectPageCopy";
   import {
     beginRead,
     confirmRead,
@@ -351,16 +353,61 @@
 
   <header class="page-header">
     <div>
-      <p class="eyebrow">Project</p>
+      <p class="eyebrow">{wrapDisplayCopy(projectPageCopy.eyebrow)}</p>
       <h1 id="project-title">{THE_ONE_PROJECT}</h1>
     </div>
+    <a class="button primary" href="/atelier/new" aria-label={wrapDisplayCopy(projectPageCopy.startRun)} onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>{wrapDisplayCopy(projectPageCopy.start)}</a>
   </header>
 
   <ReadState read={project} label="project runs" onRetry={() => { void load(); }} />
 
+  {#if project.confirmed !== null}
+    {#if groups.length === 0}
+      <p class="muted">{wrapDisplayCopy(projectPageCopy.noRuns)}</p>
+    {:else}
+      <p id="run-sort" class="muted">{wrapDisplayCopy(projectPageCopy.newestFirst)}</p>
+    {/if}
+    {#each groups as group (group.standing)}
+      <section class="run-group" aria-labelledby={`group-${group.standing}`} aria-describedby="run-sort">
+        <h2 class="section-title" id={`group-${group.standing}`}>{standingWords[group.standing]}</h2>
+        <ul class="card-list">
+          {#each group.runs as run (run.public_run_reference)}
+            {@const workflowName = listedWorkflowName(run, workflowNames)}
+            {@const when = listedWhen(run)}
+            <li>
+              <a class="run-card" href={runPath(run.public_run_reference)} onclick={(event) => { event.preventDefault(); navigate(runPath(run.public_run_reference)); }}>
+                <div class="run-card-main">
+                  <strong>{run.run_id}</strong>
+                  <span class="run-card-assignment">
+                    {workflowName === null ? THE_ONE_PROJECT : `${THE_ONE_PROJECT} · ${workflowName}`}
+                  </span>
+                </div>
+                <span class={`state-label state-${group.standing}`}><span aria-hidden="true">{standingMarks[group.standing]}</span>{standingWords[group.standing]}</span>
+                {#if group.standing === "waiting"}
+                  <span class="state-label state-waiting">{humanMove(run.state)}</span>
+                {/if}
+                {#if when !== null}
+                  <span class="run-card-when">
+                    <time datetime={when.datetime}>{when.exact}</time>
+                    <span>{when.age}</span>
+                  </span>
+                {/if}
+              </a>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/each}
+  {/if}
+
+  <section class="queue" aria-labelledby="queue-title">
+    <h2 id="queue-title">{wrapDisplayCopy(projectPageCopy.queueTitle)}</h2>
+    <p>{wrapDisplayCopy(projectPageCopy.queueAbsence)}</p>
+  </section>
+
   <section class="occupancy-editor" aria-labelledby="occupancy-title">
-    <p class="eyebrow">Project defaults</p>
-    <h2 id="occupancy-title">Occupancy</h2>
+    <p class="eyebrow">{wrapDisplayCopy(projectPageCopy.occupancyEyebrow)}</p>
+    <h2 id="occupancy-title">{wrapDisplayCopy(projectPageCopy.occupancyTitle)}</h2>
     {#if frozenWrite === null}
       {#if selectedWorkflowHash === ""}
         <ReadState read={occupancyEditor} label="project occupancy" onRetry={() => { void loadOccupancyEditor(); }} />
@@ -450,47 +497,4 @@
     {/if}
   </section>
 
-  <section class="queue" aria-labelledby="queue-title">
-    <h2 id="queue-title">Queue</h2>
-    <p>This project has no priority and no assignment yet.</p>
-    <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>Start a run</a>
-  </section>
-
-  {#if project.confirmed !== null}
-    {#if groups.length === 0}
-      <p class="muted">No runs here yet.</p>
-    {:else}
-      <p id="run-sort" class="muted">Newest first.</p>
-    {/if}
-    {#each groups as group (group.standing)}
-      <section class="run-group" aria-labelledby={`group-${group.standing}`} aria-describedby="run-sort">
-        <h2 class="section-title" id={`group-${group.standing}`}>{standingWords[group.standing]}</h2>
-        <ul class="card-list">
-          {#each group.runs as run (run.public_run_reference)}
-            {@const workflowName = listedWorkflowName(run, workflowNames)}
-            {@const when = listedWhen(run)}
-            <li>
-              <a class="run-card" href={runPath(run.public_run_reference)} onclick={(event) => { event.preventDefault(); navigate(runPath(run.public_run_reference)); }}>
-                <div class="run-card-main">
-                  <strong>{run.run_id}</strong>
-                  <span class="run-card-assignment">
-                    {workflowName === null ? THE_ONE_PROJECT : `${THE_ONE_PROJECT} · ${workflowName}`}
-                  </span>
-                </div>
-                {#if group.standing === "waiting"}
-                  <span class="state-label state-waiting"><span aria-hidden="true">{standingMarks.waiting}</span>{humanMove(run.state)}</span>
-                {/if}
-                {#if when !== null}
-                  <span class="run-card-when">
-                    <time datetime={when.datetime}>{when.exact}</time>
-                    <span>{when.age}</span>
-                  </span>
-                {/if}
-              </a>
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/each}
-  {/if}
 </section>
