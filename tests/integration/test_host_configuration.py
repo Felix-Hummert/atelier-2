@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -38,6 +42,7 @@ from atelier2.contracts.host_configuration import (
     PROJECT_ROOT_MISSING,
     PROJECT_UNKNOWN,
     HostConfigurationUnreadable,
+    HostProjectRootRevisionHash,
     OccupancyBinding,
     OccupancyRevision,
     OccupancyRevisionConflict,
@@ -45,6 +50,7 @@ from atelier2.contracts.host_configuration import (
     ProjectRootBytesDisagree,
     ProjectRootMissing,
     ProjectRootRevision,
+    ProjectRootRevisionConflict,
     ProjectUnknown,
 )
 from atelier2.host import main
@@ -114,6 +120,140 @@ def test_the_latest_revision_is_the_mapping_the_runtime_reads(tmp_path: Path) ->
                 )
                 == 2
             )
+    finally:
+        engine.dispose()
+
+
+def test_concurrent_different_project_roots_append_every_revision(
+    tmp_path: Path,
+) -> None:
+    parallelism = 8
+    roots = tuple(tmp_path / f"project-{index}" for index in range(parallelism))
+    for root in roots:
+        root.mkdir()
+    engine = opened_channel(tmp_path)
+    start_barrier = Barrier(parallelism)
+    nontransactional_read_barrier = Barrier(parallelism)
+
+    def align_nontransactional_latest_reads(
+        connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: object,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        raw_connection = connection.connection.driver_connection
+        if (
+            "FROM host_project_root_revisions" in statement
+            and not raw_connection.in_transaction
+        ):
+            nontransactional_read_barrier.wait(timeout=5)
+
+    def append(root: Path) -> ProjectRootRevision:
+        start_barrier.wait(timeout=5)
+        return append_project_root(engine, ProjectId("studio"), root)
+
+    event.listen(engine, "before_cursor_execute", align_nontransactional_latest_reads)
+    try:
+        try:
+            with ThreadPoolExecutor(max_workers=parallelism) as pool:
+                revisions = tuple(pool.map(append, roots))
+        finally:
+            event.remove(
+                engine, "before_cursor_execute", align_nontransactional_latest_reads
+            )
+        with engine.connect() as connection:
+            stored_count = connection.scalar(
+                sa.select(sa.func.count()).select_from(host_project_root_revisions)
+            )
+    finally:
+        engine.dispose()
+
+    assert sorted(revision.revision_number for revision in revisions) == list(
+        range(1, parallelism + 1)
+    )
+    assert {revision.root_path for revision in revisions} == set(roots)
+    assert stored_count == parallelism
+
+
+def test_concurrent_identical_project_roots_converge_on_one_revision(
+    tmp_path: Path,
+) -> None:
+    parallelism = 8
+    root = tmp_path / "project"
+    root.mkdir()
+    engine = opened_channel(tmp_path)
+    start_barrier = Barrier(parallelism)
+
+    def append(_worker: int) -> ProjectRootRevision:
+        start_barrier.wait(timeout=5)
+        return append_project_root(engine, ProjectId("studio"), root)
+
+    try:
+        with ThreadPoolExecutor(max_workers=parallelism) as pool:
+            revisions = tuple(pool.map(append, range(parallelism)))
+        with engine.connect() as connection:
+            stored_count = connection.scalar(
+                sa.select(sa.func.count()).select_from(host_project_root_revisions)
+            )
+    finally:
+        engine.dispose()
+
+    assert (
+        revisions == (ProjectRootRevision(ProjectId("studio"), 1, root),) * parallelism
+    )
+    assert stored_count == 1
+
+
+def test_a_project_root_identity_conflict_is_atomic(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    conflicting_root = tmp_path / "conflicting"
+    first_root.mkdir()
+    conflicting_root.mkdir()
+    engine = opened_channel(tmp_path)
+    project_id = ProjectId("studio")
+    first = ProjectRootRevision(project_id, 1, first_root)
+
+    try:
+        publish_project_root_revision(engine, first)
+        with pytest.raises(ProjectRootRevisionConflict):
+            publish_project_root_revision(
+                engine, ProjectRootRevision(project_id, 1, conflicting_root)
+            )
+
+        assert latest_project_root_revision(engine, project_id) == first
+    finally:
+        engine.dispose()
+
+
+def test_a_project_root_hash_collision_is_atomic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collision = HostProjectRootRevisionHash("ab" * 32)
+
+    def collide(
+        _hash_type: type[HostProjectRootRevisionHash], _payload: bytes
+    ) -> HostProjectRootRevisionHash:
+        return collision
+
+    monkeypatch.setattr(HostProjectRootRevisionHash, "of", classmethod(collide))
+    first_root = tmp_path / "first"
+    colliding_root = tmp_path / "colliding"
+    first_root.mkdir()
+    colliding_root.mkdir()
+    engine = opened_channel(tmp_path)
+    project_id = ProjectId("studio")
+    first = ProjectRootRevision(project_id, 1, first_root)
+
+    try:
+        publish_project_root_revision(engine, first)
+        with pytest.raises(
+            HostConfigurationUnreadable, match=HOST_CONFIGURATION_UNREADABLE
+        ):
+            append_project_root(engine, project_id, colliding_root)
+
+        assert latest_project_root_revision(engine, project_id) == first
     finally:
         engine.dispose()
 
