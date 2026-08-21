@@ -61,6 +61,7 @@ INSTALLED_HOST_PROBE = (
     "    && atelier2 --help >/dev/null"
 )
 ENTRYPOINT = 'ENTRYPOINT ["/app/container_serve.sh"]'
+TEARDOWN_ARGUMENTS = ["down", "--volumes", "--rmi", "local", "--remove-orphans"]
 
 
 def final_user(recipe: str) -> str:
@@ -490,6 +491,23 @@ def lifecycle_directories(tmp_path: Path) -> list[Path]:
     return list(tmp_path.glob("atelier2-lifecycle.*"))
 
 
+def assert_exact_candidate_teardown(tmp_path: Path) -> list[list[str]]:
+    invocations = docker_invocations(tmp_path)
+    project = project_from(invocations[0])
+    assert all(project_from(arguments) == project for arguments in invocations)
+    assert invocations[-1][-5:] == TEARDOWN_ARGUMENTS
+    assert not snapshot_from(invocations[0]).exists()
+    assert lifecycle_directories(tmp_path) == []
+    return invocations
+
+
+def wait_until_exists(path: Path, message: str) -> None:
+    deadline = time.monotonic() + 5
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert path.exists(), message
+
+
 def test_recipe_is_provider_free_and_unprivileged() -> None:
     assert_provider_free_recipe(DOCKERFILE.read_text(encoding="utf-8"))
 
@@ -741,12 +759,7 @@ def test_clean_tree_starts_one_random_project_and_prints_scoped_teardown(
         "-f",
         command[7],
     ]
-    assert command[8:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
+    assert command[8:] == TEARDOWN_ARGUMENTS + [
         "&&",
         "rm",
         "-f",
@@ -825,85 +838,107 @@ def test_teardown_descriptor_renders_only_the_candidate_resources(
     assert set(document["services"]["serve"]["networks"]) == {"serve"}
 
 
-def test_dirty_or_untracked_source_is_refused_before_docker(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("settings", "refusal", "make_source_dirty"),
+    (
+        ({}, DIRTY_TREE_REFUSAL, True),
+        (
+            {"git_status_fails": True},
+            "container snapshot: source status is unavailable",
+            False,
+        ),
+        ({"archive_fails": True}, None, False),
+        ({"head_drifts": True}, "source changed while it was archived", False),
+    ),
+    ids=(
+        "dirty-or-untracked-source",
+        "source-status-unavailable",
+        "archive-failure",
+        "head-drift-during-archive",
+    ),
+)
+def test_snapshot_refusals_leave_no_docker_or_lifecycle_state(
+    tmp_path: Path,
+    settings: dict[str, bool],
+    refusal: str | None,
+    make_source_dirty: bool,
+) -> None:
     repository = packaging_repository(tmp_path)
-    (repository / "ambient.txt").write_text("not committed\n", encoding="utf-8")
+    if make_source_dirty:
+        (repository / "ambient.txt").write_text("not committed\n", encoding="utf-8")
 
-    completed = run_container_up(repository, tmp_path)
+    completed = run_container_up(repository, tmp_path, **settings)
 
     assert completed.returncode != 0
-    assert DIRTY_TREE_REFUSAL in completed.stderr
-    assert docker_invocations(tmp_path) == []
-
-
-def test_failed_start_tears_down_only_the_generated_project(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, port_status=23)
-
-    assert completed.returncode == 23
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert all(project_from(arguments) == project for arguments in invocations)
-    assert invocations[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-    assert not snapshot_from(invocations[0]).exists()
-    assert lifecycle_directories(tmp_path) == []
-
-
-def test_unhealthy_or_exited_wait_refuses_and_tears_down(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, up_status=42)
-
-    assert completed.returncode == 42
-    assert docker_invocations(tmp_path)[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-
-
-def test_status_failure_refuses_before_snapshot_or_docker(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, git_status_fails=True)
-
-    assert completed.returncode != 0
-    assert "container snapshot: source status is unavailable" in completed.stderr
-    assert docker_invocations(tmp_path) == []
-
-
-def test_archive_failure_removes_early_lifecycle_state(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, archive_fails=True)
-
-    assert completed.returncode != 0
+    if refusal is not None:
+        assert refusal in completed.stderr
     assert docker_invocations(tmp_path) == []
     assert lifecycle_directories(tmp_path) == []
 
 
-def test_head_drift_during_archive_refuses_before_docker(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("settings", "expected_status", "refusal"),
+    (
+        ({"port_status": 23}, 23, None),
+        ({"up_status": 42}, 42, None),
+        ({"port_output": ""}, None, "invalid loopback port"),
+        ({"port_output": "0.0.0.0:49152"}, None, "invalid loopback port"),
+        ({"port_output": "127.0.0.1:0"}, None, "invalid loopback port"),
+        ({"port_output": "127.0.0.1:65536"}, None, "invalid loopback port"),
+        ({"port_output": "127.0.0.1:49152 extra"}, None, "invalid loopback port"),
+    ),
+    ids=(
+        "port-discovery-failure",
+        "unhealthy-or-exited-wait",
+        "empty-port",
+        "non-loopback-port",
+        "zero-port",
+        "out-of-range-port",
+        "extra-port-output",
+    ),
+)
+def test_candidate_refusals_teardown_only_the_generated_project(
+    tmp_path: Path,
+    settings: dict[str, int | str],
+    expected_status: int | None,
+    refusal: str | None,
+) -> None:
     repository = packaging_repository(tmp_path)
 
-    completed = run_container_up(repository, tmp_path, head_drifts=True)
+    completed = run_container_up(repository, tmp_path, **settings)
 
-    assert completed.returncode != 0
-    assert "source changed while it was archived" in completed.stderr
-    assert docker_invocations(tmp_path) == []
-    assert lifecycle_directories(tmp_path) == []
+    if expected_status is not None:
+        assert completed.returncode == expected_status
+    else:
+        assert completed.returncode != 0
+    if refusal is not None:
+        assert refusal in completed.stderr
+    assert_exact_candidate_teardown(tmp_path)
 
 
-def test_snapshot_uses_committed_bytes_after_preflight(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("use_mutable_checkout", "expected_context"),
+    (
+        pytest.param(False, "committed\n", id="committed-archive"),
+        pytest.param(
+            True, "changed after preflight\n", id="mutable-checkout-regression"
+        ),
+    ),
+)
+def test_snapshot_uses_committed_bytes_after_preflight(
+    tmp_path: Path, use_mutable_checkout: bool, expected_context: str
+) -> None:
     repository = packaging_repository(tmp_path)
+    if use_mutable_checkout:
+        script = repository / "scripts" / "container_up.sh"
+        script.write_text(
+            script.read_text(encoding="utf-8").replace(
+                '-f "${snapshot}/compose.yaml"', '-f "${repository}/compose.yaml"'
+            ),
+            encoding="utf-8",
+        )
+        run_git(repository, "add", "scripts/container_up.sh")
+        run_git(repository, "commit", "--quiet", "--message", "break snapshot context")
 
     completed = run_container_up(repository, tmp_path, mutate_after_preflight=True)
 
@@ -913,143 +948,97 @@ def test_snapshot_uses_committed_bytes_after_preflight(tmp_path: Path) -> None:
     ) == "changed after preflight\n"
     assert (tmp_path / "docker-context" / "frontend" / "marker.txt").read_text(
         encoding="utf-8"
-    ) == "committed\n"
-    assert not snapshot_from(docker_invocations(tmp_path)[0]).exists()
-
-
-def test_snapshot_proof_bites_when_build_context_uses_mutable_checkout(
-    tmp_path: Path,
-) -> None:
-    repository = packaging_repository(tmp_path)
-    script = repository / "scripts" / "container_up.sh"
-    script.write_text(
-        script.read_text(encoding="utf-8").replace(
-            '-f "${snapshot}/compose.yaml"', '-f "${repository}/compose.yaml"'
-        ),
-        encoding="utf-8",
-    )
-    run_git(repository, "add", "scripts/container_up.sh")
-    run_git(repository, "commit", "--quiet", "--message", "break snapshot context")
-
-    completed = run_container_up(repository, tmp_path, mutate_after_preflight=True)
-
-    assert completed.returncode == 0, completed.stderr
-    assert (tmp_path / "docker-context" / "frontend" / "marker.txt").read_text(
-        encoding="utf-8"
-    ) == "changed after preflight\n"
+    ) == expected_context
+    if not use_mutable_checkout:
+        assert not snapshot_from(docker_invocations(tmp_path)[0]).exists()
 
 
 @pytest.mark.parametrize(
-    "address",
-    ("", "0.0.0.0:49152", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:49152 extra"),
-)
-def test_invalid_port_output_refuses_and_tears_down(
-    tmp_path: Path, address: str
-) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(repository, tmp_path, port_output=address)
-
-    assert completed.returncode != 0
-    assert "invalid loopback port" in completed.stderr
-    assert docker_invocations(tmp_path)[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-
-
-def test_cleanup_failure_prints_replayable_exact_teardown(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path, "repository with ; metacharacters")
-
-    completed = run_container_up(repository, tmp_path, port_status=23, down_fails=True)
-
-    assert completed.returncode == 23
-    command = completed.stderr.split("container up: cleanup failed; run: ", 1)[
-        1
-    ].strip()
-    parsed = shlex.split(command)
-    down = parsed.index("down")
-    assert parsed[down : down + 5] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-    descriptor = Path(parsed[parsed.index("-f") + 1])
-    assert descriptor.is_file()
-    environment = container_environment(repository, tmp_path)
-    environment.pop(SOURCE_COMMIT, None)
-    environment.pop(SOURCE_TREE, None)
-    replay = subprocess.run(["bash", "-c", command], env=environment, check=False)
-    assert replay.returncode == 0
-    assert not descriptor.exists()
-    assert not descriptor.parent.exists()
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert {project_from(arguments) for arguments in invocations} == {project}
-
-
-def test_descriptor_removal_failure_keeps_recovery_state(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path)
-
-    completed = run_container_up(
-        repository, tmp_path, port_status=23, descriptor_remove_fails=True
-    )
-
-    assert completed.returncode == 23
-    command = completed.stderr.split(
-        "container up: lifecycle descriptor cleanup failed; run: ", 1
-    )[1].strip()
-    descriptor = Path(shlex.split(command)[7])
-    assert descriptor.is_file()
-    assert not snapshot_from(docker_invocations(tmp_path)[0]).exists()
-    descriptor.parent.chmod(0o700)
-    environment = container_environment(repository, tmp_path)
-    environment.pop(SOURCE_COMMIT, None)
-    environment.pop(SOURCE_TREE, None)
-    replay = subprocess.run(["bash", "-c", command], env=environment, check=False)
-    assert replay.returncode == 0
-    assert not descriptor.exists()
-    assert not descriptor.parent.exists()
-
-
-def test_printed_stop_command_replays_without_ambient_identity(tmp_path: Path) -> None:
-    repository = packaging_repository(tmp_path, "repository with ; metacharacters")
-    completed = run_container_up(repository, tmp_path)
-
-    assert completed.returncode == 0, completed.stderr
-    command = completed.stdout.splitlines()[1].removeprefix("container up: stop -> ")
-    descriptor = Path(shlex.split(command)[7])
-    (repository / "compose.yaml").rename(repository / "obsolete-compose.yaml")
-    environment = container_environment(repository, tmp_path)
-    environment.pop(SOURCE_COMMIT, None)
-    environment.pop(SOURCE_TREE, None)
-    replay = subprocess.run(["bash", "-c", command], env=environment, check=False)
-    assert replay.returncode == 0
-    assert not descriptor.exists()
-    assert not descriptor.parent.exists()
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert {project_from(arguments) for arguments in invocations} == {project}
-
-
-@pytest.mark.parametrize(
-    ("phase", "interruption", "status"),
+    ("settings", "prefix", "recovery", "repository_name"),
     (
-        ("build", signal.SIGHUP, 129),
-        ("up", signal.SIGINT, 130),
-        ("up", signal.SIGTERM, 143),
+        pytest.param(
+            {"port_status": 23, "down_fails": True},
+            "container up: cleanup failed; run: ",
+            "exact-down",
+            "repository with ; metacharacters",
+            id="cleanup-failure",
+        ),
+        pytest.param(
+            {"port_status": 23, "descriptor_remove_fails": True},
+            "container up: lifecycle descriptor cleanup failed; run: ",
+            "restore-descriptor-directory",
+            "repository",
+            id="descriptor-removal-failure",
+        ),
+        pytest.param(
+            {},
+            "container up: stop -> ",
+            "remove-ambient-compose",
+            "repository with ; metacharacters",
+            id="normal-stop-command",
+        ),
     ),
 )
-def test_signals_preserve_status_and_teardown_exact_project(
-    tmp_path: Path, phase: str, interruption: signal.Signals, status: int
+def test_printed_teardown_commands_replay_without_ambient_identity(
+    tmp_path: Path,
+    settings: dict[str, int | bool],
+    prefix: str,
+    recovery: str,
+    repository_name: str,
+) -> None:
+    repository = packaging_repository(tmp_path, repository_name)
+    completed = run_container_up(repository, tmp_path, **settings)
+
+    assert completed.returncode == (0 if recovery == "remove-ambient-compose" else 23)
+    output = (
+        completed.stdout if recovery == "remove-ambient-compose" else completed.stderr
+    )
+    command = output.split(prefix, 1)[1].strip()
+    parsed = shlex.split(command)
+    descriptor = Path(parsed[parsed.index("-f") + 1])
+    assert descriptor.is_file()
+    if recovery == "exact-down":
+        down = parsed.index("down")
+        assert parsed[down : down + 5] == TEARDOWN_ARGUMENTS
+    elif recovery == "restore-descriptor-directory":
+        assert not snapshot_from(docker_invocations(tmp_path)[0]).exists()
+        descriptor.parent.chmod(0o700)
+    else:
+        (repository / "compose.yaml").rename(repository / "obsolete-compose.yaml")
+    environment = container_environment(repository, tmp_path)
+    environment.pop(SOURCE_COMMIT, None)
+    environment.pop(SOURCE_TREE, None)
+    replay = subprocess.run(["bash", "-c", command], env=environment, check=False)
+    assert replay.returncode == 0
+    assert not descriptor.exists()
+    assert not descriptor.parent.exists()
+    if recovery != "restore-descriptor-directory":
+        projects = {
+            project_from(arguments) for arguments in docker_invocations(tmp_path)
+        }
+        assert len(projects) == 1
+
+
+@pytest.mark.parametrize(
+    ("phase", "first_signal", "status", "second_signal"),
+    (
+        ("build", signal.SIGHUP, 129, None),
+        ("up", signal.SIGINT, 130, None),
+        ("up", signal.SIGTERM, 143, None),
+        ("up", signal.SIGINT, 130, signal.SIGTERM),
+    ),
+    ids=("build-sighup", "up-sigint", "up-sigterm", "cleanup-second-signal"),
+)
+def test_signals_preserve_first_status_and_teardown_exact_project(
+    tmp_path: Path,
+    phase: str,
+    first_signal: signal.Signals,
+    status: int,
+    second_signal: signal.Signals | None,
 ) -> None:
     repository = packaging_repository(tmp_path)
-    environment = container_environment(repository, tmp_path, wait_phases=(phase,))
+    wait_phases = (phase, "down") if second_signal is not None else (phase,)
+    environment = container_environment(repository, tmp_path, wait_phases=wait_phases)
     process = subprocess.Popen(
         ["bash", str(repository / "scripts" / "container_up.sh")],
         cwd=repository,
@@ -1057,64 +1046,14 @@ def test_signals_preserve_status_and_teardown_exact_project(
         start_new_session=True,
     )
     ready = tmp_path / f"{phase}-ready"
-    deadline = time.monotonic() + 5
-    while not ready.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert ready.exists(), "Docker stub did not reach the launch boundary"
-    os.killpg(process.pid, interruption)
+    wait_until_exists(ready, "Docker stub did not reach the launch boundary")
+    os.killpg(process.pid, first_signal)
+    if second_signal is not None:
+        wait_until_exists(tmp_path / "down-ready", "Docker stub did not reach cleanup")
+        os.killpg(process.pid, second_signal)
+        (tmp_path / "docker-down-release").touch()
     assert process.wait(timeout=5) == status
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert all(project_from(arguments) == project for arguments in invocations)
-    assert invocations[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-    assert not snapshot_from(invocations[0]).exists()
-    assert lifecycle_directories(tmp_path) == []
-
-
-def test_repeated_signal_during_cleanup_preserves_first_signal_status(
-    tmp_path: Path,
-) -> None:
-    repository = packaging_repository(tmp_path)
-    environment = container_environment(
-        repository, tmp_path, wait_phases=("up", "down")
-    )
-    process = subprocess.Popen(
-        ["bash", str(repository / "scripts" / "container_up.sh")],
-        cwd=repository,
-        env=environment,
-        start_new_session=True,
-    )
-    up_ready = tmp_path / "up-ready"
-    deadline = time.monotonic() + 5
-    while not up_ready.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert up_ready.exists(), "Docker stub did not reach the launch boundary"
-    os.killpg(process.pid, signal.SIGINT)
-    down_ready = tmp_path / "down-ready"
-    while not down_ready.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert down_ready.exists(), "Docker stub did not reach cleanup"
-    os.killpg(process.pid, signal.SIGTERM)
-    (tmp_path / "docker-down-release").touch()
-    assert process.wait(timeout=5) == 130
-    invocations = docker_invocations(tmp_path)
-    project = project_from(invocations[0])
-    assert {project_from(arguments) for arguments in invocations} == {project}
-    assert invocations[-1][-5:] == [
-        "down",
-        "--volumes",
-        "--rmi",
-        "local",
-        "--remove-orphans",
-    ]
-    assert not snapshot_from(invocations[0]).exists()
-    assert lifecycle_directories(tmp_path) == []
+    assert_exact_candidate_teardown(tmp_path)
 
 
 def test_clean_tree_refusal_bites_when_its_preflight_is_removed(tmp_path: Path) -> None:

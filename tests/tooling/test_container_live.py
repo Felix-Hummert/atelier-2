@@ -26,6 +26,10 @@ IMAGE_ID = f"sha256:{'b' * 64}"
 NETWORK_ID = "c" * 64
 ENGINE_ID = "engine:local:test"
 PROJECT_NAME = re.compile(r"^atelier2-live-[0-9a-f]{16}$")
+RECORDED_START_STOP = [
+    ["start", CONTAINER_ID],
+    ["stop", "--time", "30", CONTAINER_ID],
+]
 
 
 def write_stub(path: Path, body: str) -> None:
@@ -571,9 +575,26 @@ def test_identity_drift_refuses_status_and_exact_operations(
 
 @pytest.mark.parametrize(
     "damage",
-    ("owner", "mode", "oversized", "symlink", "state-downgrade", "injection"),
+    (
+        "owner",
+        "mode",
+        "oversized",
+        "symlink",
+        "state-downgrade",
+        "injection",
+        "descriptor",
+    ),
+    ids=(
+        "record-wrong-owner",
+        "record-wrong-mode",
+        "record-oversized",
+        "record-symlink",
+        "record-state-downgrade",
+        "record-injection",
+        "descriptor-content",
+    ),
 )
-def test_record_boundary_refuses_unsafe_or_unbounded_state(
+def test_record_boundary_refuses_unsafe_or_drifted_state(
     tmp_path: Path, damage: str
 ) -> None:
     repository = installed_repository(tmp_path)
@@ -595,9 +616,13 @@ def test_record_boundary_refuses_unsafe_or_unbounded_state(
         record_path.write_bytes(
             original.replace(b"state=INSTALLED", b"state=INSTALLING")
         )
-    else:
+    elif damage == "injection":
         marker = tmp_path / "record-was-executed"
         record_path.write_bytes(original + f"project=$(touch {marker})\n".encode())
+    else:
+        (installation_directory(tmp_path) / "compose.yaml").write_text(
+            "changed\n", encoding="utf-8"
+        )
     if damage in ("oversized", "injection"):
         record_path.chmod(0o600)
     before = docker_invocations(tmp_path)
@@ -613,18 +638,6 @@ def test_record_boundary_refuses_unsafe_or_unbounded_state(
     assert completed.stdout == "DRIFTED\n"
     assert docker_mutations(docker_invocations(tmp_path)[len(before) :]) == []
     assert not (tmp_path / "record-was-executed").exists()
-
-
-def test_descriptor_drift_refuses_without_docker_mutation(tmp_path: Path) -> None:
-    repository = installed_repository(tmp_path)
-    descriptor = installation_directory(tmp_path) / "compose.yaml"
-    descriptor.write_text("changed\n", encoding="utf-8")
-    before = docker_invocations(tmp_path)
-
-    completed = run_live(repository, tmp_path, "status")
-
-    assert completed.stdout == "DRIFTED\n"
-    assert docker_mutations(docker_invocations(tmp_path)[len(before) :]) == []
 
 
 def test_nonblocking_lock_refuses_concurrent_lifecycle_command(tmp_path: Path) -> None:
@@ -668,8 +681,23 @@ def test_failed_install_cleans_only_its_intent_owned_project(
     assert json.loads((tmp_path / "docker-state.json").read_text()) == {}
 
 
-def test_failed_cleanup_preserves_installing_intent_for_recovery(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "settings",
+    (
+        {"ATELIER2_TEST_FAIL_DOWN": "1"},
+        {"ATELIER2_TEST_PROJECT_LIST_FAILURE": "container"},
+        {"ATELIER2_TEST_PROJECT_LIST_FAILURE": "volume"},
+        {"ATELIER2_TEST_PROJECT_LIST_FAILURE": "network"},
+    ),
+    ids=(
+        "teardown-command-failure",
+        "container-inventory-failure",
+        "volume-inventory-failure",
+        "network-inventory-failure",
+    ),
+)
+def test_failed_cleanup_keeps_durable_intent_for_recovery(
+    tmp_path: Path, settings: dict[str, str]
 ) -> None:
     repository = lifecycle_repository(tmp_path)
 
@@ -678,7 +706,7 @@ def test_failed_cleanup_preserves_installing_intent_for_recovery(
         tmp_path,
         "install",
         ATELIER2_TEST_FAIL_UP="1",
-        ATELIER2_TEST_FAIL_DOWN="1",
+        **settings,
     )
 
     assert completed.returncode == 42
@@ -686,26 +714,8 @@ def test_failed_cleanup_preserves_installing_intent_for_recovery(
     assert read_record(tmp_path)["state"] == "INSTALLING"
     status = run_live(repository, tmp_path, "status")
     assert status.stdout == "INCOMPLETE\n"
-
-
-@pytest.mark.parametrize("resource_type", ("container", "volume", "network"))
-def test_failed_cleanup_inventory_keeps_durable_intent(
-    tmp_path: Path, resource_type: str
-) -> None:
-    repository = lifecycle_repository(tmp_path)
-
-    completed = run_live(
-        repository,
-        tmp_path,
-        "install",
-        ATELIER2_TEST_FAIL_UP="1",
-        ATELIER2_TEST_PROJECT_LIST_FAILURE=resource_type,
-    )
-
-    assert completed.returncode == 42
-    assert "cleanup is incomplete" in completed.stderr
-    assert read_record(tmp_path)["state"] == "INSTALLING"
-    assert not any("down" in invocation for invocation in docker_invocations(tmp_path))
+    if "ATELIER2_TEST_PROJECT_LIST_FAILURE" in settings:
+        assert not any("down" in item for item in docker_invocations(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -749,10 +759,7 @@ def test_lifecycle_signal_cleans_only_the_exact_owned_runtime(
     assert process.wait(timeout=5) == status
     mutations = docker_mutations(docker_invocations(tmp_path))
     if command == "start":
-        assert mutations == [
-            ["start", CONTAINER_ID],
-            ["stop", "--time", "30", CONTAINER_ID],
-        ]
+        assert mutations == RECORDED_START_STOP
         assert (
             installation_directory(tmp_path) / "installation.state"
         ).read_bytes() == before_record
@@ -772,49 +779,41 @@ def test_lifecycle_signal_cleans_only_the_exact_owned_runtime(
     assert not (installation_directory(tmp_path) / "installation.state").exists()
 
 
-def test_unhealthy_start_stops_the_same_container_and_keeps_state(
+@pytest.mark.parametrize(
+    ("settings", "expected_state", "cleanup_incomplete"),
+    (
+        ({"ATELIER2_TEST_DRIFT": "health"}, "exited", False),
+        ({"ATELIER2_TEST_FAIL_START": "1"}, "exited", False),
+        (
+            {"ATELIER2_TEST_FAIL_START": "1", "ATELIER2_TEST_FAIL_STOP": "1"},
+            "running",
+            True,
+        ),
+    ),
+    ids=(
+        "unhealthy-health-check",
+        "ambiguous-start-failure",
+        "ambiguous-start-and-cleanup-failure",
+    ),
+)
+def test_failed_start_stops_the_exact_recorded_container_and_keeps_state(
     tmp_path: Path,
+    settings: dict[str, str],
+    expected_state: str,
+    cleanup_incomplete: bool,
 ) -> None:
     repository, before_record = stopped_repository(tmp_path)
 
-    completed = run_live(repository, tmp_path, "start", ATELIER2_TEST_DRIFT="health")
-
-    assert completed.returncode != 0
-    mutations = docker_mutations(docker_invocations(tmp_path))
-    assert mutations == [
-        ["start", CONTAINER_ID],
-        ["stop", "--time", "30", CONTAINER_ID],
-    ]
-    assert (
-        installation_directory(tmp_path) / "installation.state"
-    ).read_bytes() == before_record
-
-
-@pytest.mark.parametrize("cleanup_fails", (False, True))
-def test_ambiguous_start_failure_stops_the_same_container(
-    tmp_path: Path, cleanup_fails: bool
-) -> None:
-    repository, before_record = stopped_repository(tmp_path)
-
-    completed = run_live(
-        repository,
-        tmp_path,
-        "start",
-        ATELIER2_TEST_FAIL_START="1",
-        ATELIER2_TEST_FAIL_STOP="1" if cleanup_fails else "0",
-    )
+    completed = run_live(repository, tmp_path, "start", **settings)
 
     assert completed.returncode == 1
-    assert docker_mutations(docker_invocations(tmp_path)) == [
-        ["start", CONTAINER_ID],
-        ["stop", "--time", "30", CONTAINER_ID],
-    ]
+    assert docker_mutations(docker_invocations(tmp_path)) == RECORDED_START_STOP
     state = json.loads((tmp_path / "docker-state.json").read_text())["status"]
-    assert state == ("running" if cleanup_fails else "exited")
+    assert state == expected_state
     assert (
         installation_directory(tmp_path) / "installation.state"
     ).read_bytes() == before_record
-    assert ("cleanup is incomplete" in completed.stderr) is cleanup_fails
+    assert ("cleanup is incomplete" in completed.stderr) is cleanup_incomplete
 
 
 LIFECYCLE_GUARDS = (
