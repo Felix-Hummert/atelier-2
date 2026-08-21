@@ -7,11 +7,11 @@ import {
   unnamedAxeViolations,
   type AxeBaselineEntry,
   type CoreSurface
-} from "../../src/lib/axeBaseline";
+} from "../support/axeBaseline";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const baseline = JSON.parse(
-  readFileSync(resolve(import.meta.dirname, "../../src/lib/axeBaseline.json"), "utf8")
+  readFileSync(resolve(import.meta.dirname, "../support/axeBaseline.json"), "utf8")
 ) as AxeBaselineEntry[];
 
 const surfaces: readonly { surface: CoreSurface; path: string; ready: (page: Page) => Promise<void> }[] =
