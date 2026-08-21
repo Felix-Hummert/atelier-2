@@ -24,6 +24,9 @@ CONTAINER_UP = PROJECT_ROOT / "scripts" / "container_up.sh"
 CONTAINER_SERVE = PROJECT_ROOT / "scripts" / "container_serve.sh"
 OPERATIONS = PROJECT_ROOT / "docs" / "OPERATIONS.md"
 PRODUCT = PROJECT_ROOT / "docs" / "PRODUCT.md"
+PYPROJECT = PROJECT_ROOT / "pyproject.toml"
+LOCK = PROJECT_ROOT / "uv.lock"
+CI = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
 
 SOURCE_COMMIT = "ATELIER2_SOURCE_COMMIT"
 SOURCE_TREE = "ATELIER2_SOURCE_TREE"
@@ -32,6 +35,13 @@ PROJECT_NAME = re.compile(r"^atelier2-[0-9a-f]{16}$")
 
 _FROM = re.compile(r"^FROM\s+", re.MULTILINE | re.IGNORECASE)
 _USER = re.compile(r"^USER\s+(\S+)\s*$", re.MULTILINE | re.IGNORECASE)
+_CI_PYTHON_VERSION = re.compile(r'^\s*python-version: "([^"]+)"$', re.MULTILINE)
+
+PYTHON_VERSION = "3.12.13"
+SQLITE_MILLISECOND_PROBE = (
+    "RUN python -c \"import sqlite3; assert sqlite3.connect(':memory:').execute(\\"
+    '"SELECT unixepoch(\'subsec\') * 1000\\").fetchone()[0] is not None"'
+)
 
 
 def final_user(recipe: str) -> str:
@@ -51,6 +61,13 @@ def source_labels() -> dict[str, str]:
 
 def assert_provider_free_recipe(recipe: str) -> None:
     assert final_user(recipe) == "atelier2", "image ends under another user"
+    assert f"FROM python:{PYTHON_VERSION}-slim-trixie AS runtime" in recipe, (
+        "image runtime carrier is stale"
+    )
+    assert f"UV_PYTHON={PYTHON_VERSION}" in recipe, "image Python selection is stale"
+    assert SQLITE_MILLISECOND_PROBE in recipe, (
+        "image omits the SQLite millisecond probe"
+    )
     lowered = recipe.lower()
     for forbidden in (
         "claude",
@@ -93,6 +110,16 @@ def assert_provider_free_recipe(recipe: str) -> None:
         'ENTRYPOINT ["/app/container_serve.sh"]',
     ):
         assert required in recipe, f"image omits {required}"
+
+
+def assert_python_carrier_configuration(
+    recipe: str, project: str, lock: str, workflow: str
+) -> None:
+    assert_provider_free_recipe(recipe)
+    assert f'requires-python = "=={PYTHON_VERSION}"' in project
+    assert f'requires-python = "=={PYTHON_VERSION}"' in lock
+    configured_versions = _CI_PYTHON_VERSION.findall(workflow)
+    assert configured_versions == [PYTHON_VERSION] * 4
 
 
 def assert_isolated_compose(document: dict[str, Any]) -> None:
@@ -401,6 +428,49 @@ def lifecycle_directories(tmp_path: Path) -> list[Path]:
 
 def test_recipe_is_provider_free_and_unprivileged() -> None:
     assert_provider_free_recipe(DOCKERFILE.read_text(encoding="utf-8"))
+
+
+def test_python_carrier_is_pinned_to_the_sqlite_millisecond_runtime() -> None:
+    assert_python_carrier_configuration(
+        DOCKERFILE.read_text(encoding="utf-8"),
+        PYPROJECT.read_text(encoding="utf-8"),
+        LOCK.read_text(encoding="utf-8"),
+        CI.read_text(encoding="utf-8"),
+    )
+
+
+def test_python_carrier_guard_rejects_stale_or_weakened_configuration() -> None:
+    recipe = DOCKERFILE.read_text(encoding="utf-8")
+    project = PYPROJECT.read_text(encoding="utf-8")
+    lock = LOCK.read_text(encoding="utf-8")
+    workflow = CI.read_text(encoding="utf-8")
+
+    recipe_mutations = (
+        recipe.replace("python:3.12.13-slim-trixie", "python:3.12.13-slim-bookworm"),
+        recipe.replace("python:3.12.13-slim-trixie", "python:3.12.3-slim-trixie"),
+        recipe.replace("UV_PYTHON=3.12.13", "UV_PYTHON=3.12.3"),
+        recipe.replace(SQLITE_MILLISECOND_PROBE, "RUN true"),
+        recipe.replace("is not None", "is None"),
+    )
+    for mutated_recipe in recipe_mutations:
+        with pytest.raises(AssertionError):
+            assert_python_carrier_configuration(mutated_recipe, project, lock, workflow)
+
+    for mutated_project, mutated_lock in (
+        (project.replace("==3.12.13", "==3.12.3"), lock),
+        (project, lock.replace("==3.12.13", "==3.12.3")),
+    ):
+        with pytest.raises(AssertionError):
+            assert_python_carrier_configuration(
+                recipe, mutated_project, mutated_lock, workflow
+            )
+
+    for match in _CI_PYTHON_VERSION.finditer(workflow):
+        mutated_workflow = (
+            workflow[: match.start(1)] + "3.12.3" + workflow[match.end(1) :]
+        )
+        with pytest.raises(AssertionError):
+            assert_python_carrier_configuration(recipe, project, lock, mutated_workflow)
 
 
 def test_recipe_guard_rejects_provider_or_privilege_mutations() -> None:

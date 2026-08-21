@@ -6,16 +6,17 @@ COPY frontend/ ./
 RUN npm run build
 
 
-FROM python:3.12.3-slim-bookworm AS runtime
+FROM python:3.12.13-slim-trixie AS runtime
 COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /uvx /bin/
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON=3.12.3 \
+    UV_PYTHON=3.12.13 \
     UV_PYTHON_PREFERENCE=only-system
 
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --locked --no-dev --no-install-project
+RUN python -c "import sqlite3; assert sqlite3.connect(':memory:').execute(\"SELECT unixepoch('subsec') * 1000\").fetchone()[0] is not None"
 
 COPY src/ ./src/
 COPY --from=frontend /build/frontend/dist ./frontend/dist
