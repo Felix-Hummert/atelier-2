@@ -43,6 +43,24 @@ SQLITE_MILLISECOND_PROBE = (
     "RUN python -c \"import sqlite3; assert sqlite3.connect(':memory:').execute(\\"
     '"SELECT unixepoch(\'subsec\') * 1000\\").fetchone()[0] is not None"'
 )
+FINAL_PATH = (
+    "ENV PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin \\\n"
+    "    ATELIER2_SOURCE_COMMIT=${ATELIER2_SOURCE_COMMIT} \\\n"
+    "    ATELIER2_SOURCE_TREE=${ATELIER2_SOURCE_TREE}"
+)
+FINAL_PROJECT_SYNC = (
+    "RUN uv sync --locked --no-dev --no-editable \\\n"
+    "    && rm -rf /app/src \\\n"
+    "    && rm -f /bin/uv /bin/uvx"
+)
+INSTALLED_HOST_PROBE = (
+    'RUN python -c "import sysconfig; from pathlib import Path; import atelier2.host; '
+    "purelib = Path(sysconfig.get_path('purelib')).resolve(); "
+    "module = Path(atelier2.host.__file__).resolve(); "
+    'assert module.is_relative_to(purelib), module" \\\n'
+    "    && atelier2 --help >/dev/null"
+)
+ENTRYPOINT = 'ENTRYPOINT ["/app/container_serve.sh"]'
 
 
 def final_user(recipe: str) -> str:
@@ -104,6 +122,20 @@ def assert_provider_free_recipe(recipe: str) -> None:
         "    ATELIER2_SOURCE_COMMIT=${ATELIER2_SOURCE_COMMIT} \\\n"
         "    ATELIER2_SOURCE_TREE=${ATELIER2_SOURCE_TREE}"
     ) in runtime
+    assert FINAL_PATH in runtime, "image omits the final runtime PATH"
+    assert FINAL_PROJECT_SYNC in runtime, (
+        "image final project sync is not locked, production-only, non-editable, and source-free"
+    )
+    assert INSTALLED_HOST_PROBE in runtime, (
+        "image omits the installed host import and console-entry-point proof"
+    )
+    final_user_index = runtime.rindex("USER atelier2")
+    final_path_index = runtime.index(FINAL_PATH)
+    host_probe_index = runtime.index(INSTALLED_HOST_PROBE)
+    entrypoint_index = runtime.index(ENTRYPOINT)
+    assert final_user_index < final_path_index < host_probe_index < entrypoint_index, (
+        "image probes its installed host outside the final USER/PATH/ENTRYPOINT boundary"
+    )
     for required in (
         "COPY frontend/package.json frontend/package-lock.json ./",
         "RUN npm ci --no-audit --no-fund",
@@ -113,11 +145,11 @@ def assert_provider_free_recipe(recipe: str) -> None:
         "RUN uv sync --locked --no-dev --no-install-project",
         "COPY src/ ./src/",
         "COPY --from=frontend /build/frontend/dist ./frontend/dist",
-        "RUN uv sync --locked --no-dev",
+        FINAL_PROJECT_SYNC,
         "install --directory --owner atelier2 --group atelier2 --mode 0700 /var/lib/atelier2/store",
         "COPY scripts/container_serve.sh /app/container_serve.sh",
         "RUN chmod 0755 /app/container_serve.sh",
-        'ENTRYPOINT ["/app/container_serve.sh"]',
+        ENTRYPOINT,
     ):
         assert required in recipe, f"image omits {required}"
 
@@ -541,6 +573,46 @@ def test_recipe_guard_rejects_provider_or_privilege_mutations() -> None:
     ):
         with pytest.raises(AssertionError):
             assert_provider_free_recipe(mutation)
+
+
+def test_recipe_guard_rejects_installed_host_contract_mutations() -> None:
+    recipe = DOCKERFILE.read_text(encoding="utf-8")
+    assert_provider_free_recipe(recipe)
+    without_probe = recipe.replace(INSTALLED_HOST_PROBE, "")
+    before_final_user = without_probe.replace(
+        "USER atelier2", f"{INSTALLED_HOST_PROBE}\n\nUSER atelier2"
+    )
+    before_final_path = without_probe.replace(
+        FINAL_PATH, f"{INSTALLED_HOST_PROBE}\n{FINAL_PATH}"
+    )
+    mutations = (
+        recipe.replace("--no-editable", "--editable"),
+        recipe.replace("--no-editable", ""),
+        recipe.replace("rm -rf /app/src", "true"),
+        recipe.replace(
+            "PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin",
+            "PATH=/usr/local/bin:/usr/bin:/bin",
+        ),
+        before_final_user,
+        before_final_path,
+        recipe.replace("import atelier2.host", "import atelier2"),
+        recipe.replace(
+            "assert module.is_relative_to(purelib), module", "assert module, module"
+        ),
+        recipe.replace(
+            "assert module.is_relative_to(purelib), module",
+            "assert module.is_relative_to(purelib) or module.is_relative_to(Path('/app/src')), module",
+        ),
+        recipe.replace("atelier2 --help >/dev/null", "true"),
+        recipe.replace(
+            "atelier2 --help >/dev/null", "/app/.venv/bin/atelier2 --help >/dev/null"
+        ),
+    )
+
+    for mutated_recipe in mutations:
+        assert mutated_recipe != recipe, "mutation did not change the recipe"
+        with pytest.raises(AssertionError):
+            assert_provider_free_recipe(mutated_recipe)
 
 
 def test_ignore_excludes_provider_configuration_and_build_noise() -> None:
