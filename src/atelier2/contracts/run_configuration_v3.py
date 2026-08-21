@@ -68,7 +68,6 @@ class ReferenceRefusalReason(StrEnum):
     UNPUBLISHED_REVISION = "unpublished_revision"
     REVISION_KIND_MISMATCH = "revision_kind_mismatch"
     RESOLVED_REVISION_MISMATCH = "resolved_revision_mismatch"
-    UNBOUND_WORKFLOW_REFERENCE = "unbound_workflow_reference"
     UNUSABLE_SCHEMA_DOCUMENT = "unusable_schema_document"
     UNREDEEMABLE_TOOL_GRANT = "unredeemable_tool_grant"
     UNUSABLE_BUDGET_DOCUMENT = "unusable_budget_document"
@@ -182,10 +181,8 @@ def declared_references(
 ) -> tuple[DeclaredReference, ...]:
     """Every versioned reference one document declares, with the registry it names.
 
-    A subworkflow node's `workflow` reference is one of them. Which resolver answers
-    it is a separate question: the subworkflow binder already reads that child to
-    bind its boundary, so a second registry answer would be a second answer to one
-    question, and the run configuration binds what that binder resolved.
+    Workflow references remain authored declarations; the current root run does not
+    resolve them into a child configuration.
     """
     return tuple(_walk(graph, chain))
 

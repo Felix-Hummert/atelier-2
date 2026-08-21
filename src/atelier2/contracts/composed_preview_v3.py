@@ -110,25 +110,6 @@ class PreviewEdge:
     node: str
 
 
-@dataclass(frozen=True)
-class PreviewChild:
-    """The child one subworkflow node binds: what it named, and what that resolved to.
-
-    Both halves are drawn, because they answer different questions. The authored
-    reference is what the document says and what an author edits; the revision hash
-    is which exact bytes will run, and two children whose parsed graphs look alike
-    are the same picture under different bytes without it.
-    """
-
-    reference: VersionedReference
-    revision_hash: str
-    graph: ComposedPreviewGraph
-
-    def __post_init__(self) -> None:
-        if not self.revision_hash:
-            raise ValueError("a previewed child names the revision it resolved to")
-
-
 @dataclass(frozen=True, slots=True)
 class PreviewIteration:
     """That a node repeats, how often at most, and what would end it early.
@@ -146,14 +127,6 @@ class PreviewIteration:
 
 @dataclass(frozen=True)
 class PreviewNode:
-    """One node as a surface draws it, with what it demands and what it waits for.
-
-    `demands` are the requirements the executability record derived for this node,
-    including the ones a bound skill carries in transitively. `unproven` is the
-    subset the bound capability revision does not attest — the capability this node
-    is still waiting for — and it is empty for every node of an executable preview.
-    """
-
     id: str
     kind: PreviewNodeKind
     join: JoinRule | None
@@ -161,7 +134,6 @@ class PreviewNode:
     mode: AgentMode | None
     demands: tuple[CapabilityRequirement, ...]
     unproven: tuple[ExecutabilityRefusal, ...]
-    child: PreviewChild | None
     iteration: PreviewIteration | None
 
 
@@ -204,21 +176,6 @@ class PreviewGraphInput:
 
 @dataclass(frozen=True)
 class ComposedPreviewGraph:
-    """One document's derived graph, and the registries its references land in.
-
-    A subworkflow node carries the child's own graph, so a reused workflow is drawn
-    where it is used rather than flattened into its parent. Orders and references
-    are both kept where they were declared: a child's sit in the child's graph,
-    under the chain it was reached by.
-
-    The last two fields are what this graph could not answer, each at the site that
-    asked: a reference that resolved to nothing, and a skill whose grants nobody
-    read. Both are drawn rather than raised, because a revision that is publishable
-    and not yet executable is the state decision 0006 exists for — and because the
-    executability verdict speaks only for the demands that could be derived, a
-    reader learns the rest of the distance here.
-    """
-
     graph_inputs: tuple[PreviewGraphInput, ...]
     nodes: tuple[PreviewNode, ...]
     edges: tuple[PreviewEdge, ...]

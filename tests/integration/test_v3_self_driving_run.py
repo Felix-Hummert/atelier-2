@@ -203,6 +203,7 @@ def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
 
 @pytest.mark.proves("a-v3-run-drives-itself-through-the-runtime")
 @pytest.mark.proves("a-run-carries-when-it-started-and-ended")
+@pytest.mark.proves("existing-runtime-lines-survive-the-binder-deletion")
 def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
     runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
     monkeypatch: pytest.MonkeyPatch,

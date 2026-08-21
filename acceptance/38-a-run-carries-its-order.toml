@@ -40,10 +40,6 @@ id = "an-unreadable-or-unread-graph-input-is-refused-by-name"
 text = "A document whose node reads a graph input the graph never declared, and a document whose declared graph input no node reads, are both refused by name before anything can be published or started."
 
 [[sentence]]
-id = "a-parent-graph-input-reaches-a-child-through-the-boundary"
-text = "An order the parent graph declares reaches a subworkflow: it binds as a node input to the child's graph input, and a differing schema revision is refused by name."
-
-[[sentence]]
 id = "the-preview-names-every-declared-graph-input-with-its-schema"
 text = "Before any start, the preview names every declared graph input with its name and schema revision, at the graph that declared it."
 

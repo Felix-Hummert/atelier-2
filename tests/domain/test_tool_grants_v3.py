@@ -83,7 +83,7 @@ def resolution_of(document: bytes) -> ResolvedReference | ReferenceRefusal:
         RevisionKind.TOOL,
         VersionedReference(ref="verify", revision=revision.revision_hash.value),
     )
-    return resolve_declared_reference(declared, OneRevisionRegistry(revision), {})
+    return resolve_declared_reference(declared, OneRevisionRegistry(revision))
 
 
 def receipt(**changes: object) -> ToolRedemptionReceipt:
@@ -184,7 +184,7 @@ def test_an_unpinnable_grant_reference_is_refused_as_an_unpublished_revision() -
     )
 
     refusal = resolve_declared_reference(
-        declared, OneRevisionRegistry(PublishedRevision(RevisionKind.TOOL, b"{}")), {}
+        declared, OneRevisionRegistry(PublishedRevision(RevisionKind.TOOL, b"{}"))
     )
 
     assert isinstance(refusal, ReferenceRefusal)

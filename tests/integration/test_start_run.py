@@ -47,9 +47,14 @@ from atelier2.application.start_published_run import (
     RunIdentityConflict,
     start_published_run,
 )
+from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.ports.durable_runs import (
+    DurableRunFormatNotExecutable,
+    StartPublishedRunRequestV2,
+)
 from tests.scenarios.api import permissive_projection_limit
 from tests.scenarios.runs import (
     NO_AGENT_EXECUTORS,
@@ -65,6 +70,14 @@ nodes:
   - {id: waiting, type: wait, answer_type: integer, next: final}
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
+"""
+
+V3_SUBWORKFLOW_DOCUMENT = b"""format_version: 3
+name: An authored child is not executable yet
+nodes:
+  - id: child
+    type: subworkflow
+    workflow: {ref: child-workflow, revision: "0000000000000000000000000000000000000000000000000000000000000000"}
 """
 
 
@@ -225,6 +238,31 @@ nodes:
     result = start_result(runtime, starter, document=document)
 
     assert isinstance(result, InvalidAgentBindings)
+    for table in PRODUCT_TABLE_NAMES - {
+        "atelier_schema_versions",
+        "workflow_revisions",
+    }:
+        assert count(runtime.engine, table) == 0
+    assert count(runtime.engine, "workflow_status") == 0
+
+
+@pytest.mark.proves(
+    "an-authored-v3-subworkflow-remains-unexecutable-without-start-writes"
+)
+def test_an_authored_v3_subworkflow_refuses_before_start_writes(
+    storage: tuple[DbosRuntime, DbosDurableRunStarter],
+) -> None:
+    runtime, starter = storage
+    workflow = revision(V3_SUBWORKFLOW_DOCUMENT)
+    publish_revision(runtime.engine, workflow)
+
+    result = starter.start_published(
+        StartPublishedRunRequestV2(
+            RunId("v3/unexecutable-child"), workflow.revision_hash, AgentBindingSet(())
+        )
+    )
+
+    assert isinstance(result, DurableRunFormatNotExecutable)
     for table in PRODUCT_TABLE_NAMES - {
         "atelier_schema_versions",
         "workflow_revisions",

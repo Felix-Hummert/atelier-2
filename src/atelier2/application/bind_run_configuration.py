@@ -3,8 +3,6 @@ from __future__ import annotations
 from typing import assert_never
 
 from atelier2.application.resolve_references import (
-    BoundChildren,
-    bound_children,
     declared_through,
     resolve_declared_reference,
 )
@@ -29,20 +27,8 @@ def bind_run_configuration(
     binding_set_hash: AgentBindingSetHash,
     resolver: PublishedRevisionResolver,
 ) -> RunConfigurationRevision:
-    """Freeze one V3 document's complete resolution matrix before a run exists.
-
-    Every versioned reference the document and each bound child declares must resolve
-    to a published revision of the kind it is read under, or the whole binding is
-    refused naming the node, the field and the reference. A `workflow` reference
-    resolves through the subworkflow binding that already read that child, so the
-    snapshot binds the child revision that binder proved rather than a second answer.
-    Nothing durable is written here, so a refusal leaves no run behind rather than
-    one to clean up.
-    """
-    children = bound_children(binding)
     resolutions = tuple(
-        _resolve(declared, resolver, children)
-        for declared in declared_through(document, binding)
+        _resolve(declared, resolver) for declared in declared_through(document, binding)
     )
     return RunConfigurationRevision(
         workflow_revision_hash, binding_set_hash, resolutions
@@ -52,10 +38,8 @@ def bind_run_configuration(
 def _resolve(
     declared: DeclaredReference,
     resolver: PublishedRevisionResolver,
-    children: BoundChildren,
 ) -> ResolvedReference:
-    """The binding's half of the shared resolution: the first refusal ends it."""
-    match resolve_declared_reference(declared, resolver, children):
+    match resolve_declared_reference(declared, resolver):
         case ResolvedReference() as resolved:
             return resolved
         case ReferenceRefusal() as refusal:

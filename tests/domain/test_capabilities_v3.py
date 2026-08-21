@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 
 import pytest
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.bind_subworkflow_boundaries import (
-    bind_subworkflow_boundaries,
-)
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
@@ -48,11 +44,6 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     VersionedReference,
     WorkflowGraphV3,
-)
-from atelier2.ports.workflow_revisions import (
-    PublishedWorkflowFound,
-    PublishedWorkflowMissing,
-    ResolvePublishedWorkflowResult,
 )
 
 PARENT_TEMPLATE = b"""format_version: 3
@@ -225,17 +216,6 @@ def registry_subject(kind: RevisionKind, name: str, revision: str) -> Capability
     return CapabilitySubject(RegistryRevisionSubject(kind, revision), name)
 
 
-@dataclass(frozen=True)
-class PublishedWorkflows:
-    documents: Mapping[tuple[str, str], bytes]
-
-    def resolve(self, reference: VersionedReference) -> ResolvePublishedWorkflowResult:
-        document = self.documents.get((reference.ref, reference.revision))
-        if document is None:
-            return PublishedWorkflowMissing()
-        return PublishedWorkflowFound(WorkflowRevision(document))
-
-
 def parsed(document: bytes) -> WorkflowGraphV3:
     graph = parse_workflow_document(document)
     assert isinstance(graph, WorkflowGraphV3)
@@ -245,23 +225,13 @@ def parsed(document: bytes) -> WorkflowGraphV3:
 MAXIMUM_ITERATION_ROUNDS = 8
 
 
-def bound_children(document: bytes) -> SubworkflowBinding:
-    return bind_subworkflow_boundaries(
-        parsed(document),
-        PublishedWorkflows({("review_panel", CHILD_REVISION): CHILD}),
-        parse_workflow_document,
-        2,
-        MAXIMUM_ITERATION_ROUNDS,
-    )
-
-
 def required(
     document: bytes = PARENT,
     role_matrix: Sequence[ResolvedAgentBinding] = ROLE_MATRIX,
     skills: PublishedSkills = SKILL_CONTENTS,
 ) -> tuple[CapabilityRequirement, ...]:
     return required_capabilities(
-        parsed(document), bound_children(document), tuple(role_matrix), skills
+        parsed(document), SubworkflowBinding(), tuple(role_matrix), skills
     )
 
 
@@ -362,41 +332,6 @@ EXPECTED_PARENT_REQUIREMENTS = (
         RuntimeCapability.DAG_SCHEDULING, site("depends_on", "panel")
     ),
     CapabilityRequirement(
-        RuntimeCapability.SUBWORKFLOW_EXECUTION, site("workflow", "panel")
-    ),
-    CapabilityRequirement(
-        RuntimeCapability.AGENT_EXECUTION,
-        site("role", "read_it", chain=CHILD_CHAIN),
-        REVIEWER_SUBJECT,
-    ),
-    CapabilityRequirement(
-        RuntimeCapability.OUTPUT_VALIDATION,
-        site("outputs", "read_it", chain=CHILD_CHAIN),
-        SINGLE_OUTPUT,
-    ),
-    CapabilityRequirement(
-        RuntimeCapability.AGENT_EXECUTION,
-        site("role", "run_it", chain=CHILD_CHAIN),
-        REVIEWER_SUBJECT,
-    ),
-    CapabilityRequirement(
-        RuntimeCapability.OUTPUT_VALIDATION,
-        site("outputs", "run_it", chain=CHILD_CHAIN),
-        SINGLE_OUTPUT,
-    ),
-    CapabilityRequirement(
-        RuntimeCapability.DAG_SCHEDULING, site("depends_on", "merge", chain=CHILD_CHAIN)
-    ),
-    CapabilityRequirement(
-        RuntimeCapability.DETERMINISTIC_OPERATIONS,
-        site("operation", "merge", chain=CHILD_CHAIN),
-        registry_subject(
-            RevisionKind.DETERMINISTIC_OPERATION,
-            "merge_review_verdicts",
-            "deterministic-2",
-        ),
-    ),
-    CapabilityRequirement(
         RuntimeCapability.DETERMINISTIC_OPERATIONS,
         site("operation", "decide"),
         registry_subject(
@@ -425,7 +360,6 @@ def test_the_capability_vocabulary_is_the_closed_set_the_record_names() -> None:
         "isolated_workspace",
         "external_effects",
         "deterministic_operations",
-        "subworkflow_execution",
     )
 
 
@@ -507,26 +441,6 @@ def test_the_same_document_is_refused_naming_the_node_and_the_missing_capability
     )
 
 
-def test_an_attested_capability_proves_only_the_revisions_it_enumerates() -> None:
-    requirements = required()
-    attested = without_subject(
-        attesting(requirements),
-        RuntimeCapability.DETERMINISTIC_OPERATIONS,
-        RegistryRevisionSubject(
-            RevisionKind.DETERMINISTIC_OPERATION, "deterministic-2"
-        ),
-    )
-
-    assert refused(decide_executability(requirements, attested)) == (
-        (
-            f"review_panel@{CHILD_REVISION} > node 'merge' field 'operation' demands "
-            "deterministic_operations for merge_review_verdicts@"
-            "deterministic_operation:deterministic-2: deterministic_operations "
-            "enumerates no such revision [unattested_subject]"
-        ),
-    )
-
-
 def test_a_refusal_names_every_unproven_requirement_not_only_the_first() -> None:
     requirements = required()
     attested = without(
@@ -543,9 +457,6 @@ def test_a_refusal_names_every_unproven_requirement_not_only_the_first() -> None
     ) == (
         (RuntimeCapability.AGENT_EXECUTION, "implement"),
         (RuntimeCapability.DAG_SCHEDULING, "panel"),
-        (RuntimeCapability.AGENT_EXECUTION, "read_it"),
-        (RuntimeCapability.AGENT_EXECUTION, "run_it"),
-        (RuntimeCapability.DAG_SCHEDULING, "merge"),
     )
 
 
@@ -822,17 +733,6 @@ def test_a_manifest_proves_a_revision_however_the_author_named_it() -> None:
     decision = decide_executability(required(renamed), attesting(required(pinned)))
 
     assert decision == Executable()
-
-
-def test_an_unbound_role_refuses_the_document_naming_the_node_and_the_role() -> None:
-    with pytest.raises(RoleBindingRefused) as refusal:
-        required(role_matrix=(ROLE_MATRIX[0],))
-
-    assert refusal.value.refusal.reason is RoleBindingRefusalReason.UNBOUND_ROLE
-    assert str(refusal.value) == (
-        f"review_panel@{CHILD_REVISION} > node 'read_it' field 'role': no bound "
-        "agent-configuration revision carries role 'reviewer' [unbound_role]"
-    )
 
 
 def test_a_skill_whose_carried_grants_were_never_read_is_loud() -> None:

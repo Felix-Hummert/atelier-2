@@ -101,7 +101,7 @@ def resolution_of(document: bytes, kind: RevisionKind = RevisionKind.SCHEMA):
         kind,
         VersionedReference(ref="verdict", revision=revision.revision_hash.value),
     )
-    return resolve_declared_reference(declared, OneRevisionRegistry(revision), {})
+    return resolve_declared_reference(declared, OneRevisionRegistry(revision))
 
 
 THE_FIVE_THAT_BOUND_CLEANLY: tuple[tuple[str, bytes, SchemaDocumentRefusal], ...] = (

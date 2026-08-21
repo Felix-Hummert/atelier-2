@@ -88,7 +88,7 @@ def resolution_of(document: bytes) -> ResolvedReference | ReferenceRefusal:
         RevisionKind.BUDGET_POLICY,
         VersionedReference(ref="build_budget", revision=revision.revision_hash.value),
     )
-    return resolve_declared_reference(declared, OneRevisionRegistry(revision), {})
+    return resolve_declared_reference(declared, OneRevisionRegistry(revision))
 
 
 @pytest.mark.parametrize(
@@ -368,7 +368,6 @@ def test_an_unpinnable_budget_reference_is_refused_as_an_unpublished_revision() 
         OneRevisionRegistry(
             PublishedRevision(RevisionKind.BUDGET_POLICY, THE_SMALLEST_HONEST_BUDGET)
         ),
-        {},
     )
 
     assert isinstance(refusal, ReferenceRefusal)

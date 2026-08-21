@@ -464,6 +464,9 @@ def test_every_node_kind_of_the_record_parses_into_its_own_closed_model() -> Non
 
 
 @pytest.mark.proves("a-bounded-iteration-is-declarable-and-reads-back-as-authored")
+@pytest.mark.proves(
+    "an-authored-v3-subworkflow-remains-unexecutable-without-start-writes"
+)
 def test_a_bounded_iteration_reads_back_with_its_bound_green_condition_and_handover() -> (
     None
 ):
@@ -483,7 +486,7 @@ def test_a_bounded_iteration_reads_back_with_its_bound_green_condition_and_hando
 
 
 @pytest.mark.proves("a-bounded-iteration-is-declarable-and-reads-back-as-authored")
-def test_a_subworkflow_that_declares_no_iteration_stays_a_single_child_run() -> None:
+def test_a_subworkflow_that_declares_no_iteration_has_no_iteration() -> None:
     looping = graph().node("rehearse")
 
     assert isinstance(looping, SubworkflowNodeV3)
@@ -1180,7 +1183,7 @@ def test_a_round_handover_the_document_cannot_bind_is_refused(
     ("implement", "approve", "merge_findings", "publish_report"),
     ids=("agent", "wait", "deterministic", "action"),
 )
-def test_iteration_is_refused_on_every_node_kind_that_runs_no_child(
+def test_iteration_is_refused_on_every_node_kind_that_cannot_carry_it(
     node_id: str,
 ) -> None:
     refusal = refusal_of(with_node_line(node_id, iterate_line()))

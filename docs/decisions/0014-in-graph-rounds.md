@@ -1,11 +1,8 @@
 # ADR 0014: A declared loop repeats a stretch of one graph, and the round is the fourth dimension of a node execution identity
 
-- Status: ACCEPTED 2026-08-18 — the document form, the round identity, the durable
-  round and the bound-reaching end are implemented; the result-driven end this
-  record left undecided is decided by
-  [ADR 0015](0015-verdict-steered-continuation.md), which leaves everything below
-  standing and adds the earlier exit. Amended 2026-08-19: an in-loop `from` the
-  edges cannot order reads the immediately previous round ([#402](https://github.com/FlexOr2/atelier-2/issues/402)).
+- Status: structurally SUPERSEDED by #449 — the document form remains authored and
+  readable but unexecutable. The former durable round, execution and bound runtime
+  claims below are historical rather than current implementation.
 - Supersedes: the structural finding of
   [ADR 0013](0013-bounded-iteration.md) — "A loop inside one graph is therefore
   identity-impossible" — and, with it, ADR 0013's decision that a round is a child
@@ -160,11 +157,10 @@ steered it.
 ## What happens to ADR 0013
 
 ADR 0013's `iterate` block — a bounded repetition of a **child run** hanging off a
-`subworkflow` node — stays declarable, stays bound at the composition boundary, and
-stays unexecutable: no runtime interprets a `subworkflow` node. Nothing about it is
-deleted, because nothing about it has been proven wrong; what has been superseded
-is its claim that the in-graph shape *cannot exist*, and the conclusion that shape
-forced.
+`subworkflow` node — stays declarable and unexecutable: no runtime interprets a
+`subworkflow` node. #449 withdrew its tests-only composition binding; what has been
+superseded is its claim that the in-graph shape *cannot exist*, and the conclusion
+that shape forced.
 
 **This leaves two declarable ways to say "repeat, at most N times", and that is a
 named seam rather than a settled design.** They are not the same domain idea — one

@@ -215,6 +215,7 @@ def submit_answer(lease: DbosRuntime, revision: WorkflowRevision) -> None:
     )
 
 
+@pytest.mark.proves("existing-runtime-lines-survive-the-binder-deletion")
 def test_unordered_yaml_alone_drives_agent_action_wait_subworkflow(
     tmp_path: Path,
 ) -> None:

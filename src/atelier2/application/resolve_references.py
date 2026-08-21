@@ -6,14 +6,11 @@ does not resolve, while the composed preview names every one of them and keeps
 drawing. Deciding it twice would let a preview and a binding disagree about what
 resolved, so the decision lives here and each caller acts on it.
 
-A `workflow` reference is answered from the subworkflow binding rather than the
-registry: that binder already resolved the child, read its bytes and proved its
-identity, and a second registry answer could contradict it with no arbiter.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from typing import assert_never
 
 from atelier2.contracts.adapter_operations_v3 import (
@@ -31,19 +28,17 @@ from atelier2.contracts.revisions_v3 import (
 )
 from atelier2.contracts.run_configuration_v3 import (
     DeclaredReference,
-    ReferenceChain,
     ReferenceRefusal,
     ReferenceRefusalReason,
     ResolvedReference,
     declared_references,
 )
-from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaRefused, read_schema_document
 from atelier2.contracts.tool_grants_v3 import (
     ToolGrantRefused,
     read_tool_grant_document,
 )
-from atelier2.contracts.workflow_bindings_v3 import BoundSubworkflow, SubworkflowBinding
+from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
@@ -52,30 +47,21 @@ from atelier2.ports.published_revisions import (
 )
 
 type ReferenceResolution = ResolvedReference | ReferenceRefusal
-type BoundChildren = Mapping[tuple[str | None, ReferenceChain], WorkflowRevisionHash]
 
 
 def declared_through(
     document: WorkflowGraphV3, binding: SubworkflowBinding
 ) -> Iterator[DeclaredReference]:
-    """The document's own references, then those of every child it reuses."""
-    yield from declared_references(document)
-    yield from _declared_in_children(binding.subworkflows, ())
-
-
-def bound_children(binding: SubworkflowBinding) -> BoundChildren:
-    """Which child revision the subworkflow binder bound at each node of each chain."""
-    return dict(_bound_children(binding.subworkflows, ()))
+    for declared in declared_references(document):
+        if declared.kind is not RevisionKind.WORKFLOW:
+            yield declared
 
 
 def resolve_declared_reference(
     declared: DeclaredReference,
     resolver: PublishedRevisionResolver,
-    children: BoundChildren,
 ) -> ReferenceResolution:
     """The published revision one declared reference binds, or the named refusal."""
-    if declared.kind is RevisionKind.WORKFLOW:
-        return _bound_child(declared, children)
     try:
         revision_hash = PublishedRevisionHash(declared.reference.revision)
     except ValueError:
@@ -172,44 +158,6 @@ def _unreadable_document(
             )
         return None
     return None
-
-
-def _bound_child(
-    declared: DeclaredReference, children: BoundChildren
-) -> ReferenceResolution:
-    """The child revision the subworkflow binder bound for this exact reference."""
-    reached_by = declared.site.chain + (declared.reference,)
-    child_revision_hash = children.get((declared.site.node, reached_by))
-    if child_revision_hash is None:
-        return _refusal(
-            ReferenceRefusalReason.UNBOUND_WORKFLOW_REFERENCE,
-            declared,
-            "no bound child of this document was reached through this reference",
-        )
-    return ResolvedReference(
-        declared.site,
-        declared.kind,
-        declared.reference,
-        PublishedRevisionHash(child_revision_hash.value),
-    )
-
-
-def _declared_in_children(
-    bound: tuple[BoundSubworkflow, ...], chain: ReferenceChain
-) -> Iterator[DeclaredReference]:
-    for child in bound:
-        reached_by = chain + (child.reference,)
-        yield from declared_references(child.child, reached_by)
-        yield from _declared_in_children(child.children, reached_by)
-
-
-def _bound_children(
-    bound: tuple[BoundSubworkflow, ...], chain: ReferenceChain
-) -> Iterator[tuple[tuple[str | None, ReferenceChain], WorkflowRevisionHash]]:
-    for child in bound:
-        reached_by = chain + (child.reference,)
-        yield (child.node_id, reached_by), child.child_revision_hash
-        yield from _bound_children(child.children, reached_by)
 
 
 def _refusal(
