@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -6,13 +6,18 @@ import {
   baselineEntryProblems,
   unnamedAxeViolations,
   type AxeBaselineEntry
-} from "../../src/lib/axeBaseline";
+} from "../support/axeBaseline";
 
 const checkedIn = JSON.parse(
-  readFileSync(resolve(process.cwd(), "src/lib/axeBaseline.json"), "utf8")
+  readFileSync(resolve(process.cwd(), "tests/support/axeBaseline.json"), "utf8")
 ) as AxeBaselineEntry[];
 
 describe("the axe baseline is a named exception list", () => {
+  it("does not occupy the production source graph", () => {
+    expect(existsSync(resolve(process.cwd(), "src/lib/axeBaseline.ts"))).toBe(false);
+    expect(existsSync(resolve(process.cwd(), "src/lib/axeBaseline.json"))).toBe(false);
+  });
+
   it("every checked-in row names an issue and a core surface", () => {
     expect(Array.isArray(checkedIn)).toBe(true);
     for (const entry of checkedIn) {
