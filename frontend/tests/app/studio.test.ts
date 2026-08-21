@@ -153,6 +153,18 @@ describe("the studio is the level the workshop opens on", () => {
     expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
     expect(screen.queryByRole("heading", { name: "Studio" })).toBeNull();
   });
+
+  it("keeps real workshop work ahead of an unavailable chat", async () => {
+    openStudio([waitingInputRun(), startedRun({ public_run_reference: "run1.YQ" })]);
+
+    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
+    const card = await screen.findByRole("article", { name: "This workshop" });
+    const chat = await screen.findByRole("region", { name: "Chat" });
+
+    expect(inbox.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(within(chat).getByText("Unavailable").isConnected).toBe(true);
+    expect(card.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
 });
 
 describe("the inbox names what waits for a human", () => {
@@ -540,17 +552,5 @@ describe("the studio holds GET /events", () => {
     expect(screen.queryByText("Live")).toBeNull();
     expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
     expect(feed.close).toHaveBeenCalled();
-  });
-});
-
-describe("the chat is a named door, not a dead field", () => {
-  it("names the conductor as missing instead of offering an input that answers nobody", async () => {
-    openStudio([startedRun()]);
-
-    const chat = await screen.findByRole("region", { name: "Chat" });
-
-    expect(within(chat).getByText(/not built yet/).isConnected).toBe(true);
-    expect(within(chat).queryByRole("textbox")).toBeNull();
-    expect(within(chat).queryByRole("button")).toBeNull();
   });
 });

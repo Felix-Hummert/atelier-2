@@ -227,18 +227,6 @@
 </script>
 
 <section class="studio-home" aria-labelledby="studio-title">
-  <section class="studio-chat" aria-labelledby="chat-title">
-    <div class="studio-chat-head">
-      <h2 id="chat-title">Chat</h2>
-      <p>about everything — when the conductor exists</p>
-    </div>
-    <p>
-      The conductor is not built yet
-      (<a href="https://github.com/FlexOr2/atelier-2/issues/7">#7</a>).
-      When it is, it answers here — and the same door stands on the project and on the run.
-    </p>
-  </section>
-
   <div class="studio-board">
     <header class="page-header">
       <div>
@@ -297,4 +285,9 @@
       {/if}
     {/if}
   </div>
+
+  <section class="chat-status" aria-labelledby="chat-title">
+    <h2 id="chat-title">Chat</h2>
+    <p role="status"><span aria-hidden="true">◇</span> Unavailable</p>
+  </section>
 </section>
