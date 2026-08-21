@@ -89,6 +89,10 @@ class DbosRuntimeLeaseClosed(RuntimeError):
     """A released lease on the process DBOS runtime was used again."""
 
 
+class AgentProcessSupervisorUnavailable(RuntimeError):
+    """The runtime has no local process authority for V2/V3 execution."""
+
+
 @dataclass(frozen=True)
 class DbosRuntimeBinding:
     """What a process globally binds while it owns the DBOS runtime.
@@ -102,11 +106,11 @@ class DbosRuntimeBinding:
     agent_executor: AgentExecutorBinding
     agent_executors_v2: tuple[AgentExecutorManifestEntry, ...]
     effect_adapter: EffectAdapterBinding
-    agent_process_control_root: Path
-    agent_process_cgroup_root: Path
+    agent_process_control_root: Path | None
+    agent_process_cgroup_root: Path | None
     agent_scratch_root: Path | None
     project_id: ProjectId | None
-    agent_termination_grace_seconds: float
+    agent_termination_grace_seconds: float | None
 
 
 @dataclass(frozen=True)
@@ -154,19 +158,22 @@ class DbosRuntimeSettings:
         agent_executors_v2: tuple[AgentExecutorManifestEntry, ...],
         effect_adapter: EffectAdapterBinding,
     ) -> DbosRuntimeBinding:
+        process_runner_required = bool(agent_executors_v2)
         return DbosRuntimeBinding(
             self.database_path.resolve(),
             self.application_version,
             agent_executor,
             agent_executors_v2,
             effect_adapter,
-            self.process_control_root(),
-            self.process_cgroup_root(),
-            None
-            if self.agent_scratch_root is None
-            else self.agent_scratch_root.resolve(),
+            self.process_control_root() if process_runner_required else None,
+            self.process_cgroup_root() if process_runner_required else None,
+            (
+                self.agent_scratch_root.resolve()
+                if process_runner_required and self.agent_scratch_root is not None
+                else None
+            ),
             self.project_id,
-            self.agent_termination_grace_seconds,
+            self.agent_termination_grace_seconds if process_runner_required else None,
         )
 
 
@@ -240,7 +247,7 @@ class _BoundRuntime:
     agent_executors_v2: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...]
     effect_adapter_binding: EffectAdapterBinding
     effect_adapter: EffectAdapter
-    agent_process_supervisor: AgentProcessSupervisor
+    agent_process_supervisor: AgentProcessSupervisor | None
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None
     declared_project: DeclaredProject | None
     leases: int = 0
@@ -350,7 +357,7 @@ def _open_binding(
                     ).distinct()
                 )
             }
-            required_v2_capabilities = {
+            required_agent_capabilities = {
                 (
                     AgentExecutorKey(
                         ProviderId(str(record.provider_id)),
@@ -380,7 +387,9 @@ def _open_binding(
                         == agent_configuration_revisions.c.auth_profile_revision_hash,
                     )
                     .where(
-                        runs.c.workflow_format_version == WorkflowFormatVersion.V2,
+                        runs.c.workflow_format_version.in_(
+                            (WorkflowFormatVersion.V2, WorkflowFormatVersion.V3)
+                        ),
                         runs.c.state != "COMPLETED",
                     )
                     .distinct()
@@ -394,17 +403,17 @@ def _open_binding(
             raise DbosRuntimeBindingConflict(
                 "runtime adapter binding differs from durable effect intents"
             )
-        required_v2_keys = {key for key, _capability in required_v2_capabilities}
-        if not required_v2_keys.issubset(agent_registry.keys):
+        required_agent_keys = {key for key, _capability in required_agent_capabilities}
+        if not required_agent_keys.issubset(agent_registry.keys):
             raise DbosRuntimeBindingConflict(
-                "runtime V2 registry is missing a nonterminal durable executor binding"
+                "runtime registry is missing a nonterminal durable executor binding"
             )
         if any(
             capability not in agent_registry.declared_capabilities(key)
-            for key, capability in required_v2_capabilities
+            for key, capability in required_agent_capabilities
         ):
             raise DbosRuntimeBindingConflict(
-                "runtime V2 registry lacks a nonterminal durable capability"
+                "runtime registry lacks a nonterminal durable capability"
             )
         agent_executor = agent_factory.open()
         for registry_entry in agent_registry.entries:
@@ -416,13 +425,14 @@ def _open_binding(
             sqlite_url(settings.database_path), engine=engine
         )
         attempt_store = DbosAgentAttemptStore(engine, settings.application_version)
-        agent_process_supervisor = AgentProcessSupervisor(
-            attempt_store,
-            settings.process_control_root(),
-            settings.process_cgroup_root(),
-            grace_seconds=settings.agent_termination_grace_seconds,
-        )
-        if settings.agent_scratch_root is not None:
+        if agent_registry.keys:
+            agent_process_supervisor = AgentProcessSupervisor(
+                attempt_store,
+                settings.process_control_root(),
+                settings.process_cgroup_root(),
+                grace_seconds=settings.agent_termination_grace_seconds,
+            )
+        if agent_registry.keys and settings.agent_scratch_root is not None:
             agent_workspace_owner = LocalAgentAttemptWorkspaceOwner(
                 settings.agent_scratch_root
             )
@@ -584,10 +594,11 @@ class _DbosProcessOwner:
                 resources: list[EffectAdapter | AgentExecutorV2 | AgentExecutor] = [
                     bound.effect_adapter
                 ]
-                try:
-                    bound.agent_process_supervisor.close()
-                except BaseException as error:
-                    errors.append(error)
+                if bound.agent_process_supervisor is not None:
+                    try:
+                        bound.agent_process_supervisor.close()
+                    except BaseException as error:
+                        errors.append(error)
                 if bound.agent_workspace_owner is not None:
                     try:
                         bound.agent_workspace_owner.close()
@@ -633,12 +644,13 @@ class _DbosProcessOwner:
         otherwise -- so a runtime without a workspace owner has none to converge.
         """
 
+        supervisor = bound.agent_process_supervisor
         workspaces = bound.agent_workspace_owner
-        if workspaces is None:
+        if supervisor is None or workspaces is None:
             return
         converge_driverless_attempts(
             DbosAgentAttemptStore(bound.engine, bound.settings.application_version),
-            bound.agent_process_supervisor,
+            supervisor,
             workspaces,
         )
 
@@ -728,7 +740,12 @@ class DbosRuntime:
 
     @property
     def agent_process_supervisor(self) -> AgentProcessSupervisor:
-        return self._held().agent_process_supervisor
+        supervisor = self._held().agent_process_supervisor
+        if supervisor is None:
+            raise AgentProcessSupervisorUnavailable(
+                "runtime has no local agent process supervisor: empty executor registry"
+            )
+        return supervisor
 
     @property
     def agent_workspace_owner(self) -> LocalAgentAttemptWorkspaceOwner | None:

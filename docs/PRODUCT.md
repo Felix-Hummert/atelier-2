@@ -747,15 +747,19 @@ workflow editing. The graph, API, and local cockpit are a proven durable
 vertical, not yet a general-purpose workflow engine or a deployed remote
 product.
 
-A packaged container image now exists for that same local serve: the locked
-project and the built cockpit are baked in, the process runs unprivileged, and
-only the Claude executable is admitted, with isolated `HOME` and a single
-mounted `.credentials.json`. Durable store and scratch are a host volume.
-The live host unit `atelier2-live.service` is still the running serve; the
-container path is documented, not switched live. How to start and redeploy it
-is owned by [OPERATIONS.md](OPERATIONS.md). The served process writes JSON
-lines to stderr for a failed agent attempt and an unhandled HTTP exception;
-the access log is off. Network hardening remains
+A packaged container candidate now runs that same cockpit and catalog as one
+provider-free Serve image. It builds only from a clean committed tree, runs
+non-root with a read-only root, dropped capabilities and
+`no-new-privileges`, and keeps durable state in one fresh project-scoped volume.
+Each start chooses a Compose project and loopback port, labels its resources
+with the exact source identity, builds from an archived committed snapshot,
+waits for the matching health identity, and prints its exact shell-safe
+teardown command from a private candidate-lifecycle descriptor, so later
+checkout changes cannot redirect cleanup. It has no provider executable,
+credential/configuration or host-home/scratch mount, Runner service, runner
+protocol or external execution claim. The existing Core `ExactOutput` fixture
+remains Core behavior, not a packaged provider. The operator runbook is
+[OPERATIONS.md](OPERATIONS.md); network hardening remains
 [ADR 0009](decisions/0009-runner-trust.md).
 
 That API now has a command-line client of its own, so starting real work costs

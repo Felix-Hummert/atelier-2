@@ -9,6 +9,7 @@ import subprocess
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Never
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -16,6 +17,7 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+import atelier2.adapters.dbos.runtime as dbos_runtime
 from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY,
@@ -31,6 +33,7 @@ from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import (
     SQLITE_LOCK_TIMEOUT_SECONDS,
+    AgentProcessSupervisorUnavailable,
     DbosRuntime,
     DbosRuntimeSettings,
 )
@@ -377,6 +380,29 @@ def test_an_undeclared_claude_deployment_offers_no_provider_executor(
 
     try:
         assert runtime.agent_executor_registry.keys == frozenset()
+    finally:
+        runtime.close()
+
+
+def test_provider_free_composition_skips_process_supervision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden_process_authority() -> Never:
+        raise AssertionError("provider-free host resolved process authority")
+
+    monkeypatch.setattr(
+        dbos_runtime, "delegated_cgroup_root", forbidden_process_authority
+    )
+    monkeypatch.setattr(
+        dbos_runtime, "AgentProcessSupervisor", forbidden_process_authority
+    )
+    _app, runtime = compose_application(served_settings(tmp_path))
+    try:
+        assert runtime.agent_executor_registry.keys == frozenset()
+        with pytest.raises(
+            AgentProcessSupervisorUnavailable, match="empty executor registry"
+        ):
+            _ = runtime.agent_process_supervisor
     finally:
         runtime.close()
 

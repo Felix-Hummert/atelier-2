@@ -6,6 +6,7 @@
 **/*.py[cod]
 **/.pytest_cache
 **/.ruff_cache
+docs
 reports
 tests
 *.sqlite
@@ -16,9 +17,9 @@ frontend/playwright-report
 frontend/.playwright-runtime
 frontend/.svelte-kit
 frontend/coverage
-**/.credentials.json
 **/.env
 **/.env.*
+**/.credentials.json
 **/.claude
 **/.claude.json
 **/.codex
