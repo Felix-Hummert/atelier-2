@@ -1492,6 +1492,7 @@ textarea {
 .studio-home {
   display: grid;
   grid-template-areas: "board" "chat";
+  max-width: none;
   min-height: 100%;
 }
 
