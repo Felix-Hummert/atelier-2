@@ -1899,12 +1899,32 @@ test("proves(project-occupancy-editor-confirms-complete-project-truth): edits on
   await page.getByRole("button", { name: "Reload" }).click();
   await expect(page.getByRole("combobox", { name: "Recommendation for builder" })).toBeVisible();
   await page.getByRole("combobox", { name: "Recommendation for builder" }).selectOption(builderHash);
-  const uncertain = async (route: Route) => route.abort();
+  let uncertainWriteBody: Buffer | null = null;
+  const uncertain = async (route: Route) => {
+    if (route.request().method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    uncertainWriteBody = route.request().postDataBuffer();
+    await route.abort();
+  };
   await page.route("**/occupancy/**", uncertain);
   await page.getByRole("button", { name: "Save" }).click();
   await expect(page.getByText("Occupancy save unconfirmed.")).toBeVisible();
+  expect(uncertainWriteBody).not.toBeNull();
   await page.screenshot({ path: "test-results/project-occupancy-editor-uncertain.png", fullPage: true });
   await page.unroute("**/occupancy/**", uncertain);
+  let retryWriteBody: Buffer | null = null;
+  const observeRetry = async (route: Route) => {
+    if (route.request().method() === "PUT") retryWriteBody = route.request().postDataBuffer();
+    await route.continue();
+  };
+  await page.route("**/occupancy/**", observeRetry);
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator(".occupancy-confirmed")).toContainText("Saved");
+  expect(retryWriteBody).not.toBeNull();
+  expect(retryWriteBody).toEqual(uncertainWriteBody);
+  await page.unroute("**/occupancy/**", observeRetry);
   const noWorkflows = async (route: Route) => {
     if (route.request().url().includes("/workflow-revisions?")) {
       await route.fulfill({
