@@ -34,6 +34,7 @@ from atelier2.adapters.dbos.schema import (
     V24_SCHEMA_HANDOFF,
     V25_SCHEMA_HANDOFF,
     V26_SCHEMA_HANDOFF,
+    V27_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -48,7 +49,6 @@ from atelier2.adapters.dbos.schema import (
     initialize_schema,
     node_artifacts_v3,
     node_execution_requests_v3,
-    node_receipt_access_v3,
     node_receipt_outputs_v3,
     node_receipts_v3,
     published_revisions,
@@ -187,6 +187,7 @@ def test_unknown_schema_is_refused_without_logical_mutation(
     assert _logical_dump(database_path) == before_logical
 
 
+@pytest.mark.proves("fresh-store-has-no-writerless-access-storage")
 def test_empty_database_creates_the_exact_current_schema_and_reopens(
     tmp_path: Path,
 ) -> None:
@@ -217,8 +218,11 @@ def test_empty_database_creates_the_exact_current_schema_and_reopens(
             node_artifacts_v3.name,
             node_receipts_v3.name,
             node_receipt_outputs_v3.name,
-            node_receipt_access_v3.name,
         }
+        access_objects = connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'node_receipt_access_v3%'"
+        ).scalars()
+        assert tuple(access_objects) == ()
         assert {
             column["name"] for column in sa.inspect(connection).get_columns("runs")
         } >= {
@@ -354,11 +358,17 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[26]
         == "0af3ca8bbbbe06a56c56bb0988de384fde2a807b1e409152a02e1e226e917ab8"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 27
+    assert V27_SCHEMA_HANDOFF.version == 27
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V27_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[27]
         == "7f929ab33c6b8742ff24a301bb13cb1f49a4ced2d96b52b97dbb26196ebd2ac4"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 28
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[28]
+        == "8e15796b7361796fc5c70e9c1682ddf58b967dea7fb112127366cfca600c9b36"
     )
 
 
@@ -385,6 +395,7 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         24,
         25,
         26,
+        27,
     ],
 )
 def test_predecessor_store_is_refused_without_mutation(

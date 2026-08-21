@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from inspect import signature
 from typing import cast
 
 import pytest
@@ -209,7 +210,9 @@ def test_changing_artifact_value_bytes_changes_the_hash() -> None:
     assert changed.value_hash.value != RESULT_VALUE_HASH
 
 
+@pytest.mark.proves("receipt-has-no-access-input-and-keeps-v3-identity")
 def test_succeeded_receipt_hash_is_the_literal_v3_vector() -> None:
+    assert "access_receipt_hashes" not in signature(NodeReceipt).parameters
     artifact = NodeArtifact(RUN, NODE, _execution(), "result", SCHEMA, RESULT_BYTES)
     receipt = NodeReceipt(
         _execution(),

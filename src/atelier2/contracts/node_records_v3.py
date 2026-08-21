@@ -713,7 +713,6 @@ class NodeReceipt:
     request_hash: NodeExecutionRequestHash
     context_package_hash: DeclaredContextPackageHash
     outputs: tuple[ReceiptOutput, ...]
-    access_receipt_hashes: tuple[Sha256Hash, ...] = ()
     schema_revision: PublishedRevisionHash | None = None
     value_hash: Sha256Hash | None = None
     receipt_hash: NodeReceiptHash = field(init=False)
@@ -763,10 +762,9 @@ class NodeReceipt:
                         "node-receipt-outputs/v3",
                         *(output.framed() for output in self.outputs),
                     ),
-                    frame(
-                        "node-receipt-access/v3",
-                        *(_ascii_hash(item) for item in self.access_receipt_hashes),
-                    ),
+                    # Published V3 receipts hash this empty subframe; removing
+                    # its historical bytes would rename them.
+                    frame("node-receipt-access/v3"),
                     *identity,
                 )
             ),

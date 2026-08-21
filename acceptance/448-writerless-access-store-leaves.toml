@@ -1,0 +1,18 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/448"
+
+[[sentence]]
+id = "fresh-store-has-no-writerless-access-storage"
+text = "A fresh current store has no node_receipt_access_v3 table or naming trigger."
+
+[[sentence]]
+id = "receipt-has-no-access-input-and-keeps-v3-identity"
+text = "NodeReceipt exposes no Access input before a real resolver exists, while the living V3 fields still hash to pinned 9f582bf8b4a9583de77ff8bf7f36b5e4211847f31543e9f62392609bf29144ab through the frozen empty subframe."
+
+[[sentence]]
+id = "empty-v27-access-store-migrates-with-living-rows-intact"
+text = "An exact populated V27 store with empty Access table migrates transactionally to exact V28, preserving every living row and stored receipt hash, then reopens."
+
+[[sentence]]
+id = "nonempty-v27-access-store-is-refused-unaltered"
+text = "Any V27 Access row refuses migration without any logical mutation because no production owner can translate it."

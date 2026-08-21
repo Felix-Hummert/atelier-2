@@ -916,7 +916,7 @@ The node's terminal receipt is one envelope, owned by the core for every kind
 bound**, one ordered tuple of `(name, schema revision, hash)` for the declared
 outputs, **and, where a schema judged the decoded bytes, that same schema revision
 and the hash of those exact bytes as fields of this family** — older receipts
-without those two fields remain readable — the access receipts actually used, and — for an Action — the derived
+without those two fields remain readable — and — for an Action — the derived
 idempotency key, the intent hash and the adapter's typed readback evidence as an
 opaque hashed payload. The package hash is carried, never re-derived: a reader asks
 "which context did this receipt run against?" without reconstructing the request
@@ -926,6 +926,11 @@ reader ever infers it from a hash. One receipt per node, not one per output: #1 
 every node exactly one terminal receipt, and per-output receipts would make that
 count ambiguous. That receipt change is the largest implementation cost of this
 record and is named, not hidden.
+
+The published V3 hash retains its literal empty `node-receipt-access/v3`
+subframe as frozen byte identity, but exposes no Access field or store. A future
+privileged Context Resolver owns a typed access receipt only with its first real
+caller; it does not reuse the retired writerless surface.
 
 ## Worked example: the smallest cross-kind chain
 

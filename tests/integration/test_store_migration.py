@@ -25,6 +25,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.schema import CreateIndex
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.published_schema_shapes import PUBLISHED_TABLE_SHAPES
 from atelier2.adapters.dbos.run_transitions import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
@@ -42,6 +43,7 @@ from atelier2.adapters.dbos.schema import (
     V24_SCHEMA_HANDOFF,
     V25_SCHEMA_HANDOFF,
     V26_SCHEMA_HANDOFF,
+    V27_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -87,6 +89,26 @@ from tests.scenarios.agents import agent_attempt_execution
 ARCHIVED_RUN_ID = "live/erster-lauf-nach-der-nacht"
 ARCHIVED_NODE_ID = "cook"
 ARCHIVED_OUTPUT = b"lasagne, aufgetragen"
+
+_V27_ACCESS_STORE_DDL = """
+CREATE TABLE node_receipt_access_v3 (
+	node_execution_id TEXT NOT NULL, position INTEGER NOT NULL, access_receipt_hash TEXT NOT NULL,
+	PRIMARY KEY (node_execution_id, position), CHECK (position >= 0),
+	CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'), CHECK (length(access_receipt_hash) = 64 AND access_receipt_hash NOT GLOB '*[^0-9a-f]*'),
+	FOREIGN KEY(node_execution_id) REFERENCES node_receipts_v3 (node_execution_id)
+);
+CREATE TRIGGER node_receipt_access_v3_no_update BEFORE UPDATE ON node_receipt_access_v3 BEGIN SELECT RAISE(ABORT, 'v3 node receipt access is immutable'); END; CREATE TRIGGER node_receipt_access_v3_no_delete BEFORE DELETE ON node_receipt_access_v3 BEGIN SELECT RAISE(ABORT, 'v3 node receipt access is immutable'); END;
+"""
+
+
+def _restore_v27_access_store(connection: sqlite3.Connection) -> None:
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='node_receipt_access_v3'"
+    ).fetchone()
+    if exists is None:
+        connection.executescript(_V27_ACCESS_STORE_DDL)
+
 
 _PREDECESSOR_RUN_EVENTS_DDL = """
 CREATE TABLE run_events (
@@ -493,6 +515,8 @@ def _create_populated_v13_store(database_path: Path) -> None:
 
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
+    with sqlite3.connect(database_path) as predecessor:
+        _restore_v27_access_store(predecessor)
     published = PublishedRevision(RevisionKind.WORKFLOW, b"name: lasagne\n")
     lineage = CatalogLineage(published.kind, published.revision_hash)
     configuration = "44" * 32
@@ -921,6 +945,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v27_access_store(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -952,6 +977,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v27_access_store(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -970,6 +996,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v27_access_store(connection)
         _revert_project_verification_failed_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -988,6 +1015,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v27_access_store(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -1006,6 +1034,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v27_access_store(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         connection.execute(
@@ -1023,6 +1052,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v27_access_store(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -1030,6 +1060,131 @@ def _create_exact_v26_store(database_path: Path) -> None:
         )
         connection.commit()
         _require_product_shape(connection, V26_SCHEMA_HANDOFF.version)
+
+
+def _insert_v27_receipt_witness(
+    connection: sqlite3.Connection, *, access: bool
+) -> None:
+    configuration, package, request, execution = (
+        "44" * 32,
+        "33" * 32,
+        "22" * 32,
+        "11" * 32,
+    )
+    connection.execute(
+        "INSERT INTO run_configuration_revisions VALUES (?, ?)",
+        (configuration, b"frozen configuration"),
+    )
+    connection.execute(
+        "INSERT INTO context_packages_v3 VALUES (?, ?)",
+        (package, b"frozen manifest"),
+    )
+    connection.execute(
+        "INSERT INTO node_execution_requests_v3 VALUES (?, ?, ?, ?, ?)",
+        (request, execution, configuration, package, b"frozen request"),
+    )
+    connection.execute(
+        "INSERT INTO node_receipts_v3 VALUES (?, ?, ?, ?, ?, ?)",
+        (execution, "succeeded", "completed", request, package, "9f" * 32),
+    )
+    if access:
+        connection.execute(
+            "INSERT INTO node_receipt_access_v3 VALUES (?, ?, ?)",
+            (execution, 0, "aa" * 32),
+        )
+
+
+def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> None:
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v27_access_store(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V27_SCHEMA_HANDOFF.version,),
+        )
+        _insert_v27_receipt_witness(connection, access=access)
+        connection.commit()
+        _require_product_shape(connection, V27_SCHEMA_HANDOFF.version)
+
+
+def _v27_living_rows(database_path: Path) -> tuple[tuple[object, ...], ...]:
+    with sqlite3.connect(database_path) as connection:
+        return tuple(
+            (table, *row)
+            for table in (
+                "run_configuration_revisions",
+                "context_packages_v3",
+                "node_execution_requests_v3",
+                "node_receipts_v3",
+            )
+            for row in connection.execute(f"SELECT * FROM {table}")
+        )
+
+
+@pytest.mark.proves("empty-v27-access-store-migrates-with-living-rows-intact")
+def test_populated_v27_with_empty_access_store_migrates_and_reopens(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v27_store(database_path)
+    before = _v27_living_rows(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "27" in shown.out and "28" in shown.out
+    assert _v27_living_rows(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (28,)
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE "
+                "'node_receipt_access_v3%'"
+            ).fetchall()
+            == []
+        )
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+
+
+@pytest.mark.proves("nonempty-v27-access-store-is-refused-unaltered")
+def test_nonempty_v27_access_store_is_refused_without_mutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v27_store(database_path, access=True)
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "node_receipt_access_v3" in shown.err and "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+
+
+def test_nonempty_access_store_rolls_back_the_whole_v26_chain(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v26_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        _insert_v27_receipt_witness(connection, access=True)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    assert "node_receipt_access_v3" in capsys.readouterr().err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (26,)
 
 
 def test_an_exact_v21_store_migrates_to_v22(
@@ -1150,7 +1305,7 @@ def test_an_exact_v24_store_migrates_to_v25(
     engine.dispose()
 
 
-def test_an_exact_v25_store_migrates_through_v26_to_v27(
+def test_an_exact_v25_store_migrates_through_v27_to_v28(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1163,7 +1318,7 @@ def test_an_exact_v25_store_migrates_through_v26_to_v27(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert all(step in shown.out for step in ("25", "26", "27"))
+    assert all(step in shown.out for step in ("25", "26", "27", "28"))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -1188,7 +1343,7 @@ def test_an_exact_v25_store_migrates_through_v26_to_v27(
     engine.dispose()
 
 
-def test_an_exact_v26_store_migrates_to_v27(
+def test_an_exact_v26_store_migrates_through_v27_to_v28(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1201,7 +1356,7 @@ def test_an_exact_v26_store_migrates_to_v27(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "26" in shown.out and "27" in shown.out
+    assert all(step in shown.out for step in ("26", "27", "28"))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
@@ -1220,10 +1375,11 @@ def test_an_exact_v26_store_migrates_to_v27(
     engine.dispose()
 
 
-def test_v26_attempt_bytes_cross_v27_unchanged_with_none_evidence(
+def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
+    assert (V27_SCHEMA_HANDOFF.version, agent_attempts.name) in PUBLISHED_TABLE_SHAPES
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
     request = attempt_request(runtime, "migration/v26-populated")
@@ -1231,6 +1387,7 @@ def test_v26_attempt_bytes_cross_v27_unchanged_with_none_evidence(
     runtime.close()
 
     with sqlite3.connect(database_path) as connection:
+        _restore_v27_access_store(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
