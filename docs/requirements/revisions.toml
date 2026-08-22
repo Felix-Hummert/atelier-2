@@ -10,10 +10,15 @@ document = "0002"
 path = "docs/requirements/0002-teams-und-zugang.md"
 content_sha256 = "c270ec1e6b2bab894bca5c3f51bc78df73e83206b35f849d2ccd6169efc66bb3"
 
-[[legacy]]
+# In-place legacy migration (issue #521): approval_comment_id follows as soon as
+# the operator posts the exact approval line on issue #521; until then the gate
+# names this field as the one outstanding piece.
+[[revision]]
 document = "0003"
 path = "docs/requirements/0003-ziel-ui.md"
-content_sha256 = "0f18db4ef0b74541ae8a1c0114c7b75752cd76a453fd8571e04f5184ee9bb592"
+content_sha256 = "e61107df572e07756ddfcbc6694b325fb024b30eb2698f51bda0d08bd5c897f0"
+approval_sha256 = "d32fb8f359ab6272dee1fbdd5822130005bc2c993e0e738abeeee6ac8feffecd"
+predecessor = "GENESIS"
 
 [[revision]]
 document = "0004"
