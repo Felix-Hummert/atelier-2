@@ -70,3 +70,12 @@ def test_launcher_copies_public_bootstrap_and_keeps_core_inspect_read_only() -> 
     assert 'handoff / "inspect-attested"' in core
     assert "_write_json(inspect_attested" not in core
     assert 'handoff / "inspect-attested").write' not in core
+
+
+def test_launcher_records_the_witness_network_only_after_it_is_created() -> None:
+    """A concurrent `clean` must never see a recorded network before it exists,
+    or it could mistake a still-running witness for a released one."""
+    text = LAUNCHER.read_text(encoding="utf-8")
+    network_created_at = text.index("docker network create")
+    network_recorded_at = text.index('>"$root/network"')
+    assert network_created_at < network_recorded_at
