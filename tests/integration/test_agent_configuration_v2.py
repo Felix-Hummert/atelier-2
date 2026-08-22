@@ -1367,6 +1367,44 @@ def test_prepared_v2_attempt_is_cleaned_through_durable_node_when_executor_is_un
         )
         assert events[-1]["agent_attempt_id"] is None
         assert events[-1]["attempt_ordinal"] is None
+        client = _api_client(restarted)
+        public_ref = encode_public_run_reference(run_id)
+        listed = client.get(API_PREFIX + "/runs/" + public_ref)
+        assert listed.status_code == 200
+        listed_body = listed.json()
+        failed_rail = [
+            ("build", "failed", None),
+            ("done", "queued", None),
+        ]
+        assert [
+            (entry["node_id"], entry["state"], entry["attempt"])
+            for entry in listed_body["node_rail"]
+        ] == failed_rail
+        assert listed_body["agent_attempts"] == []
+        detail = client.get(API_PREFIX + "/runs/" + public_ref + "/nodes/build")
+        assert detail.status_code == 200
+        assert detail.json()["state"] == "failed"
+        assert (
+            detail.json()["refusal"]
+            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+        )
+        events_response = client.get(API_PREFIX + "/runs/" + public_ref + "/events")
+        assert events_response.status_code == 200
+        streamed = [
+            json.loads(line.removeprefix("data: "))
+            for line in events_response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert streamed[-1]["event"] == "AGENT_FAILED"
+        assert (
+            streamed[-1]["reason"]
+            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+        )
+        assert "attempt_id" not in streamed[-1]
+        assert [
+            (entry["node_id"], entry["state"], entry["attempt"])
+            for entry in streamed[-1]["node_rail"]
+        ] == failed_rail
     finally:
         restarted.close()
 

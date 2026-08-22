@@ -93,6 +93,7 @@ from atelier2.contracts.run_projections import (
     NodeAnswer,
     NodeDetail,
     NodeProvenance,
+    PublicAgentAttemptState,
     RunPage,
     RunProjection,
     WaitingReconciliationProjection,
@@ -343,6 +344,16 @@ def _event_endpoint(record: Mapping[Any, Any]) -> tuple[str, NodeExecutionId]:
     if execution_id != expected:
         raise RunTransitionConflict("event node execution binding disagrees")
     return str(record["event_kind"]), execution_id
+
+
+def _is_never_launched_cleanup(attempt: AgentAttemptProjection) -> bool:
+    cancellation = attempt.cancellation
+    return (
+        attempt.state is PublicAgentAttemptState.CANCELLED
+        and cancellation is not None
+        and cancellation.disposition
+        is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+    )
 
 
 def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
@@ -1372,6 +1383,9 @@ class DbosQueries:
                 # would refuse the read. COMPLETED is that case. FAILED is
                 # not: the attempt is still the current one, and the rail
                 # needs it so a list read does not pose the node as working.
+                # NEVER_LAUNCHED cleanup on a FAILED run is the exception: it
+                # is control evidence for an attempt-less refusal, not the
+                # public node ending.
                 if records_for_execution and run.state is not RunState.COMPLETED:
                     graph = graphs[run.revision_hash]
                     if not isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3)):
@@ -1385,6 +1399,12 @@ class DbosQueries:
                         )
                         for attempt_record in records_for_execution
                     )
+                    if run.state is RunState.FAILED:
+                        attempt_projections = tuple(
+                            attempt
+                            for attempt in attempt_projections
+                            if not _is_never_launched_cleanup(attempt)
+                        )
             instant = instants.get(run.run_id.value)
             projections.append(
                 RunProjection(

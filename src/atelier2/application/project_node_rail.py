@@ -22,13 +22,17 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from atelier2.contracts.agent_attempts import AgentAttemptState
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptState,
+)
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
 from atelier2.contracts.run_projections import (
+    AgentAttemptProjection,
     NodeState,
     PublicAgentAttemptState,
     RunProjection,
@@ -190,6 +194,7 @@ class _RailDerivation:
             and isinstance(run, RunV2 | RunV3)
             and _is_agent(node)
             and attempt is not None
+            and not _never_launched_cleanup_on_failed_run(run, attempt)
         ):
             return _NODE_STATES_ENDED_BY_ATTEMPT.get(attempt.state, NodeState.WORKING)
         ended = _state_the_event_ended_in(last_event)
@@ -265,6 +270,8 @@ class _RailDerivation:
             if node.id == run.current_node_id
             else None
         )
+        if _never_launched_cleanup_on_failed_run(run, from_snapshot):
+            from_snapshot = None
         if (
             self.leading_event is not None
             and from_event is not None
@@ -305,6 +312,21 @@ def _walk_from_start(graph: AnyWorkflowDocument) -> tuple[_RailNode, ...]:
         node = graph.node(node.next)
     walked.append(node)
     return tuple(walked)
+
+
+def _never_launched_cleanup_on_failed_run(
+    run: RunV2 | RunV3, attempt: AgentAttemptProjection | None
+) -> bool:
+    """PREPARED cleanup is control evidence, not the public ending of a FAILED run."""
+    cancellation = None if attempt is None else attempt.cancellation
+    return (
+        run.state is RunState.FAILED
+        and attempt is not None
+        and attempt.state is PublicAgentAttemptState.CANCELLED
+        and cancellation is not None
+        and cancellation.disposition
+        is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+    )
 
 
 def _is_agent(node: _RailNode) -> bool:
