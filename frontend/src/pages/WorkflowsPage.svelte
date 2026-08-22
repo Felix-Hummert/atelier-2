@@ -3,6 +3,7 @@
 
   import type { CockpitApi, WorkflowRevisionSummary } from "../api/client";
   import ReadState from "../components/ReadState.svelte";
+  import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import {
@@ -15,7 +16,7 @@
   import { readEveryRevision } from "../lib/runPages";
   import { workflowPath } from "../lib/route";
   import { groupSavedWorkflows, type SavedWorkflowRow } from "../lib/savedWorkflows";
-  import { workflowsPageCopy } from "../lib/workflowsPageCopy";
+  import { catalogStateNote, workflowsPageCopy } from "../lib/workflowsPageCopy";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
@@ -26,24 +27,33 @@
 
   type NamedWorkflowRow = SavedWorkflowRow & { name: string };
 
-  let revisions: RetainedRead<WorkflowRevisionSummary[], ReadFailure> =
-    retainedRead<WorkflowRevisionSummary[], ReadFailure>();
+  interface WorkflowsSnapshot {
+    items: WorkflowRevisionSummary[];
+    newestByName: Record<string, string>;
+    catalogByName: Record<string, CatalogNameState>;
+  }
+
+  let revisions: RetainedRead<WorkflowsSnapshot, ReadFailure> =
+    retainedRead<WorkflowsSnapshot, ReadFailure>();
   let failureMessage: string | null = null;
 
   /**
-   * One card per published name, newest revision first.
+   * One card per published name, the catalog's current head first.
    *
    * The library shows names, never hashes (REQ-UI-05): the unnamed revision
    * every fresh publish starts as, and every revision published straight
-   * through the API without a `name:` field, has no card here at all. This
-   * groups by document name rather than by formal catalog-lineage admission,
-   * because a name a person can read is what makes a revision "a workflow"
-   * on this page -- the catalog-admission bureaucracy is a separate act this
-   * page does not gate on.
+   * through the API without a `name:` field, has no card here at all. A name
+   * that is not the catalog's admitted head for it -- unlisted, unnamable, or
+   * retired -- still gets a card rather than disappearing (`catalogStateNote`
+   * explains why), the same choice the saved-workflow picker on `/atelier/new`
+   * already makes for the same three states; the project occupancy editor
+   * hides them instead because binding an occupancy needs a live catalog
+   * member, a precondition this read-only browse does not carry.
    */
-  $: namedRows = groupSavedWorkflows(revisions.confirmed ?? []).filter(
-    (row): row is NamedWorkflowRow => row.name !== null
-  );
+  $: namedRows = groupSavedWorkflows(
+    revisions.confirmed?.items ?? [],
+    revisions.confirmed?.newestByName ?? {}
+  ).filter((row): row is NamedWorkflowRow => row.name !== null);
 
   onMount(() => {
     void loadRevisions();
@@ -62,7 +72,30 @@
         });
         return;
       }
-      revisions = confirmRead(revisions, begun.generation, reading.revisions);
+      const names = [
+        ...new Set(reading.revisions.flatMap((item) => (item.name === null ? [] : [item.name])))
+      ];
+      const catalogByName = Object.fromEntries(
+        await Promise.all(
+          names.map(async (name) => [
+            name,
+            await catalogNameStateOf(name, (asked) => cockpitApi.getRevisionByName(asked))
+          ])
+        )
+      ) as Record<string, CatalogNameState>;
+      const newestByName = catalogHeadsOf(reading.revisions, catalogByName);
+      if (newestByName === null) {
+        revisions = failRead(revisions, begun.generation, {
+          kind: "unavailable",
+          title: workflowsPageCopy.listUnavailable
+        });
+        return;
+      }
+      revisions = confirmRead(revisions, begun.generation, {
+        items: reading.revisions,
+        newestByName,
+        catalogByName
+      });
     } catch (error) {
       failureMessage = humanErrorMessage(error, workflowsPageCopy.listUnavailable);
       revisions = failRead(revisions, begun.generation, {
@@ -92,9 +125,13 @@
   <ul class="workflow-cards">
     {#each namedRows as row (row.name)}
       {@const head = row.revisions[0]}
+      {@const note = catalogStateNote(revisions.confirmed?.catalogByName[row.name])}
       <li>
         <button type="button" class="workflow-card" onclick={() => open(row.name)}>
-          <strong>{row.name}</strong>
+          <span class="workflow-card-head">
+            <strong>{row.name}</strong>
+            {#if note !== null}<span class="note">{wrapDisplayCopy(note)}</span>{/if}
+          </span>
           <span class="muted">{head?.description ?? wrapDisplayCopy(workflowsPageCopy.noDescription)}</span>
         </button>
       </li>
@@ -156,11 +193,24 @@
     border-color: var(--accent);
   }
 
+  .workflow-card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+  }
+
   .workflow-card strong {
     font-size: 0.95rem;
   }
 
   .workflow-card span {
     font-size: 0.85rem;
+  }
+
+  .note {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--amber);
   }
 </style>

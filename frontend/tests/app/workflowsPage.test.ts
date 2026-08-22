@@ -2,17 +2,22 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type {
-  CockpitApi,
-  WorkflowRevisionDetail,
-  WorkflowRevisionSummary
+import {
+  CockpitRequestError,
+  type CatalogNameResolution,
+  type CockpitApi,
+  type Problem,
+  type WorkflowRevisionDetail,
+  type WorkflowRevisionSummary
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
 
 type V3Graph = Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>;
+type GetRevisionByName = CockpitApi["getRevisionByName"];
 
 const NAMED_HASH = "b".repeat(64);
+const LINEAGE_ID = "e".repeat(64);
 const UNNAMED_HASH = "c".repeat(64);
 const WORKFLOW_NAME = "iterate-code";
 
@@ -54,7 +59,7 @@ function unnamedSummary(): WorkflowRevisionSummary {
   };
 }
 
-function namedDetail(graphOverrides: Partial<V3Graph> = {}): WorkflowRevisionDetail {
+function namedDetail(graphOverrides: Partial<V3Graph> = {}, hash = NAMED_HASH): WorkflowRevisionDetail {
   const graph: V3Graph = {
     workflow_format_version: 3,
     executable: true,
@@ -70,7 +75,33 @@ function namedDetail(graphOverrides: Partial<V3Graph> = {}): WorkflowRevisionDet
     description: "build, then review",
     ...graphOverrides
   };
-  return { workflow_revision_hash: NAMED_HASH, document_base64: "", graph };
+  return { workflow_revision_hash: hash, document_base64: "", graph };
+}
+
+/** `getRevisionByName` answering that this name's catalog head is `hash`. */
+function admittedByName(hash = NAMED_HASH): GetRevisionByName {
+  return vi.fn(async (): Promise<CatalogNameResolution> => ({
+    display_name: WORKFLOW_NAME,
+    lineage_id: LINEAGE_ID,
+    workflow_revision_hash: hash,
+    revision_number: 1
+  }));
+}
+
+function problem(code: string): Problem {
+  return {
+    type: `urn:atelier2:problem:v1:${code}`,
+    title: code,
+    status: code === "catalog-lineage-retired" ? 410 : 404,
+    detail: code
+  } as Problem;
+}
+
+/** `getRevisionByName` answering that this name's lineage was retired. */
+function retiredByName(): GetRevisionByName {
+  return vi.fn(async () => {
+    throw new CockpitRequestError("retired", problem("catalog-lineage-retired"), true);
+  });
 }
 
 describe("the workflows catalog list", () => {
@@ -79,7 +110,8 @@ describe("the workflows catalog list", () => {
       listWorkflowRevisions: vi.fn(async () => ({
         items: [namedSummary(), unnamedSummary()],
         next_after_revision_hash: null
-      }))
+      })),
+      getRevisionByName: admittedByName()
     });
 
     const card = await screen.findByRole("button", { name: /iterate-code/ });
@@ -98,12 +130,54 @@ describe("the workflows catalog list", () => {
     expect(screen.queryByText(UNNAMED_HASH)).toBeNull();
   });
 
+  it("renders the catalog head, not whatever order the list answered with", async () => {
+    const staleFirst = namedSummary({
+      workflow_revision_hash: "a".repeat(64),
+      description: "an older, no-longer-current revision"
+    });
+    const catalogHead = namedSummary({
+      workflow_revision_hash: "d".repeat(64),
+      description: "the current, catalog-admitted revision"
+    });
+
+    openAt("/atelier/workflows", {
+      // The list answers with the stale revision first -- the durable store
+      // orders by hash, not recency -- so a card that trusted list order
+      // would show the wrong description.
+      listWorkflowRevisions: vi.fn(async () => ({
+        items: [staleFirst, catalogHead],
+        next_after_revision_hash: null
+      })),
+      getRevisionByName: admittedByName(catalogHead.workflow_revision_hash)
+    });
+
+    const card = await screen.findByRole("button", { name: /iterate-code/ });
+    expect(card.textContent).toContain("the current, catalog-admitted revision");
+    expect(card.textContent).not.toContain("an older, no-longer-current revision");
+  });
+
+  it("shows a name with no catalog admission rather than hiding it", async () => {
+    openAt("/atelier/workflows", {
+      listWorkflowRevisions: vi.fn(async () => ({
+        items: [namedSummary()],
+        next_after_revision_hash: null
+      })),
+      getRevisionByName: vi.fn(async () => {
+        throw new CockpitRequestError("missing", problem("catalog-name-not-found"), true);
+      })
+    });
+
+    const card = await screen.findByRole("button", { name: /iterate-code/ });
+    expect(card.textContent).toContain("Not admitted to the catalog.");
+  });
+
   it("opens a workflow's detail page on a card click", async () => {
     openAt("/atelier/workflows", {
       listWorkflowRevisions: vi.fn(async () => ({
         items: [namedSummary()],
         next_after_revision_hash: null
       })),
+      getRevisionByName: admittedByName(),
       getWorkflowRevision: vi.fn(async () => namedDetail())
     });
 
@@ -120,6 +194,7 @@ describe("the workflow detail", () => {
         items: [namedSummary()],
         next_after_revision_hash: null
       })),
+      getRevisionByName: admittedByName(),
       getWorkflowRevision: vi.fn(async () => namedDetail()),
       ...overrides
     });
@@ -133,6 +208,42 @@ describe("the workflow detail", () => {
     expect((await screen.findByRole("heading", { name: "review" })).isConnected).toBe(true);
     expect(screen.getByText("reviewer").isConnected).toBe(true);
     expect(screen.getByText("Check the diff.").isConnected).toBe(true);
+  });
+
+  it("shows the catalog head, not whatever order the list answered with", async () => {
+    const staleFirst = namedSummary({
+      workflow_revision_hash: "a".repeat(64),
+      description: "an older, no-longer-current revision"
+    });
+    const catalogHead = namedSummary({
+      workflow_revision_hash: "d".repeat(64),
+      description: "the current, catalog-admitted revision"
+    });
+
+    openDetail({
+      listWorkflowRevisions: vi.fn(async () => ({
+        items: [staleFirst, catalogHead],
+        next_after_revision_hash: null
+      })),
+      getRevisionByName: admittedByName(catalogHead.workflow_revision_hash),
+      getWorkflowRevision: vi.fn(async (hash: string) =>
+        namedDetail({ description: hash === catalogHead.workflow_revision_hash ? "current" : "stale" }, hash)
+      )
+    });
+
+    expect((await screen.findByText("current")).isConnected).toBe(true);
+    expect(screen.queryByText("stale")).toBeNull();
+  });
+
+  it("shows a retired lineage's state and refuses to offer Start on it", async () => {
+    openDetail({ getRevisionByName: retiredByName() });
+
+    expect((await screen.findByText("Retired")).isConnected).toBe(true);
+    const start = (await screen.findByRole("button", { name: "Start" })) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    expect(
+      (await screen.findByText(/catalog lineage was retired/)).isConnected
+    ).toBe(true);
   });
 
   it("disables Start and names the refusal when the revision cannot run", async () => {
@@ -161,7 +272,10 @@ describe("the workflow detail", () => {
       listWorkflowRevisions: vi.fn(async () => ({
         items: [namedSummary()],
         next_after_revision_hash: null
-      }))
+      })),
+      getRevisionByName: vi.fn(async () => {
+        throw new CockpitRequestError("missing", problem("catalog-name-not-found"), true);
+      })
     });
 
     expect((await screen.findByText("Workflow not found")).isConnected).toBe(true);

@@ -6,6 +6,7 @@
   import ReadState from "../components/ReadState.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
   import WorkflowNodePreviewPanel from "../components/WorkflowNodePreviewPanel.svelte";
+  import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { cannotBeStarted, humanErrorMessage } from "../lib/humanRefusal";
   import {
@@ -17,7 +18,7 @@
   } from "../lib/readResource";
   import { readEveryRevision } from "../lib/runPages";
   import { groupSavedWorkflows } from "../lib/savedWorkflows";
-  import { workflowFormatFact, workflowsPageCopy } from "../lib/workflowsPageCopy";
+  import { catalogStateNote, workflowFormatFact, workflowsPageCopy } from "../lib/workflowsPageCopy";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
@@ -34,15 +35,17 @@
    * rather than a transport failure.
    */
   type DetailOutcome =
-    | { kind: "found"; detail: WorkflowRevisionDetail }
+    | { kind: "found"; detail: WorkflowRevisionDetail; catalogState: CatalogNameState }
     | { kind: "not-found" };
 
   let detail: RetainedRead<DetailOutcome, ReadFailure> = retainedRead<DetailOutcome, ReadFailure>();
   let failureMessage: string | null = null;
   let selectedNodeId: string | null = null;
 
-  $: found = detail.confirmed?.kind === "found" ? detail.confirmed.detail : null;
-  $: graph = found?.graph ?? null;
+  $: found = detail.confirmed?.kind === "found" ? detail.confirmed : null;
+  $: graph = found?.detail.graph ?? null;
+  $: retired = found?.catalogState.kind === "retired";
+  $: catalogNote = catalogStateNote(found?.catalogState);
   /**
    * Only a version 3 document ever declares a `name:`, so a row this page
    * reaches by name is a version 3 revision by construction -- but the fetch
@@ -76,14 +79,25 @@
         });
         return;
       }
-      const row = groupSavedWorkflows(reading.revisions).find((candidate) => candidate.name === name);
+      const catalogState = await catalogNameStateOf(name, (asked) => cockpitApi.getRevisionByName(asked));
+      const newestByName = catalogHeadsOf(reading.revisions, { [name]: catalogState });
+      if (newestByName === null) {
+        detail = failRead(detail, begun.generation, {
+          kind: "unavailable",
+          title: workflowsPageCopy.detailUnavailable
+        });
+        return;
+      }
+      const row = groupSavedWorkflows(reading.revisions, newestByName).find(
+        (candidate) => candidate.name === name
+      );
       const head = row?.revisions[0];
       if (head === undefined) {
         detail = confirmRead(detail, begun.generation, { kind: "not-found" });
         return;
       }
       const full = await cockpitApi.getWorkflowRevision(head.workflow_revision_hash);
-      detail = confirmRead(detail, begun.generation, { kind: "found", detail: full });
+      detail = confirmRead(detail, begun.generation, { kind: "found", detail: full, catalogState });
     } catch (error) {
       failureMessage = humanErrorMessage(error, workflowsPageCopy.detailUnavailable);
       detail = failRead(detail, begun.generation, {
@@ -126,6 +140,9 @@
       <div>
         <p class="eyebrow">{wrapDisplayCopy(workflowsPageCopy.eyebrow)}</p>
         <h1 id="workflow-detail-title">{name}</h1>
+        {#if catalogNote !== null}
+          <p class="note">{wrapDisplayCopy(catalogNote)}</p>
+        {/if}
         {#if graph.workflow_format_version === 3 && graph.description !== null}
           <p class="muted">{graph.description}</p>
         {/if}
@@ -139,12 +156,14 @@
       <button
         type="button"
         class="primary"
-        disabled={graph.workflow_format_version === 3 && !graph.executable}
+        disabled={retired || (graph.workflow_format_version === 3 && !graph.executable)}
         onclick={goToStart}
       >{wrapDisplayCopy(workflowsPageCopy.start)}</button>
     </header>
 
-    {#if graph.workflow_format_version === 3 && !graph.executable}
+    {#if retired}
+      <p class="failure" role="alert">{wrapDisplayCopy(workflowsPageCopy.retiredNotice)}</p>
+    {:else if graph.workflow_format_version === 3 && !graph.executable}
       <p class="failure" role="alert">{cannotBeStarted(graph.not_executable_reason)}</p>
     {/if}
 
@@ -181,6 +200,14 @@
     margin: 0.2rem 0 0;
     color: var(--muted);
     font-size: 0.85rem;
+  }
+
+  .note {
+    margin: 0.15rem 0 0;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--amber);
   }
 
   .failure {
