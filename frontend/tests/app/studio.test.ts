@@ -322,7 +322,7 @@ describe("an empty studio teaches the one next action", () => {
     expect((await screen.findByText("Board runs unavailable")).isConnected).toBe(true);
     expect(screen.queryByText(/raw transport failure|private adapter failure|Failed to fetch/))
       .toBeNull();
-    expect(screen.getAllByRole("button", { name: "Retry studio runs" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Retry board runs" })).toHaveLength(1);
   });
 
   it("repeats only the failed Studio read until a successful retry replaces the error", async () => {
@@ -337,19 +337,19 @@ describe("an empty studio teaches the one next action", () => {
     openStudio([], { listRuns });
 
     await screen.findByText("Board runs unavailable");
-    const retry = screen.getByRole("button", { name: "Retry studio runs" });
+    const retry = screen.getByRole("button", { name: "Retry board runs" });
     await fireEvent.click(retry);
     await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(10));
-    await screen.findByRole("button", { name: "Retry studio runs" });
-    expect(screen.getAllByRole("button", { name: "Retry studio runs" })).toHaveLength(1);
+    await screen.findByRole("button", { name: "Retry board runs" });
+    expect(screen.getAllByRole("button", { name: "Retry board runs" })).toHaveLength(1);
     expect(screen.queryByText(/socket detail/)).toBeNull();
 
     await fireEvent.click(retry);
 
     expect((await screen.findByRole("article", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
     expect(listRuns).toHaveBeenCalledTimes(15);
-    expect(screen.queryByRole("button", { name: "Retry studio runs" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Refresh studio runs" }).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: "Retry board runs" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh board runs" }).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier");
   });
 
@@ -365,12 +365,12 @@ describe("an empty studio teaches the one next action", () => {
     expect(within(card).getByText("1 running").isConnected).toBe(true);
 
     response = "failed";
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh studio runs" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh board runs" }));
 
     await screen.findByText("Board runs unavailable");
     expect(within(card).getByText("1 running").isConnected).toBe(true);
     response = "completed";
-    await fireEvent.click(screen.getByRole("button", { name: "Retry studio runs" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Retry board runs" }));
 
     await waitFor(() => expect(within(card).getByText("1 done").isConnected).toBe(true));
     expect(within(card).queryByText("1 running")).toBeNull();
@@ -657,7 +657,7 @@ describe("every Studio control answers a named user question", () => {
     openStudio([], {
       listRuns: vi.fn().mockRejectedValue(new Error("wire detail"))
     });
-    await screen.findByRole("button", { name: "Retry studio runs" });
+    await screen.findByRole("button", { name: "Retry board runs" });
     expectStudioControlsAnswerNamedQuestions([studioQuestions.reloadStudioRuns.id]);
 
     cleanup();

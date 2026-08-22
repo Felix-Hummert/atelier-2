@@ -46,13 +46,14 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await expect(rail.getByText("Workflows", { exact: true })).toBeVisible();
   await expect(rail.locator("[title*='#7']")).toBeVisible();
   await expect(rail.locator("[title*='REQ-UI-05']")).toBeVisible();
-  await expect(rail.getByText("atelier-2", { exact: true })).toBeVisible();
+  await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
   await expect(rail.getByText("switch project")).toBeVisible();
   await expect(rail.getByText("Settings", { exact: true })).toBeVisible();
   await expect(rail.getByText("Profile", { exact: true })).toBeVisible();
+  await expect(rail.getByText("(later)", { exact: true })).toHaveCount(3);
 
   await rail.getByRole("link", { name: "History" }).click();
-  await expect(page.getByRole("heading", { name: "atelier-2" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier\/project$/);
 
   const stillOnProject = page.url();
@@ -311,7 +312,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   await page.goto("/atelier");
   await expect(page.getByText("Board runs unavailable")).toBeVisible();
   await expect(page.getByText(/Failed to fetch/)).toHaveCount(0);
-  const retry = page.getByRole("button", { name: "Retry studio runs" });
+  const retry = page.getByRole("button", { name: "Retry board runs" });
   await expect(retry).toHaveCount(1);
   const boardUrl = page.url();
 
@@ -328,13 +329,13 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   await retry.click();
   const board = page.getByRole("article", { name: THE_ONE_PROJECT });
   await expect(board).toBeVisible();
-  await expect(page.getByRole("button", { name: "Refresh studio runs" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Refresh board runs" })).toHaveCount(1);
   expectOnlyBoardRead();
   expect(page.url()).toBe(boardUrl);
 
   readsFail = true;
   observed.length = 0;
-  await page.getByRole("button", { name: "Refresh studio runs" }).click();
+  await page.getByRole("button", { name: "Refresh board runs" }).click();
   await expect(page.getByText("Board runs unavailable")).toBeVisible();
   await expect(board).toBeVisible();
   expectOnlyBoardRead();
@@ -364,7 +365,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   await retry.click();
   await expect(page.getByText("Board runs unavailable")).toHaveCount(0);
   await expect(board).toBeVisible();
-  await expect(page.getByRole("button", { name: "Refresh studio runs" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Refresh board runs" })).toHaveCount(1);
   expectOnlyBoardRead();
   expect(page.url()).toBe(boardUrl);
 });

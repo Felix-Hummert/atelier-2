@@ -134,10 +134,16 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
       await ready(page);
     }
     const rail = page.getByRole("navigation", { name: "Workshop" });
+    await expect(rail.getByText("[[[ atelier ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Chat ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Board ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Workflows ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ History ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ (later) ]]]", { exact: true })).toHaveCount(3);
+    await expect(rail.getByText("[[[ switch project ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ Settings ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ Profile ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
   }
 });
 

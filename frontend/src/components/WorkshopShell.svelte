@@ -2,6 +2,7 @@
   import { THE_ONE_PROJECT } from "../lib/project";
   import type { CockpitRoute } from "../lib/route";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { railCopy } from "../lib/railCopy";
   import {
     WORKSHOP_DESTINATIONS,
     activeWorkshopDestination,
@@ -28,7 +29,7 @@
 
 <div class="workshop">
   <nav class="workshop-rail" aria-label="Workshop">
-    <div class="rail-brand">atelier</div>
+    <div class="rail-brand">{wrapDisplayCopy(railCopy.brand)}</div>
 
     {#each WORKSHOP_DESTINATIONS as destination (destination.id)}
       {#if destinationIsReachable(destination)}
@@ -46,27 +47,27 @@
           <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
         </a>
       {:else}
-        <span class="nav-destination unavailable" aria-disabled="true" title={destination.vision}>
+        <span class="nav-destination unavailable" aria-disabled="true" title={wrapDisplayCopy(destination.vision)}>
           <span class="nav-destination-mark" aria-hidden="true">{destinationMarks[destination.id]}</span>
           <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
-          <small class="nav-destination-vision">{destination.visionRef}</small>
+          <small class="nav-destination-vision">{wrapDisplayCopy(railCopy.later)}</small>
         </span>
       {/if}
     {/each}
 
     <div class="rail-grow"></div>
 
-    <div class="rail-project" title="One project today — a real switcher is a later #133 slot.">
+    <div class="rail-project" title={wrapDisplayCopy(railCopy.switchProjectHint)}>
       <b>{THE_ONE_PROJECT}</b>
-      <span>switch project</span>
+      <span>{wrapDisplayCopy(railCopy.switchProject)}</span>
     </div>
     <div class="rail-settings">
       <span aria-hidden="true">⚙</span>
-      <span title="Professional settings surface — not built yet. REQ-UI-15.">Settings</span>
+      <span title={wrapDisplayCopy(railCopy.settingsHint)}>{wrapDisplayCopy(railCopy.settings)}</span>
       ·
       <span aria-hidden="true">◯</span>
-      <span title="Profile needs login/OIDC — not built yet. #82.">Profile</span>
-      <small>(later)</small>
+      <span title={wrapDisplayCopy(railCopy.profileHint)}>{wrapDisplayCopy(railCopy.profile)}</span>
+      <small>{wrapDisplayCopy(railCopy.later)}</small>
     </div>
   </nav>
 

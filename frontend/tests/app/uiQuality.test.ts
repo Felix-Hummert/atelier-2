@@ -124,12 +124,41 @@ function openProjectPseudoLocale() {
   });
 }
 
+// The one project's real name (#133 seam) and the "·" punctuation between the
+// Settings and Profile chips are the only rail text a pseudo-locale wrap does
+// not own — everything else the rail renders must come from a copy owner.
+const RAIL_TEXT_EXCEPTIONS = new Set([THE_ONE_PROJECT, "·"]);
+
+function isPseudoLocaleWrapped(text: string): boolean {
+  return text.startsWith("[[[") && text.endsWith("]]]");
+}
+
 async function railShowsOwnedPseudoLocale(): Promise<void> {
   const rail = await screen.findByRole("navigation", { name: "Workshop" });
   const labels = within(rail)
     .getAllByText((_, element) => element?.classList.contains("nav-destination-label") === true)
     .map((node) => node.textContent);
   expect(labels).toEqual(OWNED_RAIL);
+
+  const walker = document.createTreeWalker(rail, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) =>
+      node.parentElement?.closest('[aria-hidden="true"]') == null
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT
+  });
+  const unowned: string[] = [];
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const text = node.textContent?.trim() ?? "";
+    if (text !== "" && !RAIL_TEXT_EXCEPTIONS.has(text) && !isPseudoLocaleWrapped(text)) {
+      unowned.push(text);
+    }
+  }
+  expect(unowned, `unowned rail copy escapes the pseudo-locale wrap: ${unowned.join("; ")}`).toEqual([]);
+
+  const unwrappedTitles = [...rail.querySelectorAll("[title]")]
+    .map((element) => element.getAttribute("title") ?? "")
+    .filter((title) => title !== "" && !isPseudoLocaleWrapped(title));
+  expect(unwrappedTitles, `unwrapped rail title: ${unwrappedTitles.join("; ")}`).toEqual([]);
 }
 
 describe("core surfaces read owned display strings", () => {
