@@ -48,3 +48,27 @@ def test_candidate_packaging_does_not_touch_stable_serve_files() -> None:
         text=True,
     )
     assert diff == ""
+
+
+def test_launcher_copies_public_bootstrap_and_keeps_core_inspect_read_only() -> None:
+    text = LAUNCHER.read_text(encoding="utf-8")
+    assert (
+        '/usr/bin/docker cp "$core:/var/lib/atelier2-candidate/bootstrap.json"' in text
+    )
+    assert "/usr/bin/docker cp" in text
+    assert '"$root/handoff:/handoff:ro"' in text
+    assert '"$root/handoff:/handoff"' not in text.replace(
+        '"$root/handoff:/handoff:ro"', ""
+    )
+    assert "dst=/handoff,volume-nocopy" in text
+    assert "--tmpfs /handoff:" not in text
+    assert "unlink-private" in text
+    assert "attest-inspect" in text
+    assert '"$root/handoff/inspect-attested"' in text
+    core = (PROJECT_ROOT / "tests/witness/runner_candidate_core.py").read_text(
+        encoding="utf-8"
+    )
+    assert "inspect-attested" in core
+    assert 'handoff / "inspect-attested"' in core
+    assert "_write_json(inspect_attested" not in core
+    assert 'handoff / "inspect-attested").write' not in core

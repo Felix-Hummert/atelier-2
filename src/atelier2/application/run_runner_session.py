@@ -186,6 +186,20 @@ def _ascii(value: bytes) -> str:
     return value.decode("ascii")
 
 
+def require_matching_evidence_hash(
+    payload: tuple[bytes, ...], retained: RunnerTerminalEvidenceHash
+) -> RunnerTerminalEvidenceHash:
+    if len(payload) != 1:
+        raise RunnerSessionRefusal("runner-session-noncanonical")
+    try:
+        presented = RunnerTerminalEvidenceHash(_ascii(payload[0]))
+    except (TypeError, UnicodeDecodeError, ValueError) as error:
+        raise RunnerSessionRefusal("runner-ack-hash-mismatch") from error
+    if presented != retained:
+        raise RunnerSessionRefusal("runner-ack-hash-mismatch")
+    return presented
+
+
 @dataclass
 class CoreRunnerSession:
     """The one-shot Core-side ordering fence for one authenticated invocation."""
@@ -195,6 +209,7 @@ class CoreRunnerSession:
     prepare_payload: tuple[bytes, ...]
     manifest: RunnerManifestV1
     auth_reference: str
+    invocation_id: RunnerInvocationId
     _phase: _CorePhase = _CorePhase.OFFER
     _next_runner_sequence: int = 1
     _next_core_sequence: int = 1
@@ -202,7 +217,6 @@ class CoreRunnerSession:
         default_factory=dict
     )
     _terminal_hash: RunnerTerminalEvidenceHash | None = None
-    _invocation: RunnerInvocationId | None = None
     _cancellation: RunnerSessionFrame | None = None
 
     def accept(self, frame: RunnerSessionFrame) -> RunnerSessionFrame | None:
@@ -214,7 +228,7 @@ class CoreRunnerSession:
             return response
         if frame.sequence != self._next_runner_sequence:
             raise RunnerSessionRefusal("runner-session-sequence-mismatch")
-        if frame.binding != self.binding:
+        if frame.binding != self.binding or frame.invocation_id != self.invocation_id:
             raise RunnerSessionRefusal("runner-session-binding-mismatch")
         response = self._advance(frame)
         self._accepted[frame.sequence] = (frame, response)
@@ -224,7 +238,7 @@ class CoreRunnerSession:
     def cancel(self) -> RunnerSessionFrame:
         if self._cancellation is not None:
             return self._cancellation
-        if self._phase is not _CorePhase.TERMINAL_AVAILABLE or self._invocation is None:
+        if self._phase is not _CorePhase.TERMINAL_AVAILABLE:
             raise RunnerSessionRefusal("runner-cancel-conflict")
         command = self.core.cancel()
         if command.replacement is not AgentAttemptReplacement.NONE:
@@ -233,7 +247,7 @@ class CoreRunnerSession:
             RunnerSessionMessage.CANCEL,
             self._next_core_sequence,
             self.binding,
-            self._invocation,
+            self.invocation_id,
             (
                 command.run_id.value.encode("utf-8"),
                 command.command_id.encode("utf-8"),
@@ -257,27 +271,26 @@ class CoreRunnerSession:
             raise RunnerSessionRefusal("runner-session-out-of-order")
         match self._phase:
             case _CorePhase.OFFER:
-                self._invocation = frame.invocation_id
                 self._phase = _CorePhase.READY
                 return self._core_frame(
-                    RunnerSessionMessage.PREPARE, self.prepare_payload, frame
+                    RunnerSessionMessage.PREPARE, self.prepare_payload
                 )
             case _CorePhase.READY:
                 require_ready_matches_manifest(
                     frame.payload, self.manifest, self.auth_reference
                 )
                 try:
-                    self.core.arm(self.binding, frame.invocation_id)
+                    self.core.arm(self.binding, self.invocation_id)
                 except RunnerBindingConflict as error:
                     raise RunnerSessionRefusal("runner-arm-conflict") from error
                 self._phase = _CorePhase.STARTED
-                return self._core_frame(RunnerSessionMessage.LAUNCH, (), frame)
+                return self._core_frame(RunnerSessionMessage.LAUNCH, ())
             case _CorePhase.STARTED:
                 self._phase = _CorePhase.TERMINAL_AVAILABLE
                 return None
             case _CorePhase.TERMINAL_AVAILABLE:
                 self._phase = _CorePhase.TERMINAL_RECORD
-                return self._core_frame(RunnerSessionMessage.READBACK, (), frame)
+                return self._core_frame(RunnerSessionMessage.READBACK, ())
             case _CorePhase.ACK_TOMBSTONE:
                 if self._terminal_hash is None:
                     raise RunnerSessionRefusal("runner-terminal-record-missing")
@@ -288,7 +301,6 @@ class CoreRunnerSession:
                 return self._core_frame(
                     RunnerSessionMessage.RELEASE,
                     (self._terminal_hash.value.encode("ascii"),),
-                    frame,
                 )
             case _CorePhase.RELEASED:
                 return None
@@ -303,6 +315,7 @@ class CoreRunnerSession:
         if (
             frame.sequence != self._next_runner_sequence
             or frame.binding != self.binding
+            or frame.invocation_id != self.invocation_id
         ):
             raise RunnerSessionRefusal("runner-session-binding-mismatch")
         self._terminal_hash = self.core.commit_terminal_record(
@@ -312,7 +325,6 @@ class CoreRunnerSession:
         response = self._core_frame(
             RunnerSessionMessage.ACK,
             (self._terminal_hash.value.encode("ascii"),),
-            frame,
         )
         self._accepted[frame.sequence] = (frame, response)
         self._next_runner_sequence += 1
@@ -322,13 +334,12 @@ class CoreRunnerSession:
         self,
         message: RunnerSessionMessage,
         payload: tuple[bytes, ...],
-        runner_frame: RunnerSessionFrame,
     ) -> RunnerSessionFrame:
         response = RunnerSessionFrame(
             message=message,
             sequence=self._next_core_sequence,
             binding=self.binding,
-            invocation_id=runner_frame.invocation_id,
+            invocation_id=self.invocation_id,
             payload=payload,
         )
         self._next_core_sequence += 1

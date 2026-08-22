@@ -15,6 +15,7 @@ from atelier2.application.run_runner_session import (
     decode_runner_prepare_payload,
     encode_runner_prepare_payload,
     encode_runner_ready_payload,
+    require_matching_evidence_hash,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -87,9 +88,13 @@ def test_free_runner_auth_refuses_changed_or_unbound_references(reference: str) 
         FreeRunnerAuthorizationResolver().resolve(_profile(), reference)
 
 
+_INVOCATION = RunnerInvocationId("B" * 43)
+
+
 class _Core:
     def __init__(self) -> None:
         self.armed = 0
+        self.armed_invocation: RunnerInvocationId | None = None
         self.committed = 0
         self.acknowledged = 0
         self.cancelled = 0
@@ -98,6 +103,7 @@ class _Core:
     def arm(
         self, binding: RunnerGenerationBinding, invocation: RunnerInvocationId
     ) -> None:
+        self.armed_invocation = invocation
         self.armed += 1
 
     def commit_terminal_record(
@@ -138,9 +144,7 @@ def _binding() -> RunnerGenerationBinding:
 def _frame(
     message: RunnerSessionMessage, sequence: int, payload: tuple[bytes, ...] = ()
 ) -> RunnerSessionFrame:
-    return RunnerSessionFrame(
-        message, sequence, _binding(), RunnerInvocationId("B" * 43), payload
-    )
+    return RunnerSessionFrame(message, sequence, _binding(), _INVOCATION, payload)
 
 
 def _candidate_manifest():
@@ -167,6 +171,7 @@ def _session(core: _Core | None = None) -> CoreRunnerSession:
         encode_runner_prepare_payload(request, reference),
         _candidate_manifest(),
         reference,
+        _INVOCATION,
     )
 
 
@@ -211,6 +216,7 @@ def test_core_session_arms_once_then_commits_acknowledges_and_releases_in_order(
         session.accept(_frame(RunnerSessionMessage.RELEASED, 7, (b"d" * 64,))) is None
     )
     assert (core.armed, core.committed, core.acknowledged) == (1, 1, 1)
+    assert core.armed_invocation == _INVOCATION
 
 
 def test_core_session_refuses_a_launch_before_ready_without_arming() -> None:
@@ -282,6 +288,48 @@ def test_core_session_refuses_a_sequence_gap() -> None:
 
     with pytest.raises(RunnerSessionRefusal, match="runner-session-sequence-mismatch"):
         session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 2))
+
+
+def test_core_session_refuses_a_frame_invocation_other_than_the_tls_id() -> None:
+    core = _Core()
+    session = _session(core)
+    other = RunnerSessionFrame(
+        RunnerSessionMessage.INVOCATION_OFFER,
+        1,
+        _binding(),
+        RunnerInvocationId("C" * 43),
+        (),
+    )
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-binding-mismatch"):
+        session.accept(other)
+    assert core.armed == 0
+
+
+def test_core_session_refuses_ready_invocation_that_disagrees_with_tls() -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    other = RunnerSessionFrame(
+        RunnerSessionMessage.READY,
+        2,
+        _binding(),
+        RunnerInvocationId("C" * 43),
+        _ready_payload(),
+    )
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-binding-mismatch"):
+        session.accept(other)
+    assert core.armed == 0
+    assert core.armed_invocation is None
+
+
+def test_ack_payload_mismatch_keeps_the_retained_hash_unconsumed() -> None:
+    retained = RunnerTerminalEvidenceHash("d" * 64)
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-ack-hash-mismatch"):
+        require_matching_evidence_hash((b"e" * 64,), retained)
+    assert require_matching_evidence_hash((b"d" * 64,), retained) == retained
 
 
 def test_core_session_refuses_a_binding_mismatch() -> None:

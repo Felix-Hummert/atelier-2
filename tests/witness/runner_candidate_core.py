@@ -38,6 +38,9 @@ from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
     SupportedPublicKey,
     core_uri_for_certificate,
+    invocation_from_runner_uri,
+    pin_tls_13,
+    runner_uri_for_invocation,
     validate_peer_certificate,
 )
 from atelier2.application.run_runner_session import (
@@ -219,7 +222,7 @@ def _bootstrap(root: Path, handoff: Path, scenario: str):
         }
         if scenario == "cancel":
             bootstrap["scenario"] = "cancel"
-        _write_json(handoff / "bootstrap.json", bootstrap)
+        _write_json(root / "bootstrap.json", bootstrap)
         reference = FreeRunnerAuthorizationResolver().reference_for(
             request.resolved_binding.auth_profile
         )
@@ -263,7 +266,7 @@ def main(arguments: list[str] | None = None) -> int:
         cast(SupportedPublicKey, certificate.public_key())
     )
     _write_json(
-        handoff / "core-peer.json",
+        root / "core-peer.json",
         {
             "dns_name": CORE_DNS_NAME,
             "uri": core_uri,
@@ -273,21 +276,30 @@ def main(arguments: list[str] | None = None) -> int:
         },
     )
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    pin_tls_13(context)
     context.load_cert_chain(identity / "core.crt", identity / "core.key")
     context.load_verify_locations(cafile=identity / "ca.crt")
     context.verify_mode = ssl.CERT_REQUIRED
     peer_directory = Path("/run/atelier2-peer-authorization")
-    invocation_offer = handoff / "invocation.json"
     peer_leaf = peer_directory / "client.crt"
     inspect_attested = handoff / "inspect-attested"
-    _wait_for(invocation_offer)
     _wait_for(peer_leaf)
-    invocation = json.loads(invocation_offer.read_text(encoding="utf-8"))[
-        "invocation_id"
-    ]
-    expected_runner_uri = (
-        f"urn:atelier2:runner:v1:{binding.attempt_id.value}:{binding.request_hash.value}:"
-        f"{binding.generation_id.value}:{invocation}:{binding.manifest_id.value}"
+    expected = peer_leaf.read_bytes()
+    peer_certificate = x509.load_pem_x509_certificate(expected)
+    uris = peer_certificate.extensions.get_extension_for_class(
+        x509.SubjectAlternativeName
+    ).value.get_values_for_type(x509.UniformResourceIdentifier)
+    if len(uris) != 1:
+        raise RuntimeError("runner-binding-san-mismatch")
+    invocation = invocation_from_runner_uri(uris[0], binding)
+    expected_runner_uri = runner_uri_for_invocation(binding, invocation)
+    ca_pem = identity.joinpath("ca.crt").read_bytes()
+    validate_peer_certificate(
+        expected,
+        ca_pem,
+        expected_dns_name=None,
+        expected_uri=expected_runner_uri,
+        expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
     )
     server = socket.create_server(("0.0.0.0", 8443), reuse_port=False)
     with (
@@ -297,20 +309,17 @@ def main(arguments: list[str] | None = None) -> int:
         presented = connection.getpeercert(binary_form=True)
         if presented is None:
             raise RuntimeError("TLS client did not present an authenticated leaf")
-        expected = peer_leaf.read_bytes()
         presented_pem = x509.load_der_x509_certificate(presented).public_bytes(
             serialization.Encoding.PEM
         )
         validate_peer_certificate(
             presented_pem,
-            identity.joinpath("ca.crt").read_bytes(),
+            ca_pem,
             expected_dns_name=None,
             expected_uri=expected_runner_uri,
             expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
         )
-        if presented != x509.load_pem_x509_certificate(expected).public_bytes(
-            serialization.Encoding.DER
-        ):
+        if presented != peer_certificate.public_bytes(serialization.Encoding.DER):
             raise RuntimeError("Runner peer leaf differs from the issuer handoff")
         _wait_for(inspect_attested)
         if (
@@ -328,6 +337,7 @@ def main(arguments: list[str] | None = None) -> int:
             encode_runner_prepare_payload(request, reference),
             manifest,
             reference,
+            invocation,
         )
         while True:
             frame = _read_frame(connection)

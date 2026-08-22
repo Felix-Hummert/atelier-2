@@ -62,7 +62,11 @@ Each scenario creates one labelled internal Attempt network, one disposable
 Core witness, one Runner, and one identity tmpfs volume. Exact labelled
 objects are removed only after the Runner answers `RELEASED`. On failure the
 script leaves those objects and prints their names plus the witness directory
-under `/var/tmp/atelier2-301a-runner-witness.*`. Core listens as
+under `/var/tmp/atelier2-301a-runner-witness.*`. After the identity receiver
+succeeds, the launcher unlinks host private keys through held directory FDs
+and keeps only public certificate metadata in that tree. Public bootstrap
+reaches the Runner by `docker cp`; Core reads launcher inspect attestation
+from a read-only path. Core listens as
 `core.runner-candidate.internal:8443` on that internal network only. The
 external CA hook is `tests/witness/runner_candidate_issuer.py`; it is never
 copied into an image.

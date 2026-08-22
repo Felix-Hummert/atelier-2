@@ -5,6 +5,10 @@ from pathlib import Path
 import pytest
 
 from atelier2.adapters.runner_journal import RunnerJournal
+from atelier2.application.run_runner_session import (
+    RunnerSessionRefusal,
+    require_matching_evidence_hash,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     RunnerGenerationBinding,
@@ -12,6 +16,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerInvocationId,
     RunnerManifestId,
     RunnerProviderResult,
+    RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
 )
@@ -80,3 +85,23 @@ def test_release_before_ack_preserves_the_envelope(tmp_path: Path) -> None:
         )
 
     assert journal.readback(envelope.binding) == envelope
+
+
+def test_ack_and_release_payload_mismatch_keeps_the_envelope(tmp_path: Path) -> None:
+    journal = RunnerJournal(tmp_path)
+    envelope = _envelope()
+    journal.publish(envelope)
+    retained = RunnerTerminalEvidenceHash.for_envelope(envelope)
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-ack-hash-mismatch"):
+        require_matching_evidence_hash((b"0" * 64,), retained)
+        journal.acknowledge(envelope, retained)
+    assert journal.readback(envelope.binding) == envelope
+
+    journal.acknowledge(envelope, retained)
+    with pytest.raises(RunnerSessionRefusal, match="runner-ack-hash-mismatch"):
+        require_matching_evidence_hash((b"0" * 64,), retained)
+        journal.release(envelope.binding, retained)
+    record = journal.readback(envelope.binding)
+    assert isinstance(record, RunnerTerminalEvidenceAckTombstone)
+    assert record.evidence_hash == retained

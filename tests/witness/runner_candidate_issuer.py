@@ -19,8 +19,23 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.runner_child import REQUIRED_LANDLOCK_ABI
-from atelier2.adapters.runner_tls import CORE_DNS_NAME, core_uri_for_certificate
-from atelier2.contracts.agents import AgentExecutionCapability, AuthMode
+from atelier2.adapters.runner_tls import (
+    CORE_DNS_NAME,
+    core_uri_for_certificate,
+    runner_uri_for_invocation,
+)
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptId,
+    RunnerGenerationBinding,
+    RunnerGenerationId,
+    RunnerInvocationId,
+    RunnerManifestId,
+)
+from atelier2.contracts.agents import (
+    AgentExecutionCapability,
+    AgentExecutionRequestHash,
+    AuthMode,
+)
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
     CANDIDATE_JOURNAL_BYTES,
@@ -147,13 +162,17 @@ def issue_runner(
     core_peer: Path,
 ) -> int:
     authority_key, authority = _authority(state)
-    binding = json.loads(bootstrap.read_text(encoding="utf-8"))
-    invocation = json.loads(invocation_offer.read_text(encoding="utf-8"))[
-        "invocation_id"
-    ]
-    uri = "urn:atelier2:runner:v1:{attempt_id}:{request_hash}:{generation_id}:{invocation}:{manifest_id}".format(
-        **binding, invocation=invocation
+    binding_record = json.loads(bootstrap.read_text(encoding="utf-8"))
+    invocation = RunnerInvocationId(
+        json.loads(invocation_offer.read_text(encoding="utf-8"))["invocation_id"]
     )
+    binding = RunnerGenerationBinding(
+        AgentAttemptId(binding_record["attempt_id"]),
+        AgentExecutionRequestHash(binding_record["request_hash"]),
+        RunnerGenerationId(binding_record["generation_id"]),
+        RunnerManifestId(binding_record["manifest_id"]),
+    )
+    uri = runner_uri_for_invocation(binding, invocation)
     key, certificate = _leaf(
         authority_key,
         authority,
@@ -229,10 +248,7 @@ def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path)
     cap_drop = host.get("CapDrop") or []
     user = config.get("User") or ""
     expected_user = f"{manifest.effective_uid}:{manifest.effective_gid}"
-    nnp = any(
-        option == "no-new-privileges:true" or option.startswith("no-new-privileges")
-        for option in security
-    )
+    nnp = "no-new-privileges:true" in security
     identity_mount = next(
         (
             mount
@@ -265,6 +281,29 @@ def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path)
 _ISSUER_NAMES = ("client.crt", "client.key", "ca.crt")
 _ISSUER_MODES = (0o644, 0o600, 0o644)
 _ISSUER_FIELD_BYTES = 8_192
+_PRIVATE_KEY_NAMES = frozenset({"ca.key", "core.key", "client.key"})
+
+
+def unlink_private_keys(paths: list[Path]) -> int:
+    held: list[tuple[int, str]] = []
+    try:
+        for path in paths:
+            if path.name not in _PRIVATE_KEY_NAMES:
+                raise ValueError("refusing to unlink a non-private name")
+            directory = os.open(
+                path.parent,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+            held.append((directory, path.name))
+        for directory, name in held:
+            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("private key is not a regular file")
+            os.unlink(name, dir_fd=directory)
+    finally:
+        for directory, _name in held:
+            os.close(directory)
+    return 0
 
 
 def _read_issuer_identity(directory: Path) -> bytes:
@@ -328,6 +367,8 @@ def main() -> int:
     inspect.add_argument("--inspect", type=Path, required=True)
     inspect.add_argument("--manifest", type=Path, required=True)
     inspect.add_argument("--output", type=Path, required=True)
+    unlink = commands.add_parser("unlink-private")
+    unlink.add_argument("--key", type=Path, action="append", required=True)
     parsed = parser.parse_args()
     if parsed.command == "core":
         return issue_core(parsed.state, parsed.identity)
@@ -337,6 +378,8 @@ def main() -> int:
         )
     if parsed.command == "attest-inspect":
         return attest_runner_inspect(parsed.inspect, parsed.manifest, parsed.output)
+    if parsed.command == "unlink-private":
+        return unlink_private_keys(parsed.key)
     if parsed.command == "runner":
         return issue_runner(
             parsed.state,

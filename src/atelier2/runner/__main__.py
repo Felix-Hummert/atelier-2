@@ -31,9 +31,15 @@ from atelier2.adapters.runner_child import (
     start_runner_child,
 )
 from atelier2.adapters.runner_journal import RunnerJournal
-from atelier2.adapters.runner_tls import CORE_DNS_NAME, validate_peer_certificate
+from atelier2.adapters.runner_tls import (
+    CORE_DNS_NAME,
+    pin_tls_13,
+    runner_uri_for_invocation,
+    validate_peer_certificate,
+)
 from atelier2.application.run_runner_session import (
     decode_runner_prepare_payload,
+    require_matching_evidence_hash,
     require_ready_matches_manifest,
 )
 from atelier2.contracts.agent_attempts import (
@@ -105,14 +111,21 @@ def _frame(
     return RunnerSessionFrame(message, sequence, binding, invocation, payload)
 
 
+def _wait_for_file(path: Path, reason: str) -> None:
+    deadline = time.monotonic() + 10
+    while not path.is_file() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not path.is_file():
+        raise RuntimeError(reason)
+
+
 def _wait_for_client_identity(identity: Path) -> None:
     ready = identity / "ready"
-    deadline = time.monotonic() + 10
-    while not ready.is_file() and time.monotonic() < deadline:
-        time.sleep(0.05)
+    _wait_for_file(
+        ready, "external issuer did not complete the candidate identity handoff"
+    )
     if (
-        not ready.is_file()
-        or not (identity / "client.crt").is_file()
+        not (identity / "client.crt").is_file()
         or not (identity / "client.key").is_file()
     ):
         raise RuntimeError(
@@ -215,6 +228,10 @@ def _control_or_child_exit(
 def _run_candidate_session(
     handoff: Path, identity: Path, journal_directory: Path, invocation_offer: Path
 ) -> int:
+    for name in ("bootstrap.json", "core-peer.json", "core.crt", "ca.crt", "manifest"):
+        _wait_for_file(
+            handoff / name, "launcher did not copy the public bootstrap inbound"
+        )
     bootstrap = json.loads(
         handoff.joinpath("bootstrap.json").read_text(encoding="utf-8")
     )
@@ -227,11 +244,7 @@ def _run_candidate_session(
         encoding="utf-8",
     )
     _wait_for_client_identity(identity)
-    expected_runner_uri = (
-        "urn:atelier2:runner:v1:"
-        f"{binding.attempt_id.value}:{binding.request_hash.value}:"
-        f"{binding.generation_id.value}:{invocation.value}:{binding.manifest_id.value}"
-    )
+    expected_runner_uri = runner_uri_for_invocation(binding, invocation)
     peer = json.loads(handoff.joinpath("core-peer.json").read_text(encoding="utf-8"))
     core_certificate = handoff.joinpath("core.crt").read_bytes()
     ca_certificate = handoff.joinpath("ca.crt").read_bytes()
@@ -248,6 +261,7 @@ def _run_candidate_session(
     context = ssl.create_default_context(
         ssl.Purpose.SERVER_AUTH, cadata=volume_ca.decode("ascii")
     )
+    pin_tls_13(context)
     context.load_cert_chain(identity / "client.crt", identity / "client.key")
     context.check_hostname = False
     with (
@@ -391,7 +405,10 @@ def _run_candidate_session(
         acknowledgement = _read_frame(connection)
         if acknowledgement.message is not RunnerSessionMessage.ACK:
             raise RuntimeError("Core did not acknowledge durable evidence")
-        tombstone = journal.acknowledge(envelope, evidence_hash)
+        accepted = require_matching_evidence_hash(
+            acknowledgement.payload, evidence_hash
+        )
+        tombstone = journal.acknowledge(envelope, accepted)
         sequence += 1
         _write_frame(
             connection,
@@ -406,7 +423,8 @@ def _run_candidate_session(
         release = _read_frame(connection)
         if release.message is not RunnerSessionMessage.RELEASE:
             raise RuntimeError("Core did not release acknowledged evidence")
-        journal.release(binding, evidence_hash)
+        released = require_matching_evidence_hash(release.payload, evidence_hash)
+        journal.release(binding, released)
         sequence += 1
         _write_frame(
             connection,

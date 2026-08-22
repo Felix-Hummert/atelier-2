@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ssl
 from datetime import UTC, datetime
 
 from cryptography import x509
@@ -9,7 +10,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed448, ed25519, padding, rsa
 from cryptography.x509.oid import ObjectIdentifier
 
+from atelier2.contracts.agent_attempts import (
+    RunnerGenerationBinding,
+    RunnerInvocationId,
+)
+
 CORE_DNS_NAME = "core.runner-candidate.internal"
+_RUNNER_URI_PREFIX = ("urn", "atelier2", "runner", "v1")
 
 
 class CertificatePeerError(ValueError):
@@ -30,6 +37,52 @@ def core_uri_for_certificate(public_key: SupportedPublicKey) -> str:
         serialization.PublicFormat.SubjectPublicKeyInfo,
     )
     return f"urn:atelier2:core:v1:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def runner_uri_for_invocation(
+    binding: RunnerGenerationBinding, invocation: RunnerInvocationId
+) -> str:
+    return (
+        "urn:atelier2:runner:v1:"
+        f"{binding.attempt_id.value}:{binding.request_hash.value}:"
+        f"{binding.generation_id.value}:{invocation.value}:{binding.manifest_id.value}"
+    )
+
+
+def invocation_from_runner_uri(
+    uri: str, binding: RunnerGenerationBinding
+) -> RunnerInvocationId:
+    parts = uri.split(":")
+    if len(parts) != 9 or tuple(parts[:4]) != _RUNNER_URI_PREFIX:
+        raise CertificatePeerError("runner-binding-san-mismatch")
+    attempt, request, generation, invocation, manifest = parts[4:]
+    try:
+        parsed = RunnerInvocationId(invocation)
+    except ValueError as error:
+        raise CertificatePeerError("runner-binding-san-mismatch") from error
+    if (
+        attempt != binding.attempt_id.value
+        or request != binding.request_hash.value
+        or generation != binding.generation_id.value
+        or manifest != binding.manifest_id.value
+        or runner_uri_for_invocation(binding, parsed) != uri
+    ):
+        raise CertificatePeerError("runner-binding-san-mismatch")
+    return parsed
+
+
+def expected_peer_san(
+    *, expected_dns_name: str | None, expected_uri: str
+) -> tuple[x509.GeneralName, ...]:
+    uri = x509.UniformResourceIdentifier(expected_uri)
+    if expected_dns_name is None:
+        return (uri,)
+    return (x509.DNSName(expected_dns_name), uri)
+
+
+def pin_tls_13(context: ssl.SSLContext) -> None:
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    context.maximum_version = ssl.TLSVersion.TLSv1_3
 
 
 def validate_peer_certificate(
@@ -54,15 +107,14 @@ def validate_peer_certificate(
         san = certificate.extensions.get_extension_for_class(
             x509.SubjectAlternativeName
         ).value
-        dns_names = tuple(san.get_values_for_type(x509.DNSName))
-        uris = tuple(san.get_values_for_type(x509.UniformResourceIdentifier))
         ekus = tuple(
             certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
         )
     except x509.ExtensionNotFound as error:
         raise CertificatePeerError("runner-peer-unverified") from error
-    expected_dns_names = () if expected_dns_name is None else (expected_dns_name,)
-    if dns_names != expected_dns_names or uris != (expected_uri,):
+    if tuple(san) != expected_peer_san(
+        expected_dns_name=expected_dns_name, expected_uri=expected_uri
+    ):
         raise CertificatePeerError("runner-binding-san-mismatch")
     if ekus != (expected_eku,):
         raise CertificatePeerError("runner-peer-eku-mismatch")

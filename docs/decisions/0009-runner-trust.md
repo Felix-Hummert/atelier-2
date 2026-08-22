@@ -550,11 +550,13 @@ this record borrows that owner rather than opening a second vocabulary.
   content identity, launcher inspect equality, measured READY matching that
   manifest, and Landlock on the free child exec; and one cancel Attempt
   `CANCELLED`/`ACKNOWLEDGED` with `replacement=NONE` and `REAPED_AFTER_KILL`.
-  Witness directories `/var/tmp/atelier2-301a-runner-witness.CWbaEM` (success
+  Witness directories `/var/tmp/atelier2-301a-runner-witness.6Bj1kk` (success
   Core store SHA-256
-  `f67e8432b2e95b9e3e3694f74adf87e2c8cd8cbe70c302204cfd80b2c5618078`) and
-  `/var/tmp/atelier2-301a-runner-witness.9XCUEP` (cancel Core store SHA-256
-  `93adb383c43825d018d0d7fe0477c3bbc682ada76295789504cc56a5adfa9b0a`). Exact
+  `9c5c8548e593dd79e123a1b9cdf9343dbc67ec11936f6a66c07f1711aa69efe1`) and
+  `/var/tmp/atelier2-301a-runner-witness.0WqeSL` (cancel Core store SHA-256
+  `7b84cc59cc65bcb51c31ee4fb3996dde73353dd6872d82efe182dc4bff9ee901`). After
+  receiver success the host private keys were unlinked through held directory
+  FDs; the retained trees hold public certificate metadata only. Exact
   labelled Docker objects were empty after `RELEASED`. It does not prove live
   A.1 availability, restart/reconnect, cancel races, replacement `ONE`, a
   wrong-CA live refusal, or packaged cutover. Focused tests cover peer
