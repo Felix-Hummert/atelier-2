@@ -13,6 +13,8 @@
   import RunCockpitPage from "./pages/RunCockpitPage.svelte";
   import ProjectPage from "./pages/ProjectPage.svelte";
   import StudioPage from "./pages/StudioPage.svelte";
+  import WorkflowDetailPage from "./pages/WorkflowDetailPage.svelte";
+  import WorkflowsPage from "./pages/WorkflowsPage.svelte";
 
   export let cockpitApi: CockpitApi = createCockpitApi();
   export let mutationJournal: MutationJournal = new MutationJournal(sessionStorage);
@@ -45,6 +47,10 @@
     <ProjectPage {cockpitApi} {navigate} />
   {:else if route.page === "new"}
     <NewRunPage {cockpitApi} {mutationJournal} {navigate} {createRunId} />
+  {:else if route.page === "workflows"}
+    <WorkflowsPage {cockpitApi} {navigate} />
+  {:else if route.page === "workflow"}
+    <WorkflowDetailPage {cockpitApi} {navigate} name={route.name} />
   {:else if route.page === "run"}
     <RunCockpitPage
       {cockpitApi}

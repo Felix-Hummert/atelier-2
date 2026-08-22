@@ -15,10 +15,15 @@ export const SERVED_PATHS: readonly string[] = servedPaths;
 /** Where a run's public reference stands in a served path. */
 export const PUBLIC_REFERENCE_PLACEHOLDER = "{public_ref}";
 
+/** Where a workflow's name stands in a served path. */
+export const WORKFLOW_NAME_PLACEHOLDER = "{workflow_name}";
+
 export type CockpitRoute =
   | { page: "studio" }
   | { page: "project" }
   | { page: "new" }
+  | { page: "workflows" }
+  | { page: "workflow"; name: string }
   | { page: "run"; publicReference: string }
   | { page: "not-found" };
 
@@ -35,6 +40,17 @@ export function cockpitRoute(pathname: string): CockpitRoute {
   }
   if (pathname === "/atelier/new") {
     return { page: "new" };
+  }
+  if (pathname === "/atelier/workflows" || pathname === "/atelier/workflows/") {
+    return { page: "workflows" };
+  }
+  const workflowMatch = /^\/atelier\/workflows\/([^/]+)$/.exec(pathname);
+  if (workflowMatch?.[1] !== undefined) {
+    try {
+      return { page: "workflow", name: decodeURIComponent(workflowMatch[1]) };
+    } catch {
+      return { page: "not-found" };
+    }
   }
   const match = /^\/atelier\/runs\/([^/]+)$/.exec(pathname);
   if (match?.[1] !== undefined) {
@@ -54,4 +70,9 @@ export function cockpitRoute(pathname: string): CockpitRoute {
 /** The one place the path of a run is built. */
 export function runPath(publicReference: string): string {
   return `/atelier/runs/${publicReference}`;
+}
+
+/** The one place the path of a workflow's catalog page is built. */
+export function workflowPath(name: string): string {
+  return `/atelier/workflows/${encodeURIComponent(name)}`;
 }
