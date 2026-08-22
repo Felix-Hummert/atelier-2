@@ -247,7 +247,7 @@ def test_the_occupation_check_is_what_refuses_the_same_binding(
 ) -> None:
     workflow, bindings = publish(runtime, same_occupation=True)
     monkeypatch.setattr(
-        "atelier2.adapters.dbos.starter._refused_distinct_occupation",
+        "atelier2.application.resolve_start_bindings._refused_distinct_occupation",
         lambda _graph, _resolved: None,
     )
 

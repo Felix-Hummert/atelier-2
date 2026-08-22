@@ -168,7 +168,7 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
 
       - name: Scan the full history for secrets
-        run: ./gitleaks git --redact --no-banner .
+        run: ./gitleaks git --redact --no-banner --log-opts="--full-history --all --diff-filter=uxdb -m" .
 
   quality:
     name: "Python: architecture, lint, types, tests"
