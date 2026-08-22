@@ -72,7 +72,7 @@ describe("cockpit navigation", () => {
     expect(within(rail).queryByRole("button", { name: new RegExp(THE_ONE_PROJECT) })).toBeNull();
   });
 
-  it("walks Board and History on the rail and leaves deferred destinations unclickable", async () => {
+  it("walks Board, Workflows and History on the rail and leaves Chat unclickable", async () => {
     openAt("/atelier");
     await screen.findByRole("heading", { name: "Board" });
 
@@ -80,24 +80,24 @@ describe("cockpit navigation", () => {
     expect(within(rail).getByRole("link", { name: "Board" }).getAttribute("aria-current")).toBe(
       "page"
     );
+    expect(within(rail).getByRole("link", { name: "Workflows" }).getAttribute("href")).toBe(
+      "/atelier/workflows"
+    );
     expect(within(rail).getByRole("link", { name: "History" }).getAttribute("href")).toBe(
       "/atelier/project"
     );
     expect(within(rail).queryByRole("link", { name: "Chat" })).toBeNull();
-    expect(within(rail).queryByRole("link", { name: "Workflows" })).toBeNull();
     expect(within(rail).getByText("Chat").closest("[aria-disabled='true']")?.getAttribute("title")).toContain(
       "#7"
     );
-    expect(within(rail).getByText("Workflows").closest("[aria-disabled='true']")?.getAttribute("title")).toContain(
-      "REQ-UI-05"
-    );
 
-    await fireEvent.click(within(rail).getByRole("link", { name: "History" }));
-    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
-    expect(window.location.pathname).toBe("/atelier/project");
+    await fireEvent.click(within(rail).getByRole("link", { name: "Workflows" }));
+    expect((await screen.findByRole("heading", { name: "Workflows" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/workflows");
 
     const still = screen.getByRole("navigation", { name: "Workshop" });
-    await fireEvent.click(within(still).getByText("Workflows"));
+    await fireEvent.click(within(still).getByRole("link", { name: "History" }));
+    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier/project");
 
     await fireEvent.click(within(still).getByRole("link", { name: "Board" }));

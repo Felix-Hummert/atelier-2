@@ -6,7 +6,7 @@ import { encodePublicRunReference, type RunV1 } from "../../src/api/client";
 import { wrapDisplayCopy } from "../../src/lib/displayCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
-import { humanMove, standingWords } from "../../src/lib/runState";
+import { humanMove } from "../../src/lib/runState";
 import { connectionLabels } from "../../src/lib/streamStatus";
 import { studioPageCopy } from "../../src/lib/studioPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
@@ -149,7 +149,15 @@ async function railShowsOwnedPseudoLocale(): Promise<void> {
   const unowned: string[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     const text = node.textContent?.trim() ?? "";
-    if (text !== "" && !RAIL_TEXT_EXCEPTIONS.has(text) && !isPseudoLocaleWrapped(text)) {
+    // A bare digit string (the Board badge counts) is data, not copy: a count
+    // needs no translation wrap, the same way a run id or count elsewhere on
+    // the workshop never does.
+    if (
+      text !== "" &&
+      !RAIL_TEXT_EXCEPTIONS.has(text) &&
+      !isPseudoLocaleWrapped(text) &&
+      !/^\d+$/.test(text)
+    ) {
       unowned.push(text);
     }
   }
@@ -170,32 +178,27 @@ describe("core surfaces read owned display strings", () => {
     await screen.findByRole("heading", { name: "[[[ Nothing is running ]]]" });
 
     expect(screen.getByText("[[[ Atelier ]]]").isConnected).toBe(true);
-    expect(screen.getByText("[[[ A workflow becomes a run, and a run is what this workshop shows. ]]]").isConnected).toBe(true);
+    expect(screen.getByText("[[[ A run appears here the moment a workflow starts. ]]]").isConnected).toBe(true);
     expect(screen.getByRole("link", { name: "[[[ Start a run ]]]" }).isConnected).toBe(true);
   });
 
-  it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio renders inbox, card counts, chat, and connection through the display transform", async () => {
+  it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Board renders group titles, row sentences, and connection through the display transform", async () => {
     openStudioPseudoLocale(listRunsByState(populatedStudioRuns()));
 
-    const inbox = await screen.findByRole("region", { name: wrapDisplayCopy(standingWords.waiting) });
-    expect(within(inbox).getByText(`2 ${wrapDisplayCopy(studioPageCopy.needYou)}`).isConnected).toBe(true);
-    expect(within(inbox).getAllByText(wrapDisplayCopy(studioPageCopy.needsYou))).toHaveLength(2);
+    const needsYou = await screen.findByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.needsYou)} · 2` });
     const answer = humanMove("WAITING_INPUT");
     const reconcile = humanMove("WAITING_RECONCILIATION");
     expect(answer).not.toBeNull();
     expect(reconcile).not.toBeNull();
-    expect(within(inbox).getByText(wrapDisplayCopy(answer ?? "")).isConnected).toBe(true);
-    expect(within(inbox).getByText(wrapDisplayCopy(reconcile ?? "")).isConnected).toBe(true);
+    expect(within(needsYou).getByText(`${wrapDisplayCopy(answer ?? "")} →`).isConnected).toBe(true);
+    expect(within(needsYou).getByText(`${wrapDisplayCopy(reconcile ?? "")} →`).isConnected).toBe(true);
 
-    expect(screen.getByRole("heading", { name: wrapDisplayCopy(studioPageCopy.projects) }).isConnected).toBe(true);
-    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
-    expect(within(card).getByText(`2 ${wrapDisplayCopy(studioPageCopy.runningCount)}`).isConnected).toBe(true);
-    expect(within(card).getByText(`2 ${wrapDisplayCopy(studioPageCopy.waitingCount)}`).isConnected).toBe(true);
-    expect(within(card).getByText(`1 ${wrapDisplayCopy(studioPageCopy.failedCount)}`).isConnected).toBe(true);
-    expect(within(card).getByText(`1 ${wrapDisplayCopy(studioPageCopy.landedCount)}`).isConnected).toBe(true);
+    const running = screen.getByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.running)} · 3` });
+    expect(within(running).getByText(`${wrapDisplayCopy(studioPageCopy.why)} →`).isConnected).toBe(true);
 
-    const chat = screen.getByRole("region", { name: wrapDisplayCopy(studioPageCopy.chat) });
-    expect(within(chat).getByText(wrapDisplayCopy(studioPageCopy.chatUnavailable)).isConnected).toBe(true);
+    const done = screen.getByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.done)} · 1` });
+    expect(within(done).getByText(wrapDisplayCopy(studioPageCopy.completedSentence)).isConnected).toBe(true);
+
     expect(screen.getByText(wrapDisplayCopy(connectionLabels.connecting)).isConnected).toBe(true);
   });
 

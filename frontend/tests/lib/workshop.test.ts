@@ -14,11 +14,12 @@ describe("the workshop rail names four destinations", () => {
     const reachable = WORKSHOP_DESTINATIONS.filter(destinationIsReachable);
     expect(reachable.map((destination) => [destination.label, destination.path])).toEqual([
       ["Board", "/atelier"],
+      ["Workflows", "/atelier/workflows"],
       ["History", "/atelier/project"]
     ]);
 
     const deferred = WORKSHOP_DESTINATIONS.filter((destination) => !destinationIsReachable(destination));
-    expect(deferred.map((destination) => destination.label)).toEqual(["Chat", "Workflows"]);
+    expect(deferred.map((destination) => destination.label)).toEqual(["Chat"]);
     for (const destination of deferred) {
       expect(destination.vision).toContain(destination.visionRef);
       expect("path" in destination).toBe(false);
@@ -27,6 +28,10 @@ describe("the workshop rail names four destinations", () => {
 
   it("marks the rail item the current page sits under", () => {
     expect(activeWorkshopDestination({ page: "studio" })).toBe("board");
+    expect(activeWorkshopDestination({ page: "workflows" })).toBe("workflows");
+    expect(activeWorkshopDestination({ page: "workflow", name: "Preview door" })).toBe(
+      "workflows"
+    );
     expect(activeWorkshopDestination({ page: "project" })).toBe("history");
     expect(activeWorkshopDestination({ page: "new" })).toBe("history");
     expect(activeWorkshopDestination({ page: "run", publicReference: "run1.cnVu" })).toBe(
