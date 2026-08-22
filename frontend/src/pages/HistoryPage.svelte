@@ -120,8 +120,12 @@
               href={runPath(row.run.public_run_reference)}
               onclick={open(row.run.public_run_reference)}
             >
-              <span class="row-name">{row.name}</span>
+              <span class="row-name">
+                <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnName)}: </span>
+                {row.name}
+              </span>
               <span class="row-result">
+                <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
                 {#if row.result.kind === "failed"}
                   {wrapDisplayCopy(historyPageCopy.resultFailedAt)} {row.result.nodeId}
                 {:else}
@@ -129,6 +133,7 @@
                 {/if}
               </span>
               <span class="row-duration">
+                <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnDuration)}: </span>
                 {#if row.span !== null}
                   {ageLabel(row.span.startedAt, now, "duration", row.span.endedAt)}
                 {:else}
@@ -302,6 +307,24 @@
     margin: 0;
     color: var(--muted);
     font-size: var(--text-xs);
+  }
+
+  /**
+   * Names each row's three fragments (Name/Result/Took) for a screen reader
+   * without repeating the header aloud for every row -- sighted eyes already
+   * read the column from `.history-head-row`'s alignment, and duplicating
+   * that header once per row would be visual noise rather than a label.
+   */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   @media (max-width: 32rem) {

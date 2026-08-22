@@ -1,4 +1,5 @@
 import { isRunV3, type AnyRun } from "../api/client";
+import { resolveWorkflowName } from "./boardRows";
 import { newestActivityFirst, runActivityAt } from "./runList";
 import { parseUtc } from "./when";
 
@@ -26,9 +27,9 @@ export type HistoryRow = {
  *
  * Only COMPLETED and FAILED runs become a row: this is what "ist gelaufen"
  * (has run) means for History, unlike the Board, which still tracks a failed
- * run as live work. A run this round's catalog read could not name falls
- * back to its own run id, honestly, rather than a placeholder that reads like
- * a real name (the same choice `boardRows.ts`'s `resolveWorkflowName` makes).
+ * run as live work. The name comes from the one join owner (`boardRows.ts`'s
+ * `resolveWorkflowName`), including its honest run-id fallback -- not a
+ * second implementation of the same lookup.
  */
 export function projectHistoryRows(
   runs: readonly AnyRun[],
@@ -44,7 +45,7 @@ function historyRow(
 ): HistoryRow {
   return {
     run,
-    name: workflowNames?.get(run.workflow_revision_hash) ?? run.run_id,
+    name: resolveWorkflowName(run, workflowNames),
     result: historyResult(run),
     span: historySpan(run),
     activityAt: runActivityAt(run)
