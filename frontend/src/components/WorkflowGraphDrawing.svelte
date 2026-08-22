@@ -1,12 +1,21 @@
 <script lang="ts" context="module">
   let nextMarker = 0;
 
-  const kindMarks: Record<string, string> = {
-    agent: "●",
-    wait: "○",
-    action: "■",
-    deterministic: "◆",
-    subworkflow: "▣"
+  /**
+   * Form carries type, the same way it does for state (`StateMark`): a shape
+   * class on `.kind-mark`, never a color alone. Only the three kinds the
+   * target mockup (docs/requirements/0003-ziel-ui-mockup-v5.html §03/§04)
+   * names a shape for — circle, square, hexagon — get one here.
+   * `deterministic` and `subworkflow` keep the plain dot this component always
+   * drew; the subworkflow shape is unfixed until a real composed-workflow node
+   * exists to fix it against (ADR 0006), and a dot commits to nothing.
+   */
+  const KIND_LEGEND_ENTRIES = ["agent", "action", "wait"] as const;
+
+  export const kindLegendLabels: Record<(typeof KIND_LEGEND_ENTRIES)[number], string> = {
+    agent: "Agent",
+    action: "Action",
+    wait: "Wait"
   };
 </script>
 
@@ -31,6 +40,7 @@
   export let selectedNodeId: string | null = null;
   export let onSelect: ((nodeId: string) => void) | null = null;
   export let showExcerpt = false;
+  export let showLegend = false;
 
   const markerId = `workflow-graph-arrow-${nextMarker++}`;
 
@@ -100,6 +110,13 @@
 </script>
 
 <section class="workflow-graph" bind:this={host} aria-label="Workflow">
+  {#if showLegend}
+    <ul class="graph-legend" aria-label="Node shapes">
+      {#each KIND_LEGEND_ENTRIES as kind (kind)}
+        <li><span class="kind-mark kind-mark-{kind}" aria-hidden="true"></span>{kindLegendLabels[kind]}</li>
+      {/each}
+    </ul>
+  {/if}
   {#if !layered.ok}
     <p class="muted" role="status">{layered.reason}</p>
   {:else}
@@ -147,7 +164,7 @@
                   {#if state !== undefined}
                     <StateMark {state} />
                   {:else}
-                    <span class="kind-mark" aria-hidden="true">{kindMarks[preview.kind]}</span>
+                    <span class="kind-mark kind-mark-{preview.kind}" aria-hidden="true"></span>
                   {/if}
                 </header>
                 <strong class="node-id">{preview.id}</strong>
@@ -177,7 +194,7 @@
                   {#if state !== undefined}
                     <StateMark {state} />
                   {:else}
-                    <span class="kind-mark" aria-hidden="true">{kindMarks[preview.kind]}</span>
+                    <span class="kind-mark kind-mark-{preview.kind}" aria-hidden="true"></span>
                   {/if}
                 </header>
                 <strong class="node-id">{preview.id}</strong>
@@ -290,7 +307,50 @@
   }
 
   .kind-mark {
+    display: inline-block;
+    width: 0.7rem;
+    height: 0.7rem;
+    border: 1.5px solid var(--muted);
+    background: transparent;
+    flex: none;
+  }
+
+  .kind-mark-agent {
+    border-radius: 50%;
+  }
+
+  .kind-mark-action {
+    border-radius: 0.15rem;
+  }
+
+  .kind-mark-wait {
+    border: none;
+    background: var(--muted);
+    clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  }
+
+  .kind-mark-deterministic,
+  .kind-mark-subworkflow {
+    border-radius: 50%;
+    width: 0.5rem;
+    height: 0.5rem;
+  }
+
+  .graph-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.85rem;
+    margin: 0 0 0.75rem;
+    padding: 0;
+    list-style: none;
+    font-size: 0.78rem;
     color: var(--muted);
+  }
+
+  .graph-legend li {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
   }
 
   .node-id {
