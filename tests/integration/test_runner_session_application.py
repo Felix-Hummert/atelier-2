@@ -434,6 +434,44 @@ def test_core_session_refuses_a_crossing_refusal_with_the_wrong_code() -> None:
         )
 
 
+def test_core_session_refuses_a_crossing_refusal_naming_a_different_evidence() -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
+    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
+    session.cancel()
+    session.accept(_frame(RunnerSessionMessage.TERMINAL_AVAILABLE, 4, (b"d" * 64,)))
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-noncanonical"):
+        session.accept(
+            _frame(
+                RunnerSessionMessage.REFUSE,
+                5,
+                (b"runner-cancel-conflict", b"e" * 64),
+            )
+        )
+
+
+def test_core_session_refuses_a_crossing_refusal_with_a_malformed_hash() -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
+    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
+    session.cancel()
+    session.accept(_frame(RunnerSessionMessage.TERMINAL_AVAILABLE, 4, (b"d" * 64,)))
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-noncanonical"):
+        session.accept(
+            _frame(
+                RunnerSessionMessage.REFUSE,
+                5,
+                (b"runner-cancel-conflict", b"not-a-hash"),
+            )
+        )
+
+
 def test_core_session_refuses_an_unsolicited_crossing_refusal() -> None:
     core = _Core()
     session = _session(core)

@@ -226,6 +226,7 @@ class CoreRunnerSession:
     )
     _terminal_hash: RunnerTerminalEvidenceHash | None = None
     _cancellation: RunnerSessionFrame | None = None
+    _offered_evidence_hash: RunnerTerminalEvidenceHash | None = None
 
     def accept(self, frame: RunnerSessionFrame) -> RunnerSessionFrame | None:
         duplicate = self._accepted.get(frame.sequence)
@@ -302,6 +303,12 @@ class CoreRunnerSession:
                 self._phase = _CorePhase.TERMINAL_AVAILABLE
                 return None
             case _CorePhase.TERMINAL_AVAILABLE:
+                try:
+                    self._offered_evidence_hash = RunnerTerminalEvidenceHash(
+                        _ascii(frame.payload[0])
+                    )
+                except (UnicodeDecodeError, ValueError) as error:
+                    raise RunnerSessionRefusal("runner-session-noncanonical") from error
                 self._phase = _CorePhase.TERMINAL_RECORD
                 return self._core_frame(RunnerSessionMessage.READBACK, ())
             case _CorePhase.ACK_TOMBSTONE:
@@ -330,16 +337,20 @@ class CoreRunnerSession:
         itself, while `_phase` was still `TERMINAL_AVAILABLE`. The readback
         flow continues unchanged with the evidence the runner already
         retained -- success or an earlier cancel, whichever the runner's
-        journal fixed first.
+        journal fixed first. The refusal must name that exact evidence, not
+        merely a well-formed hash -- otherwise a REFUSE about some other
+        record would be absorbed as if it answered this session's cancel.
         """
         if self._cancellation is None:
             raise RunnerSessionRefusal("runner-session-out-of-order")
         if frame.payload[0] != CROSSING_CANCEL_REFUSAL_CODE.encode("ascii"):
             raise RunnerSessionRefusal("runner-session-noncanonical")
         try:
-            RunnerTerminalEvidenceHash(_ascii(frame.payload[1]))
+            presented = RunnerTerminalEvidenceHash(_ascii(frame.payload[1]))
         except (UnicodeDecodeError, ValueError) as error:
             raise RunnerSessionRefusal("runner-session-noncanonical") from error
+        if presented != self._offered_evidence_hash:
+            raise RunnerSessionRefusal("runner-session-noncanonical")
         return None
 
     def accept_terminal_record(self, frame: RunnerSessionFrame) -> RunnerSessionFrame:
