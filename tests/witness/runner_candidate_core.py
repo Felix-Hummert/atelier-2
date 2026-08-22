@@ -41,6 +41,7 @@ from atelier2.adapters.runner_tls import (
     invocation_from_runner_uri,
     pin_tls_13,
     runner_uri_for_invocation,
+    sole_peer_uri,
     validate_peer_certificate,
 )
 from atelier2.application.run_runner_session import (
@@ -347,12 +348,7 @@ def main(arguments: list[str] | None = None) -> int:
     _wait_for(peer_leaf)
     expected = peer_leaf.read_bytes()
     peer_certificate = x509.load_pem_x509_certificate(expected)
-    uris = peer_certificate.extensions.get_extension_for_class(
-        x509.SubjectAlternativeName
-    ).value.get_values_for_type(x509.UniformResourceIdentifier)
-    if len(uris) != 1:
-        raise RuntimeError("runner-binding-san-mismatch")
-    invocation = invocation_from_runner_uri(uris[0], binding)
+    invocation = invocation_from_runner_uri(sole_peer_uri(peer_certificate), binding)
     expected_runner_uri = runner_uri_for_invocation(binding, invocation)
     ca_pem = identity.joinpath("ca.crt").read_bytes()
     validate_peer_certificate(
