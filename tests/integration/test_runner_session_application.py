@@ -16,6 +16,7 @@ from atelier2.adapters.free_runner_executor import (
     FreeRunnerAuthorizationResolver,
     refuse_unbound_runner_a_request,
 )
+from atelier2.adapters.runner_journal import RunnerJournal
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
     RunnerSessionRefusal,
@@ -34,6 +35,8 @@ from atelier2.contracts.agent_attempts import (
     RunnerGenerationId,
     RunnerInvocationId,
     RunnerManifestId,
+    RunnerProviderResult,
+    RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
 )
 from atelier2.contracts.agents import (
@@ -42,6 +45,7 @@ from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
+    AgentExecutionResult,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AgentRole,
@@ -71,6 +75,7 @@ from atelier2.ports.agent_attempts import (
 from atelier2.runner.__main__ import (
     CandidateScenario,
     _declared_scenario,
+    _invocation_for_session,
     _load_verified_client_identity,
 )
 from atelier2.runner.session import _CoreFrameFence
@@ -235,6 +240,72 @@ def test_core_session_arms_once_then_commits_acknowledges_and_releases_in_order(
     )
     assert (core.armed, core.committed, core.acknowledged) == (1, 1, 1)
     assert core.armed_invocation == _INVOCATION
+
+
+def _session_ready_for_terminal_record(core: _Core) -> CoreRunnerSession:
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
+    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
+    session.accept(_frame(RunnerSessionMessage.TERMINAL_AVAILABLE, 4, (b"d" * 64,)))
+    return session
+
+
+def test_core_session_replays_the_same_terminal_record_without_a_second_commit() -> (
+    None
+):
+    core = _Core()
+    session = _session_ready_for_terminal_record(core)
+    record = _frame(RunnerSessionMessage.TERMINAL_RECORD, 5, (b"record",))
+
+    first = session.accept_terminal_record(record)
+    second = session.accept_terminal_record(record)
+
+    assert first == second
+    assert core.committed == 1
+
+
+def test_core_session_refuses_replayed_terminal_record_bytes_at_the_same_sequence() -> (
+    None
+):
+    core = _Core()
+    session = _session_ready_for_terminal_record(core)
+    session.accept_terminal_record(
+        _frame(RunnerSessionMessage.TERMINAL_RECORD, 5, (b"record",))
+    )
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-replay"):
+        session.accept_terminal_record(
+            _frame(RunnerSessionMessage.TERMINAL_RECORD, 5, (b"different",))
+        )
+    assert core.committed == 1
+
+
+def test_core_session_refuses_a_terminal_record_sequence_gap() -> None:
+    core = _Core()
+    session = _session_ready_for_terminal_record(core)
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-sequence-mismatch"):
+        session.accept_terminal_record(
+            _frame(RunnerSessionMessage.TERMINAL_RECORD, 6, (b"record",))
+        )
+    assert core.committed == 0
+
+
+def test_core_session_refuses_a_terminal_record_binding_mismatch() -> None:
+    core = _Core()
+    session = _session_ready_for_terminal_record(core)
+    foreign = RunnerSessionFrame(
+        RunnerSessionMessage.TERMINAL_RECORD,
+        5,
+        _binding(),
+        RunnerInvocationId("C" * 43),
+        (b"record",),
+    )
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-binding-mismatch"):
+        session.accept_terminal_record(foreign)
+    assert core.committed == 0
 
 
 def test_core_session_refuses_a_launch_before_ready_without_arming() -> None:
@@ -713,6 +784,26 @@ def test_runner_fence_refuses_a_core_sequence_gap() -> None:
 
         with pytest.raises(RuntimeError, match="runner-session-sequence-mismatch"):
             fence.read_frame()
+
+
+def test_invocation_for_session_mints_the_first_invocation_on_a_blank_journal(
+    tmp_path: Path,
+) -> None:
+    minted = _invocation_for_session(tmp_path, _binding())
+
+    assert minted.value
+    assert _invocation_for_session(tmp_path, _binding()).value != minted.value
+
+
+def test_invocation_for_session_reuses_a_retained_invocation(tmp_path: Path) -> None:
+    envelope = RunnerTerminalEvidenceEnvelope(
+        _binding(),
+        _INVOCATION,
+        RunnerProviderResult(AgentExecutionResult(b"resume-invocation-reuse")),
+    )
+    RunnerJournal(tmp_path).publish(envelope)
+
+    assert _invocation_for_session(tmp_path, _binding()) == _INVOCATION
 
 
 def test_candidate_scenario_is_a_closed_declared_vocabulary() -> None:

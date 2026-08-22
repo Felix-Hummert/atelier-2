@@ -41,6 +41,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerGenerationId,
     RunnerInvocationId,
     RunnerManifestId,
+    RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
 )
@@ -181,10 +182,16 @@ class _FakeRunnerSessionCore:
     ) -> RunnerTerminalEvidenceHash:
         del binding
         self.committed += 1
-        envelope = decode_runner_terminal_evidence_record(record)
-        if not isinstance(envelope, RunnerTerminalEvidenceEnvelope):
+        decoded = decode_runner_terminal_evidence_record(record)
+        # A resumed candidate whose journal already tombstoned this evidence
+        # has no envelope left to resend -- see
+        # `DbosRunnerSessionCore._require_already_acknowledged` for the real
+        # adapter's durable-store confirmation this fake stands in for.
+        if isinstance(decoded, RunnerTerminalEvidenceAckTombstone):
+            return decoded.evidence_hash
+        if not isinstance(decoded, RunnerTerminalEvidenceEnvelope):
             raise TypeError("runner-terminal-record-corrupt")
-        return RunnerTerminalEvidenceHash.for_envelope(envelope)
+        return RunnerTerminalEvidenceHash.for_envelope(decoded)
 
     def acknowledge(
         self,
