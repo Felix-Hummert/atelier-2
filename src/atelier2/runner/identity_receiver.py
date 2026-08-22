@@ -13,6 +13,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from atelier2.adapters.runner_tls import validate_peer_certificate
+from atelier2.contracts.runner_manifests import (
+    CANDIDATE_EFFECTIVE_GID,
+    CANDIDATE_EFFECTIVE_UID,
+)
 
 _MAXIMUM_FIELD_BYTES = 8_192
 _MAXIMUM_RECORD_BYTES = 24_896
@@ -94,8 +98,8 @@ def load_published_identity(
     try:
         directory_info = os.fstat(directory)
         if (
-            directory_info.st_uid != 10001
-            or directory_info.st_gid != 10001
+            directory_info.st_uid != CANDIDATE_EFFECTIVE_UID
+            or directory_info.st_gid != CANDIDATE_EFFECTIVE_GID
             or not stat.S_ISDIR(directory_info.st_mode)
             or stat.S_IMODE(directory_info.st_mode) != 0o700
         ):
@@ -113,8 +117,8 @@ def load_published_identity(
             try:
                 info = os.fstat(descriptor)
                 if (
-                    info.st_uid != 10001
-                    or info.st_gid != 10001
+                    info.st_uid != CANDIDATE_EFFECTIVE_UID
+                    or info.st_gid != CANDIDATE_EFFECTIVE_GID
                     or info.st_nlink != 1
                     or not stat.S_ISREG(info.st_mode)
                     or stat.S_IMODE(info.st_mode) != mode
@@ -171,8 +175,8 @@ def _write_identity(destination: Path, record: tuple[bytes, bytes, bytes]) -> No
                 os.fchmod(descriptor, mode)
                 info = os.fstat(descriptor)
                 if (
-                    info.st_uid != 10001
-                    or info.st_gid != 10001
+                    info.st_uid != CANDIDATE_EFFECTIVE_UID
+                    or info.st_gid != CANDIDATE_EFFECTIVE_GID
                     or not stat.S_ISREG(info.st_mode)
                     or stat.S_IMODE(info.st_mode) != mode
                 ):

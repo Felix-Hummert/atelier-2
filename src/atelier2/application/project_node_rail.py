@@ -194,7 +194,7 @@ class _RailDerivation:
             and isinstance(run, RunV2 | RunV3)
             and _is_agent(node)
             and attempt is not None
-            and not _never_launched_cleanup_on_failed_run(run, attempt)
+            and not never_launched_cleanup_on_failed_run(run, attempt)
         ):
             return _NODE_STATES_ENDED_BY_ATTEMPT.get(attempt.state, NodeState.WORKING)
         ended = _state_the_event_ended_in(last_event)
@@ -270,7 +270,7 @@ class _RailDerivation:
             if node.id == run.current_node_id
             else None
         )
-        if _never_launched_cleanup_on_failed_run(run, from_snapshot):
+        if never_launched_cleanup_on_failed_run(run, from_snapshot):
             from_snapshot = None
         if (
             self.leading_event is not None
@@ -314,7 +314,7 @@ def _walk_from_start(graph: AnyWorkflowDocument) -> tuple[_RailNode, ...]:
     return tuple(walked)
 
 
-def _never_launched_cleanup_on_failed_run(
+def never_launched_cleanup_on_failed_run(
     run: RunV2 | RunV3, attempt: AgentAttemptProjection | None
 ) -> bool:
     """PREPARED cleanup is control evidence, not the public ending of a FAILED run."""

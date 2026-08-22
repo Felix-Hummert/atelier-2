@@ -15,6 +15,9 @@ from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSession
 
 MAXIMUM_RUNNER_SESSION_BODY_BYTES = 1_078_291
 MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES = 1_078_295
+# Position of the resolved auth reference in the PREPARE payload, the last
+# field encode_runner_prepare_payload lays out.
+PREPARE_AUTH_REFERENCE_FIELD = 18
 _FRAME_PREFIX = b"ATELIER2\x00"
 
 

@@ -83,6 +83,7 @@ from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSession
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
+from atelier2.runner.__main__ import CandidateScenario
 
 _OUTPUT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b"true")
 _DOCUMENT = b"""format_version: 3
@@ -123,7 +124,7 @@ def _write_frame(connection: ssl.SSLSocket, frame: RunnerSessionFrame) -> None:
     connection.sendall(encode_runner_session_frame(frame))
 
 
-def _bootstrap(root: Path, handoff: Path, scenario: str):
+def _bootstrap(root: Path, handoff: Path, scenario: CandidateScenario):
     database = root / "core.sqlite3"
     workspace = root / "workspace"
     workspace.mkdir(mode=0o700, exist_ok=True)
@@ -219,9 +220,8 @@ def _bootstrap(root: Path, handoff: Path, scenario: str):
             "request_hash": binding.request_hash.value,
             "generation_id": binding.generation_id.value,
             "manifest_id": binding.manifest_id.value,
+            "scenario": scenario.value,
         }
-        if scenario == "cancel":
-            bootstrap["scenario"] = "cancel"
         _write_json(root / "bootstrap.json", bootstrap)
         reference = FreeRunnerAuthorizationResolver().reference_for(
             request.resolved_binding.auth_profile
@@ -252,13 +252,18 @@ def main(arguments: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", choices=("success", "cancel"), default="success")
+    parser.add_argument(
+        "--scenario",
+        choices=tuple(choice.value for choice in CandidateScenario),
+        default=CandidateScenario.SUCCESS.value,
+    )
     parsed = parser.parse_args(arguments)
+    scenario = CandidateScenario(parsed.scenario)
     root = Path("/var/lib/atelier2-candidate")
     handoff = Path("/handoff")
     identity = Path("/run/atelier2-core-identity")
     execution, binding, store, request, manifest, reference = _bootstrap(
-        root, handoff, parsed.scenario
+        root, handoff, scenario
     )
     certificate_pem = identity.joinpath("core.crt").read_bytes()
     certificate = x509.load_pem_x509_certificate(certificate_pem)
@@ -349,7 +354,7 @@ def main(arguments: list[str] | None = None) -> int:
             if response is not None:
                 _write_frame(connection, response)
             if (
-                parsed.scenario == "cancel"
+                scenario is CandidateScenario.CANCEL
                 and frame.message is RunnerSessionMessage.STARTED
             ):
                 _write_frame(connection, session.cancel())
