@@ -3,10 +3,13 @@ import {
   cockpitRoute,
   PUBLIC_REFERENCE_PLACEHOLDER,
   SERVED_PATHS,
+  WORKFLOW_NAME_PLACEHOLDER,
+  workflowPath,
   type CockpitRoute
 } from "../../src/lib/route";
 
 const SAMPLE_PUBLIC_REFERENCE = "run1.cnVu";
+const SAMPLE_WORKFLOW_NAME = "iterate-code";
 
 /**
  * Every page this router can open, and whether a served path must reach it on a
@@ -18,12 +21,18 @@ const REACHED_COLD: Record<CockpitRoute["page"], boolean> = {
   studio: true,
   project: true,
   new: true,
+  workflows: true,
+  workflow: true,
   run: true,
   "not-found": false
 };
 
 function coldLoad(servedPath: string): CockpitRoute {
-  return cockpitRoute(servedPath.replace(PUBLIC_REFERENCE_PLACEHOLDER, SAMPLE_PUBLIC_REFERENCE));
+  return cockpitRoute(
+    servedPath
+      .replace(PUBLIC_REFERENCE_PLACEHOLDER, SAMPLE_PUBLIC_REFERENCE)
+      .replace(WORKFLOW_NAME_PLACEHOLDER, SAMPLE_WORKFLOW_NAME)
+  );
 }
 
 describe("the paths the server is asked to serve", () => {
@@ -63,5 +72,20 @@ describe("the paths the server is asked to serve", () => {
 
   it("still answers an unknown path with not-found", () => {
     expect(cockpitRoute("/atelier/nowhere").page).toBe("not-found");
+  });
+
+  it("opens the workflows catalog on its canonical path", () => {
+    expect(SERVED_PATHS).toContain("/atelier/workflows");
+    expect(cockpitRoute("/atelier/workflows")).toEqual({ page: "workflows" });
+  });
+
+  it("round-trips a workflow name a person actually publishes, spaces included", () => {
+    const name = "Probefahrt am frischen Haus";
+
+    expect(cockpitRoute(workflowPath(name))).toEqual({ page: "workflow", name });
+  });
+
+  it("answers a malformed percent-encoding in a workflow path with not-found", () => {
+    expect(cockpitRoute("/atelier/workflows/%").page).toBe("not-found");
   });
 });

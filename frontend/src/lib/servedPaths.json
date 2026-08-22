@@ -4,5 +4,7 @@
   "/atelier/project",
   "/atelier/runs",
   "/atelier/new",
-  "/atelier/runs/{public_ref}"
+  "/atelier/runs/{public_ref}",
+  "/atelier/workflows",
+  "/atelier/workflows/{workflow_name}"
 ]
