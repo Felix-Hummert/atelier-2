@@ -75,19 +75,27 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
     decode_runner_terminal_evidence_record,
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
-from atelier2.runner.session import (
-    CandidateScenario,
-    RunnerFrameChannel,
-    _pid_limit,
-    _status_field,
-)
+from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _status_field
+
+# A cgroup pids controller isn't delegated the same way (or readable the same
+# way) on every host this test runs on: this sandbox, the GitHub-hosted CI
+# runner, and the Docker witness each expose /sys/fs/cgroup differently, and
+# `_pid_limit`'s own real fallback chain can legitimately find nothing
+# numeric on some of them. The manifest and the live READY measurement must
+# still agree, so both sides use this one fixed stand-in instead of the real
+# per-host reading — exactly the same accommodation as `child_allowlist`
+# below. Production's real `_pid_limit` is untouched and stays proven by the
+# Docker witness (`scripts/runner_candidate.sh`), which runs on its own
+# attested cgroup.
+_STUBBED_PROCESS_LIMIT = 4096
 
 # Runs `run_candidate_session` in a fresh interpreter, with its own
-# `PR_SET_NO_NEW_PRIVS` and a Landlock allowlist widened to reach this test
+# `PR_SET_NO_NEW_PRIVS`, a Landlock allowlist widened to reach this test
 # interpreter's own install prefix (the production allowlist names the
 # deployed candidate image's layout instead — the same accommodation
-# `test_runner_child.py` already makes for the identical reason). Nothing
-# about the session's own logic is touched.
+# `test_runner_child.py` already makes for the identical reason), and a
+# stubbed cgroup pid limit reading (see `_STUBBED_PROCESS_LIMIT` above).
+# Nothing about the session's own logic is touched.
 _CANDIDATE_DRIVER = """
 import ctypes
 import socket
@@ -98,8 +106,8 @@ _PR_SET_NO_NEW_PRIVS = 38
 
 (
     fd, attempt_id, request_hash, generation_id, manifest_id, invocation_id,
-    scenario_value, manifest_path, identity, journal_directory,
-) = sys.argv[1:11]
+    scenario_value, manifest_path, identity, journal_directory, process_limit,
+) = sys.argv[1:12]
 
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -129,6 +137,7 @@ def _interpreter_reachable_allowlist():
 
 
 session_module.child_allowlist = _interpreter_reachable_allowlist
+session_module._pid_limit = lambda: int(process_limit)
 run_candidate_session(
     socket.socket(fileno=int(fd)),
     RunnerGenerationBinding(
@@ -236,9 +245,11 @@ def _free_request() -> AgentExecutionRequestV2:
 def _host_manifest(**timings: int) -> RunnerManifestV1:
     """A candidate manifest declaring exactly what this host will measure.
 
-    `run_candidate_session`'s READY step re-measures uid, gid, capabilities,
-    and the cgroup pid limit live; a manifest built from anything else would
-    make `require_ready_matches_manifest` refuse a healthy session.
+    `run_candidate_session`'s READY step re-measures uid, gid, and
+    capabilities live; a manifest built from anything else would make
+    `require_ready_matches_manifest` refuse a healthy session. The process
+    limit instead uses the fixed `_STUBBED_PROCESS_LIMIT` both sides agree
+    on — see the comment above `_STUBBED_PROCESS_LIMIT`.
     """
     return replace(
         candidate_runner_manifest(
@@ -254,7 +265,7 @@ def _host_manifest(**timings: int) -> RunnerManifestV1:
         effective_uid=os.getuid(),
         effective_gid=os.getgid(),
         effective_capabilities=_status_field("CapEff").lower(),
-        process_limit=_pid_limit(),
+        process_limit=_STUBBED_PROCESS_LIMIT,
         **timings,
     )
 
@@ -339,6 +350,7 @@ def _spawn_candidate_session(
             str(manifest_path),
             str(identity),
             str(journal_directory),
+            str(_STUBBED_PROCESS_LIMIT),
         ),
         pass_fds=(fd,),
         close_fds=True,
