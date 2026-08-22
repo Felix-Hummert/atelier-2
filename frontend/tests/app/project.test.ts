@@ -116,7 +116,7 @@ describe("the project answers what is happening here", () => {
   it("heads the level with the one project of this installation", async () => {
     openProject([startedRun()]);
 
-    expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
   });
 
   it("groups the runs by what each one is doing, and omits a group nothing is in", async () => {
@@ -969,7 +969,7 @@ describe("project occupancy editor", () => {
 });
 
 describe("every level names the way back up", () => {
-  it("proves(every-level-names-the-way-back-up): walks the named way from the run up to the project and from the project up into the studio", async () => {
+  it("proves(every-level-names-the-way-back-up): walks the named way from the run up to the project and from the project up into the board", async () => {
     const feed = new FakeRunEventFeed();
     openAt(`/atelier/runs/${publicReference}`, {
       getRun: vi.fn(async () => startedRun()),
@@ -980,18 +980,18 @@ describe("every level names the way back up", () => {
     await screen.findByRole("heading", { name: "Unnamed workflow" });
 
     const trail = screen.getByRole("navigation", { name: "Where you are" });
-    await fireEvent.click(within(trail).getByRole("link", { name: "This workshop" }));
+    await fireEvent.click(within(trail).getByRole("link", { name: THE_ONE_PROJECT }));
 
-    expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier/project");
 
     await fireEvent.click(
       within(screen.getByRole("navigation", { name: "Where you are" })).getByRole("link", {
-        name: "Studio"
+        name: "Board"
       })
     );
 
-    expect((await screen.findByRole("heading", { name: "Studio" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Board" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier");
   });
 });

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import type { CockpitApi } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { publicReference, startedRun, workflowRevision } from "../support/workflowV1";
 
@@ -42,34 +43,34 @@ describe("the run knows where it sits", () => {
 
     const trail = screen.getByRole("navigation", { name: "Where you are" });
     expect(within(trail).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "Studio",
-      "This workshop"
+      "Board",
+      THE_ONE_PROJECT
     ]);
     expect(within(trail).getByText("Unnamed workflow").isConnected).toBe(true);
 
-    await fireEvent.click(within(trail).getByRole("link", { name: "This workshop" }));
-    expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
+    await fireEvent.click(within(trail).getByRole("link", { name: THE_ONE_PROJECT }));
+    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier/project");
 
     await fireEvent.click(
       within(screen.getByRole("navigation", { name: "Where you are" })).getByRole("link", {
-        name: "Studio"
+        name: "Board"
       })
     );
-    expect((await screen.findByRole("heading", { name: "Studio" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Board" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier");
   });
 
   it("names the level it is on without offering it as a step to walk", async () => {
     open("/atelier/project");
-    await screen.findByRole("heading", { name: "This workshop" });
+    await screen.findByRole("heading", { name: THE_ONE_PROJECT });
 
     const trail = screen.getByRole("navigation", { name: "Where you are" });
 
     expect(within(trail).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "Studio"
+      "Board"
     ]);
-    expect(within(trail).getByText("This workshop").isConnected).toBe(true);
-    expect(screen.queryByRole("link", { name: "← Studio" })).toBeNull();
+    expect(within(trail).getByText(THE_ONE_PROJECT).isConnected).toBe(true);
+    expect(screen.queryByRole("link", { name: "← Board" })).toBeNull();
   });
 });

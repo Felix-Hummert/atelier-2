@@ -5,6 +5,7 @@ import App from "../../src/App.svelte";
 import { encodePublicRunReference, type RunV1 } from "../../src/api/client";
 import { wrapDisplayCopy } from "../../src/lib/displayCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { humanMove, standingWords } from "../../src/lib/runState";
 import { connectionLabels } from "../../src/lib/streamStatus";
 import { studioPageCopy } from "../../src/lib/studioPageCopy";
@@ -29,7 +30,7 @@ afterEach(() => {
   window.history.replaceState(null, "", "/atelier");
 });
 
-const OWNED_RAIL = ["[[[ Studio ]]]", "[[[ Projekte ]]]", "[[[ Runs ]]]", "[[[ Library ]]]", "[[[ Settings ]]]"];
+const OWNED_RAIL = ["[[[ Chat ]]]", "[[[ Board ]]]", "[[[ Workflows ]]]", "[[[ History ]]]"];
 
 function open(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -135,7 +136,7 @@ describe("core surfaces read owned display strings", () => {
   it("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio renders its header and confirmed empty copy through the display transform", async () => {
     const feed = openEmptyStudio();
 
-    await screen.findByRole("heading", { name: "[[[ Studio ]]]" });
+    await screen.findByRole("heading", { name: "[[[ Board ]]]" });
     feed.handlers?.opened();
     await screen.findByRole("heading", { name: "[[[ Nothing is running ]]]" });
 
@@ -158,7 +159,7 @@ describe("core surfaces read owned display strings", () => {
     expect(within(inbox).getByText(wrapDisplayCopy(reconcile ?? "")).isConnected).toBe(true);
 
     expect(screen.getByRole("heading", { name: wrapDisplayCopy(studioPageCopy.projects) }).isConnected).toBe(true);
-    const card = await screen.findByRole("article", { name: "This workshop" });
+    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
     expect(within(card).getByText(`2 ${wrapDisplayCopy(studioPageCopy.runningCount)}`).isConnected).toBe(true);
     expect(within(card).getByText(`2 ${wrapDisplayCopy(studioPageCopy.waitingCount)}`).isConnected).toBe(true);
     expect(within(card).getByText(`1 ${wrapDisplayCopy(studioPageCopy.failedCount)}`).isConnected).toBe(true);
@@ -187,9 +188,9 @@ describe("core surfaces read owned display strings", () => {
     expect(screen.queryByText(/later page detail/)).toBeNull();
   });
 
-  it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): Studio rail uses the owner, not a hardcoded copy", async () => {
+  it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): Board rail uses the owner, not a hardcoded copy", async () => {
     open("/atelier?pseudo-locale=1");
-    await screen.findByRole("heading", { name: "[[[ Studio ]]]" });
+    await screen.findByRole("heading", { name: "[[[ Board ]]]" });
     await railShowsOwnedPseudoLocale();
   });
 
@@ -208,7 +209,7 @@ describe("core surfaces read owned display strings", () => {
   it("Project renders its new work-first copy through the display transform", async () => {
     openProjectPseudoLocale();
 
-    await screen.findByRole("heading", { name: "This workshop" });
+    await screen.findByRole("heading", { name: THE_ONE_PROJECT });
     expect(screen.getByText("[[[ Project ]]]").isConnected).toBe(true);
     expect(screen.getByRole("link", { name: "[[[ Start a run ]]]" }).isConnected).toBe(true);
     expect(screen.getByRole("heading", { name: "[[[ Queue ]]]" }).isConnected).toBe(true);

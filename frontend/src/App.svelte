@@ -54,6 +54,6 @@
       {createReconcileCommandId}
     />
   {:else}
-    <section><p class="eyebrow">Atelier 2</p><h1>Page not found</h1><a class="button" href="/atelier" onclick={(event) => { event.preventDefault(); navigate("/atelier"); }}>Studio</a></section>
+    <section><p class="eyebrow">Atelier 2</p><h1>Page not found</h1><a class="button" href="/atelier" onclick={(event) => { event.preventDefault(); navigate("/atelier"); }}>Board</a></section>
   {/if}
 </WorkshopShell>

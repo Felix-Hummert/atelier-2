@@ -17,32 +17,19 @@
   }
 
   const destinationMarks: Record<(typeof WORKSHOP_DESTINATIONS)[number]["id"], string> = {
-    studio: "✳",
-    projects: "▣",
-    runs: "▷",
-    library: "❖",
-    settings: "⚙"
+    chat: "▸",
+    board: "◫",
+    workflows: "⧉",
+    history: "≡"
   };
 
   $: active = activeWorkshopDestination(route);
 </script>
 
 <div class="workshop">
-  <header class="workshop-topbar">
-    <span class="wordmark">atelier<b>·2</b></span>
-    <button
-      class="project-chip"
-      type="button"
-      title="Open the project"
-      onclick={() => navigate("/atelier/project")}
-    >
-      <span class="project-chip-dot" aria-hidden="true"></span>
-      <span>{THE_ONE_PROJECT}</span>
-      <small>project</small>
-    </button>
-  </header>
-
   <nav class="workshop-rail" aria-label="Workshop">
+    <div class="rail-brand">atelier</div>
+
     {#each WORKSHOP_DESTINATIONS as destination (destination.id)}
       {#if destinationIsReachable(destination)}
         <a
@@ -66,6 +53,21 @@
         </span>
       {/if}
     {/each}
+
+    <div class="rail-grow"></div>
+
+    <div class="rail-project" title="One project today — a real switcher is a later #133 slot.">
+      <b>{THE_ONE_PROJECT}</b>
+      <span>switch project</span>
+    </div>
+    <div class="rail-settings">
+      <span aria-hidden="true">⚙</span>
+      <span title="Professional settings surface — not built yet. REQ-UI-15.">Settings</span>
+      ·
+      <span aria-hidden="true">◯</span>
+      <span title="Profile needs login/OIDC — not built yet. #82.">Profile</span>
+      <small>(later)</small>
+    </div>
   </nav>
 
   <main bind:this={stage} class="workshop-stage" tabindex="-1">

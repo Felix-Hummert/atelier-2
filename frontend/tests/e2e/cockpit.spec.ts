@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 
 import { NAMED_AGENT_CHOICE_STORAGE_KEY } from "../../src/lib/namedAgentChoice";
+import { THE_ONE_PROJECT } from "../../src/lib/project";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
@@ -33,31 +34,33 @@ function declaredOutput(schemaHash: string, name = "result"): string[] {
 
 test("the target-UI shell names today's doors and does not fake the rest", async ({ page }) => {
   await page.goto("/atelier");
-  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
 
   const rail = page.getByRole("navigation", { name: "Workshop" });
-  await expect(rail.getByRole("link", { name: "Studio" })).toBeVisible();
-  await expect(rail.getByRole("link", { name: "Projekte" })).toBeVisible();
-  await expect(rail.getByRole("link", { name: "Runs" })).toHaveCount(0);
-  await expect(rail.getByRole("link", { name: "Library" })).toHaveCount(0);
-  await expect(rail.getByRole("link", { name: "Settings" })).toHaveCount(0);
-  await expect(rail.getByText("Runs", { exact: true })).toBeVisible();
-  await expect(rail.getByText("Library", { exact: true })).toBeVisible();
+  await expect(rail.getByText("atelier", { exact: true })).toBeVisible();
+  await expect(rail.getByRole("link", { name: "Board" })).toBeVisible();
+  await expect(rail.getByRole("link", { name: "History" })).toBeVisible();
+  await expect(rail.getByRole("link", { name: "Chat" })).toHaveCount(0);
+  await expect(rail.getByRole("link", { name: "Workflows" })).toHaveCount(0);
+  await expect(rail.getByText("Chat", { exact: true })).toBeVisible();
+  await expect(rail.getByText("Workflows", { exact: true })).toBeVisible();
+  await expect(rail.locator("[title*='#7']")).toBeVisible();
+  await expect(rail.locator("[title*='REQ-UI-05']")).toBeVisible();
+  await expect(rail.getByText("atelier-2", { exact: true })).toBeVisible();
+  await expect(rail.getByText("switch project")).toBeVisible();
   await expect(rail.getByText("Settings", { exact: true })).toBeVisible();
-  await expect(rail.locator("[title*='REQ-UI-13']")).toBeVisible();
-  await expect(page.getByRole("banner").getByText("atelier")).toBeVisible();
-  await expect(page.getByRole("banner").getByRole("button", { name: /This workshop/ })).toBeVisible();
+  await expect(rail.getByText("Profile", { exact: true })).toBeVisible();
 
-  await rail.getByRole("link", { name: "Projekte" }).click();
-  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await rail.getByRole("link", { name: "History" }).click();
+  await expect(page.getByRole("heading", { name: "atelier-2" })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier\/project$/);
 
   const stillOnProject = page.url();
-  await rail.getByText("Library", { exact: true }).click();
+  await rail.getByText("Workflows", { exact: true }).click();
   await expect(page).toHaveURL(stillOnProject);
 
-  await rail.getByRole("link", { name: "Studio" }).click();
-  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+  await rail.getByRole("link", { name: "Board" }).click();
+  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier$/);
 
   await page.screenshot({ path: "test-results/shell-desktop.png", fullPage: true });
@@ -114,7 +117,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
     });
     Object.assign(window, { observedMainMarkers: observed });
   });
-  const project = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Projekte" });
+  const project = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "History" });
   for (let tab = 0; tab < 6 && !(await project.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
   }
@@ -122,7 +125,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await page.keyboard.press("Enter");
   const stage = page.getByRole("main");
   await expect(stage).toBeFocused();
-  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
 
   const startRun = page.getByRole("link", { name: "Start a run" });
   for (let tab = 0; tab < 8 && !(await startRun.evaluate((element) => element === document.activeElement)); tab += 1) {
@@ -244,14 +247,14 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await assertNoSeriousAccessibilityFindings(page);
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/v2-keyboard-journey-390x844.png", fullPage: true });
-  const studio = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Studio" });
-  for (let tab = 0; tab < 40 && !(await studio.evaluate((element) => element === document.activeElement)); tab += 1) {
+  const board = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Board" });
+  for (let tab = 0; tab < 40 && !(await board.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
   }
-  await expect(studio).toBeFocused();
+  await expect(board).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(stage).toBeFocused();
-  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { observedMainMarkers: string[] }).observedMainMarkers)).toEqual([
     "project-title", "new-title", "trail-here", "studio-title"
   ]);
@@ -265,14 +268,14 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
  */
 test("opens the project level from a cold link and survives a reload", async ({ page }) => {
   await page.goto("/atelier/project");
-  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier\/project$/);
 });
 
-test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): Studio recovers one retained five-list read", async ({ page }) => {
+test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): Board recovers one retained five-list read", async ({ page }) => {
   const runListPath = "/atelier/api/v1/runs";
   const expectedStates = [
     "COMPLETED",
@@ -298,7 +301,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
     else await route.continue();
   });
 
-  const expectOnlyStudioRead = (): void => {
+  const expectOnlyBoardRead = (): void => {
     expect(observed).toHaveLength(5);
     expect(observed.every(({ method, path }) => method === "GET" && path === runListPath))
       .toBe(true);
@@ -306,36 +309,36 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   };
 
   await page.goto("/atelier");
-  await expect(page.getByText("Studio runs unavailable")).toBeVisible();
+  await expect(page.getByText("Board runs unavailable")).toBeVisible();
   await expect(page.getByText(/Failed to fetch/)).toHaveCount(0);
   const retry = page.getByRole("button", { name: "Retry studio runs" });
   await expect(retry).toHaveCount(1);
-  const studioUrl = page.url();
+  const boardUrl = page.url();
 
   observed.length = 0;
   await retry.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByText("Studio runs unavailable")).toBeVisible();
+  await expect(page.getByText("Board runs unavailable")).toBeVisible();
   await expect(retry).toBeFocused();
-  expectOnlyStudioRead();
-  expect(page.url()).toBe(studioUrl);
+  expectOnlyBoardRead();
+  expect(page.url()).toBe(boardUrl);
 
   readsFail = false;
   observed.length = 0;
   await retry.click();
-  const workshop = page.getByRole("article", { name: "This workshop" });
-  await expect(workshop).toBeVisible();
+  const board = page.getByRole("article", { name: THE_ONE_PROJECT });
+  await expect(board).toBeVisible();
   await expect(page.getByRole("button", { name: "Refresh studio runs" })).toHaveCount(1);
-  expectOnlyStudioRead();
-  expect(page.url()).toBe(studioUrl);
+  expectOnlyBoardRead();
+  expect(page.url()).toBe(boardUrl);
 
   readsFail = true;
   observed.length = 0;
   await page.getByRole("button", { name: "Refresh studio runs" }).click();
-  await expect(page.getByText("Studio runs unavailable")).toBeVisible();
-  await expect(workshop).toBeVisible();
-  expectOnlyStudioRead();
-  expect(page.url()).toBe(studioUrl);
+  await expect(page.getByText("Board runs unavailable")).toBeVisible();
+  await expect(board).toBeVisible();
+  expectOnlyBoardRead();
+  expect(page.url()).toBe(boardUrl);
 
   await retry.focus();
   await page.keyboard.press("Shift+Tab");
@@ -359,11 +362,11 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   readsFail = false;
   observed.length = 0;
   await retry.click();
-  await expect(page.getByText("Studio runs unavailable")).toHaveCount(0);
-  await expect(workshop).toBeVisible();
+  await expect(page.getByText("Board runs unavailable")).toHaveCount(0);
+  await expect(board).toBeVisible();
   await expect(page.getByRole("button", { name: "Refresh studio runs" })).toHaveCount(1);
-  expectOnlyStudioRead();
-  expect(page.url()).toBe(studioUrl);
+  expectOnlyBoardRead();
+  expect(page.url()).toBe(boardUrl);
 });
 
 test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-read): Project recovers one atomic run-and-name read", async ({ page }) => {
@@ -1182,11 +1185,11 @@ test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-dr
   expect(page.url()).toBe(newRunUrl);
 });
 
-test("walks the whole workshop: studio into the project, project into the run, and the trail back up", async ({ page }) => {
+test("walks the whole workshop: board into the project, project into the run, and the trail back up", async ({ page }) => {
   await page.goto("/atelier");
-  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
-  await page.getByRole("article", { name: "This workshop" }).getByRole("link").click();
-  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
+  await page.getByRole("article", { name: THE_ONE_PROJECT }).getByRole("link").click();
+  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
 
   await page
     .getByRole("region", { name: "Waiting for you" })
@@ -1197,18 +1200,18 @@ test("walks the whole workshop: studio into the project, project into the run, a
   // instead of leading with the raw run id (#506).
   await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
   const trail = page.getByRole("navigation", { name: "Where you are" });
-  await expect(trail.getByRole("link", { name: "Studio" })).toBeVisible();
-  await expect(trail.getByRole("link", { name: "This workshop" })).toBeVisible();
+  await expect(trail.getByRole("link", { name: "Board" })).toBeVisible();
+  await expect(trail.getByRole("link", { name: THE_ONE_PROJECT })).toBeVisible();
   await page.screenshot({ path: "test-results/run-trail-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
 
-  await trail.getByRole("link", { name: "This workshop" }).click();
-  await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+  await trail.getByRole("link", { name: THE_ONE_PROJECT }).click();
+  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
   await page
     .getByRole("navigation", { name: "Where you are" })
-    .getByRole("link", { name: "Studio" })
+    .getByRole("link", { name: "Board" })
     .click();
-  await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier$/);
 });
 
@@ -2880,7 +2883,7 @@ test("the studio inbox names a run that is waiting for a person", async ({ page 
   const row = inbox.getByRole("link", { name: new RegExp(runId) });
   await expect(row).toBeVisible();
   await expect(row).toContainText("Answer");
-  const card = page.getByRole("article", { name: "This workshop" });
+  const card = page.getByRole("article", { name: THE_ONE_PROJECT });
   await expect(card).toContainText("waiting for you");
 
   await page.screenshot({ path: "test-results/studio-inbox-desktop.png", fullPage: true });
