@@ -138,7 +138,7 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
     await expect(rail.getByText("[[[ Board ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Workflows ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ History ]]]", { exact: true })).toBeVisible();
-    await expect(rail.getByText("[[[ (later) ]]]", { exact: true })).toHaveCount(3);
+    await expect(rail.getByText("[[[ (later) ]]]", { exact: true })).toHaveCount(2);
     await expect(rail.getByText("[[[ switch project ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Settings ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Profile ]]]", { exact: true })).toBeVisible();

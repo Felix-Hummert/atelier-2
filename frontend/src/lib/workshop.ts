@@ -9,13 +9,13 @@ import type { CockpitRoute } from "./route";
  * that owns it — never a dead click and never a fake page.
  */
 export type ReachableWorkshopDestination = {
-  id: "board" | "history";
+  id: "board" | "workflows" | "history";
   label: string;
-  path: "/atelier" | "/atelier/project";
+  path: "/atelier" | "/atelier/workflows" | "/atelier/project";
 };
 
 export type DeferredWorkshopDestination = {
-  id: "chat" | "workflows";
+  id: "chat";
   label: string;
   vision: string;
   visionRef: string;
@@ -31,12 +31,7 @@ export const WORKSHOP_DESTINATIONS: readonly WorkshopDestination[] = [
     visionRef: "#7"
   },
   { id: "board", label: "Board", path: "/atelier" },
-  {
-    id: "workflows",
-    label: "Workflows",
-    vision: "Workflow catalog, names never hashes — not built yet. REQ-UI-05.",
-    visionRef: "REQ-UI-05"
-  },
+  { id: "workflows", label: "Workflows", path: "/atelier/workflows" },
   { id: "history", label: "History", path: "/atelier/project" }
 ];
 
@@ -52,6 +47,9 @@ export function activeWorkshopDestination(
 ): ReachableWorkshopDestination["id"] | null {
   if (route.page === "studio") {
     return "board";
+  }
+  if (route.page === "workflows" || route.page === "workflow") {
+    return "workflows";
   }
   if (route.page === "project" || route.page === "new" || route.page === "run") {
     return "history";

@@ -39,26 +39,24 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   const rail = page.getByRole("navigation", { name: "Workshop" });
   await expect(rail.getByText("atelier", { exact: true })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Board" })).toBeVisible();
+  await expect(rail.getByRole("link", { name: "Workflows" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "History" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Chat" })).toHaveCount(0);
-  await expect(rail.getByRole("link", { name: "Workflows" })).toHaveCount(0);
   await expect(rail.getByText("Chat", { exact: true })).toBeVisible();
-  await expect(rail.getByText("Workflows", { exact: true })).toBeVisible();
   await expect(rail.locator("[title*='#7']")).toBeVisible();
-  await expect(rail.locator("[title*='REQ-UI-05']")).toBeVisible();
   await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
   await expect(rail.getByText("switch project")).toBeVisible();
   await expect(rail.getByText("Settings", { exact: true })).toBeVisible();
   await expect(rail.getByText("Profile", { exact: true })).toBeVisible();
-  await expect(rail.getByText("(later)", { exact: true })).toHaveCount(3);
+  await expect(rail.getByText("(later)", { exact: true })).toHaveCount(2);
 
   await rail.getByRole("link", { name: "History" }).click();
   await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier\/project$/);
 
-  const stillOnProject = page.url();
-  await rail.getByText("Workflows", { exact: true }).click();
-  await expect(page).toHaveURL(stillOnProject);
+  await rail.getByRole("link", { name: "Workflows" }).click();
+  await expect(page.getByRole("heading", { name: "Workflows" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier\/workflows$/);
 
   await rail.getByRole("link", { name: "Board" }).click();
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
