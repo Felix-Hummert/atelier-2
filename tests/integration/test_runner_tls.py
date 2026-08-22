@@ -23,7 +23,6 @@ from atelier2.adapters.runner_tls import (
 )
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
-    CANDIDATE_JOURNAL_BYTES,
     CANDIDATE_WORKSPACE_BYTES,
     candidate_runner_manifest,
     encode_runner_manifest,
@@ -300,7 +299,6 @@ def _inspect_document(manifest, security: list[str]) -> dict[str, object]:
             "CpuPeriod": CANDIDATE_CPU_PERIOD,
             "Tmpfs": {
                 "/workspace": f"rw,noexec,nosuid,size={CANDIDATE_WORKSPACE_BYTES}",
-                "/journal": f"rw,noexec,nosuid,size={CANDIDATE_JOURNAL_BYTES}",
             },
         },
         "Mounts": [
@@ -308,7 +306,12 @@ def _inspect_document(manifest, security: list[str]) -> dict[str, object]:
                 "Destination": "/run/atelier2-identity",
                 "RW": False,
                 "Type": "volume",
-            }
+            },
+            {
+                "Destination": "/journal",
+                "RW": True,
+                "Type": "volume",
+            },
         ],
     }
 

@@ -56,13 +56,15 @@ a local rootful Docker engine the operator has authorized:
 ```bash
 bash scripts/runner_candidate.sh success
 bash scripts/runner_candidate.sh cancel
+bash scripts/runner_candidate.sh resume
 ```
 
 Each scenario creates one labelled internal Attempt network, one disposable
-Core witness, one Runner, and one identity tmpfs volume. Exact labelled
-objects are removed only after the Runner answers `RELEASED`. On failure the
-script leaves those objects and prints their names plus the witness directory
-under `/var/tmp/atelier2-301a-runner-witness.*`. After the identity receiver
+Core witness, one Runner, one handoff tmpfs volume, and one identity and one
+journal volume. Exact labelled objects are removed only after the Runner
+answers `RELEASED`. On failure the script leaves those objects and prints
+their names plus the witness directory under
+`/var/tmp/atelier2-301a-runner-witness.*`. After the identity receiver
 succeeds, the launcher unlinks host private keys through held directory FDs
 and keeps only public certificate metadata in that tree. Public bootstrap
 reaches the Runner by `docker cp`; Core reads launcher inspect attestation
@@ -70,6 +72,21 @@ from a read-only path. Core listens as
 `core.runner-candidate.internal:8443` on that internal network only. The
 external CA hook is `tests/witness/runner_candidate_issuer.py`; it is never
 copied into an image.
+
+The identity and journal volumes are durable local volumes, not tmpfs: `resume`
+proves a real candidate process death (declared `CandidateScenario`
+`CRASH_AFTER_PUBLISH`, right after the terminal fact is journaled but before
+Core is told) survives this exact Runner container's own restart, and only a
+volume whose content outlives that restart can carry the journal's retained
+fact or the mTLS identity Core has already armed forward. A tmpfs-backed
+volume cannot — its content disappears once no container has it mounted, which
+a stopped container's own restart always crosses. This is a deliberate,
+disposable-witness-only tradeoff: the Runner's client private key now touches
+real disk under Docker's volume data root for the witness's lifetime, removed
+by the same teardown as every other labelled object once released. Handoff
+stays tmpfs; its content is fully reproducible from files the launcher already
+retains on the host, so `resume` simply re-copies them into the restarted
+container instead of needing them to survive on their own.
 
 ```bash
 bash scripts/runner_candidate.sh clean

@@ -124,6 +124,51 @@ def _write_frame(connection: ssl.SSLSocket, frame: RunnerSessionFrame) -> None:
     connection.sendall(encode_runner_session_frame(frame))
 
 
+# One connection for a normal lifetime, one more for a resumed reconnect after
+# the declared `CRASH_AFTER_PUBLISH` scenario's real process death restarts
+# this exact Runner container (`#15-B5`). A third would mean the resumed
+# candidate itself failed to reach RELEASED, which stays a loud failure
+# rather than a silent extra retry.
+_MAXIMUM_RUNNER_CONNECTIONS = 2
+
+
+def _drive_until_released_or_dropped(
+    connection: ssl.SSLSocket, session: CoreRunnerSession, scenario: CandidateScenario
+) -> bool:
+    """Drive frames on one connection until RELEASED, or the peer disconnects.
+
+    `session` is the one long-lived, in-memory ordering fence for this
+    invocation; it survives a dropped connection unmodified; a resumed
+    candidate replays every already-accepted sequence, and `CoreRunnerSession`
+    answers each replay from its own idempotent cache (`#15-B3`) instead of
+    re-advancing the durable store, so this never processes a duplicate.
+    """
+    while True:
+        try:
+            frame = _read_frame(connection)
+        except (ConnectionError, ssl.SSLError):
+            # A hard `os._exit` never sends a TLS close_notify, so the OS
+            # closing that fd out from under the peer can surface here as a
+            # plain closed connection or as an abrupt SSL EOF depending on
+            # platform and timing -- both mean the same thing: this
+            # connection is gone, and a resumed candidate may still reconnect.
+            return False
+        response = (
+            session.accept_terminal_record(frame)
+            if frame.message is RunnerSessionMessage.TERMINAL_RECORD
+            else session.accept(frame)
+        )
+        if response is not None:
+            _write_frame(connection, response)
+        if (
+            scenario is CandidateScenario.CANCEL
+            and frame.message is RunnerSessionMessage.STARTED
+        ):
+            _write_frame(connection, session.cancel())
+        if frame.message is RunnerSessionMessage.RELEASED:
+            return True
+
+
 def _bootstrap(root: Path, handoff: Path, scenario: CandidateScenario):
     database = root / "core.sqlite3"
     workspace = root / "workspace"
@@ -307,59 +352,57 @@ def main(arguments: list[str] | None = None) -> int:
         expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
     )
     server = socket.create_server(("0.0.0.0", 8443), reuse_port=False)
-    with (
-        server,
-        context.wrap_socket(server.accept()[0], server_side=True) as connection,
-    ):
-        presented = connection.getpeercert(binary_form=True)
-        if presented is None:
-            raise RuntimeError("TLS client did not present an authenticated leaf")
-        presented_pem = x509.load_der_x509_certificate(presented).public_bytes(
-            serialization.Encoding.PEM
-        )
-        validate_peer_certificate(
-            presented_pem,
-            ca_pem,
-            expected_dns_name=None,
-            expected_uri=expected_runner_uri,
-            expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
-        )
-        if presented != peer_certificate.public_bytes(serialization.Encoding.DER):
-            raise RuntimeError("Runner peer leaf differs from the issuer handoff")
-        _wait_for(inspect_attested)
-        if (
-            inspect_attested.read_text(encoding="ascii").strip()
-            != binding.manifest_id.value
-        ):
-            raise RuntimeError("runner-attestation-mismatch")
-        session = CoreRunnerSession(
-            binding,
-            DbosRunnerSessionCore(
-                execution,
-                store,
-                secrets.token_urlsafe(32),
-            ),
-            encode_runner_prepare_payload(request, reference),
-            manifest,
-            reference,
-            invocation,
-        )
-        while True:
-            frame = _read_frame(connection)
-            response = (
-                session.accept_terminal_record(frame)
-                if frame.message is RunnerSessionMessage.TERMINAL_RECORD
-                else session.accept(frame)
-            )
-            if response is not None:
-                _write_frame(connection, response)
-            if (
-                scenario is CandidateScenario.CANCEL
-                and frame.message is RunnerSessionMessage.STARTED
-            ):
-                _write_frame(connection, session.cancel())
-            if frame.message is RunnerSessionMessage.RELEASED:
+    released = False
+    session: CoreRunnerSession | None = None
+    with server:
+        for _ in range(_MAXIMUM_RUNNER_CONNECTIONS):
+            with context.wrap_socket(server.accept()[0], server_side=True) as connection:
+                presented = connection.getpeercert(binary_form=True)
+                if presented is None:
+                    raise RuntimeError("TLS client did not present an authenticated leaf")
+                presented_pem = x509.load_der_x509_certificate(presented).public_bytes(
+                    serialization.Encoding.PEM
+                )
+                validate_peer_certificate(
+                    presented_pem,
+                    ca_pem,
+                    expected_dns_name=None,
+                    expected_uri=expected_runner_uri,
+                    expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
+                )
+                if presented != peer_certificate.public_bytes(serialization.Encoding.DER):
+                    raise RuntimeError("Runner peer leaf differs from the issuer handoff")
+                if session is None:
+                    # Attested and constructed once, against the first
+                    # connection -- neither the launcher's inspect attestation
+                    # nor this invocation's identity changes on a resumed
+                    # reconnect, and `session` is the one long-lived ordering
+                    # fence every later connection keeps driving.
+                    _wait_for(inspect_attested)
+                    if (
+                        inspect_attested.read_text(encoding="ascii").strip()
+                        != binding.manifest_id.value
+                    ):
+                        raise RuntimeError("runner-attestation-mismatch")
+                    session = CoreRunnerSession(
+                        binding,
+                        DbosRunnerSessionCore(
+                            execution,
+                            store,
+                            secrets.token_urlsafe(32),
+                        ),
+                        encode_runner_prepare_payload(request, reference),
+                        manifest,
+                        reference,
+                        invocation,
+                    )
+                released = _drive_until_released_or_dropped(connection, session, scenario)
+            if released:
                 break
+    if not released:
+        raise RuntimeError(
+            "runner did not reach RELEASED within the reconnect bound"
+        )
     return 0
 
 

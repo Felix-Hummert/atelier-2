@@ -3,10 +3,19 @@ set -euo pipefail
 
 witness_root_prefix="/var/tmp/atelier2-301a-runner-witness"
 candidate_images=(atelier2-301a-core atelier2-301a-runner)
+# Must match `_CRASH_AFTER_PUBLISH_EXIT_CODE` in `src/atelier2/runner/session.py`
+# -- the one process-level fact a real `os._exit` and this shell script can
+# only share by declared, matching literal.
+crash_after_publish_exit_code=92
 
 mode="${1:-success}"
 case "$mode" in
-  success | cancel) ;;
+  success | cancel)
+    scenario="$mode"
+    ;;
+  resume)
+    scenario="crash-after-publish"
+    ;;
   clean)
     removed=0
     shopt -s nullglob
@@ -39,16 +48,16 @@ case "$mode" in
     exit 0
     ;;
   *)
-    printf 'usage: %s [success|cancel|clean|images]\n' "$0" >&2
+    printf 'usage: %s [success|cancel|resume|clean|images]\n' "$0" >&2
     exit 1
     ;;
 esac
-scenario="$mode"
 
 root=$(mktemp -d "$witness_root_prefix.XXXXXX")
 released=false
 identity_volume=""
 handoff_volume=""
+journal_volume=""
 label="atelier2.runner-candidate=${RANDOM}${RANDOM}"
 network="atelier2-301a-${RANDOM}${RANDOM}"
 core="${network}-core"
@@ -69,9 +78,12 @@ cleanup() {
     if [[ -n "$handoff_volume" ]]; then
       docker volume rm "$handoff_volume" >/dev/null 2>&1 || true
     fi
+    if [[ -n "$journal_volume" ]]; then
+      docker volume rm "$journal_volume" >/dev/null 2>&1 || true
+    fi
   else
-    printf 'recovery left labelled objects: label=%s network=%s core=%s runner=%s volume=%s handoff=%s root=%s\n' \
-      "$label" "$network" "$core" "$runner" "$identity_volume" "$handoff_volume" "$root" >&2
+    printf 'recovery left labelled objects: label=%s network=%s core=%s runner=%s volume=%s handoff=%s journal=%s root=%s\n' \
+      "$label" "$network" "$core" "$runner" "$identity_volume" "$handoff_volume" "$journal_volume" "$root" >&2
   fi
 }
 trap cleanup EXIT
@@ -92,13 +104,28 @@ docker network create --internal --label "$label" "$network" >/dev/null
 printf '%s\n' "$network" >"$root/network"
 identity_volume="atelier2-301a-identity-$network"
 handoff_volume="atelier2-301a-handoff-$network"
-/usr/bin/docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=uid=10001,gid=10001,mode=0700,size=65536 --label "$label" "$identity_volume" >/dev/null
+journal_volume="atelier2-301a-journal-$network"
+# The identity and journal volumes must survive this exact container's own
+# restart across the `resume` scenario's real crash (#15-B5); a tmpfs-backed
+# volume does not (verified: it loses its content once no container has it
+# mounted, which a stopped container's own restart always crosses). Handoff
+# stays tmpfs -- its content is fully reproducible from files already
+# retained on the host, and `resume` below just re-copies them.
+/usr/bin/docker volume create --driver local --label "$label" "$identity_volume" >/dev/null
 /usr/bin/docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=uid=10001,gid=10001,mode=1777,size=1048576 --label "$label" "$handoff_volume" >/dev/null
-volume_options=$(docker volume inspect -f '{{index .Options "o"}}' "$identity_volume")
-if [[ "$volume_options" != "uid=10001,gid=10001,mode=0700,size=65536" ]]; then
-  printf 'identity volume options differ: %s\n' "$volume_options" >&2
-  exit 1
-fi
+/usr/bin/docker volume create --driver local --label "$label" "$journal_volume" >/dev/null
+# The "local" driver has no uid/gid/mode option for a non-tmpfs volume, so
+# ownership is set once, from a throwaway root container built from the
+# already-built candidate image, before either durable volume is ever mounted
+# into the UID-10001 Runner.
+for durable_volume in "$identity_volume" "$journal_volume"; do
+  docker run --rm --user root --mount "type=volume,src=$durable_volume,dst=/target,volume-nocopy" --entrypoint sh atelier2-301a-runner -c 'chown 10001:10001 /target && chmod 0700 /target' >/dev/null
+  ownership=$(docker run --rm --user root --mount "type=volume,src=$durable_volume,dst=/target,volume-nocopy" --entrypoint stat atelier2-301a-runner -c '%u:%g:%a' /target)
+  if [[ "$ownership" != "10001:10001:700" ]]; then
+    printf 'durable volume ownership differs: volume=%s ownership=%s\n' "$durable_volume" "$ownership" >&2
+    exit 1
+  fi
+done
 docker run -d --name "$core" --label "$label" --network "$network" --network-alias core.runner-candidate.internal --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m -v "$root/core-identity:/run/atelier2-core-identity:ro" -v "$root/peer:/run/atelier2-peer-authorization:ro" -v "$root/handoff:/handoff:ro" -v "$root/core-store:/var/lib/atelier2-candidate" atelier2-301a-core --scenario "$scenario" >/dev/null
 core_handoff_rw=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/handoff"}}{{.RW}}{{end}}{{end}}' "$core")
 if [[ "$core_handoff_rw" != "false" ]]; then
@@ -114,20 +141,27 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 [[ -s "$root/handoff/bootstrap.json" && -s "$root/handoff/core-peer.json" ]]
-runner_id=$(docker run -d --name "$runner" --label "$label" --network "$network" --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 64 --memory 268435456 --cpu-period 100000 --cpu-quota 100000 --tmpfs /workspace:rw,noexec,nosuid,size=67108864,mode=1777 --tmpfs /journal:rw,noexec,nosuid,size=1048576,mode=1777 --tmpfs /offer:rw,noexec,nosuid,size=1048576,mode=1777 --mount type=volume,src="$handoff_volume",dst=/handoff,volume-nocopy --mount type=volume,src="$identity_volume",dst=/run/atelier2-identity,readonly,volume-nocopy atelier2-301a-runner)
-copied=false
-for _ in $(seq 1 100); do
-  if /usr/bin/docker cp "$root/handoff/ca.crt" "$runner:/handoff/ca.crt" \
-    && /usr/bin/docker cp "$root/handoff/core.crt" "$runner:/handoff/core.crt" \
-    && /usr/bin/docker cp "$root/handoff/manifest" "$runner:/handoff/manifest" \
-    && /usr/bin/docker cp "$root/handoff/core-peer.json" "$runner:/handoff/core-peer.json" \
-    && /usr/bin/docker cp "$root/handoff/bootstrap.json" "$runner:/handoff/bootstrap.json"; then
-    copied=true
-    break
-  fi
-  sleep 0.1
-done
-[[ "$copied" == true ]]
+runner_id=$(docker run -d --name "$runner" --label "$label" --network "$network" --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 64 --memory 268435456 --cpu-period 100000 --cpu-quota 100000 --tmpfs /workspace:rw,noexec,nosuid,size=67108864,mode=1777 --tmpfs /offer:rw,noexec,nosuid,size=1048576,mode=1777 --mount type=volume,src="$handoff_volume",dst=/handoff,volume-nocopy --mount type=volume,src="$identity_volume",dst=/run/atelier2-identity,readonly,volume-nocopy --mount type=volume,src="$journal_volume",dst=/journal,volume-nocopy atelier2-301a-runner)
+
+# Handoff is tmpfs-backed and its content is fully reproducible from the host
+# files already retained under `$root/handoff`; `resume` below calls this a
+# second time to re-populate it after the container's own restart wipes it.
+copy_handoff_into_runner() {
+  local copied=false
+  for _ in $(seq 1 100); do
+    if /usr/bin/docker cp "$root/handoff/ca.crt" "$runner:/handoff/ca.crt" \
+      && /usr/bin/docker cp "$root/handoff/core.crt" "$runner:/handoff/core.crt" \
+      && /usr/bin/docker cp "$root/handoff/manifest" "$runner:/handoff/manifest" \
+      && /usr/bin/docker cp "$root/handoff/core-peer.json" "$runner:/handoff/core-peer.json" \
+      && /usr/bin/docker cp "$root/handoff/bootstrap.json" "$runner:/handoff/bootstrap.json"; then
+      copied=true
+      break
+    fi
+    sleep 0.1
+  done
+  [[ "$copied" == true ]]
+}
+copy_handoff_into_runner
 offer="$root/offer/invocation.json"
 offer_error="$root/offer/error.log"
 for _ in $(seq 1 100); do
@@ -145,6 +179,25 @@ uv run --locked python tests/witness/runner_candidate_issuer.py unlink-private -
 docker inspect "$runner_id" >"$root/runner-inspect.json"
 uv run --locked python tests/witness/runner_candidate_issuer.py attest-inspect --inspect "$root/runner-inspect.json" --manifest "$root/handoff/manifest" --output "$root/handoff/inspect-attested"
 runner_status=$(docker wait "$runner")
+if [[ "$scenario" == "crash-after-publish" ]]; then
+  if [[ "$runner_status" != "$crash_after_publish_exit_code" ]]; then
+    printf 'runner did not exit at the declared crash cut: runner=%s expected=%s root=%s\n' \
+      "$runner_status" "$crash_after_publish_exit_code" "$root" >&2
+    exit 1
+  fi
+  journal_record=$(docker run --rm --user root --mount "type=volume,src=$journal_volume,dst=/journal,volume-nocopy" --entrypoint sh atelier2-301a-runner -c '[ -f /journal/terminal-record ] && echo present || echo absent')
+  if [[ "$journal_record" != "present" ]]; then
+    printf 'journal did not retain a terminal record across the crash: root=%s\n' "$root" >&2
+    exit 1
+  fi
+  printf 'observed the declared crash after journal.publish; journal retained its terminal record: runner-exit=%s root=%s\n' \
+    "$runner_status" "$root"
+  docker start "$runner" >/dev/null
+  copy_handoff_into_runner
+  printf 'restarted the runner container with its identity and journal volumes intact: runner=%s root=%s\n' \
+    "$runner" "$root"
+  runner_status=$(docker wait "$runner")
+fi
 core_status=$(docker wait "$core")
 if [[ "$runner_status" == 0 && "$core_status" == 0 ]]; then
   if find "$root" -type f -name '*.key' 2>/dev/null | grep -q .; then
@@ -152,6 +205,10 @@ if [[ "$runner_status" == 0 && "$core_status" == 0 ]]; then
     exit 1
   fi
   released=true
+  if [[ "$scenario" == "crash-after-publish" ]]; then
+    printf 'resume delivered the retained evidence through RELEASED: runner=%s core=%s root=%s\n' \
+      "$runner_status" "$core_status" "$root"
+  fi
 else
   printf 'candidate did not reach RELEASED: runner=%s core=%s root=%s\n' "$runner_status" "$core_status" "$root" >&2
   exit 1
