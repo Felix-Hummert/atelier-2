@@ -71,6 +71,24 @@ from a read-only path. Core listens as
 external CA hook is `tests/witness/runner_candidate_issuer.py`; it is never
 copied into an image.
 
+```bash
+bash scripts/runner_candidate.sh clean
+bash scripts/runner_candidate.sh images
+```
+
+`clean` removes only witness directories whose run reached `RELEASED`. It
+records that run's labelled network only after `docker network create`
+succeeds, so a recorded network's absence is the release proof; a directory
+with no recorded network — including one whose witness is still mid-run — or
+whose recorded network still exists, is left untouched. Failure-analysis
+residue is never removed by `clean`. Clearing a released directory's
+root-owned `core-store` needs the `atelier2-301a-core` image; `clean` refuses
+with a named reason if that image is missing rather than pulling one.
+`images` removes only the candidate images that are actually present, so
+running it again after `clean` or a prune is a no-op, not a failure; it is
+never run implicitly by `success` or `cancel`, so a normal run keeps reusing
+Docker's build cache.
+
 ## Stable local Serve installation
 
 From a clean committed checkout, install the one stable provider-free console:
