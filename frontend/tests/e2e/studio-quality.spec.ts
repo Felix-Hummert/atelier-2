@@ -84,6 +84,14 @@ function populatedRuns(): RunV1[] {
   ];
 }
 
+/** Real, moving timestamps: the Board's "Done today" group compares a row's
+ * real V3 end stamp against the page's own wall-clock `now`, so a fixture
+ * anchored to a fixed past date would drift out of "today" as the calendar
+ * advances. Same convention as historyPage.test.ts's own `minutesAgo`. */
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString();
+}
+
 function questionMapRuns(): Array<RunV1 | RunV3> {
   return [
     ...populatedRuns(),
@@ -93,7 +101,7 @@ function questionMapRuns(): Array<RunV1 | RunV3> {
       state: "COMPLETED",
       terminal_hash: revisionHash,
       node_rail: [{ node_id: "review", state: "succeeded", attempt: null }],
-      ended_at: "2026-08-18T12:00:00Z"
+      ended_at: minutesAgo(15)
     })
   ];
 }
@@ -208,12 +216,14 @@ test("proves(studio-elements-answer-named-questions): every interactive Studio c
     reply = "questions";
     await page.goto("/atelier");
     await expect(page.getByRole("heading", { name: studioPageCopy.title })).toBeVisible();
-    await expect(page.getByRole("region", { name: "Done · 2" })).toBeVisible();
-    await expect(page.getByRole("link", { name: studioPageCopy.start })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Done today · 2" })).toBeVisible();
+    // No Start of any kind sits beside the Board head (#532): starting a
+    // workflow is a Workflows-owned action now, and once the five-list read
+    // confirms, ReadState.svelte mounts no control at all.
+    await expect(page.getByRole("link", { name: "Start", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /board runs/ })).toHaveCount(0);
     await expectStudioControlsAnswerNamedQuestions(page, [
-      studioQuestions.start.id,
-      studioQuestions.openRun.id,
-      studioQuestions.reloadStudioRuns.id
+      studioQuestions.openRun.id
     ]);
   }
 
@@ -224,8 +234,7 @@ test("proves(studio-elements-answer-named-questions): every interactive Studio c
     await expect(page.getByRole("heading", { name: studioPageCopy.emptyTitle })).toBeVisible();
     await expect(page.getByRole("link", { name: studioPageCopy.emptyStart })).toBeVisible();
     await expectStudioControlsAnswerNamedQuestions(page, [
-      studioQuestions.emptyStart.id,
-      studioQuestions.reloadStudioRuns.id
+      studioQuestions.emptyStart.id
     ]);
   }
 });
