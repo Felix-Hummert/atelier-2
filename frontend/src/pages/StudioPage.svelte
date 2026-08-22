@@ -33,6 +33,7 @@
   import { readEveryRun } from "../lib/runPages";
   import { countStanding, runsStanding } from "../lib/runState";
   import { studioPageCopy } from "../lib/studioPageCopy";
+  import { studioQuestions } from "../lib/studioQuestions";
   import {
     connectionLabel,
     protocolDetail,
@@ -235,7 +236,12 @@
         <h1 id="studio-title">{wrapDisplayCopy(studioPageCopy.title)}</h1>
       </div>
       {#if snapshot !== null && !empty && canStart}
-        <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>{wrapDisplayCopy(studioPageCopy.start)}</a>
+        <a
+          class="button primary"
+          href="/atelier/new"
+          data-studio-question={studioQuestions.start.id}
+          onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}
+        >{wrapDisplayCopy(studioPageCopy.start)}</a>
       {/if}
     </header>
 
@@ -255,9 +261,17 @@
 
     {#if projectionFailure !== null}
       <ProblemNotice message={projectionFailure} />
-      <button type="button" onclick={retryProjection}>Retry</button>
+      <button
+        type="button"
+        data-studio-question={studioQuestions.retryProjection.id}
+        onclick={retryProjection}
+      >Retry</button>
     {/if}
-    <ReadState read={home} label="studio runs" onRetry={() => { void load(); }} />
+    <ReadState
+      read={home}
+      label={studioQuestions.reloadStudioRuns.readLabel}
+      onRetry={() => { void load(); }}
+    />
     {#if failureMessage !== null}
       <ProblemNotice message={failureMessage} />
     {/if}
@@ -270,7 +284,12 @@
           <h2>{wrapDisplayCopy(studioPageCopy.emptyTitle)}</h2>
           <p>{wrapDisplayCopy(studioPageCopy.emptyDescription)}</p>
           {#if canStart}
-            <a class="button primary" href="/atelier/new" onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>{wrapDisplayCopy(studioPageCopy.emptyStart)}</a>
+            <a
+              class="button primary"
+              href="/atelier/new"
+              data-studio-question={studioQuestions.emptyStart.id}
+              onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}
+            >{wrapDisplayCopy(studioPageCopy.emptyStart)}</a>
           {/if}
         </div>
       {:else if runningCount > 0 || waitingRuns.length > 0 || failedCount > 0 || landedCount > 0}

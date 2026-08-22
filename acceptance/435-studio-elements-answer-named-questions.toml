@@ -1,0 +1,7 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/435"
+
+[[sentence]]
+id = "studio-elements-answer-named-questions"
+requirement = "REQ-UIQ-01"
+text = "Every interactive control in the Studio stage is listed against one named user question; a control with no question fails CI."

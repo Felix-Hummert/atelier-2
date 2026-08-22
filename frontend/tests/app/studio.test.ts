@@ -4,12 +4,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import {
   CockpitRequestError,
+  encodePublicRunReference,
+  type AnyRun,
   type CockpitApi,
   type Problem,
-  type RunV1
+  type RunV1,
+  type RunV3
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { standingMarks } from "../../src/lib/runState";
+import {
+  describeStudioControl,
+  questionForStudioControl,
+  studioInteractiveSelector,
+  studioQuestions,
+  studioStageSelector,
+  unansweredStudioControls
+} from "../../src/lib/studioQuestions";
 import { cockpitApiStub, FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import {
   completedRun,
@@ -31,14 +42,14 @@ afterEach(() => {
   cleanup();
 });
 
-function listRunsByState(runs: RunV1[]) {
+function listRunsByState(runs: AnyRun[]) {
   return vi.fn(async (_after?: string, state?: string) => ({
     items: state === undefined ? runs : runs.filter((run) => run.state === state),
     next_after: null
   }));
 }
 
-function openStudio(runs: RunV1[] = [], overrides: Partial<CockpitApi> = {}) {
+function openStudio(runs: AnyRun[] = [], overrides: Partial<CockpitApi> = {}) {
   window.history.replaceState(null, "", "/atelier");
   return render(App, {
     props: {
@@ -51,10 +62,53 @@ function openStudio(runs: RunV1[] = [], overrides: Partial<CockpitApi> = {}) {
   });
 }
 
-function openStudioHolding(runs: RunV1[] = [], overrides: Partial<CockpitApi> = {}) {
+function openStudioHolding(runs: AnyRun[] = [], overrides: Partial<CockpitApi> = {}) {
   const feed = new FakeRunEventFeed();
   const view = openStudio(runs, { openAttentionEvents: feed.openAttention, ...overrides });
   return { feed, ...view };
+}
+
+function expectStudioControlsAnswerNamedQuestions(
+  expected: ReadonlyArray<(typeof studioQuestions)[keyof typeof studioQuestions]["id"]>
+): void {
+  const stage = document.querySelector(studioStageSelector);
+  if (stage === null) {
+    throw new Error("Studio stage is missing");
+  }
+  const unanswered = unansweredStudioControls(stage);
+  expect(
+    unanswered.map(describeStudioControl),
+    unanswered.map(describeStudioControl).join("; ")
+  ).toEqual([]);
+  const present = [...stage.querySelectorAll(studioInteractiveSelector)].map((element) => {
+    const found = questionForStudioControl(element);
+    if (found === null) {
+      throw new Error(`unmapped Studio control: ${describeStudioControl(element)}`);
+    }
+    return found.id;
+  });
+  expect(new Set(present)).toEqual(new Set(expected));
+}
+
+function listedV3Run(changes: Partial<RunV3> = {}): RunV3 {
+  return {
+    workflow_format_version: 3,
+    run_id: "v3/two-agents",
+    public_run_reference: publicReference,
+    workflow_revision_hash: revisionHash,
+    agent_binding_set_hash: "b".repeat(64),
+    run_configuration_revision_hash: "c".repeat(64),
+    agent_bindings: [],
+    state_version: 1,
+    state: "STARTED",
+    current_node_id: "review",
+    node_rail: [{ node_id: "review", state: "working", attempt: null }],
+    terminal_hash: null,
+    latest_event_cursor: null,
+    started_at: "2026-08-18T15:00:00Z",
+    ended_at: null,
+    ...changes
+  };
 }
 
 function failedRun(changes: Partial<RunV1> = {}): RunV1 {
@@ -552,5 +606,74 @@ describe("the studio holds GET /events", () => {
     expect(screen.queryByText("Live")).toBeNull();
     expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
     expect(feed.close).toHaveBeenCalled();
+  });
+});
+
+describe("every Studio control answers a named user question", () => {
+  it("proves(studio-elements-answer-named-questions): every interactive Studio control is listed against one named user question", async () => {
+    const ids = Object.values(studioQuestions).map((entry) => entry.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const entry of Object.values(studioQuestions)) {
+      expect(entry.question.endsWith("?")).toBe(true);
+    }
+
+    openStudio([
+      startedRun({ public_run_reference: "run1.YQ" }),
+      waitingInputRun({ public_run_reference: "run1.Yw" }),
+      failedRun({ public_run_reference: "run1.ZQ" }),
+      completedRun({ public_run_reference: "run1.ZA" }),
+      listedV3Run({
+        run_id: "done-v3",
+        public_run_reference: encodePublicRunReference("done-v3"),
+        state: "COMPLETED",
+        terminal_hash: revisionHash,
+        node_rail: [{ node_id: "review", state: "succeeded", attempt: null }],
+        ended_at: "2026-08-18T12:00:00Z"
+      })
+    ]);
+    await screen.findByRole("article", { name: "This workshop" });
+    await screen.findByRole("button", { name: "Exact time" });
+    expectStudioControlsAnswerNamedQuestions([
+      studioQuestions.start.id,
+      studioQuestions.inboxRun.id,
+      studioQuestions.project.id,
+      studioQuestions.whyOneProject.id,
+      studioQuestions.lastLandingTime.id,
+      studioQuestions.reloadStudioRuns.id
+    ]);
+
+    cleanup();
+    const { feed } = openStudioHolding([]);
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
+    await screen.findByRole("link", { name: "Start a run" });
+    expectStudioControlsAnswerNamedQuestions([
+      studioQuestions.emptyStart.id,
+      studioQuestions.reloadStudioRuns.id
+    ]);
+
+    cleanup();
+    openStudio([], {
+      listRuns: vi.fn().mockRejectedValue(new Error("wire detail"))
+    });
+    await screen.findByRole("button", { name: "Retry studio runs" });
+    expectStudioControlsAnswerNamedQuestions([studioQuestions.reloadStudioRuns.id]);
+
+    cleanup();
+    const getRun = vi.fn().mockRejectedValueOnce(new Error("run missing"));
+    const projection = openStudioHolding([], { getRun });
+    await screen.findByRole("heading", { name: "Studio" });
+    projection.feed.handlers?.opened();
+    await screen.findByRole("heading", { name: "Nothing is running" });
+    projection.feed.handlers?.event(
+      JSON.stringify(
+        waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" })
+      )
+    );
+    expect((await screen.findByText("run missing")).isConnected).toBe(true);
+    expectStudioControlsAnswerNamedQuestions([
+      studioQuestions.retryProjection.id,
+      studioQuestions.reloadStudioRuns.id
+    ]);
   });
 });
