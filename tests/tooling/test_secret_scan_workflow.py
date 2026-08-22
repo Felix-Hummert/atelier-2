@@ -4,7 +4,7 @@ import shlex
 from pathlib import Path
 
 
-def test_secret_scan_walks_each_parent_diff_of_a_merge() -> None:
+def test_secret_scan_command_pins_merge_parent_diff_options() -> None:
     workflow = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text(
         encoding="utf-8"
     )
@@ -18,4 +18,4 @@ def test_secret_scan_walks_each_parent_diff_of_a_merge() -> None:
     arguments = shlex.split(commands[0])
     assert [
         argument for argument in arguments if argument.startswith("--log-opts=")
-    ] == ["--log-opts=--full-history --all --diff-filter=tuxdb -m"]
+    ] == ["--log-opts=--full-history --all --diff-filter=uxdb -m"]
