@@ -22,7 +22,7 @@ import os
 import socket
 import subprocess
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -325,6 +325,37 @@ def _drive_core_session(
             return
 
 
+def _drive_core_session_with_crossing_cancel(
+    channel: RunnerFrameChannel, session: CoreRunnerSession
+) -> None:
+    """Play the Core side for a cancel that crosses the candidate's own success.
+
+    Core deliberately holds the runner's already-arrived TERMINAL_AVAILABLE
+    frame unaccepted -- accepting it first would leave the session's legal
+    cancel window and refuse the cancel with no frame ever reaching the wire.
+    Issuing the cancel while still in that window, then writing it before the
+    READBACK response `accept` produces, reproduces the crossing deterministically:
+    whatever the candidate wrote to its own outbound stream already happened,
+    unobserved by either side's control flow, so CANCEL is guaranteed to reach
+    the candidate as the very next frame after its TERMINAL_AVAILABLE.
+    """
+    while True:
+        frame = _read_frame(channel)
+        if frame.message is RunnerSessionMessage.TERMINAL_AVAILABLE:
+            _write_frame(channel, session.cancel())
+            response = session.accept(frame)
+        else:
+            response = (
+                session.accept_terminal_record(frame)
+                if frame.message is RunnerSessionMessage.TERMINAL_RECORD
+                else session.accept(frame)
+            )
+        if response is not None:
+            _write_frame(channel, response)
+        if frame.message is RunnerSessionMessage.RELEASED:
+            return
+
+
 def _spawn_candidate_session(
     candidate_side: socket.socket,
     binding: RunnerGenerationBinding,
@@ -357,12 +388,18 @@ def _spawn_candidate_session(
     )
 
 
-@pytest.mark.parametrize(
-    "scenario", (CandidateScenario.SUCCESS, CandidateScenario.CANCEL)
-)
-def test_runner_session_wire_completes_offer_to_released(
-    tmp_path: Path, scenario: CandidateScenario
-) -> None:
+@dataclass
+class _PreparedSession:
+    binding: RunnerGenerationBinding
+    invocation: RunnerInvocationId
+    manifest_path: Path
+    identity: Path
+    journal_directory: Path
+    core: _FakeRunnerSessionCore
+    core_session: CoreRunnerSession
+
+
+def _prepared_session(tmp_path: Path) -> _PreparedSession:
     invocation = RunnerInvocationId("B" * 43)
     manifest = _host_manifest(
         total_attempt_milliseconds=5_000,
@@ -387,21 +424,39 @@ def test_runner_session_wire_completes_offer_to_released(
         reference,
         invocation,
     )
+    return _PreparedSession(
+        binding,
+        invocation,
+        manifest_path,
+        identity,
+        journal_directory,
+        core,
+        core_session,
+    )
+
+
+@pytest.mark.parametrize(
+    "scenario", (CandidateScenario.SUCCESS, CandidateScenario.CANCEL)
+)
+def test_runner_session_wire_completes_offer_to_released(
+    tmp_path: Path, scenario: CandidateScenario
+) -> None:
+    prepared = _prepared_session(tmp_path)
     core_side, candidate_side = socket.socketpair()
 
     with core_side:
         candidate = _spawn_candidate_session(
             candidate_side,
-            binding,
-            invocation,
+            prepared.binding,
+            prepared.invocation,
             scenario,
-            manifest_path,
-            identity,
-            journal_directory,
+            prepared.manifest_path,
+            prepared.identity,
+            prepared.journal_directory,
         )
         candidate_side.close()
         try:
-            _drive_core_session(core_side, core_session, scenario)
+            _drive_core_session(core_side, prepared.core_session, scenario)
             returncode = candidate.wait(timeout=10)
         finally:
             # A Core-side failure must not strand the candidate subprocess
@@ -410,8 +465,50 @@ def test_runner_session_wire_completes_offer_to_released(
             candidate.wait(timeout=10)
 
     assert returncode == 0
-    assert core.armed == 1
-    assert core.committed == 1
-    assert core.acknowledged == 1
-    assert core.cancelled == (1 if scenario is CandidateScenario.CANCEL else 0)
-    assert not (journal_directory / "terminal-record").exists()
+    assert prepared.core.armed == 1
+    assert prepared.core.committed == 1
+    assert prepared.core.acknowledged == 1
+    assert prepared.core.cancelled == (1 if scenario is CandidateScenario.CANCEL else 0)
+    assert not (prepared.journal_directory / "terminal-record").exists()
+
+
+def test_runner_session_wire_declines_a_cancel_that_crosses_terminal_available(
+    tmp_path: Path,
+) -> None:
+    """A CANCEL that reaches the candidate after its own TERMINAL_AVAILABLE.
+
+    The candidate always completes CandidateScenario.SUCCESS; only Core's
+    driving loop decides, deterministically, that its cancel crosses the
+    candidate's already-sent TERMINAL_AVAILABLE (see
+    `_drive_core_session_with_crossing_cancel`). Success still wins: the
+    candidate's REFUSE closes the race instead of desynchronizing the
+    stream, and the readback flow completes with the evidence the candidate
+    already published to its journal before offering it.
+    """
+    prepared = _prepared_session(tmp_path)
+    core_side, candidate_side = socket.socketpair()
+
+    with core_side:
+        candidate = _spawn_candidate_session(
+            candidate_side,
+            prepared.binding,
+            prepared.invocation,
+            CandidateScenario.SUCCESS,
+            prepared.manifest_path,
+            prepared.identity,
+            prepared.journal_directory,
+        )
+        candidate_side.close()
+        try:
+            _drive_core_session_with_crossing_cancel(core_side, prepared.core_session)
+            returncode = candidate.wait(timeout=10)
+        finally:
+            candidate.kill()
+            candidate.wait(timeout=10)
+
+    assert returncode == 0
+    assert prepared.core.armed == 1
+    assert prepared.core.committed == 1
+    assert prepared.core.acknowledged == 1
+    assert prepared.core.cancelled == 1
+    assert not (prepared.journal_directory / "terminal-record").exists()

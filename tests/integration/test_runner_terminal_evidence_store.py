@@ -78,6 +78,7 @@ from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import RunId
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
+    AgentAttemptCancellationTerminalConflict,
     AgentAttemptReplacementNotAllowed,
     RunnerTerminalEvidenceCommitRefused,
     RunnerTerminalEvidenceCommitted,
@@ -903,6 +904,13 @@ def test_runner_completion_wins_cancel_transaction_order(tmp_path: Path) -> None
                 ("AGENT_CANCEL_REQUESTED", b"operator-cancel"),
                 ("AGENT_COMPLETED", b"finished in hand"),
             )
+
+        # Success already won the race and cleared the cancellation columns
+        # above; a crossing CANCEL that still reaches the store afterward
+        # (the wire-level race `test_runner_session_wire.py` proves) finds no
+        # pending command left to repeat and must not be silently accepted.
+        repeated = store.request_cancellation(command)
+        assert isinstance(repeated, AgentAttemptCancellationTerminalConflict)
     finally:
         runtime.close()
 
@@ -996,6 +1004,15 @@ def test_runner_cancellation_winner_rejects_late_provider_bytes_without_drift(
 
         assert store.load(execution.attempt_id) == cancelled.attempt
         assert _runner_product_snapshot(runtime) == snapshot
+
+        # Cancel won the race; the same command retried afterward -- exactly
+        # what a crossing CANCEL that still reaches the store produces (see
+        # `test_runner_session_wire.py`) -- must recognize its own already
+        # terminal command rather than either re-applying it or refusing it.
+        repeated = store.request_cancellation(command)
+        assert isinstance(repeated, AgentAttemptCancellationAccepted)
+        assert repeated.terminal is True
+        assert repeated.attempt == cancelled.attempt
     finally:
         runtime.close()
 
