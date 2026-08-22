@@ -10,6 +10,14 @@ import {
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { standingMarks } from "../../src/lib/runState";
+import {
+  describeStudioControl,
+  questionForStudioControl,
+  studioInteractiveSelector,
+  studioQuestions,
+  studioStageSelector,
+  unansweredStudioControls
+} from "../../src/lib/studioQuestions";
 import { cockpitApiStub, FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import {
   completedRun,
@@ -55,6 +63,28 @@ function openStudioHolding(runs: RunV1[] = [], overrides: Partial<CockpitApi> = 
   const feed = new FakeRunEventFeed();
   const view = openStudio(runs, { openAttentionEvents: feed.openAttention, ...overrides });
   return { feed, ...view };
+}
+
+function expectStudioControlsAnswerNamedQuestions(
+  expected: ReadonlyArray<(typeof studioQuestions)[keyof typeof studioQuestions]["id"]>
+): void {
+  const stage = document.querySelector(studioStageSelector);
+  if (stage === null) {
+    throw new Error("Studio stage is missing");
+  }
+  const unanswered = unansweredStudioControls(stage);
+  expect(
+    unanswered.map(describeStudioControl),
+    unanswered.map(describeStudioControl).join("; ")
+  ).toEqual([]);
+  const present = [...stage.querySelectorAll(studioInteractiveSelector)].map((element) => {
+    const found = questionForStudioControl(element);
+    if (found === null) {
+      throw new Error(`unmapped Studio control: ${describeStudioControl(element)}`);
+    }
+    return found.id;
+  });
+  expect(new Set(present)).toEqual(new Set(expected));
 }
 
 function failedRun(changes: Partial<RunV1> = {}): RunV1 {
@@ -552,5 +582,64 @@ describe("the studio holds GET /events", () => {
     expect(screen.queryByText("Live")).toBeNull();
     expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
     expect(feed.close).toHaveBeenCalled();
+  });
+});
+
+describe("every Studio control answers a named user question", () => {
+  it("proves(studio-elements-answer-named-questions): every interactive Studio control is listed against one named user question", async () => {
+    const ids = Object.values(studioQuestions).map((entry) => entry.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const entry of Object.values(studioQuestions)) {
+      expect(entry.question.endsWith("?")).toBe(true);
+    }
+
+    openStudio([
+      startedRun({ public_run_reference: "run1.YQ" }),
+      waitingInputRun({ public_run_reference: "run1.Yw" }),
+      failedRun({ public_run_reference: "run1.ZQ" }),
+      completedRun({ public_run_reference: "run1.ZA" })
+    ]);
+    await screen.findByRole("article", { name: "This workshop" });
+    expectStudioControlsAnswerNamedQuestions([
+      studioQuestions.start.id,
+      studioQuestions.inboxRun.id,
+      studioQuestions.project.id,
+      studioQuestions.whyOneProject.id,
+      studioQuestions.reloadStudioRuns.id
+    ]);
+
+    cleanup();
+    const { feed } = openStudioHolding([]);
+    await screen.findByRole("heading", { name: "Studio" });
+    feed.handlers?.opened();
+    await screen.findByRole("link", { name: "Start a run" });
+    expectStudioControlsAnswerNamedQuestions([
+      studioQuestions.emptyStart.id,
+      studioQuestions.reloadStudioRuns.id
+    ]);
+
+    cleanup();
+    openStudio([], {
+      listRuns: vi.fn().mockRejectedValue(new Error("wire detail"))
+    });
+    await screen.findByRole("button", { name: "Retry studio runs" });
+    expectStudioControlsAnswerNamedQuestions([studioQuestions.reloadStudioRuns.id]);
+
+    cleanup();
+    const getRun = vi.fn().mockRejectedValueOnce(new Error("run missing"));
+    const projection = openStudioHolding([], { getRun });
+    await screen.findByRole("heading", { name: "Studio" });
+    projection.feed.handlers?.opened();
+    await screen.findByRole("heading", { name: "Nothing is running" });
+    projection.feed.handlers?.event(
+      JSON.stringify(
+        waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" })
+      )
+    );
+    expect((await screen.findByText("run missing")).isConnected).toBe(true);
+    expectStudioControlsAnswerNamedQuestions([
+      studioQuestions.retryProjection.id,
+      studioQuestions.reloadStudioRuns.id
+    ]);
   });
 });

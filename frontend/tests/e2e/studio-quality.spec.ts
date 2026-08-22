@@ -5,6 +5,14 @@ import { humanMove, standingWords } from "../../src/lib/runState";
 import { connectionLabels } from "../../src/lib/streamStatus";
 import { studioPageCopy } from "../../src/lib/studioPageCopy";
 import {
+  describeStudioControlFacts,
+  questionForStudioControlFacts,
+  studioInteractiveSelector,
+  studioQuestions,
+  studioStageSelector,
+  type StudioControlFacts
+} from "../../src/lib/studioQuestions";
+import {
   completedRun,
   revisionHash,
   startedRun,
@@ -55,7 +63,7 @@ function populatedRuns(): RunV1[] {
   ];
 }
 
-type StudioReadReply = "populated" | "unavailable";
+type StudioReadReply = "populated" | "unavailable" | "empty";
 
 async function routeStudioReads(page: Page, read: () => StudioReadReply): Promise<void> {
   await page.route("**/atelier/api/v1/runs*", async (route: Route) => {
@@ -65,7 +73,8 @@ async function routeStudioReads(page: Page, read: () => StudioReadReply): Promis
     }
     const url = new URL(route.request().url());
     const state = url.searchParams.get("state");
-    const items = populatedRuns().filter((run) => state === null || run.state === state);
+    const source = read() === "empty" ? [] : populatedRuns();
+    const items = source.filter((run) => state === null || run.state === state);
     await route.fulfill({ json: { items, next_after: null } });
   });
 }
@@ -97,6 +106,35 @@ async function expectPopulatedCopy(page: Page): Promise<void> {
   await expect(page.getByRole("status").filter({ hasText: wrapped(connectionLabels.live) })).toBeVisible();
 }
 
+async function mockAttentionOpen(page: Page): Promise<void> {
+  await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: class extends EventTarget { constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event("open"))); } close() {} } }));
+}
+
+async function expectStudioControlsAnswerNamedQuestions(
+  page: Page,
+  expected: ReadonlyArray<(typeof studioQuestions)[keyof typeof studioQuestions]["id"]>
+): Promise<void> {
+  const facts = await page.locator(studioStageSelector).evaluate(
+    (root, selector) =>
+      [...root.querySelectorAll(selector)].map((element) => ({
+        questionId: element.getAttribute("data-studio-question"),
+        href: element.getAttribute("href"),
+        ariaLabel: element.getAttribute("aria-label"),
+        tag: element.tagName.toLowerCase()
+      })),
+    studioInteractiveSelector
+  ) as StudioControlFacts[];
+  const unanswered = facts.filter((item) => questionForStudioControlFacts(item) === null);
+  expect(
+    unanswered.map(describeStudioControlFacts),
+    unanswered.map(describeStudioControlFacts).join("; ")
+  ).toEqual([]);
+  expect(new Set(facts.map((item) => questionForStudioControlFacts(item)?.id))).toEqual(
+    new Set(expected)
+  );
+}
+
+
 test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio keeps populated and unavailable copy visible at desktop and 390px", async ({ page }) => {
   expect(runPageSchema.safeParse({ items: populatedRuns(), next_after: null }).success).toBe(true);
   await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: class extends EventTarget { constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event("open"))); } close() {} } }));
@@ -126,5 +164,40 @@ test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio 
     await expect(page.getByRole("status").filter({ hasText: wrapped(connectionLabels.live) })).toBeVisible();
     await expectStudioCopyFits(page);
     await page.screenshot({ path: `test-results/studio-unavailable-${viewport.width}.png`, fullPage: true });
+  }
+});
+
+test("proves(studio-elements-answer-named-questions): every interactive Studio control answers one named user question on populated and empty Studio", async ({ page }) => {
+  expect(runPageSchema.safeParse({ items: populatedRuns(), next_after: null }).success).toBe(true);
+  await mockAttentionOpen(page);
+  let reply: StudioReadReply = "populated";
+  await routeStudioReads(page, () => reply);
+
+  for (const viewport of studioViewports) {
+    await page.setViewportSize(viewport);
+    reply = "populated";
+    await page.goto("/atelier");
+    await expect(page.getByRole("heading", { name: studioPageCopy.title })).toBeVisible();
+    await expect(page.getByRole("article", { name: "This workshop" })).toBeVisible();
+    await expect(page.getByRole("link", { name: studioPageCopy.start })).toBeVisible();
+    await expectStudioControlsAnswerNamedQuestions(page, [
+      studioQuestions.start.id,
+      studioQuestions.inboxRun.id,
+      studioQuestions.project.id,
+      studioQuestions.whyOneProject.id,
+      studioQuestions.reloadStudioRuns.id
+    ]);
+  }
+
+  for (const viewport of studioViewports) {
+    await page.setViewportSize(viewport);
+    reply = "empty";
+    await page.goto("/atelier");
+    await expect(page.getByRole("heading", { name: studioPageCopy.emptyTitle })).toBeVisible();
+    await expect(page.getByRole("link", { name: studioPageCopy.emptyStart })).toBeVisible();
+    await expectStudioControlsAnswerNamedQuestions(page, [
+      studioQuestions.emptyStart.id,
+      studioQuestions.reloadStudioRuns.id
+    ]);
   }
 });
