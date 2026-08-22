@@ -16,5 +16,6 @@ export const studioPageCopy = {
   completedSentence: "Completed",
   why: "Why?",
   runsIncomplete: "Board runs incomplete",
-  runsUnavailable: "Board runs unavailable"
+  runsUnavailable: "Board runs unavailable",
+  workflowNamesUnavailable: "Workflow names unavailable — showing run ids."
 } as const;

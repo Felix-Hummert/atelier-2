@@ -47,7 +47,8 @@
 
   type StudioHome = {
     runs: AnyRun[];
-    workflowNames: ReadonlyMap<string, string | null>;
+    /** Null when the described catalog could not be read this round: enrichment, not a gate. */
+    workflowNames: ReadonlyMap<string, string | null> | null;
   };
 
   type StudioReadFailure =
@@ -94,15 +95,13 @@
           readEveryRun((after) => cockpitApi.listRuns(after, "FAILED")),
           readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after))
         ]);
-      const readings: ReadonlyArray<{ complete: boolean }> = [
-        started,
-        waitingInput,
-        waitingReconciliation,
-        completed,
-        failed,
-        revisions
-      ];
-      if (readings.some((reading) => !reading.complete)) {
+      // The five run-state lists are the confirmed board truth: any one of
+      // them incomplete stops the confirm, same discipline as before. The
+      // catalog read is enrichment over that truth, never a gate on it -- a
+      // run still confirms with its own real fields on a failed catalog read,
+      // falling back to run_id honestly instead of losing the whole board.
+      const runReadings = [started, waitingInput, waitingReconciliation, completed, failed];
+      if (runReadings.some((reading) => !reading.complete)) {
         home = failRead(home, begun.generation, {
           kind: "incomplete",
           title: wrapDisplayCopy(studioPageCopy.runsIncomplete)
@@ -116,9 +115,9 @@
         ...completed.runs,
         ...failed.runs
       ]);
-      const workflowNames = new Map(
-        revisions.revisions.map((revision) => [revision.workflow_revision_hash, revision.name])
-      );
+      const workflowNames = revisions.complete
+        ? new Map(revisions.revisions.map((revision) => [revision.workflow_revision_hash, revision.name]))
+        : null;
       confirm(begun.generation, { runs: known, workflowNames });
     } catch {
       home = failRead(home, begun.generation, {
@@ -155,7 +154,7 @@
     const merged = mergedRuns(home.confirmed?.runs ?? [], runs);
     home = updateConfirmed(home, {
       runs: merged,
-      workflowNames: home.confirmed?.workflowNames ?? new Map()
+      workflowNames: home.confirmed?.workflowNames ?? null
     });
     publishBadges(merged);
   }
@@ -302,6 +301,9 @@
   {#if failureMessage !== null}
     <ProblemNotice message={failureMessage} />
   {/if}
+  {#if snapshot !== null && snapshot.workflowNames === null}
+    <p class="catalog-notice" role="status">{wrapDisplayCopy(studioPageCopy.workflowNamesUnavailable)}</p>
+  {/if}
 
   {#if groups !== null}
     {#if empty}
@@ -310,7 +312,7 @@
         <p>{wrapDisplayCopy(studioPageCopy.emptyDescription)}</p>
         {#if canStart}
           <a
-            class="button primary"
+            class="button primary empty-start"
             href="/atelier/new"
             data-studio-question={studioQuestions.emptyStart.id}
             onclick={open("/atelier/new")}
@@ -373,6 +375,7 @@
     align-content: start;
     gap: var(--space-4);
     max-width: none;
+    min-width: 0;
     min-height: 100%;
   }
 
@@ -399,14 +402,24 @@
     margin: 0;
   }
 
+  .catalog-notice {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
   .board-empty {
+    min-width: 0;
     border: 1px solid var(--line);
     border-radius: var(--r-lg);
     padding: 1rem;
     background: var(--paper);
     display: grid;
     gap: var(--space-3);
-    justify-items: start;
+  }
+
+  .board-empty .empty-start {
+    justify-self: start;
   }
 
   .board-group-title {
@@ -489,28 +502,39 @@
     align-items: center;
   }
 
+  /* Colours mirror StateMark's own state-to-token map (styles.css .state-*),
+     so a node reads the same colour on the Board's mini pipeline as it does
+     on the run page itself -- one convention, not two. */
   .pipe-dot {
     display: inline-block;
     width: 0.54rem;
     height: 0.54rem;
     border-radius: 50%;
+  }
+
+  .pipe-dot-queued {
     background: var(--queued);
   }
 
   .pipe-dot-working {
-    background: var(--blue);
+    background: var(--warning);
   }
 
   .pipe-dot-needs_you {
-    background: var(--amber);
+    background: var(--danger);
   }
 
   .pipe-dot-succeeded {
     background: var(--accent);
   }
 
-  .pipe-dot-failed {
-    background: var(--danger);
+  .pipe-dot-failed,
+  .pipe-dot-interrupted {
+    background: var(--warning);
+  }
+
+  .pipe-dot-cancelled {
+    background: var(--queued);
   }
 
   .row-time {

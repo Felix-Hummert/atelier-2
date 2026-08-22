@@ -1,4 +1,5 @@
 import { isRunV3, type AnyRun } from "../api/client";
+import { newestActivityFirst } from "./runList";
 import type { NodeState } from "./runProjection";
 import { humanMove, runStanding, type RunStanding } from "./runState";
 
@@ -46,32 +47,41 @@ export type BoardGroups = Record<BoardGroup, readonly BoardRow[]>;
  * Resolves a run's workflow name from the described catalog listing, keyed by
  * `workflow_revision_hash`.
  *
- * A hash the catalog never described, or a described revision with no name
- * (a V1 revision names nothing, per the served document), both fall back to
- * the run id honestly -- never a placeholder that reads like a real name.
+ * A hash the catalog never described, a described revision with no name (a V1
+ * revision names nothing, per the served document), and a catalog this round
+ * could not read at all (`null`) all fall back to the run id honestly --
+ * never a placeholder that reads like a real name. The catalog read is
+ * enrichment over the confirmed run list, not a gate on it: a run still shows
+ * with its own real fields even when its name could not be resolved.
  */
 export function resolveWorkflowName(
   run: AnyRun,
-  workflowNames: ReadonlyMap<string, string | null>
+  workflowNames: ReadonlyMap<string, string | null> | null
 ): string {
-  return workflowNames.get(run.workflow_revision_hash) ?? run.run_id;
+  return workflowNames?.get(run.workflow_revision_hash) ?? run.run_id;
 }
 
 export function projectBoardGroups(
   runs: readonly AnyRun[],
-  workflowNames: ReadonlyMap<string, string | null>
+  workflowNames: ReadonlyMap<string, string | null> | null
 ): BoardGroups {
   const rows = runs.map((run) => boardRow(run, workflowNames));
+  const rowByReference = new Map(rows.map((row) => [row.run.public_run_reference, row]));
+  const done = rows.filter((row) => row.group === "done");
   return {
     needsYou: rows.filter((row) => row.group === "needsYou"),
     running: rows
       .filter((row) => row.group === "running")
       .sort((a, b) => runningRank(a) - runningRank(b)),
-    done: rows.filter((row) => row.group === "done").sort(compareDoneRows)
+    // Reuses the one newest-first owner (runList.ts) rather than a second
+    // implementation; a Done row with no activity stamp sorts to the end.
+    done: newestActivityFirst(done.map((row) => row.run)).map(
+      (run) => rowByReference.get(run.public_run_reference)!
+    )
   };
 }
 
-function boardRow(run: AnyRun, workflowNames: ReadonlyMap<string, string | null>): BoardRow {
+function boardRow(run: AnyRun, workflowNames: ReadonlyMap<string, string | null> | null): BoardRow {
   const standing = runStanding(run.state);
   return {
     run,
@@ -94,13 +104,6 @@ function boardGroup(standing: RunStanding): BoardGroup {
 /** A running row reads before a failed one within Running, as the mockup orders them. */
 function runningRank(row: BoardRow): number {
   return row.status.kind === "failed" ? 1 : 0;
-}
-
-function compareDoneRows(a: BoardRow, b: BoardRow): number {
-  if (a.endedAt !== null && b.endedAt !== null) return b.endedAt.localeCompare(a.endedAt);
-  if (a.endedAt !== null) return -1;
-  if (b.endedAt !== null) return 1;
-  return 0;
 }
 
 function rowStatus(run: AnyRun): BoardRowStatus {

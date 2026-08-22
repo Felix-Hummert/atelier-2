@@ -474,7 +474,7 @@ describe("an empty board teaches the one next action", () => {
     expect(window.location.pathname).toBe("/atelier");
   });
 
-  it("names the read incomplete when the workflow catalog page cannot be read, same as a run page", async () => {
+  it("confirms the run list on a failed catalog read, falling back to run ids and naming the gap", async () => {
     openStudio([startedRun()], {
       listWorkflowRevisions: vi.fn(async (after?: string) => {
         if (after === undefined) {
@@ -484,8 +484,10 @@ describe("an empty board teaches the one next action", () => {
       })
     });
 
-    expect((await screen.findByText("Board runs incomplete")).isConnected).toBe(true);
-    expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
+    const running = await screen.findByRole("region", { name: "Running · 1" });
+    expect(within(running).getByText("run").isConnected).toBe(true);
+    expect(screen.getByText("Workflow names unavailable — showing run ids.").isConnected).toBe(true);
+    expect(screen.queryByText("Board runs incomplete")).toBeNull();
     expect(screen.queryByText(/later catalog page detail/)).toBeNull();
   });
 
