@@ -12,8 +12,6 @@ import {
   type RunV3
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
-import { THE_ONE_PROJECT } from "../../src/lib/project";
-import { standingMarks } from "../../src/lib/runState";
 import {
   describeStudioControl,
   questionForStudioControl,
@@ -22,6 +20,7 @@ import {
   studioStageSelector,
   unansweredStudioControls
 } from "../../src/lib/studioQuestions";
+import { boardBadgeCounts } from "../../src/lib/workshop";
 import { cockpitApiStub, FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import {
   completedRun,
@@ -36,6 +35,7 @@ import {
 
 beforeEach(() => {
   sessionStorage.clear();
+  boardBadgeCounts.set(null);
 });
 
 afterEach(() => {
@@ -74,7 +74,7 @@ function expectStudioControlsAnswerNamedQuestions(
 ): void {
   const stage = document.querySelector(studioStageSelector);
   if (stage === null) {
-    throw new Error("Studio stage is missing");
+    throw new Error("Board stage is missing");
   }
   const unanswered = unansweredStudioControls(stage);
   expect(
@@ -84,7 +84,7 @@ function expectStudioControlsAnswerNamedQuestions(
   const present = [...stage.querySelectorAll(studioInteractiveSelector)].map((element) => {
     const found = questionForStudioControl(element);
     if (found === null) {
-      throw new Error(`unmapped Studio control: ${describeStudioControl(element)}`);
+      throw new Error(`unmapped Board control: ${describeStudioControl(element)}`);
     }
     return found.id;
   });
@@ -156,8 +156,11 @@ function streamFailedFrame() {
   };
 }
 
-describe("the studio is the level the workshop opens on", () => {
-  it("proves(the-workshop-opens-in-the-studio): opens the bare atelier path in the Studio instead of a list of runs", async () => {
+describe("the board is the level the workshop opens on", () => {
+  // The identifier stays "studio": REQ-UI-01 in docs/requirements/0003-ziel-ui.md
+  // still declares it under that name, and its wording is #521's revision, not
+  // this slice's.
+  it("proves(the-workshop-opens-in-the-studio): opens the bare atelier path in the Board instead of a list of runs", async () => {
     openStudio();
 
     expect((await screen.findByRole("heading", { name: "Board" })).isConnected).toBe(true);
@@ -165,10 +168,11 @@ describe("the studio is the level the workshop opens on", () => {
     expect(window.location.pathname).toBe("/atelier");
   });
 
-  it("asks the durable list by the states the card and inbox can name", async () => {
+  it("asks the durable list by the states the board's groups can name, and reads the workflow catalog", async () => {
     const listRuns = listRunsByState([startedRun()]);
-    openStudio([startedRun()], { listRuns });
-    await screen.findByRole("article", { name: THE_ONE_PROJECT });
+    const listWorkflowRevisions = vi.fn(async () => ({ items: [], next_after_revision_hash: null }));
+    openStudio([startedRun()], { listRuns, listWorkflowRevisions });
+    await screen.findByRole("region", { name: "Running · 1" });
 
     expect(listRuns.mock.calls.map(([, state]) => state).sort()).toEqual([
       "COMPLETED",
@@ -177,56 +181,60 @@ describe("the studio is the level the workshop opens on", () => {
       "WAITING_INPUT",
       "WAITING_RECONCILIATION"
     ]);
+    expect(listWorkflowRevisions).toHaveBeenCalled();
   });
 
-  it("carries one project card for this installation, with counts it can read", async () => {
-    openStudio([
-      startedRun({ public_run_reference: "run1.YQ" }),
-      startedRun({ public_run_reference: "run1.Yg" }),
-      waitingInputRun({ public_run_reference: "run1.Yw" }),
-      failedRun({ public_run_reference: "run1.ZQ" }),
-      completedRun({ public_run_reference: "run1.ZA" })
-    ]);
+  it("names a row by the catalog's workflow name, and falls back to the run id honestly when the catalog names nothing", async () => {
+    openStudio(
+      [startedRun({ public_run_reference: "run1.YQ", run_id: "named", workflow_revision_hash: "b".repeat(64) }),
+       startedRun({ public_run_reference: "run1.Yg", run_id: "unnamed" })],
+      {
+        listWorkflowRevisions: vi.fn(async () => ({
+          items: [
+            {
+              workflow_revision_hash: "b".repeat(64),
+              workflow_format_version: 1 as const,
+              executable: true,
+              not_executable_reason: null,
+              name: "Preview door",
+              description: null
+            },
+            {
+              workflow_revision_hash: revisionHash,
+              workflow_format_version: 1 as const,
+              executable: true,
+              not_executable_reason: null,
+              name: null,
+              description: null
+            }
+          ],
+          next_after_revision_hash: null
+        }))
+      }
+    );
 
-    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
-
-    expect(within(card).getByText("2 running").isConnected).toBe(true);
-    expect(within(card).getByText("1 waiting for you").isConnected).toBe(true);
-    expect(within(card).getByText("1 failed").isConnected).toBe(true);
-    expect(within(card).getByText(standingMarks.failed).isConnected).toBe(true);
-    expect(within(card).getByText("1 done").isConnected).toBe(true);
-    expect(within(card).getAllByRole("link")).toHaveLength(1);
+    const running = await screen.findByRole("region", { name: "Running · 2" });
+    expect(within(running).getByText("Preview door").isConnected).toBe(true);
+    expect(within(running).getByText("unnamed").isConnected).toBe(true);
   });
 
-  it("leads from the one project card down into the project level", async () => {
-    openStudio([startedRun()]);
-    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
-
-    await fireEvent.click(within(card).getByRole("link"));
-
-    expect(window.location.pathname).toBe("/atelier/project");
-    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
-    expect(screen.queryByRole("heading", { name: "Board" })).toBeNull();
-  });
-
-  it("keeps real workshop work ahead of an unavailable chat", async () => {
+  it("keeps real board work ahead of an empty first paint", async () => {
     openStudio([waitingInputRun(), startedRun({ public_run_reference: "run1.YQ" })]);
 
-    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
-    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
-    const chat = await screen.findByRole("region", { name: "Chat" });
+    const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
+    const running = await screen.findByRole("region", { name: "Running · 1" });
 
-    expect(inbox.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(within(chat).getByText("Unavailable").isConnected).toBe(true);
-    expect(card.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(needsYou.compareDocumentPosition(running) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 });
 
-describe("the inbox names what waits for a human", () => {
+describe("Needs you names what waits for a human", () => {
+  // Same identifier note as above: REQ-UI-01 still declares this sentence as
+  // "the-inbox-names-...", the wording carried by #521.
   it("proves(the-inbox-names-every-run-that-waits-for-a-human): names every run in a durable waiting state and no run that waits for nobody, across every page the list holds", async () => {
     // "Across everything" is only true while the reading spans the durable
-    // pages: a run that waits on the second page is exactly the one an inbox
-    // stopping at the first would lose.
+    // pages: a run that waits on the second page is exactly the one a
+    // single-page read would lose.
     window.history.replaceState(null, "", "/atelier");
     render(App, {
       props: {
@@ -256,33 +264,146 @@ describe("the inbox names what waits for a human", () => {
       }
     });
 
-    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
+    const needsYou = await screen.findByRole("region", { name: "Needs you · 3" });
 
-    const waiting = within(inbox).getAllByRole("link");
+    const waiting = within(needsYou).getAllByRole("link");
     expect(waiting).toHaveLength(3);
-    expect(within(inbox).getAllByText("Answer")).toHaveLength(2);
-    expect(within(inbox).getByText("Reconcile").isConnected).toBe(true);
+    expect(within(needsYou).getAllByText("Answer →")).toHaveLength(2);
+    expect(within(needsYou).getByText("Reconcile →").isConnected).toBe(true);
   });
 
-  it("stays silent when nothing waits for a human", async () => {
+  it("shows no Needs you section when nothing waits for a human", async () => {
     openStudio([startedRun(), completedRun({ public_run_reference: "run1.Yg" })]);
 
-    await screen.findByRole("article", { name: THE_ONE_PROJECT });
+    await screen.findByRole("region", { name: "Running · 1" });
 
-    expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
+    expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull();
   });
 
   it("opens the waiting run with one click", async () => {
     openStudio([waitingInputRun()], { getRun: vi.fn(async () => waitingInputRun()) });
 
-    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
-    await fireEvent.click(within(inbox).getByRole("link", { name: /Answer/ }));
+    const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
+    await fireEvent.click(within(needsYou).getByRole("link", { name: /Answer/ }));
 
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/runs/run1.cnVu"));
   });
 });
 
-describe("an empty studio teaches the one next action", () => {
+describe("Running holds what moves and what needs a look, never a landed result", () => {
+  it("groups a failed run under Running, red, with a Why? link to the run", async () => {
+    openStudio([startedRun({ public_run_reference: "run1.YQ" }), failedRun({ public_run_reference: "run1.Yg" })]);
+
+    const running = await screen.findByRole("region", { name: "Running · 2" });
+    const rows = within(running).getAllByRole("link");
+    expect(rows).toHaveLength(2);
+    const failedRow = within(running).getByText("Why? →").closest("a");
+    expect(failedRow).not.toBeNull();
+    expect(within(failedRow as HTMLElement).getByText("Failed at agent").isConnected).toBe(true);
+  });
+
+  it("names the node a running row is at, from the run's current node", async () => {
+    openStudio([startedRun()]);
+
+    const running = await screen.findByRole("region", { name: "Running · 1" });
+    expect(within(running).getByText("Running agent").isConnected).toBe(true);
+  });
+});
+
+describe("Done shows every landed run in plain language, newest first", () => {
+  it("orders by the real V3 landing time, and keeps a run with no timestamp after the timestamped ones", async () => {
+    const older = listedV3Run({
+      run_id: "older",
+      public_run_reference: encodePublicRunReference("older"),
+      state: "COMPLETED",
+      terminal_hash: revisionHash,
+      node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
+      ended_at: "2026-08-18T10:00:00Z"
+    });
+    const newer = listedV3Run({
+      run_id: "newer",
+      public_run_reference: encodePublicRunReference("newer"),
+      state: "COMPLETED",
+      terminal_hash: revisionHash,
+      node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
+      ended_at: "2026-08-18T12:00:00Z"
+    });
+    const untimed = completedRun({ public_run_reference: "run1.dW50aW1lZA" });
+    openStudio([older, newer, untimed]);
+
+    const done = await screen.findByRole("region", { name: "Done · 3" });
+    const names = within(done).getAllByRole("link").map((link) => link.textContent ?? "");
+    expect(names[0]).toContain("newer");
+    expect(names[1]).toContain("older");
+    expect(names[2]).toContain("run");
+  });
+
+  it("names a completed run plainly, with no fabricated result text", async () => {
+    openStudio([completedRun()]);
+
+    const done = await screen.findByRole("region", { name: "Done · 1" });
+    expect(within(done).getByText("Completed").isConnected).toBe(true);
+  });
+});
+
+describe("the mini pipeline reads node_rail honestly", () => {
+  it("shows one dot per node_rail entry for a V2/V3 run", async () => {
+    openStudio([listedV3Run({ node_rail: [
+      { node_id: "plan", state: "succeeded", attempt: null },
+      { node_id: "build", state: "working", attempt: null }
+    ] })]);
+
+    const running = await screen.findByRole("region", { name: "Running · 1" });
+    const row = within(running).getAllByRole("link")[0] as HTMLElement;
+    expect(row.querySelectorAll(".pipe-dot")).toHaveLength(2);
+  });
+
+  it("shows no mini pipeline for a V1 run, which carries no node_rail", async () => {
+    openStudio([startedRun()]);
+
+    const running = await screen.findByRole("region", { name: "Running · 1" });
+    const row = within(running).getAllByRole("link")[0] as HTMLElement;
+    expect(row.querySelectorAll(".pipe-dot")).toHaveLength(0);
+  });
+});
+
+describe("there is no Queued group", () => {
+  it("never renders a Queued section, because no served run state names one", async () => {
+    openStudio([startedRun(), waitingInputRun({ public_run_reference: "run1.YQ" }), completedRun({ public_run_reference: "run1.Yg" })]);
+
+    await screen.findByRole("region", { name: "Running · 1" });
+
+    expect(screen.queryByText(/Queued/)).toBeNull();
+  });
+});
+
+describe("the rail badges show the Board's last confirmed read", () => {
+  it("shows no badge before the first read, and the read counts after it", async () => {
+    openStudio([waitingInputRun(), startedRun({ public_run_reference: "run1.YQ" })]);
+    const rail = screen.getByRole("navigation", { name: "Workshop" });
+    const board = within(rail).getByRole("link", { name: /Board/ });
+    expect(within(board).queryByText("1")).toBeNull();
+
+    await screen.findByRole("region", { name: "Needs you · 1" });
+
+    expect(within(board).getByText("1", { selector: ".rail-badge-running" }).isConnected).toBe(true);
+    expect(within(board).getByText("1", { selector: ".rail-badge-needs-you" }).isConnected).toBe(true);
+  });
+
+  it("keeps the last known Board count visible on another page", async () => {
+    openStudio([waitingInputRun()]);
+    await screen.findByRole("region", { name: "Needs you · 1" });
+
+    window.history.pushState(null, "", "/atelier/project");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+
+    const rail = screen.getByRole("navigation", { name: "Workshop" });
+    const board = within(rail).getByRole("link", { name: /Board/ });
+    expect(within(board).getByText("1", { selector: ".rail-badge-needs-you" }).isConnected).toBe(true);
+  });
+});
+
+describe("an empty board teaches the one next action", () => {
   it("proves(an-empty-area-names-the-one-next-action): names starting a run as the one action possible today, and offers it once", async () => {
     const { feed } = openStudioHolding([]);
     await screen.findByRole("heading", { name: "Board" });
@@ -325,7 +446,7 @@ describe("an empty studio teaches the one next action", () => {
     expect(screen.getAllByRole("button", { name: "Retry board runs" })).toHaveLength(1);
   });
 
-  it("repeats only the failed Studio read until a successful retry replaces the error", async () => {
+  it("repeats only the failed Board read until a successful retry replaces the error", async () => {
     const listRuns = vi.fn(async (_after?: string, state?: string) => {
       const round = Math.floor((listRuns.mock.calls.length - 1) / 5);
       if (round < 2) throw new Error("socket detail must stay private");
@@ -346,14 +467,31 @@ describe("an empty studio teaches the one next action", () => {
 
     await fireEvent.click(retry);
 
-    expect((await screen.findByRole("article", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
+    expect((await screen.findByRole("region", { name: "Running · 1" })).isConnected).toBe(true);
     expect(listRuns).toHaveBeenCalledTimes(15);
     expect(screen.queryByRole("button", { name: "Retry board runs" })).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh board runs" }).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier");
   });
 
-  it("keeps confirmed Studio truth through a failed refresh and confirms newer truth after Retry", async () => {
+  it("confirms the run list on a failed catalog read, falling back to run ids and naming the gap", async () => {
+    openStudio([startedRun()], {
+      listWorkflowRevisions: vi.fn(async (after?: string) => {
+        if (after === undefined) {
+          return { items: [], next_after_revision_hash: "c".repeat(64) };
+        }
+        throw new Error("later catalog page detail");
+      })
+    });
+
+    const running = await screen.findByRole("region", { name: "Running · 1" });
+    expect(within(running).getByText("run").isConnected).toBe(true);
+    expect(screen.getByText("Workflow names unavailable — showing run ids.").isConnected).toBe(true);
+    expect(screen.queryByText("Board runs incomplete")).toBeNull();
+    expect(screen.queryByText(/later catalog page detail/)).toBeNull();
+  });
+
+  it("keeps confirmed Board truth through a failed refresh and confirms newer truth after Retry", async () => {
     let response: "started" | "failed" | "completed" = "started";
     const listRuns = vi.fn(async (_after?: string, state?: string) => {
       if (response === "failed") throw new Error("wire detail");
@@ -361,19 +499,18 @@ describe("an empty studio teaches the one next action", () => {
       return { items: state === run.state ? [run] : [], next_after: null };
     });
     openStudio([], { listRuns });
-    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
-    expect(within(card).getByText("1 running").isConnected).toBe(true);
+    await screen.findByRole("region", { name: "Running · 1" });
 
     response = "failed";
     await fireEvent.click(screen.getByRole("button", { name: "Refresh board runs" }));
 
     await screen.findByText("Board runs unavailable");
-    expect(within(card).getByText("1 running").isConnected).toBe(true);
+    expect(screen.getByRole("region", { name: "Running · 1" }).isConnected).toBe(true);
     response = "completed";
     await fireEvent.click(screen.getByRole("button", { name: "Retry board runs" }));
 
-    await waitFor(() => expect(within(card).getByText("1 done").isConnected).toBe(true));
-    expect(within(card).queryByText("1 running")).toBeNull();
+    await waitFor(() => expect(screen.getByRole("region", { name: "Done · 1" }).isConnected).toBe(true));
+    expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
   });
 
   it("does not confirm a partial initial five-list reading", async () => {
@@ -387,14 +524,14 @@ describe("an empty studio teaches the one next action", () => {
     openStudio([], { listRuns });
 
     expect((await screen.findByText("Board runs incomplete")).isConnected).toBe(true);
-    expect(screen.queryByRole("article", { name: THE_ONE_PROJECT })).toBeNull();
+    expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
     expect(screen.queryByText(/later page detail/)).toBeNull();
   });
 });
 
-describe("the studio holds GET /events", () => {
-  it("holds the attention stream when the studio opens", async () => {
+describe("the board holds GET /events", () => {
+  it("holds the attention stream when the board opens", async () => {
     const { feed } = openStudioHolding([]);
 
     await screen.findByRole("heading", { name: "Board" });
@@ -402,7 +539,7 @@ describe("the studio holds GET /events", () => {
     expect(feed.openAttention).toHaveBeenCalledWith(expect.any(Object));
   });
 
-  it("names connecting as itself, not as an empty workshop", async () => {
+  it("names connecting as itself, not as an empty board", async () => {
     openStudioHolding([]);
 
     expect((await screen.findByText("Connecting")).isConnected).toBe(true);
@@ -424,11 +561,10 @@ describe("the studio holds GET /events", () => {
       )
     );
 
-    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
-    expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
+    const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
+    expect(within(needsYou).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
     expect(getRun).toHaveBeenCalledWith("run1.YQ");
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
-    expect(within(await screen.findByRole("article", { name: THE_ONE_PROJECT })).getByText("1 waiting for you").isConnected).toBe(true);
   });
 
   it("applies an AGENT_FAILED from the stream without already listing the run", async () => {
@@ -440,12 +576,10 @@ describe("the studio holds GET /events", () => {
 
     feed.handlers?.event(JSON.stringify(agentFailedEvent()));
 
-    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
-    expect(within(card).getByText("1 failed").isConnected).toBe(true);
-    expect(within(card).getByText(standingMarks.failed).isConnected).toBe(true);
-    expect(within(card).queryByText("1 done")).toBeNull();
+    const running = await screen.findByRole("region", { name: "Running · 1" });
+    expect(within(running).getByText("Why? →").isConnected).toBe(true);
     expect(getRun).toHaveBeenCalledWith(publicReference);
-    expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
+    expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
   });
 
@@ -474,17 +608,14 @@ describe("the studio holds GET /events", () => {
       )
     );
 
-    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
-    expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
+    const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
+    expect(within(needsYou).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
 
     releaseStarted({ items: [staleStarted, otherStarted], next_after: null });
-    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
     await waitFor(() => {
-      expect(within(card).getByText("1 running").isConnected).toBe(true);
+      expect(screen.getByRole("region", { name: "Running · 1" }).isConnected).toBe(true);
     });
-    expect(within(card).getByText("1 waiting for you").isConnected).toBe(true);
-    expect(within(card).queryByText("2 running")).toBeNull();
-    expect(within(screen.getByRole("region", { name: "Waiting for you" })).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
+    expect(screen.getByRole("region", { name: "Needs you · 1" }).isConnected).toBe(true);
   });
 
   it("replaces a projected wait when a later list answers the same run as completed at a newer version", async () => {
@@ -511,16 +642,14 @@ describe("the studio holds GET /events", () => {
       )
     );
 
-    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
-    expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
+    const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
+    expect(within(needsYou).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
 
     releaseCompleted({ items: [newerCompleted], next_after: null });
-    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
     await waitFor(() => {
-      expect(within(card).getByText("1 done").isConnected).toBe(true);
+      expect(screen.getByRole("region", { name: "Done · 1" }).isConnected).toBe(true);
     });
-    expect(within(card).queryByText("1 waiting for you")).toBeNull();
-    expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
+    expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull();
   });
 
   it("retries a failed getRun until the delivered wait is visible once", async () => {
@@ -542,14 +671,14 @@ describe("the studio holds GET /events", () => {
 
     expect((await screen.findByText("run missing")).isConnected).toBe(true);
     expect(screen.getByText("Live").isConnected).toBe(true);
-    expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
+    expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull();
     expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
     expect(getRun).toHaveBeenCalledTimes(1);
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
-    expect(within(inbox).getAllByRole("link", { name: /Answer/ })).toHaveLength(1);
+    const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
+    expect(within(needsYou).getAllByRole("link", { name: /Answer/ })).toHaveLength(1);
     expect(getRun).toHaveBeenCalledTimes(2);
     expect(getRun).toHaveBeenNthCalledWith(1, "run1.YQ");
     expect(getRun).toHaveBeenNthCalledWith(2, "run1.YQ");
@@ -586,13 +715,13 @@ describe("the studio holds GET /events", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-    const inbox = await screen.findByRole("region", { name: "Waiting for you" });
-    expect(within(inbox).getAllByRole("link", { name: /Answer/ })).toHaveLength(1);
+    const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
+    expect(within(needsYou).getAllByRole("link", { name: /Answer/ })).toHaveLength(1);
     expect(screen.getByText("Stopped").isConnected).toBe(true);
     expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
   });
 
-  it("names a failed attention stream as itself, not as an empty workshop", async () => {
+  it("names a failed attention stream as itself, not as an empty board", async () => {
     const { feed } = openStudioHolding([]);
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
@@ -610,8 +739,9 @@ describe("the studio holds GET /events", () => {
   });
 });
 
-describe("every Studio control answers a named user question", () => {
-  it("proves(studio-elements-answer-named-questions): every interactive Studio control is listed against one named user question", async () => {
+describe("every Board control answers a named user question", () => {
+  // The identifier stays "studio" (acceptance/435): its wording is #521's revision.
+  it("proves(studio-elements-answer-named-questions): every interactive Board control is listed against one named user question", async () => {
     const ids = Object.values(studioQuestions).map((entry) => entry.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const entry of Object.values(studioQuestions)) {
@@ -632,14 +762,10 @@ describe("every Studio control answers a named user question", () => {
         ended_at: "2026-08-18T12:00:00Z"
       })
     ]);
-    await screen.findByRole("article", { name: THE_ONE_PROJECT });
-    await screen.findByRole("button", { name: studioQuestions.lastLandingTime.hintLabel });
+    await screen.findByRole("region", { name: "Done · 2" });
     expectStudioControlsAnswerNamedQuestions([
       studioQuestions.start.id,
-      studioQuestions.inboxRun.id,
-      studioQuestions.project.id,
-      studioQuestions.whyOneProject.id,
-      studioQuestions.lastLandingTime.id,
+      studioQuestions.openRun.id,
       studioQuestions.reloadStudioRuns.id
     ]);
 

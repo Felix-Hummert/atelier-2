@@ -39,26 +39,24 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   const rail = page.getByRole("navigation", { name: "Workshop" });
   await expect(rail.getByText("atelier", { exact: true })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Board" })).toBeVisible();
+  await expect(rail.getByRole("link", { name: "Workflows" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "History" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Chat" })).toHaveCount(0);
-  await expect(rail.getByRole("link", { name: "Workflows" })).toHaveCount(0);
   await expect(rail.getByText("Chat", { exact: true })).toBeVisible();
-  await expect(rail.getByText("Workflows", { exact: true })).toBeVisible();
   await expect(rail.locator("[title*='#7']")).toBeVisible();
-  await expect(rail.locator("[title*='REQ-UI-05']")).toBeVisible();
   await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
   await expect(rail.getByText("switch project")).toBeVisible();
   await expect(rail.getByText("Settings", { exact: true })).toBeVisible();
   await expect(rail.getByText("Profile", { exact: true })).toBeVisible();
-  await expect(rail.getByText("(later)", { exact: true })).toHaveCount(3);
+  await expect(rail.getByText("(later)", { exact: true })).toHaveCount(2);
 
   await rail.getByRole("link", { name: "History" }).click();
   await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier\/project$/);
 
-  const stillOnProject = page.url();
-  await rail.getByText("Workflows", { exact: true }).click();
-  await expect(page).toHaveURL(stillOnProject);
+  await rail.getByRole("link", { name: "Workflows" }).click();
+  await expect(page.getByRole("heading", { name: "Workflows" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier\/workflows$/);
 
   await rail.getByRole("link", { name: "Board" }).click();
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
@@ -111,7 +109,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
     const observed: string[] = [];
     document.addEventListener("focusin", (event) => {
       if (event.target !== document.querySelector("main.workshop-stage")) return;
-      const marker = ["#project-title", "#new-title", "#studio-title", ".trail-here"]
+      const marker = ["#project-title", "#new-title", "#board-title", ".trail-here"]
         .map((selector) => document.querySelector(selector))
         .find((candidate) => candidate !== null);
       if (marker instanceof HTMLElement) observed.push(marker.id || marker.className);
@@ -257,7 +255,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await expect(stage).toBeFocused();
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { observedMainMarkers: string[] }).observedMainMarkers)).toEqual([
-    "project-title", "new-title", "trail-here", "studio-title"
+    "project-title", "new-title", "trail-here", "board-title"
   ]);
 });
 
@@ -276,8 +274,9 @@ test("opens the project level from a cold link and survives a reload", async ({ 
   await expect(page).toHaveURL(/\/atelier\/project$/);
 });
 
-test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): Board recovers one retained five-list read", async ({ page }) => {
+test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): Board recovers one retained five-list-plus-catalog read", async ({ page }) => {
   const runListPath = "/atelier/api/v1/runs";
+  const catalogPath = "/atelier/api/v1/workflow-revisions";
   const expectedStates = [
     "COMPLETED",
     "FAILED",
@@ -303,10 +302,13 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   });
 
   const expectOnlyBoardRead = (): void => {
-    expect(observed).toHaveLength(5);
-    expect(observed.every(({ method, path }) => method === "GET" && path === runListPath))
-      .toBe(true);
-    expect(observed.map(({ state }) => state).sort()).toEqual(expectedStates);
+    const runRequests = observed.filter(({ path }) => path === runListPath);
+    const catalogRequests = observed.filter(({ path }) => path === catalogPath);
+    expect(observed).toHaveLength(runRequests.length + catalogRequests.length);
+    expect(runRequests.every(({ method }) => method === "GET")).toBe(true);
+    expect(runRequests.map(({ state }) => state).sort()).toEqual(expectedStates);
+    expect(catalogRequests).toHaveLength(1);
+    expect(catalogRequests[0]?.method).toBe("GET");
   };
 
   await page.goto("/atelier");
@@ -327,7 +329,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   readsFail = false;
   observed.length = 0;
   await retry.click();
-  const board = page.getByRole("article", { name: THE_ONE_PROJECT });
+  const board = page.locator(".board-page");
   await expect(board).toBeVisible();
   await expect(page.getByRole("button", { name: "Refresh board runs" })).toHaveCount(1);
   expectOnlyBoardRead();
@@ -1189,7 +1191,10 @@ test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-dr
 test("walks the whole workshop: board into the project, project into the run, and the trail back up", async ({ page }) => {
   await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
-  await page.getByRole("article", { name: THE_ONE_PROJECT }).getByRole("link").click();
+  await page
+    .getByRole("navigation", { name: "Workshop" })
+    .getByRole("link", { name: "History" })
+    .click();
   await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
 
   await page
@@ -2840,7 +2845,7 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   });
 });
 
-test("the studio inbox names a run that is waiting for a person", async ({ page }) => {
+test("Needs you names a run that is waiting for a person, by its catalog name", async ({ page }) => {
   const api = "/atelier/api/v1";
   const schemaHash = await anyJsonSchema(page);
   const runId = "studio/waiting-inbox";
@@ -2880,12 +2885,14 @@ test("the studio inbox names a run that is waiting for a person", async ({ page 
   }).toPass({ timeout: 15_000 });
 
   await page.goto("/atelier");
-  const inbox = page.getByRole("region", { name: "Waiting for you" });
-  const row = inbox.getByRole("link", { name: new RegExp(runId) });
+  // This backend is shared across every earlier test in this file, so other
+  // runs may already sit in Needs you: this run is named, not counted.
+  const needsYou = page.getByRole("region", { name: /^Needs you/ });
+  const row = needsYou.getByRole("link", { name: /Waiting in the studio/ });
   await expect(row).toBeVisible();
   await expect(row).toContainText("Answer");
-  const card = page.getByRole("article", { name: THE_ONE_PROJECT });
-  await expect(card).toContainText("waiting for you");
+  const boardLink = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: /Board/ });
+  await expect(boardLink).toContainText(/[1-9]/);
 
   await page.screenshot({ path: "test-results/studio-inbox-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });

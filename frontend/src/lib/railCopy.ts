@@ -13,5 +13,7 @@ export const railCopy = {
   settings: "Settings",
   settingsHint: "Professional settings surface — not built yet. REQ-UI-15.",
   profile: "Profile",
-  profileHint: "Profile needs login/OIDC — not built yet. #82."
+  profileHint: "Profile needs login/OIDC — not built yet. #82.",
+  runningBadgeSuffix: "running",
+  needsYouBadgeSuffix: "needs you"
 } as const;

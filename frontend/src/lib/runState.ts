@@ -56,6 +56,10 @@ export function humanMove(state: AnyRun["state"]): string | null {
   return humanMoves[state];
 }
 
+export function runStanding(state: AnyRun["state"]): RunStanding {
+  return standings[state];
+}
+
 export function waitsForAHuman(state: AnyRun["state"]): boolean {
   return standings[state] === "waiting";
 }
