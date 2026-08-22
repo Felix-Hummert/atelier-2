@@ -179,7 +179,7 @@ describe("core surfaces read owned display strings", () => {
 
     expect(screen.getByText("[[[ Atelier ]]]").isConnected).toBe(true);
     expect(screen.getByText("[[[ A run appears here the moment a workflow starts. ]]]").isConnected).toBe(true);
-    expect(screen.getByRole("link", { name: "[[[ Start a run ]]]" }).isConnected).toBe(true);
+    expect(screen.getByRole("link", { name: "[[[ Start your first workflow ]]]" }).isConnected).toBe(true);
   });
 
   it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Board renders group titles, row sentences, and connection through the display transform", async () => {

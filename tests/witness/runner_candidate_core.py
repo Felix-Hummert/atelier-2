@@ -29,8 +29,10 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import (
-    FreeRunnerAuthorizationResolver,
     FreeRunnerExecutorFactory,
+    FreeRunnerHoldJob,
+    FreeRunnerPrintJob,
+    encode_free_runner_job,
     refuse_unbound_runner_a_request,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
@@ -41,6 +43,7 @@ from atelier2.adapters.runner_tls import (
     invocation_from_runner_uri,
     pin_tls_13,
     runner_uri_for_invocation,
+    sole_peer_uri,
     validate_peer_certificate,
 )
 from atelier2.application.run_runner_session import (
@@ -84,22 +87,40 @@ from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.runner.__main__ import CandidateScenario
+from atelier2.runner.authorization import free_runner_auth_reference
 
 _OUTPUT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b"true")
-_DOCUMENT = b"""format_version: 3
-name: Disposable free Runner candidate
-nodes:
-  - id: execute
-    type: agent
-    role: runner
-    mode: headless
-    instruction: Return the one candidate result.
-    outputs:
-      - name: result
-        schema:
-          ref: result-schema
-          revision: %s
-""" % _OUTPUT_SCHEMA.revision_hash.value.encode("ascii")
+
+
+def _document_for(job: FreeRunnerPrintJob | FreeRunnerHoldJob) -> bytes:
+    """The one-node workflow whose authored instruction *is* the job document.
+
+    The durable store recomputes `job_bytes` from this exact node's authored
+    instruction (`_validate_request`), so the fixed candidate program's job
+    document cannot be handed to the request separately -- it has to be what
+    the workflow's author wrote. `json.dumps` doubles as a YAML-safe quoted
+    scalar here (a JSON string literal is valid YAML flow-scalar syntax),
+    which keeps the encoded document's own JSON braces and quotes from being
+    read as YAML flow-mapping syntax.
+    """
+    instruction_literal = json.dumps(encode_free_runner_job(job).decode("utf-8"))
+    return (
+        b"format_version: 3\n"
+        b"name: Disposable free Runner candidate\n"
+        b"nodes:\n"
+        b"  - id: execute\n"
+        b"    type: agent\n"
+        b"    role: runner\n"
+        b"    mode: headless\n"
+        b"    instruction: " + instruction_literal.encode("utf-8") + b"\n"
+        b"    outputs:\n"
+        b"      - name: result\n"
+        b"        schema:\n"
+        b"          ref: result-schema\n"
+        b"          revision: "
+        + _OUTPUT_SCHEMA.revision_hash.value.encode("ascii")
+        + b"\n"
+    )
 
 
 def _read_frame(connection: ssl.SSLSocket) -> RunnerSessionFrame:
@@ -181,6 +202,12 @@ def _drive_until_released_or_dropped(
 
 
 def _bootstrap(root: Path, handoff: Path, scenario: CandidateScenario):
+    manifest = decode_runner_manifest((handoff / "manifest").read_bytes())
+    job = (
+        FreeRunnerHoldJob(manifest.total_attempt_milliseconds / 1000)
+        if scenario is CandidateScenario.CANCEL
+        else FreeRunnerPrintJob("runner candidate")
+    )
     database = root / "core.sqlite3"
     workspace = root / "workspace"
     workspace.mkdir(mode=0o700, exist_ok=True)
@@ -213,7 +240,7 @@ def _bootstrap(root: Path, handoff: Path, scenario: CandidateScenario):
             AgentConfigurationRevisionFormatVersion.V2,
         )
         catalog.publish_agent_configuration_revision(configuration)
-        workflow = WorkflowRevision(_DOCUMENT)
+        workflow = WorkflowRevision(_document_for(job))
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
         run_id = RunId("runner-candidate/one")
         started = DbosDurableRunStarter(
@@ -247,7 +274,7 @@ def _bootstrap(root: Path, handoff: Path, scenario: CandidateScenario):
             "execute",
             run.agent_bindings[0],
             AgentExecutorOperationalIdentity("free-runner-candidate"),
-            b"Return the one candidate result.",
+            encode_free_runner_job(job),
         )
         refuse_unbound_runner_a_request(request)
         execution = AgentAttemptExecution(
@@ -259,7 +286,6 @@ def _bootstrap(root: Path, handoff: Path, scenario: CandidateScenario):
         )
         store = DbosAgentAttemptStore(runtime.engine)
         store.prepare(execution)
-        manifest = decode_runner_manifest((handoff / "manifest").read_bytes())
         identity = runner_manifest_id(manifest)
         stated = handoff.joinpath("manifest-id").read_text(encoding="ascii").strip()
         if identity.value != stated:
@@ -279,9 +305,9 @@ def _bootstrap(root: Path, handoff: Path, scenario: CandidateScenario):
             "scenario": scenario.value,
         }
         _write_json(root / "bootstrap.json", bootstrap)
-        reference = FreeRunnerAuthorizationResolver().reference_for(
+        reference = free_runner_auth_reference(
             request.resolved_binding.auth_profile
-        )
+        ).value
         return execution, binding, store, request, manifest, reference
     except BaseException:
         runtime.close()
@@ -347,12 +373,7 @@ def main(arguments: list[str] | None = None) -> int:
     _wait_for(peer_leaf)
     expected = peer_leaf.read_bytes()
     peer_certificate = x509.load_pem_x509_certificate(expected)
-    uris = peer_certificate.extensions.get_extension_for_class(
-        x509.SubjectAlternativeName
-    ).value.get_values_for_type(x509.UniformResourceIdentifier)
-    if len(uris) != 1:
-        raise RuntimeError("runner-binding-san-mismatch")
-    invocation = invocation_from_runner_uri(uris[0], binding)
+    invocation = invocation_from_runner_uri(sole_peer_uri(peer_certificate), binding)
     expected_runner_uri = runner_uri_for_invocation(binding, invocation)
     ca_pem = identity.joinpath("ca.crt").read_bytes()
     validate_peer_certificate(

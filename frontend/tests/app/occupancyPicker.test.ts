@@ -74,6 +74,7 @@ function detail(
         instruction_start: `Work as ${role}.`,
         depends_on: index === 0 ? [] : [`node-${index - 1}`]
       })),
+      loops: [],
       name,
       description: "Resolve each role from its honest owner."
     }

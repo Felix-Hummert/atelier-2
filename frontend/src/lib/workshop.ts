@@ -11,7 +11,7 @@ import type { CockpitRoute } from "./route";
 export type ReachableWorkshopDestination = {
   id: "board" | "workflows" | "history";
   label: string;
-  path: "/atelier" | "/atelier/workflows" | "/atelier/project";
+  path: "/atelier" | "/atelier/workflows" | "/atelier/history";
 };
 
 export type DeferredWorkshopDestination = {
@@ -32,7 +32,7 @@ export const WORKSHOP_DESTINATIONS: readonly WorkshopDestination[] = [
   },
   { id: "board", label: "Board", path: "/atelier" },
   { id: "workflows", label: "Workflows", path: "/atelier/workflows" },
-  { id: "history", label: "History", path: "/atelier/project" }
+  { id: "history", label: "History", path: "/atelier/history" }
 ];
 
 export function destinationIsReachable(
@@ -41,17 +41,27 @@ export function destinationIsReachable(
   return "path" in destination;
 }
 
-/** Which rail item the current page sits under. A missing page sits under none. */
+/**
+ * Which rail item the current page sits under. A missing page sits under none.
+ *
+ * `new` marks Workflows, not History (Operator ruling 22.08.): starting a run
+ * is a Workflows-owned action reachable from Board and from a workflow's own
+ * detail page, not a History concern. `project` marks nothing: History moved
+ * to its own page (#526), and the old project level stays reachable at its
+ * URL only as a seed for a future project area, no longer as the rail's
+ * History destination. `run` still marks History: a run reached from a
+ * History row is genuinely history being read, live or finished.
+ */
 export function activeWorkshopDestination(
   route: CockpitRoute
 ): ReachableWorkshopDestination["id"] | null {
   if (route.page === "studio") {
     return "board";
   }
-  if (route.page === "workflows" || route.page === "workflow") {
+  if (route.page === "workflows" || route.page === "workflow" || route.page === "new") {
     return "workflows";
   }
-  if (route.page === "project" || route.page === "new" || route.page === "run") {
+  if (route.page === "history" || route.page === "run") {
     return "history";
   }
   return null;

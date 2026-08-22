@@ -6,5 +6,6 @@
   "/atelier/new",
   "/atelier/runs/{public_ref}",
   "/atelier/workflows",
-  "/atelier/workflows/{workflow_name}"
+  "/atelier/workflows/{workflow_name}",
+  "/atelier/history"
 ]

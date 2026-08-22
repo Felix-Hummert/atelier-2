@@ -84,7 +84,7 @@ describe("cockpit navigation", () => {
       "/atelier/workflows"
     );
     expect(within(rail).getByRole("link", { name: "History" }).getAttribute("href")).toBe(
-      "/atelier/project"
+      "/atelier/history"
     );
     expect(within(rail).queryByRole("link", { name: "Chat" })).toBeNull();
     expect(within(rail).getByText("Chat").closest("[aria-disabled='true']")?.getAttribute("title")).toContain(
@@ -97,8 +97,8 @@ describe("cockpit navigation", () => {
 
     const still = screen.getByRole("navigation", { name: "Workshop" });
     await fireEvent.click(within(still).getByRole("link", { name: "History" }));
-    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
-    expect(window.location.pathname).toBe("/atelier/project");
+    expect((await screen.findByRole("heading", { name: "History" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/history");
 
     await fireEvent.click(within(still).getByRole("link", { name: "Board" }));
     expect((await screen.findByRole("heading", { name: "Board" })).isConnected).toBe(true);

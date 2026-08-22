@@ -20,6 +20,7 @@ from atelier2.adapters.runner_tls import (
     invocation_from_runner_uri,
     pin_tls_13,
     runner_uri_for_invocation,
+    sole_peer_uri,
     validate_peer_certificate,
 )
 from atelier2.contracts.agent_attempts import (
@@ -72,12 +73,7 @@ def _invocation_from_published_identity(
     if not (identity / "ready").is_file() or not (identity / "client.crt").is_file():
         return None
     certificate = x509.load_pem_x509_certificate((identity / "client.crt").read_bytes())
-    uris = certificate.extensions.get_extension_for_class(
-        x509.SubjectAlternativeName
-    ).value.get_values_for_type(x509.UniformResourceIdentifier)
-    if len(uris) != 1:
-        raise RuntimeError("runner-binding-san-mismatch")
-    return invocation_from_runner_uri(uris[0], binding)
+    return invocation_from_runner_uri(sole_peer_uri(certificate), binding)
 
 
 def _invocation_for_session(

@@ -143,6 +143,34 @@ const workflowDeclaredOrderSchema = z
 
 export { workflowDeclaredOrderSchema, workflowDeclaredSchemaSchema };
 
+/**
+ * The node and verdict that close a loop's round early, when the document
+ * names one. Absent where the document declares no earlier exit at all.
+ */
+const workflowLoopVerdictSchema = z
+  .object({
+    node: z.string().min(1),
+    verdict: z.enum(["accepted", "revise"])
+  })
+  .strict();
+
+/**
+ * One declared loop of a published V3 revision: its body and its bound.
+ *
+ * `member_node_ids` names the loop's one-line body by the same ids
+ * `node_previews` already carries, never the nodes a second time.
+ */
+const workflowLoopSchema = z
+  .object({
+    id: z.string().min(1),
+    member_node_ids: z.array(z.string().min(1)).min(1),
+    maximum_rounds: z.number().int().positive(),
+    repeat_while: workflowLoopVerdictSchema.nullable()
+  })
+  .strict();
+
+export { workflowLoopSchema, workflowLoopVerdictSchema };
+
 const workflowGraphV3Schema = z
   .object({
     workflow_format_version: z.literal(3),
@@ -152,6 +180,7 @@ const workflowGraphV3Schema = z
     agent_roles: z.array(z.string().min(1)).max(100),
     orders: z.array(workflowDeclaredOrderSchema),
     node_previews: z.array(workflowNodePreviewSchema),
+    loops: z.array(workflowLoopSchema),
     name: z.string().min(1),
     description: z.string().nullable()
   })

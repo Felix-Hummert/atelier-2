@@ -363,6 +363,36 @@ class WorkflowDeclaredOrderResourceV3(ApiModel):
     schema_reference: WorkflowDeclaredSchemaResourceV3 = Field(alias="schema")
 
 
+class WorkflowLoopVerdictResourceV3(ApiModel):
+    """The node and verdict that close a round early, when the document names one.
+
+    A loop the document declares may still repeat only on its round bound,
+    with no earlier exit at all — that document carries no resource of this
+    shape, rather than one with an invented verdict. Where one is declared,
+    this is the node that closes the round and the one token, of the closed
+    verdict vocabulary, whose answer sends the loop around again.
+    """
+
+    node: str = Field(min_length=1)
+    verdict: Literal["accepted", "revise"]
+
+
+class WorkflowLoopResourceV3(ApiModel):
+    """One declared loop of a published V3 revision: its body and its bound.
+
+    `member_node_ids` is the loop's one-line body, in the order the document
+    walks it — the same node ids `node_previews` already names, never the
+    nodes republished a second time. `maximum_rounds` is the bound that always
+    holds; `repeat_while` is the earlier exit a verdict may grant, or absent
+    where the document declares none.
+    """
+
+    id: str = Field(min_length=1)
+    member_node_ids: tuple[str, ...] = Field(min_length=1)
+    maximum_rounds: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    repeat_while: WorkflowLoopVerdictResourceV3 | None
+
+
 # A docstring here is published as this component's description, so the reason
 # the two authored fields carry no column of their own stays a comment: ADR 0007
 # decision 4 has them parsed out of the published bytes on the way to the wire,
@@ -410,6 +440,15 @@ class WorkflowGraphResourceV3(ApiModel):
     """
 
     node_previews: tuple[WorkflowNodePreviewResourceV3, ...] = Field(min_length=1)
+    loops: tuple[WorkflowLoopResourceV3, ...]
+    """Every loop this document declares, in the order the author wrote them.
+
+    A graph with no declared loop answers empty, the document's own answer and
+    not a gap this projection fills in. Each loop names its members by the ids
+    `node_previews` already carries, so a renderer draws the box those ids
+    outline without holding two copies of the same node.
+    """
+
     name: str = Field(min_length=1)
     description: str | None
 
@@ -442,6 +481,17 @@ class WorkflowGraphResourceV3(ApiModel):
             for dependency in node.depends_on
         ):
             raise ValueError("every depends_on names a published preview")
+        loop_ids = tuple(loop.id for loop in self.loops)
+        if len(set(loop_ids)) != len(loop_ids):
+            raise ValueError("each declared loop has one id")
+        for loop in self.loops:
+            if any(member not in preview_ids for member in loop.member_node_ids):
+                raise ValueError("every loop member names a published preview")
+            if (
+                loop.repeat_while is not None
+                and loop.repeat_while.node not in loop.member_node_ids
+            ):
+                raise ValueError("a loop's verdict names one of its own members")
         return self
 
 

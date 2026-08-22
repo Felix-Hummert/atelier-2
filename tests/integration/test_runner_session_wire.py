@@ -27,7 +27,11 @@ from pathlib import Path
 
 import pytest
 
-from atelier2.adapters.free_runner_executor import FreeRunnerAuthorizationResolver
+from atelier2.adapters.free_runner_executor import (
+    FreeRunnerHoldJob,
+    FreeRunnerPrintJob,
+    encode_free_runner_job,
+)
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
     encode_runner_prepare_payload,
@@ -41,6 +45,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerGenerationId,
     RunnerInvocationId,
     RunnerManifestId,
+    RunnerProviderFailure,
     RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
@@ -76,6 +81,7 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
     decode_runner_terminal_evidence_record,
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
+from atelier2.runner.authorization import free_runner_auth_reference
 from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _status_field
 
 # A cgroup pids controller isn't delegated the same way (or readable the same
@@ -92,11 +98,12 @@ _STUBBED_PROCESS_LIMIT = 4096
 
 # Runs `run_candidate_session` in a fresh interpreter, with its own
 # `PR_SET_NO_NEW_PRIVS`, a Landlock allowlist widened to reach this test
-# interpreter's own install prefix (the production allowlist names the
-# deployed candidate image's layout instead — the same accommodation
-# `test_runner_child.py` already makes for the identical reason), and a
-# stubbed cgroup pid limit reading (see `_STUBBED_PROCESS_LIMIT` above).
-# Nothing about the session's own logic is touched.
+# interpreter's own install prefix and installed atelier2 source (the
+# production allowlist names the deployed candidate image's layout instead
+# — the same accommodation `test_runner_child.py` already makes for the
+# identical reason), and a stubbed cgroup pid limit reading (see
+# `_STUBBED_PROCESS_LIMIT` above). Nothing about the session's own logic is
+# touched.
 _CANDIDATE_DRIVER = """
 import ctypes
 import socket
@@ -108,7 +115,8 @@ _PR_SET_NO_NEW_PRIVS = 38
 (
     fd, attempt_id, request_hash, generation_id, manifest_id, invocation_id,
     scenario_value, manifest_path, identity, journal_directory, process_limit,
-) = sys.argv[1:12]
+    workspace_directory,
+) = sys.argv[1:13]
 
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -127,11 +135,20 @@ if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
 
 
 def _interpreter_reachable_allowlist():
+    import atelier2
+
+    # An editable install's real files live outside both prefixes (this
+    # dev tree's own src/, not site-packages); the fixed candidate program
+    # (adapters/free_runner_executor.run_free_runner_job) imports atelier2
+    # only after Landlock restricts this process, so whatever install form
+    # is active has to be reachable here the same way `/usr` already
+    # covers a packaged, non-editable install (production's own layout).
+    installed_source_root = Path(atelier2.__file__).resolve().parent.parent
     return tuple(
         path
         for path in (
             Path("/usr"), Path("/lib"), Path("/lib64"), Path("/proc"), Path("/dev"),
-            Path(sys.prefix), Path(sys.base_prefix),
+            Path(sys.prefix), Path(sys.base_prefix), installed_source_root,
         )
         if path.exists()
     )
@@ -139,6 +156,7 @@ def _interpreter_reachable_allowlist():
 
 session_module.child_allowlist = _interpreter_reachable_allowlist
 session_module._pid_limit = lambda: int(process_limit)
+session_module._runner_workspace_directory = lambda: Path(workspace_directory)
 run_candidate_session(
     socket.socket(fileno=int(fd)),
     RunnerGenerationBinding(
@@ -170,6 +188,7 @@ class _FakeRunnerSessionCore:
         self.committed = 0
         self.acknowledged = 0
         self.cancelled = 0
+        self.committed_envelope: RunnerTerminalEvidenceEnvelope | None = None
 
     def arm(
         self, binding: RunnerGenerationBinding, invocation: RunnerInvocationId
@@ -191,6 +210,7 @@ class _FakeRunnerSessionCore:
             return decoded.evidence_hash
         if not isinstance(decoded, RunnerTerminalEvidenceEnvelope):
             raise TypeError("runner-terminal-record-corrupt")
+        self.committed_envelope = decoded
         return RunnerTerminalEvidenceHash.for_envelope(decoded)
 
     def acknowledge(
@@ -224,7 +244,10 @@ def _binding(
     )
 
 
-def _free_request() -> AgentExecutionRequestV2:
+_PRINT_JOB_BYTES = encode_free_runner_job(FreeRunnerPrintJob("runner candidate"))
+
+
+def _free_request(job_bytes: bytes = _PRINT_JOB_BYTES) -> AgentExecutionRequestV2:
     auth = AuthProfileRevision(
         "candidate", 1, ProviderId("fake-free"), AuthMode.API_KEY
     )
@@ -245,7 +268,7 @@ def _free_request() -> AgentExecutionRequestV2:
         node_id,
         ResolvedAgentBinding(AgentRole("runner"), configuration, auth),
         AgentExecutorOperationalIdentity("free-runner-candidate"),
-        b"Return the one candidate result.",
+        job_bytes,
     )
 
 
@@ -371,6 +394,7 @@ def _spawn_candidate_session(
     manifest_path: Path,
     identity: Path,
     journal_directory: Path,
+    workspace_directory: Path,
 ) -> subprocess.Popen[bytes]:
     fd = candidate_side.fileno()
     return subprocess.Popen(
@@ -389,6 +413,7 @@ def _spawn_candidate_session(
             str(identity),
             str(journal_directory),
             str(_STUBBED_PROCESS_LIMIT),
+            str(workspace_directory),
         ),
         pass_fds=(fd,),
         close_fds=True,
@@ -402,11 +427,16 @@ class _PreparedSession:
     manifest_path: Path
     identity: Path
     journal_directory: Path
+    workspace_directory: Path
     core: _FakeRunnerSessionCore
     core_session: CoreRunnerSession
 
 
-def _prepared_session(tmp_path: Path) -> _PreparedSession:
+def _prepared_session(
+    tmp_path: Path,
+    scenario: CandidateScenario = CandidateScenario.SUCCESS,
+    job_bytes: bytes | None = None,
+) -> _PreparedSession:
     invocation = RunnerInvocationId("B" * 43)
     manifest = _host_manifest(
         total_attempt_milliseconds=5_000,
@@ -417,10 +447,21 @@ def _prepared_session(tmp_path: Path) -> _PreparedSession:
     manifest_path.write_bytes(encode_runner_manifest(manifest))
     identity = _denied_identity_directory(tmp_path)
     journal_directory = tmp_path / "journal"
-    request = _free_request()
-    reference = FreeRunnerAuthorizationResolver().reference_for(
-        request.resolved_binding.auth_profile
+    workspace_directory = tmp_path / "workspace"
+    workspace_directory.mkdir()
+    resolved_job_bytes = (
+        job_bytes
+        if job_bytes is not None
+        else (
+            encode_free_runner_job(
+                FreeRunnerHoldJob(manifest.total_attempt_milliseconds / 1000)
+            )
+            if scenario is CandidateScenario.CANCEL
+            else _PRINT_JOB_BYTES
+        )
     )
+    request = _free_request(resolved_job_bytes)
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     binding = _binding(request.request_hash, runner_manifest_id(manifest))
     core = _FakeRunnerSessionCore()
     core_session = CoreRunnerSession(
@@ -437,6 +478,7 @@ def _prepared_session(tmp_path: Path) -> _PreparedSession:
         manifest_path,
         identity,
         journal_directory,
+        workspace_directory,
         core,
         core_session,
     )
@@ -448,7 +490,7 @@ def _prepared_session(tmp_path: Path) -> _PreparedSession:
 def test_runner_session_wire_completes_offer_to_released(
     tmp_path: Path, scenario: CandidateScenario
 ) -> None:
-    prepared = _prepared_session(tmp_path)
+    prepared = _prepared_session(tmp_path, scenario)
     core_side, candidate_side = socket.socketpair()
 
     with core_side:
@@ -460,6 +502,7 @@ def test_runner_session_wire_completes_offer_to_released(
             prepared.manifest_path,
             prepared.identity,
             prepared.journal_directory,
+            prepared.workspace_directory,
         )
         candidate_side.close()
         try:
@@ -477,6 +520,52 @@ def test_runner_session_wire_completes_offer_to_released(
     assert prepared.core.acknowledged == 1
     assert prepared.core.cancelled == (1 if scenario is CandidateScenario.CANCEL else 0)
     assert not (prepared.journal_directory / "terminal-record").exists()
+
+
+def test_runner_session_wire_publishes_a_provider_failure_for_a_refused_job_document(
+    tmp_path: Path,
+) -> None:
+    """A child that refuses its stdin ends the session in typed failure evidence.
+
+    No scenario this candidate ever declares sends a malformed job document --
+    the fixed program's own refusal (nonzero exit, a stderr line) is what B-1
+    wired `RunnerProviderFailure`/`ProcessExitSignature` for, replacing what
+    was an unconditional `RuntimeError` that discarded stderr entirely. This
+    pins that envelope as this session's actual observable outcome, not a
+    thrown exception, and that the exit code and stderr it carries are the
+    child's own.
+    """
+    prepared = _prepared_session(tmp_path, job_bytes=b"not-a-free-runner-job-document")
+    core_side, candidate_side = socket.socketpair()
+
+    with core_side:
+        candidate = _spawn_candidate_session(
+            candidate_side,
+            prepared.binding,
+            prepared.invocation,
+            CandidateScenario.SUCCESS,
+            prepared.manifest_path,
+            prepared.identity,
+            prepared.journal_directory,
+            prepared.workspace_directory,
+        )
+        candidate_side.close()
+        try:
+            _drive_core_session(
+                core_side, prepared.core_session, CandidateScenario.SUCCESS
+            )
+            returncode = candidate.wait(timeout=10)
+        finally:
+            candidate.kill()
+            candidate.wait(timeout=10)
+
+    assert returncode == 0
+    assert prepared.core.committed == 1
+    envelope = prepared.core.committed_envelope
+    assert envelope is not None
+    assert isinstance(envelope.evidence, RunnerProviderFailure)
+    assert envelope.evidence.exit_signature.return_code == 1
+    assert b"free-runner-job-refused" in envelope.evidence.exit_signature.standard_error
 
 
 def test_runner_session_wire_declines_a_cancel_that_crosses_terminal_available(
@@ -504,6 +593,7 @@ def test_runner_session_wire_declines_a_cancel_that_crosses_terminal_available(
             prepared.manifest_path,
             prepared.identity,
             prepared.journal_directory,
+            prepared.workspace_directory,
         )
         candidate_side.close()
         try:

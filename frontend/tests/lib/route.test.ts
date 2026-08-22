@@ -23,6 +23,7 @@ const REACHED_COLD: Record<CockpitRoute["page"], boolean> = {
   new: true,
   workflows: true,
   workflow: true,
+  history: true,
   run: true,
   "not-found": false
 };
@@ -77,6 +78,12 @@ describe("the paths the server is asked to serve", () => {
   it("opens the workflows catalog on its canonical path", () => {
     expect(SERVED_PATHS).toContain("/atelier/workflows");
     expect(cockpitRoute("/atelier/workflows")).toEqual({ page: "workflows" });
+  });
+
+  it("opens History on its own path, separate from the old project level", () => {
+    expect(SERVED_PATHS).toContain("/atelier/history");
+    expect(cockpitRoute("/atelier/history")).toEqual({ page: "history" });
+    expect(cockpitRoute("/atelier/project")).toEqual({ page: "project" });
   });
 
   it("round-trips a workflow name a person actually publishes, spaces included", () => {
