@@ -47,6 +47,30 @@ selected or changed. A rerun creates a new disposable candidate. The current Cor
 `ExactOutput` executor can still serve its fixture; this package supplies no
 external provider or Runner.
 
+## Disposable #301-A Runner candidate
+
+This is not the stable Serve installation and must not be pointed at it. It
+does not mutate A.1 compose, its network, or its store. From this checkout, on
+a local rootful Docker engine the operator has authorized:
+
+```bash
+bash scripts/runner_candidate.sh success
+bash scripts/runner_candidate.sh cancel
+```
+
+Each scenario creates one labelled internal Attempt network, one disposable
+Core witness, one Runner, and one identity tmpfs volume. Exact labelled
+objects are removed only after the Runner answers `RELEASED`. On failure the
+script leaves those objects and prints their names plus the witness directory
+under `/var/tmp/atelier2-301a-runner-witness.*`. After the identity receiver
+succeeds, the launcher unlinks host private keys through held directory FDs
+and keeps only public certificate metadata in that tree. Public bootstrap
+reaches the Runner by `docker cp`; Core reads launcher inspect attestation
+from a read-only path. Core listens as
+`core.runner-candidate.internal:8443` on that internal network only. The
+external CA hook is `tests/witness/runner_candidate_issuer.py`; it is never
+copied into an image.
+
 ## Stable local Serve installation
 
 From a clean committed checkout, install the one stable provider-free console:

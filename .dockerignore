@@ -8,7 +8,9 @@
 **/.ruff_cache
 docs
 reports
-tests
+tests/**
+!tests/witness/
+!tests/witness/runner_candidate_core.py
 *.sqlite
 frontend/node_modules
 frontend/dist
