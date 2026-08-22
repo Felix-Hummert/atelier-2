@@ -71,6 +71,21 @@ def invocation_from_runner_uri(
     return parsed
 
 
+def sole_peer_uri(certificate: x509.Certificate) -> str:
+    """The one URI SAN a peer identity certificate must carry, or refuse.
+
+    Every runner/core peer identity encodes its exact one binding as a single
+    URI general name; a certificate presenting zero or more than one is a
+    peer this process cannot address unambiguously.
+    """
+    uris = certificate.extensions.get_extension_for_class(
+        x509.SubjectAlternativeName
+    ).value.get_values_for_type(x509.UniformResourceIdentifier)
+    if len(uris) != 1:
+        raise CertificatePeerError("runner-binding-san-mismatch")
+    return uris[0]
+
+
 def expected_peer_san(
     *, expected_dns_name: str | None, expected_uri: str
 ) -> tuple[x509.GeneralName, ...]:
