@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from atelier2.adapters.runner_child import LandlockUnavailable, install_landlock_guard
+from atelier2.adapters.runner_journal import RunnerJournal
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
     pin_tls_13,
@@ -32,6 +33,7 @@ from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.runner.identity_receiver import load_published_identity
 from atelier2.runner.session import (
     CandidateScenario,
+    _retained_terminal_record,
     child_allowlist,
     run_candidate_session,
 )
@@ -48,6 +50,23 @@ def _binding(bootstrap: dict[str, str]) -> RunnerGenerationBinding:
 
 def _declared_scenario(bootstrap: dict[str, str]) -> CandidateScenario:
     return CandidateScenario(bootstrap["scenario"])
+
+
+def _invocation_for_session(
+    journal_directory: Path, binding: RunnerGenerationBinding
+) -> RunnerInvocationId:
+    """Offer a prior lifetime's invocation again, or mint the first one.
+
+    A crashed candidate's journal survives it; reusing the exact invocation
+    a retained record already names keeps that invocation's mTLS identity
+    (bound to its URI) valid for the reconnect, and lets the durable store's
+    own idempotent arm recognize the retry instead of racing a fresh
+    invocation against the one it already knows.
+    """
+    retained = _retained_terminal_record(RunnerJournal(journal_directory), binding)
+    if retained is not None and retained.invocation_id is not None:
+        return retained.invocation_id
+    return RunnerInvocationId(secrets.token_urlsafe(32))
 
 
 def _wait_for_file(path: Path, reason: str) -> None:
@@ -105,7 +124,7 @@ def _run_candidate_session(
     )
     binding = _binding(bootstrap)
     scenario = _declared_scenario(bootstrap)
-    invocation = RunnerInvocationId(secrets.token_urlsafe(32))
+    invocation = _invocation_for_session(journal_directory, binding)
     invocation_offer.write_text(
         json.dumps(
             {"invocation_id": invocation.value}, sort_keys=True, separators=(",", ":")

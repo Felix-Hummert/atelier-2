@@ -10,6 +10,7 @@ from atelier2.application.run_runner_session import (
 from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
+    RunnerEvidenceAcceptancePhase,
     RunnerGenerationBinding,
     RunnerInvocationId,
     RunnerTerminalEvidenceAckTombstone,
@@ -43,6 +44,8 @@ class DbosRunnerSessionCore:
         self, binding: RunnerGenerationBinding, record: bytes
     ) -> RunnerTerminalEvidenceHash:
         decoded = decode_runner_terminal_evidence_record(record)
+        if isinstance(decoded, RunnerTerminalEvidenceAckTombstone):
+            return self._require_already_acknowledged(binding, decoded)
         if not isinstance(decoded, RunnerTerminalEvidenceEnvelope):
             raise TypeError("runner-terminal-record-corrupt")
         if decoded.binding != binding:
@@ -51,6 +54,30 @@ class DbosRunnerSessionCore:
         if isinstance(committed, RunnerTerminalEvidenceCommitRefused):
             raise TypeError("runner-terminal-record-refused")
         return committed.evidence_hash
+
+    def _require_already_acknowledged(
+        self,
+        binding: RunnerGenerationBinding,
+        tombstone: RunnerTerminalEvidenceAckTombstone,
+    ) -> RunnerTerminalEvidenceHash:
+        """Resume's answer when the candidate's journal already tombstoned this.
+
+        A resumed candidate whose journal already collected its ACK before it
+        died has no envelope left to resend -- only the tombstone the durable
+        attempt record can confirm. Anything else is a foreign or premature
+        claim, never a fresh evidence commit in its own right.
+        """
+        if tombstone.binding != binding:
+            raise ValueError("runner-terminal-record-corrupt")
+        attempt = self.store.load(self.execution.attempt_id)
+        if (
+            attempt.runner_invocation_id != tombstone.invocation_id
+            or attempt.runner_terminal_evidence_hash != tombstone.evidence_hash
+            or attempt.runner_evidence_acceptance_phase
+            is not RunnerEvidenceAcceptancePhase.ACKNOWLEDGED
+        ):
+            raise TypeError("runner-terminal-record-refused")
+        return tombstone.evidence_hash
 
     def acknowledge(
         self,
