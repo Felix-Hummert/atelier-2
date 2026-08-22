@@ -51,7 +51,10 @@ from atelier2.adapters.dbos.workflow import (
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.compose_node_job import node_job
-from atelier2.application.project_node_rail import project_node_rail
+from atelier2.application.project_node_rail import (
+    never_launched_cleanup_on_failed_run,
+    project_node_rail,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
@@ -93,7 +96,6 @@ from atelier2.contracts.run_projections import (
     NodeAnswer,
     NodeDetail,
     NodeProvenance,
-    PublicAgentAttemptState,
     RunPage,
     RunProjection,
     WaitingReconciliationProjection,
@@ -344,16 +346,6 @@ def _event_endpoint(record: Mapping[Any, Any]) -> tuple[str, NodeExecutionId]:
     if execution_id != expected:
         raise RunTransitionConflict("event node execution binding disagrees")
     return str(record["event_kind"]), execution_id
-
-
-def _is_never_launched_cleanup(attempt: AgentAttemptProjection) -> bool:
-    cancellation = attempt.cancellation
-    return (
-        attempt.state is PublicAgentAttemptState.CANCELLED
-        and cancellation is not None
-        and cancellation.disposition
-        is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
-    )
 
 
 def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
@@ -1399,12 +1391,11 @@ class DbosQueries:
                         )
                         for attempt_record in records_for_execution
                     )
-                    if run.state is RunState.FAILED:
-                        attempt_projections = tuple(
-                            attempt
-                            for attempt in attempt_projections
-                            if not _is_never_launched_cleanup(attempt)
-                        )
+                    attempt_projections = tuple(
+                        attempt
+                        for attempt in attempt_projections
+                        if not never_launched_cleanup_on_failed_run(run, attempt)
+                    )
             instant = instants.get(run.run_id.value)
             projections.append(
                 RunProjection(

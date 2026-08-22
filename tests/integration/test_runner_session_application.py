@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import socket
+import ssl
 import struct
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerAuthorizationResolver,
@@ -46,6 +54,10 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runner_manifests import (
     candidate_runner_manifest,
 )
+from atelier2.contracts.runner_session_codec import (
+    PREPARE_AUTH_REFERENCE_FIELD,
+    encode_runner_session_frame,
+)
 from atelier2.contracts.runner_sessions import (
     RUNNER_SESSION_REFUSAL_CODES,
     RunnerSessionFrame,
@@ -55,6 +67,12 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationStale,
     AgentAttemptReplacementNotAllowed,
+)
+from atelier2.runner.__main__ import (
+    CandidateScenario,
+    _CoreFrameFence,
+    _declared_scenario,
+    _load_verified_client_identity,
 )
 
 
@@ -516,7 +534,7 @@ def test_prepare_payload_round_trips_the_bound_request() -> None:
     payload = encode_runner_prepare_payload(request, reference)
 
     assert decode_runner_prepare_payload(payload, request.request_hash) == request
-    assert payload[18] == reference.encode("ascii")
+    assert payload[PREPARE_AUTH_REFERENCE_FIELD] == reference.encode("ascii")
 
 
 def test_core_session_refuses_attestation_mismatch_without_arming() -> None:
@@ -541,3 +559,94 @@ def test_core_session_refuses_manifest_mismatch_without_arming() -> None:
     with pytest.raises(RunnerSessionRefusal, match="runner-manifest-mismatch"):
         session.accept(_frame(RunnerSessionMessage.READY, 2, tuple(payload)))
     assert core.armed == 0
+
+
+def test_runner_fence_completes_a_frame_split_across_poll_timeouts() -> None:
+    core_side, runner_side = socket.socketpair()
+    with core_side, runner_side:
+        fence = _CoreFrameFence(runner_side, _binding(), _INVOCATION)
+        wire = encode_runner_session_frame(
+            _frame(
+                RunnerSessionMessage.CANCEL,
+                1,
+                (b"run", b"cancel-command", b"\x00" * 8, b"NONE"),
+            )
+        )
+        core_side.sendall(wire[:10])
+
+        with pytest.raises(TimeoutError):
+            fence.read_frame(timeout=0.05)
+        core_side.sendall(wire[10:])
+
+        assert fence.read_frame(timeout=0.05).message is RunnerSessionMessage.CANCEL
+
+
+def test_runner_fence_refuses_a_core_frame_with_a_foreign_binding() -> None:
+    core_side, runner_side = socket.socketpair()
+    with core_side, runner_side:
+        fence = _CoreFrameFence(runner_side, _binding(), _INVOCATION)
+        foreign = RunnerSessionFrame(
+            RunnerSessionMessage.LAUNCH,
+            1,
+            _binding(),
+            RunnerInvocationId("C" * 43),
+            (),
+        )
+        core_side.sendall(encode_runner_session_frame(foreign))
+
+        with pytest.raises(RuntimeError, match="runner-session-binding-mismatch"):
+            fence.read_frame()
+
+
+def test_runner_fence_refuses_a_core_sequence_gap() -> None:
+    core_side, runner_side = socket.socketpair()
+    with core_side, runner_side:
+        fence = _CoreFrameFence(runner_side, _binding(), _INVOCATION)
+        core_side.sendall(
+            encode_runner_session_frame(_frame(RunnerSessionMessage.LAUNCH, 2))
+        )
+
+        with pytest.raises(RuntimeError, match="runner-session-sequence-mismatch"):
+            fence.read_frame()
+
+
+def test_candidate_scenario_is_a_closed_declared_vocabulary() -> None:
+    assert _declared_scenario({"scenario": "cancel"}) is CandidateScenario.CANCEL
+    assert _declared_scenario({"scenario": "success"}) is CandidateScenario.SUCCESS
+    with pytest.raises(ValueError):
+        _declared_scenario({"scenario": "surprise"})
+
+
+def _self_signed_identity() -> tuple[bytes, bytes]:
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.now(UTC)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "runner-candidate")])
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(minutes=5))
+        .sign(key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM), key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+
+
+def test_client_identity_loads_from_the_validated_bytes_without_a_path_reread(
+    tmp_path: Path,
+) -> None:
+    certificate, key = _self_signed_identity()
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+
+    _load_verified_client_identity(context, certificate, key, tmp_path)
+
+    with pytest.raises(ssl.SSLError):
+        _load_verified_client_identity(
+            context, b"not-a-certificate", b"not-a-key", tmp_path
+        )

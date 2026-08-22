@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import socket
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,24 @@ from atelier2.adapters.runner_child import (
     reap_cancelled_runner_child,
     start_runner_child,
 )
-from atelier2.contracts.agent_attempts import RunnerCancellationObservation
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptId,
+    RunnerCancellationObservation,
+    RunnerGenerationBinding,
+    RunnerGenerationId,
+    RunnerInvocationId,
+    RunnerManifestId,
+)
+from atelier2.contracts.agents import AgentExecutionRequestHash
+from atelier2.contracts.runner_manifests import (
+    RunnerManifestV1,
+    candidate_runner_manifest,
+)
+from atelier2.runner.__main__ import (
+    _control_or_child_exit,
+    _CoreFrameFence,
+    _reap_child,
+)
 
 
 @pytest.mark.proves("runner-child-landlock")
@@ -133,6 +152,81 @@ def test_started_child_landlock_denies_identity(tmp_path: Path) -> None:
         allowed,
     )
     assert child.wait(timeout=5) == 0, child.stderr.read() if child.stderr else b""
+
+
+def _candidate_manifest(**timings: int) -> RunnerManifestV1:
+    return replace(
+        candidate_runner_manifest(
+            source_commit="a" * 40,
+            image_digest="sha256:" + "b" * 64,
+            required_landlock_abi=1,
+            executor_revision="fake-free/v1",
+            executor_operational_identity="free-runner-candidate",
+            provider_id="fake-free",
+            auth_mode="api_key",
+            requested_capability="headless",
+        ),
+        **timings,
+    )
+
+
+def _reap_after_test(child: subprocess.Popen[bytes]) -> None:
+    if child.poll() is None:
+        child.kill()
+        child.wait(timeout=2)
+
+
+def test_post_start_control_wait_ends_at_the_manifest_attempt_span() -> None:
+    manifest = _candidate_manifest(total_attempt_milliseconds=200)
+    child = start_runner_child((sys.executable, "-c", "import time; time.sleep(60)"))
+    core_side, runner_side = socket.socketpair()
+    try:
+        with core_side, runner_side:
+            fence = _CoreFrameFence(
+                runner_side,
+                RunnerGenerationBinding(
+                    AgentAttemptId("a" * 64),
+                    AgentExecutionRequestHash("b" * 64),
+                    RunnerGenerationId("A" * 43),
+                    RunnerManifestId("c" * 64),
+                ),
+                RunnerInvocationId("B" * 43),
+            )
+            waited_from = time.monotonic()
+
+            assert _control_or_child_exit(fence, child, manifest) is None
+            # The hardcoded span this replaces waited 60 seconds.
+            assert time.monotonic() - waited_from < 30
+    finally:
+        _reap_after_test(child)
+
+
+def test_child_reap_grace_comes_from_the_attested_manifest(tmp_path: Path) -> None:
+    ready = tmp_path / "ready"
+    child = start_runner_child(
+        (
+            sys.executable,
+            "-c",
+            "import signal,sys,time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[1]).touch(); time.sleep(60)",
+            str(ready),
+        )
+    )
+    deadline = time.monotonic() + 2
+    while not ready.is_file() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.is_file()
+    try:
+        reaped_from = time.monotonic()
+
+        observation = _reap_child(
+            child, _candidate_manifest(terminate_grace_milliseconds=100)
+        )
+
+        assert observation is RunnerCancellationObservation.REAPED_AFTER_KILL
+        # The hardcoded grace this replaces waited a full second before KILL.
+        assert time.monotonic() - reaped_from < 0.9
+    finally:
+        _reap_after_test(child)
 
 
 def test_landlocked_child_reaps_after_term() -> None:

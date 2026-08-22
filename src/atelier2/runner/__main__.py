@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import time
+from enum import StrEnum
 from pathlib import Path
 
 from cryptography import x509
@@ -45,6 +46,7 @@ from atelier2.application.run_runner_session import (
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     RunnerCancellation,
+    RunnerCancellationObservation,
     RunnerGenerationBinding,
     RunnerGenerationId,
     RunnerInvocationId,
@@ -55,10 +57,12 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash, AgentExecutionResult
 from atelier2.contracts.runner_manifests import (
+    RunnerManifestV1,
     decode_runner_manifest,
     runner_manifest_id,
 )
 from atelier2.contracts.runner_session_codec import (
+    PREPARE_AUTH_REFERENCE_FIELD,
     decode_runner_session_frame,
     encode_runner_session_frame,
     runner_session_body_length,
@@ -69,23 +73,67 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
 )
 from atelier2.runner.identity_receiver import load_published_identity
 
-
-def _read_exact(connection: ssl.SSLSocket, length: int) -> bytes:
-    pieces: list[bytes] = []
-    remaining = length
-    while remaining:
-        piece = connection.recv(remaining)
-        if not piece:
-            raise ConnectionError("Core closed the candidate session")
-        pieces.append(piece)
-        remaining -= len(piece)
-    return b"".join(pieces)
+_CONTROL_POLL_SECONDS = 0.05
 
 
-def _read_frame(connection: ssl.SSLSocket) -> RunnerSessionFrame:
-    prefix = _read_exact(connection, 4)
-    length = runner_session_body_length(prefix)
-    return decode_runner_session_frame(prefix + _read_exact(connection, length))
+class CandidateScenario(StrEnum):
+    """The session ending the witness Core declares in the public bootstrap.
+
+    The A candidate exists to prove two endings — a bounded child result and a
+    cancel that reaps the child — so the child it launches is a declared,
+    closed candidate fact rather than an implicit test key.
+    """
+
+    SUCCESS = "success"
+    CANCEL = "cancel"
+
+
+class _CoreFrameFence:
+    """Read Core frames without losing bytes and refuse any foreign frame.
+
+    Bytes already received survive a control-poll timeout, so a CANCEL arriving
+    while the poll fires mid-frame is completed on the next poll instead of
+    desynchronizing the stream. Every inbound frame must carry the session's
+    exact binding, invocation, and next Core sequence — the fence Core holds
+    against the runner, held symmetrically against Core.
+    """
+
+    def __init__(
+        self,
+        connection: socket.socket,
+        binding: RunnerGenerationBinding,
+        invocation: RunnerInvocationId,
+    ) -> None:
+        self._connection = connection
+        self._binding = binding
+        self._invocation = invocation
+        self._buffer = bytearray()
+        self._next_core_sequence = 1
+
+    def read_frame(self, timeout: float | None = None) -> RunnerSessionFrame:
+        self._connection.settimeout(timeout)
+        try:
+            self._buffer_exactly(4)
+            frame_length = 4 + runner_session_body_length(bytes(self._buffer[:4]))
+            self._buffer_exactly(frame_length)
+        finally:
+            self._connection.settimeout(None)
+        wire = bytes(self._buffer[:frame_length])
+        del self._buffer[:frame_length]
+        frame = decode_runner_session_frame(wire)
+        if frame.binding != self._binding or frame.invocation_id != self._invocation:
+            raise RuntimeError("runner-session-binding-mismatch")
+        if frame.sequence != self._next_core_sequence:
+            raise RuntimeError("runner-session-sequence-mismatch")
+        self._next_core_sequence += 1
+        return frame
+
+    def _buffer_exactly(self, length: int) -> None:
+        while len(self._buffer) < length:
+            piece = self._connection.recv(length - len(self._buffer))
+            if not piece:
+                raise ConnectionError("Core closed the candidate session")
+            self._buffer.extend(piece)
 
 
 def _write_frame(connection: ssl.SSLSocket, frame: RunnerSessionFrame) -> None:
@@ -98,6 +146,37 @@ def _binding(bootstrap: dict[str, str]) -> RunnerGenerationBinding:
         AgentExecutionRequestHash(bootstrap["request_hash"]),
         RunnerGenerationId(bootstrap["generation_id"]),
         RunnerManifestId(bootstrap["manifest_id"]),
+    )
+
+
+def _declared_scenario(bootstrap: dict[str, str]) -> CandidateScenario:
+    return CandidateScenario(bootstrap["scenario"])
+
+
+def _child_command(
+    scenario: CandidateScenario, manifest: RunnerManifestV1
+) -> tuple[str, ...]:
+    if scenario is CandidateScenario.CANCEL:
+        hold_seconds = manifest.total_attempt_milliseconds / 1000
+        hold = (
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            f"time.sleep({hold_seconds})"
+        )
+        return (sys.executable, "-c", hold)
+    return (
+        sys.executable,
+        "-c",
+        "import json; print(json.dumps('runner candidate'))",
+    )
+
+
+def _reap_child(
+    child: subprocess.Popen[bytes], manifest: RunnerManifestV1
+) -> RunnerCancellationObservation:
+    return reap_cancelled_runner_child(
+        child,
+        manifest.terminate_grace_milliseconds / 1000,
+        manifest.reap_deadline_milliseconds / 1000,
     )
 
 
@@ -211,18 +290,38 @@ def _measured_ready_payload(manifest, auth_reference: str, identity: Path):
 
 
 def _control_or_child_exit(
-    connection: ssl.SSLSocket, child: subprocess.Popen[bytes]
+    fence: _CoreFrameFence,
+    child: subprocess.Popen[bytes],
+    manifest: RunnerManifestV1,
 ) -> RunnerSessionFrame | None:
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + manifest.total_attempt_milliseconds / 1000
     while child.poll() is None and time.monotonic() < deadline:
-        connection.settimeout(0.05)
         try:
-            return _read_frame(connection)
+            return fence.read_frame(timeout=_CONTROL_POLL_SECONDS)
         except TimeoutError:
             continue
-        finally:
-            connection.settimeout(None)
     return None
+
+
+def _load_verified_client_identity(
+    context: ssl.SSLContext, certificate: bytes, key: bytes, staging: Path
+) -> None:
+    """Load the exact bytes the identity reread validated, not the path again.
+
+    A path-based load_cert_chain would reopen the volume files after
+    validation, leaving a window in which different bytes could be picked up.
+    An unlinked O_TMPFILE inode carries the validated bytes themselves;
+    /proc/self/fd is the only way ssl can be handed pathless PEM material,
+    and the descriptor is closed here before any child exists.
+    """
+    descriptor = os.open(staging, os.O_TMPFILE | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    try:
+        payload = certificate + b"\n" + key
+        if os.write(descriptor, payload) != len(payload):
+            raise RuntimeError("runner identity staging write was short")
+        context.load_cert_chain(f"/proc/self/fd/{descriptor}")
+    finally:
+        os.close(descriptor)
 
 
 def _run_candidate_session(
@@ -236,6 +335,7 @@ def _run_candidate_session(
         handoff.joinpath("bootstrap.json").read_text(encoding="utf-8")
     )
     binding = _binding(bootstrap)
+    scenario = _declared_scenario(bootstrap)
     invocation = RunnerInvocationId(secrets.token_urlsafe(32))
     invocation_offer.write_text(
         json.dumps(
@@ -255,14 +355,20 @@ def _run_candidate_session(
         expected_uri=peer["uri"],
         expected_eku=ExtendedKeyUsageOID.SERVER_AUTH,
     )
-    volume_ca = load_published_identity(
+    client_certificate, client_key, volume_ca = load_published_identity(
         identity, expected_uri=expected_runner_uri, expected_ca=ca_certificate
-    )[2]
+    )
     context = ssl.create_default_context(
         ssl.Purpose.SERVER_AUTH, cadata=volume_ca.decode("ascii")
     )
     pin_tls_13(context)
-    context.load_cert_chain(identity / "client.crt", identity / "client.key")
+    _load_verified_client_identity(
+        context, client_certificate, client_key, journal_directory
+    )
+    # The built-in hostname check would only repeat the DNS half of the manual
+    # post-handshake fence below: validate_peer_certificate pins SAN DNS name,
+    # SPKI-bound URI, and EKU against the bootstrap CA, and the fingerprint
+    # comparison pins the exact presented leaf.
     context.check_hostname = False
     with (
         socket.create_connection((CORE_DNS_NAME, 8443), 5) as raw,
@@ -283,6 +389,7 @@ def _run_candidate_session(
         )
         if hashlib.sha256(presented).hexdigest() != peer["fingerprint"]:
             raise RuntimeError("runner-peer-unverified")
+        fence = _CoreFrameFence(connection, binding, invocation)
         sequence = 1
         _write_frame(
             connection,
@@ -290,7 +397,7 @@ def _run_candidate_session(
                 RunnerSessionMessage.INVOCATION_OFFER, sequence, binding, invocation
             ),
         )
-        prepare = _read_frame(connection)
+        prepare = fence.read_frame()
         if prepare.message is not RunnerSessionMessage.PREPARE:
             raise RuntimeError("Core did not prepare the exact candidate invocation")
         request = decode_runner_prepare_payload(prepare.payload, binding.request_hash)
@@ -298,7 +405,7 @@ def _run_candidate_session(
         resolver = FreeRunnerAuthorizationResolver()
         auth = request.resolved_binding.auth_profile
         reference = resolver.reference_for(auth)
-        if prepare.payload[18] != reference.encode("ascii"):
+        if prepare.payload[PREPARE_AUTH_REFERENCE_FIELD] != reference.encode("ascii"):
             raise RuntimeError("auth-profile-unresolvable")
         resolver.resolve(auth, reference)
         manifest = decode_runner_manifest(handoff.joinpath("manifest").read_bytes())
@@ -315,65 +422,57 @@ def _run_candidate_session(
                 _measured_ready_payload(manifest, reference, identity),
             ),
         )
-        if _read_frame(connection).message is not RunnerSessionMessage.LAUNCH:
+        if fence.read_frame().message is not RunnerSessionMessage.LAUNCH:
             raise RuntimeError("Core did not durably arm the candidate invocation")
         sequence += 1
-        allowlist = _child_allowlist()
-        if bootstrap.get("scenario") == "cancel":
-            child = start_runner_child(
-                (
-                    sys.executable,
-                    "-c",
-                    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
-                ),
-                allowlist,
-            )
-        else:
-            child = start_runner_child(
-                (
-                    sys.executable,
-                    "-c",
-                    "import json; print(json.dumps('runner candidate'))",
-                ),
-                allowlist,
-            )
-        _write_frame(
-            connection,
-            _frame(
-                RunnerSessionMessage.STARTED,
-                sequence,
-                binding,
-                invocation,
-                (struct.pack(">Q", 1),),
-            ),
+        child = start_runner_child(
+            _child_command(scenario, manifest), _child_allowlist()
         )
-        control = _control_or_child_exit(connection, child)
-        if control is not None and control.message is not RunnerSessionMessage.CANCEL:
-            raise RuntimeError("Core sent an unexpected post-start control frame")
-        if control is not None:
-            if control.payload[3] != b"NONE":
-                raise RuntimeError("runner-replacement-not-supported-a")
-            envelope = RunnerTerminalEvidenceEnvelope(
-                binding,
-                invocation,
-                RunnerCancellation(
-                    control.payload[1].decode("utf-8"),
-                    reap_cancelled_runner_child(child, 1, 5),
+        try:
+            _write_frame(
+                connection,
+                _frame(
+                    RunnerSessionMessage.STARTED,
+                    sequence,
+                    binding,
+                    invocation,
+                    (struct.pack(">Q", 1),),
                 ),
             )
-        else:
-            if child.poll() is None:
-                raise RuntimeError("candidate child outlived the attempt")
-            output, _error = child.communicate()
-            if child.returncode != 0:
-                raise RuntimeError(
-                    "free candidate child did not return its bounded result"
+            control = _control_or_child_exit(fence, child, manifest)
+            if (
+                control is not None
+                and control.message is not RunnerSessionMessage.CANCEL
+            ):
+                raise RuntimeError("Core sent an unexpected post-start control frame")
+            if control is not None:
+                if control.payload[3] != b"NONE":
+                    raise RuntimeError("runner-replacement-not-supported-a")
+                envelope = RunnerTerminalEvidenceEnvelope(
+                    binding,
+                    invocation,
+                    RunnerCancellation(
+                        control.payload[1].decode("utf-8"),
+                        _reap_child(child, manifest),
+                    ),
                 )
-            envelope = RunnerTerminalEvidenceEnvelope(
-                binding,
-                invocation,
-                RunnerProviderResult(AgentExecutionResult(output.strip())),
-            )
+            else:
+                if child.poll() is None:
+                    raise RuntimeError("candidate child outlived the attempt")
+                output, _error = child.communicate()
+                if child.returncode != 0:
+                    raise RuntimeError(
+                        "free candidate child did not return its bounded result"
+                    )
+                envelope = RunnerTerminalEvidenceEnvelope(
+                    binding,
+                    invocation,
+                    RunnerProviderResult(AgentExecutionResult(output.strip())),
+                )
+        except BaseException:
+            if child.poll() is None:
+                _reap_child(child, manifest)
+            raise
         journal = RunnerJournal(journal_directory)
         journal.publish(envelope)
         evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
@@ -388,7 +487,7 @@ def _run_candidate_session(
                 (evidence_hash.value.encode("ascii"),),
             ),
         )
-        if _read_frame(connection).message is not RunnerSessionMessage.READBACK:
+        if fence.read_frame().message is not RunnerSessionMessage.READBACK:
             raise RuntimeError("Core did not request retained evidence")
         sequence += 1
         encoded = encode_runner_terminal_evidence_record(envelope)
@@ -402,7 +501,7 @@ def _run_candidate_session(
                 (encoded,),
             ),
         )
-        acknowledgement = _read_frame(connection)
+        acknowledgement = fence.read_frame()
         if acknowledgement.message is not RunnerSessionMessage.ACK:
             raise RuntimeError("Core did not acknowledge durable evidence")
         accepted = require_matching_evidence_hash(
@@ -420,7 +519,7 @@ def _run_candidate_session(
                 (encode_runner_terminal_evidence_record(tombstone),),
             ),
         )
-        release = _read_frame(connection)
+        release = fence.read_frame()
         if release.message is not RunnerSessionMessage.RELEASE:
             raise RuntimeError("Core did not release acknowledged evidence")
         released = require_matching_evidence_hash(release.payload, evidence_hash)

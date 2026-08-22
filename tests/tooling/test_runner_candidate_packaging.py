@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import subprocess
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -38,16 +37,15 @@ def test_launcher_is_the_only_candidate_docker_caller() -> None:
     for path in (PROJECT_ROOT / "src").rglob("*"):
         if path.suffix in {".py", ".sh"} and path.is_file():
             body = path.read_text(encoding="utf-8")
-            assert "docker " not in body or path.name == "runner_candidate.sh"
+            assert "docker " not in body
 
 
-def test_candidate_packaging_does_not_touch_stable_serve_files() -> None:
-    diff = subprocess.check_output(
-        ["git", "diff", "--", *STABLE_FILES],
-        cwd=PROJECT_ROOT,
-        text=True,
-    )
-    assert diff == ""
+def test_stable_serve_files_do_not_adopt_candidate_packaging() -> None:
+    """The disposable candidate ships beside the stable serve stack, never in it."""
+    for name in STABLE_FILES:
+        text = (PROJECT_ROOT / name).read_text(encoding="utf-8")
+        assert "runner_candidate" not in text
+        assert "Dockerfile.runner" not in text
 
 
 def test_launcher_copies_public_bootstrap_and_keeps_core_inspect_read_only() -> None:
