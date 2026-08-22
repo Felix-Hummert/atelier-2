@@ -317,7 +317,7 @@ def _decline_crossing_cancel(
 _JOURNAL_RECORD_MISSING = "runner-terminal-record-missing"
 
 
-def _retained_terminal_record(
+def retained_terminal_record(
     journal: RunnerJournal, binding: RunnerGenerationBinding
 ) -> RunnerTerminalEvidenceEnvelope | RunnerTerminalEvidenceAckTombstone | None:
     """What a prior lifetime already fixed for this exact binding, if anything.
@@ -370,11 +370,11 @@ def run_candidate_session(
     function never resolves a name, opens a socket, or negotiates TLS. A
     prior lifetime's retained journal record, if any, decides whether this
     call launches a real child or replays the fact that lifetime already
-    fixed -- see `_retained_terminal_record`.
+    fixed -- see `retained_terminal_record`.
     """
     fence = _CoreFrameFence(channel, binding, invocation)
     journal = RunnerJournal(journal_directory)
-    retained = _retained_terminal_record(journal, binding)
+    retained = retained_terminal_record(journal, binding)
     sequence = 1
     _write_frame(
         channel,

@@ -511,6 +511,178 @@ def _drive_through_released(
     return ack
 
 
+# --- DbosRunnerSessionCore.commit_terminal_record's tombstone-shaped resume
+# path against a real store. The wire-level C5 test above only proves the
+# fake accepts a tombstone unconditionally; these prove the real adapter's
+# durable confirmation, one behavior per test.
+
+
+def _committed_envelope(fixture: _StoreFixture) -> RunnerTerminalEvidenceEnvelope:
+    return RunnerTerminalEvidenceEnvelope(
+        fixture.binding,
+        fixture.invocation,
+        RunnerProviderResult(AgentExecutionResult(b"resume-tombstone-guard")),
+    )
+
+
+def _armed_and_committed(
+    fixture: _StoreFixture,
+) -> tuple[
+    DbosRunnerSessionCore, RunnerTerminalEvidenceEnvelope, RunnerTerminalEvidenceHash
+]:
+    core = DbosRunnerSessionCore(fixture.execution, fixture.store, "resume-cut-cancel")
+    core.arm(fixture.binding, fixture.invocation)
+    envelope = _committed_envelope(fixture)
+    evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
+    core.commit_terminal_record(
+        fixture.binding, encode_runner_terminal_evidence_record(envelope)
+    )
+    return core, envelope, evidence_hash
+
+
+def _tombstone_record(
+    binding: RunnerGenerationBinding,
+    invocation: RunnerInvocationId,
+    evidence_hash: RunnerTerminalEvidenceHash,
+) -> bytes:
+    return encode_runner_terminal_evidence_record(
+        RunnerTerminalEvidenceAckTombstone(binding, invocation, evidence_hash)
+    )
+
+
+def test_commit_terminal_record_confirms_a_committed_but_not_yet_acknowledged_tombstone(
+    tmp_path: Path,
+) -> None:
+    """The window the review named: the candidate tombstones its journal right
+    after its own `ACK`, before Core processes the `ACK_TOMBSTONE` that would
+    advance it past `CORE_COMMITTED`. A resumed candidate presenting that
+    exact tombstone must be confirmed, not refused forever -- the
+    `ACK_TOMBSTONE` it resends right after this is what carries Core the rest
+    of the way, through the store's own already-idempotent
+    `mark_runner_evidence_acknowledged`.
+    """
+    fixture = _store_fixture(tmp_path, "runner-resume/tombstone-committed")
+    try:
+        core, _envelope, evidence_hash = _armed_and_committed(fixture)
+
+        confirmed = core.commit_terminal_record(
+            fixture.binding,
+            _tombstone_record(fixture.binding, fixture.invocation, evidence_hash),
+        )
+
+        assert confirmed == evidence_hash
+        durable = fixture.store.load(fixture.execution.attempt_id)
+        assert (
+            durable.runner_evidence_acceptance_phase
+            is RunnerEvidenceAcceptancePhase.CORE_COMMITTED
+        )
+    finally:
+        fixture.runtime.close()
+
+
+def test_commit_terminal_record_confirms_an_acknowledged_tombstone(
+    tmp_path: Path,
+) -> None:
+    fixture = _store_fixture(tmp_path, "runner-resume/tombstone-acknowledged")
+    try:
+        core, _envelope, evidence_hash = _armed_and_committed(fixture)
+        tombstone_bytes = _tombstone_record(
+            fixture.binding, fixture.invocation, evidence_hash
+        )
+        core.acknowledge(fixture.binding, evidence_hash, tombstone_bytes)
+
+        confirmed = core.commit_terminal_record(fixture.binding, tombstone_bytes)
+
+        assert confirmed == evidence_hash
+    finally:
+        fixture.runtime.close()
+
+
+def test_commit_terminal_record_refuses_a_tombstone_naming_a_foreign_binding(
+    tmp_path: Path,
+) -> None:
+    fixture = _store_fixture(tmp_path, "runner-resume/tombstone-foreign-binding")
+    try:
+        core, _envelope, evidence_hash = _armed_and_committed(fixture)
+        foreign_binding = RunnerGenerationBinding(
+            fixture.execution.attempt_id,
+            fixture.execution.request.request_hash,
+            RunnerGenerationId("C" * 43),
+            fixture.binding.manifest_id,
+        )
+
+        with pytest.raises(ValueError, match="runner-terminal-record-corrupt"):
+            core.commit_terminal_record(
+                fixture.binding,
+                _tombstone_record(foreign_binding, fixture.invocation, evidence_hash),
+            )
+    finally:
+        fixture.runtime.close()
+
+
+def test_commit_terminal_record_refuses_a_tombstone_naming_a_foreign_invocation(
+    tmp_path: Path,
+) -> None:
+    fixture = _store_fixture(tmp_path, "runner-resume/tombstone-foreign-invocation")
+    try:
+        core, _envelope, evidence_hash = _armed_and_committed(fixture)
+        foreign_invocation = RunnerInvocationId("C" * 43)
+
+        with pytest.raises(TypeError, match="runner-terminal-record-refused"):
+            core.commit_terminal_record(
+                fixture.binding,
+                _tombstone_record(fixture.binding, foreign_invocation, evidence_hash),
+            )
+    finally:
+        fixture.runtime.close()
+
+
+def test_commit_terminal_record_refuses_a_tombstone_naming_the_wrong_hash(
+    tmp_path: Path,
+) -> None:
+    fixture = _store_fixture(tmp_path, "runner-resume/tombstone-wrong-hash")
+    try:
+        core, _envelope, _evidence_hash = _armed_and_committed(fixture)
+        wrong_hash = RunnerTerminalEvidenceHash("d" * 64)
+
+        with pytest.raises(TypeError, match="runner-terminal-record-refused"):
+            core.commit_terminal_record(
+                fixture.binding,
+                _tombstone_record(fixture.binding, fixture.invocation, wrong_hash),
+            )
+    finally:
+        fixture.runtime.close()
+
+
+def test_commit_terminal_record_refuses_a_tombstone_before_any_evidence_is_committed(
+    tmp_path: Path,
+) -> None:
+    fixture = _store_fixture(tmp_path, "runner-resume/tombstone-premature")
+    try:
+        core = DbosRunnerSessionCore(
+            fixture.execution, fixture.store, "resume-cut-cancel"
+        )
+        core.arm(fixture.binding, fixture.invocation)
+        never_committed_hash = RunnerTerminalEvidenceHash.for_envelope(
+            _committed_envelope(fixture)
+        )
+
+        with pytest.raises(TypeError, match="runner-terminal-record-refused"):
+            core.commit_terminal_record(
+                fixture.binding,
+                _tombstone_record(
+                    fixture.binding, fixture.invocation, never_committed_hash
+                ),
+            )
+
+        durable = fixture.store.load(fixture.execution.attempt_id)
+        assert durable.runner_evidence_acceptance_phase is (
+            RunnerEvidenceAcceptancePhase.NONE
+        )
+    finally:
+        fixture.runtime.close()
+
+
 def test_resume_after_a_core_crash_before_started_re_arms_idempotently(
     tmp_path: Path,
 ) -> None:

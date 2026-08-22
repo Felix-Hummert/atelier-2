@@ -33,8 +33,8 @@ from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.runner.identity_receiver import load_published_identity
 from atelier2.runner.session import (
     CandidateScenario,
-    _retained_terminal_record,
     child_allowlist,
+    retained_terminal_record,
     run_candidate_session,
 )
 
@@ -63,7 +63,7 @@ def _invocation_for_session(
     own idempotent arm recognize the retry instead of racing a fresh
     invocation against the one it already knows.
     """
-    retained = _retained_terminal_record(RunnerJournal(journal_directory), binding)
+    retained = retained_terminal_record(RunnerJournal(journal_directory), binding)
     if retained is not None and retained.invocation_id is not None:
         return retained.invocation_id
     return RunnerInvocationId(secrets.token_urlsafe(32))
