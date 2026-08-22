@@ -159,10 +159,10 @@ describe("core surfaces read owned display strings", () => {
 
     expect(screen.getByRole("heading", { name: wrapDisplayCopy(studioPageCopy.projects) }).isConnected).toBe(true);
     const card = await screen.findByRole("article", { name: "This workshop" });
-    expect(within(card).getByText(`2 ${wrapDisplayCopy(standingWords.running)}`).isConnected).toBe(true);
-    expect(within(card).getByText(`2 ${wrapDisplayCopy(standingWords.waiting)}`).isConnected).toBe(true);
-    expect(within(card).getByText(`1 ${wrapDisplayCopy(standingWords.failed)}`).isConnected).toBe(true);
-    expect(within(card).getByText(`1 ${wrapDisplayCopy(standingWords.done)}`).isConnected).toBe(true);
+    expect(within(card).getByText(`2 ${wrapDisplayCopy(studioPageCopy.runningCount)}`).isConnected).toBe(true);
+    expect(within(card).getByText(`2 ${wrapDisplayCopy(studioPageCopy.waitingCount)}`).isConnected).toBe(true);
+    expect(within(card).getByText(`1 ${wrapDisplayCopy(studioPageCopy.failedCount)}`).isConnected).toBe(true);
+    expect(within(card).getByText(`1 ${wrapDisplayCopy(studioPageCopy.landedCount)}`).isConnected).toBe(true);
 
     const chat = screen.getByRole("region", { name: wrapDisplayCopy(studioPageCopy.chat) });
     expect(within(chat).getByText(wrapDisplayCopy(studioPageCopy.chatUnavailable)).isConnected).toBe(true);

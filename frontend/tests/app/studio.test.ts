@@ -9,7 +9,7 @@ import {
   type RunV1
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
-import { standingMarks, standingWords } from "../../src/lib/runState";
+import { standingMarks } from "../../src/lib/runState";
 import { cockpitApiStub, FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import {
   completedRun,
@@ -135,11 +135,11 @@ describe("the studio is the level the workshop opens on", () => {
 
     const card = await screen.findByRole("article", { name: "This workshop" });
 
-    expect(within(card).getByText(`2 ${standingWords.running}`).isConnected).toBe(true);
-    expect(within(card).getByText(`1 ${standingWords.waiting}`).isConnected).toBe(true);
-    expect(within(card).getByText(`1 ${standingWords.failed}`).isConnected).toBe(true);
+    expect(within(card).getByText("2 running").isConnected).toBe(true);
+    expect(within(card).getByText("1 waiting for you").isConnected).toBe(true);
+    expect(within(card).getByText("1 failed").isConnected).toBe(true);
     expect(within(card).getByText(standingMarks.failed).isConnected).toBe(true);
-    expect(within(card).getByText(`1 ${standingWords.done}`).isConnected).toBe(true);
+    expect(within(card).getByText("1 landed").isConnected).toBe(true);
     expect(within(card).getAllByRole("link")).toHaveLength(1);
   });
 
@@ -307,18 +307,18 @@ describe("an empty studio teaches the one next action", () => {
     });
     openStudio([], { listRuns });
     const card = await screen.findByRole("article", { name: "This workshop" });
-    expect(within(card).getByText(`1 ${standingWords.running}`).isConnected).toBe(true);
+    expect(within(card).getByText("1 running").isConnected).toBe(true);
 
     response = "failed";
     await fireEvent.click(screen.getByRole("button", { name: "Refresh studio runs" }));
 
     await screen.findByText("Studio runs unavailable");
-    expect(within(card).getByText(`1 ${standingWords.running}`).isConnected).toBe(true);
+    expect(within(card).getByText("1 running").isConnected).toBe(true);
     response = "completed";
     await fireEvent.click(screen.getByRole("button", { name: "Retry studio runs" }));
 
-    await waitFor(() => expect(within(card).getByText(`1 ${standingWords.done}`).isConnected).toBe(true));
-    expect(within(card).queryByText(`1 ${standingWords.running}`)).toBeNull();
+    await waitFor(() => expect(within(card).getByText("1 landed").isConnected).toBe(true));
+    expect(within(card).queryByText("1 running")).toBeNull();
   });
 
   it("does not confirm a partial initial five-list reading", async () => {
@@ -373,7 +373,7 @@ describe("the studio holds GET /events", () => {
     expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
     expect(getRun).toHaveBeenCalledWith("run1.YQ");
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
-    expect(within(await screen.findByRole("article", { name: "This workshop" })).getByText(`1 ${standingWords.waiting}`).isConnected).toBe(true);
+    expect(within(await screen.findByRole("article", { name: "This workshop" })).getByText("1 waiting for you").isConnected).toBe(true);
   });
 
   it("applies an AGENT_FAILED from the stream without already listing the run", async () => {
@@ -386,9 +386,9 @@ describe("the studio holds GET /events", () => {
     feed.handlers?.event(JSON.stringify(agentFailedEvent()));
 
     const card = await screen.findByRole("article", { name: "This workshop" });
-    expect(within(card).getByText(`1 ${standingWords.failed}`).isConnected).toBe(true);
+    expect(within(card).getByText("1 failed").isConnected).toBe(true);
     expect(within(card).getByText(standingMarks.failed).isConnected).toBe(true);
-    expect(within(card).queryByText(`1 ${standingWords.done}`)).toBeNull();
+    expect(within(card).queryByText("1 landed")).toBeNull();
     expect(getRun).toHaveBeenCalledWith(publicReference);
     expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
@@ -425,10 +425,10 @@ describe("the studio holds GET /events", () => {
     releaseStarted({ items: [staleStarted, otherStarted], next_after: null });
     const card = await screen.findByRole("article", { name: "This workshop" });
     await waitFor(() => {
-      expect(within(card).getByText(`1 ${standingWords.running}`).isConnected).toBe(true);
+      expect(within(card).getByText("1 running").isConnected).toBe(true);
     });
-    expect(within(card).getByText(`1 ${standingWords.waiting}`).isConnected).toBe(true);
-    expect(within(card).queryByText(`2 ${standingWords.running}`)).toBeNull();
+    expect(within(card).getByText("1 waiting for you").isConnected).toBe(true);
+    expect(within(card).queryByText("2 running")).toBeNull();
     expect(within(screen.getByRole("region", { name: "Waiting for you" })).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
   });
 
@@ -462,9 +462,9 @@ describe("the studio holds GET /events", () => {
     releaseCompleted({ items: [newerCompleted], next_after: null });
     const card = await screen.findByRole("article", { name: "This workshop" });
     await waitFor(() => {
-      expect(within(card).getByText(`1 ${standingWords.done}`).isConnected).toBe(true);
+      expect(within(card).getByText("1 landed").isConnected).toBe(true);
     });
-    expect(within(card).queryByText(`1 ${standingWords.waiting}`)).toBeNull();
+    expect(within(card).queryByText("1 waiting for you")).toBeNull();
     expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
   });
 

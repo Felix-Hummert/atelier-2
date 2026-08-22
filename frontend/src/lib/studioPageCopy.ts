@@ -10,6 +10,10 @@ export const studioPageCopy = {
   chatUnavailable: "Unavailable",
   needsYou: "needs you",
   needYou: "need you",
+  runningCount: "running",
+  waitingCount: "waiting for you",
+  failedCount: "failed",
+  landedCount: "landed",
   runsIncomplete: "Studio runs incomplete",
   runsUnavailable: "Studio runs unavailable"
 } as const;

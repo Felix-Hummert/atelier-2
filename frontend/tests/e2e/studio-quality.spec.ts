@@ -87,10 +87,10 @@ async function expectPopulatedCopy(page: Page): Promise<void> {
 
   await expect(page.getByRole("heading", { name: wrapped(studioPageCopy.projects) })).toBeVisible();
   const card = page.getByRole("article", { name: "This workshop" });
-  await expect(card.getByText(`2 ${wrapped(standingWords.running)}`)).toBeVisible();
-  await expect(card.getByText(`2 ${wrapped(standingWords.waiting)}`)).toBeVisible();
-  await expect(card.getByText(`1 ${wrapped(standingWords.failed)}`)).toBeVisible();
-  await expect(card.getByText(`1 ${wrapped(standingWords.done)}`)).toBeVisible();
+  await expect(card.getByText(`2 ${wrapped(studioPageCopy.runningCount)}`)).toBeVisible();
+  await expect(card.getByText(`2 ${wrapped(studioPageCopy.waitingCount)}`)).toBeVisible();
+  await expect(card.getByText(`1 ${wrapped(studioPageCopy.failedCount)}`)).toBeVisible();
+  await expect(card.getByText(`1 ${wrapped(studioPageCopy.landedCount)}`)).toBeVisible();
 
   const chat = page.getByRole("region", { name: wrapped(studioPageCopy.chat) });
   await expect(chat).toContainText(wrapped(studioPageCopy.chatUnavailable));
